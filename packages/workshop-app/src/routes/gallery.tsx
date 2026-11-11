@@ -259,7 +259,7 @@ function Gallery() {
           <Composer onSend={previewSend} addActions={addActions} addMenuInPlace />
         </div>
       </Section>
-      <Section title="ChatLayout + MessageList (virtual pages, streaming, slow history, and expandable cards)">
+      <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave)">
         <MessageListPreview />
       </Section>
       <Section title="Borders: line (input) and hairline (checkbox)">

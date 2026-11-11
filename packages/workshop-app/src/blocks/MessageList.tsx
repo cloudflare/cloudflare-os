@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 import { ArrowDownIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { MessagePage, type MessageListItem, type MessageListPage } from './MessagePage'
@@ -22,6 +22,26 @@ export type MessageListProps = {
   }
 }
 
+/** The clock of Arrival.css, which a row opens on so that what is below moves with what grows in. */
+const ARRIVAL = { duration: 420, easing: 'linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1)' }
+
+/**
+ * Lets a row arrive: it opens from nothing to its height, pushing what is below it down
+ * gradually, while what is in it animates in (see Arrival.css). The row is marked for as long as
+ * that takes. Done on the element rather than through React: it is a one-off for that element,
+ * which a row mounted again later (the pages are virtual) must not repeat.
+ */
+const markArriving = (row: Element) => {
+  row.setAttribute('data-arriving', '')
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const { height } = row.getBoundingClientRect()
+    // A row of no height would still be given the list's `gap-2`, so it starts by taking that back.
+    row.animate([{ height: '0px', marginTop: '-0.5rem' }, { height: `${height}px`, marginTop: '0px' }], ARRIVAL)
+  }
+  const arrivals = row.getAnimations({ subtree: true }).map(({ finished }) => finished)
+  void Promise.allSettled(arrivals).then(() => row.removeAttribute('data-arriving'))
+}
+
 /** A chat-specific, page-windowed list. Fetching and durable message state belong to the caller. */
 export const MessageList = ({ messages, children, history, streaming }: MessageListProps) => {
   const { scrollRef, contentRef, atBottom, scrollToBottom, reconcile } = useMessageScroll()
@@ -38,6 +58,32 @@ export const MessageList = ({ messages, children, history, streaming }: MessageL
     }
     return result
   }, [messages])
+  // Rows that join the end of the conversation while it is open are marked as arriving, for the
+  // blocks in them that animate in. Before paint, so a row is never seen at rest first.
+  const shown = useRef<{ ids: Set<string | number>; last: number }>(undefined)
+  useLayoutEffect(() => {
+    const before = shown.current
+    shown.current = { ids: new Set(messages.map(({ id }) => id)), last: messages.at(-1)?.sequence ?? -Infinity }
+    // What is there when the list is first shown is the conversation as it was found.
+    if (!before) return
+    for (const { id, sequence } of messages) {
+      // Earlier history paged in, or a row that took its place among older ones, has not just arrived.
+      if (before.ids.has(id) || sequence < before.last) continue
+      const row = contentRef.current?.querySelector(`[data-message-anchor="${CSS.escape(String(id))}"]`)
+      if (row) markArriving(row)
+    }
+  }, [messages, contentRef])
+  // Likewise what joins the live output after it was first shown, such as a card an answer produced.
+  const liveRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const observer = new MutationObserver((changes) => {
+      for (const { addedNodes } of changes) {
+        for (const node of addedNodes) if (node instanceof Element) markArriving(node)
+      }
+    })
+    observer.observe(liveRef.current!, { childList: true })
+    return () => observer.disconnect()
+  }, [])
   const { hasMore, loading, error, onLoadEarlier } = history ?? {}
   useEffect(() => {
     if (!hasMore || loading || error || !onLoadEarlier) return
@@ -77,7 +123,7 @@ export const MessageList = ({ messages, children, history, streaming }: MessageL
             )}
           </div>
           {pages.map((page) => <MessagePage key={page.id} page={page} scrollRef={scrollRef} onLayout={reconcile} />)}
-          <div data-message-anchor="live" className="flex flex-col gap-2">{children}</div>
+          <div ref={liveRef} data-message-anchor="live" className="flex flex-col gap-2">{children}</div>
         </div>
       </div>
       {!atBottom && (

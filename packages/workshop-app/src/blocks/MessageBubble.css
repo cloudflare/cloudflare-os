@@ -1,0 +1,28 @@
+/* A message that arrives after another from the same sender joins it in a run. It comes in as a
+   message on its own would, with full corners, and settles into the run as it grows: the corner
+   that meets the message above tightens, and the message draws up to it. The message above
+   tightens its own meeting corner over the same time (a transition, in MessageBubble.tsx).
+
+   Both animate from how a lone message looks to whatever the message is given, so one that joins
+   nothing is unchanged by them. */
+.message-bubble {
+  --arrives-with: message-bubble-joins 300ms ease-out backwards;
+}
+
+@keyframes message-bubble-joins {
+  from { border-radius: 21px; }
+}
+
+[data-arriving] [data-role] {
+  animation: message-bubble-draws-up 300ms ease-out backwards;
+}
+
+@keyframes message-bubble-draws-up {
+  from { margin-top: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-arriving] [data-role] {
+    animation: none;
+  }
+}
