@@ -1,0 +1,33 @@
+/* Something that has just arrived in a conversation (a message, a card) grows downwards, the way
+   the conversation runs, out of the top corner on the side it is aligned to: set that with a
+   transform-origin utility beside the `arrives` class. It borrows the dropdown menu's feel: the size rides a spring that overshoots a touch and settles,
+   while the contents fade in and come into focus on a shorter clock of their own.
+
+   What marks a thing as arriving is the row it is in (`data-arriving`, set by the message list,
+   which opens the row on the same clock so that what is below moves down with it; keep the two in
+   step). A row that is only being shown again, such as history scrolled back to, is not marked
+   and does not animate. */
+[data-arriving] .arrives {
+  animation:
+    arrives-grow 420ms linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1) backwards,
+    arrives-clear 200ms 40ms ease-out backwards,
+    /* What a block adds of its own to its arrival. */
+    var(--arrives-with, none);
+}
+
+@keyframes arrives-grow {
+  from { scale: 0.5; }
+}
+
+@keyframes arrives-clear {
+  from {
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-arriving] .arrives {
+    animation: none;
+  }
+}

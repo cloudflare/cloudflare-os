@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { Composer } from '@/blocks/Composer'
+import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
 import { UserMessage } from '@/blocks/UserMessage'
@@ -9,7 +10,7 @@ import { Button } from '@/components/Button'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, type ChatItem } from './chatItems'
+import { continuesRun, EMPTY_FEED } from './chatItems'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
@@ -68,9 +69,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
     }
   }, [actions, model, onOpenOutput, onSetUpConnection, onAlwaysApprove])
 
-  const row = (item: ChatItem) => (
-    <ChatItemView key={item.key} item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
-  )
 
   const messages = useMemo(() => {
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
@@ -112,8 +110,26 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
           streaming={chat.activity !== undefined}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: actions.loadEarlier }}
         >
-          {/* A reply joins the conversation once it is written. Until then it, and how it is coming
-              about, can be looked into here. */}
+          {/* Under the conversation, so what an answer produced is never left behind by what is said
+              after it. These come and go, each in a row that opens and closes around it. */}
+          <LiveRows>
+            {chat.pinned.map((item) => (
+              <LiveRows.Row key={item.key}>
+                <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
+              </LiveRows.Row>
+            ))}
+            {chat.queuedSteers.map(({ text, from }, index) => (
+              <LiveRows.Row key={`steer:${index}`}>
+                <UserMessage parts={[{ type: 'text', text }]} from={from} unread />
+              </LiveRows.Row>
+            ))}
+            {chat.sendError && <LiveRows.Row key="send-error"><MessageBubble role="error">{chat.sendError}</MessageBubble></LiveRows.Row>}
+            {chat.actionError && <LiveRows.Row key="action-error"><MessageBubble role="error">{chat.actionError}</MessageBubble></LiveRows.Row>}
+            {problem && <LiveRows.Row key="problem"><MessageBubble role="error">{problem}</MessageBubble></LiveRows.Row>}
+            {notice && <LiveRows.Row key="notice"><p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p></LiveRows.Row>}
+          </LiveRows>
+          {/* Last, in room that is always kept for it. A reply joins the conversation once it is
+              written; until then it, and how it is coming about, can be looked into here. */}
           <AssistantPresence
             working={chat.activity !== undefined}
             status={chat.activity}
@@ -125,15 +141,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenOutput, onSe
               ),
             }}
           />
-          {/* Below whatever is still being written, so what an answer produced is never left behind it. */}
-          {chat.pinned.map(row)}
-          {chat.queuedSteers.map(({ text, from }, index) => (
-            <UserMessage key={index} parts={[{ type: 'text', text }]} from={from} unread />
-          ))}
-          {chat.sendError && <MessageBubble role="error">{chat.sendError}</MessageBubble>}
-          {chat.actionError && <MessageBubble role="error">{chat.actionError}</MessageBubble>}
-          {problem && <MessageBubble role="error">{problem}</MessageBubble>}
-          {notice && <p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p>}
         </MessageList>
       )}
       {chat.status !== 'ready' && (
