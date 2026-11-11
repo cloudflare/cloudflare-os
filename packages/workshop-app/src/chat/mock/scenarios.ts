@@ -317,13 +317,28 @@ const writeDoc = call('writeFile', {
   content: '# Q3 platform review\n\n## Highlights\n\n- Ticket volume down 12%\n- Median time to close: 3.2 days\n',
 })
 
+// Sent with the request, so there is more than the document to open beside the chat.
+const REVIEW_FILES = [
+  {
+    id: 'tickets-by-week',
+    name: 'tickets-by-week.svg',
+    mimeType: 'image/svg+xml',
+    size: 148,
+    content: new TextEncoder().encode(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#888"/><path d="M1 6 3 4 5 5 7 2" fill="none" stroke="#fff"/></svg>',
+    ),
+  },
+  { id: 'q2-review', name: 'Q2 platform review.pdf', mimeType: 'application/pdf', size: 48_213 },
+]
+
 const output: Scenario = {
   id: 'output',
   title: 'Q3 review doc',
   description:
     'The agent creates a document and keeps writing. The card stays under the answer, as a draft until the ' +
-    'changes are accepted (scripted here: the edits and the accept arrive on their own).',
-  history: history([user('Write up the Q3 platform review as a doc.')]),
+    'changes are accepted (scripted here: the edits and the accept arrive on their own). The request has files ' +
+    'attached: they and the document open beside the chat.',
+  history: history([user('Write up the Q3 platform review as a doc.', { attachments: REVIEW_FILES })]),
   script: [
     ...turn(
       say(agent({ text: 'I’ll start a document for it.' })),

@@ -24,9 +24,11 @@ export type ChatPaneProps = {
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
   /**
-   * What this app cannot do itself yet, for whoever can. Left out, the chat says so when asked.
-   * Keep each stable, or every row renders again.
+   * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
+   * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
+   * says so when asked. Keep each stable, or every row renders again.
    */
+  onOpenAttachment?: ChatItemHandlers['onOpenAttachment']
   onOpenOutput?: ChatItemHandlers['onOpenOutput']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
@@ -35,7 +37,7 @@ export type ChatPaneProps = {
 const LIVE_WORK = 'live:work'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAttachment, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -66,9 +68,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onShowQuoted: (replying) => void actions.findQuoted(replying).then((key) => {
         if (key) requestAnimationFrame(() => list.current?.scrollToMessage(key))
       }),
-      // TODO: the attachment preview.
-      onOpenAttachment: unavailable('Previewing attachments'),
-      // TODO: open the workpiece in the output pane, once there is one.
+      onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
       onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
       onApprove: actions.approveAction,
       onDeny: actions.rejectAction,
@@ -82,7 +82,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
     }
-  }, [actions, model, onOpenOutput, onSetUpConnection, onAlwaysApprove])
+  }, [actions, model, onOpenAttachment, onOpenOutput, onSetUpConnection, onAlwaysApprove])
 
 
   const messages = useMemo(() => {

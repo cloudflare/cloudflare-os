@@ -22,6 +22,7 @@ import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
+import { ShellPreview } from '@/gallery/ShellPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
@@ -214,6 +215,7 @@ function Gallery() {
         </div>
       </Section>
       <HeaderPreview />
+      <ShellPreview />
       <Section title="Sidebar (approach a neighbour from the active row or a distant row)">
         <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
           <Sidebar

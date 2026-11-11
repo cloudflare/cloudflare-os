@@ -1,4 +1,6 @@
 import { createFileRoute, Outlet, useNavigate, useParams } from '@tanstack/react-router'
+import { AsideContext, useAsideState } from '@/aside/AsideContext'
+import { AsidePane } from '@/aside/AsidePane'
 import { Sidebar } from '@/blocks/Sidebar'
 import { AppShell } from '@/layouts/AppShell'
 import { useApi } from '@/rpc/ApiContext'
@@ -28,6 +30,8 @@ const AppFrame = () => {
   const workspacesState = useWorkspaces()
   const navigate = useNavigate()
   const { workspaceId } = useParams({ strict: false })
+  // What pages opened beside themselves. It stays open from one page to the next.
+  const aside = useAsideState()
 
   // Each workspace is listed by its title and when it was last active.
   const workspaces =
@@ -47,19 +51,25 @@ const AppFrame = () => {
         : undefined
 
   return (
-    <AppShell
-      sidebar={
-        <Sidebar
-          user={{ name: user.name }}
-          workspaces={workspaces}
-          selectedWorkspaceId={workspaceId}
-          onSelectWorkspace={(id) => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })}
-          notice={notice}
-          connections={placeholderLogos}
-        />
-      }
-    >
-      <Outlet />
-    </AppShell>
+    <AsideContext value={aside.actions}>
+      <AppShell
+        sidebar={
+          <Sidebar
+            user={{ name: user.name }}
+            workspaces={workspaces}
+            selectedWorkspaceId={workspaceId}
+            onSelectWorkspace={(id) => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })}
+            notice={notice}
+            connections={placeholderLogos}
+            library={{ shown: aside.shown, onToggle: aside.actions.toggle }}
+          />
+        }
+        aside={aside.shown && <AsidePane tabs={aside.tabs} actions={aside.actions} />}
+        onOpenAside={aside.actions.show}
+        onCloseAside={aside.actions.hide}
+      >
+        <Outlet />
+      </AppShell>
+    </AsideContext>
   )
 }

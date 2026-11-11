@@ -21,10 +21,11 @@ src/
   chat/         One chat: `ChatSession` (plain class, no React), the mapping from server
                 messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
   chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
+  aside/        What is open beside the page (a file, an output), and the ways to open it
 ```
 
 UI imports point down only: components, then blocks, then layouts, then routes. The data folders
-(`rpc/`, `workspaces/`, `chat/`) are the only code that talks to the backend: UI layers cannot import
+(`rpc/`, `workspaces/`, `chat/`, `aside/`) are the only code that talks to the backend: UI layers cannot import
 them, and they cannot import routes. Lint enforces both (`vite.config.ts` at the repo root). Blocks
 and layouts take plain typed props and callbacks.
 
@@ -120,6 +121,43 @@ removed it. A bubble that takes the place of one of the same `name` carries on f
 That is how the workspace's crumb (`WorkspaceCrumb`) stays between a workspace and its chats,
 growing its title out of the icon or drawing it back in, while going to another workspace swaps
 it. Render a pane's header in the commit that mounts the pane, or what it follows is gone by then.
+
+## Beside the page
+
+Files and outputs open in a second card beside the page (`SplitLayout`, which `AppShell` lays the
+page out with). Several can be open, one of them shown; the rules for that are plain functions
+(`aside/asideTabs.ts`). A chat does not open anything itself: it says what was asked for
+(`ChatPane`'s `onOpenAttachment` and `onOpenOutput`), and whoever lays the page out keeps what is
+open (`useAsideState`) and hands the ways to open it down (`useAside`). It stays open from one
+page to the next.
+
+The pane can be put away with things still open in it: by the arrow at the end of its header, or
+by dragging the gap far past the pane's narrowest, where the pane dims to say that letting go
+closes it. The sidebar's Library button brings it back; with nothing open it shows the pane
+empty. Opening something shows the pane too. Closing the last thing open puts the pane away with
+it.
+
+A pane that was put away can also be had back from the page's far edge, empty or not. As it goes,
+the page stops a little short of the edge and the handle stays out there for a moment, to show
+where the pane went, then both slide away. A pointer that reaches the edge brings them out again:
+clicking the handle shows the pane, and so does pulling it out, which opens room as far as it is
+pulled. Only reaching the edge does it, not being near, because the page's scrollbar is there.
+
+For now the card (`SidePane`) is its header alone; what it shows of the thing itself is still to
+come. With more than one thing open the header starts with their count, which opens to the list
+of them and the way to close them all. Then the name of the one shown, which grows a button when
+pointed at that closes it (`SidePaneTitle`).
+
+The gaps after the sidebar and between the two cards are dragged to resize (`ResizeHandle`). The
+handle only reports what is asked of it; whoever places it owns the size and its limits, as a
+motion value so that dragging renders nothing again. Past a limit a size resists and springs back
+when let go (`resizing.ts`).
+
+Scrollbars have no track (`styles.css`): left to the system, pointing at one widens it into a
+rail down the side of what is scrolled. And they are kept out of sight while the panes move, and
+while the pointer is in a gap between them (`useScrollbarsAway`): as a pane is resized or slides
+away, what is in it scrolls to keep its place, and the system would show the scrollbar for that,
+as it does for a pointer that is only beside one.
 
 ## Theming
 
