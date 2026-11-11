@@ -1,12 +1,18 @@
-import { useEffect, useId, useRef } from 'react'
-import { circlePath } from './circlePath'
-import { RAINDROPS, startMascotMotion, type MascotEmotion, type MascotMotion } from './mascotMotion'
-import { cloudLobes, raindrop, sparkle } from './shapes'
+import { useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { MASCOT_ARRIVAL_SECONDS, RAINDROPS, startMascotMotion, type MascotEmotion, type MascotMotion } from './mascotMotion'
+import { raindrop, sparkle } from './shapes'
 
+export { MASCOT_ARRIVAL_SECONDS }
 export type { MascotEmotion }
 
 export type MascotProps = {
   emotion: MascotEmotion
+  /**
+   * Whether it is there. It grows in blob by blob, the sparkle last, and shrinks away the same
+   * way backwards; while not shown it draws nothing and does no work, but keeps its place in the
+   * layout. Shown unless told otherwise.
+   */
+  shown?: boolean
   /**
    * Let it be played with: a click spins its sparkle or cheers a happy one again, and holding a
    * sad one wrings rain out of it. Leave out where it only shows a state; it is then decorative,
@@ -18,7 +24,7 @@ export type MascotProps = {
 }
 
 const HOLD_KEYS = [' ', 'Enter']
-const restingLobes = cloudLobes.map((lobe) => circlePath(lobe.x, lobe.y, lobe.radius))
+const LOBES = [0, 1, 2, 3]
 
 const describe = (emotion: MascotEmotion) =>
   emotion === 'sad'
@@ -32,24 +38,26 @@ const describe = (emotion: MascotEmotion) =>
  * happy and sad. It leans towards a pointer that comes near, stays still for people who ask for
  * reduced motion, and rests while off screen. Its colours are the brand asset's own, not UI tokens.
  */
-export const Mascot = ({ emotion, interactive, className }: MascotProps) => {
+export const Mascot = ({ emotion, shown = true, interactive, className }: MascotProps) => {
   const frame = useRef<HTMLDivElement>(null)
   const motion = useRef<MascotMotion>(undefined)
   const interior = useId()
 
-  // Restarted with `interactive`, which changes the element that moves.
-  useEffect(() => {
+  // Before the first paint, so the drawing is never seen as React left it: the motion draws every
+  // frame, the first as it starts. Restarted with `interactive`, which changes the element that moves.
+  useLayoutEffect(() => {
     const started = startMascotMotion(frame.current!)
     motion.current = started
     return started.stop
   }, [interactive])
+  useLayoutEffect(() => motion.current?.setShown(shown), [shown, interactive])
   useEffect(() => motion.current?.setEmotion(emotion), [emotion, interactive])
 
   const drawing = (
     <svg viewBox="-4 -4 73 64" fill="none" className="block w-full overflow-visible" aria-hidden="true">
       <defs>
         <clipPath id={interior}>
-          {restingLobes.map((d, index) => <path key={index} data-part="lobe" d={d} />)}
+          {LOBES.map((lobe) => <path key={lobe} data-part="lobe" />)}
         </clipPath>
       </defs>
       <g fill="#FF5C2E">
@@ -57,7 +65,7 @@ export const Mascot = ({ emotion, interactive, className }: MascotProps) => {
       </g>
       {/* Whatever of the sparkle or the face reaches past the body is drawn in the body's colour. */}
       <g fill="#FF5C2E">
-        {restingLobes.map((d, index) => <path key={index} data-part="lobe" d={d} />)}
+        {LOBES.map((lobe) => <path key={lobe} data-part="lobe" />)}
         <g data-part="sparkle"><path d={sparkle} /></g>
         <g data-part="face" opacity="0">
           <path data-part="eye" />

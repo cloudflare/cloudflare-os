@@ -7,6 +7,8 @@ export type MascotEmotion = 'idle' | 'thinking' | 'happy' | 'sad' | 'error' | 'l
 type FaceEmotion = 'sad' | 'happy'
 
 export type MascotMotion = {
+  /** Grow in, or shrink away. It starts out not shown. */
+  setShown: (shown: boolean) => void
   setEmotion: (emotion: MascotEmotion) => void
   /** Start squeezing it. Sad, it rains for as long as it is held; otherwise nothing happens. */
   press: () => void
@@ -23,6 +25,27 @@ export const RAINDROPS = 15
 // moves the same at any size.
 const TRAVEL_X = 100 / 220
 const TRAVEL_Y = 100 / (220 * 64 / 73)
+
+// Coming and going. The body's four blobs grow one shortly after another, each about the middle
+// of the cloud rather than its own, so however far apart they are in size they overlap as they do
+// at rest and the shape never comes apart. The sparkle follows once the last blob is nearly there.
+// Leaving is the same seen backwards, at the same pace: the sparkle goes first, then the blobs
+// in turn, last in first out.
+const MIDDLE = { x: 32, y: 28 }
+const GROW = 0.34
+const STAGGER = 0.07
+/** Each lobe's turn: from the lower left round to the lobe that holds the sparkle. */
+const TURN = [2, 3, 0, 1]
+const SPARKLE_AT = 3 * STAGGER + 0.12
+const ARRIVED = SPARKLE_AT + GROW
+/** How long coming or going takes, for whoever animates the room it is given. */
+export const MASCOT_ARRIVAL_SECONDS = ARRIVED
+/** From nothing to full size, a little past it on the way. */
+const pop = (value: number) => {
+  if (value <= 0) return 0
+  const left = Math.min(1, value) - 1
+  return 1 + 2.7 * left ** 3 + 1.7 * left ** 2
+}
 
 const happyEntrySpeed = 1.25
 const smoothstep = (value: number) => {
@@ -49,8 +72,9 @@ const sampleOutlines = () => {
 }
 
 /**
- * Animates the mascot drawn inside `frame` until stopped. It starts idle. Every frame is written
- * straight to the SVG, so nothing here renders React.
+ * Animates the mascot drawn inside `frame` until stopped. It starts idle and not shown, and has
+ * drawn that by the time this returns. Every frame is written straight to the SVG, so nothing
+ * here renders React.
  *
  * The drawing is found by its `data-part` attributes: the `figure` that moves as a whole, the
  * `lobe` paths of the body (the clip's four, then the visible four), the two `sparkle` groups and
@@ -66,6 +90,10 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   const eyes = parts<SVGPathElement>('eye')
   const drops = parts<SVGPathElement>('drop')
 
+  let shown = false
+  // The clock of coming and going: 0 is gone, `ARRIVED` is all there.
+  let presence = 0
+  let onScreen = true
   let emotion: MascotEmotion = 'idle'
   let held = false
   let poke = 0
@@ -162,6 +190,10 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       locatePointer(moved)
       moved = undefined
     }
+    presence = reduced
+      ? shown ? ARRIVED : 0
+      : Math.max(0, Math.min(ARRIVED, presence + (shown ? dt : -dt)))
+    const sparkleSize = pop((presence - SPARKLE_AT) / GROW)
     if (!reduced) time += dt
     const t = time
     const ease = 1 - Math.exp(-dt * 5)
@@ -503,13 +535,16 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     // lets any point of the loading loop gather into any other emotion.
     cloudLobes.forEach((lobe, index) => {
       const target = loadingFrame.circles[index]
+      const size = pop((presence - TURN[index] * STAGGER) / GROW)
       const path = circlePath(lobe.x, lobe.y, lobe.radius, (point) => {
         const displacement = deformationAt(point.x, point.y)
         const normalX = point.x + displacement.x
         const normalY = point.y + displacement.y
         const loadingX = target.x + (point.x - lobe.x) / lobe.radius * target.radius
         const loadingY = target.y + (point.y - lobe.y) / lobe.radius * target.radius
-        return { x: normalX + (loadingX - normalX) * load, y: normalY + (loadingY - normalY) * load }
+        const fullX = normalX + (loadingX - normalX) * load
+        const fullY = normalY + (loadingY - normalY) * load
+        return { x: MIDDLE.x + (fullX - MIDDLE.x) * size, y: MIDDLE.y + (fullY - MIDDLE.y) * size }
       })
       lobePaths[index].setAttribute('d', path)
       lobePaths[index + cloudLobes.length].setAttribute('d', path)
@@ -533,8 +568,10 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       rotation: displayRotation,
       scale: normalPose.scale + (targetPose.scale - normalPose.scale) * load,
     }
-    const transform = `translate(${pose.x} ${pose.y}) rotate(${pose.rotation}) scale(${pose.scale}) translate(-43.5 -32.7)`
+    const transform = `translate(${pose.x} ${pose.y}) rotate(${pose.rotation}) scale(${pose.scale * sparkleSize}) translate(-43.5 -32.7)`
     for (const element of sparkles) element.setAttribute('transform', transform)
+    const faceTransform = `translate(${MIDDLE.x} ${MIDDLE.y}) scale(${sparkleSize}) translate(${-MIDDLE.x} ${-MIDDLE.y})`
+    for (const element of faces) element.setAttribute('transform', faceTransform)
 
     // Happy eyes float as one pair rather than following separate body lobes.
     const happyDisplacement = deformationAt(32.5, 27)
@@ -606,18 +643,30 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     for (const element of sparkles) element.setAttribute('opacity', splitActive ? '0' : '1')
     for (const element of faces) element.setAttribute('opacity', splitActive ? '1' : '0')
     lastPose = pose
+    // Gone, it has drawn nothing and there is nothing more to do until it is shown again.
+    request = shown || presence > 0 ? requestAnimationFrame(animate) : 0
+  }
+  const wake = () => {
+    if (request || !onScreen || !(shown || presence > 0)) return
+    last = 0
     request = requestAnimationFrame(animate)
   }
+  animate(performance.now())
 
   // Off screen there is nothing to draw, so the loop rests until the mascot is back in view.
   const visibility = new IntersectionObserver(([entry]) => {
+    onScreen = entry.isIntersecting
+    if (onScreen) return wake()
     cancelAnimationFrame(request)
-    last = 0
-    if (entry.isIntersecting) request = requestAnimationFrame(animate)
+    request = 0
   })
   visibility.observe(frame)
 
   return {
+    setShown: (next) => {
+      shown = next
+      wake()
+    },
     setEmotion: (next) => { emotion = next },
     press: () => {
       if (emotion !== 'sad') return
