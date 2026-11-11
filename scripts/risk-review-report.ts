@@ -252,7 +252,7 @@ async function listPages(get: GitHubGet, path: string): Promise<Json[]> {
  * `until`, which holds every follow-up of those merged in the window, and those merged in the window.
  */
 async function listMerged(get: GitHubGet, { repository, since, until }: { repository: string; since: Date; until: Date }):
-  Promise<{ merged: MergedPull[]; inWindow: MergedPull[] }> {
+  Promise<{ merged: MergedPull[]; inWindow: MergedPull[]; defaultBranch: string }> {
   const horizon = until.getTime() + REVERT_WINDOW_DAYS * 86_400_000;
   const defaultBranch = asObject(await get(`/repos/${repository}`))?.default_branch;
   if (typeof defaultBranch !== "string") throw new Error(`cannot read ${repository}'s default branch`);
@@ -271,7 +271,7 @@ async function listMerged(get: GitHubGet, { repository, since, until }: { reposi
   const inWindow = merged
     .filter(({ merged_at }) => merged_at && Date.parse(merged_at) >= since.getTime() && Date.parse(merged_at) < until.getTime())
     .toSorted((a, b) => a.number - b.number);
-  return { merged, inWindow };
+  return { merged, inWindow, defaultBranch };
 }
 
 /** The decision record JSON a `risk-review` check run's summary leads with. */
@@ -334,7 +334,10 @@ export interface CalibrationRecord {
   head: string;
   area: string;
   band: string;
-  /** Whether a policy rule, an unlisted file or a non-maintainer author ruled out any AI decision. */
+  /**
+   * Whether a policy rule, an unlisted file, a non-maintainer author or a missing migration proof
+   * ruled out any merge.
+   */
   ruledOut: boolean;
   /** Both reviewers' scores when their verdicts' own conditions held, else `null`. */
   scores: { bonk: number; opus: number } | null;
@@ -436,8 +439,9 @@ export function calibrate(pulls: CalibrationPull[], { evidence, now }: {
   for (const pull of pulls.toSorted((a, b) => a.mergedAt - b.mergedAt)) {
     const records = pull.records.toSorted((a, b) => a.at - b.at);
     for (const threshold of THRESHOLDS) {
+      // A record from after the merge decided nothing the gate could have acted on.
       const point = records.find((record) =>
-        !record.ruledOut && !record.unreadable && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
+        record.at < pull.mergedAt && !record.ruledOut && !record.unreadable && record.scores !== null && record.reviewers !== null && min(record.scores) >= threshold &&
         (evidence.get(`${record.area} ${record.band}`) ?? ["unknown band"]).every((name) => record.holding.has(name)));
       if (!point?.reviewers) continue;
       const key = `${point.area} ${point.band} ${point.reviewers} ${threshold}`;
@@ -498,13 +502,14 @@ export function readCalibrationRecord(summary: Json | undefined, number: number,
   CalibrationRecord | undefined {
   const pulls = recordOf(summary)?.pulls;
   const pull = Array.isArray(pulls) ? pulls.map(asObject).find((entry) => entry?.number === number) : undefined;
-  const { area, band, never_auto, author, eligible_scores, inputs } = pull ?? {};
+  const { area, band, never_auto, author, eligible_scores, inputs, needs_migration_proof } = pull ?? {};
   const scores = asObject(eligible_scores);
   const inputObject = asObject(inputs);
   const maintainer = asObject(author)?.maintainer;
   if (typeof area !== "string" || typeof band !== "string" || !Array.isArray(never_auto) || typeof maintainer !== "boolean") {
     return undefined;
   }
+  if (typeof needs_migration_proof !== "boolean") return undefined;
   if (eligible_scores === undefined || (eligible_scores !== null && !scores) || !inputObject) return undefined;
   const { bonk, opus } = scores ?? {};
   const holding = new Set(Object.entries(inputObject).flatMap(([name, value]) => {
@@ -516,7 +521,7 @@ export function readCalibrationRecord(summary: Json | undefined, number: number,
     head,
     area,
     band,
-    ruledOut: never_auto.length > 0 || !maintainer,
+    ruledOut: never_auto.length > 0 || !maintainer || needs_migration_proof,
     scores: typeof bonk === "number" && typeof opus === "number" ? { bonk, opus } : null,
     holding,
     reviewers: reviewersKey(inputObject),
@@ -543,7 +548,7 @@ export async function buildCalibration(get: GitHubGet, graphql: GitHubGraphql, {
   const evidence = new Map(Object.entries(config.areas).flatMap(([area, bands]) =>
     Object.entries(bands).map(([band, rule]): [string, readonly string[]] => [`${area} ${band}`, rule.evidence])));
 
-  const { merged, inWindow } = await listMerged(get, { repository, since, until });
+  const { merged, inWindow, defaultBranch } = await listMerged(get, { repository, since, until });
   const pulls: CalibrationPull[] = [];
   for (const pull of inWindow) {
     const base = `/repos/${repository}`;
@@ -564,9 +569,21 @@ export async function buildCalibration(get: GitHubGet, graphql: GitHubGraphql, {
       if (typeof commit?.sha === "string" && typeof date === "string") pushedAt.set(commit.sha, Date.parse(date));
     }
     for (const { before, after, at } of forced) {
-      // The replaced head was pushed some time before; its first check suite, read below, says when.
-      if (before !== null && !pushedAt.has(before)) pushedAt.set(before, 0);
       if (after !== null) pushedAt.set(after, Math.max(pushedAt.get(after) ?? 0, at));
+      if (before === null) continue;
+      // The replaced history: every commit the replaced head had over the default branch was a head
+      // once (pushed some time before; its first check suite, read below, says when). Records on
+      // them count only where the gate made them.
+      const compared = asObject(await get(`${base}/compare/${defaultBranch}...${before}`));
+      const listed = compared?.commits;
+      if (!Array.isArray(listed) || compared?.total_commits !== listed.length) {
+        pushedAt.set("unlisted", Number.POSITIVE_INFINITY);
+      }
+      for (const value of Array.isArray(listed) ? listed : []) {
+        const sha = asObject(value)?.sha;
+        if (typeof sha === "string" && !pushedAt.has(sha)) pushedAt.set(sha, 0);
+      }
+      if (!pushedAt.has(before)) pushedAt.set(before, 0);
     }
     // The commits listing stops at 250, so a longer pull request's pushes are not all known; any
     // comment then counts as followed by a commit.

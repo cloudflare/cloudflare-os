@@ -262,6 +262,11 @@ export interface BindingExpectation {
    * run from before it ran the old base's copy of the workflow, even when re-run later.
    */
   notBefore: number;
+  /**
+   * Runs created at or after `at` do not count: another pull request from this branch had a base
+   * other than the default branch from then, so its runs of that base's workflows share this head.
+   */
+  siblingFence: { at: number; reason: string } | undefined;
 }
 
 /**
@@ -272,16 +277,17 @@ export interface BindingExpectation {
  * @returns Why the run is not the producer's, or `undefined` when it is.
  */
 export function identityError(run: WorkflowRun, expected: BindingExpectation): string | undefined {
-  const { producer, headSha, repository, pullNumber, defaultBranch, headBranch, notBefore } = expected;
+  const { producer, headSha, repository, pullNumber, defaultBranch, headBranch, notBefore, siblingFence } = expected;
   if (run.path !== producer.workflow) return `ran from ${run.path}, not ${producer.workflow}`;
   if (run.head_repository?.full_name !== repository) return "ran from another repository";
   if (run.event !== "pull_request") return `ran on ${run.event}`;
   if (run.head_sha !== headSha) return "ran on another head commit";
   // A pull request from another branch at the same commit, into a branch whose workflow was
   // replaced, runs on the same head SHA; the head branch is recorded with the run. A pull request
-  // from this branch into another base is ruled out before any run is read (see the gate).
+  // from this branch that ever had another base fences off the runs from then on.
   if (run.head_branch !== headBranch) return `ran for the branch ${run.head_branch ?? "unknown"}, not ${headBranch}`;
   if (Date.parse(run.created_at) <= notBefore) return "ran before the pull request's base last changed";
+  if (siblingFence && Date.parse(run.created_at) >= siblingFence.at) return `ran after ${siblingFence.reason}`;
   const listed = run.pull_requests.some(({ number, base }) => number === pullNumber && base.ref === defaultBranch);
   return listed ? undefined : `ran for another pull request or base than #${pullNumber} into ${defaultBranch}`;
 }

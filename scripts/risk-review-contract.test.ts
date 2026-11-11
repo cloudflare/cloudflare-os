@@ -89,6 +89,7 @@ const binding = {
   defaultBranch: "main",
   headBranch: recorded.head_branch ?? "",
   notBefore: 0,
+  siblingFence: undefined,
 };
 
 describe("bindingError", () => {
@@ -123,6 +124,9 @@ describe("bindingError", () => {
     assert.match(bindingError({ ...recorded, head_branch: "attacker/same-commit" }, binding) ?? "", /branch attacker\/same-commit/);
     assert.match(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) }) ?? "", /base last changed/);
     assert.equal(bindingError(recorded, { ...binding, notBefore: Date.parse(recorded.created_at) - 1 }), undefined);
+    const fence = (at: number) => ({ ...binding, siblingFence: { at, reason: "#8 from the same branch targeted evil" } });
+    assert.match(bindingError(recorded, fence(Date.parse(recorded.created_at))) ?? "", /ran after #8 from the same branch targeted evil/);
+    assert.equal(bindingError(recorded, fence(Date.parse(recorded.created_at) + 1)), undefined);
   });
 
   it("rejects an unfinished or unsuccessful latest attempt", () => {

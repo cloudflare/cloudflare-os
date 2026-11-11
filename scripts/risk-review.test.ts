@@ -170,6 +170,11 @@ interface HarnessOptions {
   summaryFails?: true;
   /** Closed or other pull requests the `state: "all"` listing also returns. */
   otherPulls?: PullRequest[];
+  /**
+   * Base histories by pull request number, as GraphQL returns them; `null` makes one unreadable.
+   * Unlisted ones were opened on 2026-11-01 into their current base and never changed.
+   */
+  baseHistories?: Record<number, { createdAt: string; nodes: { createdAt: string; previousRefName: string; currentRefName: string }[] } | null>;
   /** The pull request's timeline events. */
   timeline?: { event: string; created_at: string }[];
   policy?: Partial<Record<keyof typeof POLICY_FILES, string | undefined>>;
@@ -303,6 +308,21 @@ function harness(options: HarnessOptions = {}) {
       },
     },
     graphql: async (query, variables): Promise<Json> => {
+      if (query.includes("BaseRefChangedEvent")) {
+        const number = Number(variables.number);
+        const other = options.otherPulls?.find((pull) => pull.number === number) ?? pulls.get(number);
+        const history = options.baseHistories?.[number];
+        if (history === null) return { repository: { pullRequest: null } };
+        return {
+          repository: {
+            pullRequest: {
+              createdAt: history?.createdAt ?? "2026-11-01T09:00:00Z",
+              baseRefName: other?.base.ref ?? "main",
+              timelineItems: { pageInfo: { hasNextPage: false }, nodes: history?.nodes ?? [] },
+            },
+          },
+        };
+      }
       if (query.includes("enqueuePullRequest")) {
         if (options.enqueueRefused) throw new Error("Pull request is not mergeable: required status checks are pending");
         calls.enqueued.push({ id: variables.id, head: variables.head });
@@ -873,11 +893,32 @@ describe("runRiskReview producer binding", () => {
     const elsewhere = pullRequest({ number: 8, state: "closed", base: { sha: BASE, ref: "release" } });
     const { calls, evaluate } = harness({ ...open, runs: verdicts(), otherPulls: [elsewhere] });
     await evaluate("workflow_run", producerCompleted());
-    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "#8 from the same branch targets release" });
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "ran after #8 from the same branch targeted release" });
     assert.equal(lastRecord(calls).pulls[0]?.would.decision, "person");
     const sameBase = harness({ ...open, runs: verdicts(), otherPulls: [pullRequest({ number: 6, state: "closed" })] });
     await sameBase.evaluate("workflow_run", producerCompleted());
     assert.equal(lastRecord(sameBase.calls).pulls[0]?.would.decision, "auto");
+  });
+
+  it("remembers that a sibling targeted another base after it was retargeted to main, and fences runs from then", async () => {
+    // #8 opened into `evil` (whose producer workflow was replaced) at 09:30, uploaded a forged
+    // verdict for this head at 11:00, then moved to main at 11:30 and closed.
+    const sibling = pullRequest({ number: 8, state: "closed" });
+    const baseHistories = { 8: { createdAt: "2026-11-02T09:30:00Z", nodes: [{ createdAt: "2026-11-02T11:30:00Z", previousRefName: "evil", currentRefName: "main" }] } };
+    const forged = forgedAt({});
+    const { calls, evaluate } = harness({ ...open, runs: forged, otherPulls: [sibling], baseHistories });
+    await evaluate("workflow_run", producerCompleted());
+    assert.deepEqual(lastRecord(calls).pulls[0]?.inputs.bonk, { absent: "ran after #8 from the same branch targeted evil" });
+    assert.equal(lastRecord(calls).pulls[0]?.would.decision, "person");
+    // A run from before the sibling ever targeted another base still counts.
+    const early = verdicts().map((entry) => ({ ...entry, run: { ...entry.run, created_at: "2026-11-02T09:00:00Z", run_started_at: "2026-11-02T09:00:00Z" } }));
+    const before = harness({ ...open, runs: early, otherPulls: [sibling], baseHistories });
+    await before.evaluate("workflow_run", producerCompleted());
+    assert.equal(bonkScore(before.calls), 8);
+    // A sibling whose base history cannot be read fences every run.
+    const unread = harness({ ...open, runs: early, otherPulls: [sibling], baseHistories: { 8: null } });
+    await unread.evaluate("workflow_run", producerCompleted());
+    assert.equal(lastRecord(unread.calls).pulls[0]?.would.decision, "person");
   });
 
   it("ignores runs from before the pull request's base last changed, even re-run since", async () => {

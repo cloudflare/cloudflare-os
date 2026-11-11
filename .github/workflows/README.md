@@ -33,8 +33,9 @@ Bonk's verdict artifact and `review-verdict.yml` land in #972, `automerge-proofs
 would give as absent, so every pull request goes to a person. The gate accepts an artifact only from a successful `pull_request` run of the
 expected workflow file on the pull request's head commit and branch, in this repository, created
 after the pull request's base last changed (and none counts until a push follows that change,
-since GitHub rebuilds the merge ref in the background); and none counts when another pull request from the same
-branch, open or closed, targets another base, since its runs use that base's copy of the workflows.
+since GitHub rebuilds the merge ref in the background); and no run counts once another pull request from the same
+branch, open or closed, has had another base at any point (read from its base-change history), since
+its runs use that base's copy of the workflows.
 The run whose latest
 attempt started last wins even when it failed. Dependabot pull requests get no deployed preview:
 their smoke runs in workerd, without secrets, in Automerge evidence. A rung 1 proof also counts only
@@ -115,8 +116,9 @@ key from the app.
   fall out of the 90-day window (2027-02-04). High needs `evidence-consumer-build` too, so scoring
   those edits admits none of them before then.
 - The producer binding rests on what GitHub records about a run (its head commit and branch, and
-  when it was created) and on the pull request's history. It is not a signed record of which
-  workflow file ran; artifact attestations would be one.
+  when it was created) and on the pull requests' base histories. It is not a signed record of which
+  workflow file ran. Artifact attestations (`actions/attest-build-provenance`, binding each result
+  to `refs/pull/N/merge` and its merge commit) would be one; building them is a later decision.
 - A newer Bonk run whose job was skipped (a label removed, a bot event) leaves Bonk's verdict absent
   until the next push, which sends the pull request to a person.
 - The report counts a fix as a miss only when it names the pull request or reverts it within 14

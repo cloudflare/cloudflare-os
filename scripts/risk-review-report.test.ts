@@ -64,10 +64,10 @@ function verdict(name: "bonk" | "opus", score: number) {
 }
 
 /** A gate summary for `number` whose two verdicts pass with these scores. */
-function summaryWithScores(number: number, bonk: number, opus: number): string {
+function summaryWithScores(number: number, bonk: number, opus: number, filename = "packages/workshop-frontend/src/App.tsx"): string {
   const inputs: PullInputs = {
     pull: { number, node_id: "PR_1", state: "open", user: { login: "kentonv", type: "User" }, head: { sha: HEAD, ref: "kenton/topic" }, base: { sha: BASE, ref: "main" }, changed_files: 1, commits: 1 },
-    files: [{ filename: "packages/workshop-frontend/src/App.tsx", status: "modified", additions: 1, deletions: 1, changes: 2 }],
+    files: [{ filename, status: "modified", additions: 1, deletions: 1, changes: 2 }],
     facts: { workspaceCatalogOnly: true, newDependencies: [], deletedClasses: [], skillSymlinks: [] },
     reviews: [],
     comments: [],
@@ -275,6 +275,11 @@ describe("calibrate", () => {
     assert.equal(row(rows, 9, "bbbb")?.streak, 1);
   });
 
+  it("never takes a record completed after the merge as the would-merge point", () => {
+    const rows = calibrate([calPull(950, 20, { records: [calRecord(19, 9, 9)] })], { evidence: EVIDENCE, now: NOW_CAL });
+    assert.deepEqual(rows, []);
+  });
+
   it("admits nothing a policy rule ruled out, or without both scores", () => {
     const rows = calibrate([
       calPull(940, 20, { records: [calRecord(22, 9, 9, { ruledOut: true })] }),
@@ -285,6 +290,15 @@ describe("calibrate", () => {
 });
 
 describe("readCalibrationRecord", () => {
+  it("rules out a record that changes a Worker config without a migration proof", () => {
+    const config = readCalibrationRecord(summaryWithScores(901, 9, 9, "packages/gatekeeper-x/wrangler.jsonc"), 901, 0, HEAD);
+    assert.ok(config);
+    assert.equal(config.ruledOut, true);
+    assert.deepEqual(calibrate([calPull(901, 20, { records: [{ ...config, at: NOW_CAL - 22 * DAY, area: "scored", band: "low" }] })], { evidence: EVIDENCE, now: NOW_CAL }), []);
+    const plain = readCalibrationRecord(summaryWithScores(901, 9, 9), 901, 0, HEAD);
+    assert.equal(plain?.ruledOut, false);
+  });
+
   it("reads eligible scores, holding inputs and the reviewers from a gate summary", () => {
     const summary = summaryFor(901);
     const parsed = readCalibrationRecord(summary, 901, 0, HEAD);
@@ -298,12 +312,16 @@ describe("readCalibrationRecord", () => {
 });
 
 describe("buildCalibration", () => {
-  it("reads the head a force push replaced, from #1021's recorded event, and counts a catch made on it", async () => {
+  it("reads the heads a force push replaced, from #1021's recorded history, and counts catches made on them", async () => {
     const R = `/repos/${REPOSITORY}`;
     // Recorded: #1021's force push, which GraphQL reports with the head it replaced and the one it left.
     const recorded = JSON.parse(readFileSync(new URL("./risk-review-fixtures/force-push-1021.json", import.meta.url), "utf8")).data;
     const [push] = recorded.repository.pullRequest.timelineItems.nodes;
     const OLD: string = push.beforeCommit.oid;
+    // Recorded: the commits the replaced head had over main, its parent a8e2f997 among them.
+    const compared = JSON.parse(readFileSync(new URL("./risk-review-fixtures/compare-1021-before.json", import.meta.url), "utf8"));
+    const MIDDLE: string = compared.commits[0].sha;
+    assert.notEqual(MIDDLE, OLD);
     const NEW: string = push.afterCommit.oid;
     const pushed = Date.parse(push.createdAt);
     const iso = (offsetHours: number) => new Date(pushed + offsetHours * 3_600_000).toISOString();
@@ -326,6 +344,10 @@ describe("buildCalibration", () => {
       [`${R}/pulls/1021/reviews?per_page=100&page=1`]: [{ user: { login: "kentonv", type: "User" }, state: "APPROVED", submitted_at: iso(2) }],
       [`${R}/commits/${NEW}/check-suites?per_page=100`]: { check_suites: [{ created_at: push.createdAt }] },
       [`${R}/commits/${OLD}/check-suites?per_page=100`]: { check_suites: [{ created_at: iso(-5) }] },
+      [`${R}/compare/main...${OLD}`]: compared,
+      // The middle head, pushed 10 hours before the rewrite, scored 10/10.
+      [`${R}/commits/${MIDDLE}/check-suites?per_page=100`]: { check_suites: [{ created_at: iso(-10) }] },
+      [`${R}/commits/${MIDDLE}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(-9, 10)] },
       [`${R}/commits/${NEW}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: { check_runs: [runOn(1, 7)] },
       [`${R}/commits/${OLD}/check-runs?check_name=risk-review&filter=all&per_page=100&page=1`]: {
         check_runs: [runOn(-3, 9), { ...runOn(-2.5, 10), app: { slug: "someone-else" } }, { ...runOn(-2.8, 10), conclusion: "cancelled", output: { summary: "A later run decides this commit." } }],
@@ -345,7 +367,8 @@ describe("buildCalibration", () => {
     const rows = await buildCalibration(get, graphql, { repository: REPOSITORY, app: "risk-review", since: new Date(pushed - 86_400_000), until: now, now });
     const nine = rows.find((entry) => entry.threshold === 9);
     assert.deepEqual(nine?.misses, [{ number: 1021, why: ["@deregtd commented, then a commit followed"] }]);
-    assert.equal(rows.find((entry) => entry.threshold === 10), undefined);
+    // At 10 the middle head is the point, and the same catch came after it.
+    assert.deepEqual(rows.find((entry) => entry.threshold === 10)?.misses.map(({ number }) => number), [1021]);
   });
 });
 

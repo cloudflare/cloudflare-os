@@ -331,6 +331,8 @@ export interface PullDecision {
    * evidence, holds and change requests; `null` otherwise. The calibration report reads these.
    */
   eligible_scores: Scores | null;
+  /** Whether it changes a Worker config while the migration proof does not hold, which rules out any merge. */
+  needs_migration_proof: boolean;
 }
 
 /**
@@ -510,9 +512,8 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
   const depsProven = holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"]);
   const touchesWorkerConfig = inputs.files.some((file) =>
     [file.filename, file.previous_filename].some((path) => path !== undefined && needsContents(path) === "worker-config"));
-  if (touchesWorkerConfig && !holding(inputs.producers["proof-migrations"])) {
-    common.push("changes a Worker config, and the migration proof does not hold");
-  }
+  const needsMigrationProof = touchesWorkerConfig && !holding(inputs.producers["proof-migrations"]);
+  if (needsMigrationProof) common.push("changes a Worker config, and the migration proof does not hold");
   // No proof judges text that people or agents read; such a change can only be AI-scored.
   const provable = classification.readText.length === 0;
   const proven = provable && (dependabotAuthor
@@ -554,6 +555,7 @@ export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecis
     gate: gateRule(inputs, { approvers, blockers, autoApproves: would.decision === "auto" && policy.bands.appApprovalsCount }),
     would,
     eligible_scores: verdictConditions(inputs).scores,
+    needs_migration_proof: needsMigrationProof,
   };
 }
 
@@ -976,17 +978,77 @@ async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: n
   return typeof decision === "string" ? decision : null;
 }
 
+/** A pull request's base over time: its base when opened, and each change. */
+export interface BaseHistory {
+  number: number;
+  createdAt: number;
+  /** Its base now. */
+  baseRefName: string;
+  changes: { at: number; from: string; to: string }[];
+}
+
 /**
- * Why no producer run on this pull request's head can be trusted to be its own, or `undefined`.
- * Another pull request from this branch into a base other than the default branch, open or closed,
- * runs that base's copy of every producer workflow on the same head commit and branch.
+ * When a pull request first had a base other than the default branch, or `undefined` when it never
+ * did. Its first base is the first change's `from`, or its base now when it never changed.
  */
-async function sharedHeadError(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
-  Promise<string | undefined> {
+export function firstOtherBase(history: BaseHistory, defaultBranch: string): { at: number; base: string } | undefined {
+  const changes = history.changes.toSorted((a, b) => a.at - b.at);
+  const first = changes[0]?.from ?? history.baseRefName;
+  if (first !== defaultBranch) return { at: history.createdAt, base: first };
+  const moved = changes.find(({ to }) => to !== defaultBranch);
+  return moved && { at: moved.at, base: moved.to };
+}
+
+async function readBaseHistory(github: GitHubClient, repo: RepoRef, number: number): Promise<BaseHistory | undefined> {
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          createdAt
+          baseRefName
+          timelineItems(itemTypes: [BASE_REF_CHANGED_EVENT], first: 100) {
+            pageInfo { hasNextPage }
+            nodes { ... on BaseRefChangedEvent { createdAt previousRefName currentRefName } }
+          }
+        }
+      }
+    }`,
+    { owner: repo.owner, repo: repo.repo, number },
+  );
+  const pull = asObject(asObject(asObject(response)?.repository)?.pullRequest);
+  const items = asObject(pull?.timelineItems);
+  const nodes = items?.nodes;
+  const { createdAt, baseRefName } = pull ?? {};
+  if (typeof createdAt !== "string" || typeof baseRefName !== "string" || !Array.isArray(nodes)) return undefined;
+  if (asObject(items?.pageInfo)?.hasNextPage !== false) return undefined;
+  const changes: BaseHistory["changes"] = [];
+  for (const value of nodes) {
+    const { createdAt: at, previousRefName: from, currentRefName: to } = asObject(value) ?? {};
+    if (typeof at !== "string" || typeof from !== "string" || typeof to !== "string") return undefined;
+    changes.push({ at: Date.parse(at), from, to });
+  }
+  return { number, createdAt: Date.parse(createdAt), baseRefName, changes };
+}
+
+/**
+ * The earliest time another pull request from this branch, open or closed, had a base other than
+ * the default branch: from then on its runs of that base's workflows share this head commit and
+ * branch, so they could stand in for this pull request's. A history that cannot be read fences
+ * every run.
+ */
+async function siblingFence(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
+  Promise<{ at: number; reason: string } | undefined> {
   const others = await listAll((page) =>
     github.rest.pulls.list({ ...repo, ...page, state: "all", head: `${repo.owner}:${pull.head.ref}` }));
-  const elsewhere = others.find((other) => other.number !== pull.number && other.base.ref !== defaultBranch);
-  return elsewhere && `#${elsewhere.number} from the same branch targets ${elsewhere.base.ref}`;
+  let fence: { at: number; reason: string } | undefined;
+  for (const other of others.filter(({ number }) => number !== pull.number)) {
+    const history = await readBaseHistory(github, repo, other.number);
+    const found = history ? firstOtherBase(history, defaultBranch) : { at: 0, base: "a base its history does not show" };
+    if (found && (!fence || found.at < fence.at)) {
+      fence = { at: found.at, reason: `#${other.number} from the same branch targeted ${found.base}` };
+    }
+  }
+  return fence;
 }
 
 /** When the pull request's base last changed, or 0 when it never did. */
@@ -999,8 +1061,8 @@ async function lastBaseChange(github: GitHubClient, repo: RepoRef, number: numbe
 async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
   Promise<Partial<Record<ProducerName, ProducerInput>>> {
   const repository = `${repo.owner}/${repo.repo}`;
-  const [sharedBranch, notBefore] = await Promise.all([
-    sharedHeadError(github, repo, pull, defaultBranch),
+  const [fence, notBefore] = await Promise.all([
+    siblingFence(github, repo, pull, defaultBranch),
     lastBaseChange(github, repo, pull.number),
   ]);
   // After a base change GitHub rebuilds the merge ref in the background, so a run the change itself
@@ -1009,7 +1071,7 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
   const staleBase = notBefore > 0 && (pushed === undefined || Date.parse(pushed) <= notBefore)
     ? "the base changed after the head was pushed; producers count again after the next push"
     : undefined;
-  const shared = sharedBranch ?? staleBase;
+  const shared = staleBase;
   const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
   const runsOf = async (workflow: string) => {
     const cached = runsByWorkflow.get(workflow);
@@ -1047,6 +1109,7 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
       defaultBranch,
       headBranch: pull.head.ref,
       notBefore,
+      siblingFence: fence,
     };
     const runs = await runsOf(producer.workflow);
     if (typeof runs === "string") {
@@ -1055,7 +1118,10 @@ async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequ
     }
     // Only the producer's own runs compete to be the newest, so an unrelated run cannot mask them.
     const run = newestRun(runs.filter((candidate) => identityError(candidate, expected) === undefined));
-    inputs[name] = await readProducer(github, repo, { name, run, pull, expected });
+    // With none of its own, say why the newest run on the head was not the producer's.
+    const rejected = run ? undefined : newestRun(runs);
+    const why = rejected && identityError(rejected, expected);
+    inputs[name] = why ? { absent: why } : await readProducer(github, repo, { name, run, pull, expected });
   }
   return inputs;
 }
