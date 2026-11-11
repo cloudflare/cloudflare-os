@@ -3,10 +3,12 @@ import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList } from '@/blocks/MessageList'
 import { ThinkingIndicator } from '@/blocks/ThinkingIndicator'
+import { UserMessage } from '@/blocks/UserMessage'
 import { Button } from '@/components/Button'
 import { Markdown } from '@/components/Markdown'
 import { ChatLayout } from '@/layouts/ChatLayout'
-import { ChatItemView } from './ChatItemView'
+import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
+import { DisclosureStore } from './DisclosureStore'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
 
@@ -23,22 +25,47 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
   const model = useDefaultModel()
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
+  // What a row asked for that this app cannot do yet.
+  const [notice, setNotice] = useState<string>()
+  const [disclosure] = useState(() => new DisclosureStore())
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
+
+  const handlers = useMemo((): ChatItemHandlers => {
+    const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
+    return {
+      onOpenAttachment: unavailable('Previewing attachments'),
+      onOpenOutput: unavailable('Opening outputs'),
+      onApprove: unavailable('Approving actions'),
+      onDeny: unavailable('Denying actions'),
+      onAlwaysApprove: unavailable('Standing approvals'),
+      onHookEnabledChange: unavailable('Switching hooks'),
+      onSetUpConnection: unavailable('Setting up connections'),
+      onDenyConnection: unavailable('Denying connections'),
+      onRetry: unavailable('Retrying'),
+      onContinue: unavailable('Adding credits'),
+    }
+  }, [])
+
+  const row = (item: Parameters<typeof ChatItemView>[0]['item']) => (
+    <ChatItemView key={item.key} item={item} disclosure={disclosure} handlers={handlers} />
+  )
+
   const messages = useMemo(() => {
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
     // place in the conversation is the furthest sequence reached so far.
     let sequence = 0
     return items?.map((item) => {
       sequence = Math.max(sequence, item.id)
-      return { id: item.key, sequence, content: <ChatItemView item={item} /> }
+      return { id: item.key, sequence, content: <ChatItemView item={item} disclosure={disclosure} handlers={handlers} /> }
     }) ?? []
-  }, [items])
+  }, [items, disclosure, handlers])
 
   const sendMessage = (text: string) => {
     if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
     if (model.status !== 'ready') return setProblem(describeModelProblem(model))
     setProblem(undefined)
+    setNotice(undefined)
     void send(text, model.id)
   }
 
@@ -50,7 +77,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
           streaming={chat.thinking || Boolean(chat.streamingText)}
           history={{ hasMore: chat.hasEarlier, loading: chat.loadingEarlier, error: chat.historyError, onLoadEarlier: loadEarlier }}
         >
-          {chat.openTools && <ChatItemView item={chat.openTools} />}
+          {chat.openTools && row(chat.openTools)}
           {chat.streamingText && (
             <MessageBubble role="assistant">
               <Markdown>{chat.streamingText}</Markdown>
@@ -58,10 +85,13 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle }: ChatPaneProps) =
           )}
           {chat.thinking && <ThinkingIndicator />}
           {/* Below whatever is still being written, so what an answer produced is never left behind it. */}
-          {chat.pinned.map((item) => <ChatItemView key={item.key} item={item} />)}
-          {chat.queuedSteers.map(({ text }, index) => <MessageBubble key={index} role="user">{text}</MessageBubble>)}
+          {chat.pinned.map(row)}
+          {chat.queuedSteers.map(({ text, from }, index) => (
+            <UserMessage key={index} parts={[{ type: 'text', text }]} from={from} unread />
+          ))}
           {chat.sendError && <MessageBubble role="error">{chat.sendError}</MessageBubble>}
           {problem && <MessageBubble role="error">{problem}</MessageBubble>}
+          {notice && <p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p>}
         </MessageList>
       )}
       {chat.status !== 'ready' && (

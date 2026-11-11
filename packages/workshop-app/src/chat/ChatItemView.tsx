@@ -1,26 +1,159 @@
 import { memo } from 'react'
-import { MessageBubble } from '@/blocks/MessageBubble'
-import { Markdown } from '@/components/Markdown'
-import type { ChatItem } from './chatItems'
+import { ActionCard } from '@/blocks/ActionCard'
+import { AssistantMessage } from '@/blocks/AssistantMessage'
+import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
+import { ErrorMessage } from '@/blocks/ErrorMessage'
+import { FeedDivider } from '@/blocks/FeedDivider'
+import { HookCard } from '@/blocks/HookCard'
+import { OutputCard } from '@/blocks/OutputCard'
+import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
+import { ToolGroup } from '@/blocks/ToolGroup'
+import { UserMessage } from '@/blocks/UserMessage'
+import type { ActionResult } from '@/blocks/usePending'
+import type { ActionItem, ChatItem, NoticeItem } from './chatItems'
+import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
+
+/** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
+export type ChatItemHandlers = {
+  onOpenAttachment: (attachmentId: string) => void
+  onOpenOutput: (workpieceId: number) => void
+  onApprove: (actionId: number) => ActionResult
+  onDeny: (actionId: number) => ActionResult
+  onAlwaysApprove: (rule: NonNullable<ActionItem['rule']>) => ActionResult
+  onHookEnabledChange: (hookId: number, enabled: boolean) => ActionResult
+  onSetUpConnection: (requestId: string) => ActionResult
+  onDenyConnection: (requestId: string) => ActionResult
+  onRetry: () => ActionResult
+  onContinue: () => ActionResult
+}
+
+export type ChatItemViewProps = {
+  item: ChatItem
+  disclosure: DisclosureStore
+  handlers: ChatItemHandlers
+  /** The workspace has read restricted data, which changes how an approval is presented. */
+  restricted?: boolean
+}
+
+const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
+  changes: 'edit',
+  merge: 'accept',
+  revert: 'discard',
+  model: 'swap',
+  gadget: 'plug',
+  callback: 'code',
+  unknown: 'info',
+}
 
 /**
- * One row of the conversation. Memoized: items keep their identity while a reply streams in, so the
- * conversation above it is not rendered again for every piece of text that arrives.
+ * One row of the conversation, as the block for its kind. Memoized: items keep their identity
+ * while a reply streams in, so the conversation above it is not rendered again for every piece of
+ * text that arrives.
  */
-export const ChatItemView = memo(function ChatItemView({ item }: { item: ChatItem }) {
+export const ChatItemView = memo(function ChatItemView({ item, disclosure, handlers, restricted }: ChatItemViewProps) {
+  const open = useOpenKeys(disclosure, item.kind === 'tools' ? [item.key, ...item.entries.map(({ key }) => key)] : [item.key])
+  const isOpen = open.has(item.key)
+  const toggle = () => disclosure.toggle(item.key)
+
   switch (item.kind) {
     case 'user':
-      return <MessageBubble role="user">{item.text}</MessageBubble>
+      return <UserMessage parts={item.parts} attachments={item.attachments} from={item.from} onOpenAttachment={handlers.onOpenAttachment} />
     case 'assistant':
       return (
-        <MessageBubble role="assistant">
-          <Markdown>{item.text}</Markdown>
-        </MessageBubble>
+        <AssistantMessage
+          text={item.text}
+          reasoning={item.reasoning === undefined ? undefined : { text: item.reasoning, open: isOpen, onToggle: toggle }}
+        />
       )
+    case 'tools':
+      return (
+        <ToolGroup
+          summary={item.summary}
+          targets={item.targets}
+          failed={item.failed}
+          running={item.running}
+          entries={item.entries}
+          open={isOpen}
+          onToggle={toggle}
+          openEntries={open}
+          onToggleEntry={disclosure.toggle}
+        />
+      )
+    case 'output':
+      return (
+        <OutputCard
+          title={item.title}
+          kind={item.type}
+          draft={item.draft}
+          format={item.format}
+          onOpen={() => handlers.onOpenOutput(item.workpieceId)}
+        />
+      )
+    case 'action': {
+      const request = { title: item.title, description: item.description, resource: item.resource, fields: item.fields }
+      if (item.state !== 'pending') {
+        return (
+          <ActionCard
+            {...request}
+            state={item.state}
+            resolution={item.resolution ?? ''}
+            automatic={item.automatic}
+            open={isOpen}
+            onToggle={toggle}
+          />
+        )
+      }
+      const { rule } = item
+      return (
+        <ActionCard
+          {...request}
+          state="pending"
+          incomplete={item.incomplete}
+          restricted={restricted}
+          onApprove={() => handlers.onApprove(item.actionId)}
+          onDeny={() => handlers.onDeny(item.actionId)}
+          onAlwaysApprove={rule && (() => handlers.onAlwaysApprove(rule))}
+        />
+      )
+    }
+    case 'hook': {
+      const { hookId } = item
+      return (
+        <HookCard
+          title={item.title}
+          description={item.description}
+          resource={item.resource}
+          enabled={item.enabled}
+          onEnabledChange={hookId === undefined ? undefined : (enabled) => handlers.onHookEnabledChange(hookId, enabled)}
+        />
+      )
+    }
+    case 'connection': {
+      const request = { vendorName: item.vendorName, logoUrl: item.logoUrl, scope: item.scope, reason: item.reason }
+      return item.state === 'pending'
+        ? (
+          <ConnectionRequestCard
+            {...request}
+            state="pending"
+            onSetUp={() => handlers.onSetUpConnection(item.requestId)}
+            onDeny={() => handlers.onDenyConnection(item.requestId)}
+          />
+        )
+        : <ConnectionRequestCard {...request} state={item.state} />
+    }
+    case 'notice':
+      return <SystemRow icon={NOTICE_ICONS[item.notice]} detail={item.detail}>{item.text}</SystemRow>
+    case 'divider':
+      return <FeedDivider>{item.label}</FeedDivider>
     case 'error':
-      return <MessageBubble role="error">{item.text}</MessageBubble>
-    default:
-      // Each remaining kind gets its block in the commits that follow.
-      return <p className="px-2 text-sm text-kumo-subtle">{item.kind}</p>
+      return (
+        <ErrorMessage
+          variant={item.usageLimit ? 'usageLimit' : 'error'}
+          onRetry={item.recovery === 'retry' ? handlers.onRetry : undefined}
+          onContinue={item.recovery === 'continue' ? handlers.onContinue : undefined}
+        >
+          {item.text}
+        </ErrorMessage>
+      )
   }
 })
