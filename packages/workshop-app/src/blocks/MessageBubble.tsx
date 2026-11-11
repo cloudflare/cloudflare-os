@@ -73,7 +73,7 @@ const ACTIONS = (
 export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => (
   <div
     data-role={role}
-    className={cn('group/message flex items-center gap-1', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
+    className={cn('group/message flex items-center gap-2', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
   >
     {role === 'user' && ACTIONS}
     <div
