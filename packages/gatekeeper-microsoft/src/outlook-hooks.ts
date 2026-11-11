@@ -98,13 +98,14 @@ export async function subscribeNewMessages(options: {
 /** What a hook's delivery stub restores to: one firing, of a message only if the binding covers it. */
 @validateRpc()
 export class OutlookHookDeliveryImpl extends RpcTarget implements OutlookHookDelivery {
+  /** `context` borrows the delivery's queue for the call and keeps its own duplicate only once it builds the context. */
   constructor(private readonly context: (approvalQueue: RpcStub<ApprovalQueue>) => Promise<OutlookContext>) {
     super();
   }
 
   async deliver(callback: RpcStub<OutlookHookTarget>, approvalQueue: RpcStub<ApprovalQueue>, messageId: string): Promise<void> {
     if (!isMailId(messageId)) throw new TypeError("Invalid Outlook message ID.");
-    const ctx = await this.context(approvalQueue.dup());
+    const ctx = await this.context(approvalQueue);
     let handedOff = false;
     try {
       const message = await ctx.mail(mail => mail.message(messageId));

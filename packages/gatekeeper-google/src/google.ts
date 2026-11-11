@@ -2406,6 +2406,10 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       : [fileSubresourceId({kind: "document", fileId: documentId})];
   }
 
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
+  }
+
   // Every read authorizes through here, which reports the document it read as its subresource.
   #authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void> {
     return this.#approvalQueue.authorizeObservation({
@@ -3176,6 +3180,10 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
     this.#availabilityMode = availabilityMode;
     this.#approvalQueue = approvalQueue;
     this.#pendingActions = pendingActions;
+  }
+
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
   }
 
   // Every read authorizes through here, which makes `subresources` required: each read must name
@@ -4028,6 +4036,10 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     this.#scopedDatasetId = scopedDatasetId;
     this.#scopedTableId = scopedTableId;
     this.#queryProjectId = queryProjectId;
+  }
+
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
   }
 
   // Authorize an observation, reporting as subresources the datasets whose data it reveals, which

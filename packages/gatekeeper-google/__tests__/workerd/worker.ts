@@ -16,7 +16,7 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import type { GoogleSlidesGatekeeperImplProps } from "../../src/slides";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import type {
-  ActionKind, HookController, ResourceDescription,
+  ActionKind, ApprovalQueue, HookController, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
@@ -675,6 +675,14 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await this.#calendar(facetName, id, props).startSession(queueStub);
   }
 
+  /** A session started with the caller's own queue, which the facet holds across this boundary. */
+  async startCalendarSessionWith(
+      facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
+      queue: ApprovalQueue,
+  ): Promise<GoogleCalendarSession> {
+    return await this.#calendar(facetName, id, props).startSession(queue);
+  }
+
   async calendarAddObserver(
       facetName: string, id: string, props: GoogleCalendarGatekeeperImplProps,
       observerId: string, userObjectId: string,
@@ -743,6 +751,13 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return await this.#bigQuery(facetName, id, props).startSession(queueStub);
   }
 
+  /** A session started with the caller's own queue, which the facet holds across this boundary. */
+  async startBigQuerySessionWith(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps, queue: ApprovalQueue,
+  ): Promise<BigQuerySession> {
+    return await this.#bigQuery(facetName, id, props).startSession(queue);
+  }
+
   /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */
   async bigQueryAddObserver(
       facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
@@ -804,6 +819,14 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     using queueStub = new RpcStub(this.#sharedQueue(queueId));
     return await this.#googleFile<GoogleDocGatekeeperImpl>("GoogleDocGatekeeperImpl", facetName, id, props)
       .startSession(queueStub);
+  }
+
+  /** A session started with the caller's own queue, which the facet holds across this boundary. */
+  async startDocSessionWith(
+      facetName: string, id: string, props: GoogleDocGatekeeperImplProps, queue: ApprovalQueue,
+  ): Promise<GoogleDocSession> {
+    return await this.#googleFile<GoogleDocGatekeeperImpl>("GoogleDocGatekeeperImpl", facetName, id, props)
+      .startSession(queue);
   }
 
   async openSheetsSession(

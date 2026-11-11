@@ -1186,7 +1186,7 @@ export class HomeAssistantGatekeeperImpl
   async startSession(
     approvalQueue: RpcStub<ApprovalQueue>,
   ): Promise<HomeAssistantSession | Area | Label | Device | Entity> {
-    const ctx = await this.#sessionContext(approvalQueue.dup());
+    const ctx = await this.#sessionContext(approvalQueue);
     const { resourceKind, resourceId } = this.ctx.props;
     switch (resourceKind) {
       case "instance":
@@ -1334,11 +1334,13 @@ export class HomeAssistantGatekeeperImpl
   // ---------------------------------------------------------------------
   // Internal helpers
 
+  /** Resolves credentials, then takes this session's own `dup()` of `approvalQueue`: duplicating
+   * only once nothing left can throw, so a failed credential lookup holds no duplicate. */
   async #sessionContext(
     approvalQueue: RpcStub<ApprovalQueue>,
   ): Promise<SessionContext> {
     const creds = await this.#getCreds();
-    return this.#buildSessionContext(creds, approvalQueue);
+    return this.#buildSessionContext(creds, approvalQueue.dup());
   }
 
   /** Synchronous helper used by `#sessionContext` and `SessionContext.fork()` to construct a

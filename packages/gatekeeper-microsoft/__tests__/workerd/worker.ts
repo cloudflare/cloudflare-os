@@ -7,7 +7,7 @@
 // a facet, or to a session it mints, cannot be handed to the test, so TestHooks runs each scenario
 // itself -- a chain of method calls on a session -- and returns the result as plain data.
 
-import { DurableObject, RpcTarget, WorkerEntrypoint, restore, type RpcStub } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -174,6 +174,18 @@ export class RecordingQueue extends RpcTarget {
   }
 }
 
+/**
+ * A recording queue that notes when the runtime releases it: its `[Symbol.dispose]` runs once no
+ * stub to it is left anywhere, which is when the Workshop stops counting its session as live.
+ */
+export class TrackedQueue extends RecordingQueue {
+  released = false;
+
+  [Symbol.dispose](): void {
+    this.released = true;
+  }
+}
+
 /** A forwarded call's result as plain data: an expected rejection crossing RPC also reports as unhandled. */
 export type Outcome<T> = { ok: T } | { error: string };
 
@@ -208,6 +220,9 @@ class NullGitCache extends RpcTarget {}
 
 export class TestHooks extends DurableObject<Cloudflare.Env> {
   #queues = new Map<string, RecordingQueue>();
+  /** Release-tracked queues, and the sessions and cursors scenarios keep between calls, by handle. */
+  #tracked = new Map<string, TrackedQueue>();
+  #held = new Map<string, Callable>();
 
   get #exports(): TestExports {
     return this.ctx.exports as unknown as TestExports;
@@ -306,6 +321,59 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
 
   async outlookDeliver(facetName: string, props: OutlookGatekeeperProps, callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, messageId: string): Promise<void> {
     await (this.#gatekeeper(facetName, props) as unknown as TestOutlook).testDeliver(callback, approvalQueue, messageId);
+  }
+
+  /**
+   * Opens a session on a fresh `TrackedQueue` and keeps it under `handle`. TestHooks releases its
+   * own stub to the queue at once, so the queue is released exactly when the gatekeeper lets go of
+   * every duplicate it made.
+   */
+  async holdSession(handle: string, facetName: string, props: AnyGatekeeperProps): Promise<Outcome<void>> {
+    const queue = new TrackedQueue();
+    this.#tracked.set(handle, queue);
+    const stub = new RpcStub(queue);
+    try {
+      return await outcome(async () => {
+        this.#held.set(handle, await this.#gatekeeper(facetName, props).startSession(stub as unknown as RecordingQueue));
+      });
+    } finally {
+      stub[Symbol.dispose]();
+    }
+  }
+
+  /** Calls `method` on what `handle` holds; with `as`, keeps the capability it returns under that handle. */
+  async holdCall(handle: string, method: string, args: unknown[], as?: string): Promise<Outcome<unknown>> {
+    return await outcome(async () => {
+      const result = await this.#held.get(handle)![method](...args);
+      if (as === undefined) return result;
+      this.#held.set(as, result as Callable);
+      return undefined;
+    });
+  }
+
+  /** Releases the stub kept under `handle`, as a gadget disposing it does. */
+  release(handle: string): void {
+    this.#held.get(handle)?.[Symbol.dispose]?.();
+    this.#held.delete(handle);
+  }
+
+  /** Whether the queue `holdSession` or `trackedDeliver` made under `handle` was released, and how many reads it authorized. */
+  trackedQueue(handle: string): { released: boolean; observations: number } {
+    const queue = this.#tracked.get(handle)!;
+    return { released: queue.released, observations: queue.observations.length };
+  }
+
+  /** Fires the facet's hook delivery with a fresh `TrackedQueue` under `handle`, its own stub released after the call. */
+  async trackedDeliver(handle: string, facetName: string, props: OutlookGatekeeperProps, messageId: string): Promise<Outcome<void>> {
+    const queue = new TrackedQueue();
+    this.#tracked.set(handle, queue);
+    const stub = new RpcStub(queue);
+    try {
+      return await outcome(() => (this.#gatekeeper(facetName, props) as unknown as TestOutlook)
+        .testDeliver(new RecordingHook(handle) as never, stub as never, messageId));
+    } finally {
+      stub[Symbol.dispose]();
+    }
   }
 
   hookDeliveries(key: string): { subject: string; id: string; markdown?: string; error?: string }[] {

@@ -648,10 +648,10 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     const drafts = listedFolder !== undefined && listedFolder === known.drafts
       ? overlay.pendingDrafts({ id: known.drafts, path: await ctx.folderPath(known.drafts) }, await ctx.mailbox()) : [];
 
-    const walk = ctx.gate.lease();
     const units = await ctx.units();
     const where = listedFolder ? md(await ctx.folderPath(listedFolder)) : "the mailbox";
     let first = true;
+    const walk = ctx.gate.lease();
     return new TokenCursor<MessageInfo>({
       pageSize: size,
       remotePageSize: size,
@@ -705,8 +705,8 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     const path = folder ? `/mailFolders/${idPath(folder.id)}/messages` : "/messages";
     const search = kqlPhrase(query.trim());
     const overlay = ctx.overlay();
-    const walk = ctx.gate.lease();
     const units = await ctx.units();
+    const walk = ctx.gate.lease();
     return new TokenCursor<MessageInfo>({
       pageSize: size,
       remotePageSize: size,

@@ -457,7 +457,7 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<MySession> {
     return new MySessionImpl(
-      approvalQueue.dup(),  // Always dup() before storing
+      approvalQueue.dup(),  // Always dup() before storing; MySessionImpl's [Symbol.dispose] releases it
       this.ctx,
       // ... API client, props, etc.
     );
