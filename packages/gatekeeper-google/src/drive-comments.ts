@@ -677,9 +677,9 @@ const PARENT_CUT =
   `Only the first ${PARENT_EXCERPT_CHARS} characters of the comment are shown below.`;
 
 /**
- * The file and the comment a reply or resolve answers. Someone else on Drive wrote the comment
- * and chose its author's name, so both are fields, which are shown as written and never as
- * Markdown.
+ * The file and the comment a reply or resolve answers, shown after the reply itself. Someone else
+ * on Drive wrote the comment and chose its author's name, so both are fields, which are shown as
+ * written and never as Markdown.
  */
 function parentLines(
   builder: ActionDescriptionBuilder, payload: DriveCommentActions["createReply" | "resolveComment"],
@@ -706,8 +706,9 @@ export const DRIVE_COMMENT_ACTIONS = defineActions<DriveCommentsHost, DriveComme
       let builder = buildDescription(
         `Post a comment on Google Drive file ${codeSpan(payload.fileId)} as the connected ` +
         `account. It is plain text, not attached to text in the file. ${EMAILED}`);
-      fileLine(builder, payload);
+      // What is posted comes first: the Workshop cuts a long card short.
       builder.verbatim("Comment", payload.content);
+      fileLine(builder, payload);
       return {
         title: "Comment on a Google Drive file", ...builder.finish(), implementsRevert: false,
       };
@@ -727,8 +728,8 @@ export const DRIVE_COMMENT_ACTIONS = defineActions<DriveCommentsHost, DriveComme
         `Reply to a comment on Google Drive file ${codeSpan(payload.fileId)} as the connected ` +
         `account. ${EMAILED}`);
       if (payload.reopens) builder.prose("This reopens the resolved comment.");
-      parentLines(builder, payload);
       builder.verbatim("Reply", payload.content);
+      parentLines(builder, payload);
       return {
         title: "Reply to a Google Drive comment", ...builder.finish(), implementsRevert: false,
       };
@@ -747,8 +748,8 @@ export const DRIVE_COMMENT_ACTIONS = defineActions<DriveCommentsHost, DriveComme
       let builder = buildDescription(
         `Resolve a comment on Google Drive file ${codeSpan(payload.fileId)} as the connected ` +
         `account${payload.content === undefined ? "" : ", with a closing reply"}.`);
-      parentLines(builder, payload);
       if (payload.content !== undefined) builder.verbatim("Reply", payload.content);
+      parentLines(builder, payload);
       return {
         title: "Resolve a Google Drive comment", ...builder.finish(), implementsRevert: false,
       };

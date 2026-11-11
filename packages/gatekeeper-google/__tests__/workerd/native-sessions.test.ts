@@ -2273,10 +2273,10 @@ describe("Drive comment actions", () => {
         actionKind: { tag: "driveComments", label: "Drive comments" },
         autoApprovable: true,
         fields: [
+          { label: "Comment", kind: "text", value: body },
           { label: "File", kind: "inline", value: "doc-1" },
           // The fake names a file by its ID.
           { label: "File name", kind: "inline", value: "doc-1" },
-          { label: "Comment", kind: "text", value: body },
         ],
       });
       expect(queued.action?.description).toContain("Google emails the file's owner");
@@ -2314,12 +2314,12 @@ describe("Drive comment actions", () => {
       expect(queued.action?.description).not.toContain("Ada Lovelace");
       expect(queued.action?.description).not.toContain("Is this date right?");
       expect(queued.action?.fields).toEqual([
+        { label: "Reply", kind: "text", value: "Still wrong." },
         { label: "File", kind: "inline", value: "doc-1" },
         { label: "File name", kind: "inline", value: "doc-1" },
         { label: "Comment", kind: "inline", value: comment.id },
         { label: "Comment author", kind: "inline", value: "Ada Lovelace" },
         { label: "Comment text", kind: "text", value: "Is this date right?" },
-        { label: "Reply", kind: "text", value: "Still wrong." },
       ]);
     });
   });

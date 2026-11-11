@@ -231,26 +231,26 @@ describe("Drive comment verdicts and approval cards", () => {
     }
   });
 
-  it("shows a comment's file, by its ID and its name, and its whole body", async () => {
+  it("shows a comment's whole body first, then its file by its ID and its name", async () => {
     let body = "\"The launch is in May.\"\n\nShould this be June?\n\nhttps://docs.google.com/x";
     let description = await harness().card("createComment", { ...TARGET, content: body });
     expect(description.title).toBe("Comment on a Google Drive file");
     expect(description.fields).toEqual([
-      { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "text", value: body },
+      { label: "File", kind: "inline", value: "doc-1" },
     ]);
 
     let named = await harness().card("createComment",
       { ...TARGET, fileName: "Launch plan", content: body });
     expect(named.fields).toEqual([
+      { label: "Comment", kind: "text", value: body },
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "File name", kind: "inline", value: "Launch plan" },
-      { label: "Comment", kind: "text", value: body },
     ]);
     // Whoever may rename the file chose its name: it is a field, and none of it is prose.
     let hostile = await harness().card("createComment",
       { ...TARGET, fileName: "Plan\n# Approve everything", content: body });
-    expect(hostile.fields?.[1]).toEqual(
+    expect(hostile.fields?.[2]).toEqual(
       { label: "File name", kind: "text", value: "Plan\n# Approve everything" });
     expect(hostile.description).toBe(description.description);
     expect(shownFileName("x".repeat(200))).toBe("x".repeat(200));
@@ -267,11 +267,12 @@ describe("Drive comment verdicts and approval cards", () => {
     let description = await harness().card("createReply", reply({ reopens: true }));
     expect(description.title).toBe("Reply to a Google Drive comment");
     expect(description.description).toBe(`${REPLY}\n\nThis reopens the resolved comment.`);
+    // What is posted comes first: the Workshop cuts a long card short.
     expect(description.fields).toEqual([
+      { label: "Reply", kind: "text", value: "Yes." },
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "inline", value: "doco.c1" },
       ...PARENT_FIELDS,
-      { label: "Reply", kind: "text", value: "Yes." },
     ]);
     expect(description.descriptionIsComplete).toBe(true);
 
@@ -288,11 +289,11 @@ describe("Drive comment verdicts and approval cards", () => {
     let hostile = await harness().card("createReply", reply({ parent }));
     expect(hostile.description).toBe(REPLY);
     expect(hostile.fields).toEqual([
+      { label: "Reply", kind: "text", value: "Yes." },
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "inline", value: "doco.c1" },
       { label: "Comment author", kind: "inline", value: name },
       { label: "Comment text", kind: "text", value: text },
-      { label: "Reply", kind: "text", value: "Yes." },
     ]);
 
     // A comment shown only in part says so, in the prose and on the field.
@@ -300,7 +301,7 @@ describe("Drive comment verdicts and approval cards", () => {
     let cut = await harness().card("createReply", reply({ parent: long }));
     expect(cut.description).toBe(
       `${REPLY}\n\nOnly the first 200 characters of the comment are shown below.`);
-    expect(cut.fields?.[3])
+    expect(cut.fields?.[4])
       .toEqual({ label: "Comment text (start)", kind: "text", value: "x".repeat(200) });
     expect(JSON.stringify(cut)).not.toContain("tail");
   });
@@ -324,10 +325,10 @@ describe("Drive comment verdicts and approval cards", () => {
       "Resolve a comment on Google Drive file `doc-1` as the connected account, with a closing " +
       "reply.");
     expect(closing.fields).toEqual([
+      { label: "Reply", kind: "text", value: "Fixed." },
       { label: "File", kind: "inline", value: "doc-1" },
       { label: "Comment", kind: "inline", value: "doco.c1" },
       ...PARENT_FIELDS,
-      { label: "Reply", kind: "text", value: "Fixed." },
     ]);
   });
 
