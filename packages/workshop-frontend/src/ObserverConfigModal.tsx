@@ -59,7 +59,7 @@ function requiredResourceUrlPatterns(
     ? account.supportedResources
     : vendor?.supportedResources
   if (!supportedResources) return []
-  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl)
+  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl, need.resourceTypeId)
   return resolved.ok && resolved.resource.grantable ? [getResourceTypeId(resolved.resource)] : []
 }
 

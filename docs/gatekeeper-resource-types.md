@@ -31,3 +31,17 @@ Account grant lists retain the distinction between omitted (legacy full grant) a
 grants). An explicit ID grant list takes precedence over a legacy pattern list, including when
 empty. Legacy grants translate by exact current match. A gatekeeper may separately retain explicit
 historical mappings that it already knows; the Workshop does not guess them.
+
+## Deployment rollback
+
+Admin restrictions written or migrated to `disabledResourceTypeIds` are not compatible with a
+Workshop version that only reads `disabledResources`. Downgrading without restoring those
+restrictions would enable affected resource types. An older worker's next admin configuration
+write can also discard the unrecognized ID field.
+
+Before rolling back, retain a copy of the upgraded admin configuration. Restore a tested
+pre-upgrade configuration or translate and reapply every disabled type ID as a legacy pattern
+restriction, and verify enforcement before the older version serves users. Do not drop an ID
+that cannot be translated; keep the affected vendor disabled until its policy is explicitly
+restored. Google's dual-written account grants do not provide rollback compatibility for Workshop
+admin policy. Automatic reverse migration and dual-written admin restrictions are deferred.
