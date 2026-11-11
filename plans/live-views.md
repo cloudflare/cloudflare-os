@@ -85,9 +85,11 @@ Acceptance criteria:
   Nothing reaches the kernel until the viewer clicks Send. Send uses the composer's send path,
   exactly as if the viewer had typed the message, and waits whenever the composer waits.
 - A block with no content shows an error and runs nothing.
-- `env.NAME = value` in `executeCode` saves `NAME` for the chat when the call's step is stored:
-  JSON data of at most 256 KiB, or an alias of one of the chat's bindings. A chat keeps at most 16
-  names. Later `executeCode` calls in the chat see them in `env`.
+- `env.NAME = value` in `executeCode` saves `NAME` as a chat binding when the call's step is
+  stored: JSON data, or another name of one of the chat's bindings. A value is at most 1 MiB as
+  JSON, and a chat's saved data at most 4 MiB (see "Caps"). Later `executeCode` calls see the
+  name in `env`, and `describeBinding` describes it. A data name can be saved again. No name is
+  ever removed.
 - A block whose tag lists names, as in `<inline-html env="A,B">`, gets an `env` with just those
   names: `await env.A` for saved data, `env.A.rpc.method()` for a Gadget, and `env.A.method()` for
   a connection. A view reaches no models, agent spawners, auto-provided services, worktrees, `GIT`
@@ -115,35 +117,52 @@ Acceptance criteria:
     15.8 s, 10.5 s and 27.6 s.
   The results are in `~/Desktop/inline-ui/view-bench/` and `plans/view-bench.md` on the
   `explore/view-bench-env` branch.
+- **Saved names are chat bindings.** Kenton's words are that the names "get added to the agent's
+  bindings", and main has the mechanism: `ChatBindingEntry`, whose `value` kind already carries a
+  payload in its own collection, names stamped on messages, the folds in `buildCompactionState`,
+  `chatScopeNames` and `runAgent`'s replay, and `chatBindings.set` at tool time, as `createGadget`
+  does. A saved name is a new entry kind, `{type: "data"}`, whose JSON lives in `chatSavedData`;
+  another name of a binding is a copy of that binding's own entry. The `executeCode` tool call
+  stamps the names it saved on its record. So name checks, compaction, `describeBinding` and a
+  view's lookup all work through code that exists, and nothing outside the binding map holds a
+  name.
 - **A save lands with its step.** A save is an effect of the `executeCode` call that made it, so
-  it is durable iff the call's transcript record is, as a worktree commit is. The turn buffers the
-  step's saves and the step's barrier writes them in its transaction. A crash mid-step loses both.
+  it is durable iff the call's transcript record is, as a worktree commit is. The turn holds the
+  step's JSON until the barrier, which writes it in the step's transaction. A crash mid-step loses
+  both.
 - **The agent saves, then writes the view in its next response.** A view's module scripts run as
   soon as its block closes, before any tool call in the same answer, and a save lands only when its
   step is stored. A turn whose view and save came in one response, ended once the save landed, was
   probed on 2026-11-10: gpt-6-luna and claude-haiku-5-5 wrote both in one response in 0 of 3 turns
   each, Kimi K3 in 2 of 3. So the second request stays, and there is no turn-end rule for views.
-- **A saved name never shadows a chat binding.** Saving a name the chat binds is refused. A
-  binding the chat gains later under a saved name wins, in `executeCode` and in views. The names
-  the kernel picks for new bindings avoid saved names.
+- **Only a data name is ever bound again.** Main's chat bindings are never rebound. A data name
+  is the one exception: saving it again replaces its JSON and keeps its entry, so its place in the
+  map and every other name's stay as they were. A save under any other name in scope is refused,
+  and nothing else may take a data name, since `isNameInScope` sees it.
 - **A view is its own caller.** The kernel opens a connection's session for a view with the caller
   `{from: "view", chatId}`, through `openGatekeeperSession`, the chokepoint every session takes.
-  The connection works on the account it was made with, whoever views the chat: the account is in
-  the props of the class its record stores. The view holds nothing its viewer lacks: an owner or
-  build collaborator's tab can already open a session on a connection of the workspace.
+  `{from: "user", chatId}` already maps to the chat, but it is a slash command's caller: its
+  actions take the auto-approval rules as any caller's do, and `#associateAction` posts nothing
+  for it. A view needs its own policy: its actions never auto-approve and are posted to the chat,
+  it cannot bind hooks, and its calls end with its chat. The connection works on the account it
+  was made with, whoever views the chat: the account is in the props of the class its record
+  stores. The view holds nothing its viewer lacks: an owner or build collaborator's tab can
+  already open a session on a connection of the workspace.
 - **A view's reads count for its chat; its writes go to the chat.** An observation through a view
   is attributed to the view's chat, as the agent's are, so the observer ledger checks it against
   the chat's audience. It stays in the action log and is not posted to the chat. A write is
   posted to the chat as an action, as a gadget's is, and never auto-approves.
 - **The host holds every limit.** Block code runs in the bootstrap's realm (see "The host checks
   every call"), so the host serves only the names the block's tag lists, as the Workshop parsed
-  them, and paces every call. The kernel checks only that the name is in the chat's scope and of
-  a kind a view may reach.
-- **A view with `env` cannot parse a string as HTML.** Its frame gets a Trusted Types CSP that
-  makes `innerHTML` (except `= ""`), `insertAdjacentHTML` and the other ways to parse a string as
-  HTML throw. Data a view reads, such as an issue title from a connection, could otherwise run as
-  code with the view's bindings. A view without `env` keeps the rule below. The saved env arm was
-  measured with this CSP in every view.
+  them, and paces connection calls. The kernel checks only that the name is in the chat's scope,
+  of a kind a view may reach, and that the chat still exists.
+- **A view with `env` cannot parse a string as HTML, or it does not run.** Its frame gets a
+  Trusted Types CSP that makes `innerHTML` (except `= ""`), `insertAdjacentHTML` and the other ways
+  to parse a string as HTML throw. Data a view reads, such as an issue title from a connection,
+  could otherwise run as code with the view's bindings. Where the bootstrap cannot install the
+  policy, or a probe shows it is not enforced, the host never writes the block and shows an error.
+  A view without `env` keeps the rule below. The saved env arm was measured with this CSP in every
+  view.
 - **No chat gateway text.** A chat gateway gets the agent's answer as stored, tags and all.
   Nothing calls the gateway yet, and its removal is planned, so a note in place of each view was
   built, then dropped on review on 2026-11-06. The kernel then does not import the parser.
@@ -211,18 +230,35 @@ Acceptance criteria:
   buffers them, `getBufferedHead` shows them to later calls in the step, and the barrier writes
   them. `commitAgentStep` writes nothing for a chat that is gone.
 - The chat's binding scope is replayed: the seed in `chatContext.bindings`, the compaction
-  checkpoint's `chatBindings`, then the names stamped on messages (`buildCompactionState` in
-  `agent-compaction.ts` folds them). Names are never rebound. `chatScopeNames` and
-  `prepareChatBindings` pick the names of new bindings the kernel adds.
-- `openGatekeeperSession` gives every session an approval queue bound to its caller.
-  `GatekeeperCaller` is `agent`, `gadget`, `user` or `hook`. `observerContextOf` maps a caller to
-  the context its observations are checked against, and the ledger refuses a caller it maps to
-  nothing. `#associateAction` puts an agent's actions on its step and posts a gadget's to its chat.
+  checkpoint's `chatBindings`, then the names stamped on messages. `runAgent`'s replay and
+  `buildCompactionState` (`agent-compaction.ts`) fold them; `chatScopeNames` and
+  `prepareChatBindings` scan the same stamps to name new bindings. The comment above
+  `chatBindings` in `runAgent` states the rule: "Names are never rebound, so resolution is
+  replay-deterministic." `isNameInScope` enforces it at tool time, so no tool claims a name the
+  map holds. Replay of seeds, pasted resources, accepted connections and "changes" messages also
+  keeps the first entry (`if (!chatBindings.has(name))`). The same comment says "the first name
+  inserted for a target wins reverse lookups", which `chatNameFor` relies on.
+- `ChatBindingEntry` is `workpiece` or `value`. A `value` entry is an agent callback's arguments:
+  its payload is in `agentCallbackArgs`, keyed by the callback message's sequence, and
+  `getEnvForAgent` copies it into the run's `env` (`env[name] = stored.args`), so every run carries
+  it. `describeBinding` has a case for each kind, and a `satisfies never` default.
+- `createGadget` sets its name in the turn's `chatBindings` when the tool runs, and stamps it on
+  its tool call's record, which replay reads.
+- `openGatekeeperSession` gives every session an `ApprovalQueueImpl` bound to its caller, whose
+  `authorizeObservation`, `submitAction` and `bindHook` pass the caller on. `bindHook` credits a
+  caller that is not a gadget to the workspace's first gadget. `GatekeeperCaller` is `agent`,
+  `gadget`, `user` or `hook`. `observerContextOf` maps a caller to the context its observations are
+  checked against, and the ledger refuses a caller it maps to nothing. `#associateAction` puts an
+  agent's actions on its step and posts a gadget's to its chat. `submitAction` checks the
+  connection, not a chat.
 - `getGadgetFacet(gadgetId, chatId, joinAs)` returns a facet stub that counts toward the holder's
   session until it is disposed, as `GadgetClient.connectToGadget` uses it.
+  `GatekeeperClientImpl.openSession` returns a session that is not counted; only the client is.
 - `createRateLimitedCapability` (`packages/workshop-frontend/src/rateLimitedCapability.ts`) paces a
   stub's calls and refuses its stub members. `SandboxedGatekeeperApp` uses it with 8 concurrent
-  calls, 600 a minute and 128 pending.
+  calls, 600 a minute and 128 pending. Its `dispose` only clears the resume timer: queued calls
+  stay queued, and a call that finishes afterwards drains the queue and may arm the timer again.
+  `GadgetUI` does not pace `connectToGadget`'s stub.
 
 ## Design
 
@@ -240,8 +276,9 @@ text parse alike, but for the last line while the answer streams (below).
   string.
 - The opening line may carry one attribute, `env` in double quotes: `<inline-html env="A, B">`.
   Its value lists names, split at commas, each trimmed. A block that lists a name that
-  `validateBindingName` refuses, the name `then`, or more than 32 names is an error: "This view's
-  `env` lists …". A repeated name counts once. Any other attribute, or `env` in other quotes,
+  `validateBindingName` refuses, or the name `then`, is an error: "This view's `env` lists …". A
+  repeated name counts once. There is no limit on how many names a tag lists: the host opens a
+  name only when the view's code first reads it. Any other attribute, or `env` in other quotes,
   leaves the line prose, as today. The block and its open form carry the names as `env`. A block
   with no attribute has no `env`.
 - An opening line is in a code block when Markdown reads it so in the prose since the last view,
@@ -272,8 +309,8 @@ text parse alike, but for the last line while the answer streams (below).
 |---|---|---|
 | `agent.send` | A message shown under the block | Only the viewer's click on Send calls the kernel, through `sendChatMessage`, as the viewer's own message. |
 | Saved data (`env.NAME`, listed in the tag) | The JSON the chat's `executeCode` last saved under `NAME` | `await env.NAME`. Read when the code first touches the name. |
-| Gadgets (listed in the tag) | The Gadget's server, at the chat's version | `env.NAME.rpc.method()`, as in `executeCode`. Calls are paced. A write through a Gadget method needs no approval, as from a gadget's own UI. |
-| Connections (listed in the tag) | A session on a connection the user made, with the view as caller | `env.NAME.method()`. Reads are recorded in the action log. Each write waits as an action in the chat for a person's decision. Calls are paced. |
+| Gadgets (listed in the tag) | The Gadget's server, at the chat's version | `env.NAME.rpc.method()`, as in `executeCode`. Not paced, as `GadgetUI` does not pace its gadget. A write through a Gadget method needs no approval, as from a gadget's own UI. |
+| Connections (listed in the tag) | A session on a connection the user made, with the view as caller | `env.NAME.method()`. Reads are recorded in the action log. Each write waits as an action in the chat for a person's decision. Hooks are refused. Calls are paced. |
 | Names the tag does not list, models, agent spawners, auto-provided services, worktrees, `GIT`, a Gadget's `exports` | Nothing | The host serves only the tag's names. The kernel refuses the other kinds. |
 | Popups, other frames, the network | Nothing but WebRTC | `sandbox="allow-scripts"`, CSP `connect-src 'none'`, and the Workshop's `frame-src srcdoc:`. WebRTC is the exception (see "Known edge cases"). |
 
@@ -283,65 +320,148 @@ restricted data. This plan does not change gadget frames.
 
 ### Saving env (kernel)
 
-- **Capture.** `CODE_MODE_HARNESS` keeps a map of `env` as the run starts. Once the agent's
-  function returns, it hands back each name the run added or replaced. A value that is the very
-  object another name held when the run started is an alias of that name. Otherwise the harness
-  checks that the value is JSON data (plain objects and arrays of strings, finite numbers,
-  booleans and null, with no cycles) and at most 256 KiB as JSON, and hands back its JSON text, or
-  what keeps it from being saved, by path (`env.ROWS[3].when is a Date`). A run that throws hands
-  back nothing, so it saves nothing. `CodeModeEntrypoint.run` returns the changes.
-- **Decision.** `executeCodeMode` decides each name, in order, against the chat's saved names and
-  the step's pending saves. It refuses a name that `validateBindingName` refuses, one the chat
-  binds, one a pending connection request claims, `GIT`, `then` (an `env.then` would make the
-  view's `env` look like a promise), a new name past the 16th, and a value that is neither JSON
-  data nor an alias. An alias of a saved alias names its binding. One refused name refuses no
-  other. The tool's output gets one line per name:
-  `Saved env.TOTALS (data) for views and later code.`, `Saved env.SALES (the binding env.EXPENSES)
-  for views and later code.`, or `env.X was not saved: …`. `executeCodeMode` returns the log and
-  the accepted saves.
-- **The step's buffer.** `runAgent` holds the step's accepted saves beside
-  `pendingWorktreeCommits`, and passes them to each later `executeCode` call in the step, so the
-  second call sees what the first saved. A later save of a name in the step replaces the earlier
-  one. The barrier passes them to `commitAgentStep` as `envSaves`, which writes them in the step's
-  transaction. It writes nothing for a chat that is gone. A failed tool call (a `verify()` error,
-  a lost trace) buffers nothing.
-- **Storage.** A new collection, `chatEnv`, of `ChatEnvRecord = {chatId, name} & ({kind: "data",
-  json} | {kind: "alias", target})`, keyed by `chatEnvKey(chatId, name)`, which is
-  `chatKeyPrefix(chatId) + name`, so one chat's names list by prefix. `deleteChat` sweeps it.
-- **Later runs.** `executeCodeMode` layers the chat's saved names, then the step's pending saves,
-  under `getEnvForAgent`'s bindings: a name the chat binds is never replaced. Data goes in as the
-  parsed value. An alias is set inside the harness to the object its target holds, so the run can
-  save it again by name.
-- **Names.** `chatScopeNames`, `prepareChatBindings`' `taken` set and the turn's `isNameInScope`
-  count saved names, so a binding the kernel or the agent names later picks another name (see "A
-  binding that takes a saved name").
-- **The tool description.** `EXECUTE_CODE_TOOL_DESCRIPTION` gains one sentence (see "Agent
-  instructions"). The spawned agent's description is unchanged: its chat saves the same way, but
-  no one asked it for a view.
+- **The entry.** `ChatBindingEntry` gains `{type: "data"}`. Its JSON is in a new collection,
+  `chatSavedData`, of `{chatId, name, json}`, keyed by `chatSavedDataKey(chatId, name)`, which is
+  `chatKeyPrefix(chatId) + name`. Another name of a binding, as in `env.SALES = env.EXPENSES`, is
+  a copy of `EXPENSES`'s own entry under `SALES`: a `workpiece` entry for a Gadget, connection or
+  worktree, a `value` entry for callback arguments. So it resolves as its target does everywhere,
+  and needs no kind of its own. `deleteChat` sweeps `chatSavedData` beside `agentCallbackArgs`.
+- **Keyed by name, not by sequence.** A `value` payload is keyed by its message's sequence, since
+  each callback has its own arguments. A data name holds one value at a time, and nothing reads an
+  older one: a revert "changes what the chat proposes, not what was said" (`refoldChatCompactions`),
+  so it keeps every message and every checkpoint's `chatBindings`; messages go only with their
+  chat. A checkpoint's `{type: "data"}` entry under a name therefore always means that name's
+  current JSON. Keyed by sequence, every replaced value would stay stored, read by nothing, until
+  the chat is deleted.
+- **Saving a data name again.** Allowed: changing a view the agent just drew is the common case,
+  and the env arm was measured with it. The JSON is replaced and the entry stays where it is in
+  the map, so no other name moves and `chatNameFor`, which looks only at `workpiece` entries, is
+  unaffected. Replay stays deterministic: every reader folds the log in order and treats a later
+  save of a data name as a no-op on the map. Another name of a binding is never saved again: its
+  entry is a `workpiece` or `value` entry, which the rule above refuses to rebind.
+- **A save and a new binding in one step.** A step's tool calls run in order, and `createGadget`,
+  `createWorktree`, `createExternalResource` and a save each set their name in `chatBindings` as
+  they run. A save after a create of the same name finds a `workpiece` entry and is refused. A
+  create after a save finds the name in `isNameInScope` and is refused, as for any taken name. A
+  `requestConnection` claims its name the same way. Replay and `buildCompactionState` read the
+  step's tool calls in the same order, so they agree with the turn.
+- **No name is removed.** `delete env.FOOD` in a run leaves `FOOD` saved, and the output says so:
+  "env.FOOD is still saved: a saved name can't be removed; save it again to replace it." So a chat
+  near its total cap shrinks a value (`env.FOOD = null`) to free room.
+- **Capture.** `CODE_MODE_HARNESS` gets the chat's data names from a small module, as the env arm
+  did (`env-api.js`). At the start of the run it keeps each `env` value, and the JSON text of each
+  data name. Once the agent's function returns, it hands back, through `CodeModeEntrypoint.run`'s
+  result: each name added or replaced; each data name whose JSON text now differs (a change in
+  place, as in `env.FOOD.weeks.push(x)`), which is saved like an assignment; and each data name
+  deleted. A new value that is the very object a name other than a data name held at the start is
+  another name of that binding. Anything else must be JSON data (plain objects and arrays of
+  strings, finite numbers, booleans and null, with no cycles), and the harness hands back its
+  JSON, or what keeps it from being data, by path (`env.ROWS[3].when is a Date`). A run that
+  throws hands back nothing, so it saves nothing.
+- **The kernel checks what the harness hands back.** The agent's code runs in the harness's
+  isolate and can replace its globals, so `executeCodeMode` trusts only the result's shape: it
+  measures each JSON text itself and checks that it parses. Then it decides each name in order. It
+  refuses a name `validateBindingName` refuses, a name in scope that is not a data name (the
+  turn's `isNameInScope`, which runAgent passes it: bound, claimed by a pending connection request,
+  or `GIT`), a value over 1 MiB, and a save that would take the chat's data past 4 MiB. One refused
+  name refuses no other. The output gets one line per name: `Saved env.TOTALS (data) for views and
+  later code.`, `Saved env.SALES (another name for env.EXPENSES) for views and later code.`, or
+  `env.X was not saved: …`.
+- **Tool time.** `runAgent` then sets each accepted name in `chatBindings`, as `createGadget` does,
+  holds each data name's JSON in the step's `pendingSavedData`, beside `pendingWorktreeCommits`,
+  and stamps the saved names on the tool call's record: `savedEnv: {name, alias?}[]`, where
+  `alias` names the binding whose entry a name copies. A later call in the same step gets the
+  pending JSON through `getEnvForAgent`, which reads `pendingSavedData` before `chatSavedData`.
+- **The barrier.** `commitAgentStep` takes the step's `savedData: {name, json}[]` and writes it in
+  the step's transaction, with the record that stamps the names. It writes nothing for a chat that
+  is gone. A failed tool call (a `verify()` error, a lost trace) stamps and holds nothing.
+- **Caps.** Each has a reason:
+  - 1 MiB per value, as UTF-8 JSON. The value is one `chatSavedData` record. Durable Object
+    storage keeps a string at up to two bytes per code unit, so the record stays under 2 MiB:
+    inside the 2 MB value limit `observer-ledger.ts` cites, and the 8 MB the platform documents
+    today (<https://developers.cloudflare.com/durable-objects/platform/limits/>). It also reaches
+    each viewer in one Cap'n Web message.
+  - 4 MiB for a chat's saved data. Every `executeCode` run carries every data name in its `env`,
+    parsed, as `getEnvForAgent` already copies `value` payloads in. The Worker Loader serializes
+    `env` into the dynamic Worker
+    (<https://developers.cloudflare.com/dynamic-workers/api-reference/>), whose serialized RPC
+    limit is 32 MiB (<https://developers.cloudflare.com/workers/runtime-apis/rpc/>), and the
+    isolate's 128 MB of memory holds the parsed copy beside the agent's own work
+    (<https://developers.cloudflare.com/workers/platform/limits/>). That the RPC limit applies to
+    the loader's `env` is [INFERENCE]. 4 MiB of JSON leaves room for both.
+  - No cap on the number of names: the total bounds what a run pays, and a name costs only its
+    entry. The env arm's 16 names and 256 KiB had no stated reason, and are dropped.
+- **Readers of the binding map.** Each place that folds or reads it gets the new kind:
+  - `runAgent`'s replay of an `executeCode` call sets each stamped name: a data name as
+    `{type: "data"}` unless the map has it; another name as a copy of its target's entry.
+  - `buildCompactionState` does the same in its tool-call loop, so checkpoints carry data entries.
+  - `chatScopeNames` and `prepareChatBindings`' `taken` set add each stamped name.
+    `prepareChatBindings` gives no `nameByTarget` entry for another name of a binding, so a
+    pasted resource still takes its target's first name.
+  - `isNameInScope` sees data names through `chatBindings`, unchanged.
+  - `getEnvForAgent` gains `case "data"`: the pending or stored JSON, parsed. A missing record
+    throws, as a missing `value` record does.
+  - `describeBinding` gains a case: `env.NAME` is JSON data this chat's `executeCode` saved, which
+    a later save replaces and a view reads with `await env.NAME`.
+  - `resolveToolWorkpieceId`, `setGadgetBinding` and `forgeRestoreStubForBinding` already refuse a
+    non-`workpiece` entry. `setGadgetBinding`'s message, which says such an entry holds callback
+    arguments, names the entry's kind instead.
+  - `resolveChatBinding`, for views, folds with the same code (see "A view's env").
+- **The tool descriptions.** `EXECUTE_CODE_TOOL_DESCRIPTION` and
+  `SPAWNED_EXECUTE_CODE_TOOL_DESCRIPTION` gain one sentence (see "Agent instructions"): a spawned
+  agent's chat saves the same way, and its runs print the same lines.
+
+### Storage and rollback
+
+- **Types.** In `storage-schema/overseer-storage.ts`:
+  `ChatBindingEntry = {type: "workpiece"; id: WorkpieceId} | {type: "value"; messageSequence:
+  number} | {type: "data"}`, and a collection `chatSavedData: collection<{chatId: number, name:
+  string, json: string}>()({primaryKey: entry => chatSavedDataKey(entry.chatId, entry.name)})`,
+  with no index. In `workshop-shared/src/api.ts`, the `executeCode` member of `AiToolCall` gains
+  `savedEnv?: {name: string, alias?: string}[]`, documented. `GatekeeperCaller` gains
+  `{from: "view"; chatId: number}`, stored in `ActionRecord.caller`.
+- **No migration and no version bump.** `typed-storage` has no versioning ("(someday) versions and
+  migrations", `typed-storage/src/index.ts`). A new collection starts empty and has no index to
+  `rebuild()`. The new entry kind, field and caller are additive: no stored record changes shape.
+  `chatModelData` (`a073c8b28`) and `pendingAgentCalls` (`8dde840b5`) were added without a bump.
+  The rule in `overseer-migrations.ts` ("A change to what a workspace has stored needs a new
+  version") is about records that change; it is read so here, and reviewers should confirm it.
+- **Rollback.** See "Rollback" in "Known edge cases".
 
 ### A view's env (kernel)
 
 - **RPC.** `Overseer.connectToChatBinding(chatId, name): Promise<ViewBinding>` opens one name of
   the chat's scope for a view. `ViewBinding` is `{type: "data", json}`, `{type: "gadget", rpc}` or
   `{type: "connection", session}`. `json` is the saved text, which the host parses, so the API
-  carries no `unknown`. `OverseerClientInterface` implements it, under its `@validateRpc()`.
-  `UseOverseerInterface` denies it, as it denies the chat.
-- **Resolution.** `OverseerImpl.openViewBinding(chatId, name, joinAs)` resolves `name` as the
-  agent's `env` does. A chat binding wins. `resolveChatBinding(chatId, name)` folds the seed, the
-  active checkpoint's `chatBindings` and the messages after it, with the fold that
-  `buildCompactionState` uses, taken out into `foldChatBindings`. Then a saved name: data is
-  returned as it is, and an alias resolves its target as a chat binding.
+  carries no `unknown`. `rpc` and `session` are `RpcStub<any>`, as `GadgetClient.connectToGadget`
+  returns, and the method carries the one `@ts-ignore` its neighbours carry, with no second
+  suppression. Each member and the method get doc comments. `OverseerClientInterface` implements
+  it, under its `@validateRpc()`. `UseOverseerInterface` denies it, as it denies the chat.
+- **Resolution.** `OverseerImpl.openViewBinding(chatId, name, joinAs)` first checks that the chat
+  exists (`getChatMetaOrThrow`). It resolves `name` with `resolveChatBinding(chatId, name)`, which
+  folds the seed, the active checkpoint's `chatBindings` and the messages after it with
+  `foldChatBindings`: the loop `buildCompactionState` runs today, taken out so both use it. A
+  `data` entry returns its stored JSON. A name the tag lists that is another name of a binding
+  resolves as that binding, since its entry is a copy.
 - **Kinds.** A Gadget (`gadgets` record of type `gadget`): the kernel materializes the chat's
-  changes, then returns `getGadgetFacet(id, chatId, joinAs)`. A connection the user made
-  (`creationSpec.type === "gatekeeper"`): `openGatekeeperSession(id, facet, {from: "view",
-  chatId})`, wrapped so that it counts toward `joinAs` until it is disposed, as the facet stub
-  does. Anything else is refused: "`NAME` can't be used in a view." That covers model and spawner
-  gatekeepers, auto-provided services (`creationSpec.type === "ambient"`), connections made before
-  `creationSpec` existed, worktrees and agent callback values. The automatic `GIT` binding is not
-  a chat binding, so a view never reaches it. A Gadget's `exports` is not in the returned stub.
+  changes, then returns `getGadgetFacet(id, chatId, joinAs)`. Materializing is skipped while a turn
+  runs (`checkChatExistsAndMaterializeChanges`), as it is for a gadget pane opened mid-turn. A
+  connection the user made (`creationSpec.type === "gatekeeper"`):
+  `openGatekeeperSession(id, facet, {from: "view", chatId})`. Anything else is refused: "`NAME`
+  can't be used in a view." That covers model and spawner gatekeepers, auto-provided services
+  (`creationSpec.type === "ambient"`), connections made before `creationSpec` existed, worktrees
+  and callback arguments. The automatic `GIT` binding is not a chat binding, so a view never
+  reaches it. A Gadget's `exports` is not in the returned stub.
+- **The root stub.** Both kinds are wrapped once, as `getGadgetFacet` wraps its facet: the wrapper
+  counts toward `joinAs` until it is disposed, and refuses each call once the chat is gone.
 - **The view caller.** `GatekeeperCaller` gains `{from: "view", chatId}`. `observerContextOf` maps
-  it to the chat. `#associateAction` posts a view's action to its chat as it posts a gadget's, and
-  leaves its observations in the action log only. `submitAction` stores a view's action with
+  it to the chat. `ApprovalQueueImpl` refuses `bindHook` for it ("A view can't bind hooks.") before
+  anything is stored, and refuses `authorizeObservation` and `submitAction` once its chat is gone,
+  as it refuses a dead hook's calls with `requireLiveHook`. Every write and every recorded read of
+  the session goes through that queue, including those of capabilities the session returns: a
+  GitHub cursor keeps a duplicate of its session's queue so that it outlives the session.
+  `#associateAction` posts a view's action to its chat as it posts a gadget's, and leaves
+  its observations in the action log only. `submitAction` stores a view's action with
   `autoApprovable: false`. `awaitDecision` stays an agent's only.
 
 ### Rendering (frontend)
@@ -378,9 +498,9 @@ restricted data. This plan does not change gadget frames.
   while it reconnected, has other streamed text, so its stored message mounts its views fresh.
 - **Frame interfaces.** The host exports `UiBlockHost` to the frame. It has
   `requestMessage(message)`, `resize(height)`, `reportError(message)` and `binding(name)`. The
-  frame exports `UiBlockFrame`, with `setTheme(theme)`, `write(html)` and `close()`. Both are typed
-  and documented in `features/chat/uiBlockFrame.ts`, beside the bootstrap. The frontend has no
-  capnweb-validate transform, so the host checks its own arguments.
+  frame exports `UiBlockFrame`, with `setTheme(theme)`, `trustedTypes()`, `write(html)` and
+  `close()`. Both are typed and documented in `features/chat/uiBlockFrame.ts`, beside the
+  bootstrap. The frontend has no capnweb-validate transform, so the host checks its own arguments.
 - **Connection.** The Workshop checks the handshake as `GadgetUI` does: the message must come from
   the view's own frame window, with origin `"null"`.
 - **Shell.** A frame loads a shell: the sandbox head, the frame's style in the theme of that
@@ -391,6 +511,12 @@ restricted data. This plan does not change gadget frames.
   env"). The shell of a block with `env` also carries the Trusted Types CSP, whose two policies
   the bootstrap takes before any block code runs: one writes the block's document, and the
   default one lets code clear an element with `""` and refuses any other string.
+- **Trusted Types fail closed.** For a block with `env`, the host calls `trustedTypes()` after the
+  handshake and before its first `write`, so no block code exists yet. The bootstrap answers true
+  only if it created both policies and a probe, `innerHTML = "<b></b>"` on an element of its own,
+  threw. Otherwise the host writes nothing, opens no binding, and shows "This browser can't run a
+  view that reads env safely." under the view. Which current browsers enforce Trusted Types is not
+  checked [INFERENCE]; the probe decides at run time either way.
 - **Writing the block.** After the handshake the host calls `write` with the start of the block
   document (its doctype, and a head with the frame's style in the theme of that moment), then with
   the block's HTML so far, then with each new part as the answer streams, and calls `close` once
@@ -431,12 +557,19 @@ restricted data. This plan does not change gadget frames.
   `env.A.method()` pipeline through the promise. A view with no `env` attribute gets no `env`
   global. The host refuses a name its tag does not list, checked against the names in the
   Workshop's own parse of the answer, so code that reaches the port directly gains nothing. It
-  opens each name once with `overseer.connectToChatBinding(chatId, name)`, parses saved JSON, and
-  wraps a Gadget's `rpc` or a connection's session in `createRateLimitedCapability` with the
-  gatekeeper app's limits (8 concurrent calls, 600 a minute, 128 pending, throttled). It disposes
-  every stub it opened, and each limiter, when the session ends: a new handshake, Stop,
-  unmounting, or a reload. A stub that arrives after that is disposed at once. `UiBlockCard` gets
-  the chat's id and an `onOpenBinding` callback from `ChatInterface`, beside `onSendMessage`.
+  opens each name once with `overseer.connectToChatBinding(chatId, name)`, and parses saved JSON.
+  It paces a connection's session with `createRateLimitedCapability` and the gatekeeper app's
+  policy, now one exported constant that `SandboxedGatekeeperApp` uses too: an untrusted frame's
+  connection calls spend the vendor's quota on the connection's account, and a view's code runs
+  again on every mount, for every viewer. A Gadget's `rpc` is not paced, as `GadgetUI` does not
+  pace `connectToGadget`'s stub: one policy per kind of capability. The host disposes every stub
+  it opened, and each limiter, when the session ends: a new handshake, Stop, unmounting, or a
+  reload. A stub that arrives after that is disposed at once. `UiBlockCard` gets the chat's id and
+  an `onOpenBinding` callback from `ChatInterface`, beside `onSendMessage`.
+- **A limiter's dispose ends it.** `createRateLimitedCapability`'s `dispose` becomes terminal: it
+  rejects every queued call, refuses new ones, and a call already in flight neither drains the
+  queue nor arms the resume timer when it finishes. `SandboxedGatekeeperApp`, the configurator and
+  views all get the fix.
 - **Reconnect.** A view with `env` holds kernel stubs, which die with the kernel session. When
   `ChatInterface` gets a new overseer stub, a view with `env` remounts its frame, so its code runs
   again with new stubs. A view without `env` holds no kernel stub, and stays as it is.
@@ -512,7 +645,10 @@ restricted data. This plan does not change gadget frames.
   in with `textContent`, and SVG with `createElementNS`; and that code that runs on load must
   only read, and no code may poll or call in a loop.
 - `executeCode`'s description gains the arm's sentence: "The code can also save data on `env` for
-  a view in your answer and for later code, as in `env.SALES = rows` (see "Live views")."
+  a view in your answer and for later code, as in `env.SALES = rows` (see "Live views")." A
+  spawned agent's prompt is `SPAWNER_SYSTEM_PROMPT`, which has no "Live views" section, so
+  `SPAWNED_EXECUTE_CODE_TOOL_DESCRIPTION` gains: "The code can also save JSON data on `env` for
+  later code, as in `env.SALES = rows`; each run's output says what it saved."
 
 ### Evals
 
@@ -591,7 +727,17 @@ restricted data. This plan does not change gadget frames.
   its answer.
 - **Saving straight to storage from `executeCodeMode`.** The benchmark's arm did. A save then
   outlives a step that crashes before its barrier, and needs its own check for a chat deleted while
-  the code ran. The step buffer gives both for free (see "A save lands with its step").
+  the code ran. The step's buffer and barrier give both (see "A save lands with its step").
+- **A side table of saved names (`chatEnv`), apart from the chat's bindings.** The first version of
+  this plan. It made a second name scope: `chatScopeNames`, `prepareChatBindings`, `isNameInScope`
+  and `executeCodeMode` each needed a patch to see saved names, an alias needed a kind of its own
+  and a rule for an alias of an alias, compaction checkpoints did not carry the names, and
+  `describeBinding` did not know them. Main's `chatScopeNames` says why one scope matters: "Every
+  name is stamped on its message when it is claimed, so this is a plain scan."
+- **Payloads keyed by sequence.** See "Keyed by name, not by sequence".
+- **`delete env.NAME` removing a name.** A removed name would leave entries behind in checkpoints
+  and in replay, which would need a removal stamp and a removal case in every fold, for a way to
+  free room that `env.NAME = null` already gives.
 - **A frame `env` with one getter per listed name.** The frame would need the names before the
   block's code runs, and the host's check is the boundary anyway.
 - **Retargeting a view's stubs on reconnect, as `GadgetUI` does.** One forwarding target per name.
@@ -602,16 +748,19 @@ restricted data. This plan does not change gadget frames.
 Five commits, so the kernel and shared lines read apart from the frontend and the evals:
 
 1. **This plan.**
-2. **Kernel: saving env.** The harness's capture, `executeCodeMode`'s decisions, the step buffer
-   and `commitAgentStep`'s `envSaves`, the `chatEnv` collection and its sweep in `deleteChat`, and
-   saved names in the scope's name checks.
+2. **Shared and kernel: saving env.** The `data` binding kind and its case in every reader of the
+   binding map, `chatSavedData` and its sweep in `deleteChat`, the `savedEnv` stamp on the
+   `executeCode` tool call, the harness's capture, `executeCodeMode`'s checks, the turn's
+   `pendingSavedData`, and `commitAgentStep`'s `savedData`.
 3. **Shared and kernel: a view's env.** The parser's `env` attribute, `ViewBinding` and
-   `Overseer.connectToChatBinding`, `resolveChatBinding` over `foldChatBindings`, and the `view`
-   caller in `observerContextOf`, `#associateAction` and `submitAction`.
-4. **Frontend.** The host's `binding`, the frame's `env`, the Trusted Types CSP for views with
+   `Overseer.connectToChatBinding`, `foldChatBindings` and `resolveChatBinding`, the root stub's
+   wrapper, and the `view` caller in `observerContextOf`, `ApprovalQueueImpl`, `#associateAction`
+   and `submitAction`.
+4. **Frontend.** The limiter's terminal `dispose` and its shared policy constant, then the host's
+   `binding`, the frame's `env`, the Trusted Types CSP and its fail-closed probe for views with
    `env`, the card's binding callback, and the remount on a new overseer.
-5. **Instructions and evals.** The "Live views" section and `executeCode`'s sentence, the eval
-   host's `env`, and the chat-views eval's view of saved data.
+5. **Instructions and evals.** The "Live views" section and `executeCode`'s sentences, the eval
+   host's `env` and Trusted Types CSP, and the chat-views eval's view of saved data.
 
 ## Verification
 
@@ -623,24 +772,41 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
   ends while the answer streams, the same blocks at the same index among the segments at every cut
   of a streamed answer once they close, an open block at every cut at the index it closes at, with
   HTML that starts the HTML it closes with, and a long code example of tag lines parsed in linear
-  time. New: an `env` attribute's names, trimmed and counted once; a bad name, `then` and a 33rd
-  name as errors; other attributes and single quotes as prose; the names on an open block from
-  the moment its opening line ends.
-- Kernel tests (`workshop-backend/__tests__/chat-env.test.ts`, in workerd), each red before its
-  change: `executeCode` saves JSON data and an alias and says so; a later run gets them, an alias
-  as its binding's own object; a name the chat binds, `GIT`, `then`, a function, a `Date`, a cycle,
-  257 KiB and a 17th name are refused and the rest saved; a run that throws saves nothing; a
-  second call in the same step sees the first's saves; a scripted turn (pi's faux provider, as in
-  `spawned-agent-tools.test.ts`) stores its saves with its step, and a turn whose chat is deleted
-  mid-call stores none; `deleteChat` removes the chat's saves; a binding the kernel names later
-  avoids a saved name.
-- Kernel tests (`workshop-backend/__tests__/view-bindings.test.ts`): `connectToChatBinding` returns
-  saved data, an alias's Gadget, a Gadget and a connection session; refuses model, spawner,
-  auto-provided and pre-`creationSpec` connections, worktrees, callback values and unknown names;
-  a chat binding beats a saved name; `UseOverseerInterface` denies it; a view's observation is
-  attributed to its chat and not posted to it; a view's action is posted to the chat and never
-  auto-approves, even under an auto-approval rule; a collaborator's stub counts toward their
-  session until disposed.
+  time. New: an `env` attribute's names, trimmed and counted once; a bad name and `then` as
+  errors; other attributes and single quotes as prose; the names on an open block from the moment
+  its opening line ends.
+- Kernel tests (`workshop-backend/__tests__/saved-env.test.ts`, in workerd), each red before its
+  change:
+  - a run saves JSON data and another name of a binding, says so, and stamps both on its record;
+    a later run gets them, the other name as its binding's own object; `describeBinding`
+    describes a data name;
+  - a change in place (`env.FOOD.weeks.push(5)`) is saved; `delete env.FOOD` leaves it saved and
+    says so; saving a data name again replaces its JSON and keeps its place in the map;
+  - a name the chat binds, a pending connection request's name, `GIT`, another name saved again,
+    a function, a `Date`, a cycle, a value over 1 MiB and a save past 4 MiB are refused, and the
+    rest saved; a run that throws saves nothing; a harness result whose JSON does not parse is
+    refused;
+  - in one step, a second call sees the first's save; a save after a `createGadget` of the same
+    name is refused, and a `createGadget` after a save of it is refused;
+  - a scripted turn (pi's faux provider, as in `spawned-agent-tools.test.ts`) stores its JSON with
+    its step; a turn whose chat is deleted mid-call stores none; replay and a compaction
+    checkpoint rebuild the same map as the turn; `chatScopeNames` and `prepareChatBindings` give a
+    later binding another name; `deleteChat` removes the chat's `chatSavedData`;
+  - a spawned agent's run saves for its own chat.
+- Kernel tests (`workshop-backend/__tests__/view-bindings.test.ts`):
+  - `connectToChatBinding` returns saved data, another name's Gadget, a Gadget and a connection
+    session; refuses model, spawner, auto-provided and pre-`creationSpec` connections, worktrees,
+    callback arguments and unknown names; `UseOverseerInterface` denies it;
+  - a view's observation is attributed to its chat and not posted to it; a view's action is posted
+    to the chat and never auto-approves, even under an auto-approval rule;
+  - `bindHook` through a view's session is refused and stores no hook and no action;
+  - once the chat is deleted, `connectToChatBinding` is refused, and an open view's Gadget call,
+    connection read and connection write are refused, the write before any record is stored;
+  - a collaborator's root stub counts toward their session until disposed;
+  - after the Gadget's code changes and its facet restarts, the view's next Gadget call rejects,
+    and a new `connectToChatBinding` works.
+- Limiter tests (`rateLimitedCapability.test.ts`): after `dispose`, queued calls reject, new calls
+  are refused, and a call in flight finishes without draining the queue or arming the timer.
 - Frontend tests (`UiBlockCard.test.tsx`): a message from the frame never calls the kernel
   until Send; Dismiss; Send held while the composer is held; a failed Send; a Send that finishes
   after a newer message; a second handshake gets the whole block in a new session and clears the
@@ -652,11 +818,14 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
 - A browser test (`uiBlockFrame.browser.test.tsx`) runs the real frame in Chromium: the calls a
   view's code makes with `agent.send` are released, though the code ignores their results. New:
   a view with `env` reads saved data and calls a fake Gadget's method; `innerHTML` throws in it and
-  not in a view without `env`.
+  not in a view without `env`; data holding `<img src=x onerror=…>` written with `innerHTML`
+  throws and runs nothing, and with `textContent` shows as text.
 - Frontend tests (`UiBlockCard.test.tsx`), new: the host refuses a name its tag does not list,
-  opens each name once, paces a stub's calls, and disposes every stub on a new handshake, Stop and
-  unmount; a stub that arrives after the session ends is disposed; a new overseer remounts a view
-  with `env` and leaves one without it.
+  opens each name once, paces a connection's calls and not a Gadget's, and disposes every stub and
+  limiter on a new handshake, Stop and unmount; a stub that arrives after the session ends is
+  disposed; a frame whose `trustedTypes()` answers false, or throws, gets no `write` and no
+  binding and shows its error; a Gadget call that fails after a facet restart shows its error, and
+  Run opens the name again; a new overseer remounts a view with `env` and leaves one without it.
 - `ChatInterface` tests: an open block in a streaming answer is already a frame, and the closed
   block and then the stored message keep that frame element; a stored message whose text differs
   from the streamed text mounts its view fresh.
@@ -684,21 +853,29 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
 - **A view written before its save.** If the agent writes the view in the response that saves
   its data, the view's code runs before the save lands, its read fails, and the error shows under
   it. It keeps that error until it mounts again: on scroll, Stop and Run, or a reload.
-- **A binding that takes a saved name.** The name checks above should leave no path for this.
-  Should a binding take a saved name anyway, it wins, and views that read the saved name get the
-  binding.
-- **An alias whose Gadget is gone.** A chat never drops a binding, but its Gadget can be deleted.
-  `executeCode` then has no such name, as it has none for the binding, and a view gets "not a
-  binding in this chat".
 - **A Gadget's code change.** A view's Gadget stub dies when the Gadget's facet restarts, as on an
   agent's edit. The view's next call fails and shows its error. Mounting again opens a new stub.
-- **Compaction.** Saves live beside the transcript, so compaction keeps them, but its summary may
-  drop which names exist. `Object.keys(env)` in `executeCode` lists them.
-- **Revert.** Reverting a chat's code changes leaves its saves.
-- **Spawned agents.** A spawned agent's chat saves the same way, for its own chat only.
+- **A deleted chat with a view open.** Its next lookup and every call through its stubs are
+  refused (see "The root stub" and "The view caller").
+- **Scratch assignments.** Code that uses `env` as scratch space, as in `env.rows = await …`, now
+  saves JSON values and prints a line for each name, in every chat, spawned agents' included.
+  A value that is not JSON prints why it was not saved, and nothing else changes for the run.
+- **Compaction.** Data names are entries of the checkpoint's `chatBindings`, so compaction keeps
+  them, and `executeCode` sees them, though the summary may not mention them.
+- **Revert.** Reverting a chat's code changes leaves its saves, as it leaves what was said.
 - **Who did it.** The `view` caller carries no user, as the `user` caller carries none, so the
   action log does not say whose view read or wrote.
-- **Returned stubs.** A stub a connection's method returns, such as a cursor, is not paced.
+- **Returned stubs.** Stubs a connection call returns, such as a GitHub cursor, are not counted
+  toward the viewer's session, as on main for the sessions `GatekeeperClientImpl.openSession`
+  returns and for what a `getGadgetFacet` stub returns: only the root is leased. Their reads and
+  writes still go through the view's queue, with its checks. They are not paced either.
+- **Rollback.** A build without this feature reads the new stored shapes as follows. Its
+  `getEnvForAgent` skips a `data` entry (its `default` does nothing at run time), its
+  `describeBinding` returns the entry itself rather than a description, and its replay, scans and
+  folds ignore `savedEnv` stamps, so saved names drop out of scope and can be taken. Its
+  `observerContextOf` maps a `view` caller to nothing, so the ledger refuses such a call: it fails
+  closed. Its `deleteChat` leaves `chatSavedData` records behind. Rolling forward, a name a
+  rollback build bound first keeps its binding, and replay skips the later save of it.
 - **A running agent.** Send while the agent runs steers that turn, as a typed message does.
 - **An answer that is never stored.** A stopped or failed model request stores nothing, so its
   views go away with its text. A retried request runs its views again.
@@ -714,9 +891,13 @@ Five commits, so the kernel and shared lines read apart from the frontend and th
 - **WebRTC.** No CSP directive in any shipping browser covers `RTCPeerConnection`, so a view's code
   can reach STUN and TURN servers, as gadget UI frames can (`browser-export.ts` records the same
   gap). Deleting the `RTC*` globals in the bootstrap does not hold: measured 2026-10-30 in
-  Chromium 156, a `srcdoc` child frame gets a fresh `RTCPeerConnection`. The fix belongs to both
-  frame kinds at once. A view that reads restricted data through a connection can send it out this
-  way. A gadget UI frame that reads it through its Gadget can too, and can also open a popup.
+  Chromium 156, a `srcdoc` child frame gets a fresh `RTCPeerConnection`. The fix belongs to every
+  frame kind at once. This holds for views with and without `env`. A view without `env` can carry
+  restricted data out today: the agent writes the values it read into the view's code, and nothing
+  on main gates a view on `containsRestrictedData`. A gadget UI frame can too, and can also open a
+  popup. A view with `env` adds no channel and no authority: its connection works on the account
+  the agent's `executeCode` uses. A review on 2026-11-11 asked to block `env` views until WebRTC is
+  closed; that was declined for these reasons.
 
 ## Open questions
 
