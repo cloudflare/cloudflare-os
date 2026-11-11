@@ -7,6 +7,7 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
+    "generate:openapi": "gatekeeper-openapi-schema https://raw.githubusercontent.com/PagerDuty/api-schema/30efceb0dde7c2520fe80c7e86c003a4c1b6db4c/reference/REST/openapiv3.json --out src/openapi --group-by tag --operations openapi-operations.txt --omit-header Accept --omit-header Content-Type --omit-header From --writable id --patch openapi-patch.json",
     "test:run": "vp run -F @gadgets/pagerduty-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts"
   },
   "dependencies": {

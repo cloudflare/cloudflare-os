@@ -182,6 +182,25 @@ a no; any other failure fails the check. An answer is reused for 15 minutes if i
 seconds if it denied, so a lost role or team membership goes unnoticed for up to 15 minutes. See
 `docs/observers.md`.
 
+## REST types
+
+Every REST call goes through typed clients (`@gadgets/gatekeeper-kit/http`) whose paths, path and
+query parameters, and request bodies come from PagerDuty's OpenAPI description, pinned by commit in
+the `generate:openapi` script, for the operations `openapi-operations.txt` lists. The schemas are
+generated into `src/openapi/`; after changing the list, the patch or the pinned commit, regenerate
+and commit the output:
+
+```sh
+pnpm --filter @gadgets/pagerduty-gatekeeper generate:openapi
+```
+
+Replies keep the gatekeeper's own types (the `Wire*` types in `pagerduty-normalize.ts`), named
+per operation by the `Replies` table in `pagerduty-api.ts`: the description leaves nearly every
+reply field optional, every object's `id` included. The script drops the `Accept`, `Content-Type`
+and `From` headers the transport sends itself, keeps `id` in request references although the
+description marks it read-only, and applies `openapi-patch.json`, where each operation says what
+it corrects in the description.
+
 ## Limitations
 
 - **Reconnect once a year.** PagerDuty caps a Scoped OAuth grant at one year.

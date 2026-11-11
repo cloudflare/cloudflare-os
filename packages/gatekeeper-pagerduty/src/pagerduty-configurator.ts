@@ -8,8 +8,12 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { isCredentialsExpired, type CredentialSource } from "@gadgets/gatekeeper-kit/credentials";
+import type { IncidentsApi } from "./openapi/incidents";
+import type { ServicesApi } from "./openapi/services";
+import type { TeamsApi } from "./openapi/teams";
 import {
-  PagerDutyApi, chainedPage, isDenial, listing, scheduleListings, type OffsetSource, type Query,
+  PagerDutyApi, chainedPage, isDenial, listing, scheduleListings, type OffsetSource, type QueryOf,
+  type ScheduleFilters,
 } from "./pagerduty-api";
 import { RECONNECT_MESSAGE, accountSource, accountStub, type Identity, type PublicGrant } from "./pagerduty-credentials";
 import { webHost } from "./pagerduty-env";
@@ -39,7 +43,7 @@ function parseRef(ref: string): Ref {
   return { kind: match[1] as ObjectKind, id: match[2]! };
 }
 
-const OPEN_STATUSES = ["triggered", "acknowledged"];
+const OPEN_STATUSES = ["triggered", "acknowledged"] as const;
 
 const shortDate = (iso: string) => new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 
@@ -70,12 +74,18 @@ function incidentNode(wire: WireIncident): PagerDutyNode {
   };
 }
 
-const teams = (query: Query) => listing("/teams", "teams", query, teamNode);
-const services = (query: Query) => listing("/services", "services", { sort_by: "name", ...query }, serviceNode);
-const schedules = (query: Query) => scheduleListings(query, scheduleNode);
+const teams = (query: QueryOf<TeamsApi, "/teams">) => listing(
+  (api, page) => api.rest.teams.get("/teams", { query: { ...query, ...page } }), reply => reply.teams, teamNode);
+const services = (query: QueryOf<ServicesApi, "/services">) => listing(
+  (api, page) => api.rest.services.get("/services", { query: { sort_by: "name", ...query, ...page } }),
+  reply => reply.services, serviceNode);
+const schedules = (query: ScheduleFilters) => scheduleListings(query, scheduleNode);
 // PagerDuty lists the last month by default; an incident open longer is still open.
-const incidents = (query: Query) => listing("/incidents", "incidents",
-  { statuses: OPEN_STATUSES, date_range: "all", sort_by: "created_at:desc", ...query }, incidentNode);
+const incidents = (query: QueryOf<IncidentsApi, "/incidents">) => listing(
+  (api, page) => api.rest.incidents.get("/incidents", {
+    query: { "statuses[]": OPEN_STATUSES, date_range: "all", sort_by: "created_at:desc", ...query, ...page },
+  }),
+  reply => reply.incidents, incidentNode);
 
 /** The PagerDuty configurator frame's capability. */
 @validateRpc()
@@ -113,8 +123,9 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
     if (parent !== undefined) {
       const ref = parseRef(parent);
       switch (ref.kind) {
-        case "team": return await this.#chain([services({ team_ids: [ref.id] }), ...schedules({ team_ids: [ref.id] })], cursor);
-        case "service": return await this.#chain([incidents({ service_ids: [ref.id] })], cursor);
+        case "team":
+          return await this.#chain([services({ "team_ids[]": [ref.id] }), ...schedules({ "team_ids[]": [ref.id] })], cursor);
+        case "service": return await this.#chain([incidents({ "service_ids[]": [ref.id] })], cursor);
         default: throw new Error("That can't be opened.");
       }
     }
@@ -174,14 +185,16 @@ export class PagerDutyConfiguratorUI extends RpcTarget implements PagerDutyConfi
   async #node(ref: Ref): Promise<PagerDutyNode | null> {
     if (ref.kind === "account") return { ref: "account", kind: "account", title: webHost(await this.#me()) };
     try {
-      const body = await this.#read(api => api.object(ref.kind, ref.id));
-      const wire = body[ref.kind];
-      if (typeof wire !== "object" || wire === null) throw new Error(`PagerDuty's ${ref.kind} was malformed.`);
+      const { id } = ref;
       switch (ref.kind) {
-        case "team": return teamNode(wire as WireTeam);
-        case "service": return serviceNode(wire as WireService);
-        case "incident": return incidentNode(wire as WireIncident);
-        case "schedule": return scheduleNode(wire as WireSchedule);
+        case "team":
+          return teamNode((await this.#read(api => api.rest.teams.get("/teams/{id}", { path: { id } }))).team);
+        case "service":
+          return serviceNode((await this.#read(api => api.rest.services.get("/services/{id}", { path: { id } }))).service);
+        case "incident":
+          return incidentNode((await this.#read(api => api.rest.incidents.get("/incidents/{id}", { path: { id } }))).incident);
+        case "schedule":
+          return scheduleNode((await this.#read(api => api.schedule(id))).schedule);
       }
     } catch (error) {
       if (isDenial(error)) return null;
