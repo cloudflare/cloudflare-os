@@ -1,0 +1,30 @@
+[
+  {
+    "chatId": 0,
+    "sequence": 0,
+    "timestamp": {
+      "$date": "2026-10-28T14:37:25.915Z"
+    },
+    "author": {
+      "type": "user",
+      "name": "dev",
+      "id": "dev"
+    },
+    "type": "message",
+    "message": "First message from startConversation"
+  },
+  {
+    "chatId": 0,
+    "sequence": 1,
+    "timestamp": {
+      "$date": "2026-10-28T14:37:25.971Z"
+    },
+    "author": {
+      "type": "user",
+      "name": "dev",
+      "id": "dev"
+    },
+    "type": "message",
+    "message": "Second message, sent live"
+  }
+]

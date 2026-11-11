@@ -12,12 +12,12 @@ export const useChatSession = (workspaceId: string, chatId: number): {
   send: ChatSession['send']
   loadEarlier: ChatSession['loadEarlier']
 } => {
-  const { api } = useApi()
+  const { api, user } = useApi()
   const refreshWorkspaces = useRefreshWorkspaces()
   // Creating a session is free; it connects only when started, in the effect below. When a turn
   // ends the workspace's title and activity may have changed, so the sidebar reloads.
   const [session] = useState(
-    () => new ChatSession(() => api.openWorkspace(workspaceId), chatId, { onTurnEnded: refreshWorkspaces }),
+    () => new ChatSession(() => api.openWorkspace(workspaceId), chatId, { viewerId: user.id, onTurnEnded: refreshWorkspaces }),
   )
 
   useEffect(() => {

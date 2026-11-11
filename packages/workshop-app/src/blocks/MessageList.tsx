@@ -8,7 +8,7 @@ import { useScrollFadeFallback } from './useScrollFadeFallback'
 const VIRTUAL_PAGE_SIZE = 50
 
 export type MessageListProps = {
-  /** Ascending, stable sequence IDs. Expansion/interaction state must outlive virtual page mounts. */
+  /** In conversation order. Expansion/interaction state must outlive virtual page mounts. */
   messages: MessageListItem[]
   /** Live output stays mounted, including while the reader is looking at older pages. */
   children?: ReactNode
@@ -32,7 +32,7 @@ export const MessageList = ({ messages, children, history, streaming }: MessageL
   const pages = useMemo(() => {
     const result: MessageListPage[] = []
     for (const item of messages) {
-      const id = Math.floor(item.id / VIRTUAL_PAGE_SIZE)
+      const id = Math.floor(item.sequence / VIRTUAL_PAGE_SIZE)
       if (result.at(-1)?.id !== id) result.push({ id, items: [] })
       result.at(-1)!.items.push(item)
     }

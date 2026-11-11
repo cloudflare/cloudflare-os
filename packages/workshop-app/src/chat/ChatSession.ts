@@ -1,6 +1,6 @@
 import type { RpcStub } from 'capnweb'
 import type { AiChatMessage, AiChatMetadata, AiChatStreamEvent, Overseer } from '@gadgets/workshop-shared/api'
-import { toChatItems, type ChatItem } from './chatItems'
+import { EMPTY_FEED, toChatFeed, type ArtefactItem, type ChatFeed, type ChatItem, type ToolsItem } from './chatItems'
 import { ChatSubscriber, type ChatEvents } from './ChatSubscriber'
 
 export type ChatSnapshot =
@@ -9,8 +9,17 @@ export type ChatSnapshot =
       status: 'ready'
       /** Undefined until the chat's metadata arrives, which can be after its messages. */
       title: string | undefined
-      /** The committed messages, as items. The array is unchanged while only streaming text moves. */
+      /**
+       * The committed messages as rows, without the open turn's tail (`openTools`, `pinned`). The
+       * array is unchanged while only streaming text moves.
+       */
       items: ChatItem[]
+      /** The run of tool calls the open turn ends with; what streams next may continue it. */
+      openTools: ToolsItem | undefined
+      /** What the open turn produced or asks for, shown below everything else in it. */
+      pinned: ArtefactItem[]
+      /** Messages sent while the agent works that it has not read yet, oldest first. */
+      queuedSteers: QueuedSteer[]
       /** The assistant's reply so far, while it is still being written; empty otherwise. */
       streamingText: string
       /** An assistant turn is running and has not started writing text. False until the metadata arrives. */
@@ -36,7 +45,12 @@ export type ChatOverseer = Pick<Overseer, 'listChats' | 'getChatHistory' | 'send
   ): ReturnType<Overseer['subscribeToChat']>
 } & Disposable
 
+/** A message waiting for the running agent to read it. */
+export type QueuedSteer = { text: string; from?: string }
+
 export type ChatSessionOptions = {
+  /** The signed-in user's id, so their own actions read as theirs. */
+  viewerId?: string
   /** Called when an assistant turn ends, e.g. to refresh lists that show the workspace. */
   onTurnEnded?: () => void
 }
@@ -72,7 +86,9 @@ export class ChatSession {
   // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
   #liveMetadata = false
   #messages = new Map<number, AiChatMessage>()
-  #items: ChatItem[] = []
+  #feed: ChatFeed = EMPTY_FEED
+  #compactedTo: number | undefined
+  #queuedSteers: QueuedSteer[] = []
   #streaming = ''
   #generation: number | undefined
   #sendError: string | undefined
@@ -153,7 +169,7 @@ export class ChatSession {
         if (!this.#messages.has(message.sequence)) this.#messages.set(message.sequence, message)
       }
       this.#nextBeforeSequence = page.nextBeforeSequence
-      this.#rebuildItems()
+      this.#rebuildFeed()
     } catch (error) {
       if (run !== this.#run) return
       this.#historyError = messageOf(error)
@@ -163,12 +179,14 @@ export class ChatSession {
     this.#publishReady()
   }
 
-  #rebuildItems() {
+  #rebuildFeed() {
     // An update to an older, unloaded card must not expose a disconnected fragment of history.
     // Retain its newer value until paging reaches it, then prefer it over the fetched snapshot.
-    this.#items = toChatItems([...this.#messages.values()]
+    const loaded = [...this.#messages.values()]
       .filter((message) => this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)
-      .toSorted((a, b) => a.sequence - b.sequence))
+      .toSorted((a, b) => a.sequence - b.sequence)
+    const context = { viewerId: this.options.viewerId, agentActive: this.#agentActive, compactedTo: this.#compactedTo }
+    this.#feed = toChatFeed(loaded, context, this.#feed)
   }
 
   #reset() {
@@ -178,7 +196,9 @@ export class ChatSession {
     this.#agentActive = false
     this.#liveMetadata = false
     this.#messages = new Map()
-    this.#items = []
+    this.#feed = EMPTY_FEED
+    this.#compactedTo = undefined
+    this.#queuedSteers = []
     this.#streaming = ''
     this.#generation = undefined
     this.#sendError = undefined
@@ -203,7 +223,10 @@ export class ChatSession {
     this.#publish({
       status: 'ready',
       title: this.#title,
-      items: this.#items,
+      items: this.#feed.items,
+      openTools: this.#feed.openTools,
+      pinned: this.#feed.pinned,
+      queuedSteers: this.#queuedSteers,
       streamingText: this.#streaming,
       thinking: this.#agentActive && this.#streaming === '',
       sendError: this.#sendError,
@@ -236,8 +259,8 @@ export class ChatSession {
       if (run !== this.#run) return
 
       this.#messages = new Map(history.messages.map((message) => [message.sequence, message]))
-      this.#items = toChatItems(history.messages)
       this.#nextBeforeSequence = history.nextBeforeSequence
+      this.#rebuildFeed()
       this.#loaded = true
       for (const apply of this.#early.splice(0)) apply()
       this.#publishReady()
@@ -279,8 +302,7 @@ export class ChatSession {
     // The list may have been read before a live update that arrived first; live updates win, as
     // they do over fetched history.
     if (this.#liveMetadata) return
-    this.#title = chat.title
-    this.#agentActive = chat.activeAgent !== undefined
+    this.#readMetadata(chat)
     this.#publishReady()
   }
 
@@ -289,8 +311,7 @@ export class ChatSession {
     if (chat.id !== this.chatId) return
     this.#liveMetadata = true
     const wasActive = this.#agentActive
-    this.#title = chat.title
-    this.#agentActive = chat.activeAgent !== undefined
+    this.#readMetadata(chat)
     const turnEnded = wasActive && !this.#agentActive
     // Whatever was still streaming is not going to become a message.
     if (turnEnded) this.#streaming = ''
@@ -298,11 +319,24 @@ export class ChatSession {
     if (turnEnded) this.options.onTurnEnded?.()
   }
 
+  #readMetadata(chat: AiChatMetadata) {
+    this.#title = chat.title
+    this.#agentActive = chat.activeAgent !== undefined
+    this.#compactedTo = chat.compactedTo
+    const { viewerId } = this.options
+    this.#queuedSteers = (chat.queuedSteers ?? []).map(({ text, author }) => ({
+      text,
+      from: author.id === viewerId ? undefined : author.name,
+    }))
+    // Whether an error can be retried, and where the context was cut, come from the metadata.
+    this.#rebuildFeed()
+  }
+
   #applyMessage(message: AiChatMessage) {
     if (message.chatId !== this.chatId) return
     // Replayed and live delivery can overlap, so a sequence number is stored once.
     this.#messages.set(message.sequence, message)
-    this.#rebuildItems()
+    this.#rebuildFeed()
     // A finished reply replaces the stream; updates to an agent's approval/tool cards do not.
     if (message.type === 'message' && message.author.type === 'agent' &&
       (this.#nextBeforeSequence === undefined || message.sequence >= this.#nextBeforeSequence)) this.#streaming = ''
