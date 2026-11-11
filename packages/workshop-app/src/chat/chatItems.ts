@@ -350,6 +350,23 @@ const toolsItem = (emit: Emit, steps: WorkStep[]): ToolsItem => {
   )
 }
 
+/**
+ * A run of tool calls with the calls still being written added to its end. Without a `group` the
+ * live calls are a run of their own. Its line says what is happening now.
+ */
+export const continueTools = (group: ToolsItem | undefined, live: ToolEntry[]): ToolsItem => ({
+  kind: 'tools',
+  // Nothing durable yet stands behind a run that is only live.
+  id: group?.id ?? -1,
+  // The key a committed run takes from its first call, so opening it survives it being committed.
+  key: group?.key ?? `tools:${live[0].key}`,
+  summary: live.at(-1)!.label,
+  targets: group?.targets ?? [],
+  failed: group?.failed ?? false,
+  running: true,
+  entries: [...(group?.entries ?? []), ...live],
+})
+
 type CreationState = 'pending' | 'merged' | 'reverted'
 
 /**

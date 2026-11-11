@@ -97,6 +97,10 @@ export const toolLabel = (call: AiToolCall): string => {
   return target ? `${verb} ${target}` : verb
 }
 
+const json = (value: unknown) => JSON.stringify(value, null, 2)
+
+const section = (label: string, text: string | undefined): ToolSection[] => (text ? [{ label, text }] : [])
+
 const IN_PROGRESS: Record<ToolName, string> = {
   readFile: 'Reading',
   writeFile: 'Writing',
@@ -125,16 +129,22 @@ const NEEDS_TARGET: Partial<Record<ToolName, string>> = { readFile: 'file', writ
  * first; `target` is the file it names once that has streamed, and `noun` what a `createGadget`
  * is making ("Document").
  */
-export const liveToolLabel = (toolName: ToolName, target?: string, noun?: string): string => {
+export const liveToolLabel = (toolName: ToolName | undefined, target?: string, noun?: string): string => {
+  if (!toolName) return 'Using a tool…'
   if (toolName === 'createGadget' && noun) return `Creating ${noun}…`
   const verb = IN_PROGRESS[toolName] ?? 'Using a tool'
   const object = target ?? NEEDS_TARGET[toolName]
   return `${verb}${object ? ` ${object}` : ''}…`
 }
 
-const json = (value: unknown) => JSON.stringify(value, null, 2)
-
-const section = (label: string, text: string | undefined): ToolSection[] => (text ? [{ label, text }] : [])
+/** A streaming call's detail so far, under the headings its finished detail will have. */
+export const liveToolSections = (
+  { toolName, written, replaced, output }: { toolName?: ToolName; written: string; replaced?: string; output: string },
+): ToolSection[] => [
+  ...section('Replaced', replaced),
+  ...section(toolName === 'writeFile' ? 'Content' : toolName === 'editFile' ? 'With' : 'Code', written),
+  ...section('Output', output),
+]
 
 /** What a call's row shows when opened: only what the label does not already say. */
 export const toolSections = (call: AiToolCall): ToolSection[] => {
