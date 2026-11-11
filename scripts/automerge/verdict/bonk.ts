@@ -8,7 +8,7 @@
 // pull request or a compromised dependency can forge this verdict (accepted 2026-11-10). The Opus
 // verdict, which no pull request code reaches, is the other one the gate requires.
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -195,4 +195,7 @@ async function main(command: string | undefined): Promise<void> {
   throw new Error(`usage: bonk.ts prepare|verdict (got ${JSON.stringify(command)})`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main(process.argv[2]);
+// Through realpath, since import.meta.url resolves symlinks in the path the script was run by.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  await main(process.argv[2]);
+}

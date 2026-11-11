@@ -160,6 +160,19 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # The verdict scripts run from the base commit, as the Opus job's do, never from the head:
+      # copied out of git objects before any pull request code runs. The pull request's install
+      # below can still reach them, which is the limit stated above the job.
+      - name: Copy the base commit's verdict scripts
+        if: steps.break_glass.outputs.active != 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          mkdir "$RUNNER_TEMP/automerge-judge"
+          git archive "$BASE_SHA" scripts/automerge/verdict |
+            tar -x --strip-components=3 -C "$RUNNER_TEMP/automerge-judge"
+
       - name: Enable Corepack
         if: steps.break_glass.outputs.active != 'true'
         run: corepack enable
@@ -183,7 +196,9 @@ jobs:
       - name: Prepare the review
         id: prompt
         if: steps.break_glass.outputs.active != 'true'
-        run: node scripts/automerge/verdict/bonk.ts prepare
+        # Unquoted on purpose: RUNNER_TEMP has no spaces, and CodeQL's untrusted-checkout query reads a
+        # script path that starts with a quote as a path inside the checkout.
+        run: node $RUNNER_TEMP/automerge-judge/bonk.ts prepare
 
       - name: Run Bonk
         if: steps.break_glass.outputs.active != 'true'
@@ -217,7 +232,7 @@ jobs:
         if: ${{ !cancelled() && steps.break_glass.outputs.active != 'true' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/automerge/verdict/bonk.ts verdict
+        run: node $RUNNER_TEMP/automerge-judge/bonk.ts verdict
 
       - name: Upload the verdict
         if: ${{ !cancelled() && steps.break_glass.outputs.active != 'true' }}

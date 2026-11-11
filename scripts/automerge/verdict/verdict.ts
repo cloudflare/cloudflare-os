@@ -5,7 +5,7 @@
 // backtest.ts runs the same three functions over past pull requests.
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -511,4 +511,7 @@ async function main(command: string | undefined): Promise<void> {
   throw new Error(`usage: verdict.ts prepare|review|finalize (got ${JSON.stringify(command)})`);
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main(process.argv[2]);
+// Through realpath, since import.meta.url resolves symlinks in the path the script was run by.
+if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
+  await main(process.argv[2]);
+}
