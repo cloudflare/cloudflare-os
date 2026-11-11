@@ -730,6 +730,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     return queue;
   }
 
+  async bigQueryDescribe(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+  ): Promise<ResourceDescription> {
+    return await this.#bigQuery(facetName, id, props).describe();
+  }
+
   async openBigQuerySession(
       facetName: string, id: string, props: BigQueryGatekeeperImplProps, queueId: string,
   ): Promise<BigQuerySession> {

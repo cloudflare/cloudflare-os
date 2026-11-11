@@ -13,6 +13,8 @@ const PRUNE_BATCH = 1000;
 // The longest admin filter list() takes.
 const MAX_FILTER_LENGTH = 1000;
 const TOP_LIMIT = 10;
+// A record's method, which stays in the JSON (see the schema below).
+const METHOD = "json_extract(record, '$.method')";
 
 type AuditRow = {
   seq: number;
@@ -41,7 +43,8 @@ type AuditRow = {
  *     record TEXT NOT NULL CHECK (json_valid(record)),
  *     CHECK ((kind = 'workspace') = (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
  *     CHECK ((kind = 'workspace') = (exposed IS NOT NULL))) STRICT;
- *   indexes (at), (admin, seq), (workspace_id, seq), (kind, seq), (exposed, seq)
+ *   indexes (at), (admin, seq), (workspace_id, seq), (kind, seq), (exposed, seq),
+ *     (json_extract(record, '$.method'), seq)
  */
 export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
@@ -65,6 +68,9 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     sql.exec("CREATE INDEX IF NOT EXISTS admin_audit_kind ON admin_audit (kind, seq)");
     // Content reads are expected to be rare, so listing them reads only their rows.
     sql.exec("CREATE INDEX IF NOT EXISTS admin_audit_exposed ON admin_audit (exposed, seq)");
+    // Every record names its method in the JSON. SQLite uses an index on an expression only for a
+    // query that repeats the expression exactly, so list() filters on this same METHOD.
+    sql.exec(`CREATE INDEX IF NOT EXISTS admin_audit_method ON admin_audit (${METHOD}, seq)`);
   }
 
   /** Store one record. Throws when it cannot be stored, which fails the change it records. */
@@ -97,6 +103,10 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     if (query.admin !== undefined) {
       where.push("admin = ?");
       params.push(query.admin);
+    }
+    if (query.method !== undefined) {
+      where.push(`${METHOD} = ?`);
+      params.push(query.method);
     }
     if (query.since !== undefined) {
       let since = query.since.getTime();

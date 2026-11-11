@@ -42,12 +42,13 @@ import {
 } from "./markdown-converter";
 import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
+import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
 import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
   DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, fileSubresourceId, parseFileSubresource,
   requireFileSubresources, SHEETS_SUBRESOURCE_NAMESPACE, SLIDES_SUBRESOURCE_NAMESPACE,
-  type FileSubresource, type NativeFileSubresource,
+  type DriveUnit, type FileSubresource, type NativeFileSubresource,
 } from "./file-subresources";
 import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folder-scope";
 import {
@@ -56,8 +57,8 @@ import {
   requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveListOptions, DrivePdfText, DriveSessionSearchQuery, GoogleDriveFolderSession,
-  GoogleDriveReadSession, GoogleDriveSession,
+  DriveEntry, DriveFileBytes, DriveFileReadOptions, DriveListOptions, DrivePdfText,
+  DriveSessionSearchQuery, GoogleDriveFolderSession, GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
@@ -107,7 +108,7 @@ import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import { Mutex } from "./mutex";
 import {
-  BIGQUERY_HOST, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
+  BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_RESOURCE,
   RESOURCE_BY_KIND,
@@ -489,8 +490,9 @@ type AccountSubresource =
 /**
  * What a subresource a Google gatekeeper asks an account about names: a calendar or its free/busy
  * (see parseCalendarSubresource), a BigQuery dataset, a Gmail mailbox's owner, a Google Chat
- * conversation, its member list or account (see parseChatSubresource), or a Drive file or folder or
- * a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any other ID.
+ * conversation, its member list or account (see parseChatSubresource), or a Drive file, its content
+ * or a folder, or a native Docs, Sheets or Slides file (see parseFileSubresource). Throws for any
+ * other ID.
  */
 function parseAccountSubresource(subresource: string): AccountSubresource {
   switch (parseSubresourceId(subresource).namespace) {
@@ -709,7 +711,7 @@ export class UserAccount extends DurableObject<Env> {
     let datasets = new Map<string, BigQueryDatasetRef>();
     let owners = new Map<string, string>();
     let conversations = new Map<string, { spaceName: string; members: boolean }>();
-    let driveUnits = new Map<string, DriveObservation>();
+    let driveUnits = new Map<string, DriveUnit>();
     let nativeFiles = new Map<string, NativeFileSubresource>();
     for (let [subresource, resource] of parsed) {
       if (resource.kind === "bigQueryDataset") datasets.set(subresource, resource.dataset);
@@ -718,7 +720,9 @@ export class UserAccount extends DurableObject<Env> {
       } else if (resource.kind === "chatSpace" || resource.kind === "chatSpaceMembers") {
         conversations.set(subresource,
           { spaceName: resource.spaceName, members: resource.kind === "chatSpaceMembers" });
-      } else if (resource.kind === "file" || resource.kind === "folder") {
+      } else if (
+        resource.kind === "file" || resource.kind === "folder" || resource.kind === "content"
+      ) {
         driveUnits.set(subresource, resource);
       } else if ("calendarId" in resource) {
         (resource.kind === "freeBusy" ? freeBusy : calendars).set(subresource, resource.calendarId);
@@ -1048,6 +1052,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
           scopedProjectId: target.projectId,
           scopedDatasetId: target.datasetId,
           scopedTableId: target.tableId,
+          queryProjectId: target.queryProjectId,
         };
         return {class: this.ctx.exports.BigQueryGatekeeperImpl({props}), resource};
       }
@@ -1206,11 +1211,13 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 //     hasSpreadsheetAccess and hasPresentationAccess do without reusing answers for addObserver,
 //     which still checks the bound file for reads made before they reported it.
 //   - Google Drive — strategy C by file, kernel-checked: reads report each file whose metadata they
-//     return as `drive/file/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each
-//     native file whose content they read as Docs, Sheets or Slides names it.
-//     checkSubresourceAccess checks a file or folder as verifyDriveObservations does (a Drive grant,
-//     then the file visible or the folder listable), which addObserver still uses, asking Drive
-//     every time, for the bound folder or file and the units recorded before reads reported them.
+//     return as `drive/file/<fileId>`, each file whose PDF text or bytes they return as
+//     `drive/content/<fileId>`, each folder they list as `drive/folder/<folderId>`, and each native
+//     file whose content they read as Docs, Sheets or Slides names it. checkSubresourceAccess
+//     checks a file, its content or a folder as verifyDriveObservations does (a Drive grant, then
+//     the file visible, downloadable or the folder listable), which addObserver still uses, asking
+//     Drive every time, for the bound folder or file and the units recorded before reads reported
+//     them.
 //   - Google Calendar — strategy B reporting subresources: every read reports the calendar or
 //     free/busy it returned, checked by checkSubresourceAccess, where a calendar needs the role
 //     hasCalendarWriterAccess also checks for the bound calendar at admission;
@@ -3387,7 +3394,7 @@ export class GoogleDriveGatekeeperImpl
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: folder.name,
-        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, and read PDFs' text with readPdf() in Drive folder "${folder.name}"`,
+        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, PDFs' text with readPdf(), and any other file's bytes with readFile() in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: "GoogleDriveFolderSession",
       };
@@ -3396,7 +3403,7 @@ export class GoogleDriveGatekeeperImpl
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: file.name,
-      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, or with readPdf() a PDF's text, from Drive file "${file.name}"`,
+      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: "GoogleDriveReadSession",
     };
@@ -3437,7 +3444,8 @@ export class GoogleDriveGatekeeperImpl
 
   // Observers: every read reports the Drive units it depends on as subresources (see
   // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
-  // whose metadata it returned, each folder it listed, and each native file whose content it read,
+  // whose metadata it returned, each file whose PDF text or bytes it returned (as content, which
+  // needs leave to download), each folder it listed, and each native file whose content it read,
   // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
   // account binding's empty search, a folder it cannot list, or a file it cannot see) reports `[]`;
   // a folder binding's search reports its folders even when empty. Account-binding invisible-file
@@ -3467,15 +3475,15 @@ export class GoogleDriveGatekeeperImpl
   /**
    * Checks the Drive, Docs, Sheets and Slides subresources this binding's reads report, failing
    * the whole call for any other ID. Each observer's UserAccount answers whether their own account
-   * can see each file, list each folder and open each native file, reusing recent answers (see
-   * UserAccount.checkSubresourceAccess).
+   * can see each file, download each file's content, list each folder and open each native file,
+   * reusing recent answers (see UserAccount.checkSubresourceAccess).
    */
   async verifyObserverAccess(
     observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
     subresources: string[],
   ): Promise<{ allowedObserverIds: string[] }> {
     requireFileSubresources(
-      subresources, ["file", "folder", "document", "spreadsheet", "presentation"]);
+      subresources, ["file", "content", "folder", "document", "spreadsheet", "presentation"]);
     return verifyGoogleSubresourceAccess(observers, subresources);
   }
 }
@@ -3592,9 +3600,18 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
 }
 
 /** The refusal for an account connected before Drive bindings could read file content. */
-const PDF_ACCESS_MISSING =
-  "This Google account was connected before Drive bindings could read file content. Reconnect " +
-  "it in Workshop to read PDFs.";
+function contentAccessMissing(what: string): string {
+  return "This Google account was connected before Drive bindings could read file content. " +
+    `Reconnect it in Workshop to read ${what}.`;
+}
+
+/** A failed file download as a file read reports it. */
+function fileReadError(error: unknown): unknown {
+  if (lacksFileContentAccess(error)) return new Error(contentAccessMissing("Drive files"));
+  // Only a file that shrank since its size was read refuses a range inside that size.
+  if (error instanceof DriveApiRequestError && error.status === 416) return new Error(FILE_CHANGED);
+  return error;
+}
 
 /** Drive RPC session implementation, exported for workerd contract coverage. */
 @validateRpc()
@@ -3692,9 +3709,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let convert = this.#convertPdf;
     if (!convert) throw new Error("PDF reading is not available on this deployment.");
     let converted: DrivePdfText | undefined;
-    return core.nativeRead(id, PDF_MIME_TYPE)(async () => {
+    return core.nativeRead(id, PDF_MIME_TYPE, {content: true})(async () => {
       let download = (await this.#driveApi.openDownload(id).catch((error: unknown) => {
-        throw lacksFileContentAccess(error) ? new Error(PDF_ACCESS_MISSING) : error;
+        throw lacksFileContentAccess(error) ? new Error(contentAccessMissing("PDFs")) : error;
       })).getReader();
       // The checks after this fetch must cover everything the text is converted from, so a
       // conversion that answers before the download has ended is refused.
@@ -3724,6 +3741,56 @@ export class GoogleDriveSessionImpl extends RpcTarget
       await converted?.text.cancel().catch(() => undefined);
       throw error;
     });
+  }
+
+  async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
+    let range = fileReadRange(options);
+    // The stream needs no queue of its own, so this reads through the session's, as readPdf.
+    let core = this.#core;
+    let file = await core.openFile(fileId, "file");
+    let {mimeType, size, modifiedTime} = downloadableFile(file);
+    let {offset} = range;
+    if (offset > size) {
+      throw new Error(
+        `offset ${offset} is past the end of the Drive file, which is ${size} bytes long.`);
+    }
+    let length = Math.min(range.length, size - offset);
+    let opened: ReadableStream<Uint8Array> | undefined;
+    // The fetch ends once Drive begins its answer, with none of it read or held here. A folder
+    // binding's re-proof after it shows the file was still the folder's as that answer began, and
+    // the stream carries only that answer; a move or rewrite later in it is not looked for, on
+    // the understanding (unchecked) that Drive answers a download from one revision. The
+    // re-proof re-reads the file's metadata anyway, so a folder binding also refuses a rewrite
+    // that kept the size: its modification time moved.
+    let download = await core.nativeRead(file.id, mimeType, {
+      content: true,
+      unchanged: current => {
+        if (current.modifiedTime !== file.modifiedTime) throw new Error(FILE_CHANGED);
+      },
+    })(async () => {
+      if (length === 0) return undefined;
+      let answer = await this.#driveApi.downloadRange(file.id, offset, length)
+        .catch((error: unknown) => { throw fileReadError(error); });
+      opened = answer.content;
+      // Another size, or a range that ends inside the file, means bytes from another revision
+      // than the one described.
+      if ((answer.fileSize ?? size) !== size || (answer.length ?? length) < length) {
+        throw new Error(FILE_CHANGED);
+      }
+      return opened;
+    }, () => ({
+      title: "Read file from Google Drive",
+      description: `Read ${length} bytes of Drive file ${file.id}, from byte ${offset}.`,
+    })).catch(async (error: unknown) => {
+      // A read refused after Drive began its answer still holds the download open.
+      await opened?.cancel().catch(() => undefined);
+      throw error;
+    });
+    // Its idle wait starts only now, so one spent on authorization is not counted against it.
+    let content = download
+      ? exactRange(download, length)
+      : new ReadableStream<Uint8Array>({ start: controller => controller.close() });
+    return {mimeType, size, modifiedTime, offset, length, content};
   }
 
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {
@@ -3815,6 +3882,13 @@ export type BigQueryGatekeeperImplProps = {
   scopedProjectId?: string;
   scopedDatasetId?: string;
   scopedTableId?: string;
+  /**
+   * The project query jobs run in and are billed to, when it is not the scoped project: what a
+   * dataset shared from a project the account holds no role in needs, since BigQuery requires
+   * `bigquery.jobs.create` wherever the job runs. It changes nothing about which tables a query
+   * may read, which the scope above decides.
+   */
+  queryProjectId?: string;
 };
 
 @validateRpc()
@@ -3832,19 +3906,22 @@ export class BigQueryGatekeeperImpl
   }
 
   async describe(): Promise<ResourceDescription> {
-    let { scopedProjectId: p, scopedDatasetId: d, scopedTableId: t } = this.ctx.props;
+    let { scopedProjectId: p, scopedDatasetId: d, scopedTableId: t, queryProjectId } = this.ctx.props;
     let path = p ? (d ? (t ? `/${p}/${d}/${t}` : `/${p}/${d}`) : `/${p}`) : "";
     let label = t ? `${p}.${d}.${t}` : d ? `${p}.${d}` : p ?? null;
+    let url = new URL(`https://${BIGQUERY_HOST}${path}`);
+    if (queryProjectId) url.searchParams.set(BIGQUERY_QUERY_PROJECT_PARAM, queryProjectId);
+    let snippet = t
+        ? `Query BigQuery table "${p}.${d}.${t}" (read-only)`
+        : d
+            ? `Query BigQuery dataset "${p}.${d}" (read-only)`
+            : p
+                ? `Query BigQuery datasets in project "${p}" (read-only)`
+                : "Browse BigQuery projects and datasets (read-only)";
     return {
-      url: `https://${BIGQUERY_HOST}${path}`,
+      url: url.toString(),
       title: label ? `BigQuery (${label})` : "BigQuery",
-      snippet: t
-          ? `Query BigQuery table "${p}.${d}.${t}" (read-only)`
-          : d
-              ? `Query BigQuery dataset "${p}.${d}" (read-only)`
-              : p
-                  ? `Query BigQuery datasets in project "${p}" (read-only)`
-                  : "Browse BigQuery projects and datasets (read-only)",
+      snippet: queryProjectId ? `${snippet}; query jobs run in "${queryProjectId}"` : snippet,
       suggestedBindingName: "BIGQUERY",
       tsType: "BigQuerySession",
     };
@@ -3866,6 +3943,7 @@ export class BigQueryGatekeeperImpl
       this.ctx.props.scopedProjectId,
       this.ctx.props.scopedDatasetId,
       this.ctx.props.scopedTableId,
+      this.ctx.props.queryProjectId,
     );
   }
 
@@ -3933,6 +4011,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   #scopedProjectId?: string;
   #scopedDatasetId?: string;
   #scopedTableId?: string;
+  #queryProjectId?: string;
 
   constructor(
     api: BigQueryApi,
@@ -3940,6 +4019,7 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     scopedProjectId: string | undefined,
     scopedDatasetId: string | undefined,
     scopedTableId: string | undefined,
+    queryProjectId?: string,
   ) {
     super();
     this.#api = api;
@@ -3947,11 +4027,12 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     this.#scopedProjectId = scopedProjectId;
     this.#scopedDatasetId = scopedDatasetId;
     this.#scopedTableId = scopedTableId;
+    this.#queryProjectId = queryProjectId;
   }
 
   // Authorize an observation, reporting as subresources the datasets whose data it reveals, which
-  // the Workshop checks every collaborator who can see the read against. Use for every read; pass
-  // an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
+  // the Workshop checks collaborators against. Use for every read; pass an empty `datasets` for
+  // reads that reveal none (e.g. echoing the scoped project id).
   async #authorizeDatasets(
     datasets: { projectId: string; datasetId: string }[],
     description: ObservationDescription,
@@ -3975,14 +4056,40 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
 
   // --- helpers -----------------------------------------------------------
 
-  // Pick the project to bill the query against. When scoped, the scoped project is used and
-  // the caller cannot override. When unscoped, the caller must declare a default project via
-  // `defaultDataset.projectId` (BigQuery requires a billing project on every query).
+  // The project every query job runs in and is billed to: the connection's query project when it
+  // names one, else the scoped project. Fixed by the connection, never by the caller. BigQuery
+  // requires `bigquery.jobs.create` here, which a dataset shared from another project does not
+  // grant, so a connection to such a dataset names a project of the account's own.
   #billingProject(): string {
+    if (this.#queryProjectId) return this.#queryProjectId;
     if (this.#scopedProjectId) return this.#scopedProjectId;
     throw new Error(
       "This session is not scoped to a project. Connect to a specific BigQuery project " +
       "(e.g. https://bigquery.googleapis.com/my-project) to run queries.");
+  }
+
+  // The default dataset lives in the data's project, whichever project the job runs in, so an
+  // unqualified table name resolves where the connection points.
+  #jobDefaultDataset(datasetId: string | undefined): { projectId: string; datasetId: string } | undefined {
+    return datasetId ? { projectId: this.#scopedProjectId!, datasetId } : undefined;
+  }
+
+  // BigQuery's answer when the account cannot create jobs in the billing project, said in terms of
+  // what the user can do about it; the gatekeeper's own cross-project checks never reach BigQuery.
+  async #asJob<T>(billingProject: string, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof BigQueryApiError && error.status === 403 &&
+          error.reason === "accessDenied" && error.message.includes("bigquery.jobs.create")) {
+        throw new Error(
+          `This Google account cannot run query jobs in project "${billingProject}" (it lacks ` +
+          "bigquery.jobs.create there), which BigQuery requires of every query, including a dry run. " +
+          "Reconnect this BigQuery resource choosing a project of yours to run queries in; it can " +
+          "still read this data, and that project is billed instead.", { cause: error });
+      }
+      throw error;
+    }
   }
 
   #effectiveDataset(opts: { defaultDataset?: string } | undefined): string | undefined {
@@ -4084,9 +4191,9 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     // (BigQuery doesn't bill for them), and the response includes `referencedTables`
     // parsed by Google's own SQL engine — the only reliable way to check scope on
     // arbitrary SQL.
-    let estimate = await this.#api.dryRun(billingProject, sql, {
-      defaultDataset, params: opts?.params,
-    });
+    let estimate = await this.#asJob(billingProject, () => this.#api.dryRun(billingProject, sql, {
+      defaultDataset: this.#jobDefaultDataset(defaultDataset), params: opts?.params,
+    }));
     this.#assertReadOnlyEstimate(estimate);
     this.#checkScopedTables(estimate.referencedTables);
     if (estimate.bytesProcessed > maxBytes) {
@@ -4110,13 +4217,11 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
       containsRestrictedData: true,
     });
 
-    let result = await this.#api.query(billingProject, sql, {
+    return this.#asJob(billingProject, () => this.#api.query(billingProject, sql, {
       ...opts,
-      defaultDataset,
+      defaultDataset: this.#jobDefaultDataset(defaultDataset),
       maximumBytesBilled: maxBytes,
-    });
-
-    return result;
+    }));
   }
 
   async dryRun(
@@ -4126,9 +4231,9 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
     let billingProject = this.#billingProject();
     let defaultDataset = this.#effectiveDataset(opts);
 
-    let estimate = await this.#api.dryRun(billingProject, sql, {
-      defaultDataset, params: opts?.params,
-    });
+    let estimate = await this.#asJob(billingProject, () => this.#api.dryRun(billingProject, sql, {
+      defaultDataset: this.#jobDefaultDataset(defaultDataset), params: opts?.params,
+    }));
     this.#assertReadOnlyEstimate(estimate);
     this.#checkScopedTables(estimate.referencedTables);
 

@@ -5,7 +5,9 @@ import { openAgentSession } from "../src/agent-session.js";
 import { ADMIN_USERNAME, startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter, type RoutedScriptedModel } from "../src/mock-model.js";
 import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
-import { connect, signUp } from "../src/rpc-client.js";
+import {
+  connect, RpcTarget, signUp, stubFor, waitFor, withOwnerWorkspace, WorkpieceRecorder,
+} from "../src/rpc-client.js";
 
 // The trusted-host list is deployment-wide, so this file owns its harness and runs serially.
 let harness: Harness;
@@ -144,6 +146,75 @@ it("fetches a URL the trusted hosts refuse once the user approves it, if the adm
       .toEqual(expect.objectContaining({ url: approved, state: "pending" }));
     expect(webRequests.filter(url => url === approved)).toHaveLength(1);
     expect(webRequests).not.toContain(denied);
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
+  }
+});
+
+interface Researcher extends RpcTarget {
+  research(): Promise<void>;
+}
+
+const RESEARCHER_SERVER = `import { DurableObject } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async research() {
+    await this.env.SPAWNER.spawn("Research", "Fetch the page.");
+  }
+}
+`;
+
+it("asks the user before a sub-agent fetches a URL the trusted hosts refuse", async () => {
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const url = `https://${OTHER_HOST}/sub-agent`;
+    const model = models.script([
+      READ_RESTRICTED,
+      { toolCalls: [
+        { id: "create", name: "createGadget", arguments: { title: "Researcher", bindingName: "RESEARCHER" } },
+        { id: "write", name: "writeFile",
+          arguments: { workpiece: "RESEARCHER", filename: "server.js", content: RESEARCHER_SERVER } },
+      ] },
+      { text: "Built." },
+      // The sub-agent's steps: it asks, and once approved, fetches.
+      fetchStep("ask", url),
+      fetchStep("fetch-approved", url),
+      { text: "Fetched." },
+    ]);
+    await using session = await openSession(model);
+    const built = await session.runTurn("Read the restricted value, then build the researcher.");
+    expect(built.outcome).toEqual({ status: "completed" });
+    await session.acceptChanges();
+
+    await withOwnerWorkspace(harness.url, session.username, async ws => {
+      const workpieces = new WorkpieceRecorder();
+      using workpiecesStub = stubFor(workpieces);
+      using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+      await workpieces.loaded;
+      const summary = [...workpieces.summaries.values()]
+          .find(entry => entry.type === "gadget" && entry.title === "Researcher");
+      if (summary === undefined) throw new Error("The Researcher gadget was not created");
+
+      using spawner = await ws.newAgentSpawnerGatekeeper({
+        displayName: "Research agents", modelId: SCRIPTED_MODEL_ID, env: {},
+      });
+      using gadget = await ws.getGadget(summary.id);
+      await gadget.bind("SPAWNER", await spawner.getId());
+      using researcher = await gadget.connectToGadget() as RpcStub<Researcher>;
+      await researcher.research();
+
+      const chat = await waitFor("the sub-agent's chat", async () =>
+        (await ws.listChats()).find(({ spawnerName }) => spawnerName === "Research agents") ?? null);
+      const asked = await ws.waitForAgent(chat.id);
+      if (asked?.type !== "webFetchRequest") {
+        throw new Error(`The sub-agent's turn ended on ${asked?.type}, not a web fetch request`);
+      }
+      expect(asked).toMatchObject({ url, state: "pending" });
+      expect(webRequests).not.toContain(url);
+
+      await ws.approveWebFetchRequest(asked.requestId);
+      expect(await ws.waitForAgent(chat.id)).toMatchObject({ type: "message", message: "Fetched." });
+      expect(webRequests).toContain(url);
+    });
   } finally {
     await admin.setRestrictedWebFetchApprovals(false);
   }

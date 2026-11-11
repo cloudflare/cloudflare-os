@@ -30,6 +30,10 @@ const DECK = "deck-1";
 const LOCKED = "locked-folder";
 /** A folder its viewers can list. */
 const OPEN = "open-folder";
+/** A file its viewers can see but not download. */
+const RESTRICTED = "restricted-file";
+/** A file its viewers can download. */
+const REPORT = "report-file";
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
@@ -39,7 +43,7 @@ type FileNode = {
   name: string;
   mimeType: string;
   trashed: boolean;
-  capabilities?: {canListChildren: boolean};
+  capabilities?: {canListChildren?: boolean; canDownload?: boolean};
 };
 
 type Observation = {
@@ -120,6 +124,12 @@ const FILES: Record<string, FileNode> = {
   },
   [OPEN]: {
     id: OPEN, name: "Open", mimeType: FOLDER_MIME, trashed: false, capabilities: {canListChildren: true},
+  },
+  [RESTRICTED]: {
+    id: RESTRICTED, name: "Restricted", mimeType: "text/csv", trashed: false, capabilities: {canDownload: false},
+  },
+  [REPORT]: {
+    id: REPORT, name: "Report", mimeType: "text/csv", trashed: false, capabilities: {canDownload: true},
   },
 };
 
@@ -333,6 +343,17 @@ describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
     expect(await drive.verify(observers, [`drive/folder/${LOCKED}`])).toEqual({allowedObserverIds: []});
     expect(await drive.verify(observers, [`drive/file/${LOCKED}`])).toEqual({allowedObserverIds: ["viewer"]});
     expect(await drive.verify(observers, [`drive/folder/${OPEN}`, `drive/file/${LOCKED}`]))
+      .toEqual({allowedObserverIds: ["viewer"]});
+  });
+
+  it("allows a Drive file's content only to an account that may download it, though it can see it", async () => {
+    const drive = workspaceHarness(workspaceBackend(), "drive", {scope: {kind: "account"}});
+    const observers = [
+      {id: "viewer", userObjectId: await drive.observer("viewer-token", [RESTRICTED, REPORT], {drive: true})},
+    ];
+    expect(await drive.verify(observers, [`drive/content/${RESTRICTED}`])).toEqual({allowedObserverIds: []});
+    expect(await drive.verify(observers, [`drive/file/${RESTRICTED}`])).toEqual({allowedObserverIds: ["viewer"]});
+    expect(await drive.verify(observers, [`drive/content/${REPORT}`, `drive/file/${RESTRICTED}`]))
       .toEqual({allowedObserverIds: ["viewer"]});
   });
 

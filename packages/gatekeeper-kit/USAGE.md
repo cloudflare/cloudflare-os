@@ -774,6 +774,11 @@ restrictions. Throw when access is indeterminate (expired credentials or a provi
 The helper stores no verifier or observer-ID verdict: each call uses the supplied verifier,
 since an observer may reconnect with another account.
 
+Size the oracle for up to **10,000 subresource IDs per verifier call**, not the legacy tracker's
+`maxTrackedCollections`. Split IDs to fit the provider's per-request caps while staying within the
+Worker's subrequest limit. A shared tracker oracle must also handle all persisted history: lowering
+`maxTrackedCollections` does not shrink previously recorded sets.
+
 An existing `ObservationGate` converts a read with
 `gate.authorize(description, { kind: "subresources", ids })`. This scope only reports the IDs:
 it prepares no legacy state, exclusions, or fences. New code needs no gate: its constructor demands
@@ -791,7 +796,7 @@ is a no-op), which existing code comments may still cite.
 | Strategy | Report | Verify |
 | --- | --- | --- |
 | **A — Private-only / account identity** | The actual mailbox/account or other private resource. | Deny collaborators, or require the same provider identity if that is the intended policy. |
-| **B — One access-controlled unit** | The resource whose information is disclosed, including an empty answer about it. | Access sufficient for all disclosed fields, not merely existence or public metadata. |
+| **B — One access-controlled unit** | The resource whose information is actually disclosed. For empty answers, apply the disclosure-based guidance below. | Access sufficient for all disclosed fields, not merely existence or public metadata. |
 | **C — Multiple access-controlled units** | Every independently required resource: returned items, query sources, and required containers or memberships. | All requirements, not any one of them; a parent ID does not imply child access. |
 | **D — Unrestricted disclosure** | `[]`. | No provider-side access requirement applies to this answer. |
 
@@ -811,18 +816,18 @@ Design these variants explicitly:
   authorize the owner's personal list, membership, or caller-specific metadata. Report an account
   requirement too when those are private. Distinguish the operator's configurator API from data
   returned to a Gadget session; a picker method is not automatically a session observation pattern.
-- **Derived results.** Report the source footprint, not just objects present in output rows. Obtain
-  dependencies from trustworthy provider analysis where available; request text alone may not reveal
-  everything a query reads. Deduplicate, but retain dependencies for zero-row and cached answers.
-  A source-free result is D only if it has no other restricted input or context.
+- **Derived results.** Report access requirements for information actually disclosed, including
+  counts, aggregates, and metadata, not just objects named in output rows. Preserve those
+  requirements on cache hits. A source-free result is D only if it has no other restricted input
+  or context.
 - **Hierarchy and compound requirements.** A folder/list may control enumeration while individual
-  children have independent ACLs. Report both where needed, including the container for an empty
-  listing. Coarsen to one parent only with a provider guarantee that the observer can see everything
-  disclosed; neither URL nesting nor common ownership proves that.
-- **Empty and failed results.** "No rows" is not "no dependencies": absence, filtered membership,
-  counts, and aggregates can be restricted. Conversely, a failed item lookup that discloses no
-  protected information need not report that item. Decide from the complete returned answer,
-  including errors and auxiliary metadata; do not mechanically add or remove a parent ID.
+  children have independent ACLs. Report both where needed. Coarsen to one parent only with a
+  provider guarantee that the observer can see everything disclosed; neither URL nesting nor
+  common ownership proves that.
+- **Empty and failed results.** There is no blanket requirement to retain every consulted source
+  for an empty result. Choose requirements from information actually disclosed, including errors
+  and auxiliary metadata. An empty or failed lookup that discloses no protected information need
+  not report that item.
 - **Stable identity.** Resolve or reject `me`, `primary`, personal `root`, mutable names, and similar
   account-relative selectors before reporting them. Canonical escaping is not identity resolution.
   Re-check the same real resource with the observer's account; never resolve an owner's alias to
@@ -933,11 +938,14 @@ Several details prevent overly broad recipes:
   spaces have individual ACLs; Drive discovery reports each returned file instead.
   Inspect the entire response, including personal read state and membership, rather than deciding
   that every list is private or that every list is covered by returned-item IDs.
-- **Permission strength still needs review.** Drive PDF reads use `drive/file/<id>`, whose
-  oracle establishes metadata visibility, not download permission. That does not prove equivalent
-  PDF-content access. BigQuery's metadata-only probe has the analogous table-data limitation
+- **Permission strength still needs review.** A metadata oracle does not prove content access.
+  Drive's `drive/file/<id>` establishes metadata visibility, not download permission, so reads
+  that return a file's bytes or PDF text report `drive/content/<id>` instead, which an observer
+  passes only if their own account may download the file; PDF text read before that unit existed
+  keeps the metadata-only check. BigQuery's metadata-only probe still has the analogous
+  table-data limitation
   ([review discussion](https://github.com/cloudflare/cloudflare-os/pull/983#issuecomment-6619477652)).
-  Do not treat either implementation as a permission-complete content-access template.
+  Do not treat a metadata oracle as a permission-complete content-access template.
 - **Authorization machinery is reusable; migration quirks are not.** Calendar uses a typed read
   helper, Gmail decorates a shared queue with its mailbox requirement, and the Chat account queue
   enforces its account policy across child reads and hooks. Reuse those ways to avoid omissions.
@@ -1046,10 +1054,10 @@ Every outgoing page names all requirements for that disclosure, even if earlier 
 Do not drop a membership or parent-resource requirement just because `projects.length === 0`.
 
 A refusal holds the outgoing page, so the retry re-offers its rows with no further provider
-fetch: a page the provider capped short cannot grow between the refusal and the retry, which would
-hand the approver something larger than what they refused. An empty page from a spent window is the
-exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the walk
-on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
+fetch. A page the provider capped short takes in none of its later rows before the retry, since
+they would hand the approver more than what they refused. An empty page from a spent window is
+the exception — nothing was disclosed, so the retry opens a fresh window rather than pinning the
+walk on a failure that may have been transient. A refused zero-result answer is likewise re-offered.
 `ArrayCursor` takes no callback: the session that assembled its items authorized them as one read.
 
 That hold is also why a walk pinned to a connection must re-check its authority in
@@ -1071,22 +1079,38 @@ return new TokenCursor<Project>({
 });
 ```
 
-### Merge simulated rows with `inject`
+### Merge simulated rows with `inject`, and change provider rows with `overlay`
 
 Rows the gatekeeper's own simulation adds to a listing — a branch a queued push will create, a
 commit queued for push — go in `inject: { items, compare, revalidate?, identity? }` rather than a
 wrapper cursor, so they share the walk's serialization, fetch bound and refusal hold. Each injected
-row is served before the first provider row `compare` places it at-or-before, and the rest after the
-last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
-made only of them is not authorized, so do not inject anything the provider supplied. Their
+row is served before the first provider row `compare` places it at-or-before, and the rest after
+the last page. They are not provider rows: they never reach `authorizePage`'s `items`, and a page
+made only of them is not authorized. Set `authorize` when they do carry provider data, such as a
+row re-read because a pending change moves it into the listing: each then reaches `authorizePage`
+with its page's provider rows, and a page made only of them is authorized like any other. Their
 position still says a little — an injected row served first means no fetched provider row sorts
 ahead of it — so a listing whose order is itself sensitive authorizes its observation up front.
 `revalidate` re-reads a row when it is served (`null` drops it), since a page may be drained long
 after the cursor was built. `identity` drops a later row of either source whose identity was
 already served, such as the provider's copy of a create that landed mid-walk; an injected row's
 identity is re-read at each check, so a temporary id that became the provider's still matches.
-A refused page's retry re-reads its injected rows and offers no provider row the refusal did not
-cover; one a dropped injected row had hidden leads the next page instead, with the rows after it.
+
+The cursor's own `overlay` does for provider rows what `revalidate` does for injected ones. They
+sit in the buffer as fetched until served, so apply the simulation's changes to them there rather
+than in the fetch callback, and a change staged or discarded mid-walk shows in rows served later.
+It returns the rows to serve in a row's place, so it can drop a row or split it, as a pending
+override splits the on-call shift it covers. A row's pieces share a page, which can leave one
+short or, for a row that splits into more than `pageSize`, long.
+Both run synchronously, so state they read that needs a provider call or storage, such as whether a
+row's container is still within the binding, is re-read in `refresh`, which every `next()`
+awaits before building its page; refreshing it in the fetch callback would leave buffered rows
+judged by whatever the last fetch saw.
+
+A refused page's retry re-reads its rows, so `overlay` may make more or fewer of them, and offers
+no provider row the refusal did not cover; one a dropped injected row had hidden, one `overlay`
+had dropped, or one the page no longer has room for leads the next page instead, with the rows
+after it.
 
 ### Existing-code migration only: refusal and failure
 
@@ -1268,6 +1292,17 @@ shallow-info.
   stateless and classifies nothing as grant death on its own, so a refresh still goes through
   `CredentialCoordinator` via `oauthRefresh`, and the two modules share no state with
   `PreviewOAuth`.
+- A hook driver keeps its enabled hooks in a `HookRegistry` over its own `ctx.storage.kv`, which
+  reserves `reg:`, `caps:`, `msg:` and `queue:` there. Every method but `run()` is synchronous, so
+  `set()` can share a turn with the driver's own records, where neither a disconnect nor the alarm
+  comes between them. A throw does not undo a Durable Object's earlier writes, and `set()` makes
+  two: call it inside `ctx.storage.transactionSync()`, along with any records that belong with it,
+  so a registration that can't be stored leaves the hook as it was. The driver owns the alarm:
+  bring it forward after `enqueue()`, call `run()` from it, then set it for the earliest of
+  `nextDue()` and its own deadlines. `remove()` only forgets the hook, so provider teardown stays
+  in the driver's `unregister`. Delete a hook's records directly only when clearing all of the
+  driver's storage: on their own, its queued messages outlive them and are delivered if the hook
+  is enabled again.
 - Every callback the kit invokes must throw display-safe errors. `discardMint`, the rejection heal,
   and the expiry notification all log what they catch, so a thrown token, header, or response body
   lands in the deployment's logs.

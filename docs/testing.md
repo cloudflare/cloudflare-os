@@ -30,15 +30,18 @@ seeding credentials and counters. Advancing from the wall clock can cross midnig
 reset the budget; test that rollover separately from cache expiry or limit enforcement.
 
 Workshop's browser tests need Chromium installed once with
-`pnpm --filter @gadgets/workshop-frontend exec playwright install chromium`.
-Run them separately with `pnpm --filter @gadgets/workshop-frontend test:run:browser`.
+`pnpm --filter @gadgets/workshop-frontend exec playwright install chromium` (CI adds
+`--with-deps` for the system libraries). Run them separately with
+`pnpm --filter @gadgets/workshop-frontend test:run:browser`. The `workshop-evals` unit tests run
+views in that Chromium too, through Playwright, so they need the same install.
 
 ## Watchdog policy
 
 Shared test tasks use `scripts/with-timeout.ts`: 60 seconds without output and 600 seconds total.
-Import-heavy backend unit tests use a 120-second idle allowance. These process-level watchdogs are
-separate from Vitest's per-test limits and Linux Container execution deadlines. Google test
-projects allow 15 seconds per test.
+Import-heavy backend unit tests use a 120-second idle allowance, and the `workshop-evals` unit tests
+a 240-second one: `evals/chat-views.test.ts` reports only when it ends, and took 114 seconds on
+CI on 2026-11-09. These process-level watchdogs are separate from Vitest's per-test limits and
+Linux Container execution deadlines. Google test projects allow 15 seconds per test.
 
 For a slow container or CI runner, explicitly override both bounds rather than changing local
 defaults:

@@ -30,6 +30,10 @@ type Observation = {
 
 /** What the fake BigQuery answers with, which tests set. */
 type BigQueryBackendState = {
+  /** Every query job or dry run, with the project it ran in and the default dataset it was given. */
+  jobs: Array<{projectId: string; kind: "dryRun" | "query"; defaultDataset?: {projectId: string; datasetId: string}}>;
+  /** Projects the owner's token cannot create jobs in, refused as BigQuery refuses them. */
+  noJobsIn: string[];
   /** The tables every dry run reports. */
   referencedTables: TableRef[];
   /** The datasets every project lists. */
@@ -57,13 +61,22 @@ type BigQueryBackend = {
  */
 function bigQueryBackend(): BigQueryBackend {
   const state: BigQueryBackendState = {
-    referencedTables: [], datasets: [], access: new Map(), refusals: new Map(), lookups: [],
+    jobs: [], noJobsIn: [], referencedTables: [], datasets: [], access: new Map(), refusals: new Map(), lookups: [],
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
     const token = new Headers(init.headers).get("Authorization")?.replace(/^Bearer /, "") ?? "";
     // /bigquery/v2/projects/<project>/...
     const [projectId, ...rest] = url.pathname.split("/").slice(4).map(decodeURIComponent);
+    if (method === "POST" && (rest[0] === "jobs" || rest[0] === "queries")) {
+      const body = JSON.parse(init.body as string);
+      const kind = rest[0] === "jobs" ? "dryRun" : "query";
+      state.jobs.push({projectId, kind, defaultDataset: (kind === "dryRun" ? body.configuration.query : body).defaultDataset});
+      if (state.noJobsIn.includes(projectId)) {
+        return json({error: {code: 403, message: `Access Denied: Project ${projectId}: User does not have ` +
+          `bigquery.jobs.create permission in project ${projectId}.`, errors: [{reason: "accessDenied"}]}}, 403);
+      }
+    }
     if (method === "POST" && rest[0] === "jobs") {
       return json({
         status: {state: "DONE"},
@@ -132,6 +145,7 @@ function bigQueryHarness(
   });
   return {
     session: async () => hook.openBigQuerySession(facetName, id, await props, queueId),
+    describe: async () => hook.bigQueryDescribe(facetName, id, await props),
     /** An observer's account, which BigQuery lets open `datasets` (each `project/dataset`). */
     observer: (token: string, datasets: string[]): Promise<string> => {
       backend.state.access.set(token, datasets);
@@ -385,5 +399,62 @@ describe("BigQuery addObserver", () => {
     backend.state.refusals.set("analyst-token proj/sales", {status: 403, reason: "rateLimitExceeded"});
 
     await expect(bigQuery.addObserver("analyst", analyst)).rejects.toThrow(/http=403.*rateLimitExceeded/);
+  });
+});
+
+// A dataset shared from a project the account holds no role in: BigQuery lets the account read it
+// but not create jobs there, so the connection names a project of the account's own to run them in.
+describe("BigQuery query project", () => {
+  const shared = {scopedProjectId: "theirs", scopedDatasetId: "events", queryProjectId: "mine"};
+
+  it("runs every job in the query project, with the default dataset still in the data project", async () => {
+    const backend = bigQueryBackend();
+    backend.state.noJobsIn = ["theirs"];
+    backend.state.referencedTables = [{projectId: "theirs", datasetId: "events", tableId: "clicks"}];
+    const bigQuery = bigQueryHarness(backend, shared);
+    using session = await bigQuery.session();
+    expect(await session.query("SELECT * FROM clicks")).toMatchObject({rows: [{n: "1"}]});
+    await session.dryRun("SELECT * FROM clicks");
+
+    const defaultDataset = {projectId: "theirs", datasetId: "events"};
+    expect(backend.state.jobs).toEqual([
+      {projectId: "mine", kind: "dryRun", defaultDataset},
+      {projectId: "mine", kind: "query", defaultDataset},
+      {projectId: "mine", kind: "dryRun", defaultDataset},
+    ]);
+    // What was read is the shared dataset, whichever project ran the job.
+    const events = ["bigquery/project/theirs/dataset/events"];
+    expect(await bigQuery.reported()).toEqual([events, events]);
+    expect(await session.getProject()).toEqual({projectId: "theirs"});
+  });
+
+  it("keeps the data scope: the query project's own tables are out of reach", async () => {
+    const backend = bigQueryBackend();
+    backend.state.referencedTables = [{projectId: "mine", datasetId: "private", tableId: "salaries"}];
+    const bigQuery = bigQueryHarness(backend, shared);
+    using session = await bigQuery.session();
+    await expect(Promise.resolve(session.query("SELECT * FROM `mine.private.salaries`")))
+      .rejects.toThrow('references project "mine" but this connection is scoped to "theirs"');
+    await expect(Promise.resolve(session.listTables("private", "mine"))).rejects.toThrow("scoped to");
+    expect(await bigQuery.reported()).toEqual([]);
+  });
+
+  it("says what to do when the account cannot create jobs where they run", async () => {
+    const backend = bigQueryBackend();
+    backend.state.noJobsIn = ["theirs"];
+    const bigQuery = bigQueryHarness(backend, {scopedProjectId: "theirs", scopedDatasetId: "events"});
+    using session = await bigQuery.session();
+    await expect(Promise.resolve(session.dryRun("SELECT 1")))
+      .rejects.toThrow(/cannot run query jobs in project "theirs".*choosing a project of yours/);
+    expect(await bigQuery.reported()).toEqual([]);
+  });
+
+  it("describes the connection by its data, naming the query project", async () => {
+    const bigQuery = bigQueryHarness(bigQueryBackend(), shared);
+    expect(await bigQuery.describe()).toMatchObject({
+      url: "https://bigquery.googleapis.com/theirs/events?queryProject=mine",
+      title: "BigQuery (theirs.events)",
+      snippet: 'Query BigQuery dataset "theirs.events" (read-only); query jobs run in "mine"',
+    });
   });
 });

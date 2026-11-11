@@ -100,10 +100,10 @@ describe("AdminApiImpl audit log", () => {
     });
     const since = new Date("2026-01-01T00:00:00Z");
     expect(await mint().listAdminAudit({
-      kind: "setting", admin: ADMIN, since, cursor: "next", extra: true,
+      kind: "setting", admin: ADMIN, method: "setSiteName", since, cursor: "next", extra: true,
     } as Parameters<AdminApiImpl["listAdminAudit"]>[0])).toBe(page);
     expect(callsTo("audit", "list")[0]!.args).toStrictEqual([
-      { kind: "setting", admin: ADMIN, since, cursor: "next", limit: 50 },
+      { kind: "setting", admin: ADMIN, method: "setSiteName", since, cursor: "next", limit: 50 },
       120,
     ]);
   });

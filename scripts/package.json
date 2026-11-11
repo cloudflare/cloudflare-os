@@ -41,6 +41,10 @@
       "types": "./worker-config.ts",
       "import": "./worker-config.ts"
     },
+    "./property-runs": {
+      "types": "./property-runs.ts",
+      "import": "./property-runs.ts"
+    },
     "./oxlint-plugin": "./oxlint-plugin.ts"
   },
   "dependencies": {
