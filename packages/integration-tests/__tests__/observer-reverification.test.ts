@@ -189,6 +189,7 @@ describe("observer re-verification", () => {
             expect.objectContaining({
               gatekeeperId: await bound.getId(),
               vendorId: TEST_VENDOR_ID,
+              resourceTypeId: "thing",
               resourceTitle: "Test Thing bound",
               resourceUrl: thingUrl("bound"),
             }),

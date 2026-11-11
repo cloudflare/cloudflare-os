@@ -491,6 +491,8 @@ export type ObserverBindingNeed = {
   resourceTitle: string;
   /** Canonical resource URL, if known, for display. */
   resourceUrl?: string;
+  /** Stable vendor-scoped type ID from the binding; authoritative over URL-based scope selection. */
+  resourceTypeId?: string;
   /**
    * Set only when this binding was already configured but its chosen account failed verification on
    * this attempt (expired credentials, a revoked grant, an upstream outage, or a genuine denial).
