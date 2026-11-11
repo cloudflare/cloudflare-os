@@ -6,6 +6,10 @@ import { describe, it } from "node:test";
 // only reach registry.npmjs.org, so every dependency has to resolve from there.
 const PUBLIC_REGISTRY = "https://registry.npmjs.org/";
 
+// The one exception: @cloudflare/forge, which is not on npm. Like cloudflare/cf, gatekeeper-kit pins
+// a build of Forge's main branch by commit, which pkg.pr.new serves publicly.
+const FORGE_BUILD = /^https:\/\/pkg\.pr\.new\/cloudflare\/forge\/@cloudflare\/forge@[0-9a-f]{40}$/;
+
 const lockfile = readFileSync(new URL("../pnpm-lock.yaml", import.meta.url), "utf8");
 const npmrc = readFileSync(new URL("../.npmrc", import.meta.url), "utf8");
 
@@ -14,6 +18,7 @@ describe("registry policy", () => {
     const offenders = lockfile
       .split("\n")
       .filter((line) => /tarball: (?!https:\/\/registry\.npmjs\.org\/)/.test(line))
+      .filter((line) => !FORGE_BUILD.test(line.match(/tarball: ([^,}\s]+)/)?.[1] ?? ""))
       .map((line) => line.trim());
 
     assert.deepEqual(
