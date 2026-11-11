@@ -118,8 +118,9 @@ export interface WorktreeReplicator extends RpcTarget {
    * docs/worktree-replicas.md for the Git command. Files of any size are accepted.
    *
    * File modes are kept. The call fails if a changed entry is a symlink or a submodule, if
-   * `tree` contains a `.git` entry, or if merging would make a path both a file and a directory;
-   * in that case, take a new snapshot and run the command again. A submission that failed
+   * `tree` adds a `.git` entry or a name some filesystem takes for one (such as `git~1`), or if
+   * merging would make a path both a file and a directory; in that case, take a new snapshot and
+   * run the command again. A submission that failed
    * applied nothing. Submissions to a worktree apply in the order they were made.
    *
    * Run one command at a time per checkout, from `snapshot()` through updating the files after

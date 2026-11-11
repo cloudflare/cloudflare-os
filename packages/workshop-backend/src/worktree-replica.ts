@@ -26,7 +26,9 @@ import type { WorktreeTurnAccess } from "./agent";
 import {
   commitIdentityForAuthor, TreeShapeError, UnreadableContentError, type FileEntry,
 } from "./git-cache";
-import { encodeGitTree, parseGitTree, validateGitOid, type GitTreeEntry } from "./git-codec";
+import {
+  encodeGitTree, isReservedTreeEntryName, parseGitTree, validateGitOid, type GitTreeEntry,
+} from "./git-codec";
 import { threeWayMerge } from "./three-way-merge";
 import { worktreeChanges, type WorktreeSessionHost } from "./worktree-session";
 
@@ -221,11 +223,12 @@ export class WorktreeReplicas {
 
   // The file paths that differ between trees `a` and `b`, descending only into subtrees that
   // differ, and faulting in trees the store lacks, as reads do. A changed symlink or submodule is
-  // refused, as the file tools refuse them, and so is a `.git` entry in `b`. If `packed` is
-  // given, `b` is a submitted tree and `packed` the objects its pack held: each object `b` has
-  // that `a` lacks at the same path must be one of them, or else reachable from `a` (e.g. a file
-  // the command moved). The workspace holds other worktrees' objects too, so a submission
-  // naming one is refused, or it would hand the submitter that object's content.
+  // refused, as the file tools refuse them, and so is a new name in `b` that Git reserves (`.git`
+  // and its aliases). If `packed` is given, `b` is a submitted tree and `packed` the objects its
+  // pack held: each object `b` has that `a` lacks at the same path must be one of them, or else
+  // reachable from `a` (e.g. a file the command moved). The workspace holds other worktrees'
+  // objects too, so a submission naming one is refused, or it would hand the submitter that
+  // object's content.
   async #diff(a: GitOid, b: GitOid, packed?: ReadonlySet<GitOid>)
       : Promise<Map<string, DiffChange>> {
     let submitted = packed !== undefined;
@@ -262,8 +265,11 @@ export class WorktreeReplicas {
         let x = before.get(name), y = after.get(name);
         if (x?.oid === y?.oid && x?.mode === y?.mode) continue;
         let path = prefix + name;
-        if (y !== undefined && name.toLowerCase() === ".git") {
-          throw new Error(`${path}: a worktree can't hold a .git entry.`);
+        // As the tree writer does, only new names are checked: a connected repository's tree may
+        // already hold one that only some filesystems alias to `.git` (say, `git~1`).
+        if (x === undefined && y !== undefined && isReservedTreeEntryName(name)) {
+          throw new Error(`${path}: a worktree can't hold a .git entry, or a name Git reserves ` +
+              `for one (${JSON.stringify(name)}).`);
         }
         for (let entry of [x, y]) {
           if (entry?.mode === "120000" || entry?.mode === "160000") {

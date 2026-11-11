@@ -184,8 +184,10 @@ A worktree's submissions run one at a time. Each one:
    in the pack, or be reachable from the base tree (for example a file the command moved).
    The Git cache holds other worktrees' objects too, so a tree naming one, or a delta against
    one, is refused: it would hand the submitter that object's content. Each submitted tree must be canonical, as Git would write
-   it, which rejects invalid names such as `..`. A `.git` entry is refused, and so is a changed
-   symlink or submodule, as the file tools refuse them.
+   it, which rejects invalid names such as `..`. A new `.git` entry is refused, and so is a new
+   name that macOS or Windows filesystems take for one (`.git` with an invisible character,
+   `git~1`, `.git.`), as the workspace's own tree writer refuses them. So is a changed symlink or
+   submodule, as the file tools refuse them.
 3. **Merges.** If the worktree's files are still the base tree, the result is the submitted
    tree. Otherwise it is a three-way merge on just the paths both sides changed, with the
    base tree as the merge base, the worktree's current files as one side and the submitted files

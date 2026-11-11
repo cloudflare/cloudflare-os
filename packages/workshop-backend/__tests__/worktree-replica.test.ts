@@ -848,14 +848,17 @@ describe("worktree commands", () => {
     expect(await turn(impl, [[read("b.txt")]])).toEqual(["edited\n"]);
   }));
 
-  it("refuses symlinks, .git entries and missing objects", () => withCommands(async (impl, id) => {
+  it("refuses symlinks, .git entries and their aliases, and missing objects", () => withCommands(async (impl, id) => {
     const refused: unknown[] = [];
     runCode(impl, id, {
       command: async (repo, replicator, queue) => {
         const snapshot = await replicator.snapshot(queue);
         for (const command of [await commandResult(impl, snapshot.tree, {"link": {mode: "120000", text: "a.txt"}}),
           packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, ".git/config", "x\n")),
-          packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, "sub/.GIT", "x\n"))]) {
+          packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, "sub/.GIT", "x\n")),
+          // Names that HFS+ (which ignores some invisible characters) or NTFS take for `.git`.
+          ...[".git\u200c/config", "git~1/config", ".git. /config"].map(path =>
+            packedResult(impl, snapshot.tree, treeWithFile(impl, snapshot.tree, path, "x\n")))]) {
           refused.push(await replicator.submit(queue, snapshot.tree, command.tree, command.pack()).catch((error: Error) => error.message));
         }
         const command = await commandResult(impl, snapshot.tree, {"b.txt": "lost\n"});
@@ -872,7 +875,8 @@ describe("worktree commands", () => {
     });
     await turn(impl, [[execute("command")]]);
     expect(refused).toEqual([expect.stringMatching(/symlinks and submodules/), expect.stringMatching(/\.git entry/),
-      expect.stringMatching(/\.git entry/), expect.stringMatching(/neither in its pack nor in its base/),
+      expect.stringMatching(/\.git entry/), ...[".git\u200c", "git~1", ".git. "].map(name =>
+        expect.stringContaining(`name Git reserves for one (${JSON.stringify(name)})`)), expect.stringMatching(/neither in its pack nor in its base/),
       expect.stringMatching(/is malformed/)]);
     expect(pins(impl)).toEqual([]);
   }));
