@@ -21,11 +21,11 @@
   from { margin-top: 0; }
 }
 
-/* A message's details come and go in two steps, by the stage they are in (useDetailsStage.ts
-   times the steps; keep the two in step). They arrive as one line, with the growth, fade and
-   focus of an arriving bubble, and that line then opens to the rest the way a disclosure does
-   (Disclosure.css). Putting them away folds them back to the line, which then closes and fades as
-   a row that leaves does.
+/* A message's details come and go by the stage they are in (useDetailsStage.ts times the steps
+   of going; keep the two in step). They arrive whole, with the growth, fade and focus of an
+   arriving bubble. Putting them away takes two steps: they fold to their first line the way a
+   disclosure closes (Disclosure.css), and the line then closes and fades as a row that leaves
+   does.
 
    All of it is transitions, so a change of mind part of the way turns around from where it is,
    and heights are rows of a grid going between none and all of their content, so nothing is ever
@@ -66,7 +66,7 @@
     opacity 160ms ease-out;
 }
 
-.message-details:not([data-stage='full']) .message-details-more {
+.message-details:is([data-stage='row'], [data-stage='leaving']) .message-details-more {
   grid-template-rows: 0fr;
   opacity: 0;
 }
@@ -88,14 +88,14 @@
     filter 160ms ease-out;
 }
 
-/* Where the line arrives from. Details that are first drawn already open (a row scrolled back
-   to) are in another stage, and are simply there. */
+/* Where they arrive from. Details that are first drawn already open (a row scrolled back to)
+   are in another stage, and are simply there. */
 @starting-style {
-  .message-details[data-stage='row'] {
+  .message-details[data-stage='arriving'] {
     grid-template-rows: 0fr;
   }
 
-  .message-details[data-stage='row'] .message-details-surface {
+  .message-details[data-stage='arriving'] .message-details-surface {
     scale: 0.5;
     border-radius: 21px;
     opacity: 0;

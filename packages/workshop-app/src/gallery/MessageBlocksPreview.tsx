@@ -54,7 +54,7 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, arriving as one line that opens to the rest: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; Details or the chevron puts them away)">
+      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, folding to their first line before they leave: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; Details or the chevron puts them away)">
         <Column>
           <AssistantMessage
             text="I’ll build a personal Jira dashboard."

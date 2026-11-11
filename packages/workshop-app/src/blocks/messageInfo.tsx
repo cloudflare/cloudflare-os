@@ -33,7 +33,7 @@ const Line = ({ icon: LineIcon, name, children }: { icon: Icon; name: string; ch
 
 /**
  * What there is to know about a message, as the two parts a message's details show it in (see
- * `MessageBubble`): the line they arrive as, and what that line then opens to, when there is more.
+ * `MessageBubble`): their first line, and the rest, when there is more.
  */
 export const messageInfo = ({ sender, sentAt, trace }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
   const from = sender && <Line icon={trace ? CpuIcon : UserIcon} name="From">{sender}</Line>

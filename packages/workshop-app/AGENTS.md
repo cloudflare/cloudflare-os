@@ -51,12 +51,12 @@ bubble of its own: as wide as what is in it, up to the limit a message has. The 
 sender and time have their own icon rows, with a divider before the trace when present. The
 viewer's own messages only show the time. Everything in the panel is one text size (`text-sm/5`)
 and its row icons are all `size-4`, centred on their line; every chevron, here and on anything
-else that opens, is `size-3` and bold. The panel comes in two steps (`useDetailsStage`): its
-first line arrives the way a message does, then opens to the rest the way a step does. Putting
-it away is the same backwards: it folds to the line, and the line leaves. Its heights are grid
+else that opens, is `size-3` and bold. The panel arrives whole, the way a message does.
+Putting it away takes two steps (`useDetailsStage`): it folds to its first line the way a step
+closes, and the line then leaves. Its heights are grid
 rows, never measured, so closing cannot make the scroll position jump. It joins the message's
 bubble run with the same 2px spacing and meeting corners. A chevron in its top right corner
-puts it away again, and so does a click elsewhere.
+puts it away again, and so does a click anywhere outside the panel.
 The mascot's room is always kept, so its coming and going moves nothing.
 
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
