@@ -56,13 +56,12 @@ const JOINED = {
 } as const
 
 // Beside the bubble, on the side the row has room, level with its middle. They are there all
-// along and only show while the message is pointed at or one of them has focus, so showing them
-// moves nothing.
-const ACTIONS = (
-  <div className="shrink-0 opacity-0 transition-opacity group-focus-within/message:opacity-100 group-hover/message:opacity-100 motion-reduce:transition-none">
-    <MessageActions />
-  </div>
-)
+// along, so showing them moves nothing, and show while the bubble or the place they are in is
+// pointed at, or one of them has focus; the rest of the row does not bring them up. They touch
+// the bubble (the gap is their own padding), so the pointer crosses to them without leaving both.
+const ACTIONS =
+  'shrink-0 opacity-0 transition-opacity motion-reduce:transition-none ' +
+  'peer-hover/bubble:opacity-100 hover:opacity-100 focus-within:opacity-100'
 
 /**
  * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
@@ -73,12 +72,11 @@ const ACTIONS = (
 export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => (
   <div
     data-role={role}
-    className={cn('group/message flex items-center gap-2', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
+    className={cn('flex items-center', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
   >
-    {role === 'user' && ACTIONS}
     <div
       className={cn(
-        'arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
+        'peer/bubble arrives message-bubble max-w-[min(70%,65ch)] px-5 py-[11px] text-base/5 break-words',
         // It grows in downwards, as the conversation does, from its sender's side.
         role === 'user' ? 'origin-top-right' : 'origin-top-left',
         // A corner tightens gradually when a message joins this one in a run.
@@ -91,6 +89,8 @@ export const MessageBubble = ({ role, children, joins }: MessageBubbleProps) => 
     >
       {children}
     </div>
-    {role === 'assistant' && ACTIONS}
+    {/* After the bubble for both, so each can tell when it is pointed at; the user's are put before it. */}
+    {role === 'user' && <div className={cn(ACTIONS, 'order-first pe-2')}><MessageActions /></div>}
+    {role === 'assistant' && <div className={cn(ACTIONS, 'ps-2')}><MessageActions /></div>}
   </div>
 )
