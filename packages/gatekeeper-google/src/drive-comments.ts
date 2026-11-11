@@ -1,9 +1,15 @@
 /**
- * Approval-backed Drive comments: what each write queues, how it is described, how an approved one
- * is posted, and how a session shows the writes still awaiting a decision.
+ * Approval-backed Drive comments and Google Doc suggestions: what each write queues, how it is
+ * described, how an approved one is posted, and how a session shows the writes still awaiting a
+ * decision.
  *
- * Drive takes no idempotency key for a comment, and an error answer does not prove nothing was
- * posted: Drive applies a write before it checks the response mask. So a send leaves a marker
+ * A comment that quotes a Google Doc, and a suggested edit, go through the Docs API: the Doc is
+ * read again at apply, the quoted text must still occur there exactly once, and the write is sent
+ * on the revision that read saw. Drive lists a comment made that way under the same ID, so replies,
+ * resolves and every look for a posted comment stay on Drive.
+ *
+ * Neither API takes an idempotency key for a comment, and an error answer does not prove nothing
+ * was posted: Drive applies a write before it checks the response mask. So a send leaves a marker
  * before it goes, and an apply that finds one looks for what that send posted before it sends
  * again. The marker outlives its send until the action is settled, so an apply repeated after a
  * send that did post finds it too. Comments do not depend on one another or on the connection
@@ -24,9 +30,17 @@ import {
   COMMENT_WRITE_MAX_MS, type DriveApi, type DriveCommentRecord, type DriveReplyRecord,
   type DriveScopeNode,
 } from "./drive-api";
+import {
+  docsFileInvisible, docsLacksScope, docsWriteFailure, docsWriteInvalid, type DocsRange,
+  type DocsSuggestionRecord, type GoogleDocsApi, type GoogleDocsDocument,
+} from "./docs-api";
+import { locateQuote, selectTab } from "./drive-comment-body";
 import { isDirectChild, readFolderLocation } from "./drive-folder-scope";
 import type { DriveBindingScope } from "./drive-session";
-import type { DriveBindingAccess, DriveComment, DriveCommentReply } from "./drive-types";
+import type {
+  DocSuggestion, DriveBindingAccess, DriveComment, DriveCommentReply,
+} from "./drive-types";
+import { GoogleApiError } from "./google-response";
 import { obsContext } from "./observability";
 import { driveResourceUrl, type DriveAccessLevel } from "./resources";
 
@@ -101,6 +115,11 @@ export async function writeRefusal(gate: DriveWriteGate): Promise<string | undef
 const PENDING_COMMENT_REFUSED =
   "That comment is waiting for approval; reply to it once it is posted.";
 
+/** The refusal for a reply to, or a resolve of, the `pending:` ID of a suggested edit. */
+const PENDING_SUGGESTION_REFUSED =
+  "That pending ID names a suggested edit, which takes no replies here; once it is approved, " +
+  "the Doc's owner answers it in the Doc.";
+
 /** The refusal for a reply to, or a resolve of, a `pending:` ID that names no queued comment. */
 const PENDING_COMMENT_DECIDED =
   "That pending ID names no comment waiting for approval. If its comment was posted, list the " +
@@ -129,6 +148,10 @@ const EDITED_SINCE_QUEUED = "That comment was edited after this was queued. Queu
   "answer the comment as it is now.";
 const NO_LONGER_IN_SCOPE = "That file is no longer in this connection's scope.";
 const CANNOT_COMMENT = "The connected account can no longer comment on that file.";
+const QUOTE_GONE = "The quoted text is no longer in the Doc exactly once, so this can't be " +
+  "attached to it. Queue it again with text the Doc has now.";
+const DOC_CHANGED_WHILE_SENT = "The Google Doc changed while this was being sent, so nothing " +
+  "was posted. Approve it again to place it on the Doc as it is now.";
 
 /** The ID a queued write is shown under until it is posted. */
 const PENDING_PREFIX = "pending:";
@@ -185,8 +208,11 @@ export type CommentTargetPayload = {
 export type DriveCommentActions = {
   createComment: CommentTargetPayload & {
     content: string;
-    /** The body was checked against the file's text as a Google Doc, and may link to a heading of it. */
-    quotesDocument?: true;
+    /**
+     * The Google Doc text the comment is attached to, found exactly once in tab `tabId` when
+     * queued and again at apply, where it is sent through the Docs API anchored to that text.
+     */
+    anchor?: { tabId: string; text: string };
   };
   createReply: CommentTargetPayload & {
     commentId: string;
@@ -200,6 +226,15 @@ export type DriveCommentActions = {
     /** Absent for a resolve without text, which is sent with no content. */
     content?: string;
     parent: CommentParent;
+  };
+  /** A suggestion in a Google Doc: `oldText`, found exactly once in tab `tabId`, replaced. */
+  suggestEdit: CommentTargetPayload & {
+    tabId: string;
+    oldText: string;
+    /** Empty to delete `oldText`. */
+    newText: string;
+    /** Posted as a reply on the suggestion once it is made. */
+    note?: string;
   };
 };
 
@@ -228,10 +263,17 @@ export type DriveCommentQueue = {
 /** A send that may have reached Drive, recorded before it went. */
 export type CommentAttempt = {
   at: number;
-  /** The account's replies already on the comment that look like what this send posts. */
+  /**
+   * The account's replies already on the comment that look like what this send posts, or, for a
+   * suggested edit, the account's suggestions already in the Doc.
+   */
   existing?: string[];
   /** Earlier sends of this write proven to have posted nothing. */
   failedSends?: number;
+  /** A suggested edit's suggestion, once it is known to be made: what remains is its note. */
+  suggestionId?: string;
+  /** When the note's send began, once one has: a retry looks for it before sending again. */
+  noteAt?: number;
 };
 
 /** What applying a Drive comment write needs. */
@@ -239,6 +281,10 @@ export type DriveCommentsHost = {
   api: Pick<DriveApi,
     "getScopeNodes" | "getComment" | "listComments" | "listReplies" | "createComment" |
     "createReply">;
+  /** The Docs API, through which comments that quote a Doc and suggested edits are sent. */
+  docs: Pick<GoogleDocsApi,
+    "getDocumentWithSuggestions" | "getRevisionId" | "insertComment" | "suggest" |
+    "replyToSuggestion">;
   /** The binding's scope, read when an action applies. */
   scope(): DriveBindingScope;
   /** Why this binding cannot make changes now, read when an action applies. */
@@ -294,9 +340,9 @@ export async function commentParent(comment: DriveCommentRecord): Promise<Commen
 export function pendingCommentRefusal(
   commentId: string, pending: readonly JournalEntry<DriveCommentAction>[],
 ): string {
-  let waiting = pending.some(({ id, action }) =>
-    action.kind === "createComment" && `${PENDING_PREFIX}${id}` === commentId);
-  return waiting ? PENDING_COMMENT_REFUSED : PENDING_COMMENT_DECIDED;
+  let named = pending.find(({ id }) => `${PENDING_PREFIX}${id}` === commentId)?.action.kind;
+  return named === "createComment" ? PENDING_COMMENT_REFUSED
+    : named === "suggestEdit" ? PENDING_SUGGESTION_REFUSED : PENDING_COMMENT_DECIDED;
 }
 
 /** Whether `pending` holds a resolve of comment `commentId` on file `fileId`. */
@@ -348,7 +394,19 @@ export function pendingComment(
 ): DriveComment {
   return {
     id: `${PENDING_PREFIX}${id}`, author: PENDING_AUTHOR, text: payload.content,
+    ...(payload.anchor ? { quotedText: payload.anchor.text } : {}),
     createdTime: new Date(payload.queuedAt), resolved: false, replies: [], pending: true,
+  };
+}
+
+/** The queued suggested edit `id` will make, as the session returns it. */
+export function pendingSuggestion(
+  id: number, payload: DriveCommentActions["suggestEdit"],
+): DocSuggestion {
+  let { tabId, oldText, newText, note } = payload;
+  return {
+    id: `${PENDING_PREFIX}${id}`, tabId, oldText, newText, ...(note === undefined ? {} : { note }),
+    createdTime: new Date(payload.queuedAt), pending: true,
   };
 }
 
@@ -369,9 +427,9 @@ export function pendingReply(
 
 /**
  * One page of `fileId`'s comments with this binding's undecided writes for the file: each queued
- * reply or resolve under the comment it answers, and, on the last page, each queued comment.
- * `quotesDocument` says whether the page shows a queued comment whose body was checked against the
- * file's text as a Google Doc.
+ * reply or resolve under the comment it answers, and, on the last page, each queued comment. A
+ * queued suggested edit is not shown: Drive lists no suggestion. `quotesDocument` says whether the
+ * page shows a queued comment that quotes the file as a Google Doc.
  */
 export function overlayPending(
   fileId: string,
@@ -382,8 +440,8 @@ export function overlayPending(
   let mine = pending.filter(({ action }) => action.payload.fileId === fileId);
   let shown = comments.map(comment => {
     let replies = mine.flatMap(({ id, action }) =>
-      action.kind !== "createComment" && action.payload.commentId === comment.id
-        ? [pendingReply(id, action)] : []);
+      (action.kind === "createReply" || action.kind === "resolveComment") &&
+        action.payload.commentId === comment.id ? [pendingReply(id, action)] : []);
     return replies.length ? { ...comment, replies: [...comment.replies, ...replies] } : comment;
   });
   let quotesDocument = false;
@@ -391,7 +449,7 @@ export function overlayPending(
     for (let { id, action } of mine) {
       if (action.kind !== "createComment") continue;
       shown.push(pendingComment(id, action.payload));
-      quotesDocument ||= action.payload.quotesDocument === true;
+      quotesDocument ||= action.payload.anchor !== undefined;
     }
   }
   return { comments: shown, quotesDocument };
@@ -432,7 +490,7 @@ async function requireStillAllowed(
   let file = await scopedFile(host, action.payload);
   if (!file) throw new ActionApplyError(NO_LONGER_IN_SCOPE);
   if (file.canComment !== true) throw new ActionApplyError(CANNOT_COMMENT);
-  if (action.kind === "createComment") return undefined;
+  if (action.kind === "createComment" || action.kind === "suggestEdit") return undefined;
   let comment = await readLiveComment(host.api, action.payload.fileId, action.payload.commentId);
   if (!comment) throw new ActionApplyError(COMMENT_NOT_FOUND);
   // The approval showed this comment, and the write answers all of it. Only its text is compared:
@@ -500,6 +558,7 @@ function looksSent(
 async function findPosted(
   host: DriveCommentsHost, action: DriveCommentAction, attempt: CommentAttempt,
 ): Promise<string | undefined> {
+  if (action.kind === "suggestEdit") return findSuggestion(host, action.payload, attempt);
   let from = attempt.at - CLOCK_SKEW_MS;
   let until = attempt.at + RECONCILE_WINDOW_MS + CLOCK_SKEW_MS;
   let around = (item: DriveCommentRecord | DriveReplyRecord) =>
@@ -508,6 +567,7 @@ async function findPosted(
   let candidates: (DriveCommentRecord | DriveReplyRecord)[];
   try {
     if (action.kind === "createComment") {
+      // Drive lists a comment made through Docs under the same ID, with the content as sent.
       // Inclusive, and a comment is modified no earlier than it was created.
       let startModifiedTime = new Date(from).toISOString();
       candidates = (await readAll(async pageToken => {
@@ -542,6 +602,152 @@ async function findPosted(
   return candidates[0]?.id;
 }
 
+/** What a suggested edit's suggestion sums up as, in Google's words. */
+export function suggestionSummary(payload: DriveCommentActions["suggestEdit"]): string {
+  return payload.newText === "" ? `Delete: “${payload.oldText}”`
+    : `Replace: “${payload.oldText}” with “${payload.newText}”`;
+}
+
+/** Whether a Docs post is the connected account's, not deleted, and dated within `from`..`until`. */
+function myPostFrom(
+  docsPost: DocsSuggestionRecord["headPost"], from: number, until = Infinity,
+): boolean {
+  let created = Date.parse(docsPost.createTime);
+  return docsPost.me && !docsPost.deleted && created >= from && created <= until;
+}
+
+/**
+ * The Doc as a write is based on it, with its suggestions. A look (`look`) that Google refuses
+ * because the file is gone or hidden cannot tell what was posted; a read before a send that it
+ * refuses so posted nothing. Either way a missing scope throws the grant's refusal, which is retried.
+ */
+async function readDoc(
+  host: DriveCommentsHost, fileId: string, look: boolean,
+): Promise<{ document: GoogleDocsDocument; suggestions: DocsSuggestionRecord[] }> {
+  try {
+    return await host.docs.getDocumentWithSuggestions(fileId);
+  } catch (error) {
+    if (docsLacksScope(error)) throw new Error(WRITES_GRANT_MISSING, { cause: error });
+    if (!docsFileInvisible(error)) throw error;
+    if (!look) {
+      throw new ActionApplyError(
+        "Google Docs no longer shows this file to the connected account.", { cause: error });
+    }
+    throw new ActionOutcomeUnknownError(
+      "Google Docs no longer shows this file to the connected account, so whether this was " +
+      "posted can't be checked, and it won't be sent again. Reject it to clear it.",
+      { cause: error });
+  }
+}
+
+/**
+ * Finds the suggestion the send `attempt` records made: the connected account's one suggestion
+ * from around the attempt, not in the Doc before it, that Google sums up as this edit.
+ * @returns Its ID, or `undefined` when the account made none then.
+ * @throws ActionOutcomeUnknownError when the account made suggestions then and none, or more than
+ * one, sums up as this edit, so which is this one can't be told.
+ */
+async function findSuggestion(
+  host: DriveCommentsHost, payload: DriveCommentActions["suggestEdit"], attempt: CommentAttempt,
+): Promise<string | undefined> {
+  let from = attempt.at - CLOCK_SKEW_MS;
+  let until = attempt.at + RECONCILE_WINDOW_MS + CLOCK_SKEW_MS;
+  let { suggestions } = await readDoc(host, payload.fileId, true);
+  let mine = suggestions.filter(suggestion => myPostFrom(suggestion.headPost, from, until) &&
+    !attempt.existing?.includes(suggestion.suggestionId));
+  let summary = suggestionSummary(payload);
+  let matching = mine.filter(suggestion => suggestion.summaryText === summary);
+  if (matching.length === 1) return matching[0].suggestionId;
+  if (mine.length) {
+    throw new ActionOutcomeUnknownError(
+      "The connected account made suggestions in this Doc around when this was sent that can't " +
+      "be told apart from it, so whether this was made is unknown, and it won't be sent again. " +
+      "Check the Doc's suggestions, then reject it to clear it.");
+  }
+  return undefined;
+}
+
+/** Where a Docs send goes: the range found by the read at apply, and that read's revision. */
+type DocsPlacement = {
+  range: DocsRange;
+  revisionId?: string;
+  /** The connected account's suggestions in the Doc at that read. */
+  mySuggestions: string[];
+};
+
+/**
+ * Reads the Doc a comment that quotes it, or a suggested edit, is sent to, and finds the quoted
+ * text there, which must still occur exactly once in its tab. `undefined` for a write sent
+ * through Drive.
+ */
+async function place(
+  host: DriveCommentsHost, action: DriveCommentAction,
+): Promise<DocsPlacement | undefined> {
+  let quoted = action.kind === "createComment" ? action.payload.anchor
+    : action.kind === "suggestEdit"
+      ? { tabId: action.payload.tabId, text: action.payload.oldText } : undefined;
+  if (!quoted) return undefined;
+  let { document, suggestions } = await readDoc(host, action.payload.fileId, false);
+  let range: DocsRange;
+  try {
+    range = locateQuote(selectTab(document, quoted.tabId), quoted.text);
+  } catch (error) {
+    throw new ActionApplyError(QUOTE_GONE, { cause: error });
+  }
+  return {
+    range, ...(document.revisionId ? { revisionId: document.revisionId } : {}),
+    mySuggestions: suggestions.filter(({ headPost }) => headPost.me)
+      .map(({ suggestionId }) => suggestionId),
+  };
+}
+
+/**
+ * Posts a suggested edit's note on its suggestion once it is made, looking first for what an
+ * earlier send of the note may have posted. `attempt` is the write's marker, which keeps the
+ * suggestion's ID from here on, so a retry never makes the suggestion again.
+ */
+async function postNote(
+  host: DriveCommentsHost, id: number, payload: DriveCommentActions["suggestEdit"],
+  suggestionId: string, attempt: CommentAttempt,
+): Promise<void> {
+  let { note } = payload;
+  let marked: CommentAttempt = { ...attempt, suggestionId };
+  delete marked.noteAt;
+  if (note === undefined) return;
+  if (attempt.noteAt !== undefined) {
+    let noteAttempt = { at: attempt.noteAt };
+    let conclusive = windowClosed(noteAttempt);
+    let { suggestions } = await readDoc(host, payload.fileId, true);
+    let thread = suggestions.find(suggestion => suggestion.suggestionId === suggestionId);
+    if (!thread) {
+      throw new ActionOutcomeUnknownError(
+        "The suggestion was made, and the Doc no longer shows it, so whether its note was " +
+        "posted can't be checked, and it won't be sent again. Reject it to clear it.");
+    }
+    let from = noteAttempt.at - CLOCK_SKEW_MS;
+    if (thread.replies.some(reply => myPostFrom(reply, from) && reply.content === note)) return;
+    if (!conclusive) throw notShownYet(noteAttempt);
+    await requireSightedLook(host, { kind: "suggestEdit", payload });
+  }
+  host.attempts.put(id, { ...marked, noteAt: Date.now() });
+  try {
+    await host.docs.replyToSuggestion(payload.fileId, suggestionId, note);
+  } catch (error) {
+    let failure = docsWriteFailure(error);
+    if (failure === "unknown") {
+      throw new Error("The suggestion was made, but Google Docs did not confirm whether its " +
+        "note was posted. Approving it again first checks the suggestion, so the note is not " +
+        "posted twice.", { cause: error });
+    }
+    // Nothing was posted: the next approval sends the note again, never the suggestion.
+    host.attempts.put(id, marked);
+    if (failure === "rateLimited") throw new Error(rateLimited("Google Docs"), { cause: error });
+    if (docsLacksScope(error)) throw new Error(WRITES_GRANT_MISSING, { cause: error });
+    throw new ActionApplyError("The suggestion was made, but Google Docs refused its note.",
+      { cause: error });
+  }
+}
+
 /** The end of a look that found nothing while Drive shows this account none of the file's comments. */
 const LOOK_BLIND = "The connected account can no longer comment on that file, and Google Drive " +
   "shows a file's comments only to accounts that can, so whether this was posted can't be " +
@@ -570,19 +776,43 @@ function notShownYet(attempt: CommentAttempt): Error {
     `again after ${after.toISOString().slice(11, 16)} UTC.`);
 }
 
-function send(api: DriveCommentsHost["api"], action: DriveCommentAction): Promise<{ id: string }> {
+async function send(
+  host: DriveCommentsHost, action: DriveCommentAction, placement: DocsPlacement | undefined,
+): Promise<string> {
+  let { api, docs } = host;
   let { payload } = action;
   switch (action.kind) {
-    case "createComment": return api.createComment(payload.fileId, action.payload.content);
+    case "createComment":
+      return placement
+        ? docs.insertComment(payload.fileId, action.payload.content, placement.range,
+          placement.revisionId)
+        : (await api.createComment(payload.fileId, action.payload.content)).id;
     case "createReply":
-      return api.createReply(payload.fileId, action.payload.commentId,
-        { content: action.payload.content });
+      return (await api.createReply(payload.fileId, action.payload.commentId,
+        { content: action.payload.content })).id;
     case "resolveComment":
-      return api.createReply(payload.fileId, action.payload.commentId, {
+      return (await api.createReply(payload.fileId, action.payload.commentId, {
         ...(action.payload.content === undefined ? {} : { content: action.payload.content }),
         action: "resolve",
-      });
+      })).id;
+    case "suggestEdit": {
+      let { range } = placement!;
+      let { newText } = action.payload;
+      return docs.suggest(payload.fileId, [
+        { deleteContentRange: { range } },
+        ...(newText === "" ? [] : [{
+          insertText: { location: { index: range.startIndex, tabId: range.tabId }, text: newText },
+        }]),
+      ], placement!.revisionId);
+    }
   }
+}
+
+/** Google Docs' refusal, for good, of a send that posted nothing, in our words. */
+function docsRefusal(error: unknown): string {
+  if (docsFileInvisible(error)) return CANNOT_COMMENT;
+  let status = error instanceof GoogleApiError ? error.providerStatus : undefined;
+  return `Google Docs refused this${status ? ` [${status}]` : ""}.`;
 }
 
 /** Drive's refusal, for good, of a send that posted nothing, in our words. */
@@ -596,6 +826,10 @@ function refusal(error: unknown): string {
     return "Google Drive no longer shows this file or comment to the connected account.";
   }
   return `Google Drive refused this comment [http=${error.status}].`;
+}
+
+function rateLimited(google: string): string {
+  return `${google} is limiting requests from this account. Approve it again in a minute.`;
 }
 
 /** Sends of one write that Drive may leave unconfirmed before it fails for good. */
@@ -618,6 +852,11 @@ async function post(
 ): Promise<string> {
   let log = logger.with({ actionId: id, actionKind: action.kind, fileId: action.payload.fileId });
   let prior = host.attempts.get(id);
+  // A suggestion known to be made is never made again; only its note may be left to post.
+  if (action.kind === "suggestEdit" && prior?.suggestionId) {
+    await postNote(host, id, action.payload, prior.suggestionId, prior);
+    return prior.suggestionId;
+  }
   let failedSends = 0;
   if (prior) {
     // Judged before the look: one taken while the window is open proves nothing by finding nothing.
@@ -627,6 +866,7 @@ async function post(
       log.info("found a Drive comment an earlier send posted", {
         event: "drive.comments.reconciled", commentId: found, outcome: "found",
       });
+      if (action.kind === "suggestEdit") await postNote(host, id, action.payload, found, prior);
       return found;
     }
     if (!conclusive) throw notShownYet(prior);
@@ -640,48 +880,68 @@ async function post(
     }
   }
 
-  let comment = await requireStillAllowed(host, action).catch((error: unknown) => {
+  let { comment, placement } = await (async () => {
+    let answered = await requireStillAllowed(host, action);
+    return { comment: answered, placement: await place(host, action) };
+  })().catch((error: unknown) => {
     // Nothing applies a write that failed for good again, so its marker has no reader left.
     if (error instanceof ActionApplyError) host.attempts.delete(id);
     throw error;
   });
   let at = Date.now();
   // A reply already there, such as an earlier resolve of a since reopened comment, is not this
-  // send's. Comments are not listed first: taking an identical one for this send drops a duplicate.
-  let existing = action.kind === "createComment" || !comment ? [] : comment.replies
-    .filter(reply => mineFrom(reply, at - CLOCK_SKEW_MS) && looksSent(action, reply))
-    .map(reply => reply.id);
-  host.attempts.put(id, {
+  // send's, nor is a suggestion the account had already made. Comments are not listed first:
+  // taking an identical one for this send drops a duplicate.
+  let existing = action.kind === "suggestEdit" ? placement!.mySuggestions
+    : action.kind === "createComment" || !comment ? [] : comment.replies
+      .filter(reply => mineFrom(reply, at - CLOCK_SKEW_MS) && looksSent(action, reply))
+      .map(reply => reply.id);
+  let attempt: CommentAttempt = {
     at, ...(existing.length ? { existing } : {}), ...(failedSends ? { failedSends } : {}),
-  });
+  };
+  host.attempts.put(id, attempt);
+  let created: string;
   try {
-    let created = await send(host.api, action);
+    created = await send(host, action, placement);
     log.info("posted a Drive comment", {
-      event: "drive.comments.posted", commentId: created.id, outcome: "posted",
+      event: "drive.comments.posted", commentId: created, outcome: "posted",
+      ...(placement ? { api: "docs" } : {}),
     });
-    return created.id;
   } catch (error) {
-    let failure = commentWriteFailure(error);
+    let failure = placement ? docsWriteFailure(error) : commentWriteFailure(error);
     log.warn("Drive comment send failed", {
       event: "drive.comments.send.failed", outcome: failure, error,
       ...(error instanceof DriveApiRequestError
         ? { httpStatus: error.status, ...(error.reason ? { providerReasons: [error.reason] } : {}) }
-        : {}),
+        : error instanceof GoogleApiError && error.providerReasons.length
+          ? { providerReasons: [...error.providerReasons] } : {}),
     });
+    let google = placement ? "Google Docs" : "Google Drive";
     if (failure === "unknown") {
-      throw new Error("Google Drive did not confirm whether this was posted, and it may have " +
-        "been. Approving it again first checks the file's comments, so it is not posted twice; " +
-        "rejecting it leaves anything already posted on the file.", { cause: error });
+      throw new Error(`${google} did not confirm whether this was posted, and it may have ` +
+        `been. Approving it again first checks the file's ${
+          action.kind === "suggestEdit" ? "suggestions" : "comments"}, so it is not posted ` +
+        "twice; rejecting it leaves anything already posted on the file.", { cause: error });
     }
     host.attempts.delete(id);
-    if (failure === "rateLimited") {
-      throw new Error("Google Drive is limiting requests from this account. Approve it again in " +
-        "a minute.", { cause: error });
-    }
+    if (failure === "rateLimited") throw new Error(rateLimited(google), { cause: error });
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.
-    if (isInsufficientScope(error)) throw new Error(WRITES_GRANT_MISSING, { cause: error });
-    throw new ActionApplyError(refusal(error));
+    if (placement ? docsLacksScope(error) : isInsufficientScope(error)) {
+      throw new Error(WRITES_GRANT_MISSING, { cause: error });
+    }
+    // Docs refuses a write on a revision other than the one read without saying which refusal it
+    // is; a revision that moved says so, and a later approval places it on the Doc as it is then.
+    if (placement?.revisionId !== undefined && docsWriteInvalid(error)) {
+      let now = await host.docs.getRevisionId(action.payload.fileId).catch(() => undefined);
+      if (now !== placement.revisionId) throw new Error(DOC_CHANGED_WHILE_SENT, { cause: error });
+    }
+    throw new ActionApplyError(placement ? docsRefusal(error) : refusal(error));
   }
+  if (action.kind === "suggestEdit") {
+    host.attempts.put(id, { ...attempt, suggestionId: created });
+    await postNote(host, id, action.payload, created, attempt);
+  }
+  return created;
 }
 
 function fileLine(builder: ActionDescriptionBuilder, payload: CommentTargetPayload): void {
@@ -721,12 +981,18 @@ export const DRIVE_COMMENT_ACTIONS = defineActions<DriveCommentsHost, DriveComme
     // Drive takes no idempotency key: a lost activation must not post twice.
     claimBeforeApply: true,
     describe: payload => {
-      let builder = buildDescription(
-        `Post a comment on Google Drive file ${codeSpan(payload.fileId)} as the connected ` +
-        `account. It is plain text, not attached to text in the file. ${EMAILED}`);
+      let { anchor } = payload;
+      let builder = buildDescription(anchor
+        ? `Post a comment on Google Doc ${codeSpan(payload.fileId)} as the connected account, ` +
+          `attached to the quoted text. ${EMAILED}`
+        : `Post a comment on Google Drive file ${codeSpan(payload.fileId)} as the connected ` +
+          `account. It is plain text, not attached to text in the file. ${EMAILED}`);
       // What is posted comes first: the Workshop cuts a long card short.
       builder.verbatim("Comment", payload.content);
+      // Anyone who can edit the Doc wrote the quoted text, so it is a field, never prose.
+      if (anchor) builder.verbatim("Quoted text", anchor.text);
       fileLine(builder, payload);
+      if (anchor) builder.inline("Tab", anchor.tabId);
       return {
         title: "Comment on a Google Drive file", ...builder.finish(), implementsRevert: false,
       };
@@ -774,6 +1040,37 @@ export const DRIVE_COMMENT_ACTIONS = defineActions<DriveCommentsHost, DriveComme
     },
     apply: async (payload, host, ctx) => {
       await post(host, ctx.id, { kind: "resolveComment", payload });
+    },
+  },
+
+  suggestEdit: {
+    kind: DRIVE_COMMENTS,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: payload => {
+      let deletes = payload.newText === "";
+      let builder = buildDescription(
+        `Suggest ${deletes ? "deleting text" : "replacing text"} in Google Doc ${
+          codeSpan(payload.fileId)} as the connected account. It is a suggestion: the Doc's ` +
+        "text does not change unless someone who can edit it accepts it." +
+        (payload.note === undefined ? "" : " The note is posted as a reply on the suggestion."));
+      // Anyone who can edit the Doc wrote the text replaced, so every text is a field.
+      if (deletes) {
+        builder.verbatim("Delete", payload.oldText);
+      } else {
+        builder.verbatim("Replace", payload.oldText);
+        builder.verbatim("With", payload.newText);
+      }
+      if (payload.note !== undefined) builder.verbatim("Note", payload.note);
+      fileLine(builder, payload);
+      builder.inline("Tab", payload.tabId);
+      return {
+        title: "Suggest an edit in a Google Doc", ...builder.finish(), implementsRevert: false,
+      };
+    },
+    apply: async (payload, host, ctx) => {
+      await post(host, ctx.id, { kind: "suggestEdit", payload });
     },
   },
 }, { fence: "none", vendorId: "google" });

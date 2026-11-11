@@ -46,13 +46,13 @@ import {
   MAX_BATCH_FILES,
 } from "./drive-api";
 import {
-  composeComment, composeReply, composeResolve, composeSuggestion, headingLink, locateQuote,
+  checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
   selectTab,
 } from "./drive-comment-body";
 import {
   ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentAttempts, commentParent, DRIVE_COMMENT_ACTIONS,
   hasPendingResolve, isPendingCommentId, overlayPending, pendingComment, pendingCommentRefusal,
-  pendingReply, readLiveComment, REPLY_RESOLVE_PENDING, RESOLVE_PENDING, shownFileName,
+  pendingReply, pendingSuggestion, readLiveComment, REPLY_RESOLVE_PENDING, RESOLVE_PENDING, shownFileName,
   toDriveComment, writeRefusal,
   type CommentTargetPayload, type DriveCommentAction, type DriveCommentActions,
   type DriveCommentQueue,
@@ -74,7 +74,7 @@ import {
   type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry, DriveFileBytes,
+  DocSuggestion, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry, DriveFileBytes,
   DriveFileReadOptions, DriveListOptions, DrivePdfText, DriveScope, DriveSessionSearchQuery,
   DriveSuggestEditOptions, GoogleDriveFolderSession, GoogleDriveSession,
 } from "./drive-types";
@@ -3429,6 +3429,7 @@ export class GoogleDriveGatekeeperImpl
   #attempts = commentAttempts(this.ctx.storage.kv);
   #actions = DRIVE_COMMENT_ACTIONS.bind(this.#journal, {
     api: this.#api,
+    docs: new GoogleDocsApi(opts => this.#getAccessToken(opts)),
     scope: () => this.#scope,
     writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
@@ -4011,12 +4012,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
       throw new Error("tabId names the tab a quote is in; pass the quote too.");
     }
     let queued = await this.#queueComment(fileId, "createComment", async (target, base) => {
-      composeComment(text, quote);
-      let link = quote === undefined ? undefined : await this.#headingLink(target, quote, tabId);
+      if (quote === undefined) return { ...base, content: composeComment(text) };
+      // Checked before the Doc is read; a comment attached through Docs has the Docs limit.
+      let content = composeComment(text, true);
+      let quoted = requireQuote(quote);
       return {
-        ...base, content: composeComment(text, quote, link),
-        // The quote was read from the Doc, which a page that shows this comment pending reports.
-        ...(quote === undefined ? {} : { quotesDocument: true as const }),
+        ...base, content, anchor: { tabId: await this.#quotedTab(target, quoted, tabId), text: quoted },
       };
     });
     return pendingComment(queued.id, queued.payload);
@@ -4024,18 +4025,14 @@ export class GoogleDriveSessionImpl extends RpcTarget
 
   async suggestEdit(
     fileId: string, oldText: string, newText: string, options: DriveSuggestEditOptions = {},
-  ): Promise<DriveComment> {
+  ): Promise<DocSuggestion> {
     await this.#requireWritable();
     let { note, tabId } = options;
-    let queued = await this.#queueComment(fileId, "createComment", async (target, base) => {
-      composeSuggestion(oldText, newText, note);
-      let link = await this.#headingLink(target, oldText, tabId);
-      return {
-        ...base, content: composeSuggestion(oldText, newText, note, link),
-        quotesDocument: true as const,
-      };
+    let queued = await this.#queueComment(fileId, "suggestEdit", async (target, base) => {
+      let checked = checkSuggestion(oldText, newText, note);
+      return { ...base, tabId: await this.#quotedTab(target, checked.oldText, tabId), ...checked };
     });
-    return pendingComment(queued.id, queued.payload);
+    return pendingSuggestion(queued.id, queued.payload);
   }
 
   async reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply> {
@@ -4124,12 +4121,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * A link to the heading above `quote` in a Google Doc, or `undefined` when no heading precedes
-   * it. Reading the Doc is a content read, authorized as one.
+   * The ID of the tab of a Google Doc in which `quote` occurs exactly once. Reading the Doc is a
+   * content read, authorized as one.
    */
-  async #headingLink(
+  async #quotedTab(
     target: CommentTarget, quote: string, tabId: string | undefined,
-  ): Promise<string | undefined> {
+  ): Promise<string> {
     if (target.mimeType !== GOOGLE_DOC_MIME_TYPE) {
       throw new Error("Quoting and suggested edits work only on Google Docs.");
     }
@@ -4141,8 +4138,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
         description: `Read the text of Google Doc ${documentId} to find the quoted text.`,
       }));
     let tab = selectTab(document, tabId);
-    let headingId = locateQuote(tab, quote);
-    return headingId === undefined ? undefined : headingLink(documentId, tab.tabId, headingId);
+    locateQuote(tab, quote);
+    return tab.tabId;
   }
 
   async #liveComment(fileId: string, commentId: string) {
@@ -4281,7 +4278,7 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
 
   async suggestEdit(
     _fileId: string, _oldText: string, _newText: string, _options?: DriveSuggestEditOptions,
-  ): Promise<DriveComment> {
+  ): Promise<DocSuggestion> {
     throw new Error(UNCREATED_FOLDER);
   }
 

@@ -4,7 +4,7 @@
 // It follows the same pattern as google-api.ts (which wraps the Gmail API).
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { readGoogleJson } from "./google-response";
+import { GoogleApiError, readGoogleJson } from "./google-response";
 
 // ---------------------------------------------------------------------------
 // Types modeling the Google Docs API response.
@@ -403,6 +403,172 @@ export class GoogleDocsApi {
       "delete named range",
     );
   }
+
+  /**
+   * Fetch a document as a write must be based on it, suggestions inline, with the suggestion
+   * threads the caller can see. Comment threads come along too but are not kept: Drive lists the
+   * same comments under the same IDs.
+   */
+  async getDocumentWithSuggestions(
+    documentId: string,
+  ): Promise<{ document: GoogleDocsDocument; suggestions: DocsSuggestionRecord[] }> {
+    let raw = await this.#request<GoogleDocsResponse & { suggestions?: unknown }>(
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}?includeTabsContent=true&` +
+        "suggestionsViewMode=SUGGESTIONS_INLINE&commentsViewMode=COMMENTS_VIEW_MODE_INCLUDED",
+      {},
+      "get document with suggestions",
+    );
+    if (raw.documentId !== documentId) throw new Error("Google Docs returned a different document");
+    let { title, revisionId, tabs, suggestions } = raw;
+    if (suggestions !== undefined && !Array.isArray(suggestions)) throw new Error(INVALID_THREADS);
+    return {
+      document: { documentId, title, revisionId, tabs: normalizeDocumentTabs(tabs) },
+      suggestions: (suggestions ?? []).map(parseSuggestion),
+    };
+  }
+
+  /**
+   * Insert one comment anchored to `range`, refused unless the document is still at
+   * `requiredRevisionId` when given. Returns the comment's ID, which Drive lists it under too.
+   */
+  async insertComment(
+    documentId: string, content: string, range: DocsRange, requiredRevisionId?: string,
+  ): Promise<string> {
+    let result = await this.#write(documentId,
+      [{ insertComment: { content, range } }], { requiredRevisionId }, "insert comment");
+    let id = result.replies?.[0]?.insertComment?.commentThread?.commentId;
+    if (typeof id !== "string" || !id) throw new Error("Google Docs returned no comment ID");
+    return id;
+  }
+
+  /**
+   * Send `requests` as one suggestion, refused unless the document is still at
+   * `requiredRevisionId` when given. Returns the suggestion's ID.
+   */
+  async suggest(
+    documentId: string, requests: unknown[], requiredRevisionId?: string,
+  ): Promise<string> {
+    let result = await this.#write(documentId, requests,
+      { writeMode: "SUGGEST", requiredRevisionId }, "suggest edit");
+    let created = new Set((result.suggestionResponses ?? [])
+      .flatMap(response => response?.createdSuggestionIds ?? []));
+    let [id, ...more] = created;
+    if (typeof id !== "string" || !id || more.length) {
+      throw new Error("Google Docs did not return the one suggestion it made");
+    }
+    return id;
+  }
+
+  /** Reply to suggestion `suggestionId`'s thread with `content`. */
+  async replyToSuggestion(documentId: string, suggestionId: string, content: string): Promise<void> {
+    await this.#write(documentId,
+      [{ addCommentReply: { suggestionId, post: { content } } }], {}, "reply to suggestion");
+  }
+
+  async #write(
+    documentId: string,
+    requests: unknown[],
+    writeControl: { writeMode?: "SUGGEST"; requiredRevisionId?: string | undefined },
+    operation: string,
+  ) {
+    let control = Object.fromEntries(Object.entries(writeControl).filter(([, v]) => v !== undefined));
+    return this.#request<{
+      replies?: { insertComment?: { commentThread?: { commentId?: unknown } } }[];
+      suggestionResponses?: { createdSuggestionIds?: unknown[] }[];
+    }>(
+      `${DOCS_API_BASE}/${encodeURIComponent(documentId)}:batchUpdate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests, ...(Object.keys(control).length ? { writeControl: control } : {}),
+        }),
+      },
+      operation,
+    );
+  }
+}
+
+/**
+ * How a Docs write failed: refused before it applied (`absent`), refused for rate (`rateLimited`),
+ * or with no answer that says whether it applied (`unknown`). Google checks a batch whole before
+ * it applies any of it, so every answer of a status it gives is a refusal.
+ */
+export function docsWriteFailure(error: unknown): "absent" | "rateLimited" | "unknown" {
+  if (!(error instanceof GoogleApiError)) return "unknown";
+  let { providerStatus, providerReasons } = error;
+  if (providerStatus === "RESOURCE_EXHAUSTED" ||
+      providerReasons.some(reason => /rate.?limit/i.test(reason))) {
+    return "rateLimited";
+  }
+  return providerStatus !== undefined && DOCS_REFUSALS.has(providerStatus) ? "absent" : "unknown";
+}
+
+const DOCS_REFUSALS = new Set([
+  "INVALID_ARGUMENT", "FAILED_PRECONDITION", "PERMISSION_DENIED", "NOT_FOUND", "UNAUTHENTICATED",
+]);
+
+/** Whether a Docs request was refused because the token lacks a scope it needs. */
+export function docsLacksScope(error: unknown): boolean {
+  return error instanceof GoogleApiError &&
+    error.providerReasons.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT");
+}
+
+/** Whether a Docs request was refused because the document is gone or not shown to the caller. */
+export function docsFileInvisible(error: unknown): boolean {
+  return error instanceof GoogleApiError && !docsLacksScope(error) &&
+    (error.providerStatus === "NOT_FOUND" || error.providerStatus === "PERMISSION_DENIED");
+}
+
+/** Whether a Docs write was refused as invalid, which a document changed since it was read is too. */
+export function docsWriteInvalid(error: unknown): boolean {
+  return error instanceof GoogleApiError && error.providerStatus === "INVALID_ARGUMENT";
+}
+
+/** A range of one tab's body, in UTF-16 code units. */
+export type DocsRange = { startIndex: number; endIndex: number; tabId: string };
+
+/** One post of a suggestion thread, as `documents.get` shows it to the caller. */
+export type DocsPostRecord = {
+  content: string;
+  /** Whether the caller wrote it. */
+  me: boolean;
+  createTime: string;
+  deleted: boolean;
+};
+
+/** One suggestion thread, as `documents.get` shows it with comments included. */
+export type DocsSuggestionRecord = {
+  suggestionId: string;
+  /** What the suggestion changes, as Google sums it up, such as `Replace: “a” with “b”`. */
+  summaryText: string;
+  headPost: DocsPostRecord;
+  replies: DocsPostRecord[];
+};
+
+const INVALID_THREADS = "Google Docs returned invalid suggestions";
+
+function parsePost(value: unknown): DocsPostRecord {
+  if (!value || typeof value !== "object") throw new Error(INVALID_THREADS);
+  let { content, author, createTime, deleted } = value as Record<string, unknown>;
+  let me = !!author && typeof author === "object" && (author as Record<string, unknown>).me === true;
+  if (typeof createTime !== "string") throw new Error(INVALID_THREADS);
+  return {
+    content: typeof content === "string" ? content : "", me, createTime, deleted: deleted === true,
+  };
+}
+
+function parseSuggestion(value: unknown): DocsSuggestionRecord {
+  if (!value || typeof value !== "object") throw new Error(INVALID_THREADS);
+  let { suggestionId, summaryText, headPost, replies } = value as Record<string, unknown>;
+  if (typeof suggestionId !== "string" || !suggestionId) throw new Error(INVALID_THREADS);
+  if (replies !== undefined && !Array.isArray(replies)) throw new Error(INVALID_THREADS);
+  return {
+    suggestionId,
+    summaryText: typeof summaryText === "string" ? summaryText : "",
+    headPost: parsePost(headPost),
+    replies: (replies ?? []).map(parsePost),
+  };
 }
 
 /** The reads a Google Doc session makes. */

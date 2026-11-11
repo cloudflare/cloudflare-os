@@ -9,8 +9,8 @@ export type DriveCommentOptions = {
    * Text of the file this comment is about, within one paragraph and at most 500 characters, which
    * must occur exactly once in the tab: the tab's text as `getContent()` shows it, without Markdown
    * formatting (no `**`, list markers or escapes) and, in a table, without HTML (`&` rather than
-   * `&amp;`, no tags). It is shown in quotes at the top of the comment, with a link to the nearest
-   * heading above it when a heading precedes it. Google Docs only.
+   * `&amp;`, no tags). The comment is attached to it in the Doc, as one made in the Docs editor
+   * is, and must still occur exactly once in the tab when the comment is approved. Google Docs only.
    */
   quote?: string;
   /** The Doc tab `quote` is in. Defaults to the first tab. */
@@ -19,23 +19,44 @@ export type DriveCommentOptions = {
 
 /** Options for {@link DriveCommentWrites.suggestEdit}. */
 export type DriveSuggestEditOptions = {
-  /** Why, added below the suggestion. */
+  /** Why, posted as a reply on the suggestion; at most 2048 bytes of UTF-8. */
   note?: string;
   /** The Doc tab `oldText` is in. Defaults to the first tab. */
   tabId?: string;
 };
 
 /**
+ * A suggested edit in a native Google Doc, queued for the user's approval. Once approved it is a
+ * suggestion in the Doc, which someone who can edit the Doc accepts or rejects there; it is not a
+ * comment, so `listComments()` shows it neither while it is queued nor after.
+ */
+export type DocSuggestion = {
+  /** `pending:<n>` while it awaits approval. */
+  id: string;
+  /** The tab `oldText` is in. */
+  tabId: string;
+  /** The text the suggestion replaces, trimmed. */
+  oldText: string;
+  /** What it puts in its place; empty when it deletes `oldText`. */
+  newText: string;
+  /** Posted as a reply on the suggestion once it is made. */
+  note?: string;
+  createdTime: Date;
+  pending: true;
+};
+
+/**
  * Comment writes, which every Google Drive binding with read and write access offers.
  *
- * Comments are plain text, never anchored to text in the file. Each write is queued for the
- * user's approval and returns the pending item, which `listComments()` shows until it is decided.
+ * Comments are plain text. One that quotes a Google Doc is attached to the quoted text; any other
+ * is attached to no text in the file. Each comment, reply or resolve is queued for the user's
+ * approval and returns the pending item, which `listComments()` shows until it is decided.
  * A write needs the connected account to be able to comment on the file, and a new comment makes
  * Google email the file's owner. An email address written after `@` or `+` in the text mentions
  * that person: Google emails them the text, whether or not they can open the file. `fileId` names
  * an in-scope file, as it does for `listComments()`, and not a folder, which takes no comments. A
  * comment or reply holds at most 4096 bytes
- * of UTF-8, counting what `quote` or `suggestEdit()` adds to it. A write also fails, saying what
+ * of UTF-8, and a comment that quotes a Doc at most 2048. A write also fails, saying what
  * to ask the user for, when the Google account does not allow changes to Drive files, and on a
  * read-only binding, whose `getScope()` reports `access: "read"`.
  */
@@ -44,13 +65,16 @@ export interface DriveCommentWrites {
   comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;
 
   /**
-   * Queue a comment suggesting `oldText`, which must occur exactly once in the tab (matched and
-   * limited as `quote` is), be replaced with `newText` (empty to delete it). The suggestion is a
-   * comment, not an edit the owner can accept. Native Google Docs only.
+   * Queue a suggestion that `oldText`, which must occur exactly once in the tab (matched and
+   * limited as `quote` is), be replaced with `newText`: empty to delete it, otherwise at most 1000
+   * characters without line breaks. Approved, it is a suggestion in the Doc that someone who can
+   * edit it accepts or rejects there, as one made in the editor in Suggesting mode; the Doc's text
+   * does not change until then. At approval `oldText` must still occur exactly once in the tab.
+   * Native Google Docs only.
    */
   suggestEdit(
     fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,
-  ): Promise<DriveComment>;
+  ): Promise<DocSuggestion>;
 
   /**
    * Queue a reply to a comment on an in-scope file. Replying to a resolved comment reopens it. A

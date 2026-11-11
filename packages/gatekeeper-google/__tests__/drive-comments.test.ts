@@ -3,13 +3,17 @@ import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccessTokenCache } from "../src/auth-retry";
+import type {
+  DocsRange, DocsSuggestionRecord, GoogleDocsApi, GoogleDocsDocument, StructuralElement,
+} from "../src/docs-api";
+import { GoogleApiError } from "../src/google-response";
 import {
   DriveApi, DriveApiRequestError, type DriveCommentRecord, type DriveReplyRecord,
   type DriveScopeNode,
 } from "../src/drive-api";
 import {
   commentParent, DRIVE_COMMENT_ACTIONS, hasPendingResolve, overlayPending, pendingComment,
-  pendingCommentRefusal, pendingReply, readOnlyRefusal, REPLY_RESOLVE_PENDING, RESOLVE_PENDING,
+  pendingCommentRefusal, pendingReply, pendingSuggestion, readOnlyRefusal, suggestionSummary, REPLY_RESOLVE_PENDING, RESOLVE_PENDING,
   shownFileName, toDriveComment, writeRefusal, WRITES_GRANT_MISSING,
   type CommentAttempt, type DriveCommentAction, type DriveCommentActions, type DriveCommentsHost,
 } from "../src/drive-comments";
@@ -118,6 +122,51 @@ class FaultyKv extends FakeKv {
   }
 }
 
+/** The text of the Doc a test host's Docs API reads, one paragraph in tab `t.0`, from index 1. */
+const DOC_TEXT = "The launch is in May. Costs are final.\n";
+
+/** A tab body of one paragraph, `content` in one run from index 1. */
+function bodyOf(content: string): { content: StructuralElement[] } {
+  return { content: [
+    { startIndex: 0, endIndex: 1, sectionBreak: {} },
+    { startIndex: 1, endIndex: 1 + content.length, paragraph: {
+      elements: [{ startIndex: 1, endIndex: 1 + content.length, textRun: { content, textStyle: {} } }],
+      paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
+    } },
+  ] };
+}
+
+/** A Doc whose first tab is `text` in one run, and a second tab. */
+function docOf(text: string, revisionId = "rev-1"): GoogleDocsDocument {
+  let tab = (tabId: string, index: number, content: string) =>
+    ({ tabId, title: tabId, index, nestingLevel: 0, lists: {}, namedRanges: {}, body: bodyOf(content) });
+  return { documentId: "doc-1", title: "Plan", revisionId,
+    tabs: [tab("t.0", 0, text), tab("t.1", 1, "Second tab.\n")] };
+}
+
+/** Docs' refusal of a write: of a revision other than the latest, a bad request, or a hidden file. */
+const docsRefused = (status = "INVALID_ARGUMENT") =>
+  new GoogleApiError("Google Docs suggest edit failed [http=400]", status);
+
+/** A suggestion of the connected account's, as Docs lists it. */
+function suggestion(overrides: Partial<DocsSuggestionRecord> = {}): DocsSuggestionRecord {
+  return {
+    suggestionId: "suggest.s1", summaryText: "Replace: “May” with “June”",
+    headPost: { content: "", me: true, createTime: new Date().toISOString(), deleted: false },
+    replies: [], ...overrides,
+  };
+}
+
+/** A suggested edit's payload, replacing "May" in tab `t.0`. */
+function edit(
+  overrides: Partial<DriveCommentActions["suggestEdit"]> = {},
+): DriveCommentActions["suggestEdit"] {
+  return { ...TARGET, tabId: "t.0", oldText: "May", newText: "June", ...overrides };
+}
+
+/** A comment's payload, attached to "Costs are final" in tab `t.0`. */
+const ANCHORED = { ...TARGET, content: "Are they?", anchor: { tabId: "t.0", text: "Costs are final" } };
+
 /** The comment set bound over an in-memory journal, with a host a test can steer. */
 function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = new FakeKv()) {
   let attempts = new Map<number, CommentAttempt>();
@@ -133,8 +182,18 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
       async () => live({ id: "doco.posted", author: { displayName: "Me", me: true } })),
     createReply: vi.fn<DriveApi["createReply"]>(async () => mine()),
   };
+  let doc = { current: docOf(DOC_TEXT), suggestions: [] as DocsSuggestionRecord[] };
+  let docs = {
+    getDocumentWithSuggestions: vi.fn<GoogleDocsApi["getDocumentWithSuggestions"]>(
+      async () => ({ document: doc.current, suggestions: doc.suggestions })),
+    getRevisionId: vi.fn<GoogleDocsApi["getRevisionId"]>(async () => doc.current.revisionId),
+    insertComment: vi.fn<GoogleDocsApi["insertComment"]>(async () => "doco.anchored"),
+    suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => "suggest.s1"),
+    replyToSuggestion: vi.fn<GoogleDocsApi["replyToSuggestion"]>(async () => undefined),
+  };
   let host: DriveCommentsHost = {
     api,
+    docs,
     scope: () => scope,
     writeRefusal: async () => refused,
     attempts: {
@@ -151,7 +210,38 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
   let submit = <K extends keyof DriveCommentActions>(kind: K, payload: DriveCommentActions[K]) =>
     actions.submit(queue, kind, payload);
   return {
-    api, host, journal, actions, attempts, submit,
+    api, docs, doc, host, journal, actions, attempts, submit,
+    /**
+     * Makes `suggest` keep what it makes in the Doc's suggestions, summed up as Google does, and
+     * `replyToSuggestion` keep each note on its thread. `loseFirst` makes the first send of
+     * `what` land and then fail with no answer.
+     */
+    keepSuggestions({ loseFirst }: { loseFirst?: "suggestion" | "note" } = {}): void {
+      let lose = loseFirst;
+      docs.suggest.mockImplementation(async (_documentId, requests) => {
+        let [{ deleteContentRange: { range } }, insert] = requests as
+          [{ deleteContentRange: { range: DocsRange } }, { insertText: { text: string } }?];
+        let old = DOC_TEXT.slice(range.startIndex - 1, range.endIndex - 1);
+        let made = suggestion({
+          suggestionId: `suggest.s${doc.suggestions.length + 1}`,
+          summaryText: insert ? `Replace: “${old}” with “${insert.insertText.text}”` : `Delete: “${old}”`,
+        });
+        doc.suggestions.push(made);
+        if (lose === "suggestion") {
+          lose = undefined;
+          throw new Error("The operation was aborted due to timeout");
+        }
+        return made.suggestionId;
+      });
+      docs.replyToSuggestion.mockImplementation(async (_documentId, suggestionId, content) => {
+        let thread = doc.suggestions.find(candidate => candidate.suggestionId === suggestionId)!;
+        thread.replies.push({ content, me: true, createTime: new Date().toISOString(), deleted: false });
+        if (lose === "note") {
+          lose = undefined;
+          throw new Error("The operation was aborted due to timeout");
+        }
+      });
+    },
     /** Submits one write and returns what its approval shows. */
     async card<K extends keyof DriveCommentActions>(
       kind: K, payload: DriveCommentActions[K],
@@ -625,6 +715,10 @@ describe("what a binding has queued for a comment", () => {
     expect(pendingCommentRefusal("pending:5", pending)).toBe(DECIDED);
     expect(pendingCommentRefusal("pending:6", pending)).toBe(DECIDED);
     expect(pendingCommentRefusal("pending:4", [])).toBe(DECIDED);
+    // A queued suggested edit takes no replies at all.
+    expect(pendingCommentRefusal("pending:8", [entry(8, { kind: "suggestEdit", payload: edit() })]))
+      .toBe("That pending ID names a suggested edit, which takes no replies here; once it is " +
+        "approved, the Doc's owner answers it in the Doc.");
   });
 
   it("finds a queued resolve by its file and its comment", () => {
@@ -1078,11 +1172,16 @@ describe("Drive comment looks for an earlier send", () => {
 
 describe("Drive comment listings", () => {
   it("shows a queued comment on the last page only, and says when it quotes the document", () => {
-    let payload = { ...TARGET, content: "\"May\"\n\nWhy?", quotesDocument: true as const };
+    let payload = { ...TARGET, content: "Why?", anchor: { tabId: "t.0", text: "May" } };
     let pending: JournalEntry<DriveCommentAction>[] =
       [{ id: 4, action: { kind: "createComment", payload } }];
     expect(overlayPending("doc-1", [], pending, true))
       .toEqual({ comments: [pendingComment(4, payload)], quotesDocument: true });
+    // The queued comment shows the text it is attached to, as a posted one does.
+    expect(pendingComment(4, payload).quotedText).toBe("May");
+    // A queued suggested edit is not a comment, and Drive lists none: it is not shown.
+    expect(overlayPending("doc-1", [], [{ id: 7, action: { kind: "suggestEdit", payload: edit() } }], true))
+      .toEqual({ comments: [], quotesDocument: false });
     expect(overlayPending("doc-1", [], pending, false))
       .toEqual({ comments: [], quotesDocument: false });
     expect(overlayPending("doc-2", [], pending, true))
@@ -1143,5 +1242,301 @@ describe("Drive comment listings", () => {
     expect(pendingComment(7, payload).createdTime).toEqual(new Date(payload.queuedAt));
     let action = { kind: "createReply" as const, payload: reply() };
     expect(pendingReply(8, action).createdTime).toEqual(new Date(action.payload.queuedAt));
+  });
+});
+
+describe("comments that quote a Doc, and suggested edits, through the Docs API", () => {
+  const QUOTE_GONE = "The quoted text is no longer in the Doc exactly once, so this can't be " +
+    "attached to it. Queue it again with text the Doc has now.";
+  const DOC_CHANGED = "The Google Doc changed while this was being sent, so nothing was " +
+    "posted. Approve it again to place it on the Doc as it is now.";
+  const UNCONFIRMED_SUGGESTION = "Google Docs did not confirm whether this was posted, and it may " +
+    "have been. Approving it again first checks the file's suggestions, so it is not posted " +
+    "twice; rejecting it leaves anything already posted on the file.";
+  // "Costs are final" starts at offset 22 of the text, which starts at index 1.
+  const COSTS: DocsRange = { startIndex: 23, endIndex: 38, tabId: "t.0" };
+  const MAY: DocsRange = { startIndex: 18, endIndex: 21, tabId: "t.0" };
+
+  it("shows a comment's quoted text and tab, and a suggestion's change, as fields", async () => {
+    let anchored = await harness().card("createComment", { ...ANCHORED, fileName: "Plan" });
+    expect(anchored).toMatchObject({ autoApprovable: true, actionKind: KIND, implementsRevert: false });
+    expect(anchored.title).toBe("Comment on a Google Drive file");
+    expect(anchored.description).toBe("Post a comment on Google Doc `doc-1` as the connected " +
+      "account, attached to the quoted text. Google emails the file's owner about new comments.");
+    expect(anchored.fields).toEqual([
+      { label: "Comment", kind: "text", value: "Are they?" },
+      { label: "Quoted text", kind: "text", value: "Costs are final" },
+      { label: "File", kind: "inline", value: "doc-1" },
+      { label: "File name", kind: "inline", value: "Plan" },
+      { label: "Tab", kind: "inline", value: "t.0" },
+    ]);
+
+    let replace = await harness().card("suggestEdit", edit({ note: "It moved." }));
+    expect(replace).toMatchObject({ autoApprovable: true, actionKind: KIND, implementsRevert: false });
+    expect(replace.title).toBe("Suggest an edit in a Google Doc");
+    expect(replace.description).toBe("Suggest replacing text in Google Doc `doc-1` as the " +
+      "connected account. It is a suggestion: the Doc's text does not change unless someone who " +
+      "can edit it accepts it. The note is posted as a reply on the suggestion.");
+    expect(replace.fields).toEqual([
+      { label: "Replace", kind: "text", value: "May" },
+      { label: "With", kind: "text", value: "June" },
+      { label: "Note", kind: "text", value: "It moved." },
+      { label: "File", kind: "inline", value: "doc-1" },
+      { label: "Tab", kind: "inline", value: "t.0" },
+    ]);
+    expect(replace.descriptionIsComplete).toBe(true);
+
+    let deletion = await harness().card("suggestEdit", edit({ newText: "" }));
+    expect(deletion.description).toMatch(/^Suggest deleting text in Google Doc `doc-1`/);
+    expect(deletion.fields?.slice(0, 2)).toEqual([
+      { label: "Delete", kind: "text", value: "May" },
+      { label: "File", kind: "inline", value: "doc-1" },
+    ]);
+  });
+
+  it("attaches a quoting comment to the quoted text found at approval, on the revision read then", async () => {
+    let { api, docs, attempts, submit, apply } = harness();
+    let id = await submit("createComment", ANCHORED);
+    expect(await apply(id)).toBeNull();
+    expect(docs.insertComment).toHaveBeenCalledWith("doc-1", "Are they?", COSTS, "rev-1");
+    expect(api.createComment).not.toHaveBeenCalled();
+    expect(attempts.get(id)).toEqual({ at: expect.any(Number) });
+
+    // A plain comment still goes through Drive.
+    let plain = harness();
+    expect(await plain.apply(await plain.submit("createComment", { ...TARGET, content: "Hi" }))).toBeNull();
+    expect(plain.api.createComment).toHaveBeenCalledWith("doc-1", "Hi");
+    expect(plain.docs.getDocumentWithSuggestions).not.toHaveBeenCalled();
+  });
+
+  it("fails for good, sending nothing, when the quoted text is no longer there exactly once", async () => {
+    for (let text of ["The launch is in June. Costs moved.\n", "May. May.\n"]) {
+      let { doc, docs, journal, attempts, submit, apply } = harness();
+      let id = await submit("suggestEdit", edit());
+      doc.current = docOf(text);
+      expect(await apply(id)).toBe(QUOTE_GONE);
+      expect(journal.get(id)?.state).toBe("failed");
+      expect(attempts.has(id)).toBe(false);
+      expect(docs.suggest).not.toHaveBeenCalled();
+    }
+    // A tab that is gone, too.
+    let run = harness();
+    let id = await run.submit("createComment", { ...ANCHORED, anchor: { tabId: "t.9", text: "Costs" } });
+    expect(await run.apply(id)).toBe(QUOTE_GONE);
+    expect(run.docs.insertComment).not.toHaveBeenCalled();
+  });
+
+  it("is refused by a revision that moved after the read, and placed on the Doc as it is when approved again", async () => {
+    let { doc, docs, journal, attempts, submit, apply } = harness();
+    docs.insertComment.mockImplementationOnce(async () => {
+      doc.current = docOf(`New. ${DOC_TEXT}`, "rev-2");
+      throw docsRefused();
+    });
+    let id = await submit("createComment", ANCHORED);
+    expect(await apply(id)).toBe(DOC_CHANGED);
+    expect(journal.get(id)?.state).toBe("pending");
+    // Nothing was posted, so nothing needs a look.
+    expect(attempts.has(id)).toBe(false);
+    expect(await apply(id)).toBeNull();
+    expect(docs.insertComment).toHaveBeenLastCalledWith("doc-1", "Are they?",
+      { startIndex: 28, endIndex: 43, tabId: "t.0" }, "rev-2");
+
+    // The same refusal on a revision that did not move is Docs refusing the write itself.
+    let other = harness();
+    other.docs.suggest.mockRejectedValueOnce(docsRefused());
+    let refused = await other.submit("suggestEdit", edit());
+    expect(await other.apply(refused)).toBe("Google Docs refused this [INVALID_ARGUMENT].");
+    expect(other.journal.get(refused)?.state).toBe("failed");
+    // So is a commenter's refusal for the file, which Docs answers as permission denied.
+    let viewer = harness();
+    viewer.docs.suggest.mockRejectedValueOnce(docsRefused("PERMISSION_DENIED"));
+    expect(await viewer.apply(await viewer.submit("suggestEdit", edit()))).toBe(CANNOT_COMMENT);
+  });
+
+  it("fails a suggestion for good, sending nothing, once the account can no longer comment", async () => {
+    let { api, docs, submit, apply } = harness();
+    api.getScopeNodes.mockImplementation(async ids => ids.map(id => ({ id, canComment: false })));
+    expect(await apply(await submit("suggestEdit", edit()))).toBe(CANNOT_COMMENT);
+    expect(docs.getDocumentWithSuggestions).not.toHaveBeenCalled();
+    expect(docs.suggest).not.toHaveBeenCalled();
+  });
+
+  it("binds a quoting comment an unconfirmed send posted, found on Drive, without sending again", async () => {
+    let { api, docs, submit, apply, aged } = harness();
+    docs.insertComment.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
+    let id = await submit("createComment", ANCHORED);
+    expect(await apply(id)).toBe(UNCONFIRMED_SEND.replace("Google Drive", "Google Docs"));
+    let at = aged(id);
+    // Drive lists a comment made through Docs under its ID, with the content sent.
+    api.listComments.mockResolvedValue({ comments: [live({
+      id: "doco.anchored", content: "Are they?", author: { displayName: "Me", me: true },
+      createdTime: new Date(at + 1000).toISOString(),
+    })] });
+    expect(await apply(id)).toBeNull();
+    expect(docs.insertComment).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes a suggestion as one delete and insert in SUGGEST mode, then posts its note on it", async () => {
+    let { docs, attempts, submit, apply } = harness();
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await apply(id)).toBeNull();
+    expect(docs.suggest).toHaveBeenCalledWith("doc-1", [
+      { deleteContentRange: { range: MAY } },
+      { insertText: { location: { index: 18, tabId: "t.0" }, text: "June" } },
+    ], "rev-1");
+    expect(docs.replyToSuggestion).toHaveBeenCalledWith("doc-1", "suggest.s1", "It moved.");
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1", noteAt: expect.any(Number) });
+
+    let deletion = harness();
+    expect(await deletion.apply(await deletion.submit("suggestEdit", edit({ newText: "" })))).toBeNull();
+    expect(deletion.docs.suggest).toHaveBeenCalledWith("doc-1",
+      [{ deleteContentRange: { range: MAY } }], "rev-1");
+    expect(deletion.docs.replyToSuggestion).not.toHaveBeenCalled();
+    expect(suggestionSummary(edit({ newText: "" }))).toBe("Delete: “May”");
+    expect(suggestionSummary(edit())).toBe("Replace: “May” with “June”");
+  });
+
+  it("looks for a suggestion an unconfirmed send made before it sends again, and posts the note once", async () => {
+    let run = harness();
+    run.keepSuggestions({ loseFirst: "suggestion" });
+    // One of the account's suggestions was already in the Doc: it is not this send's.
+    run.doc.suggestions.push(suggestion({ suggestionId: "suggest.old" }));
+    let id = await run.submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await run.apply(id)).toBe(UNCONFIRMED_SUGGESTION);
+    expect(run.attempts.get(id)).toEqual({ at: expect.any(Number), existing: ["suggest.old"] });
+    expect(await run.apply(id)).toBeNull();
+    expect(run.docs.suggest).toHaveBeenCalledTimes(1);
+    expect(run.docs.replyToSuggestion).toHaveBeenCalledWith("doc-1", "suggest.s2", "It moved.");
+    expect(run.doc.suggestions.map(({ suggestionId }) => suggestionId)).toEqual(["suggest.old", "suggest.s2"]);
+
+    // Found nothing inside the window: it waits, never sends.
+    let waiting = harness();
+    waiting.docs.suggest.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
+    let pending = await waiting.submit("suggestEdit", edit());
+    expect(await waiting.apply(pending)).toBe(UNCONFIRMED_SUGGESTION);
+    expect(await waiting.apply(pending)).toMatch(/^Google Drive may still be posting this/);
+    expect(waiting.docs.suggest).toHaveBeenCalledTimes(1);
+    // Found nothing once the window closed: that send made nothing, so it is sent again.
+    waiting.aged(pending);
+    expect(await waiting.apply(pending)).toBeNull();
+    expect(waiting.docs.suggest).toHaveBeenCalledTimes(2);
+  });
+
+  it("ends as of unknown outcome when the account's suggestions from the send can't be told apart", async () => {
+    let { doc, docs, journal, submit, apply } = harness();
+    docs.suggest.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
+    let id = await submit("suggestEdit", edit());
+    expect(await apply(id)).toBe(UNCONFIRMED_SUGGESTION);
+    doc.suggestions.push(suggestion({ suggestionId: "suggest.other", summaryText: "Add: “x”" }));
+    expect(await apply(id)).toMatch(/suggestions in this Doc around when this was sent that can't be told apart/);
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+  });
+
+  it("never makes a suggestion twice when only its note is left to post", async () => {
+    let run = harness();
+    run.keepSuggestions({ loseFirst: "note" });
+    let id = await run.submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await run.apply(id)).toMatch(/^The suggestion was made, but Google Docs did not confirm whether its note/);
+    // The note landed: the look finds it, and nothing is sent again.
+    expect(await run.apply(id)).toBeNull();
+    expect(run.docs.suggest).toHaveBeenCalledTimes(1);
+    expect(run.docs.replyToSuggestion).toHaveBeenCalledTimes(1);
+
+    // A note that did not land waits out its window, then is sent again; the suggestion is not.
+    let lost = harness();
+    lost.keepSuggestions();
+    lost.docs.replyToSuggestion.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
+    let other = await lost.submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await lost.apply(other)).toMatch(/^The suggestion was made/);
+    expect(await lost.apply(other)).toMatch(/^Google Drive may still be posting this/);
+    lost.attempts.set(other, { ...lost.attempts.get(other)!, noteAt: Date.now() - 10 * 60_000 });
+    expect(await lost.apply(other)).toBeNull();
+    expect(lost.docs.suggest).toHaveBeenCalledTimes(1);
+    expect(lost.docs.replyToSuggestion).toHaveBeenCalledTimes(2);
+ 
+    // A suggestion the Doc no longer shows, once decided there, is never made again, however
+    // long ago it was sent: its note's outcome can't be told.
+    let decided = harness();
+    decided.keepSuggestions({ loseFirst: "note" });
+    let third = await decided.submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await decided.apply(third)).toMatch(/^The suggestion was made/);
+    decided.doc.suggestions.length = 0;
+    let old = Date.now() - 10 * 60_000;
+    decided.attempts.set(third, { ...decided.attempts.get(third)!, at: old, noteAt: old });
+    expect(await decided.apply(third)).toMatch(/^The suggestion was made, and the Doc no longer shows it/);
+    expect(decided.docs.suggest).toHaveBeenCalledTimes(1);
+    expect(decided.journal.get(third)?.state).toBe("failed");
+  });
+
+  it("withdraws a suggested edit from every state approving can leave it in", async () => {
+    type Run = ReturnType<typeof harness>;
+    let states: [string, (run: Run) => Promise<number>][] = [
+      ["never approved", run => run.submit("suggestEdit", edit())],
+      ["a send Docs did not confirm", async run => {
+        run.docs.suggest.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
+        let id = await run.submit("suggestEdit", edit());
+        expect(await run.apply(id)).toBe(UNCONFIRMED_SUGGESTION);
+        return id;
+      }],
+      ["refused by a revision that moved", async run => {
+        run.docs.suggest.mockImplementationOnce(async () => {
+          run.doc.current = docOf(DOC_TEXT, "rev-2");
+          throw docsRefused();
+        });
+        let id = await run.submit("suggestEdit", edit());
+        expect(await run.apply(id)).toBe(DOC_CHANGED);
+        return id;
+      }],
+      ["made, with its note unconfirmed", async run => {
+        run.keepSuggestions({ loseFirst: "note" });
+        let id = await run.submit("suggestEdit", edit({ note: "It moved." }));
+        expect(await run.apply(id)).toMatch(/^The suggestion was made/);
+        return id;
+      }],
+      ["failed for good with its text gone", async run => {
+        let id = await run.submit("suggestEdit", edit());
+        run.doc.current = docOf("Nothing here.\n");
+        expect(await run.apply(id)).toBe(QUOTE_GONE);
+        return id;
+      }],
+      ["an approval interrupted after its claim", async run => {
+        let id = await run.submit("suggestEdit", edit());
+        run.journal.markClaimed(id);
+        return id;
+      }],
+    ];
+    for (let [name, reach] of states) {
+      let run = harness();
+      let id = await reach(run);
+      let sends = run.docs.suggest.mock.calls.length + run.docs.replyToSuggestion.mock.calls.length;
+      await expect(run.reject(id), name).resolves.toBeUndefined();
+      expect(run.journal.get(id), name).toBeUndefined();
+      expect(run.journal.listPending(), name).toEqual([]);
+      expect(run.docs.suggest.mock.calls.length + run.docs.replyToSuggestion.mock.calls.length, name)
+        .toBe(sends);
+    }
+  });
+
+  it("returns a queued suggested edit as the session shows it", () => {
+    expect(pendingSuggestion(3, edit({ note: "It moved." }))).toEqual({
+      id: "pending:3", tabId: "t.0", oldText: "May", newText: "June", note: "It moved.",
+      createdTime: new Date(TARGET.queuedAt), pending: true,
+    });
+    expect(pendingSuggestion(3, edit())).not.toHaveProperty("note");
+  });
+});
+
+describe("how a Docs write failed", () => {
+  it("tells a refusal, a rate limit and an unanswered send apart", async () => {
+    let { docsWriteFailure } = await import("../src/docs-api");
+    expect(docsWriteFailure(docsRefused())).toBe("absent");
+    expect(docsWriteFailure(docsRefused("PERMISSION_DENIED"))).toBe("absent");
+    expect(docsWriteFailure(docsRefused("RESOURCE_EXHAUSTED"))).toBe("rateLimited");
+    expect(docsWriteFailure(new GoogleApiError("x", "PERMISSION_DENIED", ["RATE_LIMIT_EXCEEDED"])))
+      .toBe("rateLimited");
+    expect(docsWriteFailure(docsRefused("INTERNAL"))).toBe("unknown");
+    expect(docsWriteFailure(new GoogleApiError("x", undefined))).toBe("unknown");
+    expect(docsWriteFailure(new Error("The operation was aborted due to timeout"))).toBe("unknown");
   });
 });

@@ -341,7 +341,8 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
       "The cursor's `next()` fails asking to reconnect when the Google account was connected " +
         "before Drive bindings could read file content.",
       "The text of the file this comment is attached to, when Drive reports one",
-      "Absent for a comment not attached to text, as every comment made through this binding is.",
+      "or one that quoted a Google Doc, which shows it while `pending` too.",
+      "Absent for a comment not attached to text.",
       "Time the comment was made or, while it is `pending`, queued.",
       "Time the reply was made or, while it is `pending`, queued.",
       "A pending ID cannot be replied to or resolved, and names nothing once the comment is decided",
@@ -366,7 +367,8 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
       expect(names).toContain(name);
     }
     for (const name of [
-      "DriveCommentWrites", "DriveCommentOptions", "DriveSuggestEditOptions", "GoogleDriveSession",
+      "DriveCommentWrites", "DriveCommentOptions", "DriveSuggestEditOptions", "DocSuggestion",
+      "GoogleDriveSession",
       "GoogleDriveFileSession", "GoogleDriveFolderSession",
     ]) {
       expect(names).not.toContain(name);
@@ -417,7 +419,7 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     const writeTypes = source("drive-types.d.ts");
     for (const signature of [
       "comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;",
-      "fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,\n  ): Promise<DriveComment>;",
+      "fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,\n  ): Promise<DocSuggestion>;",
       "reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply>;",
       "resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply>;",
     ]) {
@@ -425,18 +427,25 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     }
     const writeProse = prose("drive-types.d.ts");
     for (const phrase of [
-      "Comments are plain text, never anchored to text in the file.",
+      "Comments are plain text. One that quotes a Google Doc is attached to the quoted text; any " +
+        "other is attached to no text in the file.",
+      "accepts or rejects there, as one made in the editor in Suggesting mode; the Doc's text " +
+        "does not change until then.",
+      "At approval `oldText` must still occur exactly once in the tab.",
+      "it is not a comment, so `listComments()` shows it neither while it is queued nor after.",
       "a new comment makes Google email the file's owner",
       "An email address written after `@` or `+` in the text mentions that person: Google emails " +
         "them the text, whether or not they can open the file.",
-      "Each write is queued for the user's approval and returns the pending item",
-      "A comment or reply holds at most 4096 bytes of UTF-8",
+      "Each comment, reply or resolve is queued for the user's approval and returns the pending item",
+      "A comment or reply holds at most 4096 bytes of UTF-8, and a comment that quotes a Doc at " +
+        "most 2048.",
       "when the Google account does not allow changes to Drive files",
       "and on a read-only binding, whose `getScope()` reports `access: \"read\"`",
       "`quote` works only on native Google Docs.",
       "Native Google Docs only.",
       "within one paragraph and at most 500 characters, which must occur exactly once in the tab",
-      "when a heading precedes it",
+      "The comment is attached to it in the Doc, as one made in the Docs editor is, and must " +
+        "still occur exactly once in the tab when the comment is approved.",
       "Defaults to the first tab.",
       "Replying to a resolved comment reopens it.",
       "A comment that is itself still `pending` takes replies once it is posted, under its Drive ID.",
@@ -459,7 +468,8 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     expect(writeProse).not.toContain("Read and write access to");
     expect(topLevelNames(stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX)))
       .toEqual([
-        "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites", "GoogleDriveSession",
+        "DriveCommentOptions", "DriveSuggestEditOptions", "DocSuggestion", "DriveCommentWrites",
+        "GoogleDriveSession",
         "GoogleDriveFileSession", "GoogleDriveFolderSession",
       ]);
     expect(duplicates(topLevelNames(driveWriteBundle()))).toEqual([]);
@@ -469,7 +479,11 @@ declare const file: GoogleDriveFileSession;
 declare const folder: GoogleDriveFolderSession;
 async function use(): Promise<void> {
   const queued: DriveComment = await drive.comment("file-1", "Why?", { quote: "May", tabId: "t.0" });
-  await file.suggestEdit("file-1", "May", "June", { note: "It moved." });
+  const suggested: DocSuggestion = await file.suggestEdit("file-1", "May", "June", { note: "It moved." });
+  const replaced: string = suggested.oldText;
+  const pendingSuggestion: true = suggested.pending;
+  // @ts-expect-error A suggestion is not a comment.
+  const asComment: DriveComment = await drive.suggestEdit("file-1", "May", "June");
   const reply: DriveCommentReply = await folder.reply("file-1", "doco.x", "Agreed.");
   await file.resolve("file-1", "doco.x");
   await drive.resolve("file-1", "doco.x", "Fixed.");
@@ -481,7 +495,7 @@ async function use(): Promise<void> {
   const readableFolder: GoogleDriveFolderReadSession = folder;
   if ((await folder.getScope()).access === "write") await folder.comment("file-1", "Why?");
 }
-// @ts-expect-error A comment is never anchored.
+// @ts-expect-error A comment is attached only by quoting, never by a raw anchor.
 drive.comment("file-1", "Why?", { anchor: "kix.1" });
 declare const readOnly: GoogleDriveReadSession;
 // @ts-expect-error A read-only session is not a read and write one.

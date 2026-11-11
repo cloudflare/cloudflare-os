@@ -1577,6 +1577,19 @@ describe("folder-scoped native sessions", () => {
 });
 
 /** A Doc whose second paragraph is the heading the quoted text sits under. */
+/** The text of headedDoc()'s tab from index 1, where a tab's text starts. */
+const HEADED_TEXT = "Plan\nLaunch\nThe launch is in May.\nWe ship in May and June.\n";
+
+/** The text of headedDoc()'s tab in `range`. */
+function headedText(range: { startIndex: number; endIndex: number }): string {
+  return HEADED_TEXT.slice(range.startIndex - 1, range.endIndex - 1);
+}
+
+/** A Docs API refusal, as Google answers one. */
+function docsError(status: number, rpc: string, message: string): Response {
+  return Response.json({ error: { code: status, status: rpc, message } }, { status });
+}
+
 function headedDoc() {
   let tab = buildTab([
     { runs: ["Plan\n"], namedStyleType: "TITLE" },
@@ -1618,7 +1631,6 @@ describe("Drive comment actions", () => {
     "again first checks the file's comments, so it is not posted twice; rejecting it leaves " +
     "anything already posted on the file.";
   const OUTSIDE = "The requested file is outside this Drive binding.";
-  const LINK = "https://docs.google.com/document/d/doc-1/edit?tab=t.0#heading=h.launch";
   const ME = { displayName: "Test User", me: true };
   const ADA = { displayName: "Ada Lovelace", me: false };
 
@@ -1666,6 +1678,12 @@ describe("Drive comment actions", () => {
     nextWrite?: "lost" | Refusal;
     /** How every listing of a file's comments answers, when set. */
     listRefusal?: Refusal;
+    /** Every Docs `batchUpdate` body, as sent. */
+    readonly docsWrites: Record<string, unknown>[] = [];
+    /** The suggestions made in `doc-1`, as Docs lists them. */
+    readonly suggestions: { suggestionId: string; summaryText: string; createTime: string; replies: string[] }[] = [];
+    /** The Doc's revision, which every Docs write moves, as Google's do. */
+    revision = 1;
     #ids = 0;
 
     install(): this {
@@ -1731,7 +1749,7 @@ describe("Drive comment actions", () => {
       if (url.pathname === "/batch/drive/v3") {
         return this.#batch(new TextDecoder().decode(await request.arrayBuffer()));
       }
-      if (url.hostname === "docs.googleapis.com") return Response.json(headedDoc());
+      if (url.hostname === "docs.googleapis.com") return this.#docs(url, request);
       let match = /^\/drive\/v3\/files\/([^/]+)(\/comments(?:\/([^/]+)(\/replies)?)?)?$/
         .exec(url.pathname);
       if (!match) throw new Error(`Unexpected provider request: ${url}`);
@@ -1800,6 +1818,66 @@ describe("Drive comment actions", () => {
         }, "fields");
       }
       return Response.json(created);
+    }
+
+    /**
+     * `doc-1` as Docs serves it, with its suggestions when comments are asked for, and its
+     * `batchUpdate`: an anchored comment Drive then lists under the same ID, a suggestion in
+     * SUGGEST mode, and a reply on a suggestion, each refused on another revision than the latest.
+     */
+    async #docs(url: URL, request: Request): Promise<Response> {
+      let doc = { ...headedDoc(), revisionId: `revision-${this.revision}` };
+      if (request.method === "GET") {
+        if (url.searchParams.get("commentsViewMode") !== "COMMENTS_VIEW_MODE_INCLUDED") {
+          return Response.json(doc);
+        }
+        return Response.json({ ...doc, suggestions: this.suggestions.map(suggestion => ({
+          suggestionId: suggestion.suggestionId, summaryText: suggestion.summaryText,
+          headPost: { content: "", author: { me: true }, createTime: suggestion.createTime },
+          replies: suggestion.replies.map(content =>
+            ({ content, author: { me: true }, createTime: new Date().toISOString() })),
+        })) });
+      }
+      let body = await request.json() as {
+        requests: Record<string, Record<string, unknown>>[];
+        writeControl?: { writeMode?: string; requiredRevisionId?: string };
+      };
+      this.docsWrites.push(body);
+      let required = body.writeControl?.requiredRevisionId;
+      if (required !== undefined && required !== doc.revisionId) {
+        return docsError(400, "INVALID_ARGUMENT", "The required revision ID does not match the latest revision.");
+      }
+      if (!this.files.get("doc-1")?.canComment) {
+        return docsError(403, "PERMISSION_DENIED", "The caller does not have permission");
+      }
+      let [first, second] = body.requests;
+      let now = new Date().toISOString();
+      this.revision++;
+      if (first.insertComment) {
+        let { content, range } = first.insertComment as
+          { content: string; range: { startIndex: number; endIndex: number } };
+        let comment: FakeComment = {
+          id: this.#id(), content, author: ME, createdTime: now, modifiedTime: now, deleted: false,
+          replies: [], quotedFileContent: { mimeType: "text/html", value: headedText(range) },
+        };
+        this.#list("doc-1").push(comment);
+        return Response.json({ replies: [{ insertComment: { commentThread: { commentId: comment.id } } }] });
+      }
+      if (first.addCommentReply) {
+        let { suggestionId, post } = first.addCommentReply as { suggestionId: string; post: { content: string } };
+        this.suggestions.find(candidate => candidate.suggestionId === suggestionId)?.replies.push(post.content);
+        return Response.json({ replies: [{}] });
+      }
+      if (body.writeControl?.writeMode !== "SUGGEST") throw new Error("An edit was sent as an edit.");
+      let old = headedText((first.deleteContentRange as { range: { startIndex: number; endIndex: number } }).range);
+      let insert = second?.insertText as { text: string } | undefined;
+      let suggestionId = `suggest.${this.#ids++}`;
+      this.suggestions.push({
+        suggestionId, createTime: now, replies: [],
+        summaryText: insert ? `Replace: “${old}” with “${insert.text}”` : `Delete: “${old}”`,
+      });
+      return Response.json({ replies: body.requests.map(() => ({})),
+        suggestionResponses: [{ createdSuggestionIds: [suggestionId] }] });
     }
 
     #createComment(fileId: string, body: Record<string, unknown>) {
@@ -2260,15 +2338,15 @@ describe("Drive comment actions", () => {
       expect(refused.error).toBe("That comment was not found on this file.");
     });
 
-    it("queues a quoted comment as plain text with a link to the heading above the quote", async () => {
+    it("queues a quoted comment with the text it is attached to, and attaches it through Docs", async () => {
       let drive = binding();
 
       let queued = await drive.queued("comment", "doc-1", "Should this be June?",
         { quote: "The launch is in May." });
 
-      let body = `"The launch is in May."\n\nShould this be June?\n\n${LINK}`;
       expect(queued.value).toEqual({
-        id: `pending:${queued.actionId}`, author: { displayName: "You", me: true }, text: body,
+        id: `pending:${queued.actionId}`, author: { displayName: "You", me: true },
+        text: "Should this be June?", quotedText: "The launch is in May.",
         createdTime: expect.any(Date), resolved: false, replies: [], pending: true,
       });
       expect(queued.action).toMatchObject({
@@ -2276,10 +2354,12 @@ describe("Drive comment actions", () => {
         actionKind: { tag: "driveComments", label: "Drive comments" },
         autoApprovable: true,
         fields: [
-          { label: "Comment", kind: "text", value: body },
+          { label: "Comment", kind: "text", value: "Should this be June?" },
+          { label: "Quoted text", kind: "text", value: "The launch is in May." },
           { label: "File", kind: "inline", value: "doc-1" },
           // The fake names a file by its ID.
           { label: "File name", kind: "inline", value: "doc-1" },
+          { label: "Tab", kind: "inline", value: "t.0" },
         ],
       });
       expect(queued.action?.description).toContain("Google emails the file's owner");
@@ -2291,16 +2371,88 @@ describe("Drive comment actions", () => {
         { title: "Read Google Doc content", subresources: ["docs/document/doc-1"] },
       ]);
       expect(posts()).toEqual([]);
+      expect(provider.docsWrites).toEqual([]);
+
+      expect(await drive.apply(queued.actionId)).toBeNull();
+      // Sent through Docs on the revision read at approval, anchored to the quoted text, which
+      // starts at index 13; Drive lists it under the same ID with that text as its quote.
+      expect(provider.docsWrites).toEqual([{
+        requests: [{ insertComment: { content: "Should this be June?",
+          range: { startIndex: 13, endIndex: 34, tabId: "t.0" } } }],
+        writeControl: { requiredRevisionId: "revision-1" },
+      }]);
+      expect(posts()).toEqual([]);
+      let [posted] = await drive.comments("doc-1");
+      expect(posted).toMatchObject({ text: "Should this be June?", quotedText: "The launch is in May." });
+      expect(posted.pending).toBeUndefined();
     });
 
-    it("queues a suggested edit as a comment describing it", async () => {
-      let queued = await binding().queued("suggestEdit", "doc-1", "launch is in May",
+    it("queues a suggested edit, and makes it a suggestion with its note on it once approved", async () => {
+      let drive = binding();
+      let queued = await drive.queued("suggestEdit", "doc-1", "launch is in May",
         "launch is in June", { note: "Marketing moved it." });
 
-      let body = "Suggested edit: replace \"launch is in May\" with \"launch is in June\"\n\n" +
-        `Marketing moved it.\n\n${LINK}`;
-      expect((queued.value as DriveComment).text).toBe(body);
-      expect(queued.action?.fields).toContainEqual({ label: "Comment", kind: "text", value: body });
+      expect(queued.value).toEqual({
+        id: `pending:${queued.actionId}`, tabId: "t.0", oldText: "launch is in May",
+        newText: "launch is in June", note: "Marketing moved it.", createdTime: expect.any(Date),
+        pending: true,
+      });
+      expect(queued.action?.fields?.slice(0, 3)).toEqual([
+        { label: "Replace", kind: "text", value: "launch is in May" },
+        { label: "With", kind: "text", value: "launch is in June" },
+        { label: "Note", kind: "text", value: "Marketing moved it." },
+      ]);
+      expect(queued.reports).toContainEqual(
+        { title: "Read Google Doc content", subresources: ["docs/document/doc-1"] });
+      // A suggestion is not a comment: no listing shows it.
+      expect(await drive.comments("doc-1")).toEqual([]);
+
+      expect(await drive.apply(queued.actionId)).toBeNull();
+      expect(provider.docsWrites).toEqual([
+        {
+          requests: [
+            { deleteContentRange: { range: { startIndex: 17, endIndex: 33, tabId: "t.0" } } },
+            { insertText: { location: { index: 17, tabId: "t.0" }, text: "launch is in June" } },
+          ],
+          writeControl: { writeMode: "SUGGEST", requiredRevisionId: "revision-1" },
+        },
+        { requests: [{ addCommentReply: { suggestionId: "suggest.0", post: { content: "Marketing moved it." } } }] },
+      ]);
+      expect(provider.suggestions).toEqual([{
+        suggestionId: "suggest.0", summaryText: "Replace: “launch is in May” with “launch is in June”",
+        createTime: expect.any(String), replies: ["Marketing moved it."],
+      }]);
+      expect(posts()).toEqual([]);
+      expect(await drive.attempts()).toEqual({});
+    });
+
+    it("fails a suggested edit for good, sending nothing, once its text is no longer in the Doc once", async () => {
+      let drive = binding();
+      let queued = await drive.queued("suggestEdit", "doc-1", "launch is in May", "launch is in June");
+      // The text is now there twice.
+      let fetch = globalThis.fetch;
+      vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+        let request = new Request(input, init);
+        if (request.method === "GET" && new URL(request.url).hostname === "docs.googleapis.com") {
+          let doc = headedDoc();
+          let run = doc.tabs[0].documentTab.body.content[4].paragraph!.elements[0];
+          run.textRun!.content = "We ship: launch is in May.\n";
+          return Response.json(doc);
+        }
+        return fetch(request);
+      });
+
+      expect(await drive.apply(queued.actionId)).toBe("The quoted text is no longer in the Doc " +
+        "exactly once, so this can't be attached to it. Queue it again with text the Doc has now.");
+      expect(provider.docsWrites).toEqual([]);
+    });
+
+    it("refuses a suggested edit as a commenter would be refused one, and sends nothing", async () => {
+      let refused = await binding().call("suggestEdit", "view-only", "launch is in May", "June");
+
+      expect(refused.error).toBe(VIEW_ONLY);
+      expect(refused.actionId).toBeUndefined();
+      expect(provider.docsWrites).toEqual([]);
     });
 
     it("says a reply to a resolved comment reopens it", async () => {
@@ -2415,7 +2567,7 @@ describe("Drive comment actions", () => {
       expect(withdrawn.reports.at(-1)?.subresources).toEqual(["drive/file/doc-1"]);
     });
 
-    it("reports the document for a pending suggested edit, and not for a pending comment that quotes nothing", async () => {
+    it("reports the document for neither a pending suggested edit, which no page shows, nor a pending comment that quotes nothing", async () => {
       let drive = binding();
       await drive.queued("comment", "doc-1", "Looks good.");
 
@@ -2424,15 +2576,9 @@ describe("Drive comment actions", () => {
       expect(plain.reports.at(-1))
         .toEqual({ title: "Read Google Drive comments", subresources: ["drive/file/doc-1"] });
 
-      let { actionId } = await drive.queued(
-        "suggestEdit", "doc-1", "launch is in May", "launch is in June");
+      await drive.queued("suggestEdit", "doc-1", "launch is in May", "launch is in June");
       let suggested = await drive.call("listComments", "doc-1");
-      expect(suggested.reports.at(-1)?.subresources)
-        .toEqual(["drive/file/doc-1", "docs/document/doc-1"]);
-
-      expect(await drive.reject(actionId)).toBeNull();
-      let withdrawn = await drive.call("listComments", "doc-1");
-      expect(withdrawn.reports.at(-1)?.subresources).toEqual(["drive/file/doc-1"]);
+      expect(suggested.reports.at(-1)?.subresources).toEqual(["drive/file/doc-1"]);
     });
 
     it("reports the folder with a child's comments", async () => {

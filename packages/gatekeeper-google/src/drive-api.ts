@@ -723,8 +723,17 @@ function batchPartLacksScope(part: BatchAccessPart): boolean {
 /** Google's limit on a comment's or reply's content, in bytes of UTF-8. */
 export const MAX_COMMENT_BYTES = 4096;
 
+/**
+ * The Docs API's limit on a comment's or post's content, in bytes of UTF-8 ("UTF-8 code units"):
+ * 2048 ASCII characters pass and 2049 are refused, as are 1025 two-byte ones.
+ */
+export const MAX_DOCS_COMMENT_BYTES = 2048;
+
 /** Our own limit on the text a comment quotes or a suggested edit replaces, in characters. */
 export const MAX_QUOTE_CHARS = 500;
+
+/** Our own limit on the text a suggested edit puts in, in characters. */
+export const MAX_REPLACEMENT_CHARS = 1000;
 
 /** Bytes `text` takes in UTF-8, which is what {@link MAX_COMMENT_BYTES} counts. */
 export function utf8ByteLength(text: string): number {
@@ -733,14 +742,18 @@ export function utf8ByteLength(text: string): number {
 
 /**
  * Refuses content Google would refuse, and content it would wrongly accept: an empty or
- * whitespace-only comment is created as an empty one. `what` names the content in the error.
+ * whitespace-only comment is created as an empty one. `what` names the content in the error, and
+ * `maxBytes` is {@link MAX_DOCS_COMMENT_BYTES} for content sent through the Docs API.
  */
-export function checkCommentContent(content: string, what: "comment" | "reply" = "comment"): void {
+export function checkCommentContent(
+  content: string, what: "comment" | "reply" | "note" = "comment", maxBytes = MAX_COMMENT_BYTES,
+): void {
   if (!content.trim()) throw new Error(`The ${what} is empty.`);
   let bytes = utf8ByteLength(content);
-  if (bytes > MAX_COMMENT_BYTES) {
-    throw new Error(
-      `The ${what} is ${bytes} bytes of UTF-8; Google Drive allows at most ${MAX_COMMENT_BYTES}.`);
+  if (bytes > maxBytes) {
+    let api = maxBytes === MAX_COMMENT_BYTES ? "Google Drive allows" : "Google Docs allows";
+    throw new Error(`The ${what} is ${bytes} bytes of UTF-8; ${api} at most ${maxBytes}${
+      maxBytes === MAX_COMMENT_BYTES ? "" : " on a comment that quotes a Doc or a suggestion's note"}.`);
   }
 }
 

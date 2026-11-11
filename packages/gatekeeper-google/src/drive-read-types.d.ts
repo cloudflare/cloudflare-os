@@ -234,8 +234,8 @@ export type DriveComment = {
   text: string;
   /**
    * The text of the file this comment is attached to, when Drive reports one: a comment made in an
-   * editor on a selection. Absent for a comment not attached to text, as every comment made
-   * through this binding is.
+   * editor on a selection, or one that quoted a Google Doc, which shows it while `pending` too.
+   * Absent for a comment not attached to text.
    */
   quotedText?: string;
   /** Time the comment was made or, while it is `pending`, queued. */

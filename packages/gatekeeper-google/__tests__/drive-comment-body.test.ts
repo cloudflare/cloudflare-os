@@ -1,17 +1,26 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsDocument, GoogleDocsTab, StructuralElement } from "../src/docs-api";
 import {
-  composeComment, composeReply, composeResolve, composeSuggestion, headingLink, locateQuote,
+  checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
   selectTab,
 } from "../src/drive-comment-body";
-import { MAX_COMMENT_BYTES, MAX_QUOTE_CHARS } from "../src/drive-api";
+import {
+  MAX_COMMENT_BYTES, MAX_DOCS_COMMENT_BYTES, MAX_QUOTE_CHARS, MAX_REPLACEMENT_CHARS,
+} from "../src/drive-api";
 
-/** A paragraph of text runs, optionally a heading with Google's `headingId`. */
-function paragraph(runs: string[], headingId?: string): StructuralElement {
+/** A part of a paragraph: a text run, or a chip that reads as text but takes one index. */
+type Part = string | { person: string } | { date: string };
+
+/** A paragraph of text runs and chips, its indices filled in later by {@link tab}. */
+function paragraph(parts: Part[], headingId?: string): StructuralElement {
   return {
     startIndex: 0, endIndex: 0,
     paragraph: {
-      elements: runs.map(content => ({ startIndex: 0, endIndex: 0, textRun: { content, textStyle: {} } })),
+      elements: parts.map(part => typeof part === "string"
+        ? { startIndex: 0, endIndex: 0, textRun: { content: part, textStyle: {} } }
+        : "person" in part
+          ? { startIndex: 0, endIndex: 0, person: { personProperties: { name: part.person } } }
+          : { startIndex: 0, endIndex: 0, dateElement: { dateElementProperties: { displayText: part.date } } }),
       paragraphStyle: headingId
         ? { namedStyleType: "HEADING_2", headingId }
         : { namedStyleType: "NORMAL_TEXT" },
@@ -31,7 +40,31 @@ function table(rows: StructuralElement[][][]): StructuralElement {
   };
 }
 
+/** Gives every element its index as Google would: a run its length, a chip one, a table and cell one. */
+function numbered(content: StructuralElement[], from: number): number {
+  let at = from;
+  for (let element of content) {
+    element.startIndex = at;
+    if (element.paragraph) {
+      for (let part of element.paragraph.elements) {
+        part.startIndex = at;
+        at += part.textRun ? part.textRun.content.length : 1;
+        part.endIndex = at;
+      }
+    } else if (element.table) {
+      at++;
+      for (let row of element.table.tableRows ?? []) {
+        at++;
+        for (let cell of row.tableCells ?? []) at = numbered(cell.content ?? [], at + 1);
+      }
+    }
+    element.endIndex = at;
+  }
+  return at;
+}
+
 function tab(tabId: string, content: StructuralElement[], extra: Partial<GoogleDocsTab> = {}): GoogleDocsTab {
+  numbered(content, 1);
   return {
     tabId, title: tabId, index: 0, nestingLevel: 0, lists: {}, namedRanges: {},
     body: { content: [{ startIndex: 0, endIndex: 1, sectionBreak: {} }, ...content] },
@@ -65,46 +98,46 @@ describe("selectTab", () => {
 });
 
 describe("locateQuote", () => {
-  it("finds a quote in a paragraph and returns no heading when none precedes it", () => {
-    expect(locateQuote(tab("t.0", [paragraph(["The budget is final.\n"])]), "budget")).toBeUndefined();
+  it("returns the range the quote takes in its tab", () => {
+    // Index 1 is where the body's text starts.
+    expect(locateQuote(tab("t.0", [paragraph(["The budget is final.\n"])]), "budget"))
+      .toEqual({ startIndex: 5, endIndex: 11, tabId: "t.0" });
   });
 
-  it("returns the nearest heading above the quote", () => {
-    let content = [
-      paragraph(["Plan\n"], "h.title"),
-      paragraph(["Intro text.\n"]),
-      paragraph(["Costs\n"], "h.costs"),
-      paragraph(["The budget is final.\n"]),
-      paragraph(["Risks\n"], "h.risks"),
-    ];
-    expect(locateQuote(tab("t.0", content), "budget is final")).toBe("h.costs");
-  });
-
-  it("returns the heading the quote is in", () => {
-    let content = [paragraph(["Intro\n"], "h.intro"), paragraph(["Costs\n"], "h.costs")];
-    expect(locateQuote(tab("t.0", content), "Costs")).toBe("h.costs");
+  it("counts every paragraph before it, headings included", () => {
+    let content = [paragraph(["Plan\n"], "h.title"), paragraph(["The budget is final.\n"])];
+    expect(locateQuote(tab("t.1", content), "budget is final"))
+      .toEqual({ startIndex: 10, endIndex: 25, tabId: "t.1" });
   });
 
   it("matches across text runs", () => {
-    let content = [paragraph(["Costs\n"], "h.costs"), paragraph(["The bud", "get is ", "final.\n"])];
-    expect(locateQuote(tab("t.0", content), "budget is final")).toBe("h.costs");
+    let content = [paragraph(["The bud", "get is ", "final.\n"])];
+    expect(locateQuote(tab("t.0", content), "budget is final"))
+      .toEqual({ startIndex: 5, endIndex: 20, tabId: "t.0" });
   });
 
-  it("finds text inside table cells, nested tables included, under the heading above the table", () => {
-    let content = [
-      paragraph(["Numbers\n"], "h.numbers"),
-      table([[[paragraph(["Q1\n"])], [table([[[paragraph(["Revenue 42\n"])]]])]]]),
-    ];
-    expect(locateQuote(tab("t.0", content), "Revenue 42")).toBe("h.numbers");
+  it("finds text inside table cells, nested tables included, at its index there", () => {
+    let content = [table([[[paragraph(["Q1\n"])], [table([[[paragraph(["Revenue 42\n"])]]])]]])];
+    let found = tab("t.0", content);
+    let range = locateQuote(found, "Revenue 42");
+    let inner = content[0].table!.tableRows![0].tableCells![1].content![0].table!
+      .tableRows![0].tableCells![0].content![0];
+    expect(range).toEqual({ startIndex: inner.startIndex, endIndex: inner.startIndex + 10, tabId: "t.0" });
   });
 
   it("trims the quote but compares the rest exactly", () => {
-    let content = [paragraph(["Costs\n"], "h.costs"), paragraph(["Caf\u00e9  budget\n"])];
-    expect(locateQuote(tab("t.0", content), "  Caf\u00e9  budget \n")).toBe("h.costs");
+    let content = [paragraph(["Caf\u00e9  budget\n"])];
+    expect(locateQuote(tab("t.0", content), "  Caf\u00e9  budget \n"))
+      .toEqual({ startIndex: 1, endIndex: 13, tabId: "t.0" });
     // A decomposed e with an accent against the document's composed one, and one space for two,
     // are not the same text.
     expect(() => locateQuote(tab("t.0", content), "Cafe\u0301  budget")).toThrow("not found");
     expect(() => locateQuote(tab("t.0", content), "Caf\u00e9 budget")).toThrow("not found");
+  });
+
+  it("counts UTF-16 code units, as Docs indices do", () => {
+    let content = [paragraph(["\u{1F600} smile\n"])];
+    expect(locateQuote(tab("t.0", content), "smile")).toEqual({ startIndex: 4, endIndex: 9, tabId: "t.0" });
   });
 
   it("refuses text that is not in the tab", () => {
@@ -121,22 +154,12 @@ describe("locateQuote", () => {
     }
   });
 
-  it("reads chips as the Markdown shows them", () => {
-    let chips: StructuralElement = {
-      startIndex: 0, endIndex: 0,
-      paragraph: {
-        elements: [
-          { startIndex: 0, endIndex: 0, textRun: { content: "Ask ", textStyle: {} } },
-          { startIndex: 0, endIndex: 0, person: { personProperties: { name: "Alice" } } },
-          { startIndex: 0, endIndex: 0, textRun: { content: " by ", textStyle: {} } },
-          { startIndex: 0, endIndex: 0, dateElement: { dateElementProperties: { displayText: "Oct 21, 2026" } } },
-          { startIndex: 0, endIndex: 0, textRun: { content: "\n", textStyle: {} } },
-        ],
-        paragraphStyle: { namedStyleType: "NORMAL_TEXT" },
-      },
-    };
-    let content = [paragraph(["Owners\n"], "h.owners"), chips];
-    expect(locateQuote(tab("t.0", content), "Ask Alice by Oct 21, 2026")).toBe("h.owners");
+  it("reads chips as the Markdown shows them, and takes a chip quoted in part whole", () => {
+    let content = [paragraph(["Ask ", { person: "Alice" }, " by ", { date: "Oct 21, 2026" }, "\n"])];
+    let found = tab("t.0", content);
+    // "Ask " is 1..5, the person chip 5..6, " by " 6..10, the date chip 10..11.
+    expect(locateQuote(found, "Ask Alice by Oct 21, 2026")).toEqual({ startIndex: 1, endIndex: 11, tabId: "t.0" });
+    expect(locateQuote(found, "lice by")).toEqual({ startIndex: 5, endIndex: 9, tabId: "t.0" });
   });
 
   it("refuses text that appears more than once, counting overlaps", () => {
@@ -150,39 +173,21 @@ describe("locateQuote", () => {
     expect(() => locateQuote(tab("t.0", [paragraph(["Hello\n"])]), "  ")).toThrow("The quote is empty.");
   });
 
-  it("reads only text runs, skipping malformed elements", () => {
+  it("skips malformed elements", () => {
     let content = [
-      paragraph(["Costs\n"], "h.costs"),
-      { startIndex: 0, endIndex: 0, paragraph: { elements: [{ person: {} }, null, { textRun: { content: 7 } }] } },
-      paragraph(["Total\n"]),
+      { startIndex: 1, endIndex: 2, paragraph: { elements: [{ person: {} }, null, { textRun: { content: 7 } }] } },
+      { startIndex: 2, endIndex: 8, paragraph: { elements: [
+        { startIndex: 2, endIndex: 8, textRun: { content: "Total\n", textStyle: {} } }] } },
     ] as unknown as StructuralElement[];
-    expect(locateQuote(tab("t.0", content), "Total")).toBe("h.costs");
-  });
-});
-
-describe("headingLink", () => {
-  it("links the tab and heading, encoding each part", () => {
-    expect(headingLink("doc-1", "t.0", "h.xgjl2srtytjt"))
-      .toBe("https://docs.google.com/document/d/doc-1/edit?tab=t.0#heading=h.xgjl2srtytjt");
-    expect(headingLink("a/b", "t 1", "h#x&y"))
-      .toBe("https://docs.google.com/document/d/a%2Fb/edit?tab=t%201#heading=h%23x%26y");
+    let raw: GoogleDocsTab = { tabId: "t.0", title: "t.0", index: 0, nestingLevel: 0, lists: {},
+      namedRanges: {}, body: { content } };
+    expect(locateQuote(raw, "Total")).toEqual({ startIndex: 2, endIndex: 7, tabId: "t.0" });
   });
 });
 
 describe("composeComment", () => {
-  const LINK = "https://docs.google.com/document/d/doc-1/edit?tab=t.0#heading=h.costs";
-
-  it("is the trimmed text alone without a quote", () => {
+  it("is the trimmed text", () => {
     expect(composeComment("  Looks good.\n")).toBe("Looks good.");
-  });
-
-  it("puts the quote, the text and the link in their own paragraphs", () => {
-    expect(composeComment("Is this final?", " the budget ", LINK))
-      .toBe(`"the budget"\n\nIs this final?\n\n${LINK}`);
-  });
-
-  it("leaves the link out when there is none", () => {
-    expect(composeComment("Is this final?", "the budget")).toBe('"the budget"\n\nIs this final?');
   });
 
   it("keeps the text's inner whitespace and characters exactly", () => {
@@ -190,22 +195,12 @@ describe("composeComment", () => {
     expect(composeComment(text)).toBe(text);
   });
 
-  it("refuses empty or whitespace-only text, even with a quote", () => {
+  it("refuses empty or whitespace-only text", () => {
     expect(() => composeComment("")).toThrow("The comment is empty.");
-    expect(() => composeComment(" \n\t", "the budget")).toThrow("The comment is empty.");
+    expect(() => composeComment(" \n\t", true)).toThrow("The comment is empty.");
   });
 
-  it("refuses an empty quote", () => {
-    expect(() => composeComment("Why?", "  ")).toThrow("The quote is empty.");
-  });
-
-  it("caps the quote in characters, not bytes", () => {
-    expect(composeComment("Why?", "\u00e9".repeat(MAX_QUOTE_CHARS))).toContain("\u00e9".repeat(MAX_QUOTE_CHARS));
-    expect(() => composeComment("Why?", "x".repeat(MAX_QUOTE_CHARS + 1)))
-      .toThrow(`The quote is ${MAX_QUOTE_CHARS + 1} characters; at most ${MAX_QUOTE_CHARS} can be quoted.`);
-  });
-
-  it("allows exactly Google's limit in UTF-8 bytes and refuses one byte more", () => {
+  it("allows exactly Drive's limit in UTF-8 bytes and refuses one byte more", () => {
     expect(composeComment("a".repeat(MAX_COMMENT_BYTES))).toHaveLength(MAX_COMMENT_BYTES);
     expect(composeComment("\u00e9".repeat(2048))).toHaveLength(2048);
     expect(() => composeComment("a".repeat(MAX_COMMENT_BYTES + 1)))
@@ -214,51 +209,61 @@ describe("composeComment", () => {
       .toThrow("The comment is 4098 bytes of UTF-8; Google Drive allows at most 4096.");
   });
 
-  it("counts the quote and the link against the limit", () => {
-    // `"abcd"`, a paragraph break, then the text: 6 + 2 + 4088 bytes.
-    let text = "a".repeat(MAX_COMMENT_BYTES - 8);
-    expect(composeComment(text, "abcd")).toHaveLength(MAX_COMMENT_BYTES);
-    expect(() => composeComment(text, "abcde")).toThrow("The comment is 4097 bytes");
-    expect(() => composeComment(text, "abcd", "x")).toThrow("The comment is 4099 bytes");
+  it("holds a comment attached through Docs to the Docs limit, as Google counts it", () => {
+    // Probed: 2048 ASCII and 1024 two-byte characters pass; 2049 and 1025 are refused.
+    expect(composeComment("a".repeat(MAX_DOCS_COMMENT_BYTES), true)).toHaveLength(2048);
+    expect(composeComment("\u00e9".repeat(1024), true)).toHaveLength(1024);
+    expect(() => composeComment("a".repeat(2049), true))
+      .toThrow("The comment is 2049 bytes of UTF-8; Google Docs allows at most 2048 on a comment " +
+        "that quotes a Doc or a suggestion's note.");
+    expect(() => composeComment("\u00e9".repeat(1025), true)).toThrow("The comment is 2050 bytes");
   });
 });
 
-describe("composeSuggestion", () => {
-  const LINK = "https://docs.google.com/document/d/doc-1/edit?tab=t.0#heading=h.costs";
-
-  it("states the replacement, then the note and the link", () => {
-    expect(composeSuggestion(" 2025 ", "2026", " The year moved. ", LINK))
-      .toBe(`Suggested edit: replace "2025" with "2026"\n\nThe year moved.\n\n${LINK}`);
+describe("requireQuote", () => {
+  it("trims, and caps the quote in characters, not bytes", () => {
+    expect(requireQuote(" the budget ")).toBe("the budget");
+    expect(requireQuote("\u00e9".repeat(MAX_QUOTE_CHARS))).toBe("\u00e9".repeat(MAX_QUOTE_CHARS));
+    expect(() => requireQuote("x".repeat(MAX_QUOTE_CHARS + 1)))
+      .toThrow(`The quote is ${MAX_QUOTE_CHARS + 1} characters; at most ${MAX_QUOTE_CHARS} can be quoted.`);
+    expect(() => requireQuote("  ")).toThrow("The quote is empty.");
   });
+});
 
-  it("is the replacement alone without a note or link", () => {
-    expect(composeSuggestion("2025", "2026")).toBe('Suggested edit: replace "2025" with "2026"');
-  });
-
-  it("keeps the new text exactly as given", () => {
-    expect(composeSuggestion("teh", " the ")).toBe('Suggested edit: replace "teh" with " the "');
-  });
-
-  it("states a deletion when the new text is empty", () => {
-    expect(composeSuggestion("very very", "", undefined, LINK))
-      .toBe(`Suggested edit: delete "very very"\n\n${LINK}`);
+describe("checkSuggestion", () => {
+  it("trims the old text and the note, and keeps the new text exactly as given", () => {
+    expect(checkSuggestion(" 2025 ", " 2026 ", " The year moved. "))
+      .toEqual({ oldText: "2025", newText: " 2026 ", note: "The year moved." });
+    expect(checkSuggestion("very very", "")).toEqual({ oldText: "very very", newText: "" });
   });
 
   it("refuses a replacement identical to the old text", () => {
-    expect(() => composeSuggestion("same", "same"))
+    expect(() => checkSuggestion("same", "same"))
       .toThrow("The replacement is the same as the text it replaces.");
   });
 
   it("refuses empty old text, an empty note, and old text over the quote cap", () => {
-    expect(() => composeSuggestion(" ", "x")).toThrow("The text to replace is empty.");
-    expect(() => composeSuggestion("a", "b", "  ")).toThrow("The note is empty.");
-    expect(() => composeSuggestion("x".repeat(MAX_QUOTE_CHARS + 1), "y"))
+    expect(() => checkSuggestion(" ", "x")).toThrow("The text to replace is empty.");
+    expect(() => checkSuggestion("a", "b", "  ")).toThrow("The note is empty.");
+    expect(() => checkSuggestion("x".repeat(MAX_QUOTE_CHARS + 1), "y"))
       .toThrow(`The text to replace is ${MAX_QUOTE_CHARS + 1} characters`);
   });
 
-  it("refuses a body over Google's limit", () => {
-    expect(() => composeSuggestion("a", "b".repeat(MAX_COMMENT_BYTES)))
-      .toThrow(/^The comment is \d+ bytes of UTF-8; Google Drive allows at most 4096\.$/);
+  it("keeps the old and the new text within one paragraph", () => {
+    expect(() => checkSuggestion("a\nb", "c")).toThrow("The text to replace must sit within one paragraph.");
+    for (let newText of ["c\nd", "c\rd", "c\u000bd"]) {
+      expect(() => checkSuggestion("a", newText))
+        .toThrow("The replacement must be one paragraph, without line breaks.");
+    }
+  });
+
+  it("caps the new text in characters and the note at the Docs limit", () => {
+    expect(checkSuggestion("a", "\u00e9".repeat(MAX_REPLACEMENT_CHARS)).newText).toHaveLength(MAX_REPLACEMENT_CHARS);
+    expect(() => checkSuggestion("a", "b".repeat(MAX_REPLACEMENT_CHARS + 1)))
+      .toThrow(`The replacement is ${MAX_REPLACEMENT_CHARS + 1} characters; at most ${MAX_REPLACEMENT_CHARS} can be suggested.`);
+    expect(checkSuggestion("a", "b", "n".repeat(MAX_DOCS_COMMENT_BYTES)).note).toHaveLength(2048);
+    expect(() => checkSuggestion("a", "b", "n".repeat(MAX_DOCS_COMMENT_BYTES + 1)))
+      .toThrow("The note is 2049 bytes of UTF-8; Google Docs allows at most 2048");
   });
 });
 
