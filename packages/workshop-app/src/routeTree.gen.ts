@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as MockIndexRouteImport } from './routes/mock.index'
+import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
 import { Route as AppWorkspaceWorkspaceIdChatIdRouteImport } from './routes/_app/workspace.$workspaceId.$chatId'
 
@@ -29,6 +31,16 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
+const MockIndexRoute = MockIndexRouteImport.update({
+  id: '/mock/',
+  path: '/mock/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MockScenarioRoute = MockScenarioRouteImport.update({
+  id: '/mock/$scenario',
+  path: '/mock/$scenario',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AppWorkspaceWorkspaceIdIndexRoute =
   AppWorkspaceWorkspaceIdIndexRouteImport.update({
     id: '/workspace/$workspaceId/',
@@ -45,12 +57,16 @@ const AppWorkspaceWorkspaceIdChatIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
+  '/mock/$scenario': typeof MockScenarioRoute
+  '/mock/': typeof MockIndexRoute
   '/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
   '/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
+  '/mock/$scenario': typeof MockScenarioRoute
   '/': typeof AppIndexRoute
+  '/mock': typeof MockIndexRoute
   '/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
   '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
@@ -58,7 +74,9 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
+  '/mock/$scenario': typeof MockScenarioRoute
   '/_app/': typeof AppIndexRoute
+  '/mock/': typeof MockIndexRoute
   '/_app/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
   '/_app/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
@@ -67,19 +85,25 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/gallery'
+    | '/mock/$scenario'
+    | '/mock/'
     | '/workspace/$workspaceId/$chatId'
     | '/workspace/$workspaceId/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/gallery'
+    | '/mock/$scenario'
     | '/'
+    | '/mock'
     | '/workspace/$workspaceId/$chatId'
     | '/workspace/$workspaceId'
   id:
     | '__root__'
     | '/_app'
     | '/gallery'
+    | '/mock/$scenario'
     | '/_app/'
+    | '/mock/'
     | '/_app/workspace/$workspaceId/$chatId'
     | '/_app/workspace/$workspaceId/'
   fileRoutesById: FileRoutesById
@@ -87,6 +111,8 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   GalleryRoute: typeof GalleryRoute
+  MockScenarioRoute: typeof MockScenarioRoute
+  MockIndexRoute: typeof MockIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -111,6 +137,20 @@ declare module '@tanstack/react-router' {
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
+    }
+    '/mock/': {
+      id: '/mock/'
+      path: '/mock'
+      fullPath: '/mock/'
+      preLoaderRoute: typeof MockIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mock/$scenario': {
+      id: '/mock/$scenario'
+      path: '/mock/$scenario'
+      fullPath: '/mock/$scenario'
+      preLoaderRoute: typeof MockScenarioRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/_app/workspace/$workspaceId/': {
       id: '/_app/workspace/$workspaceId/'
@@ -146,6 +186,8 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   GalleryRoute: GalleryRoute,
+  MockScenarioRoute: MockScenarioRoute,
+  MockIndexRoute: MockIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
