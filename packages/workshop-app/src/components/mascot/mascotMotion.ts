@@ -107,11 +107,13 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   media.addEventListener('change', onMotionChange)
   const pointer = { x: 0, y: 0, localX: 32, localY: 28, influence: 0, active: false }
   const lobes = [
-    { x: 37.8, y: 19.8, pull: 5.8, speed: 15, dx: 0, dy: 0 },
-    { x: 44.4, y: 33.1, pull: 4.5, speed: 11, dx: 0, dy: 0 },
-    { x: 26.5, y: 35.9, pull: 6.2, speed: 13, dx: 0, dy: 0 },
-    { x: 18.4, y: 24.1, pull: 5.1, speed: 17, dx: 0, dy: 0 },
+    { x: 37.8, y: 19.8, pull: 5.8, speed: 15, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
+    { x: 44.4, y: 33.1, pull: 4.5, speed: 11, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
+    { x: 26.5, y: 35.9, pull: 6.2, speed: 13, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
+    { x: 18.4, y: 24.1, pull: 5.1, speed: 17, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
   ]
+  // How much it billows: fully while idle, not at all otherwise.
+  let billow = 0
   const follow = { x: 0, y: 0 }
   const weight = { x: 0, y: 0 }
   const star = { x: 43.5, y: 32.7, rotation: 0, scale: 1 }
@@ -362,6 +364,23 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       lobe.dx += (dx * pull - lobe.dx) * response
       lobe.dy += (dy * pull - lobe.dy) * response
     }
+    // Idle, the body stays where it is and billows: each blob wanders a little about its own
+    // place and swells and settles as it goes, on slow paths of its own that never line up. What
+    // the four have in common is taken out, so that together they go nowhere.
+    billow = reduced ? 0 : billow + ((mood === 'idle' ? 1 : 0) - billow) * ease
+    lobes.forEach((lobe, index) => {
+      const pace = 1 + index * 0.17
+      const phase = index * 2.4
+      lobe.wanderX = Math.sin(t * 0.62 * pace + phase) * 1.5 + Math.sin(t * 0.37 * pace + phase * 1.7) * 1.1
+      lobe.wanderY = Math.cos(t * 0.55 * pace + phase * 1.3) * 1.5 + Math.sin(t * 0.31 * pace + phase * 2.1) * 1.1
+      lobe.swell = billow * Math.sin(t * 0.48 * pace + phase * 0.9) * 0.05
+    })
+    const commonX = lobes.reduce((sum, lobe) => sum + lobe.wanderX, 0) / lobes.length
+    const commonY = lobes.reduce((sum, lobe) => sum + lobe.wanderY, 0) / lobes.length
+    for (const lobe of lobes) {
+      lobe.wanderX = (lobe.wanderX - commonX) * billow
+      lobe.wanderY = (lobe.wanderY - commonY) * billow
+    }
     sadness += ((mood === 'sad' ? 1 : 0) - sadness) * ease
     poke *= Math.exp(-dt * 3)
     const boop = reduced ? 0 : Math.sin(poke * 10) * poke
@@ -370,9 +389,9 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     let y = 31 + Math.cos(t * 1.1) * 3
     let angle = Math.sin(t * 0.8) * 18
     let scale = 1 + Math.sin(t * 1.4) * 0.055
-    let bounce = Math.sin(t * 1.3) * 4
+    let bounce = 0
     let sway = 0
-    let tilt = Math.sin(t * 0.75) * 2
+    let tilt = 0
     let morph = 0.55
     let errorShake = 0
 
@@ -505,8 +524,8 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
         const joyDY = -10 - lobe.y
         const joyPull = joy * lobe.pull * 0.6 / Math.max(24, Math.hypot(joyDX, joyDY))
         const shiver = happyFaceShake * (1 - lobe.y / 56) * 0.3
-        localX += influence * (lobe.dx + joyDX * joyPull + shiver)
-        localY += influence * (lobe.dy + joyDY * joyPull)
+        localX += influence * (lobe.dx + lobe.wanderX + (px - lobe.x) * lobe.swell + joyDX * joyPull + shiver)
+        localY += influence * (lobe.dy + lobe.wanderY + (py - lobe.y) * lobe.swell + joyDY * joyPull)
         totalInfluence += influence
       }
       return { x: waveX + massX + localX / totalInfluence + squeezeX, y: waveY + massY + localY / totalInfluence + squeezeY }
