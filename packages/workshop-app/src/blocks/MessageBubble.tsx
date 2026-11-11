@@ -28,9 +28,9 @@ export type MessageBubbleProps = {
 export type MessageDetails = {
   open: boolean
   onToggle: () => void
-  /** The one line the panel arrives as, and is folded back to before it leaves. */
+  /** The panel's first line, which it is folded to before it leaves. */
   summary: ReactNode
-  /** What that line then opens to, beneath it. */
+  /** The rest of it, beneath that line. */
   more?: ReactNode
 }
 
@@ -96,18 +96,20 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
   const open = details?.open ?? false
   const actions = <MessageActions details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
-  // The shell owns the text, its actions and its details. A click elsewhere puts the details away,
-  // including the blank stretch of the message's row.
+  // A click anywhere outside the details puts them away, the message they are about included.
+  // The button that shows them is left to do its own switching.
   //
   // On the click, not the press: closing moves what is below, and a button that moved between the
   // press and the release would not be clicked at all. That is what asking for another message's
   // details is, and this way the one closes and the other opens together.
-  const bubble = useRef<HTMLDivElement>(null)
+  const panel = useRef<HTMLDivElement>(null)
   const stage = useDetailsStage(open, details?.more != null)
   // The message's own bubble meets the panel as it would the next message, while it is there.
-  const joinsDetails = stage === 'row' || stage === 'full'
+  const joinsDetails = stage !== 'gone' && stage !== 'leaving'
+  const folded = stage === 'row' || stage === 'leaving'
   const clickElsewhere = useEffectEvent(({ target }: MouseEvent) => {
-    if (target instanceof Node && bubble.current?.contains(target)) return
+    if (!(target instanceof Element) || panel.current?.contains(target)) return
+    if (target.closest('[aria-controls]')?.getAttribute('aria-controls') === detailsId) return
     details?.onToggle()
   })
   useEffect(() => {
@@ -122,7 +124,6 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
       className={cn('flex items-start [container-type:inline-size]', role === 'user' ? 'justify-end' : 'justify-start', RUN[role].row, joins?.above && '-mt-1.5')}
     >
       <div
-        ref={bubble}
         className={cn(
           'arrives message-bubble max-w-[min(70%,65ch)] rounded-[21px] text-base/5 break-words',
           // It grows in downwards, as the conversation does, from its sender's side.
@@ -145,12 +146,13 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
         {/* The details are a bubble of their own in width too: as wide as what is in them, up to
             the limit a message has, whatever the message's own width. The wrapper keeps them out
             of the message's intrinsic width, and they may reach past it. What is folded away
-            counts towards the width all along, so opening to it only makes the panel taller. */}
+            still counts towards the width, so folding only makes the panel shorter. */}
         {details && stage !== 'gone' && (
           <div className={cn('flex flex-col [contain:inline-size]', role === 'user' ? 'items-end' : 'items-start')}>
             <div className="w-max max-w-[min(70cqw,65ch)]">
-              {/* How it comes, opens, folds and goes is in MessageBubble.css, by its stage. */}
+              {/* How it comes, folds and goes is in MessageBubble.css, by its stage. */}
               <div
+                ref={panel}
                 id={detailsId}
                 data-message-details=""
                 data-stage={stage}
@@ -167,8 +169,8 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
                     RUN[role].details,
                     joins?.below && JOINED[role].below,
                   )}>
-                    {/* The chevron takes its room from beside the first line only: what that
-                        opens to has the full width. */}
+                    {/* The chevron takes its room from beside the first line only: the rest
+                        has the full width. */}
                     <div className="flex items-start gap-3">
                       <div className="min-w-0 flex-1">{details.summary}</div>
                       <Button
@@ -177,13 +179,18 @@ export const MessageBubble = ({ role, children, joins, details }: MessageBubbleP
                         aria-label="Hide details"
                         title="Hide details"
                         // Into the panel's corner, level with the line, and the size and weight
-                        // of the chevrons on what opens elsewhere (see `Disclosure`).
-                        className={`${MESSAGE_ACTION_STYLE} -my-1 -me-3 [&>svg]:size-3`}
+                        // of the chevrons on what opens elsewhere (see `Disclosure`). Like
+                        // theirs, it turns over as the panel folds.
+                        className={cn(
+                          MESSAGE_ACTION_STYLE,
+                          '-my-1 -me-3 [&>svg]:size-3 [&>svg]:transition-transform [&>svg]:duration-[240ms] motion-reduce:[&>svg]:transition-none',
+                          folded && '[&>svg]:-rotate-180',
+                        )}
                         onClick={details.onToggle}
                       />
                     </div>
                     {details.more != null && (
-                      <div className="message-details-more" inert={stage !== 'full'}>
+                      <div className="message-details-more" inert={folded}>
                         <div>{details.more}</div>
                       </div>
                     )}
