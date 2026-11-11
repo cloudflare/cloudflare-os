@@ -34,7 +34,7 @@ const describe = (emotion: MascotEmotion) =>
       : `Mascot is ${emotion}. Make the sparkle spin`
 
 /**
- * The Workshop cloud, alive: it billows in place when idle, bounces while thinking, and has a face for
+ * The Workshop cloud, alive: it billows in place when idle, more busily while thinking, and has a face for
  * happy and sad. It leans towards a pointer that comes near, stays still for people who ask for
  * reduced motion, and rests while off screen. It is drawn in the colours of the viewer's own
  * messages: their fill for the body, their text colour for the sparkle and the face.

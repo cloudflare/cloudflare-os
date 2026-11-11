@@ -112,8 +112,11 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     { x: 26.5, y: 35.9, pull: 6.2, speed: 13, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
     { x: 18.4, y: 24.1, pull: 5.1, speed: 17, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
   ]
-  // How much it billows: fully while idle, not at all otherwise.
+  // How much it billows: fully while idle or thinking, not at all otherwise. Thinking, it does so
+  // faster and further, so the clock it runs on has a pace of its own.
   let billow = 0
+  let billowTime = 0
+  let billowVigour = 1
   const follow = { x: 0, y: 0 }
   const weight = { x: 0, y: 0 }
   const star = { x: 43.5, y: 32.7, rotation: 0, scale: 1 }
@@ -364,22 +367,26 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       lobe.dx += (dx * pull - lobe.dx) * response
       lobe.dy += (dy * pull - lobe.dy) * response
     }
-    // Idle, the body stays where it is and billows: each blob wanders a little about its own
-    // place and swells and settles as it goes, on slow paths of its own that never line up. What
-    // the four have in common is taken out, so that together they go nowhere.
-    billow = reduced ? 0 : billow + ((mood === 'idle' ? 1 : 0) - billow) * ease
+    // Idle or thinking, the body stays where it is and billows: each blob, still the circle it
+    // is, wanders a little about its own place and swells and settles as it goes, on slow paths
+    // of its own that never line up. What the four have in common is taken out, so that together
+    // they go nowhere.
+    const billows = mood === 'idle' || mood === 'thinking'
+    billow = reduced ? 0 : billow + ((billows ? 1 : 0) - billow) * ease
+    billowVigour += ((mood === 'thinking' ? 1.5 : 1) - billowVigour) * ease
+    if (!reduced) billowTime += dt * billowVigour
     lobes.forEach((lobe, index) => {
-      const pace = 1 + index * 0.17
+      const pace = billowTime * (1 + index * 0.17)
       const phase = index * 2.4
-      lobe.wanderX = Math.sin(t * 0.62 * pace + phase) * 1.5 + Math.sin(t * 0.37 * pace + phase * 1.7) * 1.1
-      lobe.wanderY = Math.cos(t * 0.55 * pace + phase * 1.3) * 1.5 + Math.sin(t * 0.31 * pace + phase * 2.1) * 1.1
-      lobe.swell = billow * Math.sin(t * 0.48 * pace + phase * 0.9) * 0.05
+      lobe.wanderX = Math.sin(pace * 0.62 + phase) * 1.5 + Math.sin(pace * 0.37 + phase * 1.7) * 1.1
+      lobe.wanderY = Math.cos(pace * 0.55 + phase * 1.3) * 1.5 + Math.sin(pace * 0.31 + phase * 2.1) * 1.1
+      lobe.swell = billow * Math.sin(pace * 0.48 + phase * 0.9) * 0.05
     })
     const commonX = lobes.reduce((sum, lobe) => sum + lobe.wanderX, 0) / lobes.length
     const commonY = lobes.reduce((sum, lobe) => sum + lobe.wanderY, 0) / lobes.length
     for (const lobe of lobes) {
-      lobe.wanderX = (lobe.wanderX - commonX) * billow
-      lobe.wanderY = (lobe.wanderY - commonY) * billow
+      lobe.wanderX = (lobe.wanderX - commonX) * billow * billowVigour
+      lobe.wanderY = (lobe.wanderY - commonY) * billow * billowVigour
     }
     sadness += ((mood === 'sad' ? 1 : 0) - sadness) * ease
     poke *= Math.exp(-dt * 3)
@@ -401,9 +408,6 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       if (rotationReady && !reduced) thinkingAngle += dt * 115
       angle = thinkingAngle + Math.sin(moodTime * 2) * 20
       scale = 1.07 + Math.sin(t * 3.5) * 0.14
-      bounce = -Math.abs(Math.sin(t * 2.4)) * 16
-      tilt = Math.sin(t * 2.4) * 3.5
-      morph = 0.65
     } else if (mood === 'happy') {
       const hop = Math.sin(t * 2.3) * happyMotion.dance.amount
       x = 32
@@ -524,8 +528,8 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
         const joyDY = -10 - lobe.y
         const joyPull = joy * lobe.pull * 0.6 / Math.max(24, Math.hypot(joyDX, joyDY))
         const shiver = happyFaceShake * (1 - lobe.y / 56) * 0.3
-        localX += influence * (lobe.dx + lobe.wanderX + (px - lobe.x) * lobe.swell + joyDX * joyPull + shiver)
-        localY += influence * (lobe.dy + lobe.wanderY + (py - lobe.y) * lobe.swell + joyDY * joyPull)
+        localX += influence * (lobe.dx + joyDX * joyPull + shiver)
+        localY += influence * (lobe.dy + joyDY * joyPull)
         totalInfluence += influence
       }
       return { x: waveX + massX + localX / totalInfluence + squeezeX, y: waveY + massY + localY / totalInfluence + squeezeY }
@@ -553,10 +557,13 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     cloudLobes.forEach((lobe, index) => {
       const target = loadingFrame.circles[index]
       const size = pop((presence - TURN[index] * STAGGER) / GROW)
+      // Its billowing moves and sizes the blob as a whole, on top of the field every blob shares,
+      // so it stays the circle it is.
+      const { wanderX, wanderY, swell } = lobes[index]
       const path = circlePath(lobe.x, lobe.y, lobe.radius, (point) => {
         const displacement = deformationAt(point.x, point.y)
-        const normalX = point.x + displacement.x
-        const normalY = point.y + displacement.y
+        const normalX = point.x + displacement.x + wanderX + (point.x - lobe.x) * swell
+        const normalY = point.y + displacement.y + wanderY + (point.y - lobe.y) * swell
         const loadingX = target.x + (point.x - lobe.x) / lobe.radius * target.radius
         const loadingY = target.y + (point.y - lobe.y) / lobe.radius * target.radius
         const fullX = normalX + (loadingX - normalX) * load
