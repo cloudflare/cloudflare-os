@@ -1,6 +1,6 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
-import { summarizeTools, toolIcon, toolLabel, toolSections, toolTarget, type ToolIcon, type ToolSection } from './toolCalls'
+import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
 
 type Message<T extends AiChatMessage['type']> = Extract<AiChatMessage, { type: T }>
 
@@ -19,7 +19,10 @@ export type ResourceLink = { title: string; url?: string }
 /** What a created gadget is, when its blueprint declared a format. */
 export type OutputFormat = { noun: string; icon: OutputIcon }
 
-/** One step of the agent's work: a tool it called, a resource that call read, or an action a standing rule let through. */
+/**
+ * One step of the agent's work: a tool it called, or a resource that call read. Steps are not
+ * part of the conversation; they are what can be looked into while a reply is being worked on.
+ */
 export type ToolEntry =
   | {
       type: 'call'
@@ -34,16 +37,12 @@ export type ToolEntry =
       running?: boolean
     }
   | { type: 'observation'; key: string; label: string; resource?: ResourceLink; description: string; fields: ActionField[] }
-  | {
-      type: 'action'
-      key: string
-      label: string
-      /** The rule that approved it, e.g. "Auto-approved (Ada’s rule)". */
-      resolution: string
-      resource?: ResourceLink
-      description: string
-      fields: ActionField[]
-    }
+
+/**
+ * One thing in the making of a reply: a step taken, or what the step now being written is doing.
+ * `thinking` and `writing` carry what has been thought or drafted so far.
+ */
+export type WorkEntry = ToolEntry | { type: 'thinking'; key: string; text: string } | { type: 'writing'; key: string; text: string }
 
 type Row = {
   /** The sequence of the message the row comes from; the first, when it spans several. */
@@ -60,16 +59,7 @@ export type UserItem = Row & {
   /** Who sent it, when that is not the person looking: a collaborator, or a gadget that prompted the agent. */
   from?: string
 }
-export type AssistantItem = Row & { kind: 'assistant'; text: string; reasoning?: string }
-export type ToolsItem = Row & {
-  kind: 'tools'
-  summary: string
-  /** The files and resources the steps touched, each once. */
-  targets: string[]
-  failed: boolean
-  running?: boolean
-  entries: ToolEntry[]
-}
+export type AssistantItem = Row & { kind: 'assistant'; text: string }
 export type OutputItem = Row & {
   kind: 'output'
   workpieceId: number
@@ -139,7 +129,15 @@ export type ErrorItem = Row & {
 export type ArtefactItem = OutputItem | HookItem | ActionItem | ConnectionItem
 
 /** One row of the conversation. */
-export type ChatItem = UserItem | AssistantItem | ToolsItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem
+export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem
+
+/**
+ * Whether a row carries on from the one before it: a message from the same sender with nothing of
+ * its own (a name, files) above its words. Such messages are drawn as one run.
+ */
+export const continuesRun = (before: ChatItem | undefined, item: ChatItem): boolean =>
+  before?.kind === item.kind &&
+  (item.kind === 'assistant' || (item.kind === 'user' && !item.from && item.attachments.length === 0 && item.parts.length > 0))
 
 /** What the mapping cannot read from the messages themselves. */
 export type FeedContext = {
@@ -163,32 +161,34 @@ export type FeedContext = {
  * it stays where it happened.
  *
  * The last turn is still open: more may be written in it, and whatever streams belongs between its
- * rows and its artefacts. So its trailing run of tool calls and its artefacts are kept apart.
+ * rows and its artefacts. So its artefacts are kept apart.
+ *
+ * How the agent got to its answers (the tools it called, what it read, what it thought) is not
+ * part of the conversation. Only the steps taken since the last thing it said are kept, for
+ * looking into while it works.
  */
 export type ChatFeed = {
   /** Every closed turn in full, and the open turn's rows. */
   items: ChatItem[]
-  /** The run of tool calls the open turn currently ends with, which live calls continue. */
-  openTools?: ToolsItem
+  /** The steps taken since the last message in the conversation, oldest first. */
+  work: ToolEntry[]
   /** The open turn's artefacts, then what people did to its changes since its last row. */
   pinned: Array<ArtefactItem | DividerItem>
 }
 
-export const EMPTY_FEED: ChatFeed = { items: [], pinned: [] }
+export const EMPTY_FEED: ChatFeed = { items: [], work: [], pinned: [] }
 
-// What each item was built from. An item is reused, object and all, while these are unchanged, so
-// rows that did not change are not rendered again.
-const DEPS = new WeakMap<ChatItem, readonly unknown[]>()
+// What each item or step was built from. One is reused, object and all, while these are
+// unchanged, so what did not change is not rendered again.
+const DEPS = new WeakMap<object, readonly unknown[]>()
 
-type Emit = <T extends ChatItem>(key: string, deps: readonly unknown[], build: () => Omit<T, 'key'>) => T
+type Emit<Base extends { key: string }> = <T extends Base>(key: string, deps: readonly unknown[], build: () => Omit<T, 'key'>) => T
 
-const emitterFor = (previous: ChatFeed | undefined): Emit => {
-  const known = new Map<string, ChatItem>()
-  for (const item of previous?.items ?? []) known.set(item.key, item)
-  for (const item of previous?.pinned ?? []) known.set(item.key, item)
-  if (previous?.openTools) known.set(previous.openTools.key, previous.openTools)
+const emitterFor = <Base extends { key: string }>(previous: readonly Base[]): Emit<Base> => {
+  const known = new Map<string, Base>()
+  for (const item of previous) known.set(item.key, item)
 
-  return <T extends ChatItem>(key: string, deps: readonly unknown[], build: () => Omit<T, 'key'>) => {
+  return <T extends Base>(key: string, deps: readonly unknown[], build: () => Omit<T, 'key'>) => {
     const existing = known.get(key)
     const before = existing && DEPS.get(existing)
     if (before && before.length === deps.length && before.every((dep, index) => dep === deps[index])) return existing as T
@@ -325,74 +325,24 @@ const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
   }
 }
 
-type WorkStep =
-  | { type: 'call'; call: AiToolCall; sequence: number; reasoning?: string }
-  | { type: 'observation'; message: Message<'action'>; log: ActionLogEntry & { type: 'observation' } }
-  | { type: 'action'; message: Message<'action'>; log: ActionLog }
+type CallEntry = Extract<ToolEntry, { type: 'call' }>
+type ObservationEntry = Extract<ToolEntry, { type: 'observation' }>
 
-const stepEntry = (step: WorkStep): ToolEntry => {
-  if (step.type === 'call') {
-    const { call } = step
-    return {
-      type: 'call',
-      key: call.toolCallId,
-      icon: toolIcon(call.toolName),
-      label: toolLabel(call),
-      error: call.error,
-      reasoning: step.reasoning,
-      sections: toolSections(call),
-    }
-  }
-  const { description } = step.log
-  const detail = {
-    key: `${step.type}:${step.message.sequence}`,
-    resource: resourceOf(step.log),
-    description: description.description,
-    fields: description.fields ?? [],
-  }
-  return step.type === 'observation'
-    ? { type: 'observation', label: `Read ${description.title || step.log.resourceTitle || 'a resource'}`, ...detail }
-    : { type: 'action', label: description.title, resolution: resolutionOf(step.log) ?? '', ...detail }
-}
+const callEntry = (call: AiToolCall, reasoning: string | undefined): Omit<CallEntry, 'key'> => ({
+  type: 'call',
+  icon: toolIcon(call.toolName),
+  label: toolLabel(call),
+  error: call.error,
+  reasoning,
+  sections: toolSections(call),
+})
 
-const toolsItem = (emit: Emit, steps: WorkStep[]): ToolsItem => {
-  const first = steps[0]
-  const key = first.type === 'call' ? first.call.toolCallId : `${first.type}:${first.message.sequence}`
-  return emit<ToolsItem>(
-    `tools:${key}`,
-    steps.map((step) => (step.type === 'call' ? step.call : step.message)),
-    () => {
-      const calls = steps.flatMap((step) => (step.type === 'call' ? [step.call] : []))
-      const logs = steps.flatMap((step) => (step.type === 'call' ? [] : [step.log]))
-      const reads = steps.filter(({ type }) => type === 'observation').length
-      const targets = [...calls.map(toolTarget), ...logs.map(({ resourceTitle }) => resourceTitle)]
-      return {
-        kind: 'tools',
-        id: first.type === 'call' ? first.sequence : first.message.sequence,
-        summary: summarizeTools(calls, reads, logs.length - reads),
-        targets: [...new Set(targets.filter((target): target is string => !!target))],
-        failed: calls.some((call) => !!call.error),
-        entries: steps.map(stepEntry),
-      }
-    },
-  )
-}
-
-/**
- * A run of tool calls with the calls still being written added to its end. Without a `group` the
- * live calls are a run of their own. Its line says what is happening now.
- */
-export const continueTools = (group: ToolsItem | undefined, live: ToolEntry[]): ToolsItem => ({
-  kind: 'tools',
-  // Nothing durable yet stands behind a run that is only live.
-  id: group?.id ?? -1,
-  // The key a committed run takes from its first call, so opening it survives it being committed.
-  key: group?.key ?? `tools:${live[0].key}`,
-  summary: live.at(-1)!.label,
-  targets: group?.targets ?? [],
-  failed: group?.failed ?? false,
-  running: true,
-  entries: [...(group?.entries ?? []), ...live],
+const observationEntry = (log: ActionLogEntry & { type: 'observation' }): Omit<ObservationEntry, 'key'> => ({
+  type: 'observation',
+  label: `Read ${log.description.title || log.resourceTitle || 'a resource'}`,
+  resource: resourceOf(log),
+  description: log.description.description,
+  fields: log.description.fields ?? [],
 })
 
 type CreationState = 'pending' | 'merged' | 'reverted'
@@ -457,7 +407,8 @@ const changesText = (message: Message<'changes'>, actor: string) => {
  * to get the same objects back for everything that did not change.
  */
 export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {}, previous?: ChatFeed): ChatFeed => {
-  const emit = emitterFor(previous)
+  const emit = emitterFor<ChatItem>([...(previous?.items ?? []), ...(previous?.pinned ?? [])])
+  const emitStep = emitterFor<ToolEntry>(previous?.work ?? [])
   const creationState = creationStates(messages)
   const { viewerId, compactedTo } = context
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
@@ -466,23 +417,18 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   let pinned: ArtefactItem[] = []
   // What people did to the changes since the turn's last row; shown after `pinned` unless more follows.
   let acts: DividerItem[] = []
-  let work: WorkStep[] = []
+  // The steps since the last message. They are never rows: the next message leaves them behind.
+  let work: ToolEntry[] = []
   let model: string | undefined
 
-  const closeWork = () => {
-    if (work.length) items.push(toolsItem(emit, work))
-    work = []
-  }
   const closeTurn = () => {
-    closeWork()
     items.push(...pinned, ...acts)
     pinned = []
     acts = []
+    work = []
   }
   /** The turn goes on, so what people did before this point stays where it happened. */
   const carryOn = () => {
-    if (acts.length === 0) return
-    closeWork()
     items.push(...acts)
     acts = []
   }
@@ -490,7 +436,6 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     acts.push(emit<DividerItem>(`act:${message.sequence}`, [message, label], () => ({ kind: 'divider', id: message.sequence, marks, label })))
   }
   const notice = (message: AiChatMessage, kind: NoticeItem['notice'], text: string, detail?: string) => {
-    closeWork()
     items.push(emit<NoticeItem>(`notice:${message.sequence}`, [message, text], () => ({
       kind: 'notice',
       id: message.sequence,
@@ -505,7 +450,6 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     const id = message.sequence
 
     if (compactedTo !== undefined && id >= compactedTo && index > 0 && messages[index - 1].sequence < compactedTo) {
-      closeWork()
       items.push(emit<DividerItem>(`divider:${compactedTo}`, [id], () => ({ kind: 'divider', id, marks: 'compaction', label: 'Context compacted' })))
     }
 
@@ -528,10 +472,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       case 'message': {
         if (message.author.type !== 'agent') {
           // A steer joins the answer it was sent into; any other prompt starts the next turn.
-          if (message.steered) {
-            carryOn()
-            closeWork()
-          } else closeTurn()
+          if (message.steered) carryOn()
+          else closeTurn()
           if (message.message || message.attachments?.length) {
             items.push(emit<UserItem>(`user:${id}`, [message, viewerId], () => userItem(message, viewerId)))
           }
@@ -545,24 +487,23 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         carryOn()
 
         if (model !== undefined && model !== message.author.id) {
-          closeWork()
           const { name } = message.author
           items.push(emit<NoticeItem>(`model:${id}`, [name], () => ({ kind: 'notice', id, notice: 'model', text: `Switched to ${name}` })))
         }
         model = message.author.id
 
-        let reasoning = message.reasoning?.trim() ? message.reasoning : undefined
         if (text) {
-          closeWork()
-          const said = reasoning
-          items.push(emit<AssistantItem>(`assistant:${id}`, [message], () => ({ kind: 'assistant', id, text, reasoning: said })))
-          reasoning = undefined
+          items.push(emit<AssistantItem>(`assistant:${id}`, [message], () => ({ kind: 'assistant', id, text })))
+          work = []
         }
+        // The thinking behind a step that said nothing is kept with the first thing it did.
+        let reasoning = !text && message.reasoning?.trim() ? message.reasoning : undefined
 
         for (const call of calls) {
           const created = creationOf(call, (gadget) => creationState(gadget, id))
           if (!created) {
-            work.push({ type: 'call', call, sequence: id, reasoning })
+            const thought = reasoning
+            work.push(emitStep<CallEntry>(call.toolCallId, [call, thought], () => callEntry(call, thought)))
             reasoning = undefined
             continue
           }
@@ -581,7 +522,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         carryOn()
         const log = message.actionLog
         if (!log) notice(message, 'unknown', 'An action whose details are not available')
-        else if (log.type === 'observation') work.push({ type: 'observation', message, log })
+        else if (log.type === 'observation') work.push(emitStep<ObservationEntry>(`observation:${id}`, [message], () => observationEntry(log)))
         else if (log.type === 'bindHook') {
           pinned.push(emit<HookItem>(`hook:${id}`, [message], () => ({
             kind: 'hook',
@@ -592,17 +533,12 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             resource: resourceOf(log),
             enabled: log.enabled,
           })))
-        } else if (log.autoApproved) {
-          // Nobody was asked, so it is part of the work like the call that made it.
-          work.push({ type: 'action', message, log })
         } else {
           const item = emit<ActionItem>(`action:${id}`, [message], () => actionItem(id, log))
-          // It waits under the answer; once decided it is history, back where it happened.
+          // It waits under the answer; once decided it is history, back where it happened. One a
+          // standing rule approved was decided as it was made.
           if (item.state === 'pending') pinned.push(item)
-          else {
-            closeWork()
-            items.push(item)
-          }
+          else items.push(item)
         }
         break
       }
@@ -620,10 +556,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           state: message.state === 'accepted' ? 'connected' : message.state,
         }))
         if (item.state === 'pending') pinned.push(item)
-        else {
-          closeWork()
-          items.push(item)
-        }
+        else items.push(item)
         break
       }
 
@@ -646,7 +579,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         carryOn()
         const last = items.at(-1)
         // Logged once per use; a run of them says no more than one.
-        if (work.length || last?.kind !== 'notice' || last.notice !== 'gadget') notice(message, 'gadget', 'Used the gadget')
+        if (last?.kind !== 'notice' || last.notice !== 'gadget') notice(message, 'gadget', 'Used the gadget')
         break
       }
 
@@ -660,7 +593,6 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       case 'error': {
         carryOn()
-        closeWork()
         const usageLimit = message.code === 'usage_limit'
         const recovery = index === messages.length - 1 && !context.agentActive ? (usageLimit ? 'continue' : 'retry') : undefined
         items.push(emit<ErrorItem>(`error:${id}`, [message, recovery], () => ({ kind: 'error', id, text: message.message, usageLimit, recovery })))
@@ -674,11 +606,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     }
   }
 
-  const openTools = work.length ? toolsItem(emit, work) : undefined
   const tail = [...pinned, ...acts]
   return {
     items: sameItems(previous?.items, items) ? previous!.items : items,
-    openTools,
+    work: sameItems(previous?.work, work) ? previous!.work : work,
     pinned: sameItems(previous?.pinned, tail) ? previous!.pinned : tail,
   }
 }

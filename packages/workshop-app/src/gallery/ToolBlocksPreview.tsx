@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { ActionFields, type ActionField } from '@/blocks/ActionFields'
-import { ToolGroup } from '@/blocks/ToolGroup'
 import type { ToolStepEntry } from '@/blocks/ToolStep'
+import { WorkLog } from '@/blocks/WorkLog'
 import { useOpen } from './previewState'
 import { Section } from './Section'
 
@@ -46,41 +46,29 @@ const steps: ToolStepEntry[] = [
     fields: [{ label: 'Board', kind: 'inline', value: 'PLAT' }],
   },
   { type: 'call', key: 'failed', icon: 'edit', label: 'Edited src/worker.ts', error: 'The text to replace was not found in src/worker.ts.', sections: [] },
-  {
-    type: 'action',
-    key: 'action',
-    label: 'Add label “bug” to PLAT-212',
-    resolution: 'Auto-approved (Ada Lovelace’s rule)',
-    resource: { title: 'Jira · Platform board', url: 'https://jira.example.com/projects/PLAT' },
-    description: '',
-    fields: [{ label: 'Label', kind: 'inline', value: 'bug' }],
-  },
+  { type: 'call', key: 'live', icon: 'file', label: 'Writing src/trend.ts…', running: true, sections: [{ label: 'Content', text: 'export const trend = (points: number[]) =>\n  points.map(' }] },
 ]
 
-/** The agent's work, collapsed and opened, and the literal values a step can carry. */
+/** The steps of a turn's work as they are looked into while it runs, and the literal values a step can carry. */
 export const ToolBlocksPreview = () => {
-  const { open, toggle, of } = useOpen(['group-open', 'edit'])
+  const { open, toggle } = useOpen(['edit'])
 
   return (
     <>
-      <Section title="ToolGroup (closed, open with steps, failed, running, a single step, a single observation, a single auto-approved action)">
+      <Section title="WorkLog (plain step, step with thinking, code and output, a resource read, a failure, and a call being written, which is open; then thinking; then drafting the reply; then nothing yet)">
         <Column>
-          <ToolGroup summary="Read 3 files, edited 2, ran code" targets={['src/worker.ts', 'src/chart.tsx', 'package.json']} failed={false} entries={steps.slice(0, 3)} {...of('group')} openEntries={open} onToggleEntry={toggle} />
-          <ToolGroup summary="Read 1 file, edited 2, ran code, and 2 more" targets={['src/worker.ts', 'src/chart.tsx', 'Jira · Platform board']} failed entries={steps} {...of('group-open')} openEntries={open} onToggleEntry={toggle} />
-          <ToolGroup
-            summary="Writing src/trend.ts…"
-            targets={['src/worker.ts', 'src/trend.ts']}
-            failed={false}
-            running
-            entries={[steps[0], { type: 'call', key: 'live', icon: 'file', label: 'Writing src/trend.ts…', running: true, sections: [{ label: 'Content', text: 'export const trend = (points: number[]) =>\n  points.map(' }] }]}
-            {...of('group-live')}
-            openEntries={open}
-            onToggleEntry={toggle}
+          <WorkLog steps={steps} openSteps={open} onToggleStep={toggle} />
+          <WorkLog
+            steps={[steps[0], { type: 'thinking', key: 'thinking', text: 'The trend needs the twelve-week window too. Check where it is read.' }]}
+            openSteps={open}
+            onToggleStep={toggle}
           />
-          <ToolGroup summary="" targets={[]} failed={false} entries={[steps[2]]} {...of('single')} openEntries={open} onToggleEntry={toggle} />
-          <ToolGroup summary="" targets={[]} failed={false} entries={[steps[0]]} {...of('single-plain')} openEntries={open} onToggleEntry={toggle} />
-          <ToolGroup summary="" targets={[]} failed={false} entries={[steps[3]]} {...of('single-observation')} openEntries={open} onToggleEntry={toggle} />
-          <ToolGroup summary="" targets={[]} failed={false} entries={[steps[5]]} {...of('single-action')} openEntries={open} onToggleEntry={toggle} />
+          <WorkLog
+            steps={[steps[0], steps[2], { type: 'writing', key: 'writing', text: 'The chart now covers **twelve weeks**. Two things to check before you' }]}
+            openSteps={open}
+            onToggleStep={toggle}
+          />
+          <WorkLog steps={[]} openSteps={open} onToggleStep={toggle} />
         </Column>
       </Section>
       <Section title="ActionFields (inline, empty, text, truncated JSON, list, empty list, files, omitted)">

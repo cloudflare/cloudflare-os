@@ -192,11 +192,11 @@ describe('ChatSession', () => {
       session.start()
       await settled(session)
 
-      expect(ready(session)).toMatchObject({ title: undefined, thinking: false, items: [{ text: 'hello' }] })
+      expect(ready(session)).toMatchObject({ title: undefined, activity: undefined, items: [{ text: 'hello' }] })
 
       chats.resolve([chat(0, 'Chat', 1, agentAuthor)])
       await flush()
-      expect(ready(session)).toMatchObject({ title: 'Chat', thinking: true })
+      expect(ready(session)).toMatchObject({ title: 'Chat', activity: 'Thinking…' })
     })
 
     it('keeps a live metadata update over the listed metadata that arrives after it', async () => {
@@ -210,7 +210,7 @@ describe('ChatSession', () => {
       chats.resolve([chat(0, 'Old title', 1)])
       await flush()
 
-      expect(ready(session)).toMatchObject({ title: 'Renamed', thinking: true })
+      expect(ready(session)).toMatchObject({ title: 'Renamed', activity: 'Thinking…' })
     })
 
     it('reports why loading failed', async () => {
@@ -247,11 +247,11 @@ describe('ChatSession', () => {
       )
     })
 
-    it('starts thinking when an agent turn was already running', async () => {
+    it('is thinking when an agent turn was already running', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
       const session = await started(fake)
 
-      expect(ready(session).thinking).toBe(true)
+      expect(ready(session).activity).toBe('Thinking…')
     })
 
     it('notifies subscribers when the snapshot changes, and not after they unsubscribe', async () => {
@@ -312,7 +312,7 @@ describe('ChatSession', () => {
       fake.getChatHistory.mockResolvedValueOnce(page(userMessage(0, 'oldest')))
       await session.loadEarlier()
       expect(fake.getChatHistory).toHaveBeenLastCalledWith(0, 10, 50)
-      expect(ready(session)).toMatchObject({ hasEarlier: false, historyError: undefined, streamingText: 'reply in progress' })
+      expect(ready(session)).toMatchObject({ hasEarlier: false, historyError: undefined, work: [{ type: 'writing', text: 'reply in progress' }] })
     })
 
     it('pages through history that contains no renderable items', async () => {
@@ -370,19 +370,19 @@ describe('ChatSession', () => {
       expect(ready(session).items.map(({ id }) => id)).toEqual([1, 2])
     })
 
-    it('thinks until text starts, streams it, and the finished message replaces it', async () => {
+    it('thinks until text starts, is writing while it streams, and the finished message replaces it', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       const session = await started(fake)
 
       fake.server().metadata(chat(0, 'Chat', 2, agentAuthor))
-      expect(ready(session)).toMatchObject({ thinking: true, streamingText: '' })
+      expect(ready(session)).toMatchObject({ activity: 'Thinking…', work: [] })
 
       fake.server().stream(0, { type: 'textDelta', delta: 'Hel' })
       fake.server().stream(0, { type: 'textDelta', delta: 'lo' })
-      expect(ready(session)).toMatchObject({ thinking: false, streamingText: 'Hello' })
+      expect(ready(session)).toMatchObject({ activity: 'Writing…', work: [{ type: 'writing', text: 'Hello' }] })
 
       fake.server().message(agentMessage(1, 'Hello there'))
-      expect(ready(session)).toMatchObject({ streamingText: '', items: [{ kind: 'assistant', text: 'Hello there' }] })
+      expect(ready(session)).toMatchObject({ work: [], items: [{ kind: 'assistant', text: 'Hello there' }] })
     })
 
     it('keeps the items array unchanged while text streams in', async () => {
@@ -402,19 +402,19 @@ describe('ChatSession', () => {
       const session = await started(fake)
       fake.server().stream(0, { type: 'textDelta', delta: 'still writing' })
       fake.server().message(action)
-      expect(ready(session).streamingText).toBe('still writing')
+      expect(ready(session).work).toEqual([{ type: 'writing', key: 'live:writing', text: 'still writing' }])
     })
 
-    it('discards streamed text on a reset, and ignores stream events it does not show', async () => {
+    it('discards what streamed of a reply on a reset', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       const session = await started(fake)
 
       fake.server().stream(0, { type: 'textDelta', delta: 'partial' })
       fake.server().stream(0, { type: 'reasoningDelta', delta: 'thinking about it' })
-      expect(ready(session).streamingText).toBe('partial')
+      expect(ready(session).work).toMatchObject([{ type: 'thinking', text: 'thinking about it' }, { type: 'writing', text: 'partial' }])
 
       fake.server().stream(0, { type: 'streamReset' })
-      expect(ready(session).streamingText).toBe('')
+      expect(ready(session).work).toEqual([])
     })
 
     it('when the agent stops, drops text that never became a message and reports the turn end', async () => {
@@ -425,7 +425,7 @@ describe('ChatSession', () => {
       fake.server().stream(0, { type: 'textDelta', delta: 'cut off' })
       fake.server().metadata(chat(0, 'Chat', 2))
 
-      expect(ready(session)).toMatchObject({ streamingText: '', thinking: false })
+      expect(ready(session)).toMatchObject({ work: [], activity: undefined })
       expect(onTurnEnded).toHaveBeenCalledOnce()
     })
 
@@ -448,7 +448,7 @@ describe('ChatSession', () => {
       fake.server().stream(0, { type: 'textDelta', delta: 'elsewhere' })
       fake.server().metadata(chat(0, 'Renamed old chat', 300, agentAuthor))
 
-      expect(ready(session)).toMatchObject({ title: 'Shown', items: [], streamingText: '', thinking: false })
+      expect(ready(session)).toMatchObject({ title: 'Shown', items: [], work: [], activity: undefined })
     })
 
     it('holds what arrives while still loading, and applies it over the history', async () => {
@@ -476,13 +476,13 @@ describe('ChatSession', () => {
       fake.server().streamGeneration(1)
       fake.server().stream(0, { type: 'textDelta', delta: 'kept' })
       fake.server().streamGeneration(1)
-      expect(ready(session).streamingText).toBe('kept')
+      expect(ready(session).work).toMatchObject([{ type: 'writing', text: 'kept' }])
 
       fake.server().streamGeneration(2)
-      expect(ready(session).streamingText).toBe('')
+      expect(ready(session).work).toEqual([])
 
       fake.server().stream(0, { type: 'textDelta', delta: 'x' })
-      expect(ready(session).streamingText).toBe('x')
+      expect(ready(session).work).toMatchObject([{ type: 'writing', text: 'x' }])
     })
 
     it('ignores activity after stop', async () => {
@@ -501,30 +501,30 @@ describe('ChatSession', () => {
     const file = { workpieceId: 1, filename: 'worker.ts' }
     const read: AiToolCall = { toolCallId: 'read', toolName: 'readFile', input: { filename: 'chart.tsx' } }
 
-    it('shows reasoning as it is written, which is no longer just thinking', async () => {
+    it('shows reasoning as it is written', async () => {
       const { session, stream } = await working()
-      expect(ready(session)).toMatchObject({ thinking: true, streamingReasoning: '' })
+      expect(ready(session)).toMatchObject({ activity: 'Thinking…', work: [] })
 
       stream({ type: 'reasoningDelta', delta: 'The window is ' }, { type: 'reasoningDelta', delta: 'a constant.' })
 
-      expect(ready(session)).toMatchObject({ thinking: false, streamingReasoning: 'The window is a constant.', streamingText: '' })
+      expect(ready(session)).toMatchObject({ activity: 'Thinking…', work: [{ type: 'thinking', text: 'The window is a constant.' }] })
     })
 
-    it('lists a call while it is written: what it is, its file, its content so far, and when its input is complete', async () => {
+    it('says what a call is doing while it is written: what it is, its file, its content so far, and when its input is complete', async () => {
       const { session, stream } = await working()
 
       stream({ type: 'toolCallStarted', toolCallId: 'w', toolName: 'writeFile' })
-      expect(ready(session)).toMatchObject({ thinking: false, openTools: { running: true, entries: [{ label: 'Writing file…', running: true }] } })
+      expect(ready(session)).toMatchObject({ activity: 'Writing file…', work: [{ label: 'Writing file…', running: true }] })
 
       stream({ type: 'toolCallTarget', toolCallId: 'w', file })
       stream({ type: 'editPreviewStart', toolCallId: 'w', file }, { type: 'editPreviewDelta', toolCallId: 'w', delta: 'export ' }, { type: 'editPreviewDelta', toolCallId: 'w', delta: 'default {}' })
-      expect(ready(session).openTools).toMatchObject({
-        summary: 'Writing worker.ts…',
-        entries: [{ key: 'w', label: 'Writing worker.ts…', sections: [{ label: 'Content', text: 'export default {}' }] }],
+      expect(ready(session)).toMatchObject({
+        activity: 'Writing worker.ts…',
+        work: [{ key: 'w', label: 'Writing worker.ts…', sections: [{ label: 'Content', text: 'export default {}' }] }],
       })
 
       stream({ type: 'toolCallFinished', toolCallId: 'w' })
-      expect(ready(session).openTools?.entries).toMatchObject([{ running: false }])
+      expect(ready(session).work).toMatchObject([{ running: false }])
     })
 
     it('streams the code a call runs, then its output', async () => {
@@ -537,37 +537,24 @@ describe('ChatSession', () => {
         { type: 'toolOutputDelta', toolCallId: 'x', delta: '42' },
       )
 
-      expect(ready(session).openTools?.entries).toMatchObject([{
+      expect(ready(session).work).toMatchObject([{
         label: 'Running code…',
         running: true,
         sections: [{ label: 'Code', text: 'run()' }, { label: 'Output', text: '42' }],
       }])
     })
 
-    it('adds live calls to the run of calls the turn already ends with, under the same key', async () => {
+    it('adds what is being written to the steps already taken', async () => {
       const { session, stream } = await working([userMessage(0, 'go'), withCalls(1, [read])])
       const before = ready(session)
-      expect(before.openTools).toMatchObject({ summary: 'Read chart.tsx', entries: [{ key: 'read' }] })
+      expect(before.work).toMatchObject([{ key: 'read', label: 'Read chart.tsx' }])
 
-      stream({ type: 'toolCallStarted', toolCallId: 'e', toolName: 'editFile' }, { type: 'toolCallTarget', toolCallId: 'e', file })
+      stream({ type: 'textDelta', delta: 'Now the worker.' }, { type: 'toolCallStarted', toolCallId: 'e', toolName: 'editFile' }, { type: 'toolCallTarget', toolCallId: 'e', file })
 
       const after = ready(session)
-      expect(after.openTools).toMatchObject({ key: before.openTools!.key, running: true, summary: 'Editing worker.ts…', entries: [{ key: 'read' }, { key: 'e', running: true }] })
-      expect(after.streamingTools).toBeUndefined()
+      expect(after).toMatchObject({ activity: 'Editing worker.ts…', work: [{ key: 'read' }, { type: 'writing', text: 'Now the worker.' }, { key: 'e', running: true }] })
+      expect(after.work[0]).toBe(before.work[0])
       expect(after.items).toBe(before.items)
-    })
-
-    it('starts a new run for calls that follow text the agent is writing', async () => {
-      const { session, stream } = await working([userMessage(0, 'go'), withCalls(1, [read])])
-
-      stream({ type: 'textDelta', delta: 'Now the worker.' }, { type: 'toolCallStarted', toolCallId: 'e', toolName: 'editFile' })
-
-      expect(ready(session)).toMatchObject({
-        openTools: { entries: [{ key: 'read' }] },
-        streamingText: 'Now the worker.',
-        streamingTools: { entries: [{ key: 'e' }] },
-      })
-      expect(ready(session).openTools?.running).toBeUndefined()
     })
 
     it('keeps the thinking that led straight to a call with that call', async () => {
@@ -575,30 +562,31 @@ describe('ChatSession', () => {
 
       stream({ type: 'reasoningDelta', delta: 'Check the worker.' }, { type: 'toolCallStarted', toolCallId: 'r', toolName: 'readFile' })
 
-      expect(ready(session)).toMatchObject({ streamingReasoning: '', openTools: { entries: [{ reasoning: 'Check the worker.' }] } })
+      expect(ready(session).work).toMatchObject([{ type: 'call', reasoning: 'Check the worker.' }])
+      expect(ready(session).work).toHaveLength(1)
     })
 
     it('replaces everything that streamed of a step with its durable message', async () => {
       const { session, stream, server } = await working([userMessage(0, 'go')])
       stream({ type: 'reasoningDelta', delta: 'Check it.' }, { type: 'toolCallStarted', toolCallId: 'read', toolName: 'readFile' }, { type: 'toolCallFinished', toolCallId: 'read' })
-      const live = ready(session).openTools!
+      const [live] = ready(session).work
 
       server.message(withCalls(1, [read], 'Check it.'))
 
       const snapshot = ready(session)
-      expect(snapshot).toMatchObject({ streamingReasoning: '', streamingTools: undefined, openTools: { key: live.key, summary: 'Read chart.tsx' } })
-      expect(snapshot.openTools?.running).toBeUndefined()
-      expect(snapshot.openTools?.entries).toMatchObject([{ label: 'Read chart.tsx', reasoning: 'Check it.' }])
+      expect(snapshot.activity).toBe('Thinking…')
+      expect(snapshot.work).toEqual([expect.objectContaining({ key: live.key, label: 'Read chart.tsx', reasoning: 'Check it.' })])
+      expect(snapshot.work[0]).not.toHaveProperty('running')
     })
 
     it('says the conversation is being compacted until that ends', async () => {
       const { session, stream } = await working()
 
       stream({ type: 'compacting' })
-      expect(ready(session)).toMatchObject({ compacting: true, thinking: false })
+      expect(ready(session).activity).toBe('Compacting the conversation…')
 
       stream({ type: 'compacted' })
-      expect(ready(session)).toMatchObject({ compacting: false, thinking: true })
+      expect(ready(session).activity).toBe('Thinking…')
     })
 
     it('discards all of a step that will be tried again: its text, reasoning and calls', async () => {
@@ -609,12 +597,13 @@ describe('ChatSession', () => {
         { type: 'toolCallStarted', toolCallId: 'x', toolName: 'executeCode' },
         { type: 'toolCodeDelta', toolCallId: 'x', delta: 'run()' },
       )
-      expect(ready(session).streamingTools).toBeDefined()
+      // What was done, then the step being written in its order: thought, reply, call.
+      expect(ready(session).work.map(({ type }) => type)).toEqual(['call', 'thinking', 'writing', 'call'])
 
       stream({ type: 'streamReset' })
 
-      expect(ready(session)).toMatchObject({ streamingReasoning: '', streamingText: '', streamingTools: undefined, thinking: true })
-      expect(ready(session).openTools).toMatchObject({ summary: 'Read chart.tsx', entries: [{ key: 'read' }] })
+      expect(ready(session).activity).toBe('Thinking…')
+      expect(ready(session).work).toEqual([expect.objectContaining({ key: 'read', label: 'Read chart.tsx' })])
     })
 
     it('drops what was streaming when the agent stops, and when the server restarts', async () => {
@@ -624,11 +613,21 @@ describe('ChatSession', () => {
       server.streamGeneration(1)
       streamStep()
       server.streamGeneration(2)
-      expect(ready(session)).toMatchObject({ openTools: undefined, streamingReasoning: '', compacting: false })
+      expect(ready(session)).toMatchObject({ work: [], activity: 'Thinking…' })
 
       streamStep()
       server.metadata(chat(0, 'Chat', 2))
-      expect(ready(session)).toMatchObject({ openTools: undefined, streamingReasoning: '', compacting: false, thinking: false })
+      expect(ready(session)).toMatchObject({ work: [], activity: undefined })
+    })
+
+    it('keeps the turn’s steps only while it is worked on', async () => {
+      const { session, server } = await working([userMessage(0, 'go'), withCalls(1, [read])])
+      expect(ready(session).work).toHaveLength(1)
+
+      server.message(agentMessage(2, 'Done'))
+      server.metadata(chat(0, 'Chat', 2))
+
+      expect(ready(session)).toMatchObject({ work: [], activity: undefined, items: [{ kind: 'user' }, { kind: 'assistant', text: 'Done' }] })
     })
 
     it('remembers what a streamed creation was making, for the card it becomes', async () => {
@@ -637,12 +636,12 @@ describe('ChatSession', () => {
         { type: 'toolCallStarted', toolCallId: 'make', toolName: 'createGadget' },
         { type: 'toolCallOutputFormat', toolCallId: 'make', output: { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' } },
       )
-      expect(ready(session).openTools?.entries).toMatchObject([{ label: 'Creating Document…' }])
+      expect(ready(session)).toMatchObject({ activity: 'Creating Document…', work: [{ label: 'Creating Document…' }] })
 
       server.message(withCalls(1, [{ toolCallId: 'make', toolName: 'createGadget', input: { title: 'Review', bindingName: 'REVIEW' }, output: { gadgetId: 4 } }]))
 
       expect(ready(session)).toMatchObject({
-        openTools: undefined,
+        work: [],
         pinned: [{ kind: 'output', title: 'Review', workpieceId: 4, draft: true, format: { noun: 'Document', icon: 'fileText' } }],
       })
     })
@@ -735,7 +734,7 @@ describe('ChatSession', () => {
       fake.actions().entry(log({ state: 'approved', resolvedBy: userAuthor, autoApproved: true }))
 
       expect(ready(session).pinned).toEqual([])
-      expect(ready(session).openTools?.entries).toMatchObject([{ type: 'action', resolution: 'Auto-approved (User’s rule)' }])
+      expect(ready(session).items.at(-1)).toMatchObject({ kind: 'action', state: 'approved', resolution: 'Auto-approved (User’s rule)' })
     })
 
     it('ignores a record no loaded message shows', async () => {

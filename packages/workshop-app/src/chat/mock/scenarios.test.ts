@@ -19,12 +19,11 @@ const open = async (played: Scenario) => {
     if (snapshot.status !== 'ready') throw new Error(`expected a ready session, got ${snapshot.status}`)
     return snapshot
   }
-  /** Every row on screen, top to bottom. */
-  const rows = (): ChatItem[] => {
-    const { items, openTools, streamingTools, pinned } = ready()
-    return [...items, ...[openTools, streamingTools].filter((item) => item !== undefined), ...pinned]
-  }
-  return { session, overseer, ready, rows }
+  /** Every row of the conversation, top to bottom. */
+  const rows = (): ChatItem[] => [...ready().items, ...ready().pinned]
+  /** What the making of the reply shows right now, by kind. */
+  const making = () => ready().work.map(({ type }) => type)
+  return { session, overseer, ready, rows, making }
 }
 
 /** Plays the whole script, collecting something from the screen after every step. */
@@ -43,31 +42,26 @@ describe('scenarios', () => {
     const { ready, seen } = await watch(played, ({ rows }) => of(rows(), 'notice').map(({ notice }) => notice))
 
     expect(seen).not.toContain('unknown')
-    expect(ready()).toMatchObject({
-      streamingText: '',
-      streamingReasoning: '',
-      streamingTools: undefined,
-      compacting: false,
-      agentActive: false,
-      queuedSteers: [],
-      actionError: undefined,
-    })
-    expect(ready().openTools?.running).toBeUndefined()
+    expect(ready()).toMatchObject({ activity: undefined, work: [], agentActive: false, queuedSteers: [], actionError: undefined })
   })
 
-  it('plain: reasoning streams before the answer, and stays with it', async () => {
-    const { ready, seen } = await watch(scenario('plain'), (chat) => [chat.ready().streamingReasoning !== '', chat.ready().streamingText !== ''])
+  it('plain: the reply is thought about, then written, and joins the conversation only when done', async () => {
+    const { ready, seen } = await watch(scenario('plain'), (chat) => [`${chat.ready().activity}: ${chat.making().join()}; ${chat.ready().items.length} rows`])
 
-    expect(seen).toContain(true)
-    expect(ready().items).toMatchObject([{ kind: 'user' }, { kind: 'assistant', reasoning: expect.any(String) }, { kind: 'user' }, { kind: 'assistant' }])
+    expect([...seen]).toEqual(expect.arrayContaining(['Thinking…: thinking; 1 rows', 'Writing…: thinking,writing; 1 rows']))
+    expect(ready().items).toEqual([
+      expect.objectContaining({ kind: 'user' }),
+      { kind: 'assistant', id: expect.any(Number), key: expect.any(String), text: expect.any(String) },
+      expect.objectContaining({ kind: 'user' }),
+      expect.objectContaining({ kind: 'assistant' }),
+    ])
   })
 
-  it('tool-run: calls show while they run, then as one group with its failure flagged', async () => {
-    const { rows, seen } = await watch(scenario('tool-run'), ({ ready }) => (ready().openTools?.running ? ready().openTools!.entries.filter((entry) => entry.type === 'call' && entry.running).map(({ label }) => label) : []))
+  it('tool-run: what each call is doing is said while it runs, and none of it stays in the conversation', async () => {
+    const { rows, seen } = await watch(scenario('tool-run'), ({ ready }) => [ready().activity])
 
-    expect([...seen]).toEqual(expect.arrayContaining(['Reading src/worker.ts…', 'Writing src/trend.ts…', 'Running code…']))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'assistant'])
-    expect(of(rows(), 'tools')[0]).toMatchObject({ failed: true, summary: 'Read 3 files, edited 2, wrote 1, and 2 more' })
+    expect([...seen]).toEqual(expect.arrayContaining(['Reading src/worker.ts…', 'Writing src/trend.ts…', 'Running code…', 'Writing…', undefined]))
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant'])
   })
 
   it('approval: a decision goes back to its place, a rule approves the next of its kind, and what does not block waits under the answer', async () => {
@@ -91,33 +85,33 @@ describe('scenarios', () => {
     const whilePending: string[] = []
     while (overseer.player.getSnapshot().position < overseer.player.getSnapshot().total) {
       overseer.player.step()
-      if (pending().length && ready().streamingText) whilePending.push(pending()[0].title)
+      if (pending().length && ready().activity === 'Writing…') whilePending.push(pending()[0].title)
     }
     expect(new Set(whilePending)).toEqual(new Set(['Post to #platform']))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'action', 'assistant', 'tools', 'assistant', 'tools', 'assistant', 'action'])
-    // The two labels were never anyone's decision: they are steps of the work.
-    expect(of(rows(), 'tools')[1]).toMatchObject({
-      summary: 'Ran code, took 2 actions',
-      entries: [{ type: 'call' }, { resolution: 'Auto-approved (Ada Lovelace’s rule)' }, { resolution: 'Auto-approved (Ada Lovelace’s rule)' }],
-    })
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'action', 'assistant', 'action', 'action', 'assistant', 'assistant', 'action'])
 
     await session.rejectAction(pending()[0].actionId)
     expect(ready().pinned).toEqual([])
-    expect(rows().map(({ kind }) => kind).slice(-3)).toEqual(['tools', 'action', 'assistant'])
-    expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual(['Approved by Ada Lovelace', 'Denied by Ada Lovelace'])
+    expect(rows().map(({ kind }) => kind).slice(-3)).toEqual(['assistant', 'action', 'assistant'])
+    // The two labels were decided by the rule as they were made.
+    expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual([
+      'Approved by Ada Lovelace',
+      'Auto-approved (Ada Lovelace’s rule)',
+      'Auto-approved (Ada Lovelace’s rule)',
+      'Denied by Ada Lovelace',
+    ])
   })
 
-  it('observation-hook: what was read is listed with the tools, and the hook stays under the answer while it is written', async () => {
+  it('observation-hook: what was read is a step of the work, and the hook stays under the answer while more is done', async () => {
     const { session, ready, rows, seen } = await watch(scenario('observation-hook'), (chat) => {
-      const { pinned, streamingText, openTools } = chat.ready()
-      if (pinned.length === 0) return []
-      return [...(streamingText ? ['writing'] : []), ...(openTools?.running ? ['running a tool'] : [])]
+      const { pinned, activity } = chat.ready()
+      return [chat.making().join(), ...(pinned.length && activity ? [`with the hook: ${activity}`] : [])]
     })
-    // With the hook already under the answer, the agent both wrote text and ran a tool.
-    expect(seen).toEqual(new Set(['writing', 'running a tool']))
-    expect(rows().slice(-4).map(({ kind }) => kind)).toEqual(['assistant', 'tools', 'assistant', 'hook'])
+    expect(seen).toContain('call,observation,observation')
+    // With the hook already under the answer, the agent both ran a tool and wrote on.
+    expect([...seen]).toEqual(expect.arrayContaining(['with the hook: Running code…', 'with the hook: Writing…']))
+    expect(rows().slice(-3).map(({ kind }) => kind)).toEqual(['assistant', 'assistant', 'hook'])
 
-    expect(of(rows(), 'tools')[0].entries.map(({ type }) => type)).toEqual(['call', 'observation', 'observation'])
     expect(rows().at(-1)).toMatchObject({ kind: 'hook', enabled: true })
     const [hook] = of(ready().pinned, 'hook')
     await session.setHookEnabled(hook.hookId!, false)
@@ -139,7 +133,7 @@ describe('scenarios', () => {
     const { ready, rows, seen } = await watch(scenario('output'), (chat) => of(chat.rows(), 'output').map(({ draft }) => draft))
 
     expect(seen).toEqual(new Set([true, false]))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'tools', 'assistant', 'output', 'divider', 'divider'])
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant', 'output', 'divider', 'divider'])
     expect(ready().pinned).toMatchObject([
       { kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } },
       { label: 'You saved edits' },
@@ -155,7 +149,7 @@ describe('scenarios', () => {
   })
 
   it('steer-slash: a steer waits unread, then joins the answer; the context is compacted', async () => {
-    const { rows, seen } = await watch(scenario('steer-slash'), ({ ready }) => [...ready().queuedSteers.map(({ text }) => text), ...(ready().compacting ? ['compacting'] : [])])
+    const { rows, seen } = await watch(scenario('steer-slash'), ({ ready }) => [...ready().queuedSteers.map(({ text }) => text), ...(ready().activity === 'Compacting the conversation…' ? ['compacting'] : [])])
 
     expect(seen).toEqual(new Set(['Keep it under 100 words.', 'compacting']))
     expect(rows().map((row) => (row.kind === 'notice' ? row.notice : row.kind))).toEqual([

@@ -3,7 +3,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
 import { MessageAttachment } from './MessageAttachment'
-import { MessageBubble } from './MessageBubble'
+import { MessageBubble, type MessageJoins } from './MessageBubble'
 
 /** A stretch of the message: plain text, or something the user mentioned. */
 export type UserMessagePart =
@@ -22,6 +22,8 @@ export type UserMessageProps = {
   /** Sent while the agent was working, which has not read it yet. */
   unread?: boolean
   onOpenAttachment?: (id: string) => void
+  /** The neighbouring messages from the same sender, when the bubbles are not siblings in the page. */
+  joins?: MessageJoins
 }
 
 const Part = ({ part }: { part: UserMessagePart }) => {
@@ -38,7 +40,7 @@ const Part = ({ part }: { part: UserMessagePart }) => {
 }
 
 /** What a person sent: their words with what they mentioned as chips, and the files they attached. */
-export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttachment }: UserMessageProps) => (
+export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttachment, joins }: UserMessageProps) => (
   <div className={cn('flex flex-col gap-1', unread && 'opacity-60')}>
     {from && <span className="px-2 text-end text-xs text-kumo-subtle">{from}</span>}
     {attachments.length > 0 && (
@@ -51,7 +53,7 @@ export const UserMessage = ({ parts, attachments = [], from, unread, onOpenAttac
       </ul>
     )}
     {parts.length > 0 && (
-      <MessageBubble role="user">
+      <MessageBubble role="user" joins={joins}>
         {parts.map((part, index) => <Part key={index} part={part} />)}
       </MessageBubble>
     )}

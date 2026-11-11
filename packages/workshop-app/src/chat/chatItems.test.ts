@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { AiChatMessage } from '@gadgets/workshop-shared/api'
-import { toChatFeed, type ChatFeed, type ChatItem } from './chatItems'
+import { continuesRun, toChatFeed, type ChatFeed, type ChatItem } from './chatItems'
 import recordedDevChat from './fixtures/dev-chat.json'
 import { readFixture } from './fixtures/readFixture'
 import { MockOverseer } from './mock/MockOverseer'
@@ -32,7 +32,7 @@ import { SCENARIOS } from './mock/scenarios'
 const viewer = { viewerId: VIEWER.id }
 const feed = (...sources: Parameters<typeof history>[0]) => toChatFeed(history(sources), viewer)
 /** Everything the feed shows, top to bottom. */
-const rows = ({ items, openTools, pinned }: ChatFeed): ChatItem[] => [...items, ...(openTools ? [openTools] : []), ...pinned]
+const rows = ({ items, pinned }: ChatFeed): ChatItem[] => [...items, ...pinned]
 const kinds = (result: ChatFeed) => rows(result).map(({ kind }) => kind)
 const only = <K extends ChatItem['kind']>(result: ChatFeed, kind: K) =>
   rows(result).filter((item): item is Extract<ChatItem, { kind: K }> => item.kind === kind)
@@ -119,9 +119,25 @@ describe('toChatFeed', () => {
       expect(only(feed(compactCommand()), 'user')).toMatchObject([{ parts: [{ type: 'command', name: 'compact' }] }])
     })
 
-    it('keeps an agent’s reasoning with what it said', () => {
+    it('shows what the agent said and not what it thought first', () => {
       const result = feed(agent({ text: 'Done', reasoning: 'Thinking it through' }))
-      expect(result.items).toMatchObject([{ kind: 'assistant', text: 'Done', reasoning: 'Thinking it through' }])
+      expect(result.items).toEqual([{ kind: 'assistant', id: 0, key: 'assistant:0', text: 'Done' }])
+      expect(result.work).toEqual([])
+    })
+
+    it('draws consecutive messages from one sender as a run, unless the later one has its own heading', () => {
+      const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
+      const { items } = feed(
+        user('one'),
+        user('two'),
+        user('three', { author: other }),
+        user('', { attachments: [{ id: 'a', mimeType: 'application/pdf', name: 'brief.pdf', size: 10 }] }),
+        agent({ text: 'first' }),
+        agent({ toolCalls: [read('a.ts')] }),
+        agent({ text: 'second' }),
+        user('four'),
+      )
+      expect(items.map((item, index) => continuesRun(items[index - 1], item))).toEqual([false, true, false, false, false, true, false])
     })
 
     it('hides what is only for the model, and agent steps that left nothing to show', () => {
@@ -137,61 +153,54 @@ describe('toChatFeed', () => {
     })
   })
 
-  describe('tool calls', () => {
-    it('collapses consecutive calls into one group, across messages that said nothing', () => {
-      const result = feed(
-        user('go'),
-        agent({ toolCalls: [read('a.ts'), read('b.ts')] }),
-        agent({ toolCalls: [read('c.ts'), edit('a.ts')] }),
-        agent({ toolCalls: [run()] }),
-        agent({ text: 'Done' }),
-      )
-      expect(kinds(result)).toEqual(['user', 'tools', 'assistant'])
-      expect(only(result, 'tools')[0]).toMatchObject({
-        id: 1,
-        summary: 'Read 3 files, edited 1, ran code',
-        targets: ['a.ts', 'b.ts', 'c.ts'],
-        failed: false,
-      })
-      expect(only(result, 'tools')[0].entries.map(({ label }) => label)).toEqual([
-        'Read a.ts', 'Read b.ts', 'Read c.ts', 'Edited a.ts', 'Ran code',
-      ])
+  describe('the work behind an answer', () => {
+    it('is not part of the conversation: the steps since the last message are kept beside it', () => {
+      const steps = [user('go'), agent({ toolCalls: [read('a.ts'), read('b.ts')] }), agent({ toolCalls: [run()] })]
+      const working = feed(...steps)
+      expect(kinds(working)).toEqual(['user'])
+      expect(working.work.map(({ label }) => label)).toEqual(['Read a.ts', 'Read b.ts', 'Ran code'])
+
+      // What it says next leaves those steps behind; what it does as it says it starts the next lot.
+      const spoke = feed(...steps, agent({ text: 'Found it', toolCalls: [edit('a.ts')] }))
+      expect(kinds(spoke)).toEqual(['user', 'assistant'])
+      expect(spoke.work.map(({ label }) => label)).toEqual(['Edited a.ts'])
+      expect(feed(...steps, agent({ text: 'Done' })).work).toEqual([])
     })
 
-    it('starts a new group after the agent speaks, and puts a message’s calls under its text', () => {
-      const result = feed(agent({ text: 'Looking', toolCalls: [read('a.ts')] }), agent({ text: 'Fixing', toolCalls: [edit('a.ts')] }))
-      expect(kinds(result)).toEqual(['assistant', 'tools', 'assistant', 'tools'])
+    it('starts over with the next prompt, but not with a message that steers the turn', () => {
+      const turn = [user('go'), agent({ toolCalls: [read('a.ts')] })]
+      expect(feed(...turn, user('and now?')).work).toEqual([])
+      expect(feed(...turn, user('shorter', { steered: true })).work.map(({ label }) => label)).toEqual(['Read a.ts'])
     })
 
-    it('names a single call instead of counting it, and flags a group with a failure', () => {
-      const [group] = only(feed(agent({ toolCalls: [run({ error: 'Timed out' })] })), 'tools')
-      expect(group).toMatchObject({ summary: 'Ran code', failed: true, entries: [{ error: 'Timed out' }] })
-    })
-
-    it('lists what the agent read through a tool with the tools, not as rows of their own', () => {
+    it('lists what the agent read through a tool as steps, between the calls that read it', () => {
       const result = feed(agent({ toolCalls: [run()] }), observation({ title: 'PLAT-1' }), observation({ title: 'PLAT-2' }), agent({ toolCalls: [run()] }))
-      const [group] = only(result, 'tools')
-      expect(kinds(result)).toEqual(['tools'])
-      expect(group.summary).toBe('Ran code 2 times, read 2 resources')
-      expect(group.entries.map(({ type, label }) => [type, label])).toEqual([
+      expect(kinds(result)).toEqual([])
+      expect(result.work.map(({ type, label }) => [type, label])).toEqual([
         ['call', 'Ran code'], ['observation', 'Read PLAT-1'], ['observation', 'Read PLAT-2'], ['call', 'Ran code'],
       ])
     })
 
-    it('keeps the thinking behind a silent step with the step', () => {
-      const [group] = only(feed(agent({ reasoning: 'Check the worker', toolCalls: [read('worker.ts'), read('b.ts')] })), 'tools')
-      expect(group.entries.map((entry) => entry.type === 'call' && entry.reasoning)).toEqual(['Check the worker', undefined])
+    it('keeps the thinking behind a silent step with the first thing it did', () => {
+      const { work } = feed(agent({ reasoning: 'Check the worker', toolCalls: [read('worker.ts'), read('b.ts')] }))
+      expect(work.map((entry) => entry.type === 'call' && entry.reasoning)).toEqual(['Check the worker', undefined])
     })
 
-    it('shows a call’s code and output in its detail', () => {
-      const [group] = only(feed(agent({ toolCalls: [call('executeCode', { code: 'run()' }, { output: '42' })] })), 'tools')
-      expect(group.entries[0]).toMatchObject({ sections: [{ label: 'Code', text: 'run()' }, { label: 'Output', text: '42' }] })
+    it('shows a call’s code and output, and its failure, in its detail', () => {
+      const { work } = feed(agent({ toolCalls: [call('executeCode', { code: 'run()' }, { output: '42' }), run({ error: 'Timed out' })] }))
+      expect(work).toMatchObject([
+        { sections: [{ label: 'Code', text: 'run()' }, { label: 'Output', text: '42' }] },
+        { error: 'Timed out' },
+      ])
     })
 
-    it('keeps the group’s key when it grows, so what was opened stays open', () => {
+    it('keeps each step’s key as more are taken, so what was opened stays open', () => {
       const first = history([agent({ toolCalls: [read('a.ts')] })])
       const grown = [...first, ...history([agent({ toolCalls: [read('b.ts')] })], 1)]
-      expect(toChatFeed(grown).openTools?.key).toBe(toChatFeed(first).openTools?.key)
+      const before = toChatFeed(first)
+      const after = toChatFeed(grown, {}, before)
+      expect(after.work[0]).toBe(before.work[0])
+      expect(toChatFeed(grown, {}, after).work).toBe(after.work)
     })
   })
 
@@ -206,13 +215,13 @@ describe('toChatFeed', () => {
         user('thanks'),
         agent({ text: 'Any time' }),
       )
-      expect(kinds(result)).toEqual(['user', 'assistant', 'assistant', 'tools', 'assistant', 'output', 'hook', 'user', 'assistant'])
+      expect(kinds(result)).toEqual(['user', 'assistant', 'assistant', 'assistant', 'output', 'hook', 'user', 'assistant'])
     })
 
     it('keeps the open turn’s artefacts apart, to go under whatever is still streaming', () => {
       const result = feed(user('make a report'), agent({ text: 'Creating it', toolCalls: [createGadget(1)] }), agent({ toolCalls: [edit('report.md')] }))
       expect(result.items.map(({ kind }) => kind)).toEqual(['user', 'assistant'])
-      expect(result.openTools).toMatchObject({ summary: 'Edited report.md' })
+      expect(result.work).toMatchObject([{ label: 'Edited report.md' }])
       expect(result.pinned).toMatchObject([{ kind: 'output', workpieceId: 1, title: 'Report' }])
     })
 
@@ -227,11 +236,11 @@ describe('toChatFeed', () => {
       expect(kinds(result)).toEqual(['user', 'assistant', 'user', 'assistant', 'output', 'user'])
     })
 
-    it('shows a created gadget as a card and not as a tool call; a failed creation stays a call', () => {
+    it('shows a created gadget as a card and not as a step; a failed creation stays a step', () => {
       const failed = call('createGadget', { title: 'Broken', bindingName: 'X' }, { error: 'Name taken' })
       const result = feed(agent({ toolCalls: [createGadget(1), failed] }))
       expect(result.pinned).toMatchObject([{ kind: 'output', workpieceId: 1 }])
-      expect(result.openTools?.entries.map(({ label }) => label)).toEqual(['Created gadget Broken'])
+      expect(result.work.map(({ label }) => label)).toEqual(['Created gadget Broken'])
     })
 
     it('marks a created gadget as a draft until its changes are accepted', () => {
@@ -243,7 +252,7 @@ describe('toChatFeed', () => {
     it('opens nothing for a creation that was discarded, and leaves it as the step it was', () => {
       const result = feed(agent({ toolCalls: [createGadget(1)] }), created(1), revert(1))
       expect(only(result, 'output')).toEqual([])
-      expect(only(result, 'tools')[0].entries).toMatchObject([{ label: 'Created gadget Report' }])
+      expect(result.work).toMatchObject([{ label: 'Created gadget Report' }])
     })
 
     it('never calls a worktree a draft: it is private to the chat and needs no accepting', () => {
@@ -271,13 +280,10 @@ describe('toChatFeed', () => {
       ])
     })
 
-    it('lists an action a standing rule approved with the work that made it, since nobody was asked', () => {
-      const result = feed(agent({ toolCalls: [run()] }), action({ title: 'Label', kind: LABEL, autoApprovedBy: VIEWER }), agent({ toolCalls: [run()] }))
-      expect(kinds(result)).toEqual(['tools'])
-      expect(result.openTools).toMatchObject({
-        summary: 'Ran code 2 times, took 1 action',
-        entries: [{ type: 'call' }, { type: 'action', label: 'Label', resolution: 'Auto-approved (Ada Lovelace’s rule)' }, { type: 'call' }],
-      })
+    it('shows an action a standing rule approved where it happened, already decided', () => {
+      const result = feed(agent({ text: 'Labelling' }), action({ title: 'Label', kind: LABEL, autoApprovedBy: VIEWER }), agent({ text: 'Labelled' }))
+      expect(kinds(result)).toEqual(['assistant', 'action', 'assistant'])
+      expect(only(result, 'action')).toMatchObject([{ title: 'Label', state: 'approved', resolution: 'Auto-approved (Ada Lovelace’s rule)', rule: undefined }])
     })
 
     it('offers a standing approval only for a pending action whose gatekeeper allows one', () => {

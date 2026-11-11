@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { AssistantMessage } from '@/blocks/AssistantMessage'
 import { UserMessage } from '@/blocks/UserMessage'
-import { useOpen, useReport } from './previewState'
+import { useReport } from './previewState'
 import { Section } from './Section'
 
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full flex-col gap-2">{children}</div>
@@ -12,7 +12,6 @@ const picture = new TextEncoder().encode(
 
 /** What people and the agent say, in every state. */
 export const MessageBlocksPreview = () => {
-  const { of } = useOpen()
   const { report, say } = useReport()
 
   return (
@@ -44,15 +43,10 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="AssistantMessage (plain, with reasoning, still thinking, streaming with reasoning)">
+      <Section title="AssistantMessage (plain, with Markdown)">
         <Column>
-          <AssistantMessage text="I’ll build a personal **Jira dashboard**." />
-          <AssistantMessage
-            text="The chart now covers twelve weeks."
-            reasoning={{ text: 'The window is a constant in `chart.tsx`. Changing it is enough; the worker already returns twelve weeks.', ...of('reasoning') }}
-          />
-          <AssistantMessage text="" live reasoning={{ text: 'The user wants a short explanation. Cover the trigger first', ...of('thinking') }} />
-          <AssistantMessage text="A scheduled gadget runs on a" live reasoning={{ text: 'Keep it short.', ...of('streaming') }} />
+          <AssistantMessage text="I’ll build a personal Jira dashboard." />
+          <AssistantMessage text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'} />
         </Column>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>

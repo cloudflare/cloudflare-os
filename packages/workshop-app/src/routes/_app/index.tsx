@@ -43,7 +43,7 @@ function Home() {
       {/* Spaced like the conversation this becomes. */}
       <div className="flex flex-col gap-2">
         {pending && <MessageBubble role="user">{pending}</MessageBubble>}
-        <AssistantPresence working={Boolean(pending)}>Thinking…</AssistantPresence>
+        <AssistantPresence working={Boolean(pending)} status="Thinking…" />
         {problem && <MessageBubble role="error">{problem}</MessageBubble>}
       </div>
     </ChatLayout>

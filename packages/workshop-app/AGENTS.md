@@ -40,14 +40,24 @@ there so its states can be reviewed in isolation.
 its block. The mapping is pure and returns the same objects for messages that did not change, so
 only changed rows render.
 
+The conversation is what was said, so it reads like chatting with someone. How a reply came about
+(the tools the agent called, what it read, what it thought) is never a row. While the agent works,
+the mascot shows below the last message with what it is doing ("Running code…"); that status opens
+to the steps taken since the last message, with the one under way shown open, including the reply
+as it is drafted. A reply becomes a message only once it is written, and its steps are then gone.
+
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
 waiting on the user for (a pending approval or connection request) is shown at the end of the turn,
 never where it happened, so it cannot be left behind by what the agent wrote afterwards. The last
-turn's are kept apart (`pinned`) and rendered below whatever is still streaming. Once the user has
-answered a request it is history and goes back to where it happened; an action a standing rule
-approved never asked anyone, and is a step of the tool run. What a person then did to the chat's
+turn's are kept apart (`pinned`) and rendered below the mascot. Once the user has answered a
+request it is history and goes back to where it happened; an action a standing rule approved was
+decided as it was made, and is shown there the same way. What a person then did to the chat's
 changes (saved edits, accepted, discarded) follows the artefacts, as a divider. Keep these rules
 when adding a kind.
+
+Consecutive messages from one sender are drawn as a run (closer together, with smaller corners
+where they meet). `MessageBubble` does that itself between sibling bubbles; the message list wraps
+each row, so `ChatPane` tells the rows about their neighbours (`continuesRun`).
 
 What is open in a row lives in `DisclosureStore`, not in the block: the list unmounts rows far off
 screen.

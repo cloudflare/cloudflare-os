@@ -33,7 +33,7 @@ const DOCUMENT: BlueprintOutput = { id: 'document', noun: 'Document', plural: 'D
 const plain: Scenario = {
   id: 'plain',
   title: 'Scheduled gadgets',
-  description: 'A question, then reasoning and an answer streamed in. Send a message to get a second answer.',
+  description: 'A question, then an answer that is thought about and written before it appears. Open the status beside the mascot to watch. Send a message to get a second answer.',
   history: history([user('How do scheduled gadgets work? Keep it short.')]),
   script: [
     ...turn(
@@ -84,7 +84,7 @@ const search = call('grep', { workpiece: 'DASHBOARD', pattern: 'limit:', path: '
 const toolRun: Scenario = {
   id: 'tool-run',
   title: 'Jira dashboard',
-  description: 'Reads, edits, code with output and a failing tool, each streamed before it is recorded.',
+  description: 'Reads, edits, code with output and a failing tool. The status beside the mascot says what is happening and opens to the steps; none of it stays in the conversation.',
   history: history([user('Show twelve weeks of tickets on the chart instead of four.')]),
   script: turn(
     say(agent({ text: 'I’ll read the chart code first.' })),
@@ -216,7 +216,7 @@ const hook = call('setBindingHook', { bindingName: 'JIRA', entrypoint: 'OnNewIss
 const observationHook: Scenario = {
   id: 'observation-hook',
   title: 'Watch the board',
-  description: 'What the agent read is listed with its tools. The hook it sets up stays under the answer while the agent keeps working and writing; toggle it.',
+  description: 'What the agent read is a step of its work. The hook it sets up stays under the answer while the agent keeps working and writing; toggle it.',
   history: history([user('Watch the Platform board and summarise new tickets for me.')]),
   script: turn(
     streamTool(watch),

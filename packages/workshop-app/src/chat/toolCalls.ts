@@ -88,9 +88,6 @@ const describe = (call: AiToolCall): { verb: string; target?: string } => {
   }
 }
 
-/** The name of what a call acted on, when it has one worth listing beside the others. */
-export const toolTarget = (call: AiToolCall): string | undefined => describe(call).target
-
 /** One finished call as a sentence: "Read worker.ts". */
 export const toolLabel = (call: AiToolCall): string => {
   const { verb, target } = describe(call)
@@ -184,63 +181,4 @@ export const toolSections = (call: AiToolCall): ToolSection[] => {
       // A tool newer than this build: show what it was called with.
       return section('Input', json((call as AiToolCall).input))
   }
-}
-
-type Counted = { verb: string; noun?: [one: string, many: string]; distinctTargets?: boolean }
-
-// How several calls of one tool read together. Tools that share a noun drop it after its first
-// mention: "Read 3 files, edited 2".
-const COUNTED: Record<ToolName, Counted> = {
-  readFile: { verb: 'read', noun: ['file', 'files'], distinctTargets: true },
-  writeFile: { verb: 'wrote', noun: ['file', 'files'], distinctTargets: true },
-  editFile: { verb: 'edited', noun: ['file', 'files'], distinctTargets: true },
-  grep: { verb: 'searched files' },
-  describeBinding: { verb: 'inspected', noun: ['binding', 'bindings'] },
-  setBindingHook: { verb: 'connected', noun: ['binding', 'bindings'] },
-  setGadgetBinding: { verb: 'wired up', noun: ['binding', 'bindings'] },
-  saveCapsuleAsBinding: { verb: 'saved', noun: ['resource', 'resources'] },
-  createGadget: { verb: 'created', noun: ['gadget', 'gadgets'] },
-  createWorktree: { verb: 'created', noun: ['worktree', 'worktrees'] },
-  executeCode: { verb: 'ran code' },
-  webFetch: { verb: 'fetched', noun: ['page', 'pages'] },
-  observeUserChanges: { verb: 'observed your changes' },
-  giveUp: { verb: 'stopped' },
-  listBlueprints: { verb: 'listed blueprints' },
-  listConnectableResources: { verb: 'listed connectable resources' },
-  requestConnection: { verb: 'requested', noun: ['connection', 'connections'] },
-  createExternalResource: { verb: 'created', noun: ['external resource', 'external resources'] },
-}
-
-const MAX_PHRASES = 3
-
-const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
-
-/**
- * One line for a run of work: "Read 3 files, edited 2, ran code". A single step is its own
- * sentence. `reads` is how many resources were read alongside the calls, and `actions` how many
- * actions a standing rule let them take.
- */
-export const summarizeTools = (calls: AiToolCall[], reads = 0, actions = 0): string => {
-  if (calls.length === 1 && reads === 0 && actions === 0) return toolLabel(calls[0])
-
-  const phrases: string[] = []
-  const mentioned = new Set<string>()
-  const add = (verb: string, count: number, noun?: [string, string]) => {
-    if (!noun) return phrases.push(count > 1 ? `${verb} ${count} times` : verb)
-    const word = noun[count === 1 ? 0 : 1]
-    phrases.push(mentioned.has(noun[1]) ? `${verb} ${count}` : `${verb} ${count} ${word}`)
-    mentioned.add(noun[1])
-  }
-
-  for (const toolName of new Set(calls.map((call) => call.toolName))) {
-    const ofTool = calls.filter((call) => call.toolName === toolName)
-    const { verb, noun, distinctTargets } = COUNTED[toolName] ?? { verb: `used ${toolName}` }
-    add(verb, distinctTargets ? new Set(ofTool.map(toolTarget)).size : ofTool.length, noun)
-  }
-  if (reads > 0) add('read', reads, ['resource', 'resources'])
-  if (actions > 0) add('took', actions, ['action', 'actions'])
-
-  const shown = phrases.slice(0, MAX_PHRASES)
-  const rest = phrases.length - shown.length
-  return capitalize(shown.join(', ')) + (rest > 0 ? `, and ${rest} more` : '')
 }

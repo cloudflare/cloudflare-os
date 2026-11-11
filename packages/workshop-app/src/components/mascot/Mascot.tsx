@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { MASCOT_ARRIVAL_SECONDS, RAINDROPS, startMascotMotion, type MascotEmotion, type MascotMotion } from './mascotMotion'
 import { raindrop, sparkle } from './shapes'
 
@@ -9,8 +10,8 @@ export type MascotProps = {
   emotion: MascotEmotion
   /**
    * Whether it is there. It grows in blob by blob, the sparkle last, and shrinks away the same
-   * way backwards; while not shown it draws nothing and does no work, but keeps its place in the
-   * layout. Shown unless told otherwise.
+   * way backwards; while not shown it draws nothing, does no work and cannot be played with, but
+   * keeps its place in the layout. Shown unless told otherwise.
    */
   shown?: boolean
   /**
@@ -84,7 +85,7 @@ export const Mascot = ({ emotion, shown = true, interactive, className }: Mascot
 
   if (!interactive) {
     return (
-      <div ref={frame} aria-hidden="true" className={className}>
+      <div ref={frame} aria-hidden="true" className={cn('pointer-events-none', className)}>
         <div data-part="figure" className="origin-[50%_85%]">{drawing}</div>
       </div>
     )
@@ -92,7 +93,7 @@ export const Mascot = ({ emotion, shown = true, interactive, className }: Mascot
 
   const sad = emotion === 'sad'
   return (
-    <div ref={frame} className={className}>
+    <div ref={frame} inert={!shown} className={className}>
       <button
         data-part="figure"
         type="button"
