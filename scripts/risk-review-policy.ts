@@ -601,16 +601,17 @@ const ADDS_CLASSES = ["tag", "new_classes", "new_sqlite_classes"];
 /** One Durable Object migration, as `wrangler.jsonc` holds it. */
 type Migration = { [key: string]: Json };
 
-/** What a `wrangler.jsonc` says about its Worker's Durable Objects. */
-interface WorkerConfig {
-  /** The Worker's `name`, as written. */
+/** What one place in a `wrangler.jsonc` (the top level, or an environment) deploys. */
+interface Deployment {
+  /** The Worker's `name` there, as written. */
   name: Json | undefined;
-  /** The migration lists by place: `null` for the top level, else an environment's name. */
-  migrations: Map<string | null, Migration[]>;
+  /** Its Durable Object migrations; empty when it lists none. */
+  migrations: Migration[];
 }
 
 /**
- * Reads a `wrangler.jsonc`'s Worker name and Durable Object migration lists.
+ * Reads what a `wrangler.jsonc` says about its Workers' Durable Objects, by place: `null` for the
+ * top level, else an environment's name.
  *
  * `undefined` when the file is not in the generated form or a migrations list is not a list of
  * objects. Also when the file holds a `__proto__` key, which some readers turn into inherited
@@ -618,62 +619,68 @@ interface WorkerConfig {
  * read it as that key (a repeated key that a later one shadows, the word as a value or under
  * another setting): what this reads must be what any reader reads.
  */
-function readWorkerConfig(text: string): WorkerConfig | undefined {
+function readWorkerConfig(text: string): Map<string | null, Deployment> | undefined {
   const config = readGeneratedConfig(text);
   const root = asObject(config?.value);
   const environments = root?.env === undefined ? {} : asObject(root.env);
   if (!config || !root || !environments) return undefined;
   const places: [string | null, Json][] = [[null, root], ...Object.entries(environments)];
-  const migrations = new Map<string | null, Migration[]>();
+  const deployments = new Map<string | null, Deployment>();
+  let lists = 0;
   let deletions = 0;
   for (const [place, value] of places) {
     const holder = asObject(value);
     if (!holder) return undefined;
-    if (holder.migrations === undefined) continue;
-    if (!Array.isArray(holder.migrations)) return undefined;
-    const list: Migration[] = [];
-    for (const entry of holder.migrations) {
-      const migration = asObject(entry);
-      if (!migration) return undefined;
-      if (migration.deleted_classes !== undefined) deletions++;
-      list.push(migration);
+    const migrations: Migration[] = [];
+    if (holder.migrations !== undefined) {
+      lists++;
+      if (!Array.isArray(holder.migrations)) return undefined;
+      for (const entry of holder.migrations) {
+        const migration = asObject(entry);
+        if (!migration) return undefined;
+        if (migration.deleted_classes !== undefined) deletions++;
+        migrations.push(migration);
+      }
     }
-    migrations.set(place, list);
+    deployments.set(place, { name: holder.name, migrations });
   }
   const occurs = (word: string) => config.strings.filter((string) => string === word).length;
-  return occurs("__proto__") === 0 && occurs("migrations") === migrations.size && occurs("deleted_classes") === deletions
-    ? { name: root.name, migrations }
+  return occurs("__proto__") === 0 && occurs("migrations") === lists && occurs("deleted_classes") === deletions
+    ? deployments
     : undefined;
 }
 
 /**
  * Why a `wrangler.jsonc` change needs a person for its Durable Object data. Empty when it keeps
- * the Worker's name and migrations, or only appends migrations that add classes.
+ * each Worker's name and migrations, or only appends migrations that add classes.
  *
  * Migrations are append-only: Wrangler applies the ones after the deployed tag, by position, so a
  * list that is reordered, retagged, edited or cut can run an old deletion again. Nothing here
  * compares class names between base and head, so no look-alike in the base can stand for a
  * deletion it "already made". Each reason is one of:
  * - `unreadable`: either side is not a file this reads exactly;
- * - `renames the Worker`: under a new name, a plain `wrangler deploy` creates a new Worker
- *   without the old one's Durable Objects;
+ * - `renames the Worker`: under a new name, at the top level or in an environment, a plain
+ *   `wrangler deploy` creates a new Worker without the old one's Durable Objects;
  * - `rewrites migrations`: somewhere the head's list does not start with the base's;
  * - `deletes <class>`: for each class an appended migration deletes;
  * - `<operation> in <tag>`: any other operation in an appended migration that is not adding
  *   classes (`renamed_classes`, `transferred_classes`, one this does not know).
  */
 export function durableObjectRisks(base: string | undefined, head: string): string[] {
-  const before = base === undefined ? undefined : readWorkerConfig(base);
+  const before = base === undefined ? new Map<string | null, Deployment>() : readWorkerConfig(base);
   const after = readWorkerConfig(head);
-  if ((base !== undefined && !before) || !after) return ["unreadable"];
-  const risks = before && !isDeepStrictEqual(before.name, after.name) ? ["renames the Worker"] : [];
-  for (const [place, was] of before?.migrations ?? []) {
-    const now = after.migrations.get(place) ?? [];
+  if (!before || !after) return ["unreadable"];
+  const risks: string[] = [];
+  for (const [place, was] of before) {
+    const now = after.get(place);
+    if (now && !isDeepStrictEqual(was.name, now.name) && risks.length === 0) risks.push("renames the Worker");
     // Compared as values: text forms lose differences (`1e400` and `null` both print as `null`).
-    if (was.some((migration, index) => !isDeepStrictEqual(migration, now[index]))) return [...risks, "rewrites migrations"];
+    if (was.migrations.some((migration, index) => !isDeepStrictEqual(migration, now?.migrations[index]))) {
+      return [...risks, "rewrites migrations"];
+    }
   }
-  for (const [place, now] of after.migrations) {
-    for (const migration of now.slice(before?.migrations.get(place)?.length ?? 0)) {
+  for (const [place, now] of after) {
+    for (const migration of now.migrations.slice(before.get(place)?.migrations.length ?? 0)) {
       for (const [operation, value] of Object.entries(migration)) {
         if (ADDS_CLASSES.includes(operation)) continue;
         if (operation === "deleted_classes" && Array.isArray(value) && value.every((name) => typeof name === "string")) {

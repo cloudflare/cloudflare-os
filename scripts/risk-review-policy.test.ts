@@ -318,9 +318,13 @@ describe("durableObjectRisks", () => {
   });
 
   // Under a new name a plain `wrangler deploy` creates a new Worker, without the old one's objects.
-  it("needs a person when the Worker's name changes", () => {
+  it("needs a person when a Worker's name changes, at the top level or in an environment", () => {
     assert.deepEqual(durableObjectRisks(base, base.replace('"name": "notes"', '"name": "notes-2"')), ["renames the Worker"]);
     assert.deepEqual(durableObjectRisks(base, jsonc([v1, v2, v3]).replace('"name": "notes"', '"name": "notes-2"')), ["renames the Worker", "deletes Notes"]);
+    const staging = (name: string) => jsonc([v1, v2], { env: { staging: { name } } });
+    assert.deepEqual(durableObjectRisks(staging("notes-staging"), staging("notes-stage")), ["renames the Worker"]);
+    // A new environment is a new Worker, not a renamed one.
+    assert.deepEqual(durableObjectRisks(base, staging("notes-staging")), []);
   });
 
   // Wrangler applies the migrations after the deployed tag, by position, so a changed history can
