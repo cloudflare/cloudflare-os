@@ -16,7 +16,7 @@ const FINGERPRINT = {
 };
 
 function inputs(overrides: Partial<BonkInputs>): BonkInputs {
-  return { headSha: "h", baseSha: "b", round: 1, report: null, fingerprint: FINGERPRINT, ...overrides };
+  return { headSha: "h", baseSha: "b", reviewedSha: "h", round: 1, report: null, fingerprint: FINGERPRINT, ...overrides };
 }
 
 const CLEAN = "## Findings\n\nNone.\n\n## Summary\n\nNothing to fix.\nMERGE-CONFIDENCE: 9\n";
@@ -30,6 +30,16 @@ describe("buildBonkVerdict", () => {
       assert.equal(verdict.merge_confidence, null);
       assert.match(verdict.details.reason ?? "", reason);
     }
+  });
+
+  // The pinned opencode runner checks out the pull request's branch by name, which a push during
+  // the job moves past the head this artifact is bound to.
+  it("is an error when the checkout Bonk reviewed is not the event's head", () => {
+    const verdict = buildBonkVerdict(inputs({ report: CLEAN, reviewedSha: "newer" }));
+    assert.equal(verdict.status, "error");
+    assert.equal(verdict.head_sha, "h");
+    assert.equal(verdict.merge_confidence, null);
+    assert.match(verdict.details.reason ?? "", /Bonk reviewed newer, not the pull request head h/);
   });
 
   it("turns a clean review with no findings into an ok verdict", () => {

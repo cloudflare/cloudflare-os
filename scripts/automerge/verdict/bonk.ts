@@ -67,6 +67,12 @@ export function actionPins(workflow: string): { action: string; opencode: string
 export interface BonkInputs {
   headSha: string;
   baseSha: string;
+  /**
+   * The commit checked out when Bonk finished. The pinned opencode runner checks out the pull
+   * request's branch by name, so a push during the job leaves Bonk reviewing a newer commit than
+   * the head this artifact is bound to.
+   */
+  reviewedSha: string;
   round: number;
   /** The report file's text, or null when Bonk wrote none. */
   report: string | null;
@@ -74,7 +80,7 @@ export interface BonkInputs {
 }
 
 /** An `error` verdict, which the gate treats as no verdict. Bonk always reviews the whole head. */
-function errorVerdict(inputs: Omit<BonkInputs, "round"> & { round: number | null }, reason: string): Verdict {
+function errorVerdict(inputs: Omit<BonkInputs, "round" | "reviewedSha"> & { round: number | null }, reason: string): Verdict {
   return {
     schema: 1, kind: "verdict", name: "bonk", head_sha: inputs.headSha, base_sha: inputs.baseSha,
     status: "error", holds: null,
@@ -86,6 +92,9 @@ function errorVerdict(inputs: Omit<BonkInputs, "round"> & { round: number | null
 
 /** Bonk's verdict from its report file. */
 export function buildBonkVerdict(inputs: BonkInputs): Verdict {
+  if (inputs.reviewedSha !== inputs.headSha) {
+    return errorVerdict(inputs, `Bonk reviewed ${inputs.reviewedSha}, not the pull request head ${inputs.headSha}`);
+  }
   if (inputs.report === null) return errorVerdict(inputs, "Bonk wrote no report");
   const parsed = parseReview(inputs.report);
   if (!parsed.ok) return errorVerdict(inputs, parsed.error);
@@ -130,6 +139,7 @@ async function verdictFromJob(repo: string, temp: string, model: string,
   return buildBonkVerdict({
     headSha: pr.headSha,
     baseSha: pr.baseSha,
+    reviewedSha: git(repo, ["rev-parse", "HEAD"]).trim(),
     round: planRound(pr.headSha, reviewed.filter(head => ready(head.reviewedAt)), () => false).round,
     report: existsSync(reportPath) ? readFileSync(reportPath, "utf8") : null,
     fingerprint: {
