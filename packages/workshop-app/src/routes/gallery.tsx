@@ -16,6 +16,7 @@ import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
+import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
@@ -228,6 +229,7 @@ function Gallery() {
       </Section>
       <MessageBlocksPreview />
       <ToolBlocksPreview />
+      <CardBlocksPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
