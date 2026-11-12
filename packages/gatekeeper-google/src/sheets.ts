@@ -26,7 +26,7 @@ import {
   type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
 import type { BaseFormats, BaseSizes } from "./sheets-format";
-import { isRangeChange, prepareChanges } from "./sheets-input";
+import { isLayoutChange, isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardOf, resolveChanges, sheetLabels,
@@ -344,9 +344,13 @@ function overlaid(
   });
 }
 
-/** Whether any of `pending` might move rows, columns or sheets, as only changes to ranges cannot. */
+/**
+ * Whether any of `pending` might move rows, columns or sheets, as only changes to ranges and to how
+ * lines are sized and frozen cannot.
+ */
 function mayMoveCells(pending: readonly QueuedChange[]): boolean {
-  return pending.some(({ action }) => action.payload.changes.some(change => !isRangeChange(change)));
+  return pending.some(({ action }) =>
+    action.payload.changes.some(change => !isRangeChange(change) && !isLayoutChange(change)));
 }
 
 /**

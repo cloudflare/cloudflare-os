@@ -448,7 +448,12 @@ sheet.updateSpreadsheet([
   { op: "insertColumns", sheet: "Sales", at: "C" },
   { op: "deleteColumns", sheet: "Sales", at: "C", count: 2 },
   { op: "deleteSheet", sheet: "Copy" },
+  { op: "resizeRows", sheet: "Sales", at: 1, count: 2, height: 30 },
+  { op: "resizeColumns", sheet: "Sales", at: "C", width: 150 },
+  { op: "freeze", sheet: "Sales", rows: 1, columns: 0 },
 ]);
+// @ts-expect-error A column is resized by its width.
+sheet.updateSpreadsheet([{ op: "resizeColumns", sheet: "Sales", at: "C", height: 30 }]);
 // @ts-expect-error Columns are named by their letters.
 sheet.updateSpreadsheet([{ op: "insertColumns", sheet: "Sales", at: 3 }]);
 // @ts-expect-error A sheet is named by its title, not its ID.

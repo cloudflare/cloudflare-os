@@ -45,7 +45,8 @@ describe("Sheets change input", () => {
       .toBe("Make between 1 and 50 changes at a time.");
     expect(refusal([{ op: "mergeCells", range: "Sales!A1" } as unknown as SheetChange]))
       .toBe("Change 1 (mergeCells): op must be one of writeCells, clearRange, formatCells, addSheet, " +
-        "renameSheet, duplicateSheet, deleteSheet, insertRows, deleteRows, insertColumns or deleteColumns.");
+        "renameSheet, duplicateSheet, deleteSheet, insertRows, deleteRows, insertColumns, deleteColumns, " +
+        "resizeRows, resizeColumns or freeze.");
     // Changes of every kind count toward the 50.
     let mixed: SheetChange[] = Array.from({ length: 51 }, (_, i) =>
       i % 2 === 0 ? { op: "insertRows", sheet: "Sales", at: 1 } : { op: "clearRange", range: "Sales!A1" });
@@ -196,6 +197,44 @@ const format = (value: unknown, range = "Sales!A1:B2") => ({ op: "formatCells", 
 
 /** The refusal of one `formatCells` change setting `value`. */
 const formatRefusal = (value: unknown) => refusal([format(value)]);
+
+describe("Sheets layout change input", () => {
+  it("prepares resizes and freezes with only what they declare, lines zero-based", () => {
+    expect(prepareChanges([
+      { op: "resizeRows", sheet: "Sales", at: 3, count: 2, height: 40, width: 9 } as SheetChange,
+      { op: "resizeColumns", sheet: "Sales", at: "c", width: 150 },
+      { op: "freeze", sheet: "Sales", rows: 1 },
+      { op: "freeze", sheet: "Sales", columns: 0 },
+    ])).toEqual([
+      { op: "resizeRows", sheet: "Sales", start: 2, count: 2, size: 40 },
+      { op: "resizeColumns", sheet: "Sales", start: 2, count: 1, size: 150 },
+      { op: "freeze", sheet: "Sales", rows: 1 },
+      { op: "freeze", sheet: "Sales", columns: 0 },
+    ]);
+  });
+
+  it("refuses a size that is not a whole number of pixels from 1 to 10,000, or too many lines", () => {
+    for (let height of [0, 10_001, 2.5, "40"]) {
+      expect(refusal([{ op: "resizeRows", sheet: "Sales", at: 1, height } as SheetChange]))
+        .toBe("Change 1 (resizeRows): height must be an integer from 1 to 10,000.");
+    }
+    expect(refusal([{ op: "resizeColumns", sheet: "Sales", at: "A" } as SheetChange]))
+      .toBe("Change 1 (resizeColumns): width must be an integer from 1 to 10,000.");
+    expect(refusal([{ op: "resizeColumns", sheet: "Sales", at: 1, width: 50 } as unknown as SheetChange]))
+      .toBe('Change 1 (resizeColumns): at must be the letters of a column, such as "C".');
+    expect(refusal([{ op: "resizeRows", sheet: "Sales", at: 1, count: 10_001, height: 30 }]))
+      .toBe("Change 1 (resizeRows): count must be an integer from 1 to 10,000.");
+  });
+
+  it("refuses a freeze that freezes nothing given, or a count that is not a whole number", () => {
+    expect(refusal([{ op: "freeze", sheet: "Sales" }]))
+      .toBe("Change 1 (freeze): freeze must give rows, columns or both.");
+    expect(refusal([{ op: "freeze", sheet: "Sales", rows: -1 }]))
+      .toBe("Change 1 (freeze): rows must be an integer from 0 to 10,000,000.");
+    expect(refusal([{ op: "freeze", sheet: "Sales", columns: 1.5 }]))
+      .toBe("Change 1 (freeze): columns must be an integer from 0 to 18,278.");
+  });
+});
 
 describe("Sheets format change input", () => {
   it("prepares the sheet, the cells and what the format sets or resets", () => {

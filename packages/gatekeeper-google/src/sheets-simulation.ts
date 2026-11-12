@@ -33,12 +33,12 @@ import {
 import {
   rewriteFormula, structureSensitive, tokenize, type RewriteStep, type RewrittenFormula,
 } from "./sheets-formula";
-import type { LineOp } from "./sheets-input";
+import type { LineOp, ResizeOp } from "./sheets-input";
 import {
   a1Of, byPosition, cellName, enteredOf, findSheet, intersection, isFormula, rectName, shownValue, type EnteredValue,
   type Rect,
 } from "./sheets-model";
-import { cellKey, planSheet } from "./sheets-plan";
+import { cellKey, lineKey, planSheet } from "./sheets-plan";
 import type {
   SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
@@ -85,13 +85,15 @@ export type StructuralStep =
 /**
  * What a read fetched, with queued changes applied: the sheets, sorted by index; what queued
  * changes entered in cells, and set on their formatting, keyed by `cellKey` from `sheets-plan.ts`
- * with the identities of the cell's row and column, so an entry moves with its lines; and every
- * change to rows, columns or sheets replayed, in order.
+ * with the identities of the cell's row and column, so an entry moves with its lines; the sizes in
+ * pixels they gave lines, keyed by `lineKey` from there; and every change to rows, columns or
+ * sheets replayed, in order.
  */
 export type Grid = {
   sheets: readonly SimSheet[];
   cells: ReadonlyMap<string, Entry>;
   formats: ReadonlyMap<string, FormatEntry>;
+  sizes: ReadonlyMap<string, number>;
   log: readonly StructuralStep[];
 };
 
@@ -109,7 +111,9 @@ export type PlannedChange =
   | { op: "duplicateSheet"; sheetId: number; newSheetId: number; title: string; index: number }
   | { op: "deleteSheet"; sheetId: number; rowCount: number; columnCount: number }
   | { op: Extract<LineOp, `insert${string}`>; sheetId: number; start: number; count: number; appends?: true }
-  | { op: Extract<LineOp, `delete${string}`>; sheetId: number; start: number; count: number };
+  | { op: Extract<LineOp, `delete${string}`>; sheetId: number; start: number; count: number }
+  | { op: ResizeOp; sheetId: number; start: number; count: number; size: number }
+  | { op: "freeze"; sheetId: number; rows?: number; columns?: number };
 
 /**
  * An `updateSpreadsheet()` batch. `sheets` gives the title of each sheet a change acts on or
@@ -160,6 +164,7 @@ export function gridOf(metadata: { sheets: readonly SheetMeta[] }): Grid {
       .toSorted((a, b) => a.index - b.index),
     cells: new Map(),
     formats: new Map(),
+    sizes: new Map(),
     log: [],
   };
 }
@@ -775,7 +780,10 @@ function insertedLine(grid: Grid, identity: string): boolean {
 // of the sheet Google holds: null for a line a queued insert made, whose size Google gives it from
 // the line beside it, and the default for one of a sheet a queued change added.
 function lineSize(grid: Grid, sheet: SimSheet, axis: Axis, identity: string | undefined, sizes: BaseSizes): number | null {
-  if (identity === undefined || insertedLine(grid, identity)) return null;
+  if (identity === undefined) return null;
+  let queued = grid.sizes.get(lineKey(sheet.id, axis, identity));
+  if (queued !== undefined) return queued;
+  if (insertedLine(grid, identity)) return null;
   let index = baseIndexOf(identity);
   if (sheet.source !== undefined && index !== undefined) return sizes(sheet.source, axis, index);
   return axis === "rows" ? DEFAULT_ROW_HEIGHT : DEFAULT_COLUMN_WIDTH;

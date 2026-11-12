@@ -171,6 +171,44 @@ export type SheetChange =
       at: string;
       /** How many columns, 1 by default. */
       count?: number;
+    }
+  /** Set the height of rows, as `readFormats()` reads it. */
+  | {
+      op: "resizeRows";
+      /** The sheet the rows are on. */
+      sheet: string;
+      /** The 1-based first row resized. */
+      at: number;
+      /** How many rows: 1 to 10,000, 1 by default. */
+      count?: number;
+      /** The height in pixels: a whole number from 1 to 10,000. Google's default is 21. */
+      height: number;
+    }
+  /** Set the width of columns, as `readFormats()` reads it. */
+  | {
+      op: "resizeColumns";
+      /** The sheet the columns are on. */
+      sheet: string;
+      /** The letters of the first column resized, such as `"C"`. */
+      at: string;
+      /** How many columns: 1 to 10,000, 1 by default. */
+      count?: number;
+      /** The width in pixels: a whole number from 1 to 10,000. Google's default is 100. */
+      width: number;
+    }
+  /**
+   * Freeze a sheet's leading rows or columns, so they stay in view as it scrolls, as
+   * `getSpreadsheet()` lists them. A count left out is kept, and 0 unfreezes. A sheet keeps at least
+   * one row and one column unfrozen, and the frozen lines may not end inside a merge.
+   */
+  | {
+      op: "freeze";
+      /** The sheet frozen. */
+      sheet: string;
+      /** How many leading rows to freeze. */
+      rows?: number;
+      /** How many leading columns to freeze. */
+      columns?: number;
     };
 
 /**
@@ -205,7 +243,8 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * cells that are already there. The batch as queued, values included, must also fit in 100 KiB,
    * about 50,000 characters of text in all. Changes writing or formatting outside a sheet's grid,
    * or in a range the connected account may not edit, are refused, queuing nothing, as is any
-   * change to the rows, columns or tab of a sheet holding a range the account may not edit. A batch
+   * change to the rows, columns or tab of a sheet holding a range the account may not edit, but
+   * for resizing rows or columns outside that range and freezing lines. A batch
    * may also be refused while many changes are queued, and a read or a batch while changes to rows,
    * columns or sheets are; approve or reject them first.
    *

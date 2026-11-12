@@ -643,6 +643,38 @@ class SheetsProvider {
         id: this.#newSheetId(state, sheetId), title: this.#checkTitle(state, title), index,
         rowCount: gridProperties.rowCount, columnCount: gridProperties.columnCount,
       });
+    } else if (request.updateSheetProperties?.fields.startsWith("gridProperties.")) {
+      let { properties: { sheetId, gridProperties, ...rest }, fields } = request.updateSheetProperties;
+      let given = Object.keys(gridProperties);
+      if (Object.keys(rest).length > 0 || fields !== given.map(field => `gridProperties.${field}`).join(",") ||
+        given.some(field => field !== "frozenRowCount" && field !== "frozenColumnCount")) {
+        this.#violation(`updateSheetProperties sets ${fields}`);
+      }
+      let sheet = this.#sheetOf(state, sheetId);
+      for (let [field, rows] of [["frozenRowCount", true], ["frozenColumnCount", false]] as const) {
+        let count: number | undefined = gridProperties[field];
+        if (count === undefined) continue;
+        if (count >= (rows ? sheet.rowCount : sheet.columnCount)) {
+          throw new Invalid(`You can't freeze all visible ${rows ? "rows" : "columns"} on the sheet.`);
+        }
+        if ((sheet.merges ?? []).some(merge => rows
+          ? merge.startRow < count! && count! < merge.endRow
+          : merge.startColumn < count! && count! < merge.endColumn)) {
+          throw new Invalid(`Sorry, you can't freeze ${rows ? "rows" : "columns"} which contain only part of a merged cell.`);
+        }
+      }
+      state.sheets = state.sheets.map(s => s.id === sheet.id ? { ...s, ...gridProperties } : s);
+    } else if (request.updateDimensionProperties) {
+      let { range, properties, fields } = request.updateDimensionProperties;
+      if (fields !== "pixelSize" || Object.keys(properties).join() !== "pixelSize") {
+        this.#violation(`updateDimensionProperties sets ${fields}`);
+      }
+      let sheet = this.#sheetOf(state, range.sheetId);
+      let rows = range.dimension === "ROWS";
+      if (range.endIndex > (rows ? sheet.rowCount : sheet.columnCount)) throw new Invalid("range.endIndex is past the grid");
+      let sizes = { ...(rows ? sheet.rowHeights : sheet.columnWidths) };
+      for (let line = range.startIndex; line < range.endIndex; line++) sizes[line] = properties.pixelSize;
+      state.sheets = state.sheets.map(s => s.id !== sheet.id ? s : { ...s, [rows ? "rowHeights" : "columnWidths"]: sizes });
     } else if (request.updateSheetProperties) {
       let { properties, fields } = request.updateSheetProperties;
       if (fields !== "title" || Object.keys(properties).join() !== "sheetId,title") {
@@ -2303,5 +2335,57 @@ describe("Google Sheets layout", () => {
     expect(await sheets.formats("Sales!C1:C8")).toEqual({
       ...previewed, rowHeights: [21, 21, 21, 21, 40, 40, 21, 21], pendingCells: undefined,
     });
+  });
+
+  it("resizes and freezes lines as an auto-approvable edit, shown in reads before it applies", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper();
+
+    let { actionId, action } = await sheets.queued([
+      { op: "resizeRows", sheet: "Sales", at: 1, count: 2, height: 30 },
+      { op: "resizeColumns", sheet: "Sales", at: "C", width: 60 },
+      { op: "freeze", sheet: "Sales", rows: 6, columns: 0 },
+    ]);
+    expect(action).toMatchObject({
+      title: 'Edit "Sales"', autoApprovable: true, actionKind: EDIT_SPREADSHEET,
+      description: expect.stringContaining(
+        "1. In \"Sales\", make rows 1 to 2 30 pixels high\n" +
+        "2. In \"Sales\", make column C 60 pixels wide\n" +
+        "3. In \"Sales\", freeze the first 6 rows and no columns"),
+    });
+    let previewed = await sheets.formats("Sales!B1:C4");
+    expect(previewed).toMatchObject({ rowHeights: [30, 30, 21, 40], columnWidths: [100, 60] });
+    expect((await sheets.info()).sheets[0]).toMatchObject({ frozenRowCount: 6 });
+    expect((await sheets.info()).sheets[0].frozenColumnCount).toBeUndefined();
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(changeRequests(provider.batches[0])).toEqual([
+      { updateDimensionProperties: { range: { sheetId: 0, dimension: "ROWS", startIndex: 0, endIndex: 2 }, properties: { pixelSize: 30 }, fields: "pixelSize" } },
+      { updateDimensionProperties: { range: { sheetId: 0, dimension: "COLUMNS", startIndex: 2, endIndex: 3 }, properties: { pixelSize: 60 }, fields: "pixelSize" } },
+      {
+        updateSheetProperties: {
+          properties: { sheetId: 0, gridProperties: { frozenRowCount: 6, frozenColumnCount: 0 } },
+          fields: "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
+        },
+      },
+    ]);
+    expect(await sheets.formats("Sales!B1:C4")).toEqual(previewed);
+    expect((await sheets.info()).sheets[0]).toMatchObject({ frozenRowCount: 6 });
+  });
+
+  it("refuses freezing part of a merge when queued, and fails a freeze a collaborator's merge cuts", async () => {
+    let provider = laidOut();
+    let sheets = gatekeeper();
+
+    expect((await sheets.update([{ op: "freeze", sheet: "Sales", rows: 4 }])).error).toBe(
+      'Change 1 (freeze): freezing 4 rows of "Sales" would freeze only part of the merged cells C4:E6. ' +
+      "Unmerge them, or freeze rows up to one of their edges.");
+
+    let { actionId } = await sheets.queued([{ op: "freeze", sheet: "Sales", rows: 3 }]);
+    provider.sheets[0] = { ...provider.sheets[0], merges: [block(2, 0, 2, 1)] };
+    expect(await sheets.apply(actionId!)).toBe(
+      'This change no longer applies: change 1 (freeze): freezing 3 rows of "Sales" would freeze only part ' +
+      "of the merged cells A3:A4. Unmerge them, or freeze rows up to one of their edges.");
+    expect(provider.batches).toEqual([]);
   });
 });

@@ -101,7 +101,7 @@ const UPDATE_SPREADSHEET: ActionKind = {
 // The changes an `editSpreadsheet` batch may make: none removes a sheet, row or column.
 const KEEPING_OPS: ReadonlySet<string> = new Set([
   "writeCells", "clearRange", "formatCells", "addSheet", "renameSheet", "duplicateSheet",
-  "insertRows", "insertColumns",
+  "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze",
 ]);
 
 // The changes that make a batch otherwise as safe as `editSpreadsheet` a `deleteSpreadsheetContent`.
@@ -420,6 +420,20 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
     case "deleteColumns":
       return `In ${named(change.sheetId)}, delete ` +
         band(change.op === "deleteRows" ? "rows" : "columns", change.start, change.count);
+    case "resizeRows":
+      return `In ${named(change.sheetId)}, make ${band("rows", change.start, change.count)} ` +
+        `${change.size.toLocaleString("en-US")} pixels high`;
+    case "resizeColumns":
+      return `In ${named(change.sheetId)}, make ${band("columns", change.start, change.count)} ` +
+        `${change.size.toLocaleString("en-US")} pixels wide`;
+    case "freeze": {
+      let frozen = (count: number, noun: string) => count === 0 ? `no ${noun}s` : `the first ${plural(count, noun)}`;
+      let parts = [
+        ...(change.rows === undefined ? [] : [frozen(change.rows, "row")]),
+        ...(change.columns === undefined ? [] : [frozen(change.columns, "column")]),
+      ];
+      return `In ${named(change.sheetId)}, freeze ${parts.join(" and ")}`;
+    }
   }
 }
 

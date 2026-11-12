@@ -29,9 +29,16 @@ export const MAX_SPREADSHEET_CELLS = 10_000_000;
 export const MAX_FONT_SIZE = 400;
 /** The longest number format pattern a change may set. */
 export const MAX_PATTERN_LENGTH = 200;
+/** The most rows or columns one change may resize. */
+export const MAX_RESIZED_LINES = 10_000;
+/** The largest height or width a change may give a row or column, in pixels. */
+export const MAX_LINE_SIZE = 10_000;
 
 /** The changes that insert or delete rows or columns. */
 export type LineOp = "insertRows" | "deleteRows" | "insertColumns" | "deleteColumns";
+
+/** The changes that resize rows or columns. */
+export type ResizeOp = "resizeRows" | "resizeColumns";
 
 /**
  * A change as checked: the title of the sheet it acts on, as given, a range's cells, and the first
@@ -45,7 +52,9 @@ export type PreparedChange =
   | { op: "renameSheet"; sheet: string; title: string }
   | { op: "duplicateSheet"; sheet: string; title?: string; index?: number }
   | { op: "deleteSheet"; sheet: string }
-  | { op: LineOp; sheet: string; start: number; count: number };
+  | { op: LineOp; sheet: string; start: number; count: number }
+  | { op: ResizeOp; sheet: string; start: number; count: number; size: number }
+  | { op: "freeze"; sheet: string; rows?: number; columns?: number };
 
 class Refused extends Error {}
 
@@ -67,6 +76,9 @@ const FIELDS: Record<SheetChange["op"], readonly string[]> = {
   deleteRows: ["sheet", "at", "count"],
   insertColumns: ["sheet", "at", "count"],
   deleteColumns: ["sheet", "at", "count"],
+  resizeRows: ["sheet", "at", "count", "height"],
+  resizeColumns: ["sheet", "at", "count", "width"],
+  freeze: ["sheet", "rows", "columns"],
 };
 
 const OPS = Object.keys(FIELDS);
@@ -265,23 +277,45 @@ function checkSheet(sheet: unknown): string {
 
 const COLUMN_LETTERS = /^[A-Za-z]{1,3}$/;
 
+// The zero-based first line a change names in `at`: a row's number, or a column's letters.
+function checkAt(at: unknown, columns: boolean): number {
+  if (!columns) return checkInteger("at", at, 1, Number.MAX_SAFE_INTEGER) - 1;
+  if (typeof at !== "string" || !COLUMN_LETTERS.test(at)) refuse('at must be the letters of a column, such as "C"');
+  return columnNumber(at) - 1;
+}
+
 function checkLines(
   change: Extract<SheetChange, { op: LineOp }>,
 ): Extract<PreparedChange, { op: LineOp }> {
   let sheet = checkSheet(change.sheet);
   let columns = change.op === "insertColumns" || change.op === "deleteColumns";
-  let start: number;
-  if (columns) {
-    if (typeof change.at !== "string" || !COLUMN_LETTERS.test(change.at)) {
-      refuse('at must be the letters of a column, such as "C"');
-    }
-    start = columnNumber(change.at) - 1;
-  } else {
-    start = checkInteger("at", change.at, 1, Number.MAX_SAFE_INTEGER) - 1;
-  }
+  let start = checkAt(change.at, columns);
   let max = change.op.startsWith("insert") ? MAX_INSERTED_LINES : columns ? MAX_COLUMNS : MAX_SPREADSHEET_CELLS;
   let count = checkInteger("count", change.count ?? 1, 1, max);
   return { op: change.op, sheet, start, count };
+}
+
+function checkResize(
+  change: Extract<SheetChange, { op: ResizeOp }>,
+): Extract<PreparedChange, { op: ResizeOp }> {
+  let sheet = checkSheet(change.sheet);
+  let columns = change.op === "resizeColumns";
+  let start = checkAt(change.at, columns);
+  let count = checkInteger("count", change.count ?? 1, 1, MAX_RESIZED_LINES);
+  let size = change.op === "resizeColumns"
+    ? checkInteger("width", change.width, 1, MAX_LINE_SIZE)
+    : checkInteger("height", change.height, 1, MAX_LINE_SIZE);
+  return { op: change.op, sheet, start, count, size };
+}
+
+function checkFreeze(change: Extract<SheetChange, { op: "freeze" }>): Extract<PreparedChange, { op: "freeze" }> {
+  let sheet = checkSheet(change.sheet);
+  if (change.rows === undefined && change.columns === undefined) refuse("freeze must give rows, columns or both");
+  let rows = change.rows === undefined ? undefined : checkInteger("rows", change.rows, 0, MAX_SPREADSHEET_CELLS);
+  let columns = change.columns === undefined ? undefined : checkInteger("columns", change.columns, 0, MAX_COLUMNS);
+  return {
+    op: change.op, sheet, ...(rows === undefined ? {} : { rows }), ...(columns === undefined ? {} : { columns }),
+  };
 }
 
 function checkChange(change: SheetChange): PreparedChange {
@@ -327,6 +361,11 @@ function checkChange(change: SheetChange): PreparedChange {
     }
     case "deleteSheet":
       return { op: change.op, sheet: checkSheet(change.sheet) };
+    case "resizeRows":
+    case "resizeColumns":
+      return checkResize(change);
+    case "freeze":
+      return checkFreeze(change);
     default:
       return checkLines(change);
   }
@@ -357,6 +396,16 @@ export function isRangeChange<C extends { op: string }>(
   change: C,
 ): change is Extract<C, { op: "writeCells" | "clearRange" | "formatCells" }> {
   return isCellChange(change) || change.op === "formatCells";
+}
+
+/**
+ * Whether a change sets how a sheet's lines look, their sizes or which are frozen, moving no cell
+ * and adding or removing no row, column or sheet.
+ */
+export function isLayoutChange<C extends { op: string }>(
+  change: C,
+): change is Extract<C, { op: ResizeOp | "freeze" }> {
+  return change.op === "resizeRows" || change.op === "resizeColumns" || change.op === "freeze";
 }
 
 /** Checks `changes` as far as they can be without the spreadsheet. Throws `Error`. */

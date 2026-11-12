@@ -404,6 +404,91 @@ describe("Sheets structural change requests", () => {
   });
 });
 
+describe("Sheets layout change requests", () => {
+  let laidOut = [sheet(0, "Sales", { frozenRowCount: 1, merges: [rect(3, 2, 3, 3)] }), SHEETS[1]];
+
+  it("sizes lines in pixels and freezes leading lines, naming in the mask only the counts given", () => {
+    let planned = resolve([
+      { op: "resizeRows", sheet: "Sales", at: 2, count: 3, height: 40 },
+      { op: "resizeColumns", sheet: "Sales", at: "B", width: 150 },
+      { op: "freeze", sheet: "Sales", rows: 3 },
+      { op: "freeze", sheet: "It's", rows: 0, columns: 2 },
+    ], laidOut);
+    let { grid: after, requests } = planSheet(grid(laidOut), planned);
+    expect(requests).toEqual([
+      {
+        updateDimensionProperties: {
+          range: { sheetId: 0, dimension: "ROWS", startIndex: 1, endIndex: 4 }, properties: { pixelSize: 40 }, fields: "pixelSize",
+        },
+      },
+      {
+        updateDimensionProperties: {
+          range: { sheetId: 0, dimension: "COLUMNS", startIndex: 1, endIndex: 2 }, properties: { pixelSize: 150 }, fields: "pixelSize",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId: 0, gridProperties: { frozenRowCount: 3 } }, fields: "gridProperties.frozenRowCount",
+        },
+      },
+      {
+        updateSheetProperties: {
+          properties: { sheetId: 7, gridProperties: { frozenRowCount: 0, frozenColumnCount: 2 } },
+          fields: "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
+        },
+      },
+    ]);
+    expect(after.sheets.map(({ frozenRowCount, frozenColumnCount }) => [frozenRowCount, frozenColumnCount]))
+      .toEqual([[3, undefined], [undefined, 2]]);
+    expect([...after.sizes]).toEqual([
+      ["0:rows:b1", 40], ["0:rows:b2", 40], ["0:rows:b3", 40], ["0:columns:b1", 150],
+    ]);
+    // Moving no cell, they are not changes to rows, columns or sheets that later batches build on.
+    expect(guardAfter(after, [queued(1, planned)], resolve([{ op: "clearRange", range: "Sales!A1" }], laidOut),
+      [{ sheetId: 0, rect: rect(0, 0) }])).toEqual([]);
+  });
+
+  it("moves queued sizes with their lines, and drops those of deleted lines and sheets", () => {
+    let { grid: sized } = planSheet(grid(SHEETS), [
+      { op: "resizeRows", sheetId: 0, start: 1, count: 2, size: 40 },
+      { op: "insertRows", sheetId: 0, start: 0, count: 1 },
+      { op: "deleteRows", sheetId: 0, start: 2, count: 1 },
+      { op: "duplicateSheet", sheetId: 0, newSheetId: 9, title: "Copy", index: 2 },
+      { op: "resizeColumns", sheetId: 7, start: 0, count: 1, size: 60 },
+      { op: "deleteSheet", sheetId: 7, rowCount: 100, columnCount: 26 },
+    ]);
+    expect([...sized.sizes]).toEqual([["0:rows:b2", 40], ["9:rows:b2", 40]]);
+  });
+
+  it("refuses resizing lines a sheet does not have, freezing every line, or freezing part of a merge", () => {
+    expect(refused([{ op: "resizeRows", sheet: "Sales", at: 20, count: 2, height: 30 }]))
+      .toThrow('Change 1 (resizeRows): "Sales" has 20 rows, so rows 20 to 21 cannot be resized.');
+    expect(refused([{ op: "freeze", sheet: "Sales", rows: 20 }]))
+      .toThrow('Change 1 (freeze): "Sales" has 20 rows, and a sheet keeps at least one row unfrozen.');
+    expect(refused([{ op: "freeze", sheet: "Sales", columns: 6 }]))
+      .toThrow('Change 1 (freeze): "Sales" has 6 columns, and a sheet keeps at least one column unfrozen.');
+    // As Google refuses one: "you can't freeze rows which contain only part of a merged cell".
+    expect(refused([{ op: "freeze", sheet: "Sales", rows: 4 }], laidOut))
+      .toThrow('Change 1 (freeze): freezing 4 rows of "Sales" would freeze only part of the merged cells ' +
+        "C4:E6. Unmerge them, or freeze rows up to one of their edges.");
+    expect(refused([{ op: "freeze", sheet: "Sales", rows: 3, columns: 3 }], laidOut))
+      .toThrow('freezing 3 columns of "Sales" would freeze only part of the merged cells C4:E6');
+    expect(refused([{ op: "freeze", sheet: "Sales", rows: 6, columns: 5 }], laidOut)).not.toThrow();
+    // Inserted rows move the merge, so the freeze is checked against where they leave it.
+    expect(refused([
+      { op: "insertRows", sheet: "Sales", at: 1, count: 2 },
+      { op: "freeze", sheet: "Sales", rows: 6 },
+    ], laidOut)).toThrow("C6:E8");
+  });
+
+  it("fails a freeze that a collaborator's merge would cut, without a request", () => {
+    expect(conflict([{ op: "freeze", sheetId: 0, rows: 4 }], [sheet(0, "Sales", { merges: [rect(3, 0, 2, 1)] })]))
+      .toThrow(new ChangeConflict(
+        'change 1 (freeze): freezing 4 rows of "Sales" would freeze only part of the merged cells A4:A5. ' +
+        "Unmerge them, or freeze rows up to one of their edges"));
+  });
+});
+
 describe("Sheets apply guard", () => {
   let cells: SheetArea[] = [{ sheetId: 0, rect: rect(0, 0, 1, 2) }, { sheetId: 7, rect: rect(2, 2, 2, 1) }];
   let [stored, later] = WHITESPACE_DRIFT;
@@ -932,6 +1017,18 @@ describe("Sheets protected ranges", () => {
     let unbounded = { ...metadata, protectedRanges: [protection(7, { startRow: 0, endRow: Infinity, startColumn: 0, endColumn: 3 })] };
     expect(() => checkProtections(unbounded, grid(SHEETS), [{ op: "deleteSheet", sheetId: 7, rowCount: 100, columnCount: 26 }]))
       .toThrow('Change 1 (deleteSheet): "It\'s" holds a protected range of "It\'s"');
+  });
+
+  // As a spreadsheet another account protected A1:C1 of let it do: probe SH8.
+  it("resizes lines outside such a range and freezes through it, as Google does", () => {
+    expect(check([{ op: "resizeRows", sheet: "Sales", at: 2, height: 40 }]))
+      .toThrow('Change 1 (resizeRows): row 2 of "Sales" crosses the protected range Sales!A1:B2, which the ' +
+        "connected account may not edit.");
+    expect(check([{ op: "resizeColumns", sheet: "Sales", at: "A", count: 3, width: 120 }]))
+      .toThrow("Change 1 (resizeColumns): columns A to C of \"Sales\" cross the protected range");
+    expect(check([{ op: "resizeRows", sheet: "Sales", at: 3, count: 5, height: 40 }])).not.toThrow();
+    expect(check([{ op: "resizeColumns", sheet: "Sales", at: "C", width: 120 }])).not.toThrow();
+    expect(check([{ op: "freeze", sheet: "Sales", rows: 3, columns: 1 }])).not.toThrow();
   });
 });
 

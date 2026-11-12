@@ -12,8 +12,9 @@ type Change = { op: string; values?: SheetCellInput[][] };
 const write = (...values: SheetCellInput[]): Change => ({ op: "writeCells", values: [values] });
 const CLEAR: Change = { op: "clearRange" };
 const FORMAT: Change = { op: "formatCells" };
-const KEEPING: Change[] = ["addSheet", "renameSheet", "duplicateSheet", "insertRows", "insertColumns"]
-  .map(op => ({ op }));
+const KEEPING: Change[] = [
+  "addSheet", "renameSheet", "duplicateSheet", "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze",
+].map(op => ({ op }));
 const DELETING: Change[] = ["deleteSheet", "deleteRows", "deleteColumns"].map(op => ({ op }));
 
 describe("Google Sheets batch kinds", () => {

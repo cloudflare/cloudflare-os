@@ -15,11 +15,11 @@ import type { SheetArea, SheetProtection } from "./sheets-api";
 import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry } from "./sheets-format";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
 import {
-  isCellChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS, MAX_TITLE_LENGTH,
-  type LineOp, type PreparedChange,
+  isCellChange, isLayoutChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS,
+  MAX_TITLE_LENGTH, type LineOp, type PreparedChange, type ResizeOp,
 } from "./sheets-input";
 import {
-  a1Of, cellName, columnLetters, findSheet, isFormula, type EnteredValue, type Rect,
+  a1Of, cellName, columnLetters, findSheet, isFormula, rectName, type EnteredValue, type Rect,
 } from "./sheets-model";
 import type { SheetBorder, SheetColor } from "./sheets-read-types";
 import type {
@@ -59,6 +59,11 @@ export function cellKey(sheetId: number, row: string, column: string): string {
   return `${sheetId}:${row}:${column}`;
 }
 
+/** The key in `Grid.sizes` of a line, by its sheet, axis and identity. */
+export function lineKey(sheetId: number, axis: Axis, identity: string): string {
+  return `${sheetId}:${axis}:${identity}`;
+}
+
 // A cell of `rect` that lies outside `sheet`'s grid: past its last column if any is, else below it.
 function outsideCell(sheet: SheetMeta, rect: Rect): string | undefined {
   if (rect.endColumn > sheet.columnCount) {
@@ -68,8 +73,8 @@ function outsideCell(sheet: SheetMeta, rect: Rect): string | undefined {
   return undefined;
 }
 
-function axisOf(op: LineOp): Axis {
-  return op === "insertRows" || op === "deleteRows" ? "rows" : "columns";
+function axisOf(op: LineOp | ResizeOp): Axis {
+  return op === "insertRows" || op === "deleteRows" || op === "resizeRows" ? "rows" : "columns";
 }
 
 function lineName(axis: Axis, position: number): string {
@@ -93,13 +98,14 @@ function cellsOf(sheets: readonly SheetMeta[]): number {
  * by sheet once a change needs one sheet's, so it visits only those.
  */
 type Working = {
-  sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; log: StructuralStep[];
-  keys?: Map<number, Set<string>>;
+  sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; sizes: Map<string, number>;
+  log: StructuralStep[]; keys?: Map<number, Set<string>>;
 };
 
 function working(grid: Grid): Working {
   return {
-    sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats), log: [...grid.log],
+    sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats),
+    sizes: new Map(grid.sizes), log: [...grid.log],
   };
 }
 
@@ -138,9 +144,24 @@ function enterFormat(work: Working, sheetId: number, key: string, format: Format
   if (work.keys) keySet(work.keys, sheetId).add(key);
 }
 
-// The entries and formats queued changes have made.
+// The entries, formats and line sizes queued changes have made.
 function queued(work: Working): number {
-  return work.cells.size + work.formats.size;
+  return work.cells.size + work.formats.size + work.sizes.size;
+}
+
+// The keys of the sizes of sheet `sheetId`'s lines in `work`, which a resize has set. Only queued
+// resizes make them, so most grids have none to visit.
+function sizeKeysOn(work: Working, sheetId: number): string[] {
+  if (work.sizes.size === 0) return [];
+  let prefix = `${sheetId}:`;
+  return [...work.sizes.keys()].filter(key => key.startsWith(prefix));
+}
+
+// How many of the lines a resize sets have no size queued yet.
+function sizesAdded(work: Working, sheet: SimSheet, change: Extract<PlannedChange, { op: ResizeOp }>): number {
+  let axis = axisOf(change.op);
+  return linesAt(axis === "rows" ? sheet.rows : sheet.columns, change.start, change.start + change.count)
+    .filter(identity => identity !== undefined && !work.sizes.has(lineKey(sheet.id, axis, identity))).length;
 }
 
 // The entries and formats on the cells `keys` names, which a copy of them makes.
@@ -165,9 +186,12 @@ function unentered(
 // The entries and formats `change`, which applies to `work`, adds: those of the cells a write,
 // clear or format sets that have none yet, or those a copy takes from its original.
 function entriesAdded(work: Working, change: PlannedChange): number {
-  if (change.op === "duplicateSheet") return heldBy(work, keysOn(work, change.sheetId));
-  if (!isRangeChange(change)) return 0;
+  if (change.op === "duplicateSheet") {
+    return heldBy(work, keysOn(work, change.sheetId)) + sizeKeysOn(work, change.sheetId).length;
+  }
   let sheet = work.sheets.find(candidate => candidate.id === change.sheetId)!;
+  if (change.op === "resizeRows" || change.op === "resizeColumns") return sizesAdded(work, sheet, change);
+  if (!isRangeChange(change)) return 0;
   let { rect } = change;
   if (change.op === "formatCells") return formatsAdded(work, sheet, rect, change.format);
   return unentered(work.cells, sheet.id,
@@ -248,6 +272,27 @@ function spanOf(rect: Rect, axis: Axis): [number, number] {
 
 function withSpan(rect: Rect, axis: Axis, start: number, end: number): Rect {
   return axis === "rows" ? { ...rect, startRow: start, endRow: end } : { ...rect, startColumn: start, endColumn: end };
+}
+
+/**
+ * Why `sheet` cannot freeze `count` lines along `axis`, if it cannot: Google keeps at least one
+ * line unfrozen, and freezes no part of a merge without the rest.
+ */
+function unfreezable(sheet: SimSheet, axis: Axis, count: number): string | undefined {
+  let size = axis === "rows" ? sheet.rowCount : sheet.columnCount;
+  let noun = axis === "rows" ? "row" : "column";
+  if (count >= size) {
+    return `"${sheet.title}" has ${plural(size, noun)}, and a sheet keeps at least one ${noun} unfrozen`;
+  }
+  let cut = (sheet.merges ?? []).find(merge => {
+    let [start, end] = spanOf(merge, axis);
+    return start < count && count < end;
+  });
+  if (cut) {
+    return `freezing ${plural(count, noun)} of "${sheet.title}" would freeze only part of the merged ` +
+      `cells ${rectName(cut)}. Unmerge them, or freeze ${axis} up to one of their edges`;
+  }
+  return undefined;
 }
 
 /**
@@ -523,6 +568,9 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         let format = work.formats.get(key);
         if (format) enterFormat(work, newSheetId, copy, format);
       }
+      for (let key of sizeKeysOn(work, source.id)) {
+        work.sizes.set(`${newSheetId}${key.slice(key.indexOf(":"))}`, work.sizes.get(key)!);
+      }
       work.log.push({ kind: "duplicate", sheetId: source.id, title: source.title, newSheetId, newTitle: title });
       // Google picks a localized name, and the first position, for a copy given neither.
       return [{
@@ -539,8 +587,55 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         for (let map of byCell(work)) map.delete(key);
       }
       work.keys!.delete(sheet.id);
+      for (let key of sizeKeysOn(work, sheet.id)) work.sizes.delete(key);
       work.log.push({ kind: "deleteSheet", sheetId: sheet.id, title: sheet.title });
       return [{ deleteSheet: { sheetId: sheet.id } }];
+    }
+    case "resizeRows":
+    case "resizeColumns": {
+      let sheet = existing(change.sheetId);
+      let axis = axisOf(change.op);
+      let lines = axis === "rows" ? sheet.rows : sheet.columns;
+      let count = lineCount(lines);
+      if (change.start + change.count > count) {
+        throw conflict(`"${sheet.title}" has ${plural(count, axis === "rows" ? "row" : "column")}, so ` +
+          `${band(axis, change.start, change.count)} cannot be resized`);
+      }
+      room(sizesAdded(work, sheet, change));
+      for (let identity of linesAt(lines, change.start, change.start + change.count)) {
+        work.sizes.set(lineKey(sheet.id, axis, identity!), change.size);
+      }
+      return [{
+        updateDimensionProperties: {
+          range: {
+            sheetId: sheet.id, dimension: axis === "rows" ? "ROWS" : "COLUMNS",
+            startIndex: change.start, endIndex: change.start + change.count,
+          },
+          properties: { pixelSize: change.size },
+          fields: "pixelSize",
+        },
+      }];
+    }
+    case "freeze": {
+      let sheet = existing(change.sheetId);
+      let frozen = sheet;
+      for (let [axis, count] of [["rows", change.rows], ["columns", change.columns]] as const) {
+        if (count === undefined) continue;
+        let reason = unfreezable(frozen, axis, count);
+        if (reason !== undefined) throw conflict(reason);
+        frozen = withLayout(frozen, axis, count, [...frozen.merges ?? []]);
+      }
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? frozen : candidate);
+      let gridProperties = {
+        ...(change.rows === undefined ? {} : { frozenRowCount: change.rows }),
+        ...(change.columns === undefined ? {} : { frozenColumnCount: change.columns }),
+      };
+      return [{
+        updateSheetProperties: {
+          properties: { sheetId: sheet.id, gridProperties },
+          fields: Object.keys(gridProperties).map(field => `gridProperties.${field}`).join(","),
+        },
+      }];
     }
     default: {
       let sheet = existing(change.sheetId);
@@ -579,12 +674,19 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       // A band may span millions of lines, so the sheet's entries are found by their position.
       let part = axis === "rows" ? 1 : 2;
       let keys = keysOn(work, sheet.id);
+      let deleted = (identity: string) => {
+        let position = positionOf(lines, identity);
+        return position !== undefined && position >= change.start && position < change.start + change.count;
+      };
       for (let key of keys) {
-        let position = positionOf(lines, key.split(":")[part]);
-        if (position !== undefined && position >= change.start && position < change.start + change.count) {
+        if (deleted(key.split(":")[part])) {
           for (let map of byCell(work)) map.delete(key);
           keys.delete(key);
         }
+      }
+      for (let key of sizeKeysOn(work, sheet.id)) {
+        let [, along, identity] = key.split(":");
+        if (along === axis && deleted(identity)) work.sizes.delete(key);
       }
       next = deleteLines(lines, change.start, change.count);
       work.log.push({ kind: "delete", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
@@ -694,11 +796,37 @@ export function resolveChanges(
           }
           return { op: "deleteSheet", sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
         }
+        case "resizeRows":
+        case "resizeColumns": {
+          let sheet = sheetFor(change.sheet);
+          let axis = axisOf(change.op);
+          let count = axis === "rows" ? sheet.rowCount : sheet.columnCount;
+          if (change.start + change.count > count) {
+            throw new Error(`${label}: "${sheet.title}" has ${plural(count, axis === "rows" ? "row" : "column")}, ` +
+              `so ${band(axis, change.start, change.count)} cannot be resized.`);
+          }
+          return { op: change.op, sheetId: sheet.id, start: change.start, count: change.count, size: change.size };
+        }
+        case "freeze": {
+          let sheet = sheetFor(change.sheet);
+          let frozen = sheet;
+          for (let [axis, count] of [["rows", change.rows], ["columns", change.columns]] as const) {
+            if (count === undefined) continue;
+            let reason = unfreezable(frozen, axis, count);
+            if (reason !== undefined) throw new Error(`${label}: ${reason}.`);
+            frozen = withLayout(frozen, axis, count, [...frozen.merges ?? []]);
+          }
+          return {
+            op: "freeze", sheetId: sheet.id,
+            ...(change.rows === undefined ? {} : { rows: change.rows }),
+            ...(change.columns === undefined ? {} : { columns: change.columns }),
+          };
+        }
         default:
           return resolveLines(change, sheetFor(change.sheet), label, fits);
       }
     })();
-    if (!isRangeChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
+    if (!isRangeChange(next) && !isLayoutChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
       throw new Error(`${label}: ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, ` +
         "the most that may be. Approve or reject queued changes first.");
     }
@@ -808,7 +936,10 @@ export function planSheet(
   if (changes.length === 0) return { grid, requests: [] };
   let work = working(grid);
   let requests = changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
-  return { grid: { sheets: work.sheets, cells: work.cells, formats: work.formats, log: work.log }, requests };
+  return {
+    grid: { sheets: work.sheets, cells: work.cells, formats: work.formats, sizes: work.sizes, log: work.log },
+    requests,
+  };
 }
 
 // The cells `rect` of `sheet` covers as they were in `original`, the same sheet before the batch,
@@ -924,9 +1055,10 @@ export function guardFits(sheets: readonly SheetMeta[], cells: readonly SheetAre
   });
 }
 
-// The sheets a change to rows, columns or sheets acts on or creates.
+// The sheets a change to rows, columns or sheets acts on or creates. Sizing and freezing lines moves
+// no cell, so no later change builds on them.
 function structuralSheets(change: PlannedChange): number[] {
-  if (isRangeChange(change)) return [];
+  if (isRangeChange(change) || isLayoutChange(change)) return [];
   return change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId];
 }
 
@@ -1035,6 +1167,28 @@ export function checkProtections(
     let protections = locked.filter(protection => protection.area.sheetId === source);
     if (sheet && source !== undefined && protections.length > 0) {
       let title = metadata.sheets.find(candidate => candidate.id === source)?.title ?? sheet.title;
+      // Google freezes lines through a protected range, and resizes lines outside one (probe SH8).
+      if (change.op === "freeze") {
+        applyOne(work, change, 0, unexpected(i, change));
+        return;
+      }
+      if (change.op === "resizeRows" || change.op === "resizeColumns") {
+        let axis = axisOf(change.op);
+        let held = linesAt(axis === "rows" ? sheet.rows : sheet.columns, change.start, change.start + change.count)
+          .flatMap(line => {
+            let base = line === undefined ? undefined : baseIndexOf(line);
+            return base === undefined ? [] : [base];
+          });
+        let crossed = protections.find(({ area: { rect } }) => held.some(line => axis === "rows"
+          ? line >= rect.startRow && line < rect.endRow : line >= rect.startColumn && line < rect.endColumn));
+        if (crossed) {
+          throw new Error(`${label}: ${band(axis, change.start, change.count)} of "${sheet.title}" ` +
+            `${change.count === 1 ? "crosses" : "cross"} ${protectionName(crossed, title)}, which the ` +
+            "connected account may not edit.");
+        }
+        applyOne(work, change, 0, unexpected(i, change));
+        return;
+      }
       if (!isRangeChange(change)) {
         throw new Error(`${label}: "${sheet.title}" holds ${protectionName(protections[0], title)}, which ` +
           "the connected account may not edit, so its rows, columns and tab cannot be changed.");

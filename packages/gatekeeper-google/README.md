@@ -889,7 +889,10 @@ after its source (Google would put it first, under a name of its own choosing). 
 when queued that would delete the last visible sheet, every row or column of a sheet, or every one
 of its unfrozen ones, delete a sheet of more than 50,000 cells, whose content the guard below could
 not cover (delete it in Google Sheets instead), grow a sheet past 18,278 columns or the spreadsheet
-past 10,000,000 cells, or change or copy a sheet holding a protected range the account cannot edit. Reads show the
+past 10,000,000 cells, or change or copy a sheet holding a protected range the account cannot edit,
+though rows and columns outside that range may be resized and lines frozen through it, as Google
+allows (a scratch spreadsheet another account protected A1:C1 of refused resizing row 1 or column A
+with "You are trying to edit a protected cell or object", and took a freeze). Reads show the
 queued structure: sheets, rows and columns where the changes put them, cells moved with their rows
 and columns, and formulas rewritten as Google rewrites them, references shifted, grown, shrunk or
 turned into `#REF!`, and sheet titles requoted. A formula's value is shown only while every
@@ -931,7 +934,11 @@ lists the merges that overlap the range, each whole, and each of its rows' heigh
 in pixels. Queued changes to rows and columns move them as a scratch spreadsheet showed Google moving
 them: lines inserted within a merge or among the frozen lines join it, lines inserted at either of its
 edges do not, and deleted lines shrink it, a merge left one cell vanishing. An inserted line's size
-reads `null`, since Google takes it from the line beside it.
+reads `null`, since Google takes it from the line beside it. `resizeRows` and `resizeColumns` set
+lines' sizes, a whole number of pixels from 1 to 10,000 (Google accepts any number, negative ones
+included), and `freeze` sets how many leading rows or columns a sheet freezes. Both keep every sheet,
+row and column, and are queued as such. A freeze is refused when queued that would leave no row or
+column unfrozen, or freeze only part of a merge, as Google refuses both.
 
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
