@@ -14,8 +14,8 @@ import {
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
-  OFFICE_IMPORT_GRANT,
+  GOOGLE_CHAT_RESOURCE, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE,
+  GOOGLE_SLIDES_RESOURCE, OFFICE_IMPORT_GRANT,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
 
@@ -949,6 +949,55 @@ describe("the Office import grant on a stored account", () => {
       state.storage.kv.get<{ requestedResources: string[] }>(OAUTH_FLOW_KEY));
     expect(flow?.requestedResources.toSorted())
       .toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT].toSorted());
+  });
+});
+
+// An account granted the whole-account Chat resource before it gained `chat.spaces.create` and
+// `directory.readonly`: the Workshop's stored description still lists the resource as granted, so
+// only its configurator can tell the user, and offer the grant again.
+describe("the Google Chat Account configurator", () => {
+  const NEW_CHAT_SCOPES = [
+    "https://www.googleapis.com/auth/chat.spaces.create", "https://www.googleapis.com/auth/directory.readonly",
+  ];
+
+  async function legacyChatAccount() {
+    let { account, user } = await storedAccount([GOOGLE_CHAT_RESOURCE.urlPattern]);
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+      state.storage.kv.put("grantedScopes", resourceUrlPatternsToOAuthScopes([GOOGLE_CHAT_RESOURCE.urlPattern])
+        .filter(scope => !NEW_CHAT_SCOPES.includes(scope)));
+    });
+    let frame = await user.startResourceConfigurator(GOOGLE_CHAT_RESOURCE.urlPattern);
+    let stub = frame.ui as unknown as { canStartConversations(): Promise<boolean> };
+    return { account, user, canStartConversations: async () => await stub.canStartConversations() };
+  }
+
+  it("says whether the account's grant still covers starting conversations, asked afresh", async () => {
+    let { account, canStartConversations } = await legacyChatAccount();
+    await expect(canStartConversations()).resolves.toBe(false);
+
+    // The grant lands while the dialog is open, and the same configurator sees it.
+    await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
+      state.storage.kv.put("grantedScopes", resourceUrlPatternsToOAuthScopes([GOOGLE_CHAT_RESOURCE.urlPattern]));
+    });
+    await expect(canStartConversations()).resolves.toBe(true);
+  });
+
+  it("asks Google for the resource's scopes again when its Allow access asks for the resource", async () => {
+    let { account, user } = await legacyChatAccount();
+
+    let { url } = await user.ensureResources([GOOGLE_CHAT_RESOURCE.urlPattern]);
+
+    expect(url).toMatch(new RegExp(`/${account.id.toString()}/[^/]+$`));
+    let flow = await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+      state.storage.kv.get<{ requestedResources: string[] }>(OAUTH_FLOW_KEY));
+    expect(flow?.requestedResources).toEqual([GOOGLE_CHAT_RESOURCE.urlPattern]);
+  });
+
+  it("finds a current grant covers starting conversations", async () => {
+    let { user } = await storedAccount([GOOGLE_CHAT_RESOURCE.urlPattern]);
+    let frame = await user.startResourceConfigurator(GOOGLE_CHAT_RESOURCE.urlPattern);
+    expect(await (frame.ui as unknown as { canStartConversations(): Promise<boolean> })
+      .canStartConversations()).toBe(true);
   });
 });
 

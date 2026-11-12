@@ -412,7 +412,8 @@ export interface ChatSession extends RpcTarget {
    * same Workspace organization. Conversations with people outside your organization cannot be
    * started this way. A group chat that also holds anyone else, Chat apps and Google Groups
    * included, doesn't count, and if anyone joins it before the message is approved, nothing is
-   * posted.
+   * posted. When the conversation doesn't exist yet and this connection isn't allowed to start
+   * conversations, this throws before anything is queued, saying how the user can allow it.
    *
    * Until its conversation exists, a message that creates it has a temporary `spaceId`, and until
    * it is committed it can be edited but not replied to.

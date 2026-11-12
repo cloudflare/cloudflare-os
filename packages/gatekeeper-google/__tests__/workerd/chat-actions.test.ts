@@ -12,6 +12,7 @@ import type {ChatMessageInfo, ChatListMessagesOptions} from "../../src/chat-type
 import type {ChatMessageRaw, ChatReactionRaw, ChatMembershipRaw} from "../../src/chat-api";
 import type {TestHooks as TestHooksImpl} from "./worker";
 import { ChatSpaceConfiguratorUI } from "../../src/google-configurators";
+import { GOOGLE_CHAT_RESOURCE, resourceUrlPatternsToOAuthScopes } from "../../src/resources";
 
 type TestHooks = {
   chatStartSession(
@@ -136,6 +137,8 @@ function chatBackend() {
     setupOmits: [] as string[],
     /** Create setup conversations but lose their responses with this status until cleared. */
     setupFailure: 0,
+    /** Refuse setups with a 403 giving this `ErrorInfo.reason`, if any, creating nothing. */
+    setupRefusal: undefined as {reason?: string} | undefined,
   };
   const storedText = (formattedText: string) => ({formattedText, text: state.renderText(formattedText)});
   /** A page of `items` no longer than asked for, nor than `state.pageSize`, as Google may return. */
@@ -192,6 +195,10 @@ function chatBackend() {
       const body = JSON.parse(init.body as string) as {
         requestId: string; space: {spaceType: string}; memberships: Array<{member: {name: string}}>;
       };
+      if (state.setupRefusal) {
+        const {reason} = state.setupRefusal;
+        return json({error: {code: 403, status: "PERMISSION_DENIED", details: reason ? [{reason}] : []}}, 403);
+      }
       // A replayed request returns the conversation the first one created.
       if (!state.setups.some(setup => setup.requestId === body.requestId)) {
         const members = body.memberships.map(membership => membership.member.name);
@@ -346,6 +353,8 @@ function chatHarness(
     backend: ReturnType<typeof chatBackend>,
     userInfo: (token?: string | null) => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
     binding: "account" | "space" | "thread" = "space",
+    /** What the account consented to for the Google Chat Account resource. */
+    grantedScopes = resourceUrlPatternsToOAuthScopes([GOOGLE_CHAT_RESOURCE.urlPattern]),
 ) {
   // Plain flags rather than promises: the stub runs inside the gatekeeper DO, and a promise made
   // in the test context cannot be awaited there.
@@ -383,6 +392,8 @@ function chatHarness(
       state.storage.kv.put("refreshToken", "refresh-token");
       state.storage.kv.put("accessToken",
         {token: "access-token", expires: new Date(Date.now() + 3_600_000)});
+      state.storage.kv.put("grantedResources", [GOOGLE_CHAT_RESOURCE.urlPattern]);
+      state.storage.kv.put("grantedScopes", grantedScopes);
     })
     .then(() => runHook(hook, instance =>
       instance.chatStartSession(facetName, id, props, queueId)));
@@ -1694,8 +1705,11 @@ describe("Starting Google Chat conversations", () => {
   const BOB = {id: "200", name: "Bob Jones", email: "bob@example.com"};
   const CAROL = {id: "300", name: "Carol King", email: "carol@example.com"};
   const CHAT_APP = {...joined("app1"), member: {name: "users/app1", type: "BOT"}};
-  /** With `groupChat`, Ada already has the group chat SPACE_NAME with Bob and Carol. */
-  const accountChat = ({groupChat = false} = {}) => {
+  /**
+   * With `groupChat`, Ada already has the group chat SPACE_NAME with Bob and Carol. `grantedScopes`
+   * is what her account consented to, by default all the Google Chat Account resource needs.
+   */
+  const accountChat = ({groupChat = false, grantedScopes = undefined as string[] | undefined} = {}) => {
     const backend = chatBackend();
     // Directory profiles carry numeric People ids, the same number as the account's subject.
     backend.state.directory.push({id: "100", name: "Ada", email: "ada@example.com"}, BOB, CAROL);
@@ -1704,8 +1718,11 @@ describe("Starting Google Chat conversations", () => {
       backend.state.groupChats = [SPACE_NAME];
       backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
     }
-    return {backend, chat: chatHarness(backend, () => ({sub: "100", name: "Ada"}), "account")};
+    return {backend, chat: chatHarness(backend, () => ({sub: "100", name: "Ada"}), "account", grantedScopes)};
   };
+  /** The account resource's scopes before starting conversations needed more. */
+  const SCOPES_BEFORE_STARTS = resourceUrlPatternsToOAuthScopes([GOOGLE_CHAT_RESOURCE.urlPattern])
+    .filter(scope => !scope.endsWith("/chat.spaces.create") && !scope.endsWith("/directory.readonly"));
 
   it("searches only the organization's directory, recording each page it returns", async () => {
     const {chat} = accountChat();
@@ -1846,6 +1863,43 @@ describe("Starting Google Chat conversations", () => {
       .rejects.toThrow(/yourself/);
     expect((await chat.readQueue()).submissions).toEqual([]);
     expect(backend.state.setups).toEqual([]);
+  });
+
+  // A connection granted before starting conversations needed more scopes can still read and post,
+  // so the only sign would be Google refusing the setup after the message was approved.
+  it("asks for the grant again, before queuing, when the connection can't start conversations", async () => {
+    const {backend, chat} = accountChat({grantedScopes: SCOPES_BEFORE_STARTS});
+    using account = await chat.account();
+    for (const people of [[BOB.email], ["users/200"], [BOB.email, CAROL.email]]) {
+      await expect(Promise.resolve(account.sendDirectMessage(people, "hi"))).rejects.toThrow(
+        /isn't allowed to start new conversations.*requestConnection, vendorId "google" and resourceUrl "https:\/\/chat\.google\.com\/"/);
+    }
+    expect((await chat.readQueue()).submissions).toEqual([]);
+    // Where the conversation already exists, the message is an ordinary send.
+    using _dm = (await account.sendDirectMessage(["alice@example.com"], "hi")).message;
+    await chat.applyAction(1);
+    expect(backend.state.setups).toEqual([]);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hi"]);
+  });
+
+  it.each([
+    ["it lacks the scope", {reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT"},
+      /isn't allowed to start conversations .*ACCESS_TOKEN_SCOPE_INSUFFICIENT.*requestConnection.*deny this message/],
+    ["a policy stops it", {}, /refused to create this conversation .*http=403 PERMISSION_DENIED.*Workspace policy/],
+  ])("explains a new conversation Google refuses to create because %s", async (_case, refusal, error) => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
+    backend.state.setupRefusal = refusal;
+    await expect(chat.applyAction(1)).rejects.toThrow(error);
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
+    // Once Google allows it, the same people's conversation is set up afresh.
+    backend.state.setupRefusal = undefined;
+    using _again = (await account.sendDirectMessage([BOB.email, CAROL.email], "hi all")).message;
+    await chat.applyAction(2);
+    expect(backend.state.setups).toHaveLength(1);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hi all"]);
   });
 
   it("won't call someone outside the directory when more profiles match than a page holds", async () => {

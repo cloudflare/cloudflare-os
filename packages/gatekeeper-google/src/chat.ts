@@ -61,6 +61,7 @@ import type { ChatMessageRaw } from "./chat-api";
 import type { ChatHookDelivery, ChatHookParams, ChatMessageHookTarget } from "./chat-hooks";
 import { chatHooksConfigured, type PushHooksEnv } from "./pubsub-push";
 import { getGoogleAccountProfile } from "./google-api";
+import { GOOGLE_CHAT_RESOURCE } from "./resources";
 import { AccessTokenCache } from "./auth-retry";
 import { CursorPager, CursorPagerOptions } from "./cursor";
 import { ApprovalQueueRpcTarget, RpcCursor, SharedApprovalQueue } from "./shared-approval-queue";
@@ -355,6 +356,12 @@ type ChatContext = {
   queue: SharedApprovalQueue;
   store: ChatStore;
   self: ChatUser;
+  /**
+   * Whether the account's consent still covers the whole-account Chat resource, which starting a
+   * conversation needs. An account granted before the resource gained a scope, or that declined one
+   * on Google's consent screen, doesn't, until the user grants it again.
+   */
+  grantCoversAccount(): Promise<boolean>;
   /** Set for a single-conversation binding: the only space any capability may reach. */
   readonly boundSpace?: string;
   /** Immutable thread boundary inherited by every capability descended from a thread. */
@@ -796,6 +803,13 @@ const WITHDRAWN_ATTEMPT = "but an earlier attempt may already have posted it in 
 
 const LEAVE_YOURSELF_OUT = "Leave yourself out: you are in every conversation you send to.";
 
+// The dialog requestConnection opens checks the account's grant itself and offers to allow access,
+// even where the Workshop's stored description still lists the resource as granted.
+const GRANT_TO_START = "Ask the user to grant the Google Chat Account access again: an agent can request it " +
+  `with requestConnection, vendorId "google" and resourceUrl "${GOOGLE_CHAT_RESOURCE.urlPattern}", whose ` +
+  "dialog asks the user to allow access. Once they do, this connection can start conversations too. " +
+  "Messages in conversations that already exist still send.";
+
 const peopleNames = (people: ChatNewConversation["members"]) =>
   participantNames(people.map(person => person.name ?? person.email ?? person.id));
 
@@ -836,6 +850,10 @@ async function queueDirectMessage(
     : `No ${kind} exists with exactly ${users.join(", ")}.`,
     spaceSubresources([existing?.spaceName]));
   if (existing) return queueChatMessage(ctx, existing.spaceName, body, { recipients: existing.ids });
+  // Without it, Google refuses to create the conversation only once the message is approved.
+  if (!await ctx.grantCoversAccount()) {
+    throw new Error(`This Google Chat connection isn't allowed to start new conversations. ${GRANT_TO_START}`);
+  }
 
   const members: ChatNewConversation["members"] = users
     .filter(user => !user.includes("@"))
@@ -914,7 +932,16 @@ async function openConversation(
   const found = ids.length > 1 ? await api.findGroupChat(ids) : null;
   if (found) return found.spaceName;
   const spaceName = await store.attemptWrite(actionId,
-    () => api.setupConversation(ids, store.setupRequestWith(people, requestId)));
+    () => api.setupConversation(ids, store.setupRequestWith(people, requestId)))
+    .catch((error: unknown) => {
+      if (!(error instanceof ChatApiError && error.status === 403)) throw error;
+      throw new Error(error.reasons.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+        ? `Google Chat refused to create this conversation because this connection isn't allowed to start ` +
+          `conversations (${error.message}). ${GRANT_TO_START} Then deny this message and send it again.`
+        : `Google Chat refused to create this conversation (${error.message}), so nothing was posted. ` +
+          "A Google Workspace policy may stop this account starting conversations through apps. " +
+          "Deny this message to clear it.", { cause: error });
+    });
   // An empty conversation shows nobody anything, so a retry has nothing to look for until it posts.
   store.clearAttempt(actionId);
   // Google leaves out of a group chat anyone who blocks the caller, and a replayed setup returns the
@@ -1527,8 +1554,7 @@ export class GoogleChatGatekeeperImpl
   /** Conversation setups in flight by who they are with: two applied at once would make two group chats. */
   #settingUp = new SingleFlight();
   #tokens = new AccessTokenCache(async opts => {
-    const account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    const account = this.#account();
     let token = await account.getAccessToken(opts);
     // Every newly loaded token is checked before either Chat or People can use it, including a
     // refresh on a live session. A reconnect must never silently change this binding's authority.
@@ -1547,6 +1573,10 @@ export class GoogleChatGatekeeperImpl
 
   #api(): ChatApi {
     return new ChatApi(opts => this.#tokens.get(opts));
+  }
+
+  #account() {
+    return this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
   }
 
   #boundSpaceName(): string | undefined {
@@ -1674,6 +1704,8 @@ export class GoogleChatGatekeeperImpl
       queue,
       store: new ChatStore(this.ctx.storage),
       self,
+      grantCoversAccount: async () => (await this.#account().getGrantedResourceUrlPatterns())
+        .includes(GOOGLE_CHAT_RESOURCE.urlPattern),
       ...(boundSpace !== undefined ? { boundSpace } : {}),
       subscribe: (spaceName, threadName, hook, options) =>
         this.#subscribe(queue, self, spaceName, threadName, hook, options),
