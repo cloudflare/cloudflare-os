@@ -6,6 +6,7 @@ import { AppShell } from '@/layouts/AppShell'
 import { useApi } from '@/rpc/ApiContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { latestChat } from '@/workspaces/latestChat'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -26,7 +27,7 @@ export const Route = createFileRoute('/_app')({
 const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
 
 const AppFrame = () => {
-  const { user } = useApi()
+  const { api, user } = useApi()
   const workspacesState = useWorkspaces()
   const navigate = useNavigate()
   const { workspaceId } = useParams({ strict: false })
@@ -50,6 +51,13 @@ const AppFrame = () => {
         ? 'No workspaces yet.'
         : undefined
 
+  // A workspace with no chats yet, or that could not be read, opens on its own page.
+  const openLatestChat = async (id: string) => {
+    const chat = await latestChat(() => api.openWorkspace(id)).catch(() => undefined)
+    if (chat) navigate({ to: '/workspace/$workspaceId/$chatId', params: { workspaceId: id, chatId: chat.id }, state: { chatTitle: chat.title } })
+    else navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })
+  }
+
   return (
     <AsideContext value={aside.actions}>
       <AppShell
@@ -64,7 +72,10 @@ const AppFrame = () => {
             library={{ shown: aside.shown, onToggle: aside.actions.toggle }}
           />
         }
-        aside={aside.shown && <AsidePane tabs={aside.tabs} actions={aside.actions} />}
+        aside={aside.shown && (
+          <AsidePane tabs={aside.tabs} fullScreen={aside.fullScreen} actions={aside.actions} onOpenLatestChat={(id) => void openLatestChat(id)} />
+        )}
+        asideFullScreen={aside.fullScreen}
         onOpenAside={aside.actions.show}
         onCloseAside={aside.actions.hide}
       >

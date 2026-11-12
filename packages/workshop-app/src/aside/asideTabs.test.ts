@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { closeTab, openTab, selectTab, type AsideTabs } from './asideTabs'
+import { closeTab, openTab, selectTab, type AsideItem, type AsideTabs } from './asideTabs'
 
-const item = (key: string) => ({ key, title: key.toUpperCase() })
-const tabs = (keys: string[], activeKey: string): AsideTabs => ({ items: keys.map(item), activeKey })
+const item = (key: string, title = key.toUpperCase()): AsideItem => ({
+  key,
+  title,
+  kind: 'file',
+  file: { id: key, name: title, mimeType: 'text/plain', size: 0 },
+})
+const tabs = (keys: string[], activeKey: string): AsideTabs => ({ items: keys.map((key) => item(key)), activeKey })
 
 describe('asideTabs', () => {
   it('opens after what is open already, and shows what it opened', () => {
@@ -11,7 +16,7 @@ describe('asideTabs', () => {
   })
 
   it('shows what is open already where it is, under the title it has now', () => {
-    const renamed = { key: 'a', title: 'Renamed' }
+    const renamed = item('a', 'Renamed')
     expect(openTab(tabs(['a', 'b'], 'b'), renamed)).toEqual({ items: [renamed, item('b')], activeKey: 'a' })
   })
 

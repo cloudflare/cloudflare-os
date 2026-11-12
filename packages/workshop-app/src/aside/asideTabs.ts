@@ -1,9 +1,21 @@
+import type { ChatAttachment, OutputFormat } from '@/chat/chatItems'
+
+/** An output, as what is needed to show it: where it is, and what it is. */
+export type AsideOutput = {
+  workspaceId: string
+  workpieceId: number
+  type: 'gadget' | 'worktree'
+  format?: OutputFormat
+  /** The chat it was opened from: it is shown with the changes proposed there. */
+  chatId?: number
+}
+
 /** Something open beside the page. */
 export type AsideItem = {
   /** Tells it from anything else that can be opened. */
   key: string
   title: string
-}
+} & ({ kind: 'file'; file: ChatAttachment } | { kind: 'output'; output: AsideOutput })
 
 /** Everything open beside the page, in the order it was opened, and which of it is shown. Never empty. */
 export type AsideTabs = {

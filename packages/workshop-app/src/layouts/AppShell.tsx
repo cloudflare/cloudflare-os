@@ -11,6 +11,8 @@ export type AppShellProps = {
   children: ReactNode
   /** What is open beside the page, if anything. */
   aside?: ReactNode
+  /** The aside fills the window (see `SplitLayout`). */
+  asideFullScreen?: boolean
   /** Shows the aside, when none is showing (see `SplitLayout`). */
   onOpenAside?: () => void
   /** The aside was dragged shut (see `SplitLayout`). */
@@ -24,7 +26,7 @@ const SIDEBAR = { min: 208, initial: 248, max: 400, step: 8 }
  * The application frame: the sidebar, then the page and whatever is open beside it (see
  * `SplitLayout`). The gap after the sidebar is dragged to set its width (see `ResizeHandle`).
  */
-export const AppShell = ({ sidebar, children, aside, onOpenAside, onCloseAside }: AppShellProps) => {
+export const AppShell = ({ sidebar, children, aside, asideFullScreen = false, onOpenAside, onCloseAside }: AppShellProps) => {
   const reduceMotion = useReducedMotion() ?? false
   // A motion value, so that dragging renders nothing again.
   const width = useMotionValue(SIDEBAR.initial)
@@ -43,8 +45,9 @@ export const AppShell = ({ sidebar, children, aside, onOpenAside, onCloseAside }
 
   return (
     <div ref={frame} className={cn('flex h-full p-2', SCROLLBARS_AWAY)}>
-      <motion.aside style={{ width }} className="flex shrink-0 flex-col">{sidebar}</motion.aside>
+      <motion.aside style={{ width }} inert={asideFullScreen} className="flex shrink-0 flex-col">{sidebar}</motion.aside>
       <div
+        inert={asideFullScreen}
         className="relative z-20 w-3 shrink-0"
         onPointerEnter={() => scrollbars.pointerInGap(true)}
         onPointerLeave={() => scrollbars.pointerInGap(false)}
@@ -73,7 +76,7 @@ export const AppShell = ({ sidebar, children, aside, onOpenAside, onCloseAside }
         />
       </div>
       {/* The inset is this frame's own padding. */}
-      <SplitLayout aside={aside} onOpenAside={onOpenAside} onCloseAside={onCloseAside} edgeInset={8}>{children}</SplitLayout>
+      <SplitLayout aside={aside} asideFullScreen={asideFullScreen} onOpenAside={onOpenAside} onCloseAside={onCloseAside} edgeInset={8}>{children}</SplitLayout>
     </div>
   )
 }
