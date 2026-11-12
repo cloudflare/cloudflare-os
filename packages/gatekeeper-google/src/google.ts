@@ -16,8 +16,8 @@ import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
-  type DocTableDeletion, type DocTableInsertion, type GoogleDocReadSession, type GoogleDocTab,
-  type NewDocTable,
+  type DocTableCells, type DocTableCellStyle, type DocTableDeletion, type DocTableInsertion,
+  type GoogleDocReadSession, type GoogleDocTab, type NewDocTable,
 } from "./docs-types";
 import {
   DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
@@ -2049,6 +2049,7 @@ function applyGoogleDocActionToContent(
     case "deleteTableRows":
     case "deleteTableColumns":
     case "deleteTable":
+    case "setTableCellStyle":
       return { ...content, ...applyTableChange(content, action, tab) };
     default:
       action satisfies never;
@@ -2235,6 +2236,7 @@ function materializeGoogleDocAction(
     case "deleteTableRows":
     case "deleteTableColumns":
     case "deleteTable":
+    case "setTableCellStyle":
       return { tab, requests: tableChangeRequests(tab, action) };
 
     default:
@@ -3170,6 +3172,12 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
   async deleteTable(table: number, tabId?: string): Promise<void> {
     await this.#submitTableChange({ method: "deleteTable", table }, tabId);
+  }
+
+  async setTableCellStyle(
+    cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string,
+  ): Promise<void> {
+    await this.#submitTableChange({ method: "setTableCellStyle", cells }, tabId);
   }
 
   /**

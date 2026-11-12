@@ -10,7 +10,9 @@ import {
   MAX_TABLE_TEXT_REQUESTS, tableChangeRequests, tableHtml, tableTextRequests,
 } from "../src/docs-tables";
 import type { TableChange } from "../src/docs-tables";
-import type { DocTableDeletion, DocTableInsertion, NewDocTable } from "../src/docs-types";
+import type {
+  DocTableCellStyle, DocTableCells, DocTableDeletion, DocTableInsertion, NewDocTable,
+} from "../src/docs-types";
 import { computeReplaceOperations, docTabToMarkdown } from "../src/markdown-converter";
 import type { DocTabSnapshot, EditableMarkdown } from "../src/markdown-converter";
 import { BULLET_LIST, buildTab } from "./doc-fixture";
@@ -1484,5 +1486,86 @@ describe("a replacement prepared", () => {
       expect(replace(source, "<td><p></p></td>", striped(MAX_TABLE_TEXT_REQUESTS - 2)).inTable)
         .toBe(true);
     }
+  });
+});
+
+describe("setTableCellStyle", () => {
+  const restyle = (cells: DocTableCells & { style: DocTableCellStyle }) =>
+    ({ method: "setTableCellStyle" as const, cells });
+
+  it("is a table change a user may let apply without asking", () => {
+    let prepared = prepare(read(STATUS()), restyle({ table: 0, row: 0, column: 0, style: { background: "#FFCC00" } }));
+    expect(prepared.actionKind).toBe(DOCUMENT_TABLES);
+    expect(prepared.autoApprovable).toBe(true);
+    expect(prepared.change).toEqual({
+      type: "setTableCellStyle", row: 0, column: 0, rows: 1, columns: 1,
+      style: { background: "#ffcc00" }, expected: tableAt(read(STATUS()).content, 0),
+    });
+  });
+
+  it("stores each value as the table's HTML writes it", () => {
+    let { change } = prepare(read(STATUS()), restyle({
+      table: 0, row: 1, column: 0, rows: 2, columns: 2,
+      style: {
+        background: null, verticalAlign: "bottom", padding: { top: 0, left: 93.33333 },
+        border: { width: 1 }, borders: {
+          top: null, innerHorizontal: { width: 0, color: "#ff0000" },
+          innerVertical: { width: 2.25, dash: "dotted", color: "#00FF00" },
+        },
+      },
+    }));
+    expect(change).toMatchObject({
+      style: {
+        background: "transparent", verticalAlign: "bottom", padding: { top: "0pt", left: "93.333pt" },
+        border: "1pt solid #000000",
+        borders: { top: "none", innerHorizontal: "none", innerVertical: "2.25pt dotted #00ff00" },
+      },
+    });
+  });
+
+  it("refuses arguments that are wrong whatever the document holds", () => {
+    let at = { table: 0, row: 0, column: 0 };
+    expect(argumentRefusal(restyle({ ...at, style: {} })))
+      .toBe("setTableCellStyle: style sets nothing. Give at least one of its fields.");
+    expect(argumentRefusal(restyle({ ...at, style: { background: "red" } })))
+      .toBe("setTableCellStyle: style.background must be a colour written #rrggbb.");
+    expect(argumentRefusal(restyle({ ...at, style: { padding: { top: 101 } } })))
+      .toBe("setTableCellStyle: style.padding.top must be a number of points from 0 to 100.");
+    expect(argumentRefusal(restyle({ ...at, style: { border: { width: -1 } } })))
+      .toBe("setTableCellStyle: style.border.width must be a number of points from 0 to 24.");
+    expect(argumentRefusal(restyle({ ...at, style: { borders: { innerVertical: null } } }))).toBe(
+      "setTableCellStyle: style.borders.innerVertical is the edges between the block's columns, " +
+      "and this block has only one.");
+    expect(argumentRefusal(restyle({ ...at, rows: 0, style: { background: null } })))
+      .toBe("setTableCellStyle: rows must be a whole number of at least 1.");
+    expect(argumentRefusal(restyle({ ...at, style: { shading: "#ffffff" } as never }))).toBe(
+      "setTableCellStyle: unknown field \"style.shading\". The fields of style are background, " +
+      "verticalAlign, padding, border and borders.");
+    expect(argumentRefusal(restyle({ ...at, style: { borders: { outer: null } } as never }))).toBe(
+      "setTableCellStyle: unknown field \"style.borders.outer\". The fields of style.borders " +
+      "are top, bottom, left, right, innerHorizontal and innerVertical.");
+    expect(argumentRefusal(restyle({ ...at, cell: 1, style: { background: null } } as never))).toBe(
+      "setTableCellStyle: unknown field \"cell\". The fields are table, row, column, rows, " +
+      "columns and style.");
+  });
+
+  it("refuses cells past the table, and a table that reads like another", () => {
+    expect(refusal(read(STATUS()), restyle({ table: 0, row: 3, column: 0, style: { background: null } })))
+      .toBe("setTableCellStyle: row and rows must name rows of the table, which has 3.");
+    let twins = read(buildTab([para("A"), TEAM, para("B"), TEAM, para("C")]));
+    expect(refusal(twins, restyle({ table: 1, row: 0, column: 0, style: { background: null } })))
+      .toBe(readsTheSame("setTableCellStyle", 1, 0));
+  });
+
+  it("describes the cells it restyles and the style it sets", () => {
+    let { title, description } = prepare(read(STATUS()), restyle({
+      table: 0, row: 1, column: 0, rows: 2, style: { borders: { bottom: { width: 2 } } },
+    }));
+    expect(title).toBe("Restyle table cells in Google Doc");
+    expect(description.description).toBe(
+      "Set the look of the cells in rows 2 to 3 and column 1 of a table of tab \"Main\" (tab-1). " +
+      "A border on the block's outer edge also changes the facing edge of the cells beside it. " +
+      "It was table 1 of the tab when this change was requested.");
+    expect(description.fields?.[0]).toEqual(json("Style", { borders: { bottom: "2pt solid #000000" } }));
   });
 });

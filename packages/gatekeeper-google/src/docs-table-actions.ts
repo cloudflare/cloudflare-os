@@ -9,12 +9,17 @@ import {
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
-  applyNewTable, applyTableChange, applyTextReplacement, checkTabTableCells, checkTableTarget,
+  applyNewTable, applyTableChange, applyTextReplacement, checkLookTarget, checkTabTableCells,
+  checkTableTarget,
   hiddenContent, MAX_TABLE_COLUMNS, replaceTableText, runParagraphReplacement, tableLines,
   tableIdentity, tableShape, tableSize, tableTextRequests,
 } from "./docs-tables";
-import type { HiddenContent, TableChange, TextReplacement } from "./docs-tables";
-import type { DocTableDeletion, DocTableInsertion, NewDocTable } from "./docs-types";
+import type { HiddenContent, LookChange, TableChange, TextReplacement } from "./docs-tables";
+import { EDGES, points, SIDES } from "./docs-table-look";
+import type { CellStyleChange } from "./docs-table-look";
+import type {
+  DocTableBorder, DocTableCells, DocTableCellStyle, DocTableDeletion, DocTableInsertion, NewDocTable,
+} from "./docs-types";
 import {
   applyMarkdownEdit, canonicalizeMarkdownReplacement, computeReplaceOperations, lineStart,
   MAX_MARKDOWN_BLOCKS, stripUnwritableCharacters, tableRowCells,
@@ -22,9 +27,9 @@ import {
 import type { DocTabSnapshot, EditableMarkdown, MarkdownRange } from "./markdown-converter";
 
 /**
- * Adding or deleting a table, or rows or columns of one. A kind of its own, apart from "Document
- * edits", so a rule enabled for either covers only what its label says. A deletion may apply
- * without asking too, since the document's version history undoes it.
+ * Adding or deleting a table, or rows or columns of one, and changing a table's look. A kind of
+ * its own, apart from "Document edits", so a rule enabled for either covers only what its label
+ * says. A deletion may apply without asking too, since the document's version history undoes it.
  */
 export const DOCUMENT_TABLES: ActionKind = { tag: "document-tables", label: "Table changes" };
 
@@ -33,7 +38,8 @@ export type TableCall =
   | { method: "insertTable"; table: NewDocTable }
   | { method: "insertTableRows" | "insertTableColumns"; lines: DocTableInsertion }
   | { method: "deleteTableRows" | "deleteTableColumns"; lines: DocTableDeletion }
-  | { method: "deleteTable"; table: number };
+  | { method: "deleteTable"; table: number }
+  | { method: "setTableCellStyle"; cells: DocTableCells & { style: DocTableCellStyle } };
 
 /** What a table call becomes once checked against the tab. */
 export type PreparedTableChange = {
@@ -145,14 +151,94 @@ const INSERTION_FIELDS: Record<keyof DocTableInsertion, true> =
 const DELETION_FIELDS: Record<keyof DocTableDeletion, true> =
   { table: true, at: true, count: true };
 
-function checkFields(op: string, argument: object, declared: Record<string, true>): void {
+const CELLS_FIELDS: Record<keyof (DocTableCells & { style: DocTableCellStyle }), true> =
+  { table: true, row: true, column: true, rows: true, columns: true, style: true };
+const STYLE_FIELDS: Record<keyof DocTableCellStyle, true> =
+  { background: true, verticalAlign: true, padding: true, border: true, borders: true };
+const PADDING_FIELDS: Record<keyof NonNullable<DocTableCellStyle["padding"]>, true> =
+  { top: true, right: true, bottom: true, left: true };
+const BORDER_FIELDS: Record<keyof DocTableBorder, true> = { width: true, dash: true, color: true };
+const BORDERS_FIELDS: Record<keyof NonNullable<DocTableCellStyle["borders"]>, true> = {
+  top: true, bottom: true, left: true, right: true, innerHorizontal: true, innerVertical: true,
+};
+
+function checkFields(
+  op: string, argument: object, declared: Record<string, true>, of = "",
+): void {
   for (let [name, value] of Object.entries(argument)) {
     if (value === undefined || Object.hasOwn(declared, name)) continue;
     let names = Object.keys(declared);
+    let owner = of ? ` of ${of.slice(0, -1)}` : "";
     throw new Error(
-      `${op}: unknown field ${JSON.stringify(name.slice(0, 40))}. The fields are ` +
+      `${op}: unknown field ${JSON.stringify(of + name.slice(0, 40))}. The fields${owner} are ` +
       `${names.slice(0, -1).join(", ")} and ${names.at(-1)}.`);
   }
+}
+
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+/** A length the agent gave, as the look writes it, refused outside `least` to `most` points. */
+function lengthOf(op: string, name: string, value: number, least: number, most: number): string {
+  if (!Number.isFinite(value) || value < least || value > most) {
+    throw new Error(`${op}: ${name} must be a number of points from ${least} to ${most}.`);
+  }
+  return points(value);
+}
+
+function colorOf(op: string, name: string, value: string): string {
+  if (!HEX_COLOR.test(value)) throw new Error(`${op}: ${name} must be a colour written #rrggbb.`);
+  return value.toLowerCase();
+}
+
+/** A border the agent gave, as the look writes it. */
+function borderOf(op: string, name: string, border: DocTableBorder | null): string {
+  if (border === null) return "none";
+  checkFields(op, border, BORDER_FIELDS, `${name}.`);
+  let width = lengthOf(op, `${name}.width`, border.width, 0, 24);
+  if (width === "0pt") return "none";
+  return `${width} ${border.dash ?? "solid"} ${colorOf(op, `${name}.color`, border.color ?? "#000000")}`;
+}
+
+/** The change a style the agent gave makes, each value as the look writes it. */
+function styleChange(
+  op: string, style: DocTableCellStyle, rows: number, columns: number,
+): CellStyleChange {
+  checkFields(op, style, STYLE_FIELDS, "style.");
+  let change: CellStyleChange = {};
+  if (style.background !== undefined) {
+    change.background = style.background === null ? "transparent"
+      : colorOf(op, "style.background", style.background);
+  }
+  if (style.verticalAlign !== undefined) change.verticalAlign = style.verticalAlign;
+  if (style.padding !== undefined) {
+    checkFields(op, style.padding, PADDING_FIELDS, "style.padding.");
+    let padding: NonNullable<CellStyleChange["padding"]> = {};
+    for (let side of SIDES) {
+      let value = style.padding[side];
+      if (value !== undefined) padding[side] = lengthOf(op, `style.padding.${side}`, value, 0, 100);
+    }
+    if (Object.keys(padding).length > 0) change.padding = padding;
+  }
+  if (style.border !== undefined) change.border = borderOf(op, "style.border", style.border);
+  if (style.borders !== undefined) {
+    checkFields(op, style.borders, BORDERS_FIELDS, "style.borders.");
+    let borders: NonNullable<CellStyleChange["borders"]> = {};
+    for (let edge of EDGES) {
+      let border = style.borders[edge];
+      if (border === undefined) continue;
+      if (edge === "innerHorizontal" && rows < 2 || edge === "innerVertical" && columns < 2) {
+        throw new Error(
+          `${op}: style.borders.${edge} is the edges between the block's ` +
+          `${edge === "innerHorizontal" ? "rows" : "columns"}, and this block has only one.`);
+      }
+      borders[edge] = borderOf(op, `style.borders.${edge}`, border);
+    }
+    if (Object.keys(borders).length > 0) change.borders = borders;
+  }
+  if (Object.keys(change).length === 0) {
+    throw new Error(`${op}: style sets nothing. Give at least one of its fields.`);
+  }
+  return change;
 }
 
 function checkWholeNumber(op: string, name: string, value: number, least: 0 | 1): void {
@@ -231,6 +317,17 @@ export function checkTableCall(call: TableCall): void {
     }
     case "deleteTable":
       checkWholeNumber(op, "table", call.table, 0);
+      return;
+    case "setTableCellStyle": {
+      let { table, row, column, rows = 1, columns = 1, style } = call.cells;
+      checkFields(op, call.cells, CELLS_FIELDS);
+      checkWholeNumber(op, "table", table, 0);
+      checkWholeNumber(op, "row", row, 0);
+      checkWholeNumber(op, "column", column, 0);
+      checkWholeNumber(op, "rows", rows, 1);
+      checkWholeNumber(op, "columns", columns, 1);
+      styleChange(op, style, rows, columns);
+    }
   }
 }
 
@@ -457,6 +554,11 @@ function hiddenNotes(change: HiddenContent): string {
       : "");
 }
 
+/** Lines `first` to `first + count - 1` by their numbers from 1, as a card names them. */
+function lineNames(first: number, count: number, noun: string): string {
+  return count === 1 ? `${noun} ${first + 1}` : `${noun}s ${first + 1} to ${first + count}`;
+}
+
 /**
  * The card of a change to the table at `table`, written from the content as it reads before
  * the change.
@@ -493,6 +595,19 @@ function existingTableCard(
   let rowsHtml = (first: number, last: number) =>
     markdown.slice(rows[first].mdStart, rows[last].mdEnd - 1);
   let firstRow = rowsHtml(0, 0);
+  if (change.type === "setTableCellStyle") {
+    let description = describe(
+      `Set the look of the cells in ${lineNames(change.row, change.rows, "row")} and ` +
+      `${lineNames(change.column, change.columns, "column")} of a table of tab ${label}.` +
+      (change.style.border !== undefined || change.style.borders !== undefined
+        ? " A border on the block's outer edge also changes the facing edge of the cells " +
+          "beside it."
+        : ""));
+    description.json("Style", change.style);
+    return {
+      title: "Restyle table cells in Google Doc", description: located(description, firstRow),
+    };
+  }
   let { at } = change;
   switch (change.type) {
     case "insertTableRows": {
@@ -562,11 +677,30 @@ function existingTableCard(
   }
 }
 
+/** The change that sets the look of the cells a call names. */
+function lookChange(
+  content: EditableMarkdown, call: Extract<TableCall, { method: "setTableCellStyle" }>,
+  tab: DocTabSnapshot,
+): ExistingTableChange {
+  let op = call.method;
+  let { table, row, column, rows = 1, columns = 1, style } = call.cells;
+  let target = tableAt(content, table, op, tab.tabId);
+  let change: LookChange = {
+    type: op, row, column, rows, columns, style: styleChange(op, style, rows, columns),
+    expected: tableIdentity(htmlOf(content, target)),
+  };
+  checkLookTarget(content, table, change);
+  checkReadsAlone(content, table, op);
+  return change;
+}
+
 /** The change a call to change an existing table becomes, checked in the order a caller meets. */
 function existingTableChange(
   content: EditableMarkdown, call: ExistingTableCall, tab: DocTabSnapshot,
 ): ExistingTableChange {
   switch (call.method) {
+    case "setTableCellStyle":
+      return lookChange(content, call, tab);
     case "insertTableRows":
     case "insertTableColumns":
       return insertionChange(content, call, tab);
@@ -608,7 +742,8 @@ export function prepareTableChange(
   // it is stored, so a call the engine would refuse never becomes a card.
   applyTableChange(content, change, tab);
   checkStoredSize(change);
-  let table = call.method === "deleteTable" ? call.table : call.lines.table;
+  let table = call.method === "deleteTable" ? call.table
+    : call.method === "setTableCellStyle" ? call.cells.table : call.lines.table;
   let { title, description } = existingTableCard(content, table, change, label);
   return {
     change, title: sanitizeTitle(title), description, actionKind: DOCUMENT_TABLES,

@@ -107,7 +107,7 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
 /** The methods of a Google Doc session that queue an edit. */
 type DocWriteMethod =
   | "replaceText" | "appendText" | "insertTable" | "insertTableRows" | "insertTableColumns"
-  | "deleteTableRows" | "deleteTableColumns" | "deleteTable";
+  | "deleteTableRows" | "deleteTableColumns" | "deleteTable" | "setTableCellStyle";
 
 /** An action as the approval queue received it. */
 type SubmittedAction = { actionId: number; title: string };

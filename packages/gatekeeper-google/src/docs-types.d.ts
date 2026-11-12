@@ -93,6 +93,68 @@ export type DocTableDeletion = {
   count?: number;
 };
 
+/** A block of cells of a table, for `setTableCellStyle()`. */
+export type DocTableCells = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The block's first row, counting from 0. */
+  row: number;
+
+  /** The block's first column, counting from 0. */
+  column: number;
+
+  /** How many rows the block spans: 1 by default. */
+  rows?: number;
+
+  /** How many columns the block spans: 1 by default. */
+  columns?: number;
+};
+
+/** One edge of a table cell. */
+export type DocTableBorder = {
+  /** Its width in points, from 0 to 24. An edge 0 wide is not drawn, as `getContent()`'s `none`. */
+  width: number;
+
+  /** How it is drawn: `"solid"` unless given. */
+  dash?: "solid" | "dotted" | "dashed";
+
+  /** Its colour as `#rrggbb`: black unless given. */
+  color?: string;
+};
+
+/**
+ * What `setTableCellStyle()` sets, at least one field of it. A field left out stays as it is.
+ * Lengths are in points, with at most three decimals.
+ */
+export type DocTableCellStyle = {
+  /** The cells' shading as `#rrggbb`, or `null` for none. */
+  background?: string | null;
+
+  /** Where the cells' text sits between their top and bottom. */
+  verticalAlign?: "top" | "middle" | "bottom";
+
+  /** Each side's padding, from 0 to 100 points. */
+  padding?: { top?: number; right?: number; bottom?: number; left?: number };
+
+  /** Every edge of every cell of the block, those between its cells included; `null` hides them. */
+  border?: DocTableBorder | null;
+
+  /**
+   * Edges of the block, set after `border`, `null` hiding one: its outer `top`, `bottom`,
+   * `left` and `right`, and those between its rows (`innerHorizontal`, for a block of two rows
+   * or more) and between its columns (`innerVertical`, for two columns or more).
+   */
+  borders?: {
+    top?: DocTableBorder | null;
+    bottom?: DocTableBorder | null;
+    left?: DocTableBorder | null;
+    right?: DocTableBorder | null;
+    innerHorizontal?: DocTableBorder | null;
+    innerVertical?: DocTableBorder | null;
+  };
+};
+
 /**
  * Read/write access to one directly bound native Google Doc, and to its comments.
  *
@@ -325,4 +387,17 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * a numbered list and a numbered list follows it in the tab.
    */
   deleteTable(table: number, tabId?: string): Promise<void>;
+
+  /**
+   * Set the look of a block of cells of a table in tab `tabId`: their shading, vertical
+   * alignment, padding and borders, which `getContent()` shows as `style` attributes. Google Docs
+   * keeps an edge that two cells share on both of them, so a border on the block's outer edge
+   * also changes the facing edge of the cells beside the block, as reads then show.
+   *
+   * Google Docs styles a merged cell as a whole, so the block must hold all of every merged cell
+   * it takes in any of, and a block that holds one cannot set `innerHorizontal` or
+   * `innerVertical`. Changes queued for the table before and after this one are kept to it
+   * whatever its look.
+   */
+  setTableCellStyle(cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string): Promise<void>;
 }

@@ -66,6 +66,9 @@ function requestTabId(
   if ("updateTableColumnProperties" in request) {
     return request.updateTableColumnProperties.tableStartLocation.tabId;
   }
+  if ("updateTableCellStyle" in request) {
+    return request.updateTableCellStyle.tableRange.tableCellLocation.tableStartLocation.tabId;
+  }
   // A row or column request names its table, and the table's start names the tab.
   let cell = "insertTableRow" in request ? request.insertTableRow.tableCellLocation
     : "insertTableColumn" in request ? request.insertTableColumn.tableCellLocation
@@ -1222,6 +1225,7 @@ describe("Google Doc auto-approval", () => {
       ["deleteTableRows", { table: 0, at: 1 }],
       ["deleteTableColumns", { table: 0, at: 1 }],
       ["deleteTable", 0],
+      ["setTableCellStyle", { table: 0, row: 0, column: 0, style: { background: "#ffcc00" } }],
     ] as const) {
       await edit("verdict-tables", method, argument);
       expect(await hooks().lastActionVerdict)
@@ -1560,6 +1564,43 @@ describe("Google Doc tables", () => {
     passSnapshotTtl();
     expect(await hooks().readContent(facet)).toBe(preview);
     expect(docs.contentBatches).toBe(3);
+  });
+
+  it("applies a look change and a row change queued after it, and reads them as Google does", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-look-then-rows";
+    let restyled = await edit(facet, "setTableCellStyle", {
+      table: 0, row: 1, column: 0, columns: 2, style: { background: "#ffcc00", borders: { top: { width: 2 } } },
+    });
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["Ship docs", "Done"]] });
+    let preview = await hooks().readContent(facet);
+    // Four of the six cells are shaded and have a 2pt top: the table now says both.
+    expect(preview).toContain(
+      '<table style="background-color:#ffcc00;border-top:2pt solid #000000">\n  <tr>\n' +
+      '    <td style="background-color:transparent;border-top:1pt solid #000000;' +
+      'border-bottom:2pt solid #000000"><p>Task</p></td>');
+    expect(preview).toContain("    <td><p>Ship docs</p></td>");
+
+    for (let { actionId } of [restyled, rows]) {
+      expect(await hooks().applyAction(facet, actionId)).toBeNull();
+    }
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(2);
+  });
+
+  it("keeps a row change queued for a table a collaborator restyles meanwhile", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-restyled-meanwhile";
+    let rows = await edit(facet, "insertTableRows", { table: 0, cells: [["Ship docs", "Open"]] });
+    let body = structuredClone(docs.bodyTab().body);
+    let table = body.content.find(element => element.table)!.table!;
+    let cell = table.tableRows![0].tableCells![0];
+    cell.tableCellStyle = { ...cell.tableCellStyle, backgroundColor: { color: { rgbColor: { red: 1 } } } };
+    docs.externalBody(MAIN_TAB, body);
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toContain('<td style="background-color:#ff0000"><p>Task</p></td>');
+    expect(await hooks().applyAction(facet, rows.actionId)).toBeNull();
   });
 
   it("drops changes built on a rejected one", async () => {

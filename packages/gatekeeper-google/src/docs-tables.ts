@@ -11,10 +11,12 @@ import {
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
 import {
-  coveredCells, lookWithColumns, lookWithoutColumns, lookWithoutRows, lookWithRows, readLook,
-  renderLook,
+  cellStyleSteps, coveredCells, googleCellStyle, lookWithCellStyle, lookWithColumns,
+  lookWithoutColumns, lookWithoutRows, lookWithRows, readLook, renderLook,
 } from "./docs-table-look";
-import type { LookAttributes, TableLook } from "./docs-table-look";
+import type {
+  CellBlock, CellStyleChange, LookAttributes, Spans, TableLook,
+} from "./docs-table-look";
 import type {
   BlockMapping, CellInlineRun, DocTabSnapshot, EditableMarkdown, EditableTable, InheritedFormat,
   MarkdownRange, NamedFormatting, TableCellEntry, TableMapping,
@@ -70,10 +72,24 @@ export type TableChange =
   | ({ type: "insertTableColumns"; at: number; cells: string[][] } & TableRef)
   | ({ type: "deleteTableRows"; at: number; count: number } & TableRef & HiddenContent)
   | ({ type: "deleteTableColumns"; at: number; count: number } & TableRef & HiddenContent)
-  | ({ type: "deleteTable" } & TableRef & HiddenContent);
+  | ({ type: "deleteTable" } & TableRef & HiddenContent)
+  | ({ type: "setTableCellStyle"; style: CellStyleChange } & CellBlock & TableRef);
 
 type NewTableChange = Extract<TableChange, { type: "insertTable" }>;
 type ExistingTableChange = Exclude<TableChange, NewTableChange>;
+
+/** The changes that set only a table's look, which no table's identity depends on. */
+const LOOK_CHANGE_TYPES: readonly string[] = ["setTableCellStyle"];
+
+/** A change that sets only a table's look. */
+export type LookChange = Extract<TableChange, { type: "setTableCellStyle" }>;
+
+/** A change that adds or deletes rows or columns. */
+type LineChange = Exclude<ExistingTableChange, LookChange | { type: "deleteTable" }>;
+
+function isLookChange(change: TableChange): change is LookChange {
+  return LOOK_CHANGE_TYPES.includes(change.type);
+}
 
 // ---------------------------------------------------------------------------
 // Line structure
@@ -419,7 +435,8 @@ export function hiddenContent(
 function targetOf(content: EditableMarkdown, change: ExistingTableChange): number {
   let op = change.type;
   let table = resolveTable(content, change, op);
-  if (change.type === "insertTableRows" || change.type === "insertTableColumns") return table;
+  if (change.type === "insertTableRows" || change.type === "insertTableColumns" ||
+      isLookChange(change)) return table;
   let hidden = hiddenContent(content, table, change);
   if (hidden.unshown && !change.unshown) {
     throw new Error(
@@ -436,7 +453,7 @@ function targetOf(content: EditableMarkdown, change: ExistingTableChange): numbe
 
 const TABLE_CHANGE_TYPES: readonly string[] = [
   "insertTable", "insertTableRows", "insertTableColumns", "deleteTableRows",
-  "deleteTableColumns", "deleteTable",
+  "deleteTableColumns", "deleteTable", ...LOOK_CHANGE_TYPES,
 ];
 
 /**
@@ -461,9 +478,12 @@ export function namesTable(change: { type: string }): boolean {
 export class TableReplayGate {
   #closed = new Set<string>();
 
-  /** Notes that `change`, queued for tab `tabId`, did not replay. */
+  /**
+   * Notes that `change`, queued for tab `tabId`, did not replay. A change to a table's look
+   * leaves the tables as the later changes recorded them, which leave looks out.
+   */
   failed(tabId: string | undefined, change: { type: string; inTable?: true }): void {
-    if (changesTables(change)) this.close(tabId);
+    if (changesTables(change) && !LOOK_CHANGE_TYPES.includes(change.type)) this.close(tabId);
   }
 
   /** Notes that the tables of tab `tabId` may no longer be as the later changes found them. */
@@ -601,7 +621,7 @@ export type TableChangeShape =
 
 type LineChangeShape = Exclude<TableChangeShape, { type: "deleteTable" }>;
 
-function shapeOf(change: Exclude<ExistingTableChange, { type: "deleteTable" }>): LineChangeShape {
+function shapeOf(change: LineChange): LineChangeShape {
   switch (change.type) {
     case "insertTableRows":
       return { type: change.type, at: change.at, count: change.cells.length };
@@ -931,7 +951,7 @@ const spanAttribute = (name: string, span: number): string => span > 1 ? ` ${nam
 /** Replay a change to the rows or columns of the table at `table`. */
 function applyLineChange(
   content: EditableMarkdown, table: number,
-  change: Exclude<ExistingTableChange, { type: "deleteTable" }>, doc: DocTabSnapshot | undefined,
+  change: LineChange, doc: DocTabSnapshot | undefined,
 ): EditableMarkdown {
   let shape = shapeOf(change);
   let { lines, rows, columns } = checkLineChange(content, table, shape, doc);
@@ -1243,9 +1263,95 @@ export function applyTableChange(
   if (change.type === "insertTable") return applyNewTable(content, change, tab).content;
   let doc = documentOf(content, tab);
   let table = targetOf(content, change);
+  if (isLookChange(change)) return applyLookChange(content, table, change);
   return change.type === "deleteTable"
     ? applyTableDeletion(content, table, doc)
     : applyLineChange(content, table, change, doc);
+}
+
+// ---------------------------------------------------------------------------
+// Changes to a table's look
+// ---------------------------------------------------------------------------
+
+/** A table that passed the checks of a change to its look, with its cells' spans. */
+type CheckedLook = { lines: TableLines; spans: Spans[][] };
+
+/**
+ * The checks of a change to the look of `block` of the table at `table`: the block lies in the
+ * table and holds every merged cell it reaches whole, since Google styles all of a merged cell
+ * it reaches any of.
+ */
+function checkCellBlock(
+  content: EditableMarkdown, table: number, block: CellBlock, op: string,
+): CheckedLook {
+  let lines = linesOf(content.markdown, content.tables[table], op);
+  let { rows, columns } = sizeOf(lines, op);
+  if (block.row + block.rows > rows) {
+    throw new Error(`${op}: row and rows must name rows of the table, which has ${rows}.`);
+  }
+  if (block.column + block.columns > columns) {
+    throw new Error(
+      `${op}: column and columns must name columns of the table, which has ${columns}.`);
+  }
+  let spans = lines.rows.map(row =>
+    row.cells.map(({ rowSpan, columnSpan }) => ({ rowSpan, columnSpan })));
+  let covered = coveredCells(spans);
+  let inside = (r: number, c: number) => r >= block.row && r < block.row + block.rows &&
+    c >= block.column && c < block.column + block.columns;
+  for (let [r, row] of spans.entries()) {
+    for (let [c, { rowSpan, columnSpan }] of row.entries()) {
+      if (covered[r][c] || rowSpan === 1 && columnSpan === 1) continue;
+      let reached = false;
+      let whole = true;
+      for (let down = r; down < Math.min(r + rowSpan, rows); down++) {
+        for (let across = c; across < Math.min(c + columnSpan, columns); across++) {
+          if (inside(down, across)) reached = true;
+          else whole = false;
+        }
+      }
+      if (reached && !whole) {
+        throw new Error(
+          `${op}: the cells named take in part of the merged cell at row ${r}, column ${c} ` +
+          "(counting from 0), which Google Docs styles as a whole. Name all of its cells or " +
+          "none of them.");
+      }
+    }
+  }
+  return { lines, spans };
+}
+
+/** Refuse a change to a table's look for what the table at `table` is or holds. */
+export function checkLookTarget(
+  content: EditableMarkdown, table: number, change: LookChange,
+): void {
+  lookTarget(content, table, change);
+}
+
+function lookTarget(content: EditableMarkdown, table: number, change: LookChange): CheckedLook {
+  let op = change.type;
+  let checked = checkCellBlock(content, table, change, op);
+  let { borders } = change.style;
+  if (borders?.innerHorizontal !== undefined || borders?.innerVertical !== undefined) {
+    let merged = checked.spans.some((row, r) => row.some(({ rowSpan, columnSpan }, c) =>
+      (rowSpan > 1 || columnSpan > 1) && r >= change.row && r < change.row + change.rows &&
+      c >= change.column && c < change.column + change.columns));
+    if (merged) {
+      throw new Error(
+        `${op}: the cells named hold a merged cell, so the edges between their rows or ` +
+        "columns cannot be set. Set them on blocks of cells beside it, or use border.");
+    }
+  }
+  return checked;
+}
+
+/** Replay a change to the look of the table at `table`. */
+function applyLookChange(
+  content: EditableMarkdown, table: number, change: LookChange,
+): EditableMarkdown {
+  let { lines, spans } = lookTarget(content, table, change);
+  let look = readTableLook(lines, change.type);
+  let steps = cellStyleSteps(change, change.style);
+  return restyleTable(content, table, lookWithCellStyle(look, spans, steps));
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,7 +1373,8 @@ function restoreFixedWidths(
   if (!columns || columns[reference] !== null) return;
   let byWidth = new Map<number, number[]>();
   for (let [column, width] of columns.entries()) {
-    if (width !== null) byWidth.set(width, [...byWidth.get(width) ?? [], column < at ? column : column + count]);
+    if (width === null) continue;
+    byWidth.set(width, [...byWidth.get(width) ?? [], column < at ? column : column + count]);
   }
   for (let [width, columnIndices] of byWidth) {
     addRequest(requests, {
@@ -1319,6 +1426,24 @@ export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): G
   let position = targetOf(content, change);
   let table = tab.sourceMap.tables[position];
   let tableStartLocation = { index: table.docStart, tabId };
+  if (isLookChange(change)) {
+    lookTarget(content, position, change);
+    for (let step of cellStyleSteps(change, change.style)) {
+      addRequest(requests, {
+        updateTableCellStyle: {
+          tableRange: {
+            tableCellLocation: {
+              tableStartLocation, rowIndex: step.block.row, columnIndex: step.block.column,
+            },
+            rowSpan: step.block.rows,
+            columnSpan: step.block.columns,
+          },
+          ...googleCellStyle(step.set),
+        },
+      });
+    }
+    return requests;
+  }
   if (change.type === "deleteTable") {
     checkTableDeletion(content, position, tab);
     addRequest(requests, {

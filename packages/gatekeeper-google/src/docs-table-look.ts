@@ -353,7 +353,8 @@ export function lookWithRows(look: TableLook, at: number, count: number): TableL
   let reference = Math.min(at, look.cells.length - 1);
   return {
     ...look,
-    cells: look.cells.toSpliced(at, 0, ...Array.from({ length: count }, () => look.cells[reference])),
+    cells: look.cells.toSpliced(
+      at, 0, ...Array.from({ length: count }, () => look.cells[reference])),
     rows: look.rows.toSpliced(at, 0, ...Array.from({ length: count }, () => look.rows[reference])),
   };
 }
@@ -387,4 +388,215 @@ export function lookWithoutColumns(look: TableLook, at: number, count: number): 
     ...(columns?.some(width => width !== null) ? { columns } : {}),
     rows: look.rows,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Setting cells' looks
+// ---------------------------------------------------------------------------
+
+/** The edges a style change can set on a block of cells. */
+export const EDGES =
+  ["top", "bottom", "left", "right", "innerHorizontal", "innerVertical"] as const;
+
+/** One of `EDGES`. */
+export type Edge = typeof EDGES[number];
+
+/**
+ * What a style change sets on a block of cells, each value as `CellLook` writes it; a field left
+ * out is left as it is. `border` sets every edge of every cell, and `borders` then sets edges of
+ * the block: its outer ones, or those between its rows or its columns.
+ */
+export type CellStyleChange = {
+  background?: string;
+  verticalAlign?: string;
+  padding?: Partial<Record<Side, string>>;
+  border?: string;
+  borders?: Partial<Record<Edge, string>>;
+};
+
+/** A block of a table's cells, counted from 0. */
+export type CellBlock = { row: number; column: number; rows: number; columns: number };
+
+/** One part of a style change as Google applies it: one request, over a block of cells. */
+export type CellStyleStep = {
+  block: CellBlock;
+  /** The longhands the request sets on each cell the block reaches, with their values. */
+  set: Partial<Record<Longhand, string>>;
+};
+
+/**
+ * The requests a style change makes, in the order they are sent: the shading, alignment and
+ * padding over the block, then `border` over it, then each of `borders` over the cells along
+ * that edge. Google has no request for the edges between cells, so those are the bottoms of every
+ * row but the last, or the right sides of every column but the last.
+ */
+export function cellStyleSteps(block: CellBlock, style: CellStyleChange): CellStyleStep[] {
+  let steps: CellStyleStep[] = [];
+  let plain: Partial<Record<Longhand, string>> = {};
+  if (style.background !== undefined) plain["background-color"] = style.background;
+  if (style.verticalAlign !== undefined) plain["vertical-align"] = style.verticalAlign;
+  for (let side of SIDES) {
+    let padding = style.padding?.[side];
+    if (padding !== undefined) plain[`padding-${side}`] = padding;
+  }
+  if (Object.keys(plain).length > 0) steps.push({ block, set: plain });
+  if (style.border !== undefined) {
+    let border = style.border;
+    steps.push({ block, set: Object.fromEntries(SIDES.map(side => [`border-${side}`, border])) });
+  }
+  let { row, column, rows, columns } = block;
+  let edges: [Edge, CellBlock, Longhand][] = [
+    ["innerHorizontal", { row, column, rows: rows - 1, columns }, "border-bottom"],
+    ["innerVertical", { row, column, rows, columns: columns - 1 }, "border-right"],
+    ["top", { row, column, rows: 1, columns }, "border-top"],
+    ["bottom", { row: row + rows - 1, column, rows: 1, columns }, "border-bottom"],
+    ["left", { row, column, rows, columns: 1 }, "border-left"],
+    ["right", { row, column: column + columns - 1, rows, columns: 1 }, "border-right"],
+  ];
+  for (let [edge, reached, longhand] of edges) {
+    let value = style.borders?.[edge];
+    if (value !== undefined) steps.push({ block: reached, set: { [longhand]: value } });
+  }
+  return steps;
+}
+
+const OPPOSITE: Record<Side, Side> = { top: "bottom", bottom: "top", left: "right", right: "left" };
+
+/** The merged cell, or the cell, that covers each cell of a table: its row and column. */
+function headsOf(spans: readonly (readonly Spans[])[]): [number, number][][] {
+  let heads = spans.map(row => row.map((): [number, number] => [-1, -1]));
+  spans.forEach((row, r) => row.forEach(({ rowSpan, columnSpan }, c) => {
+    if (heads[r][c][0] >= 0) return;
+    for (let down = r; down < Math.min(r + rowSpan, spans.length); down++) {
+      for (let across = c; across < Math.min(c + columnSpan, spans[down].length); across++) {
+        heads[down][across] = [r, c];
+      }
+    }
+  }));
+  return heads;
+}
+
+/**
+ * `look` once Google has applied `steps` to the table whose cells have `spans`. A request
+ * reaches the whole of every merged cell it reaches any cell of. It sets the shading, alignment
+ * and padding of each, and a border along each one's side: on the cells Google keeps that side
+ * on, and on the facing side of the cells beside them, last write winning. A merged cell reads
+ * its top and left edges from its first cell, its right from its last column and its bottom from
+ * its last row, as `lookOfTable` reads them.
+ */
+export function lookWithCellStyle(
+  look: TableLook, spans: readonly (readonly Spans[])[], steps: readonly CellStyleStep[],
+): TableLook {
+  let cells = look.cells.map(row => row.map(cell => cell && { ...cell }));
+  let heads = headsOf(spans);
+  let height = spans.length;
+  // Set side `side` of the cell at `r`, `c`, where the merged cell covering it reads it from.
+  let setSide = (r: number, c: number, side: Side, value: string) => {
+    let [hr, hc] = heads[r][c];
+    let { rowSpan, columnSpan } = spans[hr][hc];
+    let reads = side === "right" ? r === hr && c === hc + columnSpan - 1
+      : side === "bottom" ? r === hr + rowSpan - 1 && c === hc
+      : r === hr && c === hc;
+    let cell = cells[hr][hc];
+    if (reads && cell) (cell as Record<Longhand, string>)[`border-${side}`] = value;
+  };
+  for (let { block, set } of steps) {
+    let reached = new Set<string>();
+    for (let r = block.row; r < block.row + block.rows; r++) {
+      for (let c = block.column; c < block.column + block.columns; c++) {
+        reached.add(heads[r][c].join());
+      }
+    }
+    for (let key of reached) {
+      let [hr, hc] = key.split(",").map(Number);
+      let { rowSpan, columnSpan } = spans[hr][hc];
+      let last = {
+        row: Math.min(hr + rowSpan, height) - 1,
+        column: Math.min(hc + columnSpan, spans[hr].length) - 1,
+      };
+      for (let [longhand, value] of Object.entries(set) as [Longhand, string][]) {
+        let side = SIDES.find(name => longhand === `border-${name}`);
+        if (!side) {
+          (cells[hr][hc] as Record<Longhand, string>)[longhand] = value;
+          continue;
+        }
+        // The cells along that side, and the cell beside each.
+        let along: [number, number][] = [];
+        if (side === "top" || side === "bottom") {
+          let r = side === "top" ? hr : last.row;
+          for (let c = hc; c <= last.column; c++) along.push([r, c]);
+        } else {
+          let c = side === "left" ? hc : last.column;
+          for (let r = hr; r <= last.row; r++) along.push([r, c]);
+        }
+        let step = { top: [-1, 0], bottom: [1, 0], left: [0, -1], right: [0, 1] }[side];
+        for (let [r, c] of along) {
+          setSide(r, c, side, value);
+          let [nr, nc] = [r + step[0], c + step[1]];
+          if (nr >= 0 && nr < height && nc >= 0 && nc < spans[nr].length) {
+            setSide(nr, nc, OPPOSITE[side], value);
+          }
+        }
+      }
+    }
+  }
+  return { ...look, cells };
+}
+
+/** A look's colour as Google's colour: `#rrggbb`, each component a fraction of 255. */
+export function googleColor(hex: string): OptionalColor {
+  let component = (at: number) => parseInt(hex.slice(at, at + 2), 16) / 255;
+  return { color: { rgbColor: { red: component(1), green: component(3), blue: component(5) } } };
+}
+
+const DASH_STYLES: Record<string, string> = { solid: "SOLID", dotted: "DOT", dashed: "DASH" };
+
+/** A look's border as Google stores one: `none` is drawn 0pt wide, in black. */
+export function googleBorder(value: string): TableCellBorder {
+  if (value === "none") {
+    return {
+      width: { magnitude: 0, unit: "PT" }, dashStyle: "SOLID", color: googleColor("#000000"),
+    };
+  }
+  let [width, dash, color] = value.split(" ");
+  return {
+    width: { magnitude: Number(width.slice(0, -2)), unit: "PT" },
+    dashStyle: DASH_STYLES[dash], color: googleColor(color),
+  };
+}
+
+const CONTENT_ALIGNMENTS: Record<string, string> =
+  { top: "TOP", middle: "MIDDLE", bottom: "BOTTOM" };
+
+const STYLE_FIELDS: Record<Longhand, keyof TableCellStyle> = {
+  "background-color": "backgroundColor", "vertical-align": "contentAlignment",
+  "padding-top": "paddingTop", "padding-right": "paddingRight",
+  "padding-bottom": "paddingBottom", "padding-left": "paddingLeft",
+  "border-top": "borderTop", "border-right": "borderRight",
+  "border-bottom": "borderBottom", "border-left": "borderLeft",
+};
+
+/** What one step sends Google: the cell style it sets and the field mask that names it. */
+export function googleCellStyle(
+  set: CellStyleStep["set"],
+): { tableCellStyle: TableCellStyle; fields: string } {
+  let style: Record<string, unknown> = {};
+  let fields: string[] = [];
+  for (let longhand of LONGHANDS) {
+    let value = set[longhand];
+    if (value === undefined) continue;
+    let field = STYLE_FIELDS[longhand];
+    fields.push(field);
+    // A shading cleared is a field named in the mask and left out, as probe R1 saw.
+    if (longhand === "background-color") {
+      if (value !== "transparent") style[field] = googleColor(value);
+    } else if (longhand === "vertical-align") {
+      style[field] = CONTENT_ALIGNMENTS[value];
+    } else if (longhand.startsWith("padding")) {
+      style[field] = { magnitude: Number(value.slice(0, -2)), unit: "PT" };
+    } else {
+      style[field] = googleBorder(value);
+    }
+  }
+  return { tableCellStyle: style as TableCellStyle, fields: fields.join(",") };
 }

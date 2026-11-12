@@ -131,6 +131,7 @@ const newTable = (cells: string[][], after?: string): TableChange => ({
 function shapeOf(change: TableChange): TableChangeShape {
   switch (change.type) {
     case "insertTable": throw new Error("insertTable names no table");
+    case "setTableCellStyle": throw new Error(`${change.type} changes no rows or columns`);
     case "deleteTable": return { type: change.type };
     case "insertTableRows": return { type: change.type, at: change.at, count: change.cells.length };
     case "insertTableColumns":
@@ -4553,5 +4554,83 @@ describe("a table's look through changes to its rows and columns", () => {
     let applied = expectSameAsGoogle(tab, newTable([["a", "b"]], "Before"));
     expect(tableAt(read(applied), 0).startsWith("<table>\n  <tr>\n    <td><p>a</p></td>")).toBe(true);
     expect(JSON.stringify(applied.body.content)).toContain('"paddingTop":{"magnitude":5');
+  });
+});
+
+describe("setting the look of a table's cells", () => {
+  const grid3 = (): GoogleDocsTab => buildTab([para("Before"), grid(["a", "b", "c"], ["d", "e", "f"], ["g", "h", "i"]), para("After")]);
+  const styleChange = (
+    content: EditableMarkdown, row: number, column: number, rows: number, columns: number,
+    style: Extract<TableChange, { type: "setTableCellStyle" }>["style"],
+  ): TableChange => ({ type: "setTableCellStyle", row, column, rows, columns, style, ...refOf(content, 0) });
+
+  it("shades, aligns and pads a block, and clears shading, as Google does", () => {
+    let tab = grid3();
+    let shaded = expectSameAsGoogle(tab, styleChange(read(tab), 0, 0, 2, 2,
+      { background: "#ffcc00", verticalAlign: "middle", padding: { top: "8pt", left: "0.5pt" } }));
+    let html = tableAt(read(shaded), 0);
+    expect(html).toContain('<td style="background-color:#ffcc00;vertical-align:middle;padding-top:8pt;padding-left:0.5pt"><p>a</p></td>');
+    expect(html).toContain("<td><p>c</p></td>");
+    let cleared = expectSameAsGoogle(shaded, styleChange(read(shaded), 0, 0, 1, 2, { background: "transparent" }));
+    expect(tableAt(read(cleared), 0)).toContain('<td style="vertical-align:middle;padding-top:8pt;padding-left:0.5pt"><p>a</p></td>');
+  });
+
+  it("draws a border on both cells of an edge they share, the later write winning", () => {
+    let tab = grid3();
+    let right = expectSameAsGoogle(tab, styleChange(read(tab), 1, 1, 1, 1, { borders: { right: "3pt solid #ff0000" } }));
+    let html = tableAt(read(right), 0);
+    expect(html).toContain('<td style="border-right:3pt solid #ff0000"><p>e</p></td>');
+    expect(html).toContain('<td style="border-left:3pt solid #ff0000"><p>f</p></td>');
+    let over = expectSameAsGoogle(right, styleChange(read(right), 1, 2, 1, 1, { borders: { left: "none" } }));
+    expect(tableAt(read(over), 0)).toContain('<td style="border-right:none"><p>e</p></td>');
+  });
+
+  it("sets every edge with border, and the block's outer and inner edges with borders", () => {
+    let tab = grid3();
+    let all = expectSameAsGoogle(tab, styleChange(read(tab), 0, 0, 3, 3, { border: "2pt dashed #0000ff" }));
+    expect(tableAt(read(all), 0).startsWith('<table style="border:2pt dashed #0000ff">\n')).toBe(true);
+    for (let edges of [
+      { top: "1pt dotted #ff0000", bottom: "none" }, { left: "4pt solid #00ff00", right: "0.25pt solid #123456" },
+      { innerHorizontal: "none" }, { innerVertical: "3pt solid #000000", top: "none" },
+    ]) {
+      expectSameAsGoogle(tab, styleChange(read(tab), 0, 1, 2, 2, { borders: edges }));
+      expectSameAsGoogle(all, styleChange(read(all), 1, 0, 2, 3, { border: "none", borders: edges }));
+    }
+  });
+
+  it("styles a merged cell whole, reading its edges where Google keeps them", () => {
+    let tab = buildTab([para("Before"), { table: [
+      ["a\n", "b\n", "c\n"],
+      ["d\n", { paragraphs: [para("e")], tableCellStyle: { rowSpan: 2, columnSpan: 2 } }, "\n"],
+      ["g\n", "\n", "\n"],
+    ] }, para("After")]);
+    let applied = expectSameAsGoogle(tab, styleChange(read(tab), 1, 1, 2, 2,
+      { background: "#00ff00", borders: { right: "2pt solid #ff0000", bottom: "3pt solid #0000ff", top: "none" } }));
+    expect(tableAt(read(applied), 0)).toContain(
+      '<td rowspan="2" colspan="2" style="background-color:#00ff00;border-top:none;' +
+      'border-right:2pt solid #ff0000;border-bottom:3pt solid #0000ff"><p>e</p></td>');
+    expectSameAsGoogle(tab, styleChange(read(tab), 0, 0, 3, 3, { border: "1pt solid #cccccc" }));
+    expect(refusal(tab, styleChange(read(tab), 1, 1, 1, 1, { background: "#00ff00" }))).toBe(
+      "setTableCellStyle: the cells named take in part of the merged cell at row 1, column 1 " +
+      "(counting from 0), which Google Docs styles as a whole. Name all of its cells or none of them.");
+    expect(refusal(tab, styleChange(read(tab), 0, 0, 3, 3, { borders: { innerVertical: "none" } }))).toBe(
+      "setTableCellStyle: the cells named hold a merged cell, so the edges between their rows or " +
+      "columns cannot be set. Set them on blocks of cells beside it, or use border.");
+  });
+
+  it("refuses cells past the table", () => {
+    let tab = grid3();
+    expect(refusal(tab, styleChange(read(tab), 2, 0, 2, 1, { background: "#000000" })))
+      .toBe("setTableCellStyle: row and rows must name rows of the table, which has 3.");
+    expect(refusal(tab, styleChange(read(tab), 0, 3, 1, 1, { background: "#000000" })))
+      .toBe("setTableCellStyle: column and columns must name columns of the table, which has 3.");
+  });
+
+  it("keeps the queue's later changes when a look change no longer applies", () => {
+    let gate = new TableReplayGate();
+    gate.failed(TAB, { type: "setTableCellStyle" });
+    expect(() => gate.admit(TAB, { type: "insertTableRows" })).not.toThrow();
+    gate.failed(TAB, { type: "insertTableRows" });
+    expect(() => gate.admit(TAB, { type: "setTableCellStyle" })).toThrow();
   });
 });

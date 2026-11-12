@@ -493,6 +493,9 @@ function applyRequest(tab: GoogleDocsTab, request: GoogleDocsRequest, options: M
   if ("updateTableColumnProperties" in request) {
     return updateTableColumnProperties(tab, request.updateTableColumnProperties);
   }
+  if ("updateTableCellStyle" in request) {
+    return updateTableCellStyle(tab, request.updateTableCellStyle);
+  }
   notModelled(`the request ${Object.keys(request).join(", ")}`);
 }
 
@@ -1120,5 +1123,102 @@ function updateTableColumnProperties(
     properties[column] = widthType === "FIXED_WIDTH"
       ? { widthType, width: structuredClone(width) }
       : { widthType };
+  }
+}
+
+const BORDER_SIDES = {
+  borderTop: { along: "top", opposite: "borderBottom", step: [-1, 0] },
+  borderBottom: { along: "bottom", opposite: "borderTop", step: [1, 0] },
+  borderLeft: { along: "left", opposite: "borderRight", step: [0, -1] },
+  borderRight: { along: "right", opposite: "borderLeft", step: [0, 1] },
+} as const;
+const CELL_STYLE_FIELDS: readonly (keyof TableCellStyle)[] = [
+  "backgroundColor", "contentAlignment", "paddingTop", "paddingRight", "paddingBottom",
+  "paddingLeft", "borderTop", "borderRight", "borderBottom", "borderLeft",
+];
+
+/**
+ * Style cells, as probes R1, R2, R2b and R7 saw. A request reaches the whole of every merged
+ * cell it reaches any cell of, and sets each field on every cell it reaches, but a border only
+ * on the cells along that side of each merged cell, or of each cell, and then on the facing side
+ * of the cells beside them, last write winning. A field the mask names and the style leaves out
+ * is cleared.
+ */
+function updateTableCellStyle(
+  tab: GoogleDocsTab,
+  { tableRange, tableCellStyle, fields }: Extract<
+    GoogleDocsRequest, { updateTableCellStyle: unknown }
+  >["updateTableCellStyle"],
+): void {
+  let { tableCellLocation: location, rowSpan, columnSpan } = tableRange;
+  requireTab(tab, location.tableStartLocation);
+  let place = tableAt(tab.body.content, location.tableStartLocation.index);
+  if (!place) throw new Error(INVALID_TABLE_START);
+  let named = fields.split(",") as (keyof TableCellStyle)[];
+  if (named.some(field => !CELL_STYLE_FIELDS.includes(field))) notModelled(`fields ${fields}`);
+  for (let field of named) {
+    let border = tableCellStyle[field];
+    if (!field.startsWith("border") || border === undefined) continue;
+    let { dashStyle, color } = border as { dashStyle?: string; color?: { color?: unknown } };
+    if (!dashStyle) throw new Error("The dash style is invalid: DASH_STYLE_UNSPECIFIED");
+    if (!color?.color) {
+      throw new Error(
+        "Table cell borders cannot be transparent. To hide a table cell border, make its width 0.");
+    }
+  }
+  let rows = place.table.tableRows ?? [];
+  let grid = rows.map(row => row.tableCells ?? []);
+  // The merged cell, or the cell, that covers each cell.
+  let heads = grid.map(row => row.map((): [number, number] => [-1, -1]));
+  grid.forEach((row, r) => row.forEach((cell, c) => {
+    if (heads[r][c][0] >= 0) return;
+    let spans = cell.tableCellStyle;
+    for (let down = r; down < Math.min(r + (spans?.rowSpan ?? 1), grid.length); down++) {
+      for (let across = c; across < Math.min(c + (spans?.columnSpan ?? 1), row.length); across++) {
+        heads[down][across] = [r, c];
+      }
+    }
+  }));
+  let reached = new Set<string>();
+  for (let r = location.rowIndex; r < location.rowIndex + rowSpan; r++) {
+    for (let c = location.columnIndex; c < location.columnIndex + columnSpan; c++) {
+      if (!grid[r]?.[c]) notModelled(`a cell range past the table at row ${r}, column ${c}`);
+      reached.add(heads[r][c].join());
+    }
+  }
+  let set = (cell: TableCell, field: keyof TableCellStyle) => {
+    let style: Record<string, unknown> = cell.tableCellStyle ??= {};
+    let value = tableCellStyle[field];
+    if (value === undefined) delete style[field];
+    else style[field] = structuredClone(value);
+  };
+  for (let key of reached) {
+    let [hr, hc] = key.split(",").map(Number);
+    let spans = grid[hr][hc].tableCellStyle;
+    let lastRow = Math.min(hr + (spans?.rowSpan ?? 1), grid.length) - 1;
+    let lastColumn = Math.min(hc + (spans?.columnSpan ?? 1), grid[hr].length) - 1;
+    for (let field of named) {
+      if (!(field in BORDER_SIDES)) {
+        for (let r = hr; r <= lastRow; r++) for (let c = hc; c <= lastColumn; c++) set(grid[r][c], field);
+        continue;
+      }
+      let { along, opposite, step } = BORDER_SIDES[field as keyof typeof BORDER_SIDES];
+      let cells: [number, number][] = [];
+      if (along === "top" || along === "bottom") {
+        for (let c = hc; c <= lastColumn; c++) cells.push([along === "top" ? hr : lastRow, c]);
+      } else {
+        for (let r = hr; r <= lastRow; r++) cells.push([r, along === "left" ? hc : lastColumn]);
+      }
+      for (let [r, c] of cells) {
+        set(grid[r][c], field);
+        let beside = grid[r + step[0]]?.[c + step[1]];
+        if (beside) {
+          let style: Record<string, unknown> = beside.tableCellStyle ??= {};
+          let value = tableCellStyle[field];
+          if (value === undefined) delete style[opposite];
+          else style[opposite] = structuredClone(value);
+        }
+      }
+    }
   }
 }

@@ -389,6 +389,13 @@ export type GoogleDocsRequest =
   | { deleteTableColumn: { tableCellLocation: TableCellLocation } }
   | { pinTableHeaderRows: { tableStartLocation: DocsLocation; pinnedHeaderRowsCount: number } }
   | {
+    updateTableCellStyle: {
+      tableRange: { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+      tableCellStyle: TableCellStyle;
+      fields: string;
+    };
+  }
+  | {
     updateTableColumnProperties: {
       tableStartLocation: DocsLocation;
       columnIndices: number[];
