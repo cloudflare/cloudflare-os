@@ -19,7 +19,7 @@ function Home() {
   return (
     <NewChatPane
       greeting={greet(user.name)}
-      start={(text, modelId) => startConversation(() => api.newWorkspace(), text, modelId)}
+      start={(text, files, modelId) => startConversation(() => api.newWorkspace(), text, files, modelId)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
     />
   )

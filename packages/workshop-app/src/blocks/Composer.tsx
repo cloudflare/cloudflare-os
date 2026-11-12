@@ -1,9 +1,10 @@
 import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
-import { ArrowUpIcon } from '@phosphor-icons/react'
+import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
+import { ComposerProblem } from './ComposerProblem'
 import { ComposerReply } from './ComposerReply'
 import { useComposerAttachments } from './useComposerAttachments'
 import { useComposerAttachmentDrop } from './useComposerAttachmentDrop'
@@ -23,6 +24,14 @@ export type ComposerProps = {
    * message knows what it replies to.
    */
   reply?: { quote: string; onShow?: () => void; onCancel: () => void }
+  /** Why the last message did not go, shown over the composer until dismissed. */
+  problem?: { message: string; onDismiss: () => void }
+  /**
+   * The agent is working and can be stopped. Meanwhile only words can be sent, to steer it.
+   * Stopping drops what is `waiting` for it, which is put in the draft so it can still be sent.
+   * `onStop` rejects when the agent could not be stopped, so it can be asked again.
+   */
+  stop?: { waiting: readonly string[]; onStop: () => Promise<void> }
   addActions?: Omit<ComposerAddActions, 'onUpload'>
   /** Expand the add menu in place over its button. */
   addMenuInPlace?: boolean
@@ -35,9 +44,12 @@ export type ComposerProps = {
 const MAX_ROWS = 6
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState('')
   const [expanded, setExpanded] = useState(false)
+  // Asked to stop and not yet stopped: steering would be refused, and asking again is no use.
+  const [stopping, setStopping] = useState(false)
+  if (stopping && !stop) setStopping(false)
   const { attachments, addFiles, removeAttachment, clearAttachments } = useComposerAttachments()
   const { isActive: isFileDragActive, ...dropHandlers } = useComposerAttachmentDrop(addFiles)
   const formRef = useRef<HTMLFormElement>(null)
@@ -47,7 +59,9 @@ export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus,
   const measureRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const trimmed = text.trim()
-  const canSend = !!trimmed || attachments.length > 0
+  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0
+  const canSend = stop ? canSteer : !!trimmed || attachments.length > 0
+  const showSend = !stop || canSteer
   useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), [])
 
   useLayoutEffect(() => {
@@ -75,6 +89,13 @@ export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus,
 
   return (
     <div>
+      <ComposerProblem
+        message={problem?.message}
+        onDismiss={() => {
+          problem?.onDismiss()
+          inputRef.current?.focus()
+        }}
+      />
       <form
         ref={formRef}
         data-file-drag={isFileDragActive || undefined}
@@ -119,7 +140,12 @@ export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus,
         <span className="sr-only" role="status">
           {attachments.length > 0 ? `${attachments.length} ${attachments.length === 1 ? 'file' : 'files'} attached` : ''}
         </span>
-        <div ref={editorRef} data-expanded={expanded || undefined} className="composer relative">
+        <div
+          ref={editorRef}
+          data-expanded={expanded || undefined}
+          data-two-actions={(stop && showSend) || undefined}
+          className="composer relative"
+        >
           <div className="composer-editor absolute overflow-clip">
             <InputArea
               ref={inputRef}
@@ -166,7 +192,7 @@ export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus,
           <div
             ref={measureRef}
             aria-hidden="true"
-            className="pointer-events-none invisible absolute top-[11px] right-11 left-[42px] text-base/5 wrap-anywhere whitespace-pre-wrap"
+            className="pointer-events-none invisible absolute top-[11px] right-[var(--composer-end)] left-[42px] text-base/5 wrap-anywhere whitespace-pre-wrap"
           >
             {text + '\u200b'}
           </div>
@@ -178,14 +204,35 @@ export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus,
               onUpload={() => fileInputRef.current?.click()}
             />
           </div>
-          <div className="absolute right-1.5 bottom-1.5 flex">
-            <Button
-              type="submit"
-              icon={<ArrowUpIcon weight="bold" />}
-              aria-label="Send"
-              disabled={!canSend}
-              className="size-[30px] [&>svg]:size-3.5"
-            />
+          <div className="absolute right-1.5 bottom-1.5 flex gap-1">
+            {stop && (
+              <Button
+                // Beside Send it steps back, so Enter's button is the one that stands out.
+                variant={showSend ? 'ghost' : 'secondary'}
+                icon={<StopIcon weight="fill" />}
+                aria-label="Stop"
+                title="Stop"
+                disabled={stopping}
+                onClick={() => {
+                  setStopping(true)
+                  // A failed stop may still have dropped them on the server, so they stay in the draft.
+                  if (stop.waiting.length) setText([text.trimEnd(), ...stop.waiting].filter(Boolean).join('\n\n'))
+                  stop.onStop().catch(() => setStopping(false))
+                  // The button goes once the agent has stopped; the draft is where to carry on.
+                  inputRef.current?.focus()
+                }}
+                className="size-[30px] [&>svg]:size-3.5"
+              />
+            )}
+            {showSend && (
+              <Button
+                type="submit"
+                icon={<ArrowUpIcon weight="bold" />}
+                aria-label="Send"
+                disabled={!canSend}
+                className="size-[30px] [&>svg]:size-3.5"
+              />
+            )}
           </div>
         </div>
       </form>

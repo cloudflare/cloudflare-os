@@ -27,7 +27,7 @@ export const MessageBlocksPreview = () => {
 
   return (
     <>
-      <Section title="UserMessage (plain, a reply, a short reply to a long message, mentions, slash command, attachments, another sender, not read yet)">
+      <Section title="UserMessage (plain, a reply, a short reply to a long message, mentions, slash command, attachments, attachments alone, another sender, not read yet)">
         <Column>
           <UserMessage parts={[{ type: 'text', text: 'Create a dashboard showcasing my Jira stats' }]} onReply={() => say('reply')} />
           <UserMessage parts={[{ type: 'text', text: 'Make it twenty-four, and keep the weekly split.' }]} quote="The chart now covers 12 weeks" />
@@ -54,6 +54,12 @@ export const MessageBlocksPreview = () => {
               { id: 'csv', name: 'Quarterly results with a long name.csv', mimeType: 'text/csv' },
             ]}
             onOpenAttachment={(id) => say(`open attachment ${id}`)}
+          />
+          <UserMessage
+            parts={[]}
+            attachments={[{ id: 'only', name: 'chart.svg', mimeType: 'image/svg+xml', content: picture }]}
+            onOpenAttachment={(id) => say(`open attachment ${id}`)}
+            onReply={() => say('reply')}
           />
           <UserMessage parts={[{ type: 'text', text: 'I can take the export bug' }]} from="Grace Hopper" />
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />

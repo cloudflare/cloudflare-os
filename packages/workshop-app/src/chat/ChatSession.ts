@@ -14,6 +14,7 @@ import {
 import { acceptsAlone, proposesOnlyCode } from './autoAccept'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
+import { uploadAttachments } from './uploadAttachments'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
 
 export type ChatSnapshot =
@@ -43,6 +44,11 @@ export type ChatSnapshot =
       /** An assistant turn is running. */
       agentActive: boolean
       /**
+       * What was sent to the running agent that it has not read yet, oldest first, whoever sent
+       * it. Stopping the agent drops these, for whoever stops it to put back in their draft.
+       */
+      waiting: string[]
+      /**
        * What the open turn produced or asks for, then what people did to its changes since. Shown
        * below everything else in the turn.
        */
@@ -62,7 +68,9 @@ type Calls =
   | 'listChats'
   | 'getChatHistory'
   | 'sendChatMessage'
+  | 'uploadBlob'
   | 'retryAgent'
+  | 'stopAgent'
   | 'approveAction'
   | 'rejectAction'
   | 'denyConnectionRequest'
@@ -235,21 +243,45 @@ export class ChatSession {
   }
 
   /**
-   * Sends a message to the chat. The message and the reply come back through the subscription, not
-   * from here; a failure is reported in the snapshot's `sendError`.
+   * Sends a message to the chat, with `files` uploaded for it to carry. The message and the reply
+   * come back through the subscription, not from here; a failure is reported in the snapshot's
+   * `sendError`.
    */
-  send = async (text: string, modelId: string) => {
+  send = async (text: string, modelId: string, files: readonly File[] = []) => {
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) return
     const run = this.#run
     this.#sendError = undefined
+    // Only plain text steers a running agent; the server refuses anything else until it is done.
+    if (files.length && this.#agentActive) {
+      this.#sendError = 'Files can be sent once the agent has finished.'
+      return this.#publishReady()
+    }
     try {
-      await overseer.sendChatMessage(this.chatId, text, modelId)
+      const attachments = await uploadAttachments(overseer, files)
+      await overseer.sendChatMessage(this.chatId, text, modelId, undefined, attachments)
     } catch (error) {
       if (run !== this.#run) return
       this.#sendError = messageOf(error)
     }
     if (run === this.#run) this.#publishReady()
+  }
+
+  /** Puts away the report of a failed send. */
+  dismissSendError = () => {
+    if (this.#sendError === undefined) return
+    this.#sendError = undefined
+    this.#publishReady()
+  }
+
+  /**
+   * Stops the running turn, and with it the messages waiting for the agent (`waiting`). The
+   * metadata saying so arrives before this resolves. Rejects when the workspace could not stop it.
+   */
+  stopAgent = async () => {
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) return
+    await overseer.stopAgent(this.chatId)
   }
 
   /** Runs the agent again on the conversation as it stands, e.g. after an error. */
@@ -467,6 +499,7 @@ export class ChatSession {
       activity: working ? this.#activity() : undefined,
       work: working ? this.#liveWork() : EMPTY_FEED.work,
       agentActive: this.#agentActive,
+      waiting: this.#steers.filter(({ unread }) => unread).map(({ text }) => text),
       pinned: this.#feed.pinned,
       sendError: this.#sendError,
       actionError: this.#actionError,

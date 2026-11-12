@@ -14,6 +14,11 @@ export type MessageBubbleProps = {
   role: 'user' | 'assistant' | 'error'
   children: ReactNode
   /**
+   * It holds files rather than words: inset only enough to keep them off its edge, so that a
+   * `rounded-2xl` tile's corners follow the bubble's.
+   */
+  media?: boolean
+  /**
    * The neighbours from the same sender, for where bubbles are not siblings in the page and so
    * cannot find each other (a message list wraps every row). Sibling bubbles need not be told.
    */
@@ -95,10 +100,12 @@ const ACTIONS =
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, joins, onReply, copyText, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, media, joins, onReply, copyText, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
-  const actions = <MessageActions onReply={onReply} copyText={copyText} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+  // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
+  const actions = (onReply || copyText !== undefined || details) &&
+    <MessageActions onReply={onReply} copyText={copyText} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
   // A click anywhere outside the details puts them away, the message they are about included.
   // The button that shows them is left to do its own switching.
@@ -139,13 +146,15 @@ export const MessageBubble = ({ role, children, joins, onReply, copyText, detail
         )}
       >
         <div className={cn(
-          'message-bubble-text group/message relative rounded-[inherit] px-5 py-[11px] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+          'message-bubble-text group/message relative rounded-[inherit] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+          // 21px corners less a 5px inset leave a tile's 16px.
+          media ? 'p-[5px]' : 'px-5 py-[11px]',
           BUBBLE[role],
           joinsDetails && JOINED[role].below,
         )}>
           {children}
-          {role === 'user' && <div className={cn(ACTIONS, 'right-full pe-2')}>{actions}</div>}
-          {role === 'assistant' && <div className={cn(ACTIONS, 'left-full ps-2')}>{actions}</div>}
+          {actions && role === 'user' && <div className={cn(ACTIONS, 'right-full pe-2')}>{actions}</div>}
+          {actions && role === 'assistant' && <div className={cn(ACTIONS, 'left-full ps-2')}>{actions}</div>}
         </div>
         {/* The details are a bubble of their own in width too: as wide as what is in them, up to
             the limit a message has, whatever the message's own width. The wrapper keeps them out
