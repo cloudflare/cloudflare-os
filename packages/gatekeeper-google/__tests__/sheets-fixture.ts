@@ -43,6 +43,15 @@ export type FixtureGridRange = {
   endColumnIndex?: number;
 };
 
+/** `rect` of sheet `sheetId` as Google returns a `GridRange`, its zero fields left out. */
+export function gridRangeOf(sheetId: number, rect: Rect): FixtureGridRange {
+  let range = {
+    sheetId, startRowIndex: rect.startRow, endRowIndex: rect.endRow,
+    startColumnIndex: rect.startColumn, endColumnIndex: rect.endColumn,
+  };
+  return Object.fromEntries(Object.entries(range).filter(([, value]) => value !== 0)) as FixtureGridRange;
+}
+
 /** A protected range as `sheets(protectedRanges)` returns it, editors' addresses included. */
 export function protectedRange(
   protectedRangeId: number,
@@ -68,7 +77,8 @@ export function spreadsheetMetadata(
     spreadsheetId,
     properties: { title, locale: "en_US", timeZone: "America/New_York" },
     sheets: sheets.map(({
-      id, title: sheetTitle, index, rowCount, columnCount, hidden, frozenRowCount, frozenColumnCount, protectedRanges,
+      id, title: sheetTitle, index, rowCount, columnCount, hidden, frozenRowCount, frozenColumnCount, merges,
+      protectedRanges,
     }) => ({
       properties: {
         sheetId: id, title: sheetTitle, index, ...(hidden ? { hidden } : {}),
@@ -77,6 +87,7 @@ export function spreadsheetMetadata(
           ...(frozenRowCount ? { frozenRowCount } : {}), ...(frozenColumnCount ? { frozenColumnCount } : {}),
         },
       },
+      ...(merges?.length ? { merges: merges.map(merge => gridRangeOf(id, merge)) } : {}),
       ...(protectedRanges ? { protectedRanges } : {}),
     })),
   };
@@ -246,18 +257,24 @@ export const FORMAT_READBACK = {
 
 /**
  * One sheet of a format read's answer, in the shape Google returns it: each range's cells from
- * its first row and column, which are left out when 0, and a cell with no format set as `{}`.
+ * its first row and column, which are left out when 0, a cell with no format set as `{}`, and the
+ * size of each of its lines, 21 pixels a row and 100 a column unless given.
  */
 export function formatSheet(
   properties: { sheetId: number; title: string; index?: number; rowCount?: number; columnCount?: number },
-  data: { startRow: number; startColumn: number; formats: (object | undefined)[][] }[],
+  data: {
+    startRow: number; startColumn: number; formats: (object | undefined)[][];
+    rowHeights?: number[]; columnWidths?: number[];
+  }[],
 ) {
   let { sheetId, title, index = 0, rowCount = 20, columnCount = 6 } = properties;
   return {
     properties: { sheetId, title, index, gridProperties: { rowCount, columnCount } },
-    data: data.map(({ startRow, startColumn, formats }) => ({
+    data: data.map(({ startRow, startColumn, formats, rowHeights, columnWidths }) => ({
       ...(startRow ? { startRow } : {}),
       ...(startColumn ? { startColumn } : {}),
+      rowMetadata: (rowHeights ?? formats.map(() => 21)).map(pixelSize => ({ pixelSize })),
+      columnMetadata: (columnWidths ?? (formats[0] ?? []).map(() => 100)).map(pixelSize => ({ pixelSize })),
       rowData: formats.map(row => ({
         values: row.map(format => format ? { userEnteredFormat: format } : {}),
       })),

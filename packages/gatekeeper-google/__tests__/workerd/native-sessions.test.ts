@@ -1173,7 +1173,7 @@ describe("folder-scoped native sessions", () => {
       if (url.hostname === "sheets.googleapis.com" && url.searchParams.has("ranges")) {
         return Response.json({
           sheets: [formatSheet({ sheetId: 0, title: "Sheet1" }, [
-            { startRow: 0, startColumn: 0, formats: [[{ textFormat: { bold: true } }]] },
+            { startRow: 0, startColumn: 0, formats: [[{ textFormat: { bold: true } }, undefined]] },
           ])],
         });
       }
@@ -1231,7 +1231,7 @@ describe("folder-scoped native sessions", () => {
     const fetched = vi.mocked(fetch);
     const before = fetched.mock.calls.length;
     expect(await sheet.readFormats("A1:B1"))
-      .toEqual({ range: "Sheet1!A1:B1", formats: [[{ bold: true }, null]] });
+      .toEqual({ range: "Sheet1!A1:B1", formats: [[{ bold: true }, null]], rowHeights: [21], columnWidths: [100, 100] });
     const formatUrls = fetched.mock.calls.slice(before)
       .map(([input]) => new URL(input instanceof Request ? input.url : input.toString()))
       .filter(url => url.hostname === "sheets.googleapis.com");

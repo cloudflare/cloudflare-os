@@ -25,7 +25,7 @@ import {
   type SheetArea,
   type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
-import type { BaseFormats } from "./sheets-format";
+import type { BaseFormats, BaseSizes } from "./sheets-format";
 import { isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
@@ -350,13 +350,20 @@ function mayMoveCells(pending: readonly QueuedChange[]): boolean {
 }
 
 /**
- * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell of the
- * spreadsheet Google holds.
+ * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell, and the
+ * sizes of its lines, by line, of the spreadsheet Google holds.
  */
-function formatsOf(read: SpreadsheetFormats, sheetId: number, rect: Rect): BaseFormats {
-  return (sheet, row, column) => sheet === sheetId
-    ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
-    : null;
+function formatsOf(
+  read: SpreadsheetFormats, sheetId: number, rect: Rect,
+): { formats: BaseFormats; sizes: BaseSizes } {
+  return {
+    formats: (sheet, row, column) => sheet === sheetId
+      ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
+      : null,
+    sizes: (sheet, axis, index) => sheet !== sheetId ? null
+      : axis === "rows" ? read.rowHeights[index - rect.startRow] ?? null
+      : read.columnWidths[index - rect.startColumn] ?? null,
+  };
 }
 
 /** A read refused for what it found, which is reported only once the read is authorized. */
@@ -418,8 +425,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           title: metadata.title,
           ...(metadata.locale ? { locale: metadata.locale } : {}),
           ...(metadata.timeZone ? { timeZone: metadata.timeZone } : {}),
-          sheets: grid.sheets.map(({ id, title, index, rowCount, columnCount, hidden }) =>
-            ({ id, title, index, rowCount, columnCount, ...(hidden ? { hidden } : {}) })),
+          sheets: grid.sheets.map(({ id, title, index, rowCount, columnCount, hidden, frozenRowCount, frozenColumnCount }) => ({
+            id, title, index, rowCount, columnCount, ...(hidden ? { hidden } : {}),
+            ...(frozenRowCount ? { frozenRowCount } : {}), ...(frozenColumnCount ? { frozenColumnCount } : {}),
+          })),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),
@@ -621,7 +630,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let base = grid.log.length > 0
       ? await this.#api.readFormatAreas(this.#spreadsheetId, pieces)
       : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
-    let shown = simulatedFormats(grid, area, base);
+    let shown = simulatedFormats(grid, area, base.formats, base.sizes);
     return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
   }
 

@@ -926,6 +926,13 @@ integer from 1 to 400, and a pattern holds 1 to 200 characters and no control ch
 Formatting is not guarded: a collaborator's formatting change made after a batch is queued is
 overwritten when it applies.
 
+`getSpreadsheet()` lists how many leading rows and columns each sheet freezes, and `readFormats()`
+lists the merges that overlap the range, each whole, and each of its rows' height and columns' width
+in pixels. Queued changes to rows and columns move them as a scratch spreadsheet showed Google moving
+them: lines inserted within a merge or among the frozen lines join it, lines inserted at either of its
+edges do not, and deleted lines shrink it, a merge left one cell vanishing. An inserted line's size
+reads `null`, since Google takes it from the line beside it.
+
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
 columns and sheets it deletes, as entered, the title and size of each sheet it addresses, and,

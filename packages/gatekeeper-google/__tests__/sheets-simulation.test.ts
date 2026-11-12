@@ -698,8 +698,11 @@ const FORMATTED_A1: BaseFormats = (sheetId, row, column) =>
 const BORDERED: BaseFormats = () => ({ borders: { top: { style: "SOLID" }, left: { style: "DASHED" } } });
 
 /** The formatting `rect` of sheet `sheetId` of `g` reads with, over `base`. */
-const formatsOf = (g: Grid, sheetId: number, at: Rect, base = UNFORMATTED) => simulatedFormats(
-  g, { sheetId, rect: at, rows: at.endRow - at.startRow, columns: at.endColumn - at.startColumn }, base);
+const formatsOf = (g: Grid, sheetId: number, at: Rect, base = UNFORMATTED) => {
+  let { rowHeights: _rows, columnWidths: _columns, ...read } = simulatedFormats(
+    g, { sheetId, rect: at, rows: at.endRow - at.startRow, columns: at.endColumn - at.startColumn }, base, () => null);
+  return read;
+};
 
 describe("Sheets queued formatting", () => {
   it("merges queued formatting over each cell's own, a later change over an earlier", () => {

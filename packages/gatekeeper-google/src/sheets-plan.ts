@@ -12,7 +12,7 @@
  */
 
 import type { SheetArea, SheetProtection } from "./sheets-api";
-import { colorStyle, wrapStrategy, type BorderSide, type FormatEntry } from "./sheets-format";
+import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry } from "./sheets-format";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
 import {
   isCellChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS, MAX_TITLE_LENGTH,
@@ -67,8 +67,6 @@ function outsideCell(sheet: SheetMeta, rect: Rect): string | undefined {
   if (rect.endRow > sheet.rowCount) return cellName(Math.max(rect.startRow, sheet.rowCount), rect.startColumn);
   return undefined;
 }
-
-type Axis = "rows" | "columns";
 
 function axisOf(op: LineOp): Axis {
   return op === "insertRows" || op === "deleteRows" ? "rows" : "columns";
@@ -228,6 +226,59 @@ function withLines(sheet: SimSheet, axis: Axis, lines: Lines): SimSheet {
   return axis === "rows"
     ? { ...sheet, rows: lines, rowCount: lineCount(lines) }
     : { ...sheet, columns: lines, columnCount: lineCount(lines) };
+}
+
+// `sheet` with `frozen` lines frozen along `axis`, and `merges`.
+function withLayout(sheet: SimSheet, axis: Axis, frozen: number, merges: Rect[]): SimSheet {
+  let { frozenRowCount: _rows, frozenColumnCount: _columns, merges: _merges, ...rest } = sheet;
+  let rows = axis === "rows" ? frozen : frozenCount(sheet, "rows");
+  let columns = axis === "columns" ? frozen : frozenCount(sheet, "columns");
+  return {
+    ...rest,
+    ...(rows > 0 ? { frozenRowCount: rows } : {}),
+    ...(columns > 0 ? { frozenColumnCount: columns } : {}),
+    ...(merges.length > 0 ? { merges } : {}),
+  };
+}
+
+// The positions a merge spans along `axis`, and the merge spanning `start` to `end` there instead.
+function spanOf(rect: Rect, axis: Axis): [number, number] {
+  return axis === "rows" ? [rect.startRow, rect.endRow] : [rect.startColumn, rect.endColumn];
+}
+
+function withSpan(rect: Rect, axis: Axis, start: number, end: number): Rect {
+  return axis === "rows" ? { ...rect, startRow: start, endRow: end } : { ...rect, startColumn: start, endColumn: end };
+}
+
+/**
+ * `sheet`, whose lines along `axis` are as they were, once `count` lines are inserted before
+ * position `at`: a merge, or the frozen lines, grow by lines inserted within them and move by
+ * lines inserted before them, as Google moves them; lines inserted at either edge are outside.
+ */
+function afterInsert(sheet: SimSheet, axis: Axis, at: number, count: number): SimSheet {
+  let frozen = frozenCount(sheet, axis);
+  let merges = (sheet.merges ?? []).map(merge => {
+    let [start, end] = spanOf(merge, axis);
+    if (at <= start) return withSpan(merge, axis, start + count, end + count);
+    return at < end ? withSpan(merge, axis, start, end + count) : merge;
+  });
+  return withLayout(sheet, axis, at < frozen ? frozen + count : frozen, merges);
+}
+
+/**
+ * `sheet` once the `count` lines along `axis` from `start` are deleted: merges and the frozen lines
+ * shrink by the lines deleted from them, and a merge left one cell is gone.
+ */
+function afterDelete(sheet: SimSheet, axis: Axis, start: number, count: number): SimSheet {
+  let end = start + count;
+  let shrunk = (position: number) => position - Math.max(0, Math.min(end, position) - start);
+  let merges = (sheet.merges ?? []).flatMap(merge => {
+    let [from, to] = spanOf(merge, axis);
+    let kept = withSpan(merge, axis, shrunk(from), shrunk(to));
+    let cells = (kept.endRow - kept.startRow) * (kept.endColumn - kept.startColumn);
+    return cells > 1 ? [kept] : [];
+  });
+  return withLayout(sheet, axis, shrunk(frozenCount(sheet, axis)), merges);
 }
 
 /** Sheets' `GridRange` for `rect` of sheet `sheetId`. */
@@ -461,6 +512,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         ...(source.source === undefined ? {} : { source: source.source }),
         ...(source.frozenRowCount === undefined ? {} : { frozenRowCount: source.frozenRowCount }),
         ...(source.frozenColumnCount === undefined ? {} : { frozenColumnCount: source.frozenColumnCount }),
+        ...(source.merges === undefined ? {} : { merges: source.merges }),
       });
       // The copy holds what is queued for the original, and its cells move with its own lines.
       for (let key of copied) {
@@ -510,7 +562,8 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         work.log.push({ kind: "insert", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
         // New lines take the formatting of the line before them; Google refuses lines added after
         // the last unless they do.
-        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
+        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id
+          ? withLines(afterInsert(candidate, axis, change.start, change.count), axis, next) : candidate);
         return [{ insertDimension: { range, inheritFromBefore: change.start > 0 } }];
       }
       if (change.start + change.count > count) {
@@ -535,7 +588,8 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       }
       next = deleteLines(lines, change.start, change.count);
       work.log.push({ kind: "delete", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
-      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id
+        ? withLines(afterDelete(candidate, axis, change.start, change.count), axis, next) : candidate);
       return [{ deleteDimension: { range } }];
     }
   }

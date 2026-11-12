@@ -26,13 +26,17 @@ import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
 import type { SheetArea } from "./sheets-api";
-import { mergeFormat, type BaseFormats, type FormatEntry } from "./sheets-format";
+import {
+  DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, mergeFormat, type Axis, type BaseFormats, type BaseSizes,
+  type FormatEntry,
+} from "./sheets-format";
 import {
   rewriteFormula, structureSensitive, tokenize, type RewriteStep, type RewrittenFormula,
 } from "./sheets-formula";
 import type { LineOp } from "./sheets-input";
 import {
-  a1Of, cellName, enteredOf, findSheet, isFormula, shownValue, type EnteredValue, type Rect,
+  a1Of, byPosition, cellName, enteredOf, findSheet, intersection, isFormula, rectName, shownValue, type EnteredValue,
+  type Rect,
 } from "./sheets-model";
 import { cellKey, planSheet } from "./sheets-plan";
 import type {
@@ -54,6 +58,8 @@ export type SheetMeta = {
   frozenRowCount?: number;
   /** How many leading columns are frozen, when any are. */
   frozenColumnCount?: number;
+  /** Its merged cells, when it has any. */
+  merges?: readonly Rect[];
 };
 
 /**
@@ -765,15 +771,28 @@ function insertedLine(grid: Grid, identity: string): boolean {
   return match !== null && grid.log[Number(match[1])]?.kind === "insert";
 }
 
+// The size of the line with `identity` along `axis` of `sheet`, from `sizes`, those of the lines
+// of the sheet Google holds: null for a line a queued insert made, whose size Google gives it from
+// the line beside it, and the default for one of a sheet a queued change added.
+function lineSize(grid: Grid, sheet: SimSheet, axis: Axis, identity: string | undefined, sizes: BaseSizes): number | null {
+  if (identity === undefined || insertedLine(grid, identity)) return null;
+  let index = baseIndexOf(identity);
+  if (sheet.source !== undefined && index !== undefined) return sizes(sheet.source, axis, index);
+  return axis === "rows" ? DEFAULT_ROW_HEIGHT : DEFAULT_COLUMN_WIDTH;
+}
+
 /**
- * `area` of `grid` as a format read returns it, from `base`, the formats of the cells of the
- * spreadsheet Google holds that `basePiecesOf` gives for it, or, for a grid whose log is empty,
- * of the area itself: what queued changes set merged over what each cell has, and cells moved
- * with their lines. Cells of added sheets start with no formatting. Cells of inserted lines read
+ * `area` of `grid` as a format read returns it, from `base` and `sizes`, the formats of the cells
+ * and the sizes of the lines of the spreadsheet Google holds that `basePiecesOf` gives for it, or,
+ * for a grid whose log is empty, of the area itself: what queued changes set merged over what each
+ * cell has, and cells and sizes moved with their lines, with the merges queued changes leave
+ * overlapping it. Cells of added sheets start with no formatting. Cells of inserted lines read
  * null and pending, since Google gives an inserted row the formatting of the row beside it but not
  * its borders, and an inserted column its borders as well.
  */
-export function simulatedFormats(grid: Grid, area: SimulatedArea, base: BaseFormats): SpreadsheetFormats {
+export function simulatedFormats(
+  grid: Grid, area: SimulatedArea, base: BaseFormats, sizes: BaseSizes,
+): SpreadsheetFormats {
   let sheet = sheetOf(grid, area.sheetId);
   let { rect } = area;
   let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
@@ -794,9 +813,15 @@ export function simulatedFormats(grid: Grid, area: SimulatedArea, base: BaseForm
       ? null : base(sheet.source, baseRow, baseColumn);
     return mergeFormat(held, entry);
   }));
+  let merges = (sheet.merges ?? []).filter(merge => intersection(merge, rect)).toSorted(byPosition);
+  let rowLines = linesAt(sheet.rows, rect.startRow, rect.startRow + area.rows);
+  let columnLines = linesAt(sheet.columns, rect.startColumn, rect.startColumn + area.columns);
   return {
     range: a1Of(sheet.title, rect),
     formats,
+    ...(merges.length > 0 ? { merges: merges.map(rectName) } : {}),
+    rowHeights: rowLines.map(row => lineSize(grid, sheet, "rows", row, sizes)),
+    columnWidths: columnLines.map(column => lineSize(grid, sheet, "columns", column, sizes)),
     ...(pendingCells.length > 0 ? { pendingCells } : {}),
   };
 }
