@@ -188,7 +188,7 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
       async () => ({ document: doc.current, suggestions: doc.suggestions })),
     getRevisionId: vi.fn<GoogleDocsApi["getRevisionId"]>(async () => doc.current.revisionId),
     insertComment: vi.fn<GoogleDocsApi["insertComment"]>(async () => "doco.anchored"),
-    suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => "suggest.s1"),
+    suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => ({ id: "suggest.s1", threadSaved: true })),
     replyToSuggestion: vi.fn<GoogleDocsApi["replyToSuggestion"]>(async () => undefined),
   };
   let host: DriveCommentsHost = {
@@ -231,7 +231,7 @@ function harness(scope: DriveBindingScope = { kind: "account" }, kv: FakeKv = ne
           lose = undefined;
           throw new Error("The operation was aborted due to timeout");
         }
-        return made.suggestionId;
+        return { id: made.suggestionId, threadSaved: true };
       });
       docs.replyToSuggestion.mockImplementation(async (_documentId, suggestionId, content) => {
         let thread = doc.suggestions.find(candidate => candidate.suggestionId === suggestionId)!;
@@ -804,7 +804,7 @@ describe("Drive comment sends and their markers", () => {
     expect(await apply(id)).toBeNull();
     expect(api.createComment).toHaveBeenCalledTimes(2);
     // The second send's marker records the one before it.
-    expect(attempts.get(id)).toStrictEqual({ at: expect.any(Number), failedSends: 1 });
+    expect(attempts.get(id)).toStrictEqual({ at: expect.any(Number), failedSends: 1, postedId: "doco.posted" });
   });
 
   it("stops after three sends that posted nothing, and never sends a fourth", async () => {
@@ -990,9 +990,34 @@ describe("Drive comment sends and their markers", () => {
     adopt(id);
     expect(await apply(id)).toBeNull();
     expect(api.createComment).toHaveBeenCalledTimes(1);
-    // The look that bound it.
-    expect(api.listComments).toHaveBeenCalledTimes(1);
+    // Google confirmed the send, so nothing needs a look.
+    expect(api.listComments).not.toHaveBeenCalled();
     expect(journal.get(id)).toBeUndefined();
+  });
+
+  // Nathan: a confirmed send must hold even once its comment no longer looks like what was sent.
+  it("never sends a confirmed write again after a retire that did not land, though its post was edited since", async () => {
+    let kv = new FaultyKv();
+    let { api, journal, attempts, submit, apply, adopt, aged, keepPosts } = harness({ kind: "account" }, kv);
+    let posted = keepPosts();
+    let id = await submit("createComment", { ...TARGET, content: "Hi" });
+    kv.failNextRetire = true;
+    expect(await apply(id)).toBe("storage failure");
+    expect(attempts.get(id)).toMatchObject({ postedId: "doco.posted0" });
+    posted[0] = { ...posted[0], content: "Hi, edited" };
+    aged(id);
+
+    adopt(id);
+    expect(await apply(id)).toBeNull();
+    expect(api.createComment).toHaveBeenCalledTimes(1);
+    expect(api.listComments).not.toHaveBeenCalled();
+    expect(journal.get(id)).toBeUndefined();
+
+    // A reply keeps its post too.
+    let replies = harness();
+    let answer = await replies.submit("createReply", reply());
+    expect(await replies.apply(answer)).toBeNull();
+    expect(replies.attempts.get(answer)).toMatchObject({ postedId: expect.any(String) });
   });
 
   it("binds a found comment after a retire that did not land", async () => {
@@ -1300,7 +1325,7 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     expect(await apply(id)).toBeNull();
     expect(docs.insertComment).toHaveBeenCalledWith("doc-1", "Are they?", COSTS, "rev-1");
     expect(api.createComment).not.toHaveBeenCalled();
-    expect(attempts.get(id)).toEqual({ at: expect.any(Number) });
+    expect(attempts.get(id)).toEqual({ at: expect.any(Number), postedId: "doco.anchored" });
 
     // A plain comment still goes through Drive.
     let plain = harness();
@@ -1359,6 +1384,29 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     expect(await apply(await submit("suggestEdit", edit()))).toBe(CANNOT_COMMENT);
     expect(docs.getDocumentWithSuggestions).not.toHaveBeenCalled();
     expect(docs.suggest).not.toHaveBeenCalled();
+  });
+
+  // Nathan: the file may leave the scope while the Doc is read, so it is asked again before a send.
+  it("sends nothing placed through Docs once the file left the scope during the Doc's read", async () => {
+    for (let payload of [ANCHORED, edit()]) {
+      let { api, docs, journal, attempts, submit, apply } =
+        harness({ kind: "folder", folderId: "bound-root" });
+      let parent = "bound-root";
+      api.getScopeNodes.mockImplementation(async ids => ids.map(id =>
+        id === "bound-root" ? folder(id, "above") : file(id, parent)));
+      let id = "anchor" in payload
+        ? await submit("createComment", { ...payload, folderIds: ["bound-root"] })
+        : await submit("suggestEdit", { ...payload, folderIds: ["bound-root"] });
+      docs.getDocumentWithSuggestions.mockImplementationOnce(async () => {
+        parent = "elsewhere";
+        return { document: docOf(DOC_TEXT), suggestions: [] };
+      });
+      expect(await apply(id)).toBe(OUT_OF_SCOPE);
+      expect(journal.get(id)?.state).toBe("failed");
+      expect(attempts.has(id)).toBe(false);
+      expect(docs.insertComment).not.toHaveBeenCalled();
+      expect(docs.suggest).not.toHaveBeenCalled();
+    }
   });
 
   it("binds a quoting comment an unconfirmed send posted, found on Drive, without sending again", async () => {
@@ -1449,6 +1497,24 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     expect(await apply(id)).toMatch(/suggestions in this Doc around when this was sent that can't be told apart/);
     expect(journal.get(id)?.state).toBe("failed");
     expect(docs.suggest).toHaveBeenCalledTimes(1);
+  });
+
+  // Nathan: Google may make the suggestion and still not save its thread.
+  it("keeps a suggestion Google made without saving its thread, and fails only its note", async () => {
+    let { docs, journal, attempts, submit, apply } = harness();
+    docs.suggest.mockResolvedValue({ id: "suggest.s1", threadSaved: false });
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await apply(id)).toBe("The suggestion was made, but Google Docs did not save its " +
+      "thread, so its note can't be posted.");
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1" });
+    expect(docs.replyToSuggestion).not.toHaveBeenCalled();
+
+    // Without a note there is nothing left to post.
+    let bare = harness();
+    bare.docs.suggest.mockResolvedValue({ id: "suggest.s1", threadSaved: false });
+    expect(await bare.apply(await bare.submit("suggestEdit", edit()))).toBeNull();
+    expect(bare.docs.suggest).toHaveBeenCalledTimes(1);
   });
 
   it("never makes a suggestion twice when only its note is left to post", async () => {

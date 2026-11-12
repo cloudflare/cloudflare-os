@@ -160,6 +160,8 @@ const NO_REVISION = "Google Docs did not give the connected account the Doc's re
   "quoted text can't be held in place while this is sent.";
 const COMMENT_NOT_SAVED = "Google Docs answered that it did not save this comment, so nothing was " +
   "posted. Approve it again to post it.";
+const THREAD_NOT_SAVED = "The suggestion was made, but Google Docs did not save its thread, so " +
+  "its note can't be posted.";
 const DOC_CHANGED_WHILE_SENT = "The Google Doc changed while this was being sent, so nothing " +
   "was posted. Approve it again to place it on the Doc as it is now.";
 
@@ -283,6 +285,11 @@ export type CommentAttempt = {
   failedSends?: number;
   /** A suggested edit's suggestion, once it is known to be made: what remains is its note. */
   suggestionId?: string;
+  /**
+   * What a comment, reply or resolve posted, once Google confirmed it: a retry answers with it
+   * and never looks, since the post may have been edited or deleted since.
+   */
+  postedId?: string;
   /** When the note's send began, once one has: a retry looks for it before sending again. */
   noteAt?: number;
 };
@@ -538,6 +545,16 @@ async function scopedFile(
 }
 
 /**
+ * Refuses, for good, a write on a file the binding's scope no longer reaches, or one the connected
+ * account can no longer comment on.
+ */
+async function requireInScope(host: CommentHost, payload: CommentTargetPayload): Promise<void> {
+  let file = await host.threads.target(payload);
+  if (!file) throw new ActionApplyError(NO_LONGER_IN_SCOPE);
+  if (file.canComment !== true) throw new ActionApplyError(CANNOT_COMMENT);
+}
+
+/**
  * Refuses a write that may not be made at apply, having posted nothing: for good, except while the
  * account does not hold the grant, which leaves the write pending for a later approval.
  * @returns The comment a reply or resolve answers, as it stands now.
@@ -549,9 +566,7 @@ async function requireStillAllowed(
   // Allowing changes again lifts the grant's refusal; a binding's access level never changes.
   if (refused === host.threads.grantMissing) throw new Error(refused);
   if (refused !== undefined) throw new ActionApplyError(refused);
-  let file = await host.threads.target(action.payload);
-  if (!file) throw new ActionApplyError(NO_LONGER_IN_SCOPE);
-  if (file.canComment !== true) throw new ActionApplyError(CANNOT_COMMENT);
+  await requireInScope(host, action.payload);
   if (action.kind === "createComment" || action.kind === "suggestEdit") return undefined;
   let comment = await host.threads.comment(action.payload.fileId, action.payload.commentId);
   if (!comment) throw new ActionApplyError(COMMENT_NOT_FOUND);
@@ -844,25 +859,30 @@ function notShownYet(attempt: CommentAttempt, via: string): Error {
     `again after ${after.toISOString().slice(11, 16)} UTC.`);
 }
 
+/**
+ * Sends one write. `threadSaved` is false only for a suggestion Google made without saving its
+ * comment thread; any other unsaved post fails.
+ */
 async function send(
   host: CommentHost, action: DriveCommentAction, placement: DocsPlacement | undefined,
-): Promise<string> {
+): Promise<{ id: string; threadSaved: boolean }> {
   let { threads, docs } = host;
   let { payload } = action;
+  let saved = async (id: Promise<string>) => ({ id: await id, threadSaved: true });
   switch (action.kind) {
     case "createComment":
-      return placement
+      return saved(placement
         ? docs.insertComment(payload.fileId, action.payload.content, placement.range,
           placement.revisionId)
-        : threads.createUnanchored(payload.fileId, action.payload.content);
+        : threads.createUnanchored(payload.fileId, action.payload.content));
     case "createReply":
-      return threads.reply(payload.fileId, action.payload.commentId,
-        { content: action.payload.content });
+      return saved(threads.reply(payload.fileId, action.payload.commentId,
+        { content: action.payload.content }));
     case "resolveComment":
-      return threads.reply(payload.fileId, action.payload.commentId, {
+      return saved(threads.reply(payload.fileId, action.payload.commentId, {
         ...(action.payload.content === undefined ? {} : { content: action.payload.content }),
         resolve: true,
-      });
+      }));
     case "suggestEdit": {
       let { range } = placement!;
       let { newText } = action.payload;
@@ -921,6 +941,8 @@ async function post(
   let { threads } = host;
   let log = logger.with({ actionId: id, actionKind: action.kind, fileId: action.payload.fileId });
   let prior = host.attempts.get(id);
+  // A send Google confirmed is over, whatever has become of its post since.
+  if (prior?.postedId) return prior.postedId;
   // A suggestion known to be made is never made again; only its note may be left to post.
   if (action.kind === "suggestEdit" && prior?.suggestionId) {
     await postNote(host, id, action.payload, prior.suggestionId, prior);
@@ -941,6 +963,8 @@ async function post(
         let marked: CommentAttempt = { ...prior, suggestionId: found };
         host.attempts.put(id, marked);
         await postNote(host, id, action.payload, found, marked);
+      } else {
+        host.attempts.put(id, { ...prior, postedId: found });
       }
       return found;
     }
@@ -957,7 +981,10 @@ async function post(
 
   let { comment, placement } = await (async () => {
     let answered = await requireStillAllowed(host, action);
-    return { comment: answered, placement: await place(host, action) };
+    let placed = await place(host, action);
+    // The file may have left the scope while the Doc was read.
+    if (placed) await requireInScope(host, action.payload);
+    return { comment: answered, placement: placed };
   })().catch((error: unknown) => {
     // Nothing applies a write that failed for good again, so its marker has no reader left.
     if (error instanceof ActionApplyError) host.attempts.delete(id);
@@ -976,8 +1003,9 @@ async function post(
   };
   host.attempts.put(id, attempt);
   let created: string;
+  let threadSaved: boolean;
   try {
-    created = await send(host, action, placement);
+    ({ id: created, threadSaved } = await send(host, action, placement));
     log.info("posted a Drive comment", {
       event: "drive.comments.posted", commentId: created, outcome: "posted",
     });
@@ -1012,10 +1040,20 @@ async function post(
     }
     throw new ActionApplyError(placement ? docsRefusal(error) : threads.refusal(error));
   }
-  if (action.kind === "suggestEdit") {
-    host.attempts.put(id, { ...attempt, suggestionId: created });
-    await postNote(host, id, action.payload, created, attempt);
+  if (action.kind !== "suggestEdit") {
+    host.attempts.put(id, { ...attempt, postedId: created });
+    return created;
   }
+  host.attempts.put(id, { ...attempt, suggestionId: created });
+  if (!threadSaved) {
+    log.warn("Google Docs made a suggestion without saving its thread", {
+      event: "drive.comments.thread.unsaved", commentId: created, outcome: "posted",
+    });
+    // The suggestion stands, and is not made again; there is no thread for its note.
+    if (action.payload.note !== undefined) throw new ActionApplyError(THREAD_NOT_SAVED);
+    return created;
+  }
+  await postNote(host, id, action.payload, created, attempt);
   return created;
 }
 

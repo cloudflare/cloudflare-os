@@ -456,11 +456,13 @@ export class GoogleDocsApi {
 
   /**
    * Send `requests` as one suggestion, refused unless the document is still at
-   * `requiredRevisionId` when given. Returns the suggestion's ID.
+   * `requiredRevisionId` when given. Returns the suggestion's ID, and whether Google saved its
+   * comment thread (`commentUpdateState`): the suggestion is made either way, but a note can be
+   * posted only on a saved thread.
    */
   async suggest(
     documentId: string, requests: unknown[], requiredRevisionId?: string,
-  ): Promise<string> {
+  ): Promise<{ id: string; threadSaved: boolean }> {
     let result = await this.#write(documentId, requests,
       { writeMode: "SUGGEST", requiredRevisionId }, "suggest edit");
     let created = new Set((result.suggestionResponses ?? [])
@@ -469,7 +471,7 @@ export class GoogleDocsApi {
     if (typeof id !== "string" || !id || more.length) {
       throw new Error("Google Docs did not return the one suggestion it made");
     }
-    return id;
+    return { id, threadSaved: result.commentUpdateState !== COMMENT_NOT_SAVED_STATE };
   }
 
   /** Reply to suggestion `suggestionId`'s thread with `content`. */
@@ -543,9 +545,12 @@ export class GoogleDocsApi {
   }
 }
 
+/** The `commentUpdateState` of a write whose comment update Google did not save. */
+const COMMENT_NOT_SAVED_STATE = "ALL_FAILED_UNKNOWN_REASON";
+
 /** Refuses a comment update Google answered as not saved. */
 function requireCommentSaved(state: unknown): void {
-  if (state === "ALL_FAILED_UNKNOWN_REASON") {
+  if (state === COMMENT_NOT_SAVED_STATE) {
     throw new DocsCommentNotSavedError("Google Docs did not save the comment.");
   }
 }

@@ -76,7 +76,7 @@ function harness() {
       async () => ({ document: docOf(TEXT), suggestions: [] })),
     getRevisionId: vi.fn<GoogleDocsApi["getRevisionId"]>(async () => "rev-1"),
     insertComment: vi.fn<GoogleDocsApi["insertComment"]>(async () => "doco.anchored"),
-    suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => "suggest.s1"),
+    suggest: vi.fn<GoogleDocsApi["suggest"]>(async () => ({ id: "suggest.s1", threadSaved: true })),
     replyToSuggestion: vi.fn<GoogleDocsApi["replyToSuggestion"]>(async () => undefined),
   };
   let drive = {
@@ -211,6 +211,17 @@ describe("Docs comment threads", () => {
       .replyToComment("doc-1", "doco.c1", content, action);
     expect(id).toBe("doco.p9");
     expect(bodies).toEqual([{ requests: [{ addCommentReply: { commentId: "doco.c1", post } }] }]);
+  });
+
+  it("returns a suggestion's ID with whether Google saved its thread", async () => {
+    let state = "ALL_SAVED";
+    vi.stubGlobal("fetch", async () => Response.json({
+      suggestionResponses: [{ createdSuggestionIds: ["suggest.s1"] }], commentUpdateState: state,
+    }));
+    let api = new GoogleDocsApi(async () => "token");
+    await expect(api.suggest("doc-1", [])).resolves.toEqual({ id: "suggest.s1", threadSaved: true });
+    state = "ALL_FAILED_UNKNOWN_REASON";
+    await expect(api.suggest("doc-1", [])).resolves.toEqual({ id: "suggest.s1", threadSaved: false });
   });
 
   it("refuses a reply Google says it did not save, or answered with no ID", async () => {
