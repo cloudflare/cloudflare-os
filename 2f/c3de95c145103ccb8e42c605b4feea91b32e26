@@ -1,0 +1,45 @@
+packages/workshop-frontend/src/Activity.tsx
+  s_99c049c8391965::t_0c53b160c3fcba 1,20,22
+packages/workshop-frontend/src/ActivityNotifications.tsx
+  s_99c049c8391965::t_64b323a53a3523 16
+packages/workshop-frontend/src/features/approvals/BulkResolveButtons.tsx
+  s_99c049c8391965::t_7f392ce15d1c8b 1-47
+packages/workshop-frontend/src/features/approvals/PendingChangeGroupRow.tsx
+  s_99c049c8391965::t_a4053f483e7f65 1-156
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.test.tsx
+  s_99c049c8391965::t_e390e214a07217 1-217
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.tsx
+  s_99c049c8391965::t_1b34ead884599c 1-176
+packages/workshop-frontend/src/features/approvals/ReviewRequest.tsx
+  s_99c049c8391965::t_827a858b80e120 1-140
+packages/workshop-frontend/src/features/approvals/autoApprovalRules.test.ts
+  s_99c049c8391965::t_d2e6c95dc607ec 1-97
+packages/workshop-frontend/src/features/approvals/autoApprovalRules.ts
+  s_99c049c8391965::t_4adf53155646a0 1-72
+packages/workshop-frontend/src/features/approvals/pendingChangeGroups.test.ts
+  s_99c049c8391965::t_c67366e1078d4d 1-160
+packages/workshop-frontend/src/features/approvals/pendingChangeGroups.ts
+  s_99c049c8391965::t_7dd12eb1922cff 1-101
+packages/workshop-frontend/src/features/approvals/useBulkResolve.test.tsx
+  s_99c049c8391965::t_cbc00b2051c70d 1-167
+packages/workshop-frontend/src/features/approvals/useBulkResolve.ts
+  s_99c049c8391965::t_379b9eb49dab97 1-102
+packages/workshop-frontend/src/utils/formatRelativeTime.ts
+  s_99c049c8391965::t_74e15fdc41a422 1-13
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "2fc3de95c145103ccb8e42c605b4feea91b32e26",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
