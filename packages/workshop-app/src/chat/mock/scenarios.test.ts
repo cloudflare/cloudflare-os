@@ -155,7 +155,7 @@ describe('scenarios', () => {
     expect(ready().pinned).toMatchObject([
       { kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } },
       { label: 'You saved edits' },
-      { label: 'You accepted changes' },
+      { label: 'Changes applied' },
     ])
   })
 

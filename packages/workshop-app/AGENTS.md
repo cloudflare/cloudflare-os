@@ -70,6 +70,13 @@ was decided as it was made, and is shown there the same way. What a person then 
 changes (saved edits, accepted, discarded) follows the artefacts, as a divider. Keep these rules
 when adding a kind.
 
+A chat's changes are accepted on their own once its turn ends (`ChatSession`, rules in
+`chat/autoAccept.ts`), so the agent's code takes effect as it is written, but only while the
+viewer is the only one working on them: nobody else is in the workspace, and no other chat has
+changes waiting to the same gadgets. Only code is: a binding the chat proposes is the user's to
+grant, and a blueprint's update or the latest accepted changes brought into the chat were asked
+for to be looked at first. Those stay proposed.
+
 A message sent while the agent works ends the conversation, dimmed, until the agent reads it. It
 is the same row before and after, so being read only brings it to full strength. Its key is its
 place among its turn's steers rather than its sequence, which it has only once read, and

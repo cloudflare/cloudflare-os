@@ -85,6 +85,8 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
     disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
     setChatTitle: vi.fn<Overseer['setChatTitle']>(async () => {}),
+    listCollaborators: vi.fn<Overseer['listCollaborators']>(async () => []),
+    mergeChanges: vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' })),
   }
 
   const overseer: ChatOverseer = {
@@ -177,6 +179,31 @@ const log = (change: Partial<ActionLogEntry & { type: 'action' }> = {}): ActionL
 const withAction = async (actionLog = log()) => {
   const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'file it'), actionMessage(1, actionLog)) })
   return { fake, session: await started(fake) }
+}
+
+/** A chat with changes waiting to gadget 1. */
+const proposing = (activeAgent?: AiChatAuthorInfo): AiChatMetadata => ({ ...chat(0, 'Chat', 1, activeAgent), proposedChangeWorkpieces: [1] })
+const changes = (sequence: number, extra: Partial<Extract<AiChatMessage, { type: 'changes' }>> = {}): AiChatMessage =>
+  ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'changes', ...extra })
+const binding = { addedBindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }] }
+
+/**
+ * A chat whose agent is working on gadget 1, and a way to end its turn. `earlier` are the pages
+ * before `history`, newest first.
+ */
+const workingOn = async (history: AiChatMessage[], codeBase?: AiChatMetadata['codeBase'], earlier: AiChatHistoryPage[] = []) => {
+  const fake = fakeOverseer(Promise.resolve([{ ...proposing(agentAuthor), codeBase }]))
+  const pages = [{ messages: history, nextBeforeSequence: earlier.length > 0 ? history[0].sequence : undefined }, ...earlier]
+  fake.getChatHistory.mockImplementation(async (_chatId, before) =>
+    pages.find(({ messages }) => before === undefined || messages.every(({ sequence }) => sequence < before)) ?? page())
+  const session = await started(fake)
+  const endTurn = async () => {
+    fake.listChats.mockResolvedValue([{ ...proposing(), codeBase }])
+    fake.server().metadata({ ...proposing(), codeBase })
+    await vi.waitFor(() => expect(fake.listCollaborators).toHaveBeenCalled())
+    await flush()
+  }
+  return { fake, session, endTurn }
 }
 
 describe('ChatSession', () => {
@@ -841,6 +868,57 @@ describe('ChatSession', () => {
 
       await session.rejectAction(7)
       expect(ready(session).actionError).toBeUndefined()
+    })
+  })
+
+  describe('accepting changes on its own', () => {
+    it('accepts the agent’s code when its turn ends', async () => {
+      const { fake, endTurn } = await workingOn([userMessage(0, 'fix it'), changes(1)])
+      expect(fake.mergeChanges).not.toHaveBeenCalled()
+
+      await endTurn()
+      expect(fake.mergeChanges).toHaveBeenCalledExactlyOnceWith(0)
+    })
+
+    it('accepts what was left proposed when the chat is opened', async () => {
+      const fake = fakeOverseer(Promise.resolve([proposing()]), { 0: page(changes(1)) })
+      await started(fake)
+      await vi.waitFor(() => expect(fake.mergeChanges).toHaveBeenCalledExactlyOnceWith(0))
+    })
+
+    it('leaves the changes proposed when they bind a resource to the gadget', async () => {
+      const { fake, endTurn } = await workingOn([changes(1, binding)])
+      await endTurn()
+      expect(fake.mergeChanges).not.toHaveBeenCalled()
+    })
+
+    it('leaves the changes proposed when someone else is in the workspace', async () => {
+      const { fake, endTurn } = await workingOn([changes(1)])
+      fake.listCollaborators.mockResolvedValue([{ profile: userAuthor, addedBy: [] }])
+      await endTurn()
+      expect(fake.mergeChanges).not.toHaveBeenCalled()
+    })
+
+    it('reads back to the last accept before deciding', async () => {
+      // The binding is on a page before the one shown; the accept that opened the epoch is at 2.
+      const { fake, endTurn } = await workingOn(
+        [changes(5)],
+        { pins: [], generation: 1, revision: 0, epoch: 2 },
+        [{ messages: [changes(3, binding)], nextBeforeSequence: 3 }],
+      )
+      await endTurn()
+      await vi.waitFor(() => expect(fake.getChatHistory).toHaveBeenCalledWith(0, 5, expect.any(Number)))
+      await flush()
+
+      expect(fake.getChatHistory).toHaveBeenCalledTimes(2)
+      expect(fake.mergeChanges).not.toHaveBeenCalled()
+    })
+
+    it('reports an accept that failed', async () => {
+      const { fake, session, endTurn } = await workingOn([changes(1)])
+      fake.mergeChanges.mockRejectedValueOnce(new Error('Gadget is locked'))
+      await endTurn()
+      await vi.waitFor(() => expect(ready(session).actionError).toBe('The changes couldn’t be accepted: Gadget is locked'))
     })
   })
 

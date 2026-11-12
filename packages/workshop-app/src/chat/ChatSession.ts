@@ -11,6 +11,7 @@ import {
   type UserItem,
   type WorkEntry,
 } from './chatItems'
+import { acceptsAlone, proposesOnlyCode } from './autoAccept'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
@@ -68,6 +69,8 @@ type Calls =
   | 'enableHook'
   | 'disableHook'
   | 'setChatTitle'
+  | 'listCollaborators'
+  | 'mergeChanges'
 
 /**
  * The part of a workspace's Overseer a session uses, and the lease that must be disposed. The
@@ -132,6 +135,8 @@ const LOADING: ChatSnapshot = { status: 'loading' }
 const HISTORY_PAGE_SIZE = 50
 /** How many earlier pages are fetched in search of the message a reply quotes. */
 const QUOTE_SEARCH_PAGES = 20
+/** How many earlier pages are fetched to see everything a chat's changes would accept. */
+const EPOCH_SEARCH_PAGES = 20
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -188,6 +193,10 @@ export class ChatSession {
   // Set when the subscription fails, for the rest of the run: a conversation that is no longer
   // live must not go back to looking ready because the initial load finished.
   #failure: string | undefined
+  // The workpieces the chat proposes changes to, as last seen, and the accepts tried one after
+  // another so two never race.
+  #proposed = ''
+  #accepting: Promise<void> = Promise.resolve()
 
   /** `open` connects to the chat's workspace; the session disposes what it returns. */
   constructor(
@@ -434,6 +443,8 @@ export class ChatSession {
     this.#earlier = undefined
     this.#historyError = undefined
     this.#failure = undefined
+    this.#proposed = ''
+    this.#accepting = Promise.resolve()
   }
 
   #publish(snapshot: ChatSnapshot) {
@@ -484,7 +495,7 @@ export class ChatSession {
       // The messages are shown as soon as they arrive; the title and agent state follow from the
       // list, as the workspace has no call for one chat's metadata.
       overseer.listChats().then(
-        (chats) => this.#live(run, () => this.#applyListedChat(chats.find(({ id }) => id === this.chatId))),
+        (chats) => this.#live(run, () => this.#applyListedChat(run, chats.find(({ id }) => id === this.chatId))),
         (error) => {
           if (run === this.#run) this.#fail(messageOf(error))
         },
@@ -525,23 +536,24 @@ export class ChatSession {
           if (this.#loaded) this.#publishReady()
         }
       },
-      metadata: (chat) => live(() => this.#applyMetadata(chat)),
+      metadata: (chat) => live(() => this.#applyMetadata(run, chat)),
       message: (message) => live(() => this.#applyMessage(message)),
       stream: (chatId, event) => live(() => this.#applyStream(chatId, event)),
       deleted: () => {},
     }
   }
 
-  #applyListedChat(chat: AiChatMetadata | undefined) {
+  #applyListedChat(run: number, chat: AiChatMetadata | undefined) {
     if (!chat) return this.#fail('This chat doesn’t exist, or was deleted.')
     // The list may have been read before a live update that arrived first; live updates win, as
     // they do over fetched history.
     if (this.#liveMetadata) return
     this.#readMetadata(chat)
     this.#publishReady()
+    this.#offerAccept(run, chat, false)
   }
 
-  #applyMetadata(chat: AiChatMetadata) {
+  #applyMetadata(run: number, chat: AiChatMetadata) {
     // The subscription covers the whole workspace, so events for its other chats are dropped.
     if (chat.id !== this.chatId) return
     this.#liveMetadata = true
@@ -555,6 +567,60 @@ export class ChatSession {
     }
     this.#publishReady()
     if (turnEnded) this.options.onTurnEnded?.()
+    this.#offerAccept(run, chat, turnEnded)
+  }
+
+  /**
+   * Accepts the chat's changes once nobody is working on them: when its turn ends, or when what it
+   * proposes changes while its agent is not running (as on opening), so the agent's code takes
+   * effect as it is written. Changes that cannot be accepted without asking stay proposed (see
+   * autoAccept.ts).
+   */
+  #offerAccept(run: number, chat: AiChatMetadata, turnEnded: boolean) {
+    const proposed = (chat.proposedChangeWorkpieces ?? []).join()
+    const changed = proposed !== this.#proposed
+    this.#proposed = proposed
+    if (proposed === '' || chat.activeAgent || !(turnEnded || changed)) return
+    this.#accepting = this.#accepting.then(() => this.#accept(run))
+  }
+
+  async #accept(run: number) {
+    const overseer = this.#overseer
+    if (!overseer || run !== this.#run) return
+    let chat: AiChatMetadata | undefined
+    try {
+      // Read afresh, as this may run well after what prompted it.
+      const [chats, collaborators] = await Promise.all([overseer.listChats(), overseer.listCollaborators()])
+      chat = chats.find(({ id }) => id === this.chatId)
+      if (!chat || !acceptsAlone(chat, chats, collaborators.length > 0)) return
+    } catch {
+      // What cannot be checked is left proposed.
+      return
+    }
+    const epoch = chat.codeBase?.epoch
+    if (!(await this.#loadedSince(run, epoch))) return
+    // The accept takes whatever is proposed by the time it lands, so a turn begun since would
+    // have it take that turn's changes unchecked.
+    if (run !== this.#run || this.#agentActive || !proposesOnlyCode([...this.#messages.values()], epoch)) return
+    try {
+      // A stale outcome (another chat's accept landed first) leaves the changes proposed.
+      await overseer.mergeChanges(this.chatId)
+    } catch (error) {
+      if (run !== this.#run) return
+      this.#actionError = `The changes couldn’t be accepted: ${messageOf(error)}`
+      this.#publishReady()
+    }
+  }
+
+  /** Fetches earlier pages until every message after `epoch` is in, or the search gives up. */
+  async #loadedSince(run: number, epoch: number | undefined) {
+    for (let pages = 0; ; pages++) {
+      const before = this.#nextBeforeSequence
+      if (before === undefined || (epoch !== undefined && before <= epoch + 1)) return true
+      if (run !== this.#run || pages === EPOCH_SEARCH_PAGES) return false
+      await (this.#earlier ?? this.loadEarlier())
+      if (run !== this.#run || this.#nextBeforeSequence === before) return false
+    }
   }
 
   #readMetadata(chat: AiChatMetadata) {

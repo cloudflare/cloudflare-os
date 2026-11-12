@@ -406,12 +406,14 @@ describe('toChatFeed', () => {
   describe('system rows', () => {
     it('marks saved edits, accepts and discards, as the viewer’s own or by name', () => {
       const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
-      const result = feed(changes(), merge(), changes({ author: other }), revert(2, other))
+      const result = feed(changes(), merge(), changes({ author: other }), revert(2, other), changes(), merge(other))
       expect(only(result, 'divider').map(({ marks, label }) => [marks, label])).toEqual([
         ['changes', 'You saved edits'],
-        ['merge', 'You accepted changes'],
+        ['merge', 'Changes applied'],
         ['changes', 'Grace Hopper saved edits'],
         ['revert', 'Grace Hopper discarded changes'],
+        ['changes', 'You saved edits'],
+        ['merge', 'Grace Hopper applied changes'],
       ])
     })
 
@@ -419,7 +421,7 @@ describe('toChatFeed', () => {
       const turn = [user('make a report'), agent({ text: 'Here it is', toolCalls: [createGadget(1)] }), created(1), changes(), merge()]
       const open = feed(...turn)
       expect(kinds(open)).toEqual(['user', 'assistant', 'output', 'divider', 'divider'])
-      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You saved edits' }, { label: 'You accepted changes' }])
+      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You saved edits' }, { label: 'Changes applied' }])
 
       expect(kinds(feed(...turn, user('thanks')))).toEqual(['user', 'assistant', 'output', 'divider', 'divider', 'user'])
     })
@@ -433,7 +435,7 @@ describe('toChatFeed', () => {
         merge(),
       )
       expect(rows(result).map((row) => (row.kind === 'divider' ? row.label : row.kind))).toEqual([
-        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'You accepted changes',
+        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'Changes applied',
       ])
     })
 

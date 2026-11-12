@@ -21,7 +21,8 @@ export const SystemBlocksPreview = () => {
           <FeedDivider>Context compacted</FeedDivider>
           <FeedDivider>Switched to Mock Model Fast</FeedDivider>
           <FeedDivider>You saved edits</FeedDivider>
-          <FeedDivider>You accepted changes</FeedDivider>
+          <FeedDivider>Changes applied</FeedDivider>
+          <FeedDivider>Grace Hopper applied changes</FeedDivider>
           <FeedDivider>Grace Hopper discarded changes</FeedDivider>
         </Column>
       </Section>
