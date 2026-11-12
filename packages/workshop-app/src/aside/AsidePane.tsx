@@ -1,12 +1,14 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { asideItemIcon } from './asideItemIcon'
-import type { AsideItem } from './asideItems'
+import type { AsideFile, AsideItem } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
+import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
 
 export type AsidePaneProps = {
@@ -52,6 +54,7 @@ export const AsidePane = (props: AsidePaneProps) => {
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
+  const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
   const title = snapshot.title ?? item.title
   // As the page, it names the tab; beside one, the page does.
   useDocumentTitle(props.placement === 'page' ? title : undefined)
@@ -67,13 +70,19 @@ export const AsidePane = (props: AsidePaneProps) => {
   }, [fullScreen, onFullScreenChange])
 
   const content = item.kind === 'file' ? (
-    <PaneNotice key={item.key} icon={FileDashedIcon} title={title} description="Previews of files are still to come." />
+    <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.output.type === 'worktree' ? (
     <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
   ) : (
     <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
   )
-  const shared = { active: paneItem(item, title), people: snapshot.people, link, onReload: connection?.reload }
+  const shared = {
+    active: paneItem(item, title),
+    people: snapshot.people,
+    link,
+    onReload: connection?.reload,
+    onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+  }
 
   return props.placement === 'beside' ? (
     <SidePane
@@ -116,5 +125,24 @@ const GadgetView = ({ title, ui, frame, onReload }: {
     case 'ready':
       // Keyed by the load, so that a reload starts the page over.
       return <GadgetFrame key={ui.load} ref={frame} page={ui.page} title={title} />
+  }
+}
+
+const SIZE = new Intl.NumberFormat('en', { notation: 'compact', style: 'unit', unit: 'byte', unitDisplay: 'narrow' })
+
+const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => {
+  switch (state.status) {
+    case 'loading':
+      return <PaneNotice title="Loading…" />
+    case 'unreachable':
+      return <PaneNotice icon={FileDashedIcon} title={file.name} description="Open it from the chat it was sent in to see it." />
+    case 'failed':
+      return <PaneNotice icon={WarningCircleIcon} title={`Couldn’t load ${file.name}`} description={state.message} />
+    case 'ready': {
+      const details = [file.mimeType, file.size > 0 && SIZE.format(file.size)].filter(Boolean).join(' · ')
+      const { preview } = state
+      const shared = { name: file.name, details, onDownload: state.download }
+      return <FileView {...shared} {...preview} />
+    }
   }
 }

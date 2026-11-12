@@ -3,7 +3,7 @@ import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion,
 import { Badge } from '@cloudflare/kumo'
 import {
   ArrowClockwiseIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CornersInIcon, CornersOutIcon, DotsThreeIcon,
+  CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -53,6 +53,8 @@ export type SidePaneProps = Placement & {
   link?: string
   /** Loads the one shown again. */
   onReload?: () => void
+  /** Saves the one shown to this device. */
+  onDownload?: () => void
   /** What is shown of the one shown. */
   children: ReactNode
 }
@@ -80,7 +82,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, children } = props
+  const { active, people = [], link, onReload, onDownload, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -155,10 +157,11 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {active && (onReload || beside) && (
+            {active && (onReload || onDownload || beside) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={`More for ${active.title}`} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
+                  {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
                 </DropdownMenu>
               </HeaderBubble>

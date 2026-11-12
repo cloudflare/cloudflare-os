@@ -253,6 +253,8 @@ export type Scenario = {
   script: ScriptStep[]
   /** The workspace has read restricted data, so every approval asks for a full read. */
   restricted?: boolean
+  /** The bytes of files sent in the chat that are fetched when opened, rather than sent inline, by id. */
+  files?: Record<string, Uint8Array>
 }
 
 const CHUNK_DELAY = 45

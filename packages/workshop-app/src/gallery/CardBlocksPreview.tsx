@@ -5,6 +5,7 @@ import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { HookCard } from '@/blocks/HookCard'
 import { OutputCard } from '@/blocks/OutputCard'
 import { FileListItem } from '@/blocks/FileListItem'
+import { FileView } from '@/blocks/FileView'
 import { ListGroup } from '@/blocks/ListGroup'
 import { OutputListItem } from '@/blocks/OutputListItem'
 import { useOpen, useReport } from './previewState'
@@ -12,6 +13,18 @@ import { Section } from './Section'
 import { fields } from './ToolBlocksPreview'
 
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full flex-col gap-2">{children}</div>
+
+// The pane's surface, as tall as a pane would be short.
+const Surface = ({ children }: { children: ReactNode }) => (
+  <div className="flex h-80 w-full flex-col overflow-hidden rounded-xl bg-kumo-tint ring-1 ring-kumo-line">{children}</div>
+)
+
+const NOTES = `# Launch checklist
+
+- [x] Error rates under **0.1%** for a week
+- [ ] Docs reviewed by \`@grace\`
+
+> Ship it on a Tuesday.`
 
 const request = {
   title: 'Create issue in PLAT',
@@ -52,6 +65,14 @@ export const CardBlocksPreview = () => {
             <FileListItem title="my-song-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-in-the-row.wav" icon={<WaveformIcon aria-hidden="true" />} time="Tuesday" onSelect={() => say('open the song')} />
             <FileListItem title="Launch checklist" icon={<FileTextIcon aria-hidden="true" />} time="Monday" onSelect={() => say('open the checklist')} />
           </ListGroup>
+        </Column>
+      </Section>
+      <Section title="FileView (a file in the aside or on its own page: an image, Markdown, text or code as it was written, and one that cannot be shown here, which offers the download)">
+        <Column>
+          <Surface><FileView kind="image" name="favicon.svg" url="/favicon.svg" onDownload={() => say('download the image')} /></Surface>
+          <Surface><FileView kind="markdown" name="checklist.md" text={NOTES} onDownload={() => say('download the notes')} /></Surface>
+          <Surface><FileView kind="text" name="export.ts" text={'export const timeout = 30_000\n\nexport async function exportAll(ids: string[]) {\n  for (const id of ids) await exportOne(id, { timeout })\n}'} onDownload={() => say('download the code')} /></Surface>
+          <Surface><FileView kind="none" name="Q3 forecast.xlsx" details="application/vnd.ms-excel · 48KB" onDownload={() => say('download the spreadsheet')} /></Surface>
         </Column>
       </Section>
       <Section title="ActionCard (the request opens from every card but the restricted one, which shows it in full: pending, with a standing approval, incomplete, restricted and incomplete, approved, denied)">
