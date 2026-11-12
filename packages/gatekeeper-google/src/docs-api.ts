@@ -396,6 +396,16 @@ export type GoogleDocsRequest =
     };
   }
   | {
+    mergeTableCells: {
+      tableRange: { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+    };
+  }
+  | {
+    unmergeTableCells: {
+      tableRange: { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+    };
+  }
+  | {
     updateTableRowStyle: {
       tableStartLocation: DocsLocation;
       rowIndices: number[];

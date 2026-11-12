@@ -134,6 +134,8 @@ function shapeOf(change: TableChange): TableChangeShape {
     case "setTableCellStyle":
     case "setTableColumnWidths":
     case "setTableRowHeights":
+    case "mergeTableCells":
+    case "unmergeTableCells":
       throw new Error(`${change.type} adds or deletes no rows or columns`);
     case "deleteTable": return { type: change.type };
     case "insertTableRows": return { type: change.type, at: change.at, count: change.cells.length };
@@ -4671,5 +4673,96 @@ describe("setting a table's column widths and row heights", () => {
       .toBe("setTableColumnWidths: at and count must name columns of the table, which has 3.");
     expect(refusal(tab, heights(read(tab), 2, 1, 50)))
       .toBe("setTableRowHeights: at and count must name rows of the table, which has 2.");
+  });
+});
+
+describe("merging and splitting cells", () => {
+  const pt = (magnitude: number) => ({ magnitude, unit: "PT" });
+  const shaded = (text: string, red: number): CellSpec => ({
+    paragraphs: [para(text)],
+    tableCellStyle: { backgroundColor: { color: { rgbColor: { red } } }, paddingTop: pt(red * 10) },
+  });
+  const merge = (content: EditableMarkdown, row: number, column: number, rows: number, columns: number): TableChange =>
+    ({ type: "mergeTableCells", row, column, rows, columns, ...refOf(content, 0) });
+  const split = (content: EditableMarkdown, row: number, column: number): TableChange =>
+    ({ type: "unmergeTableCells", row, column, ...refOf(content, 0) });
+  const table = (...rows: CellSpec[][]): GoogleDocsTab =>
+    buildTab([para("Before"), { table: rows, heights: [0, 24, 0] }, para("After")]);
+
+  it("joins the cells' paragraphs into the top-left cell, row by row, as Google does", () => {
+    let tab = table(
+      [cellOf(heading("Head", 3), para("x2")), "y\n", "\n"],
+      ["\n", cellOf(para("z1"), para("z2")), "c\n"],
+      ["d\n", "e\n", "f\n"]);
+    let applied = expectSameAsGoogle(tab, merge(read(tab), 0, 0, 2, 2));
+    let html = tableAt(read(applied), 0);
+    expect(html).toContain(
+      '    <td rowspan="2" colspan="2">\n      <h3>Head</h3>\n      <p>x2</p>\n      <p>y</p>\n' +
+      "      <p>z1</p>\n      <p>z2</p>\n    </td>\n    <td><p></p></td>\n    <td><p></p></td>\n");
+    // The rows keep the heights they had, which Google would have set to what they render at.
+    expect(html).toContain('  <tr style="height:24pt">\n    <td><p></p></td>\n    <td><p></p></td>\n    <td><p>c</p></td>');
+  }, );
+
+  it("keeps the top-left cell's look, reading the block's edges where Google keeps them", () => {
+    let tab = table(
+      [shaded("a", 1), shaded("b", 0.5), "c\n"],
+      ["d\n", "e\n", "f\n"],
+      ["g\n", "h\n", "i\n"]);
+    let applied = expectSameAsGoogle(tab, merge(read(tab), 0, 0, 1, 2));
+    expect(tableAt(read(applied), 0)).toContain('<td colspan="2" style="background-color:#ff0000;padding-top:10pt">\n      <p>a</p>\n      <p>b</p>');
+    expectSameAsGoogle(tab, merge(read(tab), 1, 0, 2, 3));
+  });
+
+  it("merges a block that holds a merged cell whole, and empty cells into one empty paragraph", () => {
+    let tab = table(
+      [{ paragraphs: [para("ab")], tableCellStyle: { columnSpan: 2 } }, "\n", "\n"],
+      ["c\n", "d\n", "\n"],
+      ["\n", "\n", "\n"]);
+    expectSameAsGoogle(tab, merge(read(tab), 0, 0, 2, 2));
+    let applied = expectSameAsGoogle(tab, merge(read(tab), 2, 0, 1, 3));
+    expect(tableAt(read(applied), 0)).toContain('<td colspan="3"><p></p></td>');
+    expect(refusal(tab, merge(read(tab), 0, 1, 2, 2))).toBe(
+      "mergeTableCells: the cells named take in part of the merged cell at row 0, column 0 " +
+      "(counting from 0), which Google Docs styles as a whole. Name all of its cells or none of them.");
+  });
+
+  it("splits a merged cell, its text staying in the top-left cell and the others empty", () => {
+    let tab = table(
+      [{ paragraphs: [para("ab"), para("cd")], tableCellStyle: { rowSpan: 2, columnSpan: 2, backgroundColor: { color: { rgbColor: { green: 1 } } } } },
+        { paragraphs: [para("")], tableCellStyle: { borderRight: { width: pt(3), dashStyle: "SOLID", color: { color: { rgbColor: { red: 1 } } } } } }, "x\n"],
+      ["\n", "\n", "y\n"],
+      ["g\n", "h\n", "i\n"]);
+    let applied = expectSameAsGoogle(tab, split(read(tab), 0, 0));
+    let html = tableAt(read(applied), 0);
+    expect(html).toContain("<p>ab</p>\n      <p>cd</p>");
+    expect(html.split("background-color:#00ff00").length - 1).toBe(4);
+    // The restored cells take text like any other.
+    let row = '<tr style="height:24pt">\n    <td style="background-color:#00ff00"><p>';
+    expectCellTextSameAsGoogle(applied, `${row}</p>`, `${row}new</p>`);
+    expect(refusal(tab, split(read(tab), 0, 1))).toBe(
+      "unmergeTableCells: no merged cell starts at row 0, column 1 (counting from 0). Name the " +
+      "top-left cell of the merged cell.");
+  });
+
+  it("refuses to merge what it cannot join exactly", () => {
+    let tab = buildTab([para("Before"), { table: [
+      ["a\n", { paragraphs: [item("one")] }, "\n"],
+      [cellOf(para("x"), para("")), "b\n", { paragraphs: [{ runs: ["n", { footnote: { id: "f1", number: "1" } }, "\n"] }] }],
+    ] }, para("After")], ALL_LISTS);
+    expect(refusal(tab, merge(read(tab), 0, 0, 1, 2))).toBe(
+      "mergeTableCells: the cell at row 0, column 1 (counting from 0) starts with a heading, a list " +
+      "item or a subtitle, or holds a numbered list. Only the top-left cell of the block may.");
+    expect(refusal(tab, merge(read(tab), 1, 0, 1, 2))).toBe(
+      "mergeTableCells: the cell at row 1, column 0 (counting from 0) holds an empty paragraph " +
+      "beside others, which merging cells does not support. Remove it first.");
+    expect(refusal(tab, merge(read(tab), 1, 1, 1, 2))).toBe(
+      "mergeTableCells: the cell at row 1, column 2 (counting from 0) holds a table, a footnote, a " +
+      "smart chip or an element getContent() does not show, which merging cells does not support.");
+  });
+
+  it("closes the replay gate when a merge no longer applies", () => {
+    let gate = new TableReplayGate();
+    gate.failed(TAB, { type: "mergeTableCells" });
+    expect(() => gate.admit(TAB, { type: "setTableCellStyle" })).toThrow();
   });
 });

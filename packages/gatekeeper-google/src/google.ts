@@ -16,8 +16,9 @@ import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
-  type DocTableCells, type DocTableCellStyle,
-  type DocTableColumnWidths, type DocTableDeletion, type DocTableInsertion, type DocTableRowHeights,
+  type DocTableCell, type DocTableCells, type DocTableCellStyle,
+  type DocTableColumnWidths, type DocTableDeletion, type DocTableInsertion, type DocTableMerge,
+  type DocTableRowHeights,
   type GoogleDocReadSession, type GoogleDocTab, type NewDocTable,
 } from "./docs-types";
 import {
@@ -2053,6 +2054,8 @@ function applyGoogleDocActionToContent(
     case "setTableCellStyle":
     case "setTableColumnWidths":
     case "setTableRowHeights":
+    case "mergeTableCells":
+    case "unmergeTableCells":
       return { ...content, ...applyTableChange(content, action, tab) };
     default:
       action satisfies never;
@@ -2242,6 +2245,8 @@ function materializeGoogleDocAction(
     case "setTableCellStyle":
     case "setTableColumnWidths":
     case "setTableRowHeights":
+    case "mergeTableCells":
+    case "unmergeTableCells":
       return { tab, requests: tableChangeRequests(tab, action) };
 
     default:
@@ -3191,6 +3196,14 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
   async setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void> {
     await this.#submitTableChange({ method: "setTableRowHeights", rows }, tabId);
+  }
+
+  async mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "mergeTableCells", cells }, tabId);
+  }
+
+  async unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "unmergeTableCells", cell }, tabId);
   }
 
   /**

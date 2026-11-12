@@ -373,11 +373,12 @@ reads it. An Office file already bound as a Doc answers each approved edit with 
 ## Google Docs edits
 
 A `.docx` or other Office document cannot be bound; connecting one makes a native copy (see
-[Office files](#office-files)). A directly bound Doc accepts eleven changes, each call queued for
+[Office files](#office-files)). A directly bound Doc accepts thirteen changes, each call queued for
 approval as one change: `replaceText()` and `appendText()` edit one tab's Markdown,
 `insertTable()`, `insertTableRows()`, `insertTableColumns()`, `deleteTableRows()`,
-`deleteTableColumns()` and `deleteTable()` change a tab's tables, and `setTableCellStyle()`,
-`setTableColumnWidths()` and `setTableRowHeights()` change a table's look. Changes apply in the order they
+`deleteTableColumns()`, `deleteTable()`, `mergeTableCells()` and `unmergeTableCells()` change a
+tab's tables, and `setTableCellStyle()`, `setTableColumnWidths()` and `setTableRowHeights()` change
+a table's look. Changes apply in the order they
 were queued. Calls on one document take effect in the order they are made, whether or not the
 caller awaits each before the next: a write waits for the writes before it, and so does a read that
 shows queued changes (`getContent()`, `getMetadata()`). A Doc opened from a Drive binding has none
@@ -436,6 +437,23 @@ leave of the page; the other columns keep theirs. `setTableRowHeights()` sets ro
 from 0 to 1,000pt, sending only the height so a pinned header row stays pinned. A change to a
 table's look leaves the table's identity as it was, so a change queued behind it does not fail
 when it does.
+
+`mergeTableCells()` merges a block of at least two cells into its top-left one. Google joins the
+paragraphs of every cell into it, row by row, keeping their headings and list items, and a cell
+that is one empty paragraph adds none, the top-left one included; the others are left one empty
+paragraph. It also sets each merged row's least height to the height it renders at, which only
+Google knows, so the change sends the rows' heights again after it. The merged cell keeps the
+top-left cell's shading, alignment and padding. A block may hold a merged cell whole, but a block
+that takes in part of one is refused, as Google refuses it. So that reads can show the merged cell
+exactly, the first version refuses a block where a cell other than the top-left one starts with a
+heading, a list item or a subtitle or holds a numbered list, where any cell holds a table, a
+footnote, a smart chip or an element the view does not show, or an empty paragraph beside others,
+or an empty top-left cell that is a heading or list item, and a table that holds suggestions.
+`unmergeTableCells()` splits a merged cell named by its top-left cell: its text stays there, and the
+cells it covered come back empty and editable. Google gives those cells the looks they kept while
+covered, which no read shows, so the change then sets each of them to the merged cell's look, the
+edges between them taking its top edge. Rows and columns of a table with merged cells still cannot
+be added or deleted.
 
 A replacement that only adds paragraphs directly above or below a table (`<table>` replaced by
 `## Results`, a blank line and `<table>`) changes no table: it is applied as the same text added to

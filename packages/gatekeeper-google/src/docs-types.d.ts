@@ -191,6 +191,30 @@ export type DocTableRowHeights = {
   height: number;
 };
 
+/** A block of a table's cells to merge into one, for `mergeTableCells()`. */
+export type DocTableMerge = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The block's top-left cell: its row and column, counting from 0. */
+  row: number;
+  column: number;
+
+  /** How many rows and columns the block spans; it holds at least two cells. */
+  rows: number;
+  columns: number;
+};
+
+/** A merged cell to split, for `unmergeTableCells()`: its top-left cell. */
+export type DocTableCell = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The row and column of the merged cell's top-left cell, counting from 0. */
+  row: number;
+  column: number;
+};
+
 /**
  * Read/write access to one directly bound native Google Doc, and to its comments.
  *
@@ -435,7 +459,9 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * `innerVertical`. Changes queued for the table before and after this one are kept to it
    * whatever its look.
    */
-  setTableCellStyle(cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string): Promise<void>;
+  setTableCellStyle(
+    cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string,
+  ): Promise<void>;
 
   /**
    * Set the width of columns of a table in tab `tabId`, which `getContent()` shows in the
@@ -449,4 +475,22 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * `<tr style="height:…">`. Header rows the table pins stay pinned.
    */
   setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void>;
+
+  /**
+   * Merge a block of a table's cells in tab `tabId` into one, which `getContent()` then shows
+   * with `rowspan` and `colspan`, the cells it covers reading as empty cells. Google Docs joins
+   * the paragraphs of every cell into the top-left one, row by row, a cell that is one empty
+   * paragraph adding none, and the merged cell keeps the top-left cell's look; rows keep their
+   * heights. The block may hold merged cells whole, but not part of one. Only its top-left cell
+   * may start with a heading or a list item, and no cell of it may hold a table, a footnote, a
+   * smart chip, or an empty paragraph beside others. Rows and columns of a table with merged
+   * cells cannot be added or deleted.
+   */
+  mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void>;
+
+  /**
+   * Split a merged cell of a table in tab `tabId` back into its cells. Its text stays in the
+   * top-left one, and the others come back empty, each with the merged cell's look.
+   */
+  unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void>;
 }

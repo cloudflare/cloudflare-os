@@ -67,6 +67,12 @@ function requestTabId(
     return request.updateTableColumnProperties.tableStartLocation.tabId;
   }
   if ("updateTableRowStyle" in request) return request.updateTableRowStyle.tableStartLocation.tabId;
+  if ("mergeTableCells" in request) {
+    return request.mergeTableCells.tableRange.tableCellLocation.tableStartLocation.tabId;
+  }
+  if ("unmergeTableCells" in request) {
+    return request.unmergeTableCells.tableRange.tableCellLocation.tableStartLocation.tabId;
+  }
   if ("updateTableCellStyle" in request) {
     return request.updateTableCellStyle.tableRange.tableCellLocation.tableStartLocation.tabId;
   }
@@ -1227,6 +1233,8 @@ describe("Google Doc auto-approval", () => {
       ["deleteTableColumns", { table: 0, at: 1 }],
       ["deleteTable", 0],
       ["setTableCellStyle", { table: 0, row: 0, column: 0, style: { background: "#ffcc00" } }],
+      ["setTableColumnWidths", { table: 0, width: 100 }],
+      ["setTableRowHeights", { table: 0, height: 20 }],
     ] as const) {
       await edit("verdict-tables", method, argument);
       expect(await hooks().lastActionVerdict)
@@ -1587,6 +1595,27 @@ describe("Google Doc tables", () => {
     }
     passSnapshotTtl();
     expect(await hooks().readContent(facet)).toBe(preview);
+    expect(docs.contentBatches).toBe(2);
+  });
+
+  it("merges cells, then splits them, and reads each as Google does", async () => {
+    let docs = docsWithBody(tableBody());
+    let facet = "table-merge-split";
+    let merged = await edit(facet, "mergeTableCells", { table: 0, row: 1, column: 0, rows: 1, columns: 2 });
+    expect(await hooks().lastActionVerdict)
+      .toEqual({ actionKind: { tag: "document-tables", label: "Table changes" }, autoApprovable: true });
+    let mergedRead = await hooks().readContent(facet);
+    expect(mergedRead).toContain(
+      '  <tr>\n    <td colspan="2">\n      <p>Fix login</p>\n      <p>Open</p>\n    </td>\n' +
+      "    <td><p></p></td>\n  </tr>");
+    expect(await hooks().applyAction(facet, merged.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(mergedRead);
+    let split = await edit(facet, "unmergeTableCells", { table: 0, row: 1, column: 0 });
+    let splitRead = await hooks().readContent(facet);
+    expect(await hooks().applyAction(facet, split.actionId)).toBeNull();
+    passSnapshotTtl();
+    expect(await hooks().readContent(facet)).toBe(splitRead);
     expect(docs.contentBatches).toBe(2);
   });
 

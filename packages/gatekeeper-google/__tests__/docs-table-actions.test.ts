@@ -11,7 +11,7 @@ import {
 } from "../src/docs-tables";
 import type { TableChange } from "../src/docs-tables";
 import type {
-  DocTableCellStyle, DocTableCells, DocTableColumnWidths, DocTableDeletion, DocTableInsertion, DocTableRowHeights, NewDocTable,
+  DocTableCell, DocTableCellStyle, DocTableCells, DocTableColumnWidths, DocTableDeletion, DocTableInsertion, DocTableMerge, DocTableRowHeights, NewDocTable,
 } from "../src/docs-types";
 import { computeReplaceOperations, docTabToMarkdown } from "../src/markdown-converter";
 import type { DocTabSnapshot, EditableMarkdown } from "../src/markdown-converter";
@@ -1603,5 +1603,36 @@ describe("setTableColumnWidths and setTableRowHeights", () => {
     expect(prepare(from, heights({ table: 0, at: 1, count: 2, height: 0 })).description.description).toBe(
       "Make rows 2 to 3 of a table of tab \"Main\" (tab-1) as tall as their text. It was table 1 " +
       "of the tab when this change was requested.");
+  });
+});
+
+describe("mergeTableCells and unmergeTableCells", () => {
+  const merge = (cells: DocTableMerge) => ({ method: "mergeTableCells" as const, cells });
+  const split = (cell: DocTableCell) => ({ method: "unmergeTableCells" as const, cell });
+
+  it("merges and splits as table changes a user may let apply without asking", () => {
+    let from = read(STATUS());
+    let merged = prepare(from, merge({ table: 0, row: 1, column: 0, rows: 1, columns: 2 }));
+    expect(merged).toMatchObject({
+      actionKind: DOCUMENT_TABLES, autoApprovable: true, title: "Merge table cells in Google Doc",
+      change: { type: "mergeTableCells", row: 1, column: 0, rows: 1, columns: 2 },
+    });
+    expect(merged.description.description).toBe(
+      "Merge the cells in row 2 and columns 1 to 2 of a table of tab \"Main\" (tab-1) into one. " +
+      "Their text is joined into the top-left cell, row by row. It was table 1 of the tab when " +
+      "this change was requested.");
+    let after = { tab: from.tab, content: applyTableChange(from.content, merged.change, from.tab) };
+    let split_ = prepare(after, split({ table: 0, row: 1, column: 0 }));
+    expect(split_).toMatchObject({ autoApprovable: true, title: "Split a table cell in Google Doc" });
+  });
+
+  it("refuses a block of one cell, and fields it does not declare", () => {
+    expect(argumentRefusal(merge({ table: 0, row: 0, column: 0, rows: 1, columns: 1 })))
+      .toBe("mergeTableCells: the block must hold at least two cells.");
+    expect(argumentRefusal(split({ table: 0, row: 0, column: 0, rows: 2 } as never)))
+      .toBe("unmergeTableCells: unknown field \"rows\". The fields are table, row and column.");
+    expect(refusal(read(STATUS()), split({ table: 0, row: 0, column: 0 }))).toBe(
+      "unmergeTableCells: no merged cell starts at row 0, column 0 (counting from 0). Name the " +
+      "top-left cell of the merged cell.");
   });
 });

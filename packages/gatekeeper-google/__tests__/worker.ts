@@ -108,7 +108,7 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
 type DocWriteMethod =
   | "replaceText" | "appendText" | "insertTable" | "insertTableRows" | "insertTableColumns"
   | "deleteTableRows" | "deleteTableColumns" | "deleteTable" | "setTableCellStyle"
-  | "setTableColumnWidths" | "setTableRowHeights";
+  | "setTableColumnWidths" | "setTableRowHeights" | "mergeTableCells" | "unmergeTableCells";
 
 /** An action as the approval queue received it. */
 type SubmittedAction = { actionId: number; title: string };

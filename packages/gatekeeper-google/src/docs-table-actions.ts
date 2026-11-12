@@ -18,8 +18,8 @@ import type { HiddenContent, LookChange, TableChange, TextReplacement } from "./
 import { EDGES, points, SIDES } from "./docs-table-look";
 import type { CellStyleChange } from "./docs-table-look";
 import type {
-  DocTableBorder, DocTableCells, DocTableCellStyle, DocTableColumnWidths, DocTableDeletion,
-  DocTableInsertion, DocTableRowHeights, NewDocTable,
+  DocTableBorder, DocTableCell, DocTableCells, DocTableCellStyle, DocTableColumnWidths,
+  DocTableDeletion, DocTableInsertion, DocTableMerge, DocTableRowHeights, NewDocTable,
 } from "./docs-types";
 import {
   applyMarkdownEdit, canonicalizeMarkdownReplacement, computeReplaceOperations, lineStart,
@@ -42,7 +42,9 @@ export type TableCall =
   | { method: "deleteTable"; table: number }
   | { method: "setTableCellStyle"; cells: DocTableCells & { style: DocTableCellStyle } }
   | { method: "setTableColumnWidths"; columns: DocTableColumnWidths }
-  | { method: "setTableRowHeights"; rows: DocTableRowHeights };
+  | { method: "setTableRowHeights"; rows: DocTableRowHeights }
+  | { method: "mergeTableCells"; cells: DocTableMerge }
+  | { method: "unmergeTableCells"; cell: DocTableCell };
 
 /** What a table call becomes once checked against the tab. */
 export type PreparedTableChange = {
@@ -165,6 +167,9 @@ const WIDTHS_FIELDS: Record<keyof DocTableColumnWidths, true> =
   { table: true, at: true, count: true, width: true };
 const HEIGHTS_FIELDS: Record<keyof DocTableRowHeights, true> =
   { table: true, at: true, count: true, height: true };
+const MERGE_FIELDS: Record<keyof DocTableMerge, true> =
+  { table: true, row: true, column: true, rows: true, columns: true };
+const CELL_FIELDS: Record<keyof DocTableCell, true> = { table: true, row: true, column: true };
 const BORDERS_FIELDS: Record<keyof NonNullable<DocTableCellStyle["borders"]>, true> = {
   top: true, bottom: true, left: true, right: true, innerHorizontal: true, innerVertical: true,
 };
@@ -203,7 +208,8 @@ function borderOf(op: string, name: string, border: DocTableBorder | null): stri
   checkFields(op, border, BORDER_FIELDS, `${name}.`);
   let width = lengthOf(op, `${name}.width`, border.width, 0, 24);
   if (width === "0pt") return "none";
-  return `${width} ${border.dash ?? "solid"} ${colorOf(op, `${name}.color`, border.color ?? "#000000")}`;
+  let color = colorOf(op, `${name}.color`, border.color ?? "#000000");
+  return `${width} ${border.dash ?? "solid"} ${color}`;
 }
 
 /** The change a style the agent gave makes, each value as the look writes it. */
@@ -339,7 +345,8 @@ export function checkTableCall(call: TableCall): void {
     case "setTableColumnWidths":
     case "setTableRowHeights": {
       let lines = call.method === "setTableColumnWidths" ? call.columns : call.rows;
-      checkFields(op, lines, call.method === "setTableColumnWidths" ? WIDTHS_FIELDS : HEIGHTS_FIELDS);
+      checkFields(
+        op, lines, call.method === "setTableColumnWidths" ? WIDTHS_FIELDS : HEIGHTS_FIELDS);
       checkWholeNumber(op, "table", lines.table, 0);
       if (lines.at !== undefined) checkWholeNumber(op, "at", lines.at, 0);
       if (lines.count !== undefined) checkWholeNumber(op, "count", lines.count, 1);
@@ -348,7 +355,26 @@ export function checkTableCall(call: TableCall): void {
       } else {
         lengthOf(op, "height", call.rows.height, 0, 1000);
       }
+      return;
     }
+    case "mergeTableCells": {
+      let { table, row, column, rows, columns } = call.cells;
+      checkFields(op, call.cells, MERGE_FIELDS);
+      checkWholeNumber(op, "table", table, 0);
+      checkWholeNumber(op, "row", row, 0);
+      checkWholeNumber(op, "column", column, 0);
+      checkWholeNumber(op, "rows", rows, 1);
+      checkWholeNumber(op, "columns", columns, 1);
+      if (rows * columns < 2) {
+        throw new Error("mergeTableCells: the block must hold at least two cells.");
+      }
+      return;
+    }
+    case "unmergeTableCells":
+      checkFields(op, call.cell, CELL_FIELDS);
+      checkWholeNumber(op, "table", call.cell.table, 0);
+      checkWholeNumber(op, "row", call.cell.row, 0);
+      checkWholeNumber(op, "column", call.cell.column, 0);
   }
 }
 
@@ -629,6 +655,23 @@ function existingTableCard(
       title: "Restyle table cells in Google Doc", description: located(description, firstRow),
     };
   }
+  if (change.type === "mergeTableCells") {
+    let description = describe(
+      `Merge the cells in ${lineNames(change.row, change.rows, "row")} and ` +
+      `${lineNames(change.column, change.columns, "column")} of a table of tab ${label} into ` +
+      "one. Their text is joined into the top-left cell, row by row.");
+    return {
+      title: "Merge table cells in Google Doc", description: located(description, firstRow),
+    };
+  }
+  if (change.type === "unmergeTableCells") {
+    let description = describe(
+      `Split the merged cell at row ${change.row + 1}, column ${change.column + 1} of a table ` +
+      `of tab ${label} back into its cells. Its text stays in the top-left one.`);
+    return {
+      title: "Split a table cell in Google Doc", description: located(description, firstRow),
+    };
+  }
   if (change.type === "setTableColumnWidths" || change.type === "setTableRowHeights") {
     let ofColumns = change.type === "setTableColumnWidths";
     let what = lineNames(change.at, change.count, ofColumns ? "column" : "row");
@@ -639,7 +682,8 @@ function existingTableCard(
     let description = describe(
       `Make ${what} of a table of tab ${label} ${value}.`);
     return {
-      title: ofColumns ? "Set table column widths in Google Doc" : "Set table row heights in Google Doc",
+      title: ofColumns
+        ? "Set table column widths in Google Doc" : "Set table row heights in Google Doc",
       description: located(description, firstRow),
     };
   }
@@ -730,7 +774,7 @@ function lookChange(
 }
 
 /** A length as a look stores it: at most three decimals. */
-function canonical(value: number): number {
+function inPoints(value: number): number {
   return Number(value.toFixed(3));
 }
 
@@ -751,12 +795,33 @@ function lineLookChange(
   let change: LookChange = call.method === "setTableColumnWidths"
     ? {
       type: op as "setTableColumnWidths", at, count, expected,
-      width: call.columns.width === null ? null : canonical(call.columns.width),
+      width: call.columns.width === null ? null : inPoints(call.columns.width),
     }
-    : { type: op as "setTableRowHeights", at, count, height: canonical(call.rows.height), expected };
+    : {
+      type: op as "setTableRowHeights", at, count, height: inPoints(call.rows.height), expected,
+    };
   checkLookTarget(content, lines.table, change);
   checkReadsAlone(content, lines.table, op);
   return change;
+}
+
+/** The change that merges the cells a call names, or splits the merged cell it names. */
+function mergeChange(
+  content: EditableMarkdown,
+  call: Extract<TableCall, { method: "mergeTableCells" | "unmergeTableCells" }>,
+  tab: DocTabSnapshot,
+): ExistingTableChange {
+  let op = call.method;
+  let { table, row, column } = call.method === "mergeTableCells" ? call.cells : call.cell;
+  let target = tableAt(content, table, op, tab.tabId);
+  let expected = tableIdentity(htmlOf(content, target));
+  checkReadsAlone(content, table, op);
+  return call.method === "mergeTableCells"
+    ? {
+      type: op as "mergeTableCells", row, column, rows: call.cells.rows,
+      columns: call.cells.columns, expected,
+    }
+    : { type: op as "unmergeTableCells", row, column, expected };
 }
 
 /** The change a call to change an existing table becomes, checked in the order a caller meets. */
@@ -769,6 +834,9 @@ function existingTableChange(
     case "setTableColumnWidths":
     case "setTableRowHeights":
       return lineLookChange(content, call, tab);
+    case "mergeTableCells":
+    case "unmergeTableCells":
+      return mergeChange(content, call, tab);
     case "insertTableRows":
     case "insertTableColumns":
       return insertionChange(content, call, tab);
@@ -813,7 +881,9 @@ export function prepareTableChange(
   let table = call.method === "deleteTable" ? call.table
     : call.method === "setTableCellStyle" ? call.cells.table
     : call.method === "setTableColumnWidths" ? call.columns.table
-    : call.method === "setTableRowHeights" ? call.rows.table : call.lines.table;
+    : call.method === "setTableRowHeights" ? call.rows.table
+    : call.method === "mergeTableCells" ? call.cells.table
+    : call.method === "unmergeTableCells" ? call.cell.table : call.lines.table;
   let { title, description } = existingTableCard(content, table, change, label);
   return {
     change, title: sanitizeTitle(title), description, actionKind: DOCUMENT_TABLES,

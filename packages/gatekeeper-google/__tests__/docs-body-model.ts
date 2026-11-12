@@ -497,6 +497,10 @@ function applyRequest(tab: GoogleDocsTab, request: GoogleDocsRequest, options: M
     return updateTableCellStyle(tab, request.updateTableCellStyle);
   }
   if ("updateTableRowStyle" in request) return updateTableRowStyle(tab, request.updateTableRowStyle);
+  if ("mergeTableCells" in request) return mergeTableCells(tab, request.mergeTableCells.tableRange);
+  if ("unmergeTableCells" in request) {
+    return unmergeTableCells(tab, request.unmergeTableCells.tableRange);
+  }
   notModelled(`the request ${Object.keys(request).join(", ")}`);
 }
 
@@ -1249,4 +1253,101 @@ function updateTableRowStyle(
       minRowHeight: magnitude === 0 ? { unit: "PT" } : { magnitude, unit: "PT" },
     };
   }
+}
+
+/**
+ * The height the model gives each merged row: Google sets the height the row renders at (probe
+ * M1 saw 21pt for a line of text, 25pt and 26pt for more), which only it knows.
+ */
+const MERGED_ROW_HEIGHT = 21;
+
+type TableRange = { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number };
+
+/** The table a range names, its cells, and the cell covering each cell. */
+function rangeTable(tab: GoogleDocsTab, range: TableRange) {
+  let location = range.tableCellLocation;
+  requireTab(tab, location.tableStartLocation);
+  let place = tableAt(tab.body.content, location.tableStartLocation.index);
+  if (!place) throw new Error(INVALID_TABLE_START);
+  let rows = place.table.tableRows ?? [];
+  let grid = rows.map(row => row.tableCells ?? []);
+  let heads = grid.map(row => row.map((): [number, number] => [-1, -1]));
+  grid.forEach((row, r) => row.forEach((cell, c) => {
+    if (heads[r][c][0] >= 0) return;
+    let spans = cell.tableCellStyle;
+    for (let down = r; down < Math.min(r + (spans?.rowSpan ?? 1), grid.length); down++) {
+      for (let across = c; across < Math.min(c + (spans?.columnSpan ?? 1), row.length); across++) {
+        heads[down][across] = [r, c];
+      }
+    }
+  }));
+  return { rows, grid, heads };
+}
+
+/** Whether a cell is one empty paragraph, which a merge takes nothing from (probe M7). */
+function isEmptyCell(cell: TableCell): boolean {
+  let content = cell.content ?? [];
+  let paragraph = content.length === 1 ? content[0].paragraph : undefined;
+  return !!paragraph && paragraph.elements.length === 1 &&
+    paragraph.elements[0].textRun?.content === "\n";
+}
+
+/**
+ * Merge cells, as probes M1, M2, M4 and M7 saw: the top-left cell takes the paragraphs of every
+ * cell of the range, row by row, one that is one empty paragraph adding none; the others are
+ * left one empty paragraph and keep their styles; each merged row's least height is set. A range
+ * that takes in part of a merged cell is refused.
+ */
+function mergeTableCells(tab: GoogleDocsTab, range: TableRange): void {
+  let { rows, grid, heads } = rangeTable(tab, range);
+  let { rowIndex: top, columnIndex: left } = range.tableCellLocation;
+  let bottom = top + range.rowSpan - 1;
+  let right = left + range.columnSpan - 1;
+  if (bottom >= grid.length || right >= (grid[0]?.length ?? 0)) notModelled("a range past the table");
+  let inside = (r: number, c: number) => r >= top && r <= bottom && c >= left && c <= right;
+  grid.forEach((row, r) => row.forEach((_, c) => {
+    let [hr, hc] = heads[r][c];
+    if (inside(hr, hc) !== inside(r, c)) {
+      throw new Error("A non-rectangular collection of cells cannot be merged.");
+    }
+  }));
+  if (range.rowSpan * range.columnSpan === 1) return;
+  let joined: StructuralElement[] = [];
+  for (let r = top; r <= bottom; r++) {
+    for (let c = left; c <= right; c++) {
+      let cell = grid[r][c];
+      if (!isEmptyCell(cell)) joined.push(...cell.content ?? []);
+      if (r !== top || c !== left) {
+        cell.content = [plainParagraph()];
+        if (cell.tableCellStyle) cell.tableCellStyle = { ...cell.tableCellStyle, rowSpan: 1, columnSpan: 1 };
+      }
+    }
+  }
+  let head = grid[top][left];
+  head.content = joined.length > 0 ? joined : [plainParagraph()];
+  head.tableCellStyle = { ...head.tableCellStyle, rowSpan: range.rowSpan, columnSpan: range.columnSpan };
+  for (let r = top; r <= bottom; r++) {
+    rows[r].tableRowStyle = {
+      ...rows[r].tableRowStyle, minRowHeight: { magnitude: MERGED_ROW_HEIGHT, unit: "PT" },
+    };
+  }
+}
+
+/**
+ * Split a merged cell, as probes M3 and M6 saw: named by any of its cells, it keeps its text, the
+ * cells it covered show the styles they kept, and it takes the right edge of the cells along its
+ * right side. A cell that is not merged is left as it is.
+ */
+function unmergeTableCells(tab: GoogleDocsTab, range: TableRange): void {
+  let { grid, heads } = rangeTable(tab, range);
+  let { rowIndex, columnIndex } = range.tableCellLocation;
+  let [hr, hc] = heads[rowIndex][columnIndex];
+  let head = grid[hr][hc];
+  let style = head.tableCellStyle;
+  let columns = style?.columnSpan ?? 1;
+  if ((style?.rowSpan ?? 1) === 1 && columns === 1) return;
+  let edge = grid[hr][hc + columns - 1].tableCellStyle?.borderRight;
+  head.tableCellStyle = {
+    ...style, rowSpan: 1, columnSpan: 1, ...(edge ? { borderRight: structuredClone(edge) } : {}),
+  };
 }

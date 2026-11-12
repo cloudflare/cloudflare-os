@@ -2,7 +2,7 @@
 // queued change replays over that rendering, and which batchUpdate requests make the same change
 // in the document. Everything here is a pure function of a rendering; nothing mutates its input.
 
-import type { DocsLocation, GoogleDocsRequest, TextStyle } from "./docs-api";
+import type { DocsLocation, GoogleDocsRequest, TableCellLocation, TextStyle } from "./docs-api";
 import {
   addRequest, applyMarkdownEdit, canonicalizeMarkdownReplacement, canonicalLinkDestination,
   cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
@@ -15,7 +15,7 @@ import {
   lookWithoutColumns, lookWithoutRows, lookWithRows, readLook, renderLook,
 } from "./docs-table-look";
 import type {
-  CellBlock, CellStyleChange, LookAttributes, Spans, TableLook,
+  CellBlock, CellLook, CellStyleChange, CellStyleStep, LookAttributes, Spans, TableLook,
 } from "./docs-table-look";
 import type {
   BlockMapping, CellInlineRun, DocTabSnapshot, EditableMarkdown, EditableTable, InheritedFormat,
@@ -75,7 +75,9 @@ export type TableChange =
   | ({ type: "deleteTable" } & TableRef & HiddenContent)
   | ({ type: "setTableCellStyle"; style: CellStyleChange } & CellBlock & TableRef)
   | ({ type: "setTableColumnWidths"; at: number; count: number; width: number | null } & TableRef)
-  | ({ type: "setTableRowHeights"; at: number; count: number; height: number } & TableRef);
+  | ({ type: "setTableRowHeights"; at: number; count: number; height: number } & TableRef)
+  | ({ type: "mergeTableCells" } & CellBlock & TableRef)
+  | ({ type: "unmergeTableCells"; row: number; column: number } & TableRef);
 
 type NewTableChange = Extract<TableChange, { type: "insertTable" }>;
 type ExistingTableChange = Exclude<TableChange, NewTableChange>;
@@ -89,8 +91,11 @@ export type LookChange = Extract<
   TableChange, { type: "setTableCellStyle" | "setTableColumnWidths" | "setTableRowHeights" }
 >;
 
+/** A change that merges cells, or splits a merged cell. */
+type MergeChange = Extract<TableChange, { type: "mergeTableCells" | "unmergeTableCells" }>;
+
 /** A change that adds or deletes rows or columns. */
-type LineChange = Exclude<ExistingTableChange, LookChange | { type: "deleteTable" }>;
+type LineChange = Exclude<ExistingTableChange, LookChange | MergeChange | { type: "deleteTable" }>;
 
 function isLookChange(change: TableChange): change is LookChange {
   return LOOK_CHANGE_TYPES.includes(change.type);
@@ -441,6 +446,7 @@ function targetOf(content: EditableMarkdown, change: ExistingTableChange): numbe
   let op = change.type;
   let table = resolveTable(content, change, op);
   if (change.type === "insertTableRows" || change.type === "insertTableColumns" ||
+      change.type === "mergeTableCells" || change.type === "unmergeTableCells" ||
       isLookChange(change)) return table;
   let hidden = hiddenContent(content, table, change);
   if (hidden.unshown && !change.unshown) {
@@ -458,7 +464,8 @@ function targetOf(content: EditableMarkdown, change: ExistingTableChange): numbe
 
 const TABLE_CHANGE_TYPES: readonly string[] = [
   "insertTable", "insertTableRows", "insertTableColumns", "deleteTableRows",
-  "deleteTableColumns", "deleteTable", ...LOOK_CHANGE_TYPES,
+  "deleteTableColumns", "deleteTable", "mergeTableCells", "unmergeTableCells",
+  ...LOOK_CHANGE_TYPES,
 ];
 
 /**
@@ -1269,9 +1276,279 @@ export function applyTableChange(
   let doc = documentOf(content, tab);
   let table = targetOf(content, change);
   if (isLookChange(change)) return applyLookChange(content, table, change);
+  if (change.type === "mergeTableCells") return applyMerge(content, table, change);
+  if (change.type === "unmergeTableCells") return applyUnmerge(content, table, change);
   return change.type === "deleteTable"
     ? applyTableDeletion(content, table, doc)
     : applyLineChange(content, table, change, doc);
+}
+
+// ---------------------------------------------------------------------------
+// Merging cells
+// ---------------------------------------------------------------------------
+
+/** A cell's content as lines, each without its indentation, with where its texts are in them. */
+type CellContent = { lines: string[]; texts: [line: number, start: number, end: number][] };
+
+/** The content of the cell at `cell`, whose texts the map gives as `entry` does. */
+function cellContent(
+  markdown: string, cell: TableLines["rows"][number]["cells"][number], entry: TableCellEntry,
+): CellContent {
+  let block = markdown.slice(cell.mdStart, cell.mdEnd - 1);
+  let tagEnd = cell.tag.mdEnd - cell.mdStart;
+  if (!block.includes("\n")) {
+    return {
+      lines: [block.slice(tagEnd, -"</td>".length)],
+      texts: entry.texts.map(([start, end]) => [0, start - tagEnd, end - tagEnd]),
+    };
+  }
+  let lines = block.slice(tagEnd + 1, block.lastIndexOf("\n")).split("\n");
+  let starts: number[] = [];
+  let at = tagEnd + 1;
+  for (let line of lines) {
+    starts.push(at + 6);
+    at += line.length + 1;
+  }
+  return {
+    lines: lines.map(line => line.slice(6)),
+    texts: entry.texts.map(([start, end]) => {
+      let line = starts.findLastIndex(begins => begins <= start);
+      return [line, start - starts[line], end - starts[line]];
+    }),
+  };
+}
+
+/** The block of a cell of `content`, opened with `attributes`, and where its texts then are. */
+function cellBlock(
+  attributes: string, content: CellContent,
+): { html: string; texts: [number, number][] } {
+  let open = `    <td${attributes}>`;
+  if (content.lines.length === 1) {
+    return {
+      html: `${open}${content.lines[0]}</td>\n`,
+      texts: content.texts.map(([, start, end]) => [open.length + start, open.length + end]),
+    };
+  }
+  let starts: number[] = [];
+  let html = `${open}\n`;
+  for (let line of content.lines) {
+    starts.push(html.length + 6);
+    html += `      ${line}\n`;
+  }
+  return {
+    html: `${html}    </td>\n`,
+    texts: content.texts.map(([line, start, end]) => [starts[line] + start, starts[line] + end]),
+  };
+}
+
+const EMPTY_PARAGRAPH = "<p></p>";
+
+/** A merge or a split, checked against its table, with the table's lines and the cells' spans. */
+type CheckedMerge = CheckedLook & { look: TableLook; entries: TableCellEntry[][] };
+
+function checkMerge(content: EditableMarkdown, table: number, change: MergeChange): CheckedMerge {
+  let op = change.type;
+  let target = content.tables[table];
+  if (target.suggested) {
+    throw new Error(
+      `${op}: this table holds suggested changes to its rows, columns or cells, so its cells ` +
+      "cannot be merged or split until they are accepted or rejected.");
+  }
+  let block: CellBlock;
+  if (change.type === "mergeTableCells") {
+    block = change;
+  } else {
+    let { row, column } = change;
+    let found = linesOf(content.markdown, target, op);
+    let { rows, columns } = sizeOf(found, op);
+    if (row >= rows || column >= columns) {
+      throw new Error(
+        `unmergeTableCells: row and column must name a cell of the table, which has ${rows} ` +
+        `rows and ${columns} columns.`);
+    }
+    let { rowSpan, columnSpan } = found.rows[row].cells[column];
+    if (coveredCells(found.rows.map(line => line.cells))[row][column] ||
+        rowSpan === 1 && columnSpan === 1) {
+      throw new Error(
+        `unmergeTableCells: no merged cell starts at row ${row}, column ${column} (counting ` +
+        "from 0). Name the top-left cell of the merged cell.");
+    }
+    block = { row, column, rows: rowSpan, columns: columnSpan };
+  }
+  let checked = checkCellBlock(content, table, block, op);
+  let { lines, spans } = checked;
+  if (lines.rows.length !== target.rows.length) throw notLaidOut(op);
+  let entries = target.rows.map((_, row) => tableRowCells(target, row));
+  if (entries.some((row, r) => row.length !== lines.rows[r].cells.length)) throw notLaidOut(op);
+  let look = readTableLook(lines, op);
+  let covered = coveredCells(spans);
+  if (change.type === "unmergeTableCells") return { ...checked, look, entries };
+  let { row, column, rows, columns } = change;
+  for (let r = row; r < row + rows; r++) {
+    for (let c = column; c < column + columns; c++) {
+      if (covered[r][c]) continue;
+      let entry = entries[r][c];
+      let cell = lines.rows[r].cells[c];
+      let at = `row ${r}, column ${c} (counting from 0)`;
+      if (cell.nested || entry.footnote || entry.unshown || entry.loneChip) {
+        throw new Error(
+          `mergeTableCells: the cell at ${at} holds a table, a footnote, a smart chip or an ` +
+          "element getContent() does not show, which merging cells does not support.");
+      }
+      let { lines: parts } = cellContent(content.markdown, cell, entry);
+      if (parts.length > 1 && parts.includes(EMPTY_PARAGRAPH)) {
+        throw new Error(
+          `mergeTableCells: the cell at ${at} holds an empty paragraph beside others, which ` +
+          "merging cells does not support. Remove it first.");
+      }
+      if (r === row && c === column) {
+        let empty = entry.texts.every(([start, end]) => start === end);
+        if (entry.styled && parts.length === 1 && empty) {
+          throw new Error(
+            `mergeTableCells: the cell at ${at} is an empty heading or list item, which ` +
+            "merging cells does not support. Give it text, or make it a plain paragraph.");
+        }
+      } else if (entry.styled || entry.numbered) {
+        throw new Error(
+          `mergeTableCells: the cell at ${at} starts with a heading, a list item or a subtitle, ` +
+          "or holds a numbered list. Only the top-left cell of the block may.");
+      }
+    }
+  }
+  return { ...checked, look, entries };
+}
+
+/**
+ * Replay a merge: Google joins the paragraphs of every cell of the block into its top-left cell,
+ * row by row, a cell that is one empty paragraph adding none, and leaves the other cells empty.
+ * The merged cell keeps its own shading, alignment and padding, and reads its right and bottom
+ * edges from the cells Google keeps them on.
+ */
+function applyMerge(
+  content: EditableMarkdown, table: number,
+  change: Extract<TableChange, { type: "mergeTableCells" }>,
+): EditableMarkdown {
+  let { lines, spans, look, entries } = checkMerge(content, table, change);
+  let { row, column, rows, columns } = change;
+  let covered = coveredCells(spans);
+  let parts: CellContent[] = [];
+  let headKept = false;
+  for (let r = row; r < row + rows; r++) {
+    for (let c = column; c < column + columns; c++) {
+      if (covered[r][c]) continue;
+      let part = cellContent(content.markdown, lines.rows[r].cells[c], entries[r][c]);
+      if (part.lines.length === 1 && part.lines[0] === EMPTY_PARAGRAPH) continue;
+      parts.push(part);
+      if (r === row && c === column) headKept = true;
+    }
+  }
+  let merged: CellContent = { lines: [], texts: [] };
+  for (let part of parts) {
+    for (let [line, start, end] of part.texts) {
+      merged.texts.push([merged.lines.length + line, start, end]);
+    }
+    merged.lines.push(...part.lines);
+  }
+  if (merged.lines.length === 0) merged = { lines: [EMPTY_PARAGRAPH], texts: [[0, 3, 3]] };
+  let head = cellBlock(spanAttribute("rowspan", rows) + spanAttribute("colspan", columns), merged);
+  let edits: TextEdit[] = [];
+  let packed = entries.map((cells, r) => {
+    let entriesOfRow = [...cells];
+    let inBlock = r >= row && r < row + rows;
+    for (let c = column; c < (inBlock ? column + columns : column); c++) {
+      let cell = lines.rows[r].cells[c];
+      if (r === row && c === column) {
+        edits.push({ start: cell.mdStart, end: cell.mdEnd, text: head.html });
+        entriesOfRow[c] = {
+          // Only the top-left cell may start with a heading or a list item, or hold a numbered
+          // list: its paragraphs come first, unless it is empty and adds none.
+          ...PLAIN_CELL, texts: head.texts, numbered: cells[c].numbered,
+          styled: headKept && cells[c].styled,
+        };
+      } else {
+        edits.push({
+          start: cell.mdStart, end: cell.mdEnd, text: `    <td>${EMPTY_PARAGRAPH}</td>\n`,
+        });
+        entriesOfRow[c] = { ...PLAIN_CELL, texts: [] };
+      }
+    }
+    return packTableRow(entriesOfRow);
+  });
+  let joined = withTable(content, table, spliceText(content.markdown, edits), packed);
+  let headLook = look.cells[row][column]!;
+  let edgeOf = (r: number, c: number, side: "right" | "bottom") =>
+    look.cells[r][c]?.[`border-${side}`] ?? headLook[`border-${side}`];
+  let cells = look.cells.map((cellsOfRow, r) => cellsOfRow.map((cell, c) => {
+    if (r < row || r >= row + rows || c < column || c >= column + columns) return cell;
+    if (r !== row || c !== column) return null;
+    return {
+      ...headLook,
+      "border-right": edgeOf(row, column + columns - 1, "right"),
+      "border-bottom": edgeOf(row + rows - 1, column, "bottom"),
+    };
+  }));
+  return restyleTable(joined, table, { ...look, cells });
+}
+
+/**
+ * The style that splitting the merged cell `head` of `look` sends after it: Google gives the
+ * cells it restores the looks they kept while covered, which a read does not show, so each is
+ * set to the merged cell's look, the edges between them taking its top edge.
+ */
+function unmergeStyle(look: CellLook): CellStyleChange {
+  return {
+    background: look["background-color"], verticalAlign: look["vertical-align"],
+    padding: {
+      top: look["padding-top"], right: look["padding-right"],
+      bottom: look["padding-bottom"], left: look["padding-left"],
+    },
+    border: look["border-top"],
+    borders: {
+      top: look["border-top"], bottom: look["border-bottom"],
+      left: look["border-left"], right: look["border-right"],
+    },
+  };
+}
+
+/** Replay a split: the merged cell keeps its text, and the cells it covered come back empty. */
+function applyUnmerge(
+  content: EditableMarkdown, table: number,
+  change: Extract<TableChange, { type: "unmergeTableCells" }>,
+): EditableMarkdown {
+  let { lines, spans, look, entries } = checkMerge(content, table, change);
+  let { row, column } = change;
+  let { rowSpan, columnSpan } = spans[row][column];
+  let edits: TextEdit[] = [];
+  let packed = entries.map((cells, r) => {
+    let entriesOfRow = [...cells];
+    let inBlock = r >= row && r < row + rowSpan;
+    for (let c = column; c < (inBlock ? column + columnSpan : column); c++) {
+      let cell = lines.rows[r].cells[c];
+      if (r === row && c === column) {
+        let open = `<td>`;
+        let moved = open.length - (cell.tag.mdEnd - cell.tag.mdStart);
+        edits.push({ start: cell.tag.mdStart, end: cell.tag.mdEnd, text: open });
+        entriesOfRow[c] = {
+          ...cells[c], texts: cells[c].texts.map(([start, end]) => [start + moved, end + moved]),
+        };
+      } else {
+        entriesOfRow[c] = { ...PLAIN_CELL, texts: [[11, 11]] };
+      }
+    }
+    return packTableRow(entriesOfRow);
+  });
+  let split = withTable(content, table, spliceText(content.markdown, edits), packed);
+  let headLook = look.cells[row][column]!;
+  let block = { row, column, rows: rowSpan, columns: columnSpan };
+  let cells = look.cells.map((cellsOfRow, r) => cellsOfRow.map((cell, c) =>
+    r >= row && r < row + rowSpan && c >= column && c < column + columnSpan ? headLook : cell));
+  let flat = spans.map(cellsOfRow => cellsOfRow.map(spansOfCell => spansOfCell));
+  for (let r = row; r < row + rowSpan; r++) {
+    for (let c = column; c < column + columnSpan; c++) flat[r][c] = { rowSpan: 1, columnSpan: 1 };
+  }
+  let restyled = lookWithCellStyle(
+    { ...look, cells }, flat, cellStyleSteps(block, unmergeStyle(headLook)));
+  return restyleTable(split, table, restyled);
 }
 
 // ---------------------------------------------------------------------------
@@ -1393,6 +1670,30 @@ function applyLookChange(
 // The requests of a change
 // ---------------------------------------------------------------------------
 
+/** The range of a block of a table's cells, as a request names it. */
+function cellRange(
+  tableStartLocation: DocsLocation, block: CellBlock,
+): { tableCellLocation: TableCellLocation; rowSpan: number; columnSpan: number } {
+  return {
+    tableCellLocation: { tableStartLocation, rowIndex: block.row, columnIndex: block.column },
+    rowSpan: block.rows,
+    columnSpan: block.columns,
+  };
+}
+
+/** Add a request for each of `steps`. */
+function cellStyleRequests(
+  requests: GoogleDocsRequest[], tableStartLocation: DocsLocation, steps: readonly CellStyleStep[],
+): void {
+  for (let step of steps) {
+    addRequest(requests, {
+      updateTableCellStyle: {
+        tableRange: cellRange(tableStartLocation, step.block), ...googleCellStyle(step.set),
+      },
+    });
+  }
+}
+
 /**
  * Set the fixed widths of a table's columns back to what `look` gives them, once `count` columns
  * have been added before column `at`, copying column `reference`. A column added beside one that
@@ -1415,7 +1716,9 @@ function restoreFixedWidths(
     addRequest(requests, {
       updateTableColumnProperties: {
         tableStartLocation, columnIndices,
-        tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: width, unit: "PT" } },
+        tableColumnProperties: {
+          widthType: "FIXED_WIDTH", width: { magnitude: width, unit: "PT" },
+        },
         fields: "widthType,width",
       },
     });
@@ -1461,6 +1764,44 @@ export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): G
   let position = targetOf(content, change);
   let table = tab.sourceMap.tables[position];
   let tableStartLocation = { index: table.docStart, tabId };
+  if (change.type === "mergeTableCells" || change.type === "unmergeTableCells") {
+    let { look, spans } = checkMerge(content, position, change);
+    let { row, column } = change;
+    if (change.type === "mergeTableCells") {
+      let { rows, columns } = change;
+      addRequest(requests, {
+        mergeTableCells: {
+          tableRange: cellRange(tableStartLocation, { row, column, rows, columns }),
+        },
+      });
+      // Google sets each merged row's least height to the height it renders at, which only it
+      // knows (probe M1): the heights the rows had are sent again.
+      let byHeight = new Map<number, number[]>();
+      for (let r = row; r < row + rows; r++) {
+        byHeight.set(look.rows[r], [...byHeight.get(look.rows[r]) ?? [], r]);
+      }
+      for (let [height, rowIndices] of byHeight) {
+        addRequest(requests, {
+          updateTableRowStyle: {
+            tableStartLocation, rowIndices,
+            tableRowStyle: { minRowHeight: { magnitude: height, unit: "PT" } },
+            fields: "minRowHeight",
+          },
+        });
+      }
+    } else {
+      let { rowSpan, columnSpan } = spans[row][column];
+      addRequest(requests, {
+        unmergeTableCells: {
+          tableRange: cellRange(tableStartLocation, { row, column, rows: 1, columns: 1 }),
+        },
+      });
+      let block = { row, column, rows: rowSpan, columns: columnSpan };
+      cellStyleRequests(requests, tableStartLocation,
+        cellStyleSteps(block, unmergeStyle(look.cells[row][column]!)));
+    }
+    return requests;
+  }
   if (change.type === "setTableColumnWidths" || change.type === "setTableRowHeights") {
     lookTarget(content, position, change);
     let indices = Array.from({ length: change.count }, (_, index) => change.at + index);
@@ -1490,20 +1831,7 @@ export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): G
   }
   if (isLookChange(change)) {
     lookTarget(content, position, change);
-    for (let step of cellStyleSteps(change, change.style)) {
-      addRequest(requests, {
-        updateTableCellStyle: {
-          tableRange: {
-            tableCellLocation: {
-              tableStartLocation, rowIndex: step.block.row, columnIndex: step.block.column,
-            },
-            rowSpan: step.block.rows,
-            columnSpan: step.block.columns,
-          },
-          ...googleCellStyle(step.set),
-        },
-      });
-    }
+    cellStyleRequests(requests, tableStartLocation, cellStyleSteps(change, change.style));
     return requests;
   }
   if (change.type === "deleteTable") {
