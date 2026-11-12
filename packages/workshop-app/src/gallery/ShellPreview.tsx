@@ -25,7 +25,7 @@ const output = (workpieceId: number, title: string): AsideItem => ({
 const ITEMS: AsideItem[] = [
   output(41, 'Q3 platform review, with a title long enough that it has to be cut off'),
   output(42, 'Launch checklist'),
-  { key: 'file-image', title: 'my-favourite-image.jpg', kind: 'file', file: { id: 'image', name: 'my-favourite-image.jpg', mimeType: 'image/jpeg', size: 182_000 } },
+  { key: 'file-image', title: 'my-favourite-image.jpg', kind: 'file', file: { id: 'image', name: 'my-favourite-image.jpg', mimeType: 'image/jpeg', size: 182_000, workspaceId: MOCK_WORKSPACE_ID } },
 ]
 const ELSEWHERE = output(43, 'Opened from the library')
 

@@ -44,9 +44,11 @@ export class MockOverseer {
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
+  #files: Record<string, Uint8Array>
 
   constructor(scenario: Scenario) {
     this.#messages = [...scenario.history]
+    this.#files = scenario.files ?? {}
     this.#metadata = {
       id: CHAT_ID,
       title: scenario.title,
@@ -150,6 +152,12 @@ export class MockOverseer {
   async acceptConnectionRequest(requestId: string, result: { gatekeeperId: number }) {
     this.#resolveConnection(requestId, { state: 'accepted', gatekeeperId: result.gatekeeperId })
     this.player.fire('onAcceptConnection')
+  }
+
+  async getChatAttachmentContent(_chatId: number, id: string): Promise<Uint8Array> {
+    const bytes = this.#files[id]
+    if (!bytes) throw new Error(`No attachment ${id}`)
+    return bytes
   }
 
   async setChatTitle(_chatId: number, title: string) {

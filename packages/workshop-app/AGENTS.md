@@ -169,8 +169,17 @@ asks, with a port it posts. Only messages from the pane's own frame are listened
 chat, a gadget shows that chat's proposed changes. It is loaded again when its code changes: a
 change to its files in that chat, the chat's changes being accepted or thrown away, or its head
 moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
-the one shown is connected: going to another tab and back starts it over. Files and worktrees only
-say what they are, for now.
+the one shown is connected: going to another tab and back starts it over. Worktrees only say what
+they are, for now.
+
+A file is shown as what it is (`aside/filePreview.ts`, tested; `FileView` draws each kind): an
+image, a PDF in the browser's own viewer, audio, video, Markdown, and text or code as written.
+Anything else offers its download, which the pane's more menu has for every file. The bytes come
+inline with the message or are fetched through the chat it was sent in, so a file's own page
+needs `?chat=`. What the browser is given to show is never typed by the file's word alone: only
+the kinds a browser displays without running anything are, a PDF must start like one, a page is
+shown as its text, and a file that says nothing is told by its first bytes. Downloads are typed
+as plain bytes, so they are saved rather than opened.
 
 Full screen has the pane fill the window to its very edges, with no frame or corners, over the
 sidebar and the page, which are made inert. The card leaves its place beside the page (which is

@@ -21,7 +21,14 @@ export type AsideItem = {
    * output, when the last message before its latest card was. Unknown for one named by a link alone.
    */
   at?: Date
-} & ({ kind: 'file'; file: ChatAttachment } | { kind: 'output'; output: AsideOutput })
+} & ({ kind: 'file'; file: AsideFile } | { kind: 'output'; output: AsideOutput })
+
+/** A file, as what is needed to show it: what it is, and where its bytes are. */
+export type AsideFile = ChatAttachment & {
+  workspaceId: string
+  /** The chat it was sent in, which its bytes are fetched through. Unknown for one named by a link alone. */
+  chatId?: number
+}
 
 /**
  * Something within a workspace that can be shown, as the URL names it: `12` for what was made
@@ -92,7 +99,7 @@ export const asideItemFor = (workspaceId: string, ref: AsideRef, chatId: number 
   if (found) return found
   return ref.kind === 'output'
     ? { key, title: 'Untitled', kind: 'output', output: { workspaceId, workpieceId: ref.workpieceId, type: 'gadget', chatId } }
-    : { key, title: 'File', kind: 'file', file: { id: ref.fileId, name: 'File', mimeType: '', size: 0 } }
+    : { key, title: 'File', kind: 'file', file: { id: ref.fileId, name: 'File', mimeType: '', size: 0, workspaceId, chatId } }
 }
 
 /**
@@ -127,7 +134,7 @@ export const chatAsideItems = (workspaceId: string, chatId: number, chat: ChatSn
     } else if (row.kind === 'user') {
       for (const file of row.attachments.toReversed()) {
         const key = formatAsideRef({ kind: 'file', fileId: file.id })
-        if (!found.has(key)) found.set(key, { key, title: file.name, at, kind: 'file', file })
+        if (!found.has(key)) found.set(key, { key, title: file.name, at, kind: 'file', file: { ...file, workspaceId, chatId } })
       }
     }
   }

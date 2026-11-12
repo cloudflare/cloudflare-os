@@ -317,7 +317,33 @@ const writeDoc = call('writeFile', {
   content: '# Q3 platform review\n\n## Highlights\n\n- Ticket volume down 12%\n- Median time to close: 3.2 days\n',
 })
 
-// Sent with the request, so there is more than the document to open beside the chat.
+// A one-page PDF saying `text`, with the offsets a reader looks its parts up by.
+const pdf = (text: string) => {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+    `<< /Length ${text.length + 31} >>\nstream\nBT /F1 24 Tf 72 700 Td (${text}) Tj ET\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  let body = '%PDF-1.4\n'
+  const offsets = objects.map((object, index) => {
+    const offset = body.length
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`
+    return offset
+  })
+  const xref = body.length
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`
+  body += offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`
+  return new TextEncoder().encode(body)
+}
+
+const Q2_REVIEW = pdf('Q2 platform review')
+const Q3_NOTES = new TextEncoder().encode('# Q3 notes\n\n- Ticket volume **down 12%**\n- Median time to close: 3.2 days\n\n> Keep the dashboard on the agenda.\n')
+
+// Sent with the request, so there is more than the document to open beside the chat. Only the
+// image comes with its bytes; the others are fetched when opened, as from a server.
 const REVIEW_FILES = [
   {
     id: 'tickets-by-week',
@@ -328,7 +354,8 @@ const REVIEW_FILES = [
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" fill="#888"/><path d="M1 6 3 4 5 5 7 2" fill="none" stroke="#fff"/></svg>',
     ),
   },
-  { id: 'q2-review', name: 'Q2 platform review.pdf', mimeType: 'application/pdf', size: 48_213 },
+  { id: 'q2-review', name: 'Q2 platform review.pdf', mimeType: 'application/pdf', size: Q2_REVIEW.length },
+  { id: 'q3-notes', name: 'Q3 notes.md', mimeType: 'text/markdown', size: Q3_NOTES.length },
 ]
 
 const output: Scenario = {
@@ -339,6 +366,7 @@ const output: Scenario = {
     'changes are accepted (scripted here: the edits and the accept arrive on their own). The request has files ' +
     'attached: they and the document open beside the chat.',
   history: history([user('Write up the Q3 platform review as a doc.', { attachments: REVIEW_FILES })]),
+  files: { 'q2-review': Q2_REVIEW, 'q3-notes': Q3_NOTES },
   script: [
     ...turn(
       say(agent({ text: 'I’ll start a document for it.' })),

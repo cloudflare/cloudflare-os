@@ -59,15 +59,20 @@ const AppFrame = () => {
 
   // Beside a chat, or a chat that is still to be made: what it has to show, and which is named.
   const besideOf = chatPage ?? newChatPage
-  const chatWorkspaceId = chatPage?.params.workspaceId
   const chatId = chatPage?.params.chatId
-  const chat = useChatSnapshot(chatWorkspaceId === undefined || chatId === undefined ? undefined : { workspaceId: chatWorkspaceId, chatId })
+  const chatRef = chatPage && { workspaceId: chatPage.params.workspaceId, chatId: chatPage.params.chatId }
+  // The chat what is shown comes from: the one the page is, or the one an item's own page names,
+  // which says what the item is (a file's name and type) and where its bytes are.
+  const pageChatId = itemPage?.search.chat
+  const shownFrom = chatRef ?? (pageItem && pageChatId !== undefined ? { workspaceId: pageItem.workspaceId, chatId: pageChatId } : undefined)
+  const fromWorkspaceId = shownFrom?.workspaceId
+  const fromChatId = shownFrom?.chatId
+  const chat = useChatSnapshot(fromWorkspaceId === undefined || fromChatId === undefined ? undefined : { workspaceId: fromWorkspaceId, chatId: fromChatId })
   const items = useMemo(
-    () => (chatWorkspaceId === undefined || chatId === undefined ? [] : chatAsideItems(chatWorkspaceId, chatId, chat)),
-    [chatWorkspaceId, chatId, chat],
+    () => (fromWorkspaceId === undefined || fromChatId === undefined ? [] : chatAsideItems(fromWorkspaceId, fromChatId, chat)),
+    [fromWorkspaceId, fromChatId, chat],
   )
   const named = besideOf && parseAsideRef(besideOf.search.open)
-  const chatRef = chatWorkspaceId === undefined || chatId === undefined ? undefined : { workspaceId: chatWorkspaceId, chatId }
 
   // Full screen belongs to the page it was asked for on, so it is left behind with it.
   const [fullScreenAt, setFullScreenAt] = useState<string>()
@@ -83,7 +88,7 @@ const AppFrame = () => {
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
     const { chat: fromChat } = itemPage.search
-    const item = asideItemFor(pageWorkspaceId, ref, fromChat)
+    const item = asideItemFor(pageWorkspaceId, ref, fromChat, items)
     const open = formatAsideRef(ref)
     const expandedHere = router.state.location.state.fromChat === true
     asideElement = (
