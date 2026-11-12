@@ -667,7 +667,7 @@ function accessField(context: Context) {
     <RadioCards
       value={values.access === "write" ? "write" : "read"}
       options={[
-        { value: "write", title: "Read and write", description: "Files can also be commented on and shared, and a folder or all-of-Drive connection can move them. Each change waits for your approval." },
+        { value: "write", title: "Read and write", description: "Changes, such as comments, sharing and moves, each wait for your approval." },
         { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
       ]}
       onChange={next => chooseAccess(context, next)}
