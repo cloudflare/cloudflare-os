@@ -81,6 +81,11 @@ function tabText(tab: GoogleDocsTab): { text: string; pieces: Piece[] } {
 const PARTIAL_CHIP = "That text takes in part of a smart chip (a person, date or link), which " +
   "can only be replaced whole. Include all of the chip's text, or none of it.";
 
+/** The refusal for replacing text on both sides of an element that reads as no text. */
+const SPANS_HIDDEN = "That text runs across something in the Doc that reads as no text, such " +
+  "as a dropdown or a horizontal line, which the suggestion would delete too. Quote the text on " +
+  "one side of it.";
+
 /**
  * The tab index of text offset `offset`, as the start (or, `end`, the exclusive end) of a range.
  * A chip the offset falls inside is taken whole, or, with `wholeChips`, refused.
@@ -101,7 +106,8 @@ function indexAt(pieces: Piece[], offset: number, end: boolean, wholeChips: bool
 /**
  * Finds `quote`, trimmed, in the tab's text, where it must occur exactly once; neither side is
  * normalized. Returns the range it takes in the tab. A chip the quote takes part of is taken
- * whole, as a comment's anchor; with `wholeChips`, as for text a suggestion replaces, it is refused.
+ * whole, as a comment's anchor; with `wholeChips`, as for text a suggestion replaces, it is refused,
+ * as is a quote that runs across an element the text leaves out, which the range would take in.
  */
 export function locateQuote(
   tab: GoogleDocsTab, quote: string, { wholeChips = false }: { wholeChips?: boolean } = {},
@@ -122,6 +128,13 @@ export function locateQuote(
   for (let at = first; at >= 0; at = text.indexOf(needle, at + 1)) count++;
   if (count > 1) {
     throw new Error(`That text appears ${count} times; quote more of it so it is unique.`);
+  }
+  if (wholeChips) {
+    let end = first + needle.length;
+    let inside = pieces.filter(piece => piece.at < end && piece.at + piece.length > first);
+    if (inside.some((piece, i) => i > 0 && inside[i - 1].endIndex !== piece.startIndex)) {
+      throw new Error(SPANS_HIDDEN);
+    }
   }
   return {
     startIndex: indexAt(pieces, first, false, wholeChips),

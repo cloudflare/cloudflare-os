@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { GoogleDocsDocument, GoogleDocsTab, StructuralElement } from "../src/docs-api";
+import type {
+  GoogleDocsDocument, GoogleDocsTab, ParagraphElement, StructuralElement,
+} from "../src/docs-api";
 import {
   checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
   selectTab,
@@ -9,7 +11,7 @@ import {
 } from "../src/drive-api";
 
 /** A part of a paragraph: a text run, or a chip that reads as text but takes one index. */
-type Part = string | { person: string } | { date: string };
+type Part = string | { person: string } | { date: string } | { dropdown: true };
 
 /** A paragraph of text runs and chips, its indices filled in later by {@link tab}. */
 function paragraph(parts: Part[], headingId?: string): StructuralElement {
@@ -20,7 +22,10 @@ function paragraph(parts: Part[], headingId?: string): StructuralElement {
         ? { startIndex: 0, endIndex: 0, textRun: { content: part, textStyle: {} } }
         : "person" in part
           ? { startIndex: 0, endIndex: 0, person: { personProperties: { name: part.person } } }
-          : { startIndex: 0, endIndex: 0, dateElement: { dateElementProperties: { displayText: part.date } } }),
+          : "date" in part
+            ? { startIndex: 0, endIndex: 0, dateElement: { dateElementProperties: { displayText: part.date } } }
+            // An element the text leaves out, as Google's dropdown, which no type here declares.
+            : { startIndex: 0, endIndex: 0, dropdown: {} } as ParagraphElement),
       paragraphStyle: headingId
         ? { namedStyleType: "HEADING_2", headingId }
         : { namedStyleType: "NORMAL_TEXT" },
@@ -168,6 +173,18 @@ describe("locateQuote", () => {
       expect(() => locateQuote(found, part, { wholeChips: true }), part)
         .toThrow("That text takes in part of a smart chip");
     }
+  });
+
+  // bonk: an element that reads as no text joins the text on its sides, and a replacement range
+  // across it would delete it unseen.
+  it("refuses a replacement across an element that reads as no text, which a comment may span", () => {
+    // "Before " is 1..8, the dropdown 8..9, " after" 9..15.
+    let found = tab("t.0", [paragraph(["Before ", { dropdown: true }, " after\n"])]);
+    expect(() => locateQuote(found, "Before  after", { wholeChips: true }))
+      .toThrow("That text runs across something in the Doc that reads as no text");
+    expect(locateQuote(found, "Before  after")).toEqual({ startIndex: 1, endIndex: 15, tabId: "t.0" });
+    expect(locateQuote(found, "Before", { wholeChips: true })).toEqual({ startIndex: 1, endIndex: 7, tabId: "t.0" });
+    expect(locateQuote(found, "after", { wholeChips: true })).toEqual({ startIndex: 10, endIndex: 15, tabId: "t.0" });
   });
 
   it("refuses text that appears more than once, counting overlaps", () => {
