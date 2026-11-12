@@ -17,7 +17,6 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
-import type { UiBundle } from "./api.js";
 
 /**
  * A pagination cursor.
@@ -2088,3 +2087,30 @@ export type GitPullHints = {
    */
   filterTreeDepth?: number;
 }
+
+/**
+ * Describes the client-side UI code for a Gadget. Such code is intended to run inside an iframe
+ * sandbox with no access to the outside world except through an RPC interface to the Workshop
+ * and to the Gadget's server.
+ */
+export type UiBundle = {
+  // URL from which the main bundle of UI code can be downloaded. This download contains all the
+  // Gadget's client-side assets. The URL is content-addressed to make it highly cacheable, even
+  // across multiple Gadgets sharing the same implementation (blueprint).
+  //
+  // TODO: Specify the format of what this URL returns. A raw HTML page doesn't quite work because
+  //   the client needs to initialize the sandbox with some platform libraries before loading the
+  //   Gadget itself.
+//  url: string;
+
+  /**
+   * Returns the raw JS code to execute in the Gadget iframe.
+   * TODO: For now we just return the code but we should switch to serving over HTTP as described
+   *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
+   *   Cache API in the browser? Or some other local storage?
+   */
+  jsCode: string;
+
+  // Other metadata could be placed here in the future, e.g. to specify what version of support
+  // libraries should be loaded.
+};

@@ -26,7 +26,8 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, GatekeeperUserSelection, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
-import type { GitOid } from "./gatekeeper.js";
+import type { GitOid, UiBundle } from "./gatekeeper.js";
+export type { UiBundle };
 import type { UiFeatureFlags } from "./feature-flags.js";
 
 export const SERVICE_SALT = new Uint8Array([
@@ -3013,33 +3014,6 @@ export type OutputSummary = {
    */
   role?: CollaboratorRole;
 }
-
-/**
- * Describes the client-side UI code for a Gadget. Such code is intended to run inside an iframe
- * sandbox with no access to the outside world except through an RPC interface to the Workshop
- * and to the Gadget's server.
- */
-export type UiBundle = {
-  // URL from which the main bundle of UI code can be downloaded. This download contains all the
-  // Gadget's client-side assets. The URL is content-addressed to make it highly cacheable, even
-  // across multiple Gadgets sharing the same implementation (blueprint).
-  //
-  // TODO: Specify the format of what this URL returns. A raw HTML page doesn't quite work because
-  //   the client needs to initialize the sandbox with some platform libraries before loading the
-  //   Gadget itself.
-//  url: string;
-
-  /**
-   * Returns the raw JS code to execute in the Gadget iframe.
-   * TODO: For now we just return the code but we should switch to serving over HTTP as described
-   *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
-   *   Cache API in the browser? Or some other local storage?
-   */
-  jsCode: string;
-
-  // Other metadata could be placed here in the future, e.g. to specify what version of support
-  // libraries should be loaded.
-};
 
 /**
  * A git author/committer identity, as recorded in commits in a workspace's git object store.
