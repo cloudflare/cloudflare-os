@@ -77,11 +77,13 @@ Counts and queue headers hydrate from local storage once per User DO lifetime. S
 and subscriptions use that memory, never list threads on other DOs, and never write read rows.
 The existing source fanout carries inbox metadata with the count; title changes already dirty the
 same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
-change read horizons. The existing admission callback can repair metadata skipped during denied
-admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
+change read horizons, including on preference-only rows whose read tracking has not started.
+Preference changes accept only the source default and alert receipt, leaving the read positions,
+count and paired inbox head to ordinary fanout. The existing admission callback can repair metadata
+skipped during denied admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
 Every live tracked cursor stores a head and both visible positions, supplied by message fanout,
-first admission or an open-session read command. Tombstones may omit a head. Bulk actions rely
-on this invariant; there is no metadata lookup fallback.
+first admission or an open-session read command. Tombstones and preference-only rows may omit a
+head. Bulk actions rely on this invariant; there is no metadata lookup fallback.
 
 Three targeted local queries avoid transferring the full thread state for every consumer:
 

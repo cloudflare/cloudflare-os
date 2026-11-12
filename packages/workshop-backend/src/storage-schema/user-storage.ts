@@ -168,7 +168,8 @@ export type ChatReadCursor = {
   notifiedEventIds?: string[];
   /**
    * The chat's title and latest-message preview, copied from the workspace so the inbox can show it
-   * without asking the workspace. Always present, except on rows for deleted chats.
+   * without asking the workspace. Absent on deleted chats and preference-only rows whose read
+   * tracking has not started.
    */
   head?: ChatTimelineHead;
   /**

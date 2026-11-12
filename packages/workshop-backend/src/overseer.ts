@@ -1388,15 +1388,11 @@ class OverseerImpl implements AgentHooks {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
-    let counter = this.storage.nextChatSequences.get(chatId);
     let tail = this.nextChatSequencePeek(chatId) - 1;
     await this.wrapUserDo(this.users.get(this.users.idFromString(userId))).setChatNotificationsEnabled(
       this.ctx.id.toString(), chatId, enabled, {
-        head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
         notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
-        latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
-        readThroughSequence: tail, readThroughVisibleSequence: counter?.visibleThroughSequence ?? 0,
-        notificationBaseline: tail,
+        notifiedThroughSequence: tail,
       });
   }
 

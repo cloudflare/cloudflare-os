@@ -840,13 +840,13 @@ describe("UserDurableObject notifications", () => {
       })));
       using publishing = vi.spyOn(user, "publishNotification");
       const position = {head: {chatTitle: "Chat", latestSequence: 1}, headUpdatedAt: new Date(),
-        latestVisibleSequence: 1, readThroughSequence: 1, readThroughVisibleSequence: 1, notificationBaseline: 1};
+        latestVisibleSequence: 1};
       await user.messageArrived(workspaceId, chatId, {...position,
         firstMessageSequence: 1, firstVisibleSequence: 1,
         notifications: [{id: NOTIFICATION.id, kind: NOTIFICATION.kind, chatTitle: "Chat", sequence: 1}]});
       await offered.promise;
-      await user.setChatNotificationsEnabled(workspaceId, chatId, false, position);
-      await user.setChatNotificationsEnabled(workspaceId, chatId, true, position);
+      await user.setChatNotificationsEnabled(workspaceId, chatId, false, {notifiedThroughSequence: 1});
+      await user.setChatNotificationsEnabled(workspaceId, chatId, true, {notifiedThroughSequence: 1});
       answer.reject(new Error("Browser hidden"));
       await publishing.mock.results[0].value;
       expect(bodies(fetcher, "/v1/deliveries")).toEqual([]);

@@ -824,16 +824,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Store this user's per-chat override using an authorized workspace snapshot, without a callback. */
   async setChatNotificationsEnabled(workspaceId: string, chatId: number, enabled: boolean,
-      position: ChatReadPosition): Promise<void> {
+      baseline: Pick<ChatAdmissionBaseline, "notificationsMutedByDefault" | "notifiedThroughSequence">): Promise<void> {
     if (!this.#hasWorkspace(workspaceId)) return;
     let current = this.#cursor(workspaceId, chatId);
     if (current.deleted || current.notificationsEnabled === enabled) return;
     this.ctx.storage.transactionSync(() => {
-      let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
-      let cursor = {...current, ...this.#mergeHead(current, position), notificationsEnabled: enabled,
-        latestVisibleSequence: latest, unreadCount: current.readThroughVisibleSequence === undefined
-          ? current.unreadCount : latest - current.readThroughVisibleSequence};
-      this.#storeCursor(this.#skipChatNotifications(cursor, position.readThroughSequence));
+      // Preference changes leave read accounting and its paired head to ordinary fanout.
+      let cursor = {...current, notificationsEnabled: enabled,
+        notificationsMutedByDefault: baseline.notificationsMutedByDefault ?? current.notificationsMutedByDefault};
+      this.#storeCursor(this.#skipChatNotifications(cursor, baseline.notifiedThroughSequence));
     });
     this.#unreadChanged(workspaceId, chatId);
     await this.#armExpirySweep();
@@ -1080,8 +1079,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     let cursor = this.#cursor(workspaceId, chatId);
     if (cursor.deleted) return;
-    // Metadata changes don't enroll history. Wait for a new message or an explicit command.
-    if (progress.firstMessageSequence === undefined && !this.#readCursors.has(key)) return;
+    // Preference-only rows aren't enrolled either. Wait for a new message or a read command.
+    if (progress.firstMessageSequence === undefined && cursor.readThroughVisibleSequence === undefined) return;
     let readThroughVisibleSequence = cursor.readThroughVisibleSequence;
     if (readThroughVisibleSequence === undefined) {
       readThroughVisibleSequence = (progress.firstVisibleSequence ?? progress.latestVisibleSequence + 1) - 1;

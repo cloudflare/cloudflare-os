@@ -174,6 +174,61 @@ describe("persisted visible positions", () => {
 });
 
 describe("spawned chat notifications", () => {
+  it.each([false, true])("does not enroll legacy history through a preference and metadata update (enabled: %s)", async enabled => {
+    const fixture = await setup();
+    await withImpl(fixture.workspace, async impl => {
+      impl.ownerId = undefined;
+      impl.storage.version.put(6);
+      write(impl, 0, "Old"); write(impl, 99, "Old tail");
+      impl.ownerId = fixture.user.id.toString();
+    });
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
+      await impl.deliverDirtyChats();
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled);
+    });
+    await evictDurableObject(fixture.user);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed", lastActive: impl.getChatTimestamp()});
+      await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({notificationsEnabled: enabled, unreadCount: 0});
+    expect((await cursor(fixture))?.readThroughVisibleSequence).toBeUndefined();
+    await append(fixture, 100, "First tracked message");
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 99, readThroughVisibleSequence: 0,
+      latestVisibleSequence: 1, unreadCount: 1, head: {chatTitle: "Renamed"}});
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(enabled ? 1 : 0);
+  });
+
+  it.each([false, true])("keeps a delayed own message read across a preference update (enabled: %s)", async enabled => {
+    const fixture = await setup(); const {owner} = await addReader(fixture);
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Mine", 1, owner); await impl.deliverDirtyChats();
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        if (user.id.equals(fixture.user.id)) { entered.resolve(); await release.promise; }
+        await user.messageArrived(...args);
+      });
+      try {
+        write(impl, 4, "Mine while fanout waits", 1, owner);
+        const delivery = impl.deliverDirtyChats();
+        await entered.promise;
+        await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled);
+        release.resolve(); await delivery;
+      } finally {
+        release.resolve(); restore();
+      }
+    });
+    await evictDurableObject(fixture.user);
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 4, readThroughVisibleSequence: 2,
+      latestVisibleSequence: 2, unreadCount: 0, notificationsEnabled: enabled});
+    await withImpl(fixture.workspace, async impl => {
+      impl.markChatDirty(1, 4, 2); await impl.deliverDirtyChats();
+    });
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 4, unreadCount: 0});
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+  });
+
   it("defaults spawned chats to muted badges and alerts, including after eviction", async () => {
     const fixture = await setup();
     const {reader} = await addReader(fixture);
