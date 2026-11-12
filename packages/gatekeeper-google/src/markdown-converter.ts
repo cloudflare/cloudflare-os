@@ -122,6 +122,11 @@ export type TableMapping = EditableTable & {
 export type TableCellEntry = {
   /** The cell's editable texts, as half-open ranges counted from the cell's first line. */
   texts: [number, number][];
+  /**
+   * The indexes in `texts` of the texts whose paragraph is a title, which the HTML shows as an
+   * `<h1>`, as it does a level-one heading; absent where there is none.
+   */
+  titles?: number[];
   /** Whether the cell holds an item of a list that numbers any of its levels. */
   numbered: boolean;
   /** Whether the cell holds a footnote reference. */
@@ -153,8 +158,9 @@ export type TableCellEntry = {
 };
 
 // The packing of `EditableTable.rows` and `TableMapping.docRows`, which only the three functions
-// below and the renderer know. A cell's first number in `rows` holds its flags in the low seven
-// bits and the number of its texts above them.
+// below and the renderer know. A cell's first number in `rows` holds its flags in the low eight
+// bits and the number of its texts above them. Its texts follow, two numbers each, and then, where
+// `CELL_TITLES` is set, the number of its titles and their indexes.
 const CELL_NUMBERED = 1;
 const CELL_FOOTNOTE = 2;
 const CELL_STYLED = 4;
@@ -162,7 +168,8 @@ const CELL_LONE_CHIP = 8;
 const CELL_UNSHOWN = 16;
 const CELL_COPIES_DROPDOWN = 32;
 const CELL_COPIES_PLACEHOLDER = 64;
-const CELL_TEXT = 128;
+const CELL_TITLES = 128;
+const CELL_TEXT = 256;
 
 /** A cell's `copies`, which its two bits hold: both set for "nothing". */
 function copiesOf(head: number): Pick<TableCellEntry, "copies"> {
@@ -182,8 +189,13 @@ export function tableRowCells(table: EditableTable, row: number): TableCellEntry
     for (let count = Math.floor(head / CELL_TEXT); count > 0; count--) {
       texts.push([packed[index++], packed[index++]]);
     }
+    let titles: number[] = [];
+    if (head & CELL_TITLES) {
+      for (let count = packed[index++]; count > 0; count--) titles.push(packed[index++]);
+    }
     cells.push({
       texts,
+      ...(titles.length > 0 ? { titles } : {}),
       numbered: (head & CELL_NUMBERED) !== 0,
       footnote: (head & CELL_FOOTNOTE) !== 0,
       styled: (head & CELL_STYLED) !== 0,
@@ -207,8 +219,10 @@ export function packTableRow(cells: readonly TableCellEntry[]): number[] {
       (cell.footnote ? CELL_FOOTNOTE : 0) + (cell.styled ? CELL_STYLED : 0) +
       (cell.loneChip ? CELL_LONE_CHIP : 0) + (cell.unshown ? CELL_UNSHOWN : 0) +
       (cell.copies === "dropdown" || cell.copies === "nothing" ? CELL_COPIES_DROPDOWN : 0) +
-      (cell.copies === "placeholder" || cell.copies === "nothing" ? CELL_COPIES_PLACEHOLDER : 0));
+      (cell.copies === "placeholder" || cell.copies === "nothing" ? CELL_COPIES_PLACEHOLDER : 0) +
+      (cell.titles?.length ? CELL_TITLES : 0));
     for (let [start, end] of cell.texts) packed.push(start, end);
+    if (cell.titles?.length) packed.push(cell.titles.length, ...cell.titles);
   }
   return packed;
 }
@@ -228,7 +242,9 @@ export function tableRowIndexes(table: TableMapping, row: number): {
   let next = 1;
   for (let index = 0; index < packed.length;) {
     let texts = Math.floor(packed[index] / CELL_TEXT);
+    let titled = (packed[index] & CELL_TITLES) !== 0;
     index += 1 + 2 * texts;
+    if (titled) index += 1 + packed[index];
     let cellEnd = cellStart + docRow[next++];
     let paragraphs: number[] = [];
     for (let text = 0; text < texts; text++) paragraphs.push(cellStart + docRow[next++]);
@@ -571,7 +587,8 @@ function holdsOnlyText(paragraph: Paragraph): boolean {
 }
 
 /** An editable text in rendered HTML, and the start index of the paragraph it came from. */
-type RenderedText = { start: number; end: number; docStart: number };
+/** An editable text: where it is, where its paragraph starts, and whether that is a title. */
+type RenderedText = { start: number; end: number; docStart: number; title?: true };
 
 /** Rendered HTML with the editable texts in it, as ranges counted from its first character. */
 type RenderedHtml = { html: string; texts: readonly RenderedText[] };
@@ -579,8 +596,8 @@ type RenderedHtml = { html: string; texts: readonly RenderedText[] };
 const NO_TEXTS: readonly RenderedText[] = [];
 
 function shiftTexts(texts: readonly RenderedText[], offset: number): readonly RenderedText[] {
-  return offset === 0 ? texts : texts.map(({ start, end, docStart }) => ({
-    start: start + offset, end: end + offset, docStart,
+  return offset === 0 ? texts : texts.map(text => ({
+    ...text, start: text.start + offset, end: text.end + offset,
   }));
 }
 
@@ -690,13 +707,16 @@ function recordTableRow(
     let elements = cell.content ?? [];
     let first = elements[0]?.paragraph;
     let texts: [number, number][] = [];
+    let titles: number[] = [];
     docRow.push(cell.endIndex - cell.startIndex);
     for (let text of rendered[column].texts) {
+      if (text.title) titles.push(texts.length);
       texts.push([text.start, text.end]);
       docRow.push(text.docStart - cell.startIndex);
     }
     cells.push({
       texts,
+      ...(titles.length > 0 ? { titles } : {}),
       numbered: someCellParagraph(elements, lists, isItemOfNumberingList),
       footnote: someCellParagraph(elements, lists, holdsFootnote),
       // Google copies the style of a cell's first paragraph into a cell added beside it, and the
@@ -861,9 +881,7 @@ function indentedTexts(
     }
     return lead + offset + spaces * lines;
   };
-  return texts.map(({ start, end, docStart }) => ({
-    start: place(start), end: place(end), docStart,
-  }));
+  return texts.map(text => ({ ...text, start: place(text.start), end: place(text.end) }));
 }
 
 /**
@@ -901,7 +919,7 @@ function tableListToHtml(
     if (editable && isEditableCellParagraph(paragraph)) {
       texts.push({
         start: html.length, end: html.length + content.length,
-        docStart: elements[index].startIndex,
+        docStart: elements[index].startIndex, ...titleFlag(paragraph),
       });
     }
     html += headingLevel ? `${content}</h${headingLevel}>` : content;
@@ -948,9 +966,15 @@ function tableCellElementToHtml(
   let start = tag.length + 2;
   return {
     html: `<${tag}>${content}</${tag}>`,
-    texts: editable && isEditableCellParagraph(paragraph)
-      ? [{ start, end: start + content.length, docStart: element.startIndex }] : NO_TEXTS,
+    texts: editable && isEditableCellParagraph(paragraph) ? [{
+      start, end: start + content.length, docStart: element.startIndex, ...titleFlag(paragraph),
+    }] : NO_TEXTS,
   };
+}
+
+/** A rendered text's `title` flag, for a paragraph that is a title. */
+function titleFlag(paragraph: Paragraph): Pick<RenderedText, "title"> {
+  return paragraph.paragraphStyle.namedStyleType === "TITLE" ? { title: true } : {};
 }
 
 /**

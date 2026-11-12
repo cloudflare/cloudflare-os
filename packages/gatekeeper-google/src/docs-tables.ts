@@ -1344,8 +1344,13 @@ export function applyTableChange(
 // Merging cells
 // ---------------------------------------------------------------------------
 
-/** A cell's content as lines, each without its indentation, with where its texts are in them. */
-type CellContent = { lines: string[]; texts: [line: number, start: number, end: number][] };
+/**
+ * A cell's content as lines, each without its indentation, with where its texts are in them and
+ * which of them are titles, as `TableCellEntry.titles` says.
+ */
+type CellContent = {
+  lines: string[]; texts: [line: number, start: number, end: number][]; titles?: number[];
+};
 
 /** The content of the cell at `cell`, whose texts the map gives as `entry` does. */
 function cellContent(
@@ -1353,10 +1358,12 @@ function cellContent(
 ): CellContent {
   let block = markdown.slice(cell.mdStart, cell.mdEnd - 1);
   let tagEnd = cell.tag.mdEnd - cell.mdStart;
+  let titles = entry.titles ? { titles: entry.titles } : {};
   if (!block.includes("\n")) {
     return {
       lines: [block.slice(tagEnd, -"</td>".length)],
       texts: entry.texts.map(([start, end]) => [0, start - tagEnd, end - tagEnd]),
+      ...titles,
     };
   }
   let lines = block.slice(tagEnd + 1, block.lastIndexOf("\n")).split("\n");
@@ -1372,6 +1379,7 @@ function cellContent(
       let line = starts.findLastIndex(begins => begins <= start);
       return [line, start - starts[line], end - starts[line]];
     }),
+    ...titles,
   };
 }
 
@@ -1512,7 +1520,9 @@ function applyMerge(
     }
   }
   let merged: CellContent = { lines: [], texts: [] };
+  let titles: number[] = [];
   for (let part of parts) {
+    for (let title of part.titles ?? []) titles.push(merged.texts.length + title);
     for (let [line, start, end] of part.texts) {
       merged.texts.push([merged.lines.length + line, start, end]);
     }
@@ -1532,7 +1542,7 @@ function applyMerge(
           // Only the top-left cell may start with a heading or a list item, or hold a numbered
           // list: its paragraphs come first, unless it is empty and adds none.
           ...PLAIN_CELL, texts: head.texts, numbered: cells[c].numbered,
-          styled: headKept && cells[c].styled,
+          styled: headKept && cells[c].styled, ...(titles.length > 0 ? { titles } : {}),
         };
       } else {
         edits.push({
@@ -2726,25 +2736,18 @@ function requestedHtml(
 
 /**
  * Plan the change of the text of the cell paragraph that `piece` opens, and its requests, read by
- * the named style its tag gives. An `<h1>` is a title or a level-one heading, which the read does
- * not tell apart, so a change the two would read otherwise is refused.
+ * the paragraph's named style: a title where the table's map says so, else the style its tag
+ * gives.
  */
 function planCellText(
   oldHtml: string, newHtml: string, tabId: string, named: NamedFormatting | null, piece: string,
+  title: boolean,
 ): { plan: TextPlan; requests: TextRequest[] } {
   let tag = /<(h[1-6]|p|li)\b[^>]*>[^<]*$/.exec(piece)?.[1];
-  let style = tag?.startsWith("h") ? `HEADING_${tag[1]}` : "NORMAL_TEXT";
+  let style = title ? "TITLE" : tag?.startsWith("h") ? `HEADING_${tag[1]}` : "NORMAL_TEXT";
   let drafted = planText(oldHtml, newHtml, tabId);
   let requests = textPlanRequests(drafted, tabId);
   let html = requestedHtml(drafted, requests, named?.[style] ?? {});
-  if (style === "HEADING_1" && named &&
-      requestedHtml(drafted, requests, named.TITLE ?? {}) !== html) {
-    throw new Error(
-      "replaceText: in this tab a title reads its bold, italic or strikethrough otherwise than a " +
-      "level-one heading does, and an <h1> in a table cell may be either, so how this change " +
-      "would read cannot be told. Change the heading's text without changing its bold, italic " +
-      "or strikethrough.");
-  }
   return { plan: { ...drafted, html }, requests };
 }
 
@@ -2878,8 +2881,13 @@ function textPlanRequests(plan: Omit<TextPlan, "html">, tabId: string): TextRequ
 // A replacement in table cells: reading the new HTML against the table
 // ---------------------------------------------------------------------------
 
-/** An editable text of a table: its range in the table's HTML, and whose text it is. */
-type TableText = { start: number; end: number; row: number; column: number; index: number };
+/**
+ * An editable text of a table: its range in the table's HTML, whose text it is, and whether its
+ * paragraph is a title.
+ */
+type TableText = {
+  start: number; end: number; row: number; column: number; index: number; title: boolean;
+};
 
 /** Where a walk stopped: at `offset` of piece `piece`, which is at `at` of the text walked. */
 type WalkStop = { piece: number; offset: number; at: number };
@@ -3087,8 +3095,12 @@ function readTableText(
     if (entries.length !== line.cells.length) throw notLaidOut("replaceText");
     for (let [column, cell] of line.cells.entries()) {
       let cellStart = cell.mdStart - target.mdStart;
+      let { titles } = entries[column];
       for (let [index, [start, end]] of entries[column].texts.entries()) {
-        texts.push({ start: cellStart + start, end: cellStart + end, row, column, index });
+        texts.push({
+          start: cellStart + start, end: cellStart + end, row, column, index,
+          title: titles?.includes(index) === true,
+        });
       }
     }
   }
@@ -3124,7 +3136,7 @@ function readTableText(
   for (let [index, text] of texts.entries()) {
     let old = html.slice(text.start, text.end);
     let planned = written[index] === old ? undefined
-      : planCellText(old, written[index], tabId, named, pieces[index]);
+      : planCellText(old, written[index], tabId, named, pieces[index], text.title);
     plans.push(planned?.plan);
     // A plan's requests are sent even where its HTML reads as the old did: what Google stores
     // can differ where the read cannot tell, as for bold written over a heading's explicit

@@ -4005,40 +4005,32 @@ describe("formatting a paragraph's named style already gives", () => {
       .toBe(applyTableChange(simulated, rows).markdown);
   });
 
-  it("refuses formatting in a cell's <h1> that a title would read otherwise than a heading", () => {
+  it("reads a cell's title and level-one heading each by its own named style", () => {
     let title: ParagraphSpec = { runs: ["Notes here\n"], namedStyleType: "TITLE" };
-    let titled = (styles: NonNullable<GoogleDocsTab["namedStyles"]>["styles"]) => styledTab([
+    let tab = () => styledTab([
       para("Before"),
-      { table: [[cellOf(title), cellOf(heading("Cell results", 1))]] },
+      { table: [[cellOf(title), cellOf(heading("Cell results", 1))], ["a\n", "b\n"]] },
       para("After"),
-    ], { styles });
-    let tab = titled([
-      { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
-      { namedStyleType: "TITLE", textStyle: { bold: true } },
-    ]);
-    let before = docTabToMarkdown(tab);
-    for (let [oldMarkdown, newMarkdown] of [
-      ["<h1>Notes here</h1>", "<h1><strong>Notes here</strong></h1>"],
-      ["<h1>Cell results</h1>", "<h1><strong>Cell</strong> results</h1>"],
+    ], {
+      styles: [
+        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
+        { namedStyleType: "TITLE", textStyle: { bold: true } },
+      ],
+    });
+    expect(tableRowCells(read(tab()).tables[0], 0).map(cell => cell.titles)).toEqual([[0], undefined]);
+    // Bold written into the bold title is its style's, and into the plain heading the text's own.
+    for (let [oldMarkdown, newMarkdown, reads] of [
+      ["<h1>Notes here</h1>", "<h1><strong>Notes here</strong></h1>", "<h1>Notes here</h1>"],
+      ["<h1>Cell results</h1>", "<h1><strong>Cell</strong> results</h1>",
+        "<h1><strong>Cell</strong> results</h1>"],
     ]) {
-      let replacement = { ...replacementIn(before.markdown, oldMarkdown, newMarkdown), inTable: true as const };
-      expect(message(() => applyTextReplacement(contentOf(before), replacement, TAB, before))).toBe(
-        "replaceText: in this tab a title reads its bold, italic or strikethrough otherwise than a " +
-        "level-one heading does, and an <h1> in a table cell may be either, so how this change " +
-        "would read cannot be told. Change the heading's text without changing its bold, italic " +
-        "or strikethrough.");
+      let { simulated, applied } = expectStyledSameAsGoogle(tab(), oldMarkdown, newMarkdown, true);
+      expect(tableAt(simulated, 0)).toContain(reads);
+      let rows = addRows(simulated, 0, 2, [["x", "y"]]);
+      let fresh = docTabToMarkdown(applied);
+      expect(applyTableChange(contentOf(fresh), rows, fresh).markdown)
+        .toBe(applyTableChange(simulated, rows).markdown);
     }
-    // Text, and formatting the two styles read alike, are taken.
-    expectStyledSameAsGoogle(tab, "<h1>Notes here</h1>", "<h1>Notes there</h1>", true);
-    expectStyledSameAsGoogle(tab, "<h1>Notes here</h1>", "<h1><em>Notes</em> here</h1>", true);
-    let alike = titled([
-      { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
-      { namedStyleType: "TITLE", textStyle: { bold: true } },
-      { namedStyleType: "HEADING_1", textStyle: { bold: true } },
-    ]);
-    let { simulated } = expectStyledSameAsGoogle(
-      alike, "<h1>Notes here</h1>", "<h1><strong>Notes</strong> here</h1>", true);
-    expect(tableAt(simulated, 0)).toContain("<h1>Notes here</h1>");
   });
 
   it("reads a paragraph a replacement gives another style by that style, as Google does", () => {
@@ -4948,6 +4940,16 @@ describe("merging and splitting cells", () => {
     ({ type: "unmergeTableCells", row, column, ...refOf(content, 0) });
   const table = (...rows: CellSpec[][]): GoogleDocsTab =>
     buildTab([para("Before"), { table: rows, heights: [0, 24, 0] }, para("After")]);
+
+  it("keeps which of the joined paragraphs are titles", () => {
+    const title = (text: string): ParagraphSpec => ({ runs: [`${text}\n`], namedStyleType: "TITLE" });
+    let tab = table(
+      [cellOf(title("One"), para("x")), cellOf(para("z"), title("Two")), "y\n"],
+      ["a\n", "b\n", "c\n"],
+      ["d\n", "e\n", "f\n"]);
+    let applied = expectSameAsGoogle(tab, merge(read(tab), 0, 0, 1, 2));
+    expect(tableRowCells(read(applied).tables[0], 0)[0].titles).toEqual([0, 3]);
+  });
 
   it("joins the cells' paragraphs into the top-left cell, row by row, as Google does", () => {
     let tab = table(
