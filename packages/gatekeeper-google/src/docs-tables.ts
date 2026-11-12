@@ -2585,7 +2585,6 @@ function formatPieces(
   return pieces;
 }
 
-/** Plan the change of one cell paragraph's text from `oldHtml` to `newHtml`, in tab `tabId`. */
 /**
  * The plan of one text's change. Where `inherited` names a style the paragraph's named style gives,
  * text the change styles reads without it once Google has applied the change.
@@ -2683,10 +2682,26 @@ function planText(
   };
 }
 
-/** The named style of the cell paragraph whose text follows `piece`, by the tag that opens it. */
-function cellParagraphStyle(piece: string): string {
+/**
+ * Plan the change of the text of the cell paragraph that `piece` opens, by the named style its
+ * tag gives. An `<h1>` is a title or a level-one heading, which the read does not tell apart, so
+ * a change the two would read otherwise is refused.
+ */
+function planCellText(
+  oldHtml: string, newHtml: string, tabId: string, named: NamedFormatting | null, piece: string,
+): TextPlan {
   let tag = /<(h[1-6]|p|li)\b[^>]*>[^<]*$/.exec(piece)?.[1];
-  return tag?.startsWith("h") ? `HEADING_${tag[1]}` : "NORMAL_TEXT";
+  let style = tag?.startsWith("h") ? `HEADING_${tag[1]}` : "NORMAL_TEXT";
+  let plan = planText(oldHtml, newHtml, tabId, named?.[style]);
+  if (style === "HEADING_1" && named &&
+      planText(oldHtml, newHtml, tabId, named.TITLE).html !== plan.html) {
+    throw new Error(
+      "replaceText: in this tab a title reads its bold, italic or strikethrough otherwise than a " +
+      "level-one heading does, and an <h1> in a table cell may be either, so how this change " +
+      "would read cannot be told. Change the heading's text without changing its bold, italic " +
+      "or strikethrough.");
+  }
+  return plan;
 }
 
 /** A request of a text's plan, with its indexes counted from the start of the text's paragraph. */
@@ -3065,7 +3080,7 @@ function readTableText(
   for (let [index, text] of texts.entries()) {
     let old = html.slice(text.start, text.end);
     let plan = written[index] === old ? undefined
-      : planText(old, written[index], tabId, named?.[cellParagraphStyle(pieces[index])]);
+      : planCellText(old, written[index], tabId, named, pieces[index]);
     plans.push(plan);
     // A text whose HTML stays as it is needs no request, however it was written.
     let needed = plan && plan.html !== old ? textPlanRequests(plan, tabId) : undefined;

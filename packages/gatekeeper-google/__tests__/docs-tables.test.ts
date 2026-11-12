@@ -3895,6 +3895,42 @@ describe("formatting a paragraph's named style already gives", () => {
     expect(tableAt(simulated, 0)).toContain("<h6>Cell notes</h6>");
   });
 
+  it("refuses formatting in a cell's <h1> that a title would read otherwise than a heading", () => {
+    let title: ParagraphSpec = { runs: ["Notes here\n"], namedStyleType: "TITLE" };
+    let titled = (styles: NonNullable<GoogleDocsTab["namedStyles"]>["styles"]) => styledTab([
+      para("Before"),
+      { table: [[cellOf(title), cellOf(heading("Cell results", 1))]] },
+      para("After"),
+    ], { styles });
+    let tab = titled([
+      { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
+      { namedStyleType: "TITLE", textStyle: { bold: true } },
+    ]);
+    let before = docTabToMarkdown(tab);
+    for (let [oldMarkdown, newMarkdown] of [
+      ["<h1>Notes here</h1>", "<h1><strong>Notes here</strong></h1>"],
+      ["<h1>Cell results</h1>", "<h1><strong>Cell</strong> results</h1>"],
+    ]) {
+      let replacement = { ...replacementIn(before.markdown, oldMarkdown, newMarkdown), inTable: true as const };
+      expect(message(() => applyTextReplacement(contentOf(before), replacement, TAB, before))).toBe(
+        "replaceText: in this tab a title reads its bold, italic or strikethrough otherwise than a " +
+        "level-one heading does, and an <h1> in a table cell may be either, so how this change " +
+        "would read cannot be told. Change the heading's text without changing its bold, italic " +
+        "or strikethrough.");
+    }
+    // Text, and formatting the two styles read alike, are taken.
+    expectStyledSameAsGoogle(tab, "<h1>Notes here</h1>", "<h1>Notes there</h1>", true);
+    expectStyledSameAsGoogle(tab, "<h1>Notes here</h1>", "<h1><em>Notes</em> here</h1>", true);
+    let alike = titled([
+      { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
+      { namedStyleType: "TITLE", textStyle: { bold: true } },
+      { namedStyleType: "HEADING_1", textStyle: { bold: true } },
+    ]);
+    let { simulated } = expectStyledSameAsGoogle(
+      alike, "<h1>Notes here</h1>", "<h1><strong>Notes</strong> here</h1>", true);
+    expect(tableAt(simulated, 0)).toContain("<h1>Notes here</h1>");
+  });
+
   it("reads a paragraph a replacement gives another style by that style, as Google does", () => {
     // A Heading 6, italic by its style, written as normal text keeps its italic.
     let { simulated } = expectStyledSameAsGoogle(body(), "###### Notes here", "*Notes* here");
