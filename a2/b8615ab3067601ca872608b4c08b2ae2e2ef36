@@ -1,0 +1,27 @@
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_99c049c8391965::t_0f29b7239bb9b8 4711-4717,4719,4724-4728,4763-4764
+packages/workshop-frontend/src/features/approvals/PendingChangeGroupRow.tsx
+  s_99c049c8391965::t_54d054a54ad873 59-60,62,189,192
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.test.tsx
+  s_99c049c8391965::t_7b2d3d068f5603 206-230
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.tsx
+  s_99c049c8391965::t_4cb5e4969a3c59 214,230-235
+packages/workshop-frontend/src/features/approvals/autoApprovalChannel.ts
+  s_99c049c8391965::t_9489e2dd39a696 22-25
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "a2b8615ab3067601ca872608b4c08b2ae2e2ef36",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
