@@ -7,7 +7,7 @@ import {
   addRequest, applyMarkdownEdit, canonicalizeMarkdownReplacement, canonicalLinkDestination,
   cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
   dropInheritedFormatting, escapeHtml, isGoogleDocsStrippedCharacter, isSafeTableLink, lineStart,
-  listLineType, rewrittenBlockStyles,
+  listLineType, replacedRange, rewrittenBlockStyles,
   MAX_GOOGLE_DOC_REQUESTS, packTableRow, plainTextToDocRequests, StructuredContentError,
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
@@ -2350,13 +2350,16 @@ export function applyTextReplacement(
   });
   if (!named) return edited;
   // Where the content reads as the document does, its blocks name each paragraph's style, and the
-  // request builder says which style each block it rewrites is written with.
+  // request builder says what it writes, and with which style. Otherwise only the replaced text is
+  // known to be written.
   let source = documentOf(content, doc)?.sourceMap;
   let blocks = source?.blocks;
-  let rewrite = source && run && rewrittenBlockStyles(source, content.markdown, run.matchStart,
-    run.matchStart + run.oldMarkdown.length, run.rendered);
+  let written = run && (source
+    ? rewrittenBlockStyles(source, content.markdown, run.matchStart,
+      run.matchStart + run.oldMarkdown.length, run.rendered)
+    : { replaced: replacedRange(content.markdown, run.matchStart, run.oldMarkdown, run.rendered) });
   return dropInheritedFormatting(content, edited, named, blocks && (start =>
-    blocks.find(block => block.mdStart === start)?.namedStyleType), rewrite, !source);
+    blocks.find(block => block.mdStart === start)?.namedStyleType), written);
 }
 
 /** The requests of a stored `replaceText` against the fresh tab. */

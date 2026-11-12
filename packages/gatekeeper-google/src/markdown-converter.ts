@@ -1819,6 +1819,7 @@ function coalesceFormattingSpans(spans: FormattingSpan[]): FormattingSpan[] {
 function sanitizeGoogleDocsParsedText(
   plainText: string,
   spans: FormattingSpan[],
+  offsets?: Int32Array,
 ): { plainText: string; spans: FormattingSpan[] } {
   let firstRemoved = -1;
   for (let index = 0; index < plainText.length; index++) {
@@ -1844,6 +1845,9 @@ function sanitizeGoogleDocsParsedText(
   }
 
   chunks.push(plainText.slice(chunkStart));
+  if (offsets) {
+    for (let at = 0; at < offsets.length; at++) offsets[at] -= removedBefore[offsets[at]];
+  }
   return {
     plainText: chunks.join(""),
     spans: coalesceFormattingSpans(spans.map(span => ({
@@ -1854,8 +1858,20 @@ function sanitizeGoogleDocsParsedText(
   };
 }
 
-function parseInlineFormatting(text: string): { plainText: string; spans: FormattingSpan[] } {
+/**
+ * The plain text and formatting spans of one line's inline Markdown. Where `offsets` is given, of
+ * length `text.length + 1`, it is filled with the plain text's length before each offset of
+ * `text`: an offset inside a marker, an escape or a link's syntax maps to the length before it.
+ */
+function parseInlineFormatting(
+  text: string, offsets?: Int32Array,
+): { plainText: string; spans: FormattingSpan[] } {
   let plainText = "";
+  // Each offset in [from, to) maps to the plain length before it, or, `literal`, one for one.
+  let mark = (from: number, to: number, literal = false) => {
+    if (!offsets) return;
+    for (let at = from; at < to; at++) offsets[at] = plainText.length + (literal ? at - from : 0);
+  };
   let spans: FormattingSpan[] = [];
   let starts = new Map<number, number>();
   let state = 0;
@@ -1867,6 +1883,7 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
   for (let index = 0; index < text.length;) {
     let escaped = text[index + 1];
     if (text[index] === "\\" && escaped && isMarkdownPunctuation(escaped)) {
+      mark(index, index + 2);
       plainText += escaped;
       index += 2;
       continue;
@@ -1876,11 +1893,20 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
     if (link) {
       let end = link.end + 1;
       if (!link.label) {
+        mark(index, end, true);
         plainText += text.slice(index, end);
       } else {
         let start = plainText.length;
-        let inner = parseInlineFormatting(link.label);
+        let labelOffsets = offsets && new Int32Array(link.label.length + 1);
+        let inner = parseInlineFormatting(link.label, labelOffsets);
+        mark(index, index + 1);
+        if (offsets && labelOffsets) {
+          for (let at = 0; at < link.label.length; at++) {
+            offsets[index + 1 + at] = start + labelOffsets[at];
+          }
+        }
         plainText += inner.plainText;
+        mark(index + 1 + link.label.length, end);
         spans.push({ start, end: plainText.length, link: link.url });
         for (let span of inner.spans) {
           spans.push({ ...span, start: start + span.start, end: start + span.end });
@@ -1896,6 +1922,7 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
       if (state & STRIKETHROUGH_STATE && token.marker === "strikethrough" &&
           nextToken?.marker === "strikethrough" && token.end === nextToken.start &&
           completable[tokenIndex + 2] & (1 << state)) {
+        mark(index, nextToken.end);
         index = nextToken.end;
         tokenIndex += 2;
         continue;
@@ -1907,6 +1934,7 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
         if (token.marker === "strikethrough" && state & STRIKETHROUGH_STATE &&
             previousToken?.marker === "strikethrough" && previousToken.end === token.start &&
             starts.get(STRIKETHROUGH_STATE) === plainText.length) {
+          mark(previousToken.start, token.end, true);
           plainText += text.slice(previousToken.start, token.end);
           starts.delete(STRIKETHROUGH_STATE);
           state = next;
@@ -1922,9 +1950,11 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
               starts.delete(style);
             }
           }
+          mark(token.start, token.end);
           state = next;
         }
       } else {
+        mark(token.start, token.end, true);
         plainText += text.slice(token.start, token.end);
       }
       index = token.end;
@@ -1932,10 +1962,12 @@ function parseInlineFormatting(text: string): { plainText: string; spans: Format
       continue;
     }
 
+    mark(index, index + 1, true);
     plainText += text[index++];
   }
+  mark(text.length, text.length + 1);
 
-  return sanitizeGoogleDocsParsedText(plainText, spans);
+  return sanitizeGoogleDocsParsedText(plainText, spans, offsets);
 }
 
 function canonicalInlineMarkdown(block: ParsedBlock): string {
@@ -2671,23 +2703,45 @@ function normalizeChangedListBoundaries(
 /**
  * `edited`, an edit of `content` replayed as Markdown, as a read shows it once Google has applied
  * it: without the bold, italic or strikethrough written into a paragraph whose named style gives
- * it, which Google stores as inherited. Only the lines the edit changed are looked at; a line that
- * was there before reads no such style, since Google never stores one. A line reads as the style
- * its heading marker names, or as normal text, unless the edit leaves its marker as it was and
- * `styleAt` names the style of the paragraph that starts there before the edit. A replacement that
- * rewrites whole blocks, or one that writes only new paragraphs, says so in `written`, from
- * `rewrittenBlockStyles`. A subtitle keeps its italic, which a read shows inherited.
+ * it, which Google stores as inherited. Only text the edit's requests write loses it: text they
+ * keep reads as it did, and can hold such a style, as text given it before its paragraph took that
+ * named style does. `written`, from `rewrittenBlockStyles`, says what the requests write: whole
+ * blocks, each with its style, or the replaced text alone. Without it, every line the edit changed
+ * is written, as an append's are. Where it gives only the `replaced` range, the content does not
+ * read as the document, so whether the lines around it are written cannot be told, and a kept
+ * character that shows a style its line's named style gives is refused.
+ *
+ * A line reads as the style its heading marker names, or as normal text, unless the edit leaves
+ * its marker as it was and `styleAt` names the style of the paragraph that starts there before the
+ * edit. A subtitle keeps its italic, which a read shows inherited.
  */
 export function dropInheritedFormatting(
   content: EditableMarkdown, edited: EditableMarkdown, named: NamedFormatting,
   styleAt?: (lineStart: number) => string | undefined,
   written?: WrittenStyles,
-  unknownStyles = false,
 ): EditableMarkdown {
   let rewrite = written?.rewrite;
   if (Object.keys(named).length === 0 || edited.markdown === content.markdown) return edited;
+  let unknownStyles = written !== undefined && !rewrite && written.keepsFirst === undefined;
   let { prefixLen, suffixLen } = markdownReplacementBounds(content.markdown, edited.markdown);
   let { markdown } = edited;
+  // The edited Markdown the requests write, where they write only the replaced text: the text
+  // around it on its lines, and the lines before and after them, are kept as they were, and only
+  // the breaks between those lines can differ.
+  let writes: MarkdownRange | undefined;
+  if (written?.replaced) {
+    let old = content.markdown;
+    let { mdStart, mdEnd } = written.replaced;
+    let firstLine = lineStart(old, mdStart);
+    let lastEnd = old.indexOf("\n", mdEnd);
+    if (lastEnd < 0) lastEnd = old.length;
+    let before = firstLine - newlineRun(old, firstLine - 1, -1);
+    let after = markdown.length - (old.length - lastEnd - newlineRun(old, lastEnd, 1));
+    writes = {
+      mdStart: before + newlineRun(markdown, before, 1) + mdStart - firstLine,
+      mdEnd: after - newlineRun(markdown, after - 1, -1) - (lastEnd - mdEnd),
+    };
+  }
   let { protectedRanges, tables } = edited;
   let first = lineStart(markdown, prefixLen);
   let last = markdown.length - suffixLen;
@@ -2716,13 +2770,33 @@ export function dropInheritedFormatting(
       (level > 0 ? `HEADING_${level}` : "NORMAL_TEXT");
     let format = inheritedFormatOf(named, style);
     let block = parseLine(line);
+    // The plain text the requests write on this line: all of it, none of it where a rewrite of
+    // whole blocks keeps the block, or where `writes` lies.
+    let from = 0;
+    let to = block.plainText.length;
+    if (rewrite) {
+      let target = start >= rewrite.mdStart
+        ? nonBlankLines(markdown, rewrite.mdStart, start) : -1;
+      if (!rewrite.rewritten[target]) to = 0;
+    } else if (writes) {
+      let offsets = new Int32Array(line.length - marker[0].length + 1);
+      parseInlineFormatting(line.slice(marker[0].length), offsets);
+      let plainAt = (column: number) =>
+        offsets[Math.min(Math.max(column - marker[0].length, 0), offsets.length - 1)];
+      from = plainAt(writes.mdStart - start);
+      to = plainAt(writes.mdEnd - start);
+    }
+    let shows = (span: FormattingSpan, given: InheritedFormat, inside: boolean) =>
+      (inside ? span.start < to && span.end > from : span.start < from || span.end > to) &&
+      INHERITED_FIELDS.some(field => span[field] && given[field]);
     // Without the document, a line that reads as normal text may be a subtitle, and a level-one
     // heading a title. Where that style would read this line otherwise, the read cannot be told.
     let alternative = level === 0 ? "SUBTITLE" : level === 1 ? "TITLE" : undefined;
     if (unknownStyles && alternative && style !== alternative) {
       let other = inheritedFormatOf(named, alternative);
-      if (block.spans.some(span => INHERITED_FIELDS.some(field =>
-        span[field] && !format[field] !== !other[field]))) {
+      let differs: InheritedFormat = {};
+      for (let field of INHERITED_FIELDS) if (!format[field] !== !other[field]) differs[field] = true;
+      if (block.spans.some(span => shows(span, differs, true))) {
         throw new Error(
           `replaceText: in this tab a ${alternative === "TITLE" ? "title" : "subtitle"} reads ` +
           "its bold, italic or strikethrough otherwise than other text, and with earlier changes " +
@@ -2730,13 +2804,27 @@ export function dropInheritedFormatting(
           "earlier changes to this tab have been approved or rejected.");
       }
     }
-    if (!block.spans.some(span => INHERITED_FIELDS.some(field => format[field] && span[field]))) {
-      continue;
+    // Text kept beside the replaced text is rewritten too where the replacement rewrites whole
+    // blocks, which cannot be told without the document.
+    let given = alternative && unknownStyles
+      ? { ...format, ...inheritedFormatOf(named, alternative) } : format;
+    if (unknownStyles && block.spans.some(span => shows(span, given, false))) {
+      throw new Error(
+        "replaceText: this line keeps bold, italic or strikethrough that its paragraph's named " +
+        "style also gives, and with earlier changes waiting on the tab, whether this change " +
+        "rewrites that text, which would then read without it, cannot be told. Retry once the " +
+        "earlier changes to this tab have been approved or rejected.");
     }
-    let spans = block.spans.map(span => {
-      let kept = { ...span };
-      for (let field of INHERITED_FIELDS) if (format[field]) kept[field] = false;
-      return kept;
+    if (!block.spans.some(span => shows(span, format, true))) continue;
+    let spans = block.spans.flatMap(span => {
+      if (!shows(span, format, true)) return [span];
+      let stripped = { ...span, start: Math.max(span.start, from), end: Math.min(span.end, to) };
+      for (let field of INHERITED_FIELDS) if (format[field]) stripped[field] = false;
+      return [
+        ...span.start < from ? [{ ...span, end: from }] : [],
+        stripped,
+        ...span.end > to ? [{ ...span, start: to }] : [],
+      ];
     });
     let rewritten = line.slice(0, marker[0].length) + canonicalInlineMarkdown({ ...block, spans });
     let offset = rewritten.length - line.length;
@@ -3152,6 +3240,17 @@ function blockRewrite(
 }
 
 /**
+ * The range of `markdown` a replacement of `oldMarkdown` at `matchStart` by `newMarkdown` changes,
+ * once the text the two share at either end is left out, as the requests leave it.
+ */
+export function replacedRange(
+  markdown: string, matchStart: number, oldMarkdown: string, newMarkdown: string,
+): MarkdownRange {
+  let { prefixLen, suffixLen } = markdownReplacementBounds(oldMarkdown, newMarkdown);
+  return { mdStart: matchStart + prefixLen, mdEnd: matchStart + oldMarkdown.length - suffixLen };
+}
+
+/**
  * The paragraph styles a replacement's requests write (`WrittenStyles`). A rewrite of whole blocks
  * gives each block that has text the style of the paragraph it is paired with where that paragraph
  * keeps its style or gives it (a title or a subtitle), and otherwise the style its heading marker
@@ -3162,35 +3261,48 @@ export function rewrittenBlockStyles(
 ): WrittenStyles | undefined {
   let oldText = markdown.slice(matchStart, matchEnd);
   if (oldText === newMarkdown) return undefined;
-  let { prefixLen, suffixLen } = markdownReplacementBounds(oldText, newMarkdown);
-  let trimmedStart = matchStart + prefixLen;
-  let trimmedEnd = matchEnd - suffixLen;
-  let trimmedNew = newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen);
+  let { mdStart: trimmedStart, mdEnd: trimmedEnd } =
+    replacedRange(markdown, matchStart, oldText, newMarkdown);
+  let trimmedNew = newMarkdown.slice(
+    trimmedStart - matchStart, newMarkdown.length - (matchEnd - trimmedEnd));
   let rewrite = blockRewrite(sourceMap, markdown, trimmedStart, trimmedEnd, trimmedNew,
-    oldText.slice(prefixLen, oldText.length - suffixLen).includes("\n"));
+    markdown.slice(trimmedStart, trimmedEnd).includes("\n"));
   if (!rewrite) {
     let { writeOptions } = inlineWrite(sourceMap, markdown, trimmedStart, trimmedEnd, trimmedNew);
-    return { keepsFirst: writeOptions.preserveLeadingParagraph === true };
+    return {
+      keepsFirst: writeOptions.preserveLeadingParagraph === true,
+      replaced: { mdStart: trimmedStart, mdEnd: trimmedEnd },
+    };
   }
   let { blockRange: { blocks, mdStart }, targets } = rewrite;
   let paired = new Map(alignSourceBlocks(blocks, targets, markdown).map(([s, t]) => [t, blocks[s]]));
-  let styles = targets.flatMap((target, index) => {
-    if (target.plainText === "" && target.listType === null) return [];
+  let styles: string[] = [];
+  let rewritten: boolean[] = [];
+  for (let [index, target] of targets.entries()) {
+    if (target.plainText === "" && target.listType === null) continue;
     let source = paired.get(index);
-    return [source && isUnchangedBlock(source, target, markdown)
-      ? source.namedStyleType : targetNamedStyle(target, source)];
-  });
-  return { rewrite: { mdStart, styles } };
+    let kept = source !== undefined && isUnchangedBlock(source, target, markdown);
+    styles.push(kept ? source!.namedStyleType : targetNamedStyle(target, source));
+    rewritten.push(!kept);
+  }
+  return { rewrite: { mdStart, styles, rewritten } };
 }
 
 /**
- * The paragraph styles a replacement's requests write: for a rewrite of whole blocks, where they
- * start and each block's style; for an edit inside a paragraph, whether its first line keeps the
- * style of the paragraph written into, or every line it writes takes the style its marker names.
+ * What a replacement's requests write. For a rewrite of whole blocks: where they start, and for
+ * each block that has text its style and whether its text is written, which it is unless the
+ * block stays as it was. For an edit inside a paragraph: the range of the old Markdown it
+ * replaces, the only text it writes, and whether its first line keeps the style of the paragraph
+ * written into, or every line it writes takes the style its marker names. Where the content does
+ * not read as the document, only the `replaced` range is known, and the requests may rewrite the
+ * whole blocks around it.
  */
 export type WrittenStyles =
-  | { rewrite: { mdStart: number; styles: string[] }; keepsFirst?: never }
-  | { keepsFirst: boolean; rewrite?: never };
+  | {
+    rewrite: { mdStart: number; styles: string[]; rewritten: boolean[] };
+    keepsFirst?: never; replaced?: never;
+  }
+  | { keepsFirst?: boolean; replaced: MarkdownRange; rewrite?: never };
 
 /**
  * Rewrite whole source blocks paragraph by paragraph, so each kept paragraph keeps its own list and

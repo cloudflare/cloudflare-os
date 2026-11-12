@@ -3894,6 +3894,55 @@ describe("formatting a paragraph's named style already gives", () => {
       .simulated.markdown).toContain("## Results *here*\n");
   });
 
+  it("keeps it on text a replacement outside tables does not write", () => {
+    // Text made bold before its paragraph became a bold heading keeps its own bold.
+    const boldHeading = (text: string): ParagraphSpec =>
+      ({ runs: [{ text, style: { bold: true } }, " here\n"], namedStyleType: "HEADING_2" });
+    let tab = () => styledTab([para("Before"), boldHeading("Bold"), boldHeading("Two"), para("After")]);
+    expect(docTabToMarkdown(tab()).markdown).toContain("## **Bold** here\n\n## **Two** here\n");
+    // A write inside the paragraph's text writes only its own text.
+    for (let [newMarkdown, read] of [
+      ["**Bold** *literal* here", "## **Bold** *literal* here\n"],
+      ["**Bold** there", "## **Bold** there\n"],
+      ["**Bold** **there**", "## **Bold** there\n"],
+    ]) {
+      let { simulated } = expectStyledSameAsGoogle(tab(), "**Bold** here", newMarkdown);
+      expect(simulated.markdown).toContain(read);
+    }
+    // One that meets a formatting marker rewrites the paragraph whole, which then loses it.
+    expect(expectStyledSameAsGoogle(tab(), "**Bold** here", "*literal* **Bold** here")
+      .simulated.markdown).toContain("## *literal* Bold here\n");
+    // A rewrite of whole blocks keeps the blocks it leaves as they were.
+    expect(expectStyledSameAsGoogle(tab(), "## **Two** here", "## **Two** here\n\n## **Three**")
+      .simulated.markdown).toContain("## **Two** here\n\n## Three\n");
+    // Text that is written loses it.
+    expect(expectStyledSameAsGoogle(tab(), "## **Bold** here", "## **New** here")
+      .simulated.markdown).toContain("## New here\n");
+  });
+
+  it("refuses an edit beside kept text its named style also formats, while an earlier change waits", () => {
+    let tab = styledTab([
+      para("Other text"),
+      { runs: [{ text: "Bold", style: { bold: true } }, " here\n"], namedStyleType: "HEADING_2" },
+      heading("Plain here", 2),
+      para("After"),
+    ]);
+    let before = docTabToMarkdown(tab);
+    let first = applyTextReplacement(
+      contentOf(before), replacementIn(before.markdown, "Other text", "Elsewhere"), TAB, before);
+    expect(message(() => applyTextReplacement(
+      first, replacementIn(first.markdown, "**Bold** here", "**Bold** there"), TAB, before))).toBe(
+      "replaceText: this line keeps bold, italic or strikethrough that its paragraph's named " +
+      "style also gives, and with earlier changes waiting on the tab, whether this change " +
+      "rewrites that text, which would then read without it, cannot be told. Retry once the " +
+      "earlier changes to this tab have been approved or rejected.");
+    // A line that keeps no such text is taken, and so is the edit with nothing waiting.
+    let plain = applyTextReplacement(
+      first, replacementIn(first.markdown, "Plain here", "**Plain** there"), TAB, before);
+    expect(plain.markdown).toContain("## Plain there\n");
+    expectStyledSameAsGoogle(tab, "**Bold** here", "**Bold** there");
+  });
+
   it("drops it from text written into a cell, and a row change queued behind it applies", () => {
     for (let [oldMarkdown, newMarkdown] of [
       ["<h6>Cell notes</h6>", "<h6><em>Cell</em> notes</h6>"],

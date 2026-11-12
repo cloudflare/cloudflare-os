@@ -404,7 +404,11 @@ Google stores bold, italic or strikethrough written into a paragraph whose named
 gives it as inherited, and a read shows only the formatting text sets itself, so such formatting
 reads without its tag once the change is applied: italic written into a Heading 6, bold into a
 heading the document's owner made bold, in a cell or outside tables. The read of a waiting change
-shows it so too, so that the changes queued behind it find their tables as they will be. A
+shows it so too, so that the changes queued behind it find their tables as they will be. Text a
+replacement does not rewrite keeps such formatting where it has it, as text given it before its
+paragraph took that style does; with changes waiting, a replacement in a paragraph outside tables
+that keeps such text is refused until they are decided, since whether it rewrites that text cannot
+be told. A
 paragraph's style is told by how it reads (a heading by its level, anything else as normal text),
 and by the document while nothing waits before the change, which also tells a title and a subtitle
 apart. With changes waiting, a replacement that writes bold, italic or strikethrough into a line a
