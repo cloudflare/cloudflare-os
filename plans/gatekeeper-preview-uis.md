@@ -134,20 +134,22 @@ type GoogleDocPendingChange = { id: number; stale?: true } & (
 - The agent-facing docs call a change "pending" until Google Docs has saved it. This is the first
   place those docs admit that writes are deferred; they still never mention approvals.
 
-### 3. The Docs preview client (gatekeeper-google)
+### 3. A preview client (each gatekeeper)
 
-`src/docs-preview-client.txt`, returned by `GoogleDocGatekeeperImpl.getPreviewUi()`. Both the
-real and the not-yet-created Doc report `hasPreview`.
+Gadget-format client code the gatekeeper returns from `getPreviewUi()`. How it draws its resource
+is the gatekeeper's business; what every preview keeps to is:
 
-- Calls `gadget.listTabs()` once, then `gadget.getPendingChanges(tabId)` on load and on each
-  `refresh` message from its parent.
-- Parses both Markdown copies into blocks and diffs them (common prefix and suffix trimmed, then
-  a longest-common-subsequence over the middle, with a size cap past which the middle is shown as
-  replaced). Added blocks are marked green; removed blocks are drawn struck through where they
-  were. The diff is per paragraph.
-- Notes how many changes are stale, since they appear in neither copy.
-- Everything from the document is set as text or built node by node. Tables are rebuilt from an
-  inert parse with allow-listed tags and attributes. Links are drawn but not followable.
+- It reads only through the session: once on load, and again on each `refresh` message from its
+  parent. Each read is a logged observation, so it does not poll.
+- It shows the resource with its pending changes, and what those changes did against the saved
+  copy, from the session's `getPendingChanges()`.
+- It says when a change is stale, since a stale change appears in neither copy.
+- It treats everything the resource says as text. Nothing from it is parsed as HTML into the
+  frame, and links are drawn but not followable.
+- It carries its own styling for light and dark; the Workshop's tokens do not exist in the frame.
+- It does not apply or discard. Those stay in the Workshop.
+
+Google Docs is the first (`gatekeeper-google/src/docs-preview-client.txt`).
 
 The file is `.txt` because the gatekeeper's bundler imports only `.txt` and `.svg` as text, and a
 symlink to a `.js` file is executed as code by the test pool. It is therefore not linted.
@@ -207,8 +209,8 @@ symlink to a `.js` file is executed as code by the test pool. It is therefore no
   session's snapshot lifetime. Nothing notifies the preview.
 - **Large documents.** The preview fetches and diffs the whole tab. Nothing caps a tab's size
   or keeps only the text around each edit.
-- **Gatekeeper Markdown quirks** show through: a numbered list reads back as `1.` / `1.`, and a
-  nested bullet can be separated from its list by a blank paragraph.
+- **A preview is only as faithful as its session.** It can draw what the session's reads
+  return and nothing more; for Docs that is the tab as Markdown, without its appearance.
 
 ## Commit sequence
 
