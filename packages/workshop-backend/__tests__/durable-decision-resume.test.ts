@@ -580,21 +580,47 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it("clears the lookup budget before running inference", async () => {
-    const s = await scenario(), gate = Promise.withResolvers<void>(), requests = inference(gate.promise);
-    await s.visit(async impl => {
-      const error = Object.assign(new Error("reset"), {durableObjectReset: true});
-      modelLookup(impl, vi.fn().mockRejectedValueOnce(error).mockRejectedValueOnce(error)
-        .mockResolvedValue({profile: USER, aiModel: MODEL}));
+  it("starts the resume budget afresh once the resumed turn persists a step", async () => {
+    const s = await scenario();
+    let staged = true;
+    const requests = inference(undefined, () => staged);
+    await expect(s.visit(async impl => {
+      // The first step persists; the second never finishes.
+      vi.spyOn(impl, "executeCodeMode").mockResolvedValueOnce("Done.").mockReturnValue(new Promise(() => {}));
+      impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, resumeAttempts: 3});
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await vi.waitFor(() => expect(requests()).toBe(2));
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during the second step");
+    })).rejects.toThrow(/Injected reset/);
+    staged = false;
+    await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(1);
-      const alarm = impl.runAlarmTasks();
-      await vi.waitFor(() => expect(requests()).toBe(1));
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBeUndefined();
-      gate.resolve();
-      await alarm;
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].map(m => m.type)).not.toContain("error");
     });
+    expect(requests()).toBe(3);
+  });
+
+  it("fails a turn that is reset four times before it persists a step", async () => {
+    const s = await scenario(), requests = inference(new Promise(() => {}));
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await expect(s.visit(async impl => {
+        if (attempt === 1) { decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT); }
+        await vi.waitFor(() => expect(requests()).toBe(attempt));
+        await impl.ctx.storage.sync();
+        impl.ctx.abort("Injected reset during resumed turn");
+      })).rejects.toThrow(/Injected reset/);
+    }
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
+        type: "error", message: expect.stringContaining("interrupted too many times"),
+      }));
+    });
+    expect(requests()).toBe(4);
   });
 
   it("Stop clears a retry handoff that no longer has a running task", async () => {

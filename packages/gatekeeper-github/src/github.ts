@@ -258,6 +258,12 @@ type CachedIssueSearchResult = {
 
 type GitHubDiscussionCommentEntry = Extract<GitHubDiscussionEntry, { kind: "comment" }>;
 
+/**
+ * A review as a cached page of `GET /pulls/{n}/reviews` holds it: without its diff comments,
+ * which are attached on every read (see `#getDiscussionReviewPage`).
+ */
+type CachedDiscussionReview = Omit<Extract<GitHubDiscussionEntry, { kind: "review" }>, "diffComments">;
+
 type StoredCommentCacheState = {
   depth: number;
   freshness: number;
@@ -3626,8 +3632,14 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
   }
 
   async #getDiscussionReviewPage(realId: string, page: number): Promise<GitHubDiscussionEntry[]> {
-    const cacheKey = this.#cacheKey("discussion-reviews", realId, `p${page}`);
-    return await this.#loadCachedWithEtag<GitHubDiscussionEntry[]>(cacheKey, ENTITY_CACHE_TTL_MS, async etag => {
+    // The page is cached without the reviews' diff comments, which are attached below from the
+    // review-comment store, synced first (as `readDiffThreads()` does). The page's etag only
+    // changes when the reviews do, so diff comments cached along with it went stale: a page
+    // first built while the store was empty or behind kept serving no (or old) diff comments
+    // until another review was posted, and the store itself was only ever refreshed by
+    // `readDiffThreads()`. (v2: v1 pages held their diff comments.)
+    const cacheKey = this.#cacheKey("discussion-reviews-v2", realId, `p${page}`);
+    const reviews = await this.#loadCachedWithEtag<CachedDiscussionReview[]>(cacheKey, ENTITY_CACHE_TTL_MS, async etag => {
       const raw = await this.#withApi(api =>
         api.listPullRequestReviewsConditional(
           this.ctx.props.owner,
@@ -3642,24 +3654,10 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
         return raw;
       }
 
-      const commentsByReviewId = new Map<number, GitHubPullRequestReviewCommentResponse[]>();
-      for (const comment of await this.#materializeAllPullReviewComments(realId)) {
-        const reviewId = comment.pull_request_review_id;
-        if (!reviewId) {
-          continue;
-        }
-
-        const comments = commentsByReviewId.get(reviewId);
-        if (comments) {
-          comments.push(comment);
-        } else {
-          commentsByReviewId.set(reviewId, [comment]);
-        }
-      }
-
-      const normalized = await Promise.all(raw.data.map(async review => {
-        const reviewComments = commentsByReviewId.get(review.id) ?? [];
-        return {
+      return {
+        status: 200,
+        headers: raw.headers,
+        data: raw.data.map(review => ({
           kind: "review" as const,
           id: String(review.id),
           author: actorFromUser(review.user),
@@ -3668,16 +3666,33 @@ export class GitHubGatekeeperImpl extends DurableObject<Env, GitHubGatekeeperImp
           updatedAt: parseDate(review.submitted_at),
           url: review.html_url,
           decision: reviewDecisionFromState(review.state),
-          diffComments: reviewComments.map(submittedDiffCommentFromResponse),
-        };
-      }));
-
-      return {
-        status: 200,
-        headers: raw.headers,
-        data: normalized,
+        })),
       };
     });
+    if (reviews.length === 0) {
+      return [];
+    }
+
+    await this.#syncPullReviewComments(realId);
+    const commentsByReviewId = new Map<string, GitHubPullRequestReviewCommentResponse[]>();
+    for (const comment of await this.#materializeAllPullReviewComments(realId)) {
+      const reviewId = comment.pull_request_review_id;
+      if (!reviewId) {
+        continue;
+      }
+
+      const comments = commentsByReviewId.get(String(reviewId));
+      if (comments) {
+        comments.push(comment);
+      } else {
+        commentsByReviewId.set(String(reviewId), [comment]);
+      }
+    }
+
+    return reviews.map(review => ({
+      ...review,
+      diffComments: (commentsByReviewId.get(review.id) ?? []).map(submittedDiffCommentFromResponse),
+    }));
   }
 
   async #getDiscussion(kind: EntityKind, logicalId: string, pageSize: number): Promise<Cursor<GitHubDiscussionEntry>> {

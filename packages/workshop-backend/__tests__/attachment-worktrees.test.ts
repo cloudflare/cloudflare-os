@@ -3,7 +3,7 @@ import {env} from "cloudflare:workers";
 import {abortAllDurableObjects, runInDurableObject} from "cloudflare:test";
 import {buildPackStream, decodePackStream} from "../src/git-codec";
 import {validateChatAttachmentUpload} from "../src/chat-attachment-validation";
-import {runAgent} from "../src/agent";
+import {MAX_TOOL_RESULT_CHARS, runAgent} from "../src/agent";
 import {createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type Api, type Message} from "@earendil-works/pi-ai";
 import type {OverseerDurableObject} from "../src/overseer";
 import type {UserDurableObject} from "../src/user";
@@ -23,8 +23,7 @@ async function step(impl: Impl, chatId: number, change: CodeChange) {
     createdWorktrees: [], addedBindings: [], worktreeCommits: [], blueprintMerges: []});
 }
 async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof fauxToolCall>[], api?: Api) {
-  // Isolate file operations from compaction of the legacy model-inline attachment payload.
-  const faux = createFauxCore({models: [{id: "faux-model", contextWindow: 8_000_000}]});
+  const faux = createFauxCore({models: [{id: "faux-model"}]});
   const requests: Message[][] = [];
   faux.setResponses(calls.length
     ? [fauxAssistantMessage(calls, {stopReason: "toolUse"}), fauxAssistantMessage(fauxText("Done"))]
@@ -33,7 +32,7 @@ async function scriptedTurn(impl: Impl, chatId: number, calls: ReturnType<typeof
     requests.push(structuredClone(context.messages));
     return faux.stream(model, context, options);
   }}, chatId, AUTHOR, new AbortController().signal, USER,
-  {provider: "cloudflare", model: "faux-model", apiToken: "", contextWindow: 8_000_000});
+  {provider: "cloudflare", model: "faux-model", apiToken: ""});
   return requests;
 }
 const fileToolResults = (messages: Message[]) => messages.flatMap(message =>
@@ -579,6 +578,35 @@ describe("scratch worktree attachment ingress", () => {
     if (tree.type !== "worktree") throw new Error("Expected scratch worktree");
     const value = await impl.gitCache.fileBytesAtCommit(tree.baseCommit, file.name);
     expect(impl.gitCache.readBlob(value!.oid, value!.byteLength)).toEqual(bytes);
+  }));
+
+  // Inlined text is resent on every turn, and a large upload alone can exceed the model's window,
+  // which compaction cannot fix. Past what readFile would return whole, the model gets the path.
+  // A first upload creates the scratch worktree; a later one reaches it as a user change.
+  it("inlines text that fits one tool result and gives larger text only by its workspace path", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const upload = async (name: string, text: string) =>
+      ({oid: (await impl.gitCache.writeBlob(new TextEncoder().encode(text))).oid, mimeType: "text/plain", name});
+    const fits = "fits\n".padEnd(MAX_TOOL_RESULT_CHARS, "f");
+    const large = "needle\n".padEnd(MAX_TOOL_RESULT_CHARS + 1, "l");
+    const chatId = await impl.newChat(user, {profile: USER}, "Read these", undefined,
+      [await upload("fits.txt", fits), await upload("first.txt", large)]);
+    const requests = await scriptedTurn(impl, chatId, []);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined,
+      [await upload("later.txt", large)]);
+    requests.push(...await scriptedTurn(impl, chatId, []));
+    expect(requests).toHaveLength(2);
+    const texts = requests.map(request => request.flatMap(message => {
+      const parts: {type: string, text?: string}[] =
+        typeof message.content === "string" ? [{type: "text", text: message.content}] : message.content;
+      return parts.flatMap(part => part.type === "text" && part.text !== undefined ? [part.text] : []);
+    }).join("\n"));
+    for (const text of texts) {
+      expect(text).toContain(fits);
+      expect(text).toContain("env.SCRATCH/first.txt");
+      expect(text).not.toContain("needle");
+    }
+    expect(texts[1]).toContain("env.SCRATCH/later.txt");
   }));
 
   it.each(["image/png", "application/pdf"])(

@@ -686,9 +686,7 @@ export function validateCodeChangeContent(change: CodeChange, content: CodeConte
     for (let [path, fileChange] of fileChanges) {
       let where = `gadget ${gadgetId} ${path}`;
       if ("set" in fileChange) {
-        if (hasLoneSurrogate(fileChange.set)) {
-          throw new Error(`file change set contains a lone surrogate: ${where}`);
-        }
+        if (hasLoneSurrogate(fileChange.set)) throw halfCharacterError(where);
       } else if ("edit" in fileChange) {
         let text = content.get(gadgetId)?.get(path);
         if (text === undefined) throw new Error(`edit of absent file: ${where}`);
@@ -699,17 +697,22 @@ export function validateCodeChangeContent(change: CodeChange, content: CodeConte
               `change expects ${changes.length}, file has ${text.length}`);
         }
         changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-          if (!isCodePointBoundary(text, fromA) || !isCodePointBoundary(text, toA)) {
-            throw new Error(`file change edit splits a surrogate pair: ${where}`);
-          }
-          if (hasLoneSurrogate(inserted.toString())) {
-            throw new Error(`file change edit inserts a lone surrogate: ${where}`);
+          if (!isCodePointBoundary(text, fromA) || !isCodePointBoundary(text, toA) ||
+              hasLoneSurrogate(inserted.toString())) {
+            throw halfCharacterError(where);
           }
         });
       }
       // `remove` needs no content checks: it is valid against any state.
     }
   }
+}
+
+// Splitting a pair leaves its other half lone, so every surrogate rule fails the same way. An
+// agent's edit returns this as its tool error, so it says what to write instead.
+function halfCharacterError(where: string): Error {
+  return new Error(`${where} would contain half of a character such as an emoji (a lone ` +
+      `UTF-16 surrogate), which can't be saved. Write and replace whole characters only.`);
 }
 
 // Whether position `pos` in `text` is a code-point boundary, i.e. does not fall between the

@@ -9,12 +9,13 @@ import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, CreationLocationConfiguratorUI, DriveConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
   OFFICE_IMPORT_GRANT,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
@@ -140,6 +141,55 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
       expect(calls[0].searchParams.get("orderBy")).toBe("folder,name");
       expect(calls[0].searchParams.get("pageToken")).toBe("page-2");
+    });
+
+    it("lists only folders for a creation's location, and which ones take new files", async () => {
+      const calls = stubDrive({
+        "/files": {
+          files: [
+            { id: "open", name: "Plans", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: true } },
+            { id: "viewer", name: "Archive", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: false } },
+          ],
+        },
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+
+      await expect(creating.listFolders("folder:root", "", null)).resolves.toEqual({
+        nodes: [
+          { id: "folder:open", title: "Plans", kind: "folder", listable: true, addable: true },
+          { id: "folder:viewer", title: "Archive", kind: "folder", listable: true },
+        ],
+      });
+      expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
+    });
+
+    // The creation picker's My Drive tab is Drive's `root` alias, so a pasted folder's path must
+    // start there, or at the Shared drives tab, for the picker to open it where it lives.
+    it("places a pasted folder link for a creation under its tab", async () => {
+      const folder = (id: string, name: string, parents?: string[], driveId?: string) => ({
+        id, name, mimeType: FOLDER, trashed: false, ...parents && { parents }, ...driveId && { driveId },
+        capabilities: { canListChildren: true, canAddChildren: true },
+      });
+      stubDrive({
+        "/files/root": folder("0AMyRoot", "My Drive"),
+        "/files/0AMyRoot": folder("0AMyRoot", "My Drive"),
+        "/files/plans": folder("plans", "Plans", ["0AMyRoot"]),
+        "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
+        "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+      const pasted = async (id: string) =>
+        (await creating.listFolders("folder:root", `https://drive.google.com/drive/folders/${id}`, null)).nodes;
+
+      await expect(pasted("plans")).resolves.toEqual([{
+        id: "folder:plans", title: "Plans", kind: "folder", listable: true, addable: true,
+        path: [{ id: "folder:root", title: "My Drive", listable: true, addable: true }],
+      }]);
+      await expect(pasted("0AMyRoot"))
+        .resolves.toMatchObject([{ id: "folder:root", title: "My Drive", addable: true, path: [] }]);
+      await expect(pasted("specs")).resolves.toMatchObject([{
+        id: "folder:specs", path: [{ id: "shared-drives" }, { id: "folder:0ADrive", title: "Engineering" }],
+      }]);
     });
 
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing
@@ -316,7 +366,7 @@ describe("Google resource configurators", () => {
         .resolves.toEqual({ nodes: [] });
     });
 
-    // An agent asking for a Drive file connection of a native file asked for read-only access.
+    // An agent asking for a Drive file connection of a native file asked for it as a Drive file.
     it("keeps a pre-filled Drive file id for a Google Doc, so it binds as a Drive file", async () => {
       stubDrive({
         "/files/F9": { id: "F9", name: "Q3", mimeType: "application/vnd.google-apps.document" },
@@ -412,6 +462,31 @@ describe("Google resource configurators", () => {
       await expect(browser.getDriveNode("folder:missing")).resolves.toBeNull();
       await expect(browser.getDriveNode("shared-drives")).resolves.toBeNull();
     });
+
+    // Every Drive type opens the one picker, and each is where a connection is made read and write.
+    it.each([GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE])(
+      "names the writes grant and reads it live, without asking Drive ($urlPattern)", async resource => {
+        const calls = stubDrive({});
+        const granted: string[] = [SHARED_DRIVES_GRANT];
+        const account = {
+          getAccessToken: vi.fn(async () => token("access-token")),
+          getGrantedResourceUrlPatterns: vi.fn(async () => granted),
+        };
+        const ctx = {
+          props: { userObjectId: "account-id" },
+          exports: { UserAccount: { idFromString: () => "account-id", get: () => account } },
+        };
+        const frame = await new GatekeeperUserImpl(ctx as never, {} as never)
+          .startResourceConfigurator(resource.urlPattern);
+        const ui = frame.ui as unknown as { getWriteAccess(): Promise<unknown> };
+
+        await expect(ui.getWriteAccess()).resolves.toEqual({ grant: DRIVE_WRITES_GRANT, held: false });
+        // The grant lands while the dialog is open, and the same configurator sees it.
+        granted.push(DRIVE_WRITES_GRANT);
+        await expect(ui.getWriteAccess()).resolves.toEqual({ grant: DRIVE_WRITES_GRANT, held: true });
+        expect(account.getGrantedResourceUrlPatterns).toHaveBeenCalledTimes(2);
+        expect(calls).toEqual([]);
+      });
   });
 
   it("offers every calendar the account can write, including limited writers", async () => {
@@ -908,14 +983,20 @@ const testEnv = env as unknown as { UserAccount: DurableObjectNamespace<UserAcco
 /** The storage key oauth-flow.ts keeps a prepared consent flow under. */
 const OAUTH_FLOW_KEY = "oauthFlow";
 
-/** A stored account whose recorded grant is `resourceUrlPatterns`, and the user entrypoint over it. */
-async function storedAccount(resourceUrlPatterns: string[]) {
+/**
+ * A stored account whose recorded grant is `resourceUrlPatterns`, and the user entrypoint over it.
+ * `oauthScopes` is what Google returned at its last consent: all the grant asks for, unless given.
+ */
+async function storedAccount(
+  resourceUrlPatterns: string[],
+  oauthScopes: string[] = resourceUrlPatternsToOAuthScopes(resourceUrlPatterns),
+) {
   let account = testEnv.UserAccount.get(testEnv.UserAccount.newUniqueId());
   await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
     state.storage.kv.put("refreshToken", "refresh-token");
     state.storage.kv.put("accessToken", token("access-token"));
     state.storage.kv.put("grantedResources", resourceUrlPatterns);
-    state.storage.kv.put("grantedScopes", resourceUrlPatternsToOAuthScopes(resourceUrlPatterns));
+    state.storage.kv.put("grantedScopes", oauthScopes);
   });
   let ctx = {
     props: { userObjectId: account.id.toString() },
@@ -949,6 +1030,47 @@ describe("the Office import grant on a stored account", () => {
       state.storage.kv.get<{ requestedResources: string[] }>(OAUTH_FLOW_KEY));
     expect(flow?.requestedResources.toSorted())
       .toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT].toSorted());
+  });
+});
+
+/** The grants the consent flow `account` last prepared will ask Google for. */
+const requested = (account: DurableObjectStub<UserAccount>) =>
+  runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.get<{ requestedResources: string[] }>(OAUTH_FLOW_KEY)?.requestedResources);
+
+// A consent records what it asked for when it completes, whatever Google returned, and every later
+// consent asks for all of it again.
+describe("the Drive writes grant on a stored account", () => {
+  const FILE = GOOGLE_DRIVE_FILE_RESOURCE.urlPattern;
+  const SHEETS = GOOGLE_SHEETS_RESOURCE.urlPattern;
+
+  it("is asked for again by every later consent once it was asked for, granted or not", async () => {
+    // What a completed Allow changes consent leaves when Drive's line was left unchecked.
+    let declined = await storedAccount([FILE, DRIVE_WRITES_GRANT], resourceUrlPatternsToOAuthScopes([FILE]));
+    expect(await declined.account.getGrantedResourceUrlPatterns()).toEqual([FILE]);
+
+    // A widening for another resource asks for it too.
+    let { url } = await declined.user.ensureResources([SHEETS]);
+    expect(url).toMatch(new RegExp(`/${declined.account.id.toString()}/[^/]+$`));
+    expect((await requested(declined.account))?.toSorted()).toEqual([FILE, SHEETS, DRIVE_WRITES_GRANT].toSorted());
+
+    await declined.user.reconnect();
+    expect((await requested(declined.account))?.toSorted()).toEqual([FILE, DRIVE_WRITES_GRANT].toSorted());
+
+    let granted = await storedAccount([FILE, DRIVE_WRITES_GRANT]);
+    expect(await granted.account.getGrantedResourceUrlPatterns()).toContain(DRIVE_WRITES_GRANT);
+    await granted.user.ensureResources([SHEETS]);
+    expect(await requested(granted.account)).toContain(DRIVE_WRITES_GRANT);
+  });
+
+  it("is asked for by no consent of an account that never asked for it", async () => {
+    let { account, user } = await storedAccount([FILE]);
+
+    await user.ensureResources([SHEETS]);
+    expect(await requested(account)).not.toContain(DRIVE_WRITES_GRANT);
+
+    await user.reconnect();
+    expect(await requested(account)).toEqual([FILE]);
   });
 });
 

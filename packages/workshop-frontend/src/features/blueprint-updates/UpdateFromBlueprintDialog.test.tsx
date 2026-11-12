@@ -8,6 +8,7 @@ import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
   ApplyBlueprintResult,
+  AuthenticatedApi,
   BlueprintPublicInfo,
   GadgetClient,
   GadgetUpstream,
@@ -171,6 +172,7 @@ function deferred<T>() {
 const applyBlueprint = vi.fn<GadgetClient['applyBlueprint']>()
 const getBlueprint = vi.fn<(id: string) => Promise<BlueprintPublicInfo | null>>()
 const listModels = vi.fn<() => Promise<AiChatAuthorInfo[]>>()
+const setPreferredModel = vi.fn<(id: string | null) => Promise<void>>()
 const onClose = vi.fn<() => void>()
 const onProposed = vi.fn<(chatId: number) => void>()
 
@@ -181,6 +183,7 @@ beforeEach(() => {
   vi.resetAllMocks()
   localStorage.clear()
   listModels.mockResolvedValue([OPUS, SONNET])
+  setPreferredModel.mockResolvedValue(undefined)
   getBlueprint.mockImplementation(async id => BLUEPRINTS.find(blueprint => blueprint.id === id) ?? null)
   container = document.createElement('div')
   document.body.append(container)
@@ -203,6 +206,9 @@ async function open(upstream?: GadgetUpstream) {
         }}
         overseer={{ listModels } as unknown as RpcStub<Overseer>}
         publicApi={{ getBlueprint } as unknown as RpcStub<PublicApi>}
+        authenticatedApi={
+          { setPreferredModel } as unknown as RpcStub<AuthenticatedApi>
+        }
         onClose={onClose}
         onProposed={onProposed}
       />,
@@ -313,8 +319,9 @@ describe('UpdateFromBlueprintDialog', () => {
     await click('Update')
 
     expect(applyBlueprint).toHaveBeenCalledExactlyOnceWith('trip', { modelId: 'opus' })
-    // Like the composer's selector, the pick carries over to the next chat.
+    // Like the composer's selector, the pick carries over to the next chat, in any browser.
     expect(localStorage.getItem('lastSelectedModel')).toBe('opus')
+    expect(setPreferredModel).toHaveBeenLastCalledWith('opus')
   })
 
   it('reviews with no agent when the user picks none', async () => {

@@ -136,7 +136,7 @@ can still hold confidential issues and internal notes; job logs and test reports
   rewrite key and the legacy admission requirement.
 - **Every read reports it.** Each read, each page of a listing as it is returned, an empty result,
   and one served from a cache or from queued actions, reports `project/<projectId>` as its
-  subresource, so the Workshop checks everyone who can see it before it is returned (see
+  subresource, which the Workshop checks collaborators against (see
   [docs/observers.md](../../docs/observers.md) §10). A job log reports
   `project/<projectId>/role/developer`. A test report reports `project/<projectId>/role/developer`
   when it was read through a member below Maintainer who is not an administrator, and

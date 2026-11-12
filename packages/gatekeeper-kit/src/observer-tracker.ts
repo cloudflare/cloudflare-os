@@ -133,7 +133,7 @@ function settleSets(
 }
 
 /**
- * Internal: maps with bounded concurrency, preserving result order. Once a call fails it starts no
+ * Maps with bounded concurrency, preserving result order. Once a call fails it starts no
  * more, and rejects with that first error only after the calls already running have settled, so
  * none of them outlives the map.
  * @param items Inputs.

@@ -1684,7 +1684,8 @@ per-instance, so it does nothing for a consumer that constructs a cache per call
 `ArrayCursor<T>`, `PageNumberCursor<T>`, `OffsetCursor<T>` and `TokenCursor<T>`, all extending
 `RpcTarget` and implementing the `Cursor<T>` contract from `workshop-shared/gatekeeper`, generalized
 from `gatekeeper-github/src/github.ts:809-929`. The scope is **pagination mechanics only**: a cursor
-owns provider paging state, buffers pages, and hands out fixed-size ones. `fetchPage` returns the
+owns provider paging state, buffers pages, and hands out ones of the caller's size (a row
+`overlay` splits aside, below). `fetchPage` returns the
 session's own item type, so each provider cursor takes a single type parameter.
 
 Provider-backed cursor options also share `dispose?(): void`. `BufferedCursor` exposes
@@ -1702,8 +1703,8 @@ silently, and `page * perPage` arithmetic then skips the rows between with no er
 reflect the rows it consumed — a server-side-filtered search with its own next signal, confluence's
 v1 CQL — is a `TokenCursor` carrying that signal as its token.
 
-`overlay` and `map` stay in each gatekeeper's `fetchPage`: each came from one gatekeeper's shape.
-Injected-item merging did not stay out. GitHub and GitLab each grew a near-identical
+`map` stays in each gatekeeper's `fetchPage`: it came from one gatekeeper's shape. Injected-item
+merging did not stay out. GitHub and GitLab each grew a near-identical
 `StreamingCursor` for it (overlay, injected rows merged by comparator, re-validation at serve time),
 and the copies drifted into opposite bugs — GitHub's served duplicate rows under concurrent
 `next()` and lost a page whose fetch threw, GitLab's walked a fully filtered listing to the end in
@@ -1712,12 +1713,27 @@ it inherits serialization, the fetch bound and the refusal hold. Injected rows a
 simulation, not provider rows: they never reach `authorizePage`, and a page made only of them is
 not authorized. Only their position carries provider information — an injected row served first
 means no fetched provider row sorts ahead of it — which a listing whose order is itself sensitive
-covers by authorizing up front. `revalidate` and `identity` run when a row is served, not when it
+covers by authorizing up front. `authorize` is for an injection whose rows do carry provider data:
+PagerDuty re-reads an incident a pending change moves into the filter, which its own listing leaves
+out, and injects it at its sort position. Authorizing those once, when the cursor was built, left a
+page made only of them served with no check of its own, so they reach `authorizePage` with their
+page instead, and such a page is authorized like any other. `revalidate` and `identity` run when a row is served, not when it
 is fetched, and identities count as served only once their page is authorized. A refused page's
-retry rebuilds from the entries that page consumed, re-reading the injected ones, and stops before
+retry rebuilds from the entries that page consumed, re-reading every row, and stops before
 a provider row the refusal did not cover, such as one a dropped injected row had hidden: that row
 leads the next page, so it is neither lost nor slipped past the refusal.
-`retain` is the one post-fetch step for provider rows, and the ordering rule below is what keeps it
+`overlay` followed it onto the base as `revalidate`'s counterpart for provider rows: a row can sit in
+the buffer long after its fetch, so the simulated changes are applied when it is served, and a
+refusal covers the entry behind the row, whatever `overlay` made of it. Applying them in the fetch
+callback, as the gatekeepers' own cursors did, is wrong on a buffered base. It returns rows rather
+than the `T | null` those used, since a simulated change can split a row, as PagerDuty's pending
+override splits the on-call entry it covers. The pieces share a page, so no walk shows one split
+under two states of the journal, and `pageSize` is a bound only a row that splits into more can
+exceed; carrying a row's remainder onto the next page would keep the bound hard at the price of
+that guarantee and of more held state. Both are synchronous, so
+`refresh` runs at the start of every `next()` to read asynchronously whatever they derive rows
+from, such as whether the binding still reaches a row's container.
+`retain` is the one fetch-time step for provider rows, and the ordering rule below is what keeps it
 from costing a page.
 
 Filtering is the exception, because a numeric walk has no end-of-list signal but the row count.

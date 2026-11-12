@@ -1,6 +1,6 @@
 import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
-  type FileContent, type CodeContent, type CodeChange,
+  validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
 import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
@@ -71,7 +71,9 @@ export function agentCodeChangeShape(change: CodeChange) {
  * produce more decides for itself how to stay under it in a way the model can read -- readFile
  * returns a window of whole lines with a continuation note, grep drops whole matches and says how
  * many, webFetch cuts its body and says so in the frontmatter -- rather than any tool's output
- * being spliced blindly. Tools not listed are small by construction.
+ * being spliced blindly. Tools not listed are small by construction. The same limit bounds what the
+ * user puts in front of the model: a text attachment is inlined, and a user change's diff shown,
+ * only within it; past it the file is named instead, for readFile to window.
  */
 export const MAX_TOOL_RESULT_CHARS = 32 * 1024;
 
@@ -612,11 +614,10 @@ export interface AgentHooks {
   /**
    * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
    * to Workers AI, and the hosts it may reach in a workspace that has observed restricted data.
-   * Where that workspace refuses `url` but the admin lets users approve it (and
-   * `mayRequestApproval`), records a "webFetchRequest" instead, and the turn should end. Throws
-   * if the workspace may reach nothing.
+   * Where that workspace refuses `url` but the admin lets users approve it, records a
+   * "webFetchRequest" instead, and the turn should end. Throws if the workspace may reach nothing.
    */
-  authorizeWebFetch(chatId: number, url: string, mayRequestApproval: boolean)
+  authorizeWebFetch(chatId: number, url: string)
       : Promise<{env: WebFetchEnv} | {approvalMessage: string}>;
 
   /**
@@ -1843,12 +1844,15 @@ async function runAgentPass(
   // the map) is "not already removed", and for a complete entry is "present in the map". (A
   // `set` of a base path a sparse entry hasn't loaded renders as an addition, since the previous
   // text isn't at hand; the shipped clients emit `set` only for new or re-created files, so this
-  // is cosmetic and left alone.)
+  // is cosmetic and left alone.) The observation is one tool result, so its diffs share
+  // MAX_TOOL_RESULT_CHARS; a file whose diff doesn't fit is named instead, and the model's
+  // knowledge of it dropped, so editFile makes it read the file first.
   let applyReplayedChange = (change: CodeChange, includeDiff: boolean): string | undefined => {
     let before = sessionContent;
     sessionContent = applyCodeChange(sessionContent, change);
 
     let diffParts: string[] = [];
+    let diffBudget = MAX_TOOL_RESULT_CHARS;
     for (let [key, entries] of includeDiff ? Object.entries(change) : []) {
       let id = Number(key);
       let envName = chatNameFor(id);
@@ -1875,9 +1879,14 @@ async function runAgentPass(
         }
         let diff = formatUnifiedDiff(
             filename, oldContent ?? "", newContent ?? "", oldContent !== undefined, true);
-        if (diff) {
-          fileDiffParts.push(diff);
+        if (!diff) continue;
+        if (diff.length > diffBudget) {
+          filesRead.get(id)?.delete(filename);
+          fileDiffParts.push(`${filename}: changed; the diff is too large to show, so read the file`);
+          continue;
         }
+        diffBudget -= diff.length;
+        fileDiffParts.push(diff);
       }
 
       if (fileDiffParts.length > 0) {
@@ -2341,11 +2350,22 @@ async function runAgentPass(
                     data: data.toBase64(),
                     mimeType: attachment.mimeType,
                   }];
-                } else if (text !== undefined) {
+                } else if (text !== undefined && text.length <= MAX_TOOL_RESULT_CHARS) {
                   return [{
                     type: "text",
                     text: `\n\n[Attached text file${filename}${workspaceLocation}]\n` +
                         text,
+                  }];
+                } else if (text !== undefined) {
+                  // Inlined, it would be resent on every turn, and could alone exceed the model's
+                  // window, which compaction cannot fix.
+                  return [{
+                    type: "text",
+                    text: `\n\n[Attached text file${filename}${workspaceLocation}; ${data.byteLength} ` +
+                        "bytes, too large to inline. " + (workspaceLocation
+                            ? "Use readFile with startLine and lineCount, or grep, to read the " +
+                              "workspace file.]"
+                            : "It is not in the workspace yet, so its contents are unavailable.]"),
                   }];
                 } else if (attachment.mimeType === PDF_MIME_TYPE &&
                            modelApiSupportsPdfAttachments(handle.model.api)) {
@@ -3097,12 +3117,15 @@ async function runAgentPass(
           : "Too many code changes in one step. End this response; the changes made so far " +
             "are being saved, and you can continue the work in your next step.");
     }
-    // Apply first: an inapplicable change must throw before anything buffers.
+    // Validate and apply first: a change the barrier's content check would refuse (text with a
+    // lone surrogate, say) must throw before anything buffers, as a tool error the model can
+    // correct, not fail the whole step at the barrier.
     let newContent = sessionContent;
     if (pin !== undefined) {
       newContent = new Map(newContent);
       newContent.set(workpieceId, pin.baseFiles);
     }
+    validateCodeChangeContent(change, newContent);
     newContent = applyCodeChange(newContent, change);
     stepBuffer.changes.push({
       change,
@@ -3641,7 +3664,7 @@ async function runAgentPass(
       }),
       execute: async (toolCallId, {url, raw}) => {
         try {
-          let authorized = await hooks.authorizeWebFetch(chatId, url, !agentContext.spawnerConfig);
+          let authorized = await hooks.authorizeWebFetch(chatId, url);
           if ("approvalMessage" in authorized) {
             decisionRequested = true;
             return toolResult(authorized.approvalMessage,

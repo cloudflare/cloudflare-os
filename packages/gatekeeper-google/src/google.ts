@@ -1,6 +1,7 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
@@ -12,7 +13,13 @@ import {
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
-import { GoogleDocSession, DocMetadata, type GoogleDocReadSession, type GoogleDocTab } from "./docs-types";
+import {
+  GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
+  type GoogleDocReadSession, type GoogleDocTab,
+} from "./docs-types";
+import {
+  DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
+} from "./doc-comments";
 import {
   BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
   type GoogleDocsTab,
@@ -40,7 +47,22 @@ import {
   computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
-import { DriveApi, DriveApiRequestError, lacksFileContentAccess, MAX_BATCH_FILES } from "./drive-api";
+import {
+  DriveApi, DriveApiRequestError, FOLDER_MIME_TYPE, isDriveCommentId, lacksFileContentAccess,
+  MAX_BATCH_FILES,
+} from "./drive-api";
+import {
+  checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
+  selectTab,
+} from "./drive-comment-body";
+import {
+  ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentAttempts, commentParent, DRIVE_COMMENT_ACTIONS,
+  hasPendingResolve, isPendingCommentId, overlayPending, pendingComment, pendingCommentRefusal,
+  pendingReply, pendingSuggestion, readLiveComment, REPLY_RESOLVE_PENDING, RESOLVE_PENDING, shownFileName,
+  toDriveComment, writeRefusal,
+  type CommentTargetPayload, type DriveCommentAction, type DriveCommentActions,
+  type DriveCommentQueue,
+} from "./drive-comments";
 import { CONVERSION_FAILED, pdfToText, type PdfConverter } from "./drive-pdf";
 import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
 import type { AiFetcher } from "./workers-ai-markdown";
@@ -54,11 +76,13 @@ import { outsideScope, readFolderRoot, type FolderLocation } from "./drive-folde
 import {
   DriveFolderSessionCore, DriveSessionCore, driveModifiedTime,
   GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE, PDF_MIME_TYPE,
-  requireDriveBindingScope, type DriveBindingScope, type DriveCore, type NativeObservation, type NativeRead,
+  requireDriveBindingScope, type CommentTarget, type DriveBindingScope, type DriveCore,
+  type NativeObservation, type NativeRead,
 } from "./drive-session";
 import type {
-  DriveEntry, DriveFileBytes, DriveFileReadOptions, DriveListOptions, DrivePdfText,
-  DriveSessionSearchQuery, GoogleDriveFolderSession, GoogleDriveReadSession, GoogleDriveSession,
+  DocSuggestion, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry, DriveFileBytes,
+  DriveFileReadOptions, DriveListOptions, DrivePdfText, DriveScope, DriveSessionSearchQuery,
+  DriveSuggestEditOptions, GoogleDriveFolderSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
@@ -86,7 +110,9 @@ import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
+import DRIVE_READ_TYPES_CODE from "./drive-read-types.txt";
 import DRIVE_TYPES_CODE from "./drive-types.txt";
+import COMMENT_TYPES_CODE from "./comment-types.txt";
 import {
   BigQueryConfiguratorUI,
   CalendarConfiguratorUI,
@@ -95,6 +121,7 @@ import {
   ChatThreadConfiguratorUI,
   GmailConfiguratorUI,
   DriveConfiguratorUI,
+  CreationLocationConfiguratorUI,
 } from "./google-configurators";
 import BIGQUERY_CONFIGURATOR_HTML from "./generated/bigquery-configurator-ui.txt";
 import CALENDAR_CONFIGURATOR_HTML from "./generated/calendar-configurator-ui.txt";
@@ -103,18 +130,20 @@ import CHAT_SPACE_CONFIGURATOR_HTML from "./generated/chat-space-configurator-ui
 import CHAT_THREAD_CONFIGURATOR_HTML from "./generated/chat-thread-configurator-ui.txt";
 import GMAIL_CONFIGURATOR_HTML from "./generated/gmail-configurator-ui.txt";
 import DRIVE_CONFIGURATOR_HTML from "./generated/drive-configurator-ui.txt";
+import CREATION_LOCATION_CONFIGURATOR_HTML from "./generated/creation-location-configurator-ui.txt";
 import GOOGLE_LOGO_SVG from "./google-logo.svg";
 import { obsContext } from "./observability.js";
 import { AccessTokenCache, AccessTokenRequest, ACCESS_TOKEN_EXPIRY_SAFETY_MS } from "./auth-retry";
 import { Mutex } from "./mutex";
+import { ReadGate } from "./read-gate";
 import {
   BIGQUERY_HOST, BIGQUERY_QUERY_PROJECT_PARAM, BIGQUERY_RESOURCE, GMAIL_RESOURCE, GOOGLE_CALENDAR_RESOURCE,
   GOOGLE_CHAT_RESOURCE, GOOGLE_CHAT_SPACE_RESOURCE, GOOGLE_CHAT_THREAD_RESOURCE,
   GOOGLE_DRIVE_RESOURCE,
   RESOURCE_BY_KIND,
   SUPPORTED_RESOURCES, creatableKind, nativeFileUrl,
-  grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
-  parseResourceUrl, recordedResourceUrlPatterns, type RecordedResourceGrant,
+  DRIVE_WRITES_GRANT, grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
+  parseResourceUrl, recordedResourceUrlPatterns, type DriveAccessLevel, type RecordedResourceGrant,
 } from "./resources";
 import { explainUnopenedFile, officeFileError, officeLabel } from "./office-conversion";
 import {
@@ -132,29 +161,44 @@ import {
   type GoogleOAuthEnv,
 } from "./oauth";
 import {
-  DOCS_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX, GMAIL_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
+  GMAIL_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "./type-bundle";
 
 let googleDocTypesCode: string | undefined;
+let driveReadAgentTypesCode: string | undefined;
 let driveAgentTypesCode: string | undefined;
-let googleDriveTypesCode: string | undefined;
 
+/**
+ * A directly bound Doc's bundle. It holds the comment declarations, which every Drive bundle holds
+ * too, so the vendor's bundle takes them from here and from no Drive part.
+ */
 function getGoogleDocTypesCode(): string {
   return googleDocTypesCode ??= [
-    DOCS_READ_TYPES_CODE,
+    DOCS_READ_TYPES_CODE, COMMENT_TYPES_CODE,
     stripTypeModulePrefix(DOCS_TYPES_CODE, DOCS_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
 
-function getDriveAgentTypesCode(): string {
-  return driveAgentTypesCode ??= stripTypeModulePrefix(
-    DRIVE_TYPES_CODE, DRIVE_TYPES_MODULE_PREFIX,
-  );
+/** The Drive read declarations, which every Drive binding's bundle holds. */
+function getDriveReadAgentTypesCode(): string {
+  return driveReadAgentTypesCode ??= stripTypeModulePrefix(
+    DRIVE_READ_TYPES_CODE, DRIVE_READ_TYPES_MODULE_PREFIX);
 }
 
-function getGoogleDriveTypesCode(): string {
-  return googleDriveTypesCode ??= [
-    DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE, getDriveAgentTypesCode(),
+/** The Drive write declarations, which only a read and write binding's bundle adds. */
+function getDriveAgentTypesCode(): string {
+  return driveAgentTypesCode ??= stripTypeModulePrefix(DRIVE_TYPES_CODE, DRIVE_TYPES_MODULE_PREFIX);
+}
+
+/**
+ * A Drive binding's bundle: the native read types, the comment declarations and the Drive reads,
+ * with the writes for `write`.
+ */
+function getGoogleDriveTypesCode(write: boolean): string {
+  return [
+    DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE, COMMENT_TYPES_CODE,
+    getDriveReadAgentTypesCode(), ...(write ? [getDriveAgentTypesCode()] : []),
   ].join("\n");
 }
 
@@ -444,6 +488,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
       case "doc": cls = this.ctx.exports.GoogleDocGatekeeperImpl({props}); break;
       case "sheets": cls = this.ctx.exports.GoogleSheetsGatekeeperImpl({props}); break;
       case "slides": cls = this.ctx.exports.GoogleSlidesGatekeeperImpl({props}); break;
+      case "driveFolder": cls = this.ctx.exports.GoogleDriveGatekeeperImpl({props}); break;
     }
     let resource = RESOURCE_BY_KIND[kind];
     return { class: cls, resource, action: creationAction(resource, props.creation.title) };
@@ -453,7 +498,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     return [
       stripTypeModulePrefix(TYPES_CODE, GMAIL_TYPES_MODULE_PREFIX), getGoogleDocTypesCode(),
       getGoogleSheetsTypesCode(), getGoogleSlidesTypesCode(), CALENDAR_TYPES_CODE,
-      BIGQUERY_TYPES_CODE, getDriveAgentTypesCode(), CHAT_TYPES_CODE,
+      BIGQUERY_TYPES_CODE, getDriveReadAgentTypesCode(), getDriveAgentTypesCode(), CHAT_TYPES_CODE,
     ].join("\n");
   }
 }
@@ -1075,20 +1120,30 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
           case "driveFolder": scope = { kind: "folder", folderId: target.folderId }; break;
           default: scope = { kind: "file", fileId: target.fileId };
         }
-        let props: GoogleDriveGatekeeperImplProps = { userObjectId, scope };
+        let props: GoogleDriveGatekeeperImplProps = {
+          userObjectId, scope, ...(target.access === "write" ? { access: "write" } : {}),
+        };
         return { class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props }), resource };
       }
     }
   }
 
+  /**
+   * What a configurator reaches the account through. A grant is read on every call, since a private
+   * one arrives through a pop-up while the dialog is open.
+   */
+  #configuratorAccess() {
+    let account = this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
+    return {
+      getToken: async (opts?: AccessTokenRequest) => await account.getAccessToken(opts),
+      holds: async (grant: string) => (await account.getGrantedResourceUrlPatterns()).includes(grant),
+    };
+  }
+
   async startResourceConfigurator(
       resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
-    let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
-    let account = this.ctx.exports.UserAccount.get(id);
-    let getToken = async (opts?: AccessTokenRequest) => await account.getAccessToken(opts);
-    // A grant is read on every call, since a private one arrives through a pop-up while the dialog is
-    // open.
-    let holds = async (grant: string) => (await account.getGrantedResourceUrlPatterns()).includes(grant);
+    let { getToken, holds } = this.#configuratorAccess();
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
       return {
@@ -1145,6 +1200,16 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     }
 
     throw new Error(`Unsupported resource configurator type: ${resourceUrlPattern}`);
+  }
+
+  /** Every creatable type is configured by where it is created. */
+  async startCreationConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    creatableKind(resourceUrlPattern);
+    let { getToken, holds } = this.#configuratorAccess();
+    return {
+      iframeHtml: CREATION_LOCATION_CONFIGURATOR_HTML,
+      ui: new RpcStub(new CreationLocationConfiguratorUI(getToken, holds)),
+    };
   }
 
   async revoke(): Promise<void> {
@@ -1415,6 +1480,9 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
   }
 }
 
+/** Where a {@link PendingActionStore} keeps the next unused action ID, starting at 1. */
+const PENDING_NEXT_ACTION_ID_KEY = "pending:nextActionId";
+
 class PendingActionStore<Action> {
   #kv: DurableObjectStorage["kv"];
 
@@ -1427,8 +1495,8 @@ class PendingActionStore<Action> {
   }
 
   submit(action: Action): number {
-    let id = this.#kv.get<number>("pending:nextActionId") ?? 1;
-    this.#kv.put("pending:nextActionId", id + 1);
+    let id = this.#kv.get<number>(PENDING_NEXT_ACTION_ID_KEY) ?? 1;
+    this.#kv.put(PENDING_NEXT_ACTION_ID_KEY, id + 1);
     this.#kv.put(this.#actionKey(id), action);
     return id;
   }
@@ -2046,6 +2114,25 @@ export class GoogleDocGatekeeperImpl
         this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId));
     return stub.getAccessToken(opts);
   });
+  // Comment writes keep the comment engine's own records. Their journal takes its IDs from the
+  // edit store's counter, which holds the next unused ID and starts at 1 as a journal's does, so an
+  // approval ID names one action of this binding, edit or comment: applyAction() and rejectAction()
+  // tell the two apart by whether this journal holds it. A namespace would start a second counter.
+  #commentJournal = new ActionJournal<DriveCommentAction>(this.ctx.storage.kv, {
+    legacyKeys: { nextIdKey: PENDING_NEXT_ACTION_ID_KEY, recordPrefix: "docComments:action:" },
+  });
+  #commentAttempts = commentAttempts(this.ctx.storage.kv);
+  #comments = DOC_COMMENT_ACTIONS.bind(this.#commentJournal, {
+    // Read at apply: a Doc not created yet takes no comment writes, so none applies before it is.
+    threads: docsThreads(() => this.#bound.documentId,
+      new GoogleDocsApi(opts => this.#getAccessToken(opts)),
+      new DriveApi(opts => this.#getAccessToken(opts))),
+    docs: new GoogleDocsApi(opts => this.#getAccessToken(opts)),
+    // Not gated on Drive's read and write choice, as the Doc's edits are not.
+    writeRefusal: async () => undefined,
+    attempts: this.#commentAttempts,
+  });
+  #reads = new ReadGate();
 
   constructor(ctx: DurableObjectState<GoogleDocGatekeeperImplProps>, env: Env) {
     super(ctx, env);
@@ -2155,13 +2242,19 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [EDIT_DOCUMENT_ACTION];
+    return [EDIT_DOCUMENT_ACTION, ...this.#comments.autoApprovableKinds()];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<GoogleDocSession> {
     let props = this.ctx.props;
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+    // Only an undecided or claimed comment write can be applied again, so no other marker is read.
+    this.#commentAttempts.sweep(new Set(this.#commentJournal.listPending().map(({ id }) => id)));
+    let comments: DocCommentQueue = {
+      submit: (queue, kind, payload) => this.#comments.submit(queue, kind, payload),
+      undecided: read => this.#reads.read(() => read(this.#commentJournal.listUndecided())),
+    };
     // A blank document always has a revision, so the session never reaches Drive for one.
     return new GoogleDocSessionImpl(
         isSimulated(props)
@@ -2172,26 +2265,60 @@ export class GoogleDocGatekeeperImpl
         approvalQueue.dup(),
         pendingActions,
         this.ctx.storage,
-        this.#simulationCache);
+        this.#simulationCache,
+        comments);
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    return this.#actions.run(() => this.#applyAction(actionId));
+    return this.#actions.run(() => this.#isComment(actionId)
+      ? this.#applyComment(actionId) : this.#applyAction(actionId));
   }
 
   async rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
-    return this.#actions.run(() => this.#rejectAction(actionId));
+    return this.#actions.run(() => this.#isComment(actionId)
+      ? this.#rejectComment(actionId) : this.#rejectAction(actionId));
   }
 
-  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  /** Whether `actionId` names a comment write, pending or already applied, rather than an edit. */
+  #isComment(actionId: number): boolean {
+    return this.#commentJournal.get(actionId) !== undefined ||
+      this.#commentJournal.wasApplied(actionId);
+  }
+
+  /**
+   * Applies a comment write, and then drops its attempt marker, as a Drive binding does. A claim an
+   * earlier apply left is handed back as undecided first: the marker decides whether its send is
+   * looked for before anything is sent again. Comments depend on no edit, so they are applied in
+   * any order.
+   */
+  #applyComment(actionId: number): Promise<void> {
+    return this.#reads.resolve(async () => {
+      if (this.#commentJournal.get(actionId)?.state === "claimed") {
+        this.#commentJournal.restorePending(actionId);
+      }
+      await this.#comments.apply(actionId);
+      this.#commentAttempts.delete(actionId);
+    });
+  }
+
+  /** Withdraws a comment write. No edit waits on it, so nothing restarts. */
+  #rejectComment(actionId: number): Promise<void> {
+    return this.#reads.resolve(async () => {
+      await this.#comments.reject(actionId);
+      this.#commentAttempts.delete(actionId);
+    });
+  }
+
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
-    return this.#actions.run(() => this.#applyCreation(creator));
+    return this.#actions.run(() => this.#applyCreation(creator, configuration));
   }
 
-  async #applyCreation(creator: Fetcher<GatekeeperUserVerifier>)
+  async #applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
     let { userObjectId, fileId, resourceUrl, getAccessToken: tokens } = await createFileOnce(
-        this.ctx, creator, "doc", (title, getToken) => new GoogleDocsApi(getToken).createDocument(title));
+        this.ctx, creator, "doc", configuration,
+        (title, getToken) => new GoogleDocsApi(getToken).createDocument(title));
     // Edits queued against the blank document name its tab, which the created one may not share.
     let [tab] = (await new GoogleDocsApi(tokens).getDocument(fileId)).tabs;
     this.ctx.storage.kv.put(CREATED_DOC_TAB_KEY, tab.tabId);
@@ -2383,6 +2510,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #simulationCache: GoogleDocSimulationCacheHolder;
   /** What every read reports: the document, or nothing for one not created yet. */
   #subresources: string[];
+  #comments: DocCommentSession;
 
   constructor(
     docsApi: GoogleDocReader,
@@ -2392,6 +2520,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     pendingActions: PendingActionStore<GoogleDocAction>,
     storage: DurableObjectStorage,
     simulationCache: GoogleDocSimulationCacheHolder,
+    comments: DocCommentQueue,
   ) {
     super();
     this.#docsApi = docsApi;
@@ -2404,6 +2533,37 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     this.#subresources = documentId === UNCREATED_FILE_ID
       ? []
       : [fileSubresourceId({kind: "document", fileId: documentId})];
+    this.#comments = new DocCommentSession({
+      documentId, docs: docsApi, drive: driveApi, comments, approvalQueue,
+      authorizeRead: description => this.#authorizeRead(description),
+      onlyInPendingEdits: async (tabId, quote) => {
+        if (this.#pendingActions.list().length === 0) return false;
+        let { tab, markdown } = await this.#getSimulatedContent(tabId, "getContent");
+        return !tab.markdown.includes(quote) && markdown.includes(quote);
+      },
+    });
+  }
+
+  listComments(): Promise<DriveComment[]> {
+    return this.#comments.listComments();
+  }
+
+  comment(text: string, options: DocCommentOptions): Promise<DriveComment> {
+    return this.#comments.comment(text, options);
+  }
+
+  suggestEdit(
+    oldText: string, newText: string, options?: DocSuggestEditOptions,
+  ): Promise<DocSuggestion> {
+    return this.#comments.suggestEdit(oldText, newText, options);
+  }
+
+  reply(commentId: string, text: string): Promise<DriveCommentReply> {
+    return this.#comments.reply(commentId, text);
+  }
+
+  resolve(commentId: string, text?: string): Promise<DriveCommentReply> {
+    return this.#comments.resolve(commentId, text);
   }
 
   // Every read authorizes through here, which reports the document it read as its subresource.
@@ -2508,6 +2668,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     let lastModified = pendingActions.reduce(
         (latest, action) => Math.max(latest, action.submittedAt), revisedAt);
     return {
+      // UNCREATED_FILE_ID, empty, until the document is created.
+      id: this.#documentId,
       title: metadata.title,
       lastModified: new Date(lastModified),
     };
@@ -3355,37 +3517,108 @@ class GoogleCalendarSessionImpl extends RpcTarget implements GoogleCalendarSessi
 // Google Drive Gatekeeper
 // =======================================================================================
 
+/**
+ * What a Drive binding names: its owner's account, its scope and its access level, or a folder not
+ * created yet.
+ */
 export type GoogleDriveGatekeeperImplProps = {
   userObjectId: string;
   scope: DriveBindingScope;
-};
+  /** `"write"` when the connection was made read and write; absent on a read-only one. */
+  access?: DriveAccessLevel;
+} | SimulatedFileProps;
 
 @validateRpc()
 export class GoogleDriveGatekeeperImpl
     extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
     implements Gatekeeper<GoogleDriveSession> {
-  #tokens = new AccessTokenCache(opts => {
-    let account = this.ctx.exports.UserAccount.get(
-      this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-    return account.getAccessToken(opts);
+  #creating = new Mutex();
+  #tokens = new AccessTokenCache(opts => this.#account().getAccessToken(opts));
+  #api = new DriveApi(opts => this.#getAccessToken(opts));
+  #journal = new ActionJournal<DriveCommentAction>(this.ctx.storage.kv, { namespace: "drive" });
+  #attempts = commentAttempts(this.ctx.storage.kv);
+  #actions = DRIVE_COMMENT_ACTIONS.bind(this.#journal, {
+    api: this.#api,
+    docs: new GoogleDocsApi(opts => this.#getAccessToken(opts)),
+    scope: () => this.#scope,
+    writeRefusal: () => this.#writeRefusal(),
+    attempts: this.#attempts,
   });
+  #reads = new ReadGate();
+
+  #account() {
+    return this.ctx.exports.UserAccount.get(
+      this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId));
+  }
+
+  /**
+   * Whether the connection was made read and write. Anything else in its props is read-only, a
+   * folder not created yet included.
+   */
+  get #writes(): boolean {
+    return !isSimulated(this.ctx.props) && this.ctx.props.access === "write";
+  }
+
+  /**
+   * Whether the account holds the Drive writes grant, read live so a withdrawal counts at once.
+   *
+   * An account that does not is asked for its token, past this binding's memo of it. A disconnected
+   * account records no grant either, and allowing changes cannot restore its connection, so a
+   * write on it fails there as every read of the binding does, rather than name that step.
+   */
+  async #holdsWritesGrant(): Promise<boolean> {
+    if ((await this.#account().getGrantedResourceUrlPatterns()).includes(DRIVE_WRITES_GRANT)) {
+      return true;
+    }
+    await this.#getAccessToken({ reloadStored: true });
+    return false;
+  }
+
+  /** Why this binding cannot make changes now, if it cannot: asked at queue and at apply. */
+  #writeRefusal(): Promise<string | undefined> {
+    return writeRefusal({
+      access: this.#bound.access, scope: this.#scope, holdsGrant: () => this.#holdsWritesGrant(),
+    });
+  }
 
   #getAccessToken(opts?: AccessTokenRequest): Promise<string> {
     return this.#tokens.get(opts);
   }
 
+  /** The account, scope and access this binding has, which a folder not yet created has not. */
+  get #bound(): { userObjectId: string; scope: DriveBindingScope; access?: DriveAccessLevel } {
+    return boundProps(this.ctx.props, "driveFolder");
+  }
+
   async describe(): Promise<ResourceDescription> {
+    let props = this.ctx.props;
+    if (isSimulated(props)) {
+      let { title } = props.creation;
+      return {
+        url: nativeFileUrl("driveFolder"),
+        title,
+        snippet: `Google Drive folder: ${title} (empty; not created yet)`,
+        suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
+        // Created as a read-only connection, as a resource URL without `?access=write` is.
+        tsType: "GoogleDriveFolderReadSession",
+      };
+    }
     let scope = this.#scope;
+    let write = this.#writes;
+    let level = write ? "Read and write" : "Read-only";
+    let comments = write ? "read and queue comments" : "read comments";
+    // The title is where a connection's level is said to people and to the agent.
+    let titled = (title: string) => write ? `${title} (read and write)` : title;
     if (scope.kind === "account") {
       return {
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
-        title: "Google Drive Account",
-        snippet: GOOGLE_DRIVE_RESOURCE.description,
+        title: titled("Google Drive Account"),
+        snippet: `${level}: find files anywhere this Google account can read in Drive, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile(), and ${comments}`,
         suggestedBindingName: "GOOGLE_DRIVE",
-        tsType: "GoogleDriveSession",
+        tsType: write ? "GoogleDriveSession" : "GoogleDriveReadSession",
       };
     }
-    let api = new DriveApi(opts => this.#getAccessToken(opts));
+    let api = this.#api;
     if (scope.kind === "folder") {
       // Validated here too, so a hand-built resource URL fails at connect rather than minting a
       // presentable binding whose every call then refuses.
@@ -3393,66 +3626,123 @@ export class GoogleDriveGatekeeperImpl
       return {
         // The natural browser URL, not the internal `_resource` selector the grant is keyed on.
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
-        title: folder.name,
-        snippet: `List and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, PDFs' text with readPdf(), and any other file's bytes with readFile() in Drive folder "${folder.name}"`,
+        title: titled(folder.name),
+        snippet: `${level}: list and search direct children, navigate child folders, read native Google Docs, Sheets and Slides, read PDFs' text with readPdf() and any other file's bytes with readFile(), and ${comments} on direct children in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
-        tsType: "GoogleDriveFolderSession",
+        tsType: write ? "GoogleDriveFolderSession" : "GoogleDriveFolderReadSession",
       };
     }
     let file = await api.getFile(scope.fileId);
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
-      title: file.name,
-      snippet: `Read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}"`,
+      title: titled(file.name),
+      snippet: write
+        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", and read and queue comments on it`
+        : `Read-only: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, and comments, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
-      tsType: "GoogleDriveReadSession",
+      tsType: write ? "GoogleDriveFileSession" : "GoogleDriveReadSession",
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
-    return getGoogleDriveTypesCode();
+    return getGoogleDriveTypesCode(this.#writes);
   }
 
-  async getAutoApprovableActions() {
-    return [];
+  /** A read-only binding submits nothing, so it lists no kind. */
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return this.#writes ? this.#actions.autoApprovableKinds() : [];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
+    let props = this.ctx.props;
+    if (isSimulated(props)) return new UncreatedDriveFolderSessionImpl(props.creation.title, approvalQueue.dup());
+    // Only an undecided or claimed write can be applied again, so no other marker is read again.
+    this.#attempts.sweep(new Set(this.#journal.listPending().map(({ id }) => id)));
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
     // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
     let ai = this.env.AI as unknown as AiFetcher | undefined;
     let gatewayId = this.env.CF_AI_GATEWAY;
     let convertPdf: PdfConverter | undefined = ai && (pdf => pdfToText(ai, gatewayId, pdf));
+    let comments: DriveCommentQueue = {
+      access: this.#writes ? "write" : "read",
+      writeRefusal: () => this.#writeRefusal(),
+      submit: (queue, kind, payload) => this.#actions.submit(queue, kind, payload),
+      undecided: read => this.#reads.read(() => read(this.#journal.listUndecided())),
+    };
     return new GoogleDriveSessionImpl(
-      new DriveApi(getDriveAccessToken),
+      this.#api,
       new GoogleDocsApi(getDriveAccessToken),
       new GoogleSheetsApi(getDriveAccessToken),
       new GoogleSlidesApi(getDriveAccessToken),
       convertPdf,
       this.#scope,
       approvalQueue.dup(),
+      comments,
     );
   }
 
-  /** Read-only — no side-effecting actions. */
-  async applyAction(_action: number): Promise<void> {}
-  async rejectAction(_action: number): Promise<void> {}
+  async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, resourceUrl: string}> {
+    return this.#creating.run(async () => {
+      let { userObjectId, fileId, resourceUrl } = await createFileOnce(this.ctx, creator, "driveFolder", configuration);
+      let props: GoogleDriveGatekeeperImplProps = { userObjectId, scope: { kind: "folder", folderId: fileId } };
+      return { class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props }), resourceUrl };
+    });
+  }
+
+  /**
+   * Applies a write, and then drops its attempt marker. The marker outlives the send it records
+   * until the action's record is settled, so that a retry of an apply that ended in between finds
+   * it and looks for what was posted.
+   */
+  applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    return this.#reads.resolve(async () => {
+      this.#adoptOrphanedClaim(actionId);
+      await this.#actions.apply(actionId);
+      this.#attempts.delete(actionId);
+    });
+  }
+
+  /**
+   * Withdraws a write, whatever an earlier send of it did: a comment that send posted stays on the
+   * file, and nothing applies the action again, so its attempt marker goes with it.
+   */
+  rejectAction(actionId: number): Promise<void> {
+    return this.#reads.resolve(async () => {
+      await this.#actions.reject(actionId);
+      this.#attempts.delete(actionId);
+    });
+  }
+
   revertAction(_action: number): Promise<void> {
-    throw new Error("Google Drive gatekeeper has no writable actions to revert");
+    throw new Error("Google Drive comments cannot be reverted automatically.");
+  }
+
+  /**
+   * Hands a claim an earlier apply left behind back to the action set as undecided, rather than
+   * let it be failed as of unknown outcome: the send's attempt marker decides instead. With one,
+   * applying looks for what the send posted before anything is sent again. Without one, no send
+   * of the write is in doubt: none was made, or each one made is known to have posted nothing. A
+   * marker is kept until its action is applied or rejected so that this holds. Resolutions run
+   * one at a time behind the read gate, so a claim found here is never one this activation holds.
+   */
+  #adoptOrphanedClaim(actionId: number): void {
+    if (this.#journal.get(actionId)?.state === "claimed") this.#journal.restorePending(actionId);
   }
 
   // Observers: every read reports the Drive units it depends on as subresources (see
   // file-subresources.ts), which the Workshop checks through verifyObserverAccess(): each file
-  // whose metadata it returned, each file whose PDF text or bytes it returned (as content, which
-  // needs leave to download), each folder it listed, and each native file whose content it read,
-  // Docs, Sheets and Slides included. A read whose answer is relative to the connected account (an
-  // account binding's empty search, a folder it cannot list, or a file it cannot see) reports `[]`;
-  // a folder binding's search reports its folders even when empty. Account-binding invisible-file
-  // 403/404 probes return one generic error without Google's per-file reason. The tracker no
-  // longer records what reads reveal. It keeps what addObserver() still enforces: a Drive grant,
-  // the bound folder or file (seeded below), the units reads recorded before they reported
-  // subresources, and the admission fence earlier releases latched after owner-relative reads.
+  // whose metadata or comments it returned, each file whose PDF text or bytes it returned (as
+  // content, which needs leave to download), each folder it listed, and each native file whose
+  // content it read, Docs, Sheets and Slides included. A read whose answer is relative to the
+  // connected account (an account binding's empty search, a folder it cannot list, a file it
+  // cannot see, or a file it cannot comment on) reports `[]`; a folder binding's search reports
+  // its folders even when empty. Account-binding invisible-file 403/404 probes return one generic
+  // error without Google's per-file reason. The tracker no longer records what reads reveal. It
+  // keeps what addObserver() still enforces: a Drive grant, the bound folder or file (seeded
+  // below), the units reads recorded before they reported subresources, and the admission fence
+  // earlier releases latched after owner-relative reads.
 
   #observerTracker(): ObserverTracker<DriveObservation, Fetcher<GoogleVerifierApi>> {
     return driveObserverTracker<Fetcher<GoogleVerifierApi>>(
@@ -3461,7 +3751,7 @@ export class GoogleDriveGatekeeperImpl
   }
 
   get #scope(): DriveBindingScope {
-    return requireDriveBindingScope(this.ctx.props.scope);
+    return requireDriveBindingScope(this.#bound.scope);
   }
 
   async addObserver(id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
@@ -3469,6 +3759,8 @@ export class GoogleDriveGatekeeperImpl
   }
 
   async removeObserver(id: string): Promise<void> {
+    // A folder not created yet tracks no observer.
+    if (isSimulated(this.ctx.props)) return;
     this.#observerTracker().removeObserver(id);
   }
 
@@ -3522,7 +3814,7 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   async getMetadata(): Promise<DocMetadata> {
     return this.#read(async () => {
       let file = await this.#driveApi.getFile(this.#documentId);
-      return { title: file.name, lastModified: driveModifiedTime(file) };
+      return { id: this.#documentId, title: file.name, lastModified: driveModifiedTime(file) };
     }, () => ({
       title: "Read Google Doc metadata",
       description: "Read the current title and modification time of the Drive document.",
@@ -3599,6 +3891,9 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   }
 }
 
+/** The refusal for a comment write on a folder: Drive answers one with a server error, every time. */
+const FOLDER_COMMENT_REFUSED = "A Google Drive folder cannot take comments.";
+
 /** The refusal for an account connected before Drive bindings could read file content. */
 function contentAccessMissing(what: string): string {
   return "This Google account was connected before Drive bindings could read file content. " +
@@ -3613,10 +3908,15 @@ function fileReadError(error: unknown): unknown {
   return error;
 }
 
+/** The same refusal for a comment listing, which needs the same access. */
+const COMMENTS_ACCESS_MISSING =
+  "This Google account was connected before Drive bindings could read file content. Reconnect " +
+  "it in Workshop to read comments.";
+
 /** Drive RPC session implementation, exported for workerd contract coverage. */
 @validateRpc()
 export class GoogleDriveSessionImpl extends RpcTarget
-    implements GoogleDriveReadSession, GoogleDriveFolderSession {
+    implements GoogleDriveSession, GoogleDriveFolderSession {
   #core: DriveCore;
   #driveApi: DriveApi;
   #docsApi: GoogleDocsApi;
@@ -3628,6 +3928,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
   /** Set exactly when the scope is a folder, so no core has to be built to learn which it is. */
   #location?: FolderLocation;
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #comments: DriveCommentQueue;
 
   constructor(
     driveApi: DriveApi,
@@ -3637,6 +3938,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     convertPdf: PdfConverter | undefined,
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
+    comments: DriveCommentQueue,
     location?: FolderLocation,
   ) {
     super();
@@ -3650,6 +3952,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       ? location ?? {folderIds: [scope.folderId]}
       : undefined;
     this.#approvalQueue = approvalQueue;
+    this.#comments = comments;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -3679,7 +3982,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, location,
+        this.#scope, queue, this.#comments, location,
       );
     });
   }
@@ -3793,9 +4096,175 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return {mimeType, size, modifiedTime, offset, length, content};
   }
 
+  async listComments(fileId: string): Promise<Cursor<DriveComment>> {
+    return this.#withQueue(async (queue, core) => {
+      let { fileId: id } = await core.commentTarget(fileId);
+      await core.requireCommentable(id);
+      let pager = core.commentPager(id, fetch => this.#comments.undecided(async pending => {
+        let { comments, nextPageToken } = await fetch().catch((error: unknown) => {
+          throw lacksFileContentAccess(error) ? new Error(COMMENTS_ACCESS_MISSING) : error;
+        });
+        return {
+          ...overlayPending(id, comments.map(toDriveComment), pending, nextPageToken === undefined),
+          ...(nextPageToken ? { nextPageToken } : {}),
+        };
+      }));
+      return new RpcCursor(pager, queue);
+    });
+  }
+
+  async comment(
+    fileId: string, text: string, options: DriveCommentOptions = {},
+  ): Promise<DriveComment> {
+    await this.#requireWritable();
+    let { quote, tabId } = options;
+    if (tabId !== undefined && quote === undefined) {
+      throw new Error("tabId names the tab a quote is in; pass the quote too.");
+    }
+    let queued = await this.#queueComment(fileId, "createComment", async (target, base) => {
+      if (quote === undefined) return { ...base, content: composeComment(text) };
+      // Checked before the Doc is read; a comment attached through Docs has the Docs limit.
+      let content = composeComment(text, true);
+      let quoted = requireQuote(quote);
+      return {
+        ...base, content, anchor: { tabId: await this.#quotedTab(target, quoted, tabId), text: quoted },
+      };
+    });
+    return pendingComment(queued.id, queued.payload);
+  }
+
+  async suggestEdit(
+    fileId: string, oldText: string, newText: string, options: DriveSuggestEditOptions = {},
+  ): Promise<DocSuggestion> {
+    await this.#requireWritable();
+    let { note, tabId } = options;
+    let queued = await this.#queueComment(fileId, "suggestEdit", async (target, base) => {
+      let checked = checkSuggestion(oldText, newText, note);
+      return {
+        ...base, tabId: await this.#quotedTab(target, checked.oldText, tabId, true), ...checked,
+      };
+    });
+    return pendingSuggestion(queued.id, queued.payload);
+  }
+
+  async reply(fileId: string, commentId: string, text: string): Promise<DriveCommentReply> {
+    await this.#requireWritable();
+    await this.#requirePostedCommentId(commentId);
+    let queued = await this.#queueComment(fileId, "createReply", async (target, base) => {
+      let content = composeReply(text);
+      // Before Drive is asked for the comment, so that a resolve applied meanwhile is seen there.
+      if (await this.#resolvePending(target.fileId, commentId)) {
+        throw new Error(REPLY_RESOLVE_PENDING);
+      }
+      let comment = await this.#liveComment(target.fileId, commentId);
+      return {
+        ...base, commentId, content, parent: await commentParent(comment),
+        // Drive reopens a resolved comment that is replied to.
+        ...(comment.resolved ? { reopens: true as const } : {}),
+      };
+    });
+    return pendingReply(queued.id, { kind: "createReply", payload: queued.payload });
+  }
+
+  async resolve(fileId: string, commentId: string, text?: string): Promise<DriveCommentReply> {
+    await this.#requireWritable();
+    await this.#requirePostedCommentId(commentId);
+    let queued = await this.#queueComment(fileId, "resolveComment", async (target, base) => {
+      let content = composeResolve(text);
+      if (await this.#resolvePending(target.fileId, commentId)) throw new Error(RESOLVE_PENDING);
+      let comment = await this.#liveComment(target.fileId, commentId);
+      // Drive would add another resolve reply to a resolved comment.
+      if (comment.resolved) throw new Error(ALREADY_RESOLVED);
+      return {
+        ...base, commentId, ...(content === undefined ? {} : { content }),
+        parent: await commentParent(comment),
+      };
+    });
+    return pendingReply(queued.id, { kind: "resolveComment", payload: queued.payload });
+  }
+
+  /** Refuses a write this binding may not make: it is read-only, or its account does not allow changes. */
+  async #requireWritable(): Promise<void> {
+    let refused = await this.#comments.writeRefusal();
+    if (refused !== undefined) throw new Error(refused);
+  }
+
+  /**
+   * Refuses a comment ID that is not one Drive gave: a `pending:` ID, by whether its comment still
+   * awaits approval in this binding's queue, or anything that is not a comment ID at all.
+   */
+  async #requirePostedCommentId(commentId: string): Promise<void> {
+    if (isPendingCommentId(commentId)) {
+      throw new Error(await this.#comments.undecided(
+        async pending => pendingCommentRefusal(commentId, pending)));
+    }
+    if (!isDriveCommentId(commentId)) throw new Error("Not a Google Drive comment ID.");
+  }
+
+  /** Whether this binding has a resolve of the comment waiting for approval. */
+  #resolvePending(fileId: string, commentId: string): Promise<boolean> {
+    return this.#comments.undecided(
+      async pending => hasPendingResolve(fileId, commentId, pending));
+  }
+
+  /**
+   * Checks and queues one comment write: the file is in scope, is not a folder, and the connected
+   * account can comment on it, all before `prepare` builds the payload, and nothing is queued
+   * until it has.
+   */
+  async #queueComment<K extends keyof DriveCommentActions>(
+    fileId: string,
+    kind: K,
+    prepare: (target: CommentTarget, base: CommentTargetPayload) => Promise<DriveCommentActions[K]>,
+  ): Promise<{ id: number; payload: DriveCommentActions[K] }> {
+    let core = this.#core;
+    let target = await core.commentTarget(fileId);
+    // Before the account is asked whether it can comment: of a folder, Drive says it can.
+    if (target.mimeType === FOLDER_MIME_TYPE) throw new Error(FOLDER_COMMENT_REFUSED);
+    await core.requireCommentable(target.fileId);
+    let payload = await prepare(target, {
+      fileId: target.fileId,
+      fileName: shownFileName(target.name),
+      ...(target.folderIds ? { folderIds: target.folderIds } : {}),
+      queuedAt: new Date().toISOString(),
+    });
+    let id = await this.#comments.submit(this.#approvalQueue, kind, payload);
+    return { id, payload };
+  }
+
+  /**
+   * The ID of the tab of a Google Doc in which `quote` occurs exactly once; with `wholeChips`, as
+   * for text a suggestion replaces, refused when it takes in part of a chip. Reading the Doc is a
+   * content read, authorized as one.
+   */
+  async #quotedTab(
+    target: CommentTarget, quote: string, tabId: string | undefined, wholeChips = false,
+  ): Promise<string> {
+    if (target.mimeType !== GOOGLE_DOC_MIME_TYPE) {
+      throw new Error("Quoting and suggested edits work only on Google Docs.");
+    }
+    let documentId = target.fileId;
+    let document = await this.#core.nativeRead(documentId, GOOGLE_DOC_MIME_TYPE)(
+      () => this.#docsApi.getDocument(documentId),
+      () => ({
+        title: "Read Google Doc content",
+        description: `Read the text of Google Doc ${documentId} to find the quoted text.`,
+      }));
+    let tab = selectTab(document, tabId);
+    locateQuote(tab, quote, { wholeChips });
+    return tab.tabId;
+  }
+
+  async #liveComment(fileId: string, commentId: string) {
+    let comment = await readLiveComment(this.#driveApi, fileId, commentId);
+    if (!comment) throw new Error(COMMENT_NOT_FOUND);
+    return comment;
+  }
+
   #coreFor(queue: RpcStub<ApprovalQueue>): DriveCore {
     let common = {
       api: this.#driveApi,
+      access: this.#comments.access,
       authorize: (description: ObservationDescription) => queue.authorizeObservation(description),
     };
     if (this.#scope.kind === "folder") {
@@ -3836,6 +4305,106 @@ export class GoogleDriveSessionImpl extends RpcTarget
       let id = await core.openNativeFile(fileId, mimeType, description);
       return build(id, queue, core.nativeRead(id, mimeType));
     });
+  }
+}
+
+const UNCREATED_FOLDER =
+  "This Google Drive folder is not created yet, so it holds nothing. Once its creation is " +
+  "approved, open it from a new session.";
+
+/**
+ * A Drive folder GatekeeperVendor.createResource() was asked for, before its creation is approved:
+ * empty, and named as it will be. Nothing it answers comes from Google, but its reads are audited
+ * as every pending creation's are, with no subresources.
+ */
+@validateRpc()
+class UncreatedDriveFolderSessionImpl extends RpcTarget
+    implements GoogleDriveSession, GoogleDriveFolderSession {
+  #title: string;
+  #queue: RpcStub<ApprovalQueue>;
+
+  constructor(title: string, queue: RpcStub<ApprovalQueue>) {
+    super();
+    this.#title = title;
+    this.#queue = queue;
+  }
+
+  #audit(title: string, description: string): Promise<void> {
+    return this.#queue.authorizeObservation({ title, description, subresources: [] });
+  }
+
+  async getScope(): Promise<DriveScope> {
+    await this.#audit("Read Google Drive scope", `Read the name of Drive folder "${this.#title}", not created yet.`);
+    return {
+      kind: "folder", folderId: UNCREATED_FILE_ID, rootFolderId: UNCREATED_FILE_ID, name: this.#title,
+      access: "read",
+    };
+  }
+
+  async list(_options?: DriveListOptions): Promise<Cursor<DriveEntry>> {
+    await this.#audit("Read Google Drive metadata", `Listed Drive folder "${this.#title}", not created yet: empty.`);
+    return new RpcCursor<DriveEntry>({ next: async () => null });
+  }
+
+  async search(_query: DriveSessionSearchQuery): Promise<Cursor<DriveEntry>> {
+    await this.#audit("Read Google Drive metadata", `Searched Drive folder "${this.#title}", not created yet: empty.`);
+    return new RpcCursor<DriveEntry>({ next: async () => null });
+  }
+
+  async getEntry(_fileId: string): Promise<DriveEntry> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openFolder(_folderId: string): Promise<GoogleDriveFolderSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openGoogleDoc(_fileId: string): Promise<GoogleDocReadSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openGoogleSheet(_fileId: string): Promise<GoogleSpreadsheetReadSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async openGoogleSlides(_fileId: string): Promise<GooglePresentationReadSession> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async readPdf(_fileId: string): Promise<DrivePdfText> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async readFile(_fileId: string, _options?: DriveFileReadOptions): Promise<DriveFileBytes> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  // A folder not created yet holds no file to read or write comments on. Its agent types are the
+  // read-only ones, so the writes are here only for the session's declared shape.
+  async listComments(_fileId: string): Promise<Cursor<DriveComment>> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async comment(_fileId: string, _text: string, _options?: DriveCommentOptions): Promise<DriveComment> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async suggestEdit(
+    _fileId: string, _oldText: string, _newText: string, _options?: DriveSuggestEditOptions,
+  ): Promise<DocSuggestion> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async reply(_fileId: string, _commentId: string, _text: string): Promise<DriveCommentReply> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  async resolve(_fileId: string, _commentId: string, _text?: string): Promise<DriveCommentReply> {
+    throw new Error(UNCREATED_FOLDER);
+  }
+
+  [Symbol.dispose](): void {
+    this.#queue[Symbol.dispose]();
   }
 }
 
@@ -4031,8 +4600,8 @@ class BigQuerySessionImpl extends RpcTarget implements BigQuerySession {
   }
 
   // Authorize an observation, reporting as subresources the datasets whose data it reveals, which
-  // the Workshop checks every collaborator who can see the read against. Use for every read; pass
-  // an empty `datasets` for reads that reveal none (e.g. echoing the scoped project id).
+  // the Workshop checks collaborators against. Use for every read; pass an empty `datasets` for
+  // reads that reveal none (e.g. echoing the scoped project id).
   async #authorizeDatasets(
     datasets: { projectId: string; datasetId: string }[],
     description: ObservationDescription,

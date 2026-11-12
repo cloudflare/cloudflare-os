@@ -4,6 +4,7 @@ import { X } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
+  AuthenticatedApi,
   BlueprintPublicInfo,
   GadgetClient,
   GadgetUpstream,
@@ -29,6 +30,8 @@ type UpdateFromBlueprintDialogProps = {
   gadget: { title: string; upstream?: GadgetUpstream; client: RpcStub<GadgetClient> }
   overseer: RpcStub<Overseer>
   publicApi: RpcStub<PublicApi>
+  /** Saves a reviewer pick as the user's preferred model. */
+  authenticatedApi: RpcStub<AuthenticatedApi>
   onClose: () => void
   /** Called with the new chat that holds the proposal, once there is one. */
   onProposed: (chatId: number) => void
@@ -98,6 +101,7 @@ export const UpdateFromBlueprintDialog = ({
   gadget,
   overseer,
   publicApi,
+  authenticatedApi,
   onClose,
   onProposed,
 }: UpdateFromBlueprintDialogProps) => {
@@ -165,7 +169,7 @@ export const UpdateFromBlueprintDialog = ({
   const pickReviewer = (modelId: string | null) => {
     setPickedReviewer({ modelId })
     // As the composer's selector does, since the chat this opens is where the choice applies.
-    persistSelectedModel(modelId)
+    persistSelectedModel(authenticatedApi, modelId)
   }
 
   const apply = async (blueprint: BlueprintChoice, allowUnrelated: boolean) => {
