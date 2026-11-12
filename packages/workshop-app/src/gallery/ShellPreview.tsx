@@ -37,18 +37,19 @@ export const ShellPreview = () => {
   const from = { workspaceId: MOCK_WORKSPACE_ID }
 
   return (
-    <Section title="AppShell, SplitLayout, SidePane, ResizeHandle (the pane grows in beside the page and goes the same way. With more than one thing open a count shows, which opens to the list of them; the title swaps as another is shown, and pointed at it grows a button that closes what it names. A gadget runs in it, on a tinted surface whose bar pushes the header up out of the way or pulls it back down; the header also has who else is there, more, a link, and full screen, which fills the window with the pane until collapsed or Escape. The arrow puts the pane away with everything still open, and so does dragging the gap far to the right, where the pane dims; the sidebar's Library button brings it back, and so does the page's far edge: as the pane goes, a handle stays out there for a moment, and it comes out again when the pointer reaches the edge, to be clicked or pulled. Near either gap a pill follows the pointer: drag it to resize, past a limit it resists and springs back; double-click to reset, or tab to it and use the arrow keys)">
+    <Section title="AppShell, SplitLayout, SidePane, ResizeHandle (the pane grows in beside the page and goes the same way. With more than one thing open a count shows, which opens to the list of them; the title swaps as another is shown, and pointed at it grows a button that closes what it names. A gadget runs in it, on a tinted surface whose bar pushes the header up out of the way or pulls it back down; the header also has who else is there, more, a link, and full screen, which fills the window with the pane until collapsed or Escape. The arrow puts the pane away with everything still open, and so does dragging the gap far to the right, where the pane dims; the sidebar's Library button brings it back, and so does the page's far edge: as the pane goes, a handle stays out there for a moment, and it comes out again when the pointer reaches the edge, to be clicked or pulled. Dragging the sidebar's gap well past its narrowest collapses it to a rail of icons, and past the rail hides it, where it dims; it is had back from the near edge the same way. Near either gap a pill follows the pointer: drag it to resize, past a limit it resists and springs back; double-click to reset, or tab to it and use the arrow keys)">
       {/* Wider than the gallery's column, so that there is room to drag in. */}
       <div className="relative left-1/2 h-[32rem] w-[min(72rem,100vw-4rem)] shrink-0 -translate-x-1/2 rounded-3xl bg-kumo-canvas ring-1 ring-kumo-line">
         <ApiContext value={session}>
           <AppShell
-            sidebar={(
+            sidebar={(collapsed) => (
               <Sidebar
                 user={{ name: 'Ada Lovelace' }}
                 workspaces={WORKSPACES}
                 selectedWorkspaceId={workspace}
                 onSelectWorkspace={setWorkspace}
                 library={{ shown, onToggle: actions.toggle }}
+                collapsed={collapsed}
               />
             )}
             aside={shown && <AsidePane tabs={tabs} fullScreen={fullScreen} actions={actions} />}

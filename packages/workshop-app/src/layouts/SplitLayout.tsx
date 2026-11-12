@@ -3,6 +3,7 @@ import { AnimatePresence, animate, motion, useMotionValue, useMotionValueEvent, 
 import { cn } from '@cloudflare/kumo/utils'
 import { ResizeHandle } from '@/components/ResizeHandle'
 import { clampSize, resistSize, settleSize } from '@/components/resizing'
+import { CLICK_SLOP, CLOSING_DIM, EDGE_GAP, OPENING_TIMING, useEdgeHint } from './useEdgeHint'
 import { SCROLLBARS_AWAY, useScrollbarsAway } from './useScrollbarsAway'
 
 export type SplitLayoutProps = {
@@ -30,31 +31,21 @@ export type SplitLayoutProps = {
 }
 
 const GAP = 12
-// The gap held open at the page's far edge for the handle, with the aside away. Wider than the
-// gap between the cards, so that the handle stands clear of the page.
-const EDGE_GAP = 24
 // Neither pane is dragged narrower than this, or than half the room when there is less than twice it.
 const MIN_PANE_WIDTH = 320
 const EVEN = 0.5
 // What an arrow key moves the divider by, as a share of the room.
 const STEP = 0.02
 // Dragged narrower than this share of its narrowest, the aside closes when let go, and is dimmed
-// by this much meanwhile to say so.
+// meanwhile to say so.
 const CLOSES_AT = 0.6
-const CLOSING_DIM = 0.6
-// Pulled out of the edge by at least this many pixels, the aside opens when let go. A pointer that
-// moved less than the slop between pressing and letting go only clicked, which opens it too.
+// Pulled out of the edge by at least this many pixels, the aside opens when let go.
 const OPENS_AT = 48
-const CLICK_SLOP = 4
-// How long the edge's handle stays out after the aside is put away, counted from when it starts to go.
-const HINT_TIME = 700
 const PANE = 'flex min-w-0 basis-0 flex-col overflow-hidden rounded-3xl bg-kumo-base ring ring-kumo-line'
 // The card's corners beside the page (`rounded-3xl`). Filling the window it has none, nor any
 // room around it: its ring is then past the window's edges.
 const CORNER = 24
 const FULL_SCREEN_TIMING = { type: 'spring', duration: 0.4, bounce: 0.08 } as const
-// The aside coming and going: setting off gently, rather than all at once.
-const OPENING_TIMING = { type: 'spring', duration: 0.4, bounce: 0 } as const
 
 /**
  * Where the card is from each edge of the window while it is out of its place, and how round its
@@ -199,18 +190,7 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
     reopensAt.current = undefined
   }
 
-  // The handle is shown at the edge for a moment after the aside is put away.
-  const [wasShown, setWasShown] = useState(shown)
-  const [hinting, setHinting] = useState(false)
-  if (wasShown !== shown) {
-    setWasShown(shown)
-    setHinting(!shown)
-  }
-  useEffect(() => {
-    if (!hinting) return
-    const timer = setTimeout(() => setHinting(false), HINT_TIME)
-    return () => clearTimeout(timer)
-  }, [hinting])
+  const hinting = useEdgeHint(shown)
 
   /** The room the two cards have between them, and the aside's limits within it. */
   const room = () => {
@@ -293,7 +273,7 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
               value={shown ? Math.round((1 - rest) * 100) : 100}
               min={0}
               max={100}
-              edge={!shown}
+              edge={shown ? undefined : 'right'}
               hint={hinting}
               // With the aside open, holding the edge's gap open changes nothing that is seen.
               onReach={(reached) => settleSize(peek, reached ? 1 : 0, reduceMotion || (reached && open.get() >= 1))}

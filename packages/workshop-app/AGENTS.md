@@ -182,6 +182,17 @@ for the output's workspace's latest chat, with the output beside it (`latestChat
 out until it is put away, and is put away and had back by the bar as beside the page; doing so
 squares off the surface's top corners as it goes, so they are square at the window's top.
 
+The sidebar is expanded, collapsed to a rail one button wide, or hidden, and `AppShell` owns
+which (it hands `collapsed` to whatever draws the sidebar). Its gap dragged well past the
+sidebar's narrowest collapses it to the rail, and dragged back out expands it. Between the two,
+the width springs across the jump, and what was in the sidebar fades out, keeping its width,
+before the other fades in and comes into focus; never both at once. Dragged narrower than itself,
+the rail does not resist or squeeze: it keeps its width and follows the pointer out under the
+edge. Well past, it dims and is hidden when let go, the way the aside is put away, and is had back from the
+window's near edge the way the aside is from the far one: clicking the handle shows it as it was,
+and pulling it out brings the rail out first, then the sidebar past the rail. The arrow keys on
+the handle step through the same: narrower than its narrowest collapses, and the rail hides.
+
 The gaps after the sidebar and between the two cards are dragged to resize (`ResizeHandle`). The
 handle only reports what is asked of it; whoever places it owns the size and its limits, as a
 motion value so that dragging renders nothing again. Past a limit a size resists and springs back
