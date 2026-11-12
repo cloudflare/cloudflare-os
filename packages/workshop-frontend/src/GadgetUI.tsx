@@ -230,6 +230,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     const reconnect = async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined
       try {
+        // A pipelined client resolves only once the connection is back and the workspace reopened.
+        // The budget is for the gadget's own answer, not for the outage before it.
+        await gadget
         const replacementStub = await Promise.race([
           replacementPromise,
           new Promise<never>((_, reject) => {
