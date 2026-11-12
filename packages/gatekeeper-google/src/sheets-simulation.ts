@@ -33,7 +33,7 @@ import {
 import {
   rewriteFormula, structureSensitive, tokenize, type RewriteStep, type RewrittenFormula,
 } from "./sheets-formula";
-import type { LineOp, ResizeOp } from "./sheets-input";
+import type { LineOp, MergeType, ResizeOp } from "./sheets-input";
 import {
   a1Of, byPosition, cellName, enteredOf, findSheet, intersection, isFormula, rectName, shownValue, type EnteredValue,
   type Rect,
@@ -106,6 +106,8 @@ export type PlannedChange =
   | { op: "writeCells"; sheetId: number; rect: Rect; values: SheetCellInput[][] }
   | { op: "clearRange"; sheetId: number; rect: Rect }
   | { op: "formatCells"; sheetId: number; rect: Rect; format: SheetFormatChange }
+  | { op: "mergeCells"; sheetId: number; rect: Rect; merge: MergeType }
+  | { op: "unmergeCells"; sheetId: number; rect: Rect }
   | { op: "addSheet"; sheetId: number; title: string; index: number; rowCount: number; columnCount: number }
   | { op: "renameSheet"; sheetId: number; title: string }
   | { op: "duplicateSheet"; sheetId: number; newSheetId: number; title: string; index: number }
@@ -796,7 +798,8 @@ function lineSize(grid: Grid, sheet: SimSheet, axis: Axis, identity: string | un
  * cell has, and cells and sizes moved with their lines, with the merges queued changes leave
  * overlapping it. Cells of added sheets start with no formatting. Cells of inserted lines read
  * null and pending, since Google gives an inserted row the formatting of the row beside it but not
- * its borders, and an inserted column its borders as well.
+ * its borders, and an inserted column its borders as well, as do cells a queued merge covers, which
+ * take their merged cell's.
  */
 export function simulatedFormats(
   grid: Grid, area: SimulatedArea, base: BaseFormats, sizes: BaseSizes,
@@ -811,7 +814,7 @@ export function simulatedFormats(
     let column = columns[c];
     if (row === undefined || column === undefined) return null;
     let entry = grid.formats.get(cellKey(sheet.id, row, column));
-    if (insertedLine(grid, row) || insertedLine(grid, column)) {
+    if (insertedLine(grid, row) || insertedLine(grid, column) || entry?.unknown) {
       pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
       return null;
     }

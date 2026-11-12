@@ -87,6 +87,30 @@ export type SheetChange =
       /** What to set or reset. */
       format: SheetFormatChange;
     }
+  /**
+   * Merge a range's cells into one, or each of its rows or columns into one, as `readFormats()`
+   * lists merges. Each merged cell shows the value of its top-left cell, and Google clears the
+   * others and gives them its formatting, which unmerging does not undo. A merged cell is written
+   * through its top-left cell: a value written into another cell it covers is refused. The range may
+   * hold whole merges, which the new ones replace, but not part of one, nor cross the line between a
+   * sheet's frozen rows or columns and the rest.
+   */
+  | {
+      op: "mergeCells";
+      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
+      range: string;
+      /** `ALL`, the default, merges the whole range; `ROWS` each of its rows; `COLUMNS` each column. */
+      merge?: "ALL" | "ROWS" | "COLUMNS";
+    }
+  /**
+   * Unmerge every merged cell within a range, which keeps its value in its top-left cell. The range
+   * may not hold part of a merged cell.
+   */
+  | {
+      op: "unmergeCells";
+      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
+      range: string;
+    }
   /** Add an empty sheet. */
   | {
       op: "addSheet";

@@ -489,6 +489,85 @@ describe("Sheets layout change requests", () => {
   });
 });
 
+describe("Sheets merge requests", () => {
+  let laidOut = [sheet(0, "Sales", { frozenRowCount: 1, frozenColumnCount: 1, merges: [rect(3, 2, 3, 3)] }), SHEETS[1]];
+
+  it("merges a range whole, by row or by column, clearing every cell but each block's top-left", () => {
+    let planned = resolve([
+      { op: "mergeCells", range: "Sales!B2:C3" },
+      { op: "mergeCells", range: "Sales!B9:D10", merge: "ROWS" },
+      { op: "mergeCells", range: "Sales!B12:C13", merge: "COLUMNS" },
+    ], laidOut);
+    let { grid: merged, requests } = planSheet(grid(laidOut), planned);
+    expect(requests).toEqual([
+      { mergeCells: { range: { sheetId: 0, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: "MERGE_ALL" } },
+      { mergeCells: { range: { sheetId: 0, startRowIndex: 8, endRowIndex: 10, startColumnIndex: 1, endColumnIndex: 4 }, mergeType: "MERGE_ROWS" } },
+      { mergeCells: { range: { sheetId: 0, startRowIndex: 11, endRowIndex: 13, startColumnIndex: 1, endColumnIndex: 3 }, mergeType: "MERGE_COLUMNS" } },
+    ]);
+    expect(merged.sheets[0].merges).toEqual([
+      rect(3, 2, 3, 3), rect(1, 1, 2, 2), rect(8, 1, 1, 3), rect(9, 1, 1, 3), rect(11, 1, 2, 1), rect(11, 2, 2, 1),
+    ]);
+    let cleared = [...merged.cells.keys()].map(key => key.split(":").slice(1).map(identity => Number(identity.slice(1))));
+    expect(cleared).toEqual([
+      [1, 2], [2, 1], [2, 2], [8, 2], [8, 3], [9, 2], [9, 3], [12, 1], [12, 2],
+    ]);
+    expect([...merged.formats.values()].every(format => format.unknown)).toBe(true);
+    // What the merges clear is what the batch's guard covers.
+    expect(guardCells(grid(laidOut), planned)).toEqual([
+      { sheetId: 0, rect: rect(1, 2) }, { sheetId: 0, rect: rect(2, 1, 1, 2) },
+      { sheetId: 0, rect: rect(8, 2, 2, 2) }, { sheetId: 0, rect: rect(12, 1, 1, 2) },
+    ]);
+  });
+
+  it("replaces the merges a range holds whole, and unmerges every one within a range", () => {
+    let merged = planSheet(grid(laidOut), resolve([{ op: "mergeCells", range: "Sales!B3:F7" }], laidOut)).grid;
+    expect(merged.sheets[0].merges).toEqual([rect(2, 1, 5, 5)]);
+    let unmerged = planSheet(grid(laidOut), resolve([
+      { op: "mergeCells", range: "Sales!B2:B3" },
+      { op: "unmergeCells", range: "Sales!A1:F9" },
+      { op: "unmergeCells", range: "Sales!A12" },
+    ], laidOut));
+    expect(unmerged.grid.sheets[0].merges).toBeUndefined();
+    expect(unmerged.requests.slice(1)).toEqual([
+      { unmergeCells: { range: { sheetId: 0, startRowIndex: 0, endRowIndex: 9, startColumnIndex: 0, endColumnIndex: 6 } } },
+      { unmergeCells: { range: { sheetId: 0, startRowIndex: 11, endRowIndex: 12, startColumnIndex: 0, endColumnIndex: 1 } } },
+    ]);
+  });
+
+  // As a scratch spreadsheet refused them, in Google's words: "You must select all cells in a merged
+  // range to merge or unmerge them" and "You can't merge frozen and non-frozen rows".
+  it("refuses merging or unmerging part of a merge, and merging frozen lines with others", () => {
+    expect(refused([{ op: "mergeCells", range: "Sales!D5:F6" }], laidOut))
+      .toThrow("Change 1 (mergeCells): merging D5:F6 would merge only part of the merged cells C4:E6, and a merge " +
+        "takes in all of a merged cell or none of it.");
+    expect(refused([{ op: "mergeCells", range: "Sales!C4:E6", merge: "ROWS" }], laidOut))
+      .toThrow("would merge only part of the merged cells C4:E6");
+    expect(refused([{ op: "unmergeCells", range: "Sales!C4:D6" }], laidOut))
+      .toThrow("Change 1 (unmergeCells): C4:D6 holds only part of the merged cells C4:E6; unmerge a range that " +
+        "holds all of them.");
+    expect(refused([{ op: "mergeCells", range: "Sales!B1:B2" }], laidOut))
+      .toThrow('Change 1 (mergeCells): "Sales" freezes its first 1 row, and merging B1:B2 would merge frozen rows ' +
+        "with others, which Google does not.");
+    expect(refused([{ op: "mergeCells", range: "Sales!A9:B9" }], laidOut)).toThrow("merge frozen columns with others");
+    expect(refused([{ op: "mergeCells", range: "Sales!B9:C10", merge: "COLUMNS" }, { op: "freeze", sheet: "Sales", rows: 9 }], laidOut))
+      .toThrow("Change 2 (freeze): freezing 9 rows");
+  });
+
+  it("refuses writing a value into a cell a merge covers, which Google would drop, but not into its top-left", () => {
+    expect(refused([{ op: "writeCells", range: "Sales!D4:D5", values: [[1], [2]] }], laidOut))
+      .toThrow("Change 1 (writeCells): D4 is covered by the merged cells C4:E6, which show only C4's value, so " +
+        "Google would drop the value written there. Write it to C4, or unmerge the cells first.");
+    expect(refused([{ op: "writeCells", range: "Sales!C4:D4", values: [[1, null]] }], laidOut)).not.toThrow();
+    expect(refused([
+      { op: "mergeCells", range: "Sales!B12:C12" },
+      { op: "writeCells", range: "Sales!C12", values: [["x"]] },
+    ], laidOut)).toThrow("Change 2 (writeCells): C12 is covered by the merged cells B12:C12");
+    expect(conflict([{ op: "writeCells", sheetId: 0, rect: rect(4, 3), values: [[1]] }], laidOut))
+      .toThrow(new ChangeConflict("change 1 (writeCells): D5 is covered by the merged cells C4:E6, which show only " +
+        "C4's value, so Google would drop the value written there. Write it to C4, or unmerge the cells first"));
+  });
+});
+
 describe("Sheets apply guard", () => {
   let cells: SheetArea[] = [{ sheetId: 0, rect: rect(0, 0, 1, 2) }, { sheetId: 7, rect: rect(2, 2, 2, 1) }];
   let [stored, later] = WHITESPACE_DRIFT;

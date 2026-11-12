@@ -12,7 +12,7 @@ import type {
 import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
 import {
-  gridRangeOf, protectedRange, rect as block, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
+  gridRangeOf, protectedRange, rect as rectOf, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
 } from "../sheets-fixture";
 
 type BatchRequest = Record<string, any>;
@@ -26,6 +26,12 @@ type ProviderSheet = SheetMeta & {
   rowHeights?: Record<number, number>;
   columnWidths?: Record<number, number>;
 };
+
+/** Whether `outer` holds every cell of `inner`. */
+function holds(outer: Rect, inner: Rect): boolean {
+  return inner.startRow >= outer.startRow && inner.endRow <= outer.endRow &&
+    inner.startColumn >= outer.startColumn && inner.endColumn <= outer.endColumn;
+}
 
 /** The size of line `index` of `sheet` along an axis. */
 function sizeOf(sheet: ProviderSheet, rows: boolean, index: number): number {
@@ -58,7 +64,7 @@ const CHANGED = "This change no longer applies: cells it overwrites or deletes, 
 
 const EDIT_SPREADSHEET = { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" };
 const DELETE_SPREADSHEET_CONTENT = {
-  tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows or columns",
+  tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values",
 };
 /** The kind of every change a user cannot let apply without asking. */
 const UPDATE_SPREADSHEET = {
@@ -586,7 +592,10 @@ class SheetsProvider {
             ?.userEnteredValue;
           let value: EnteredValue = entered?.formulaValue !== undefined ? { formula: entered.formulaValue }
             : entered?.stringValue ?? entered?.numberValue ?? entered?.boolValue ?? null;
-          if (value === null) cells.delete(key(sheet.id, row, column));
+          // Google accepts a value written into a cell a merge covers, and drops it.
+          let covered = (sheet.merges ?? []).some(merge => intersection(merge, { startRow: row, endRow: row + 1, startColumn: column, endColumn: column + 1 }) &&
+            !(merge.startRow === row && merge.startColumn === column));
+          if (value === null || covered) cells.delete(key(sheet.id, row, column));
           else cells.set(key(sheet.id, row, column), value);
         }
       }
@@ -634,6 +643,8 @@ class SheetsProvider {
           this.#reformat(state, neighbours, format => setPath(format, ["borders", facing], undefined));
         }
       }
+    } else if (request.mergeCells || request.unmergeCells) {
+      this.#merge(request, state);
     } else if (request.addSheet) {
       let { sheetId, title, index, gridProperties } = request.addSheet.properties;
       if (index === undefined || gridProperties?.rowCount === undefined || gridProperties.columnCount === undefined) {
@@ -726,6 +737,55 @@ class SheetsProvider {
     } else {
       this.#violation(`unexpected request ${Object.keys(request).join()}`);
     }
+  }
+
+  /**
+   * Merges or unmerges the cells of a range, as a scratch spreadsheet did: a merge whole, by row or
+   * by column keeps each block's top-left value, clears the others' and gives them its formatting,
+   * and replaces the merges the range holds whole; an unmerge restores nothing.
+   */
+  #merge(request: BatchRequest, state: ProviderState): void {
+    let { range, mergeType } = request.mergeCells ?? request.unmergeCells;
+    let sheet = this.#sheetOf(state, range.sheetId);
+    this.#withinGrid(sheet, range);
+    let rect = {
+      startRow: range.startRowIndex, endRow: range.endRowIndex, startColumn: range.startColumnIndex, endColumn: range.endColumnIndex,
+    };
+    let blocks: Rect[] = [rect];
+    if (request.mergeCells) {
+      if (!["MERGE_ALL", "MERGE_ROWS", "MERGE_COLUMNS"].includes(mergeType)) this.#violation(`mergeType ${mergeType}`);
+      if (mergeType === "MERGE_ROWS") {
+        blocks = Array.from({ length: rect.endRow - rect.startRow }, (_, i) => ({ ...rect, startRow: rect.startRow + i, endRow: rect.startRow + i + 1 }));
+      } else if (mergeType === "MERGE_COLUMNS") {
+        blocks = Array.from({ length: rect.endColumn - rect.startColumn }, (_, i) => ({ ...rect, startColumn: rect.startColumn + i, endColumn: rect.startColumn + i + 1 }));
+      }
+    }
+    let held = sheet.merges ?? [];
+    if (held.some(merge => intersection(merge, rect) && !blocks.some(block => holds(block, merge)))) {
+      throw new Invalid("You must select all cells in a merged range to merge or unmerge them.");
+    }
+    let merges = held.filter(merge => !holds(rect, merge));
+    if (request.mergeCells) {
+      for (let [rows, frozen] of [[true, sheet.frozenRowCount ?? 0], [false, sheet.frozenColumnCount ?? 0]] as const) {
+        if (blocks.some(block => rows ? block.startRow < frozen && frozen < block.endRow
+          : block.startColumn < frozen && frozen < block.endColumn)) {
+          throw new Invalid(`You can't merge frozen and non-frozen ${rows ? "rows" : "columns"}.`);
+        }
+      }
+      for (let block of blocks) {
+        let head = state.formats.get(key(sheet.id, block.startRow, block.startColumn));
+        for (let row = block.startRow; row < block.endRow; row++) {
+          for (let column = block.startColumn; column < block.endColumn; column++) {
+            if (row === block.startRow && column === block.startColumn) continue;
+            state.cells.delete(key(sheet.id, row, column));
+            if (head) state.formats.set(key(sheet.id, row, column), structuredClone(head));
+            else state.formats.delete(key(sheet.id, row, column));
+          }
+        }
+      }
+      merges.push(...blocks);
+    }
+    state.sheets = state.sheets.map(s => s.id === sheet.id ? { ...s, merges } : s);
   }
 
   /** Inserts or deletes rows or columns, moving cells and rewriting formulas as Google does. */
@@ -2298,15 +2358,15 @@ describe("Google Sheets formatting", () => {
   });
 });
 
+/** A spreadsheet whose "Sales" freezes 2 rows and 1 column, merges C4:E6, and has a tall row 4 and a wide column C. */
+function laidOut() {
+  return budget([
+    { ...sheetMeta(0, "Sales"), frozenRowCount: 2, frozenColumnCount: 1, merges: [rectOf(3, 2, 3, 3)], rowHeights: { 3: 40 }, columnWidths: { 2: 150 } },
+    sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
+  ]);
+}
+
 describe("Google Sheets layout", () => {
-  /** A spreadsheet whose "Sales" freezes 2 rows and 1 column, merges C4:E6, and has a tall row 4 and a wide column C. */
-  function laidOut() {
-    let provider = budget([
-      { ...sheetMeta(0, "Sales"), frozenRowCount: 2, frozenColumnCount: 1, merges: [block(3, 2, 3, 3)], rowHeights: { 3: 40 }, columnWidths: { 2: 150 } },
-      sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 }),
-    ]);
-    return provider;
-  }
 
   it("reads frozen lines, merges and line sizes, and moves them with queued rows as Google does", async () => {
     let provider = laidOut();
@@ -2331,7 +2391,7 @@ describe("Google Sheets layout", () => {
     });
 
     expect(await sheets.apply(rows.actionId!)).toBeNull();
-    expect(provider.sheets[0]).toMatchObject({ frozenRowCount: 3, merges: [block(4, 2, 4, 3)] });
+    expect(provider.sheets[0]).toMatchObject({ frozenRowCount: 3, merges: [rectOf(4, 2, 4, 3)] });
     expect(await sheets.formats("Sales!C1:C8")).toEqual({
       ...previewed, rowHeights: [21, 21, 21, 21, 40, 40, 21, 21], pendingCells: undefined,
     });
@@ -2382,10 +2442,59 @@ describe("Google Sheets layout", () => {
       "Unmerge them, or freeze rows up to one of their edges.");
 
     let { actionId } = await sheets.queued([{ op: "freeze", sheet: "Sales", rows: 3 }]);
-    provider.sheets[0] = { ...provider.sheets[0], merges: [block(2, 0, 2, 1)] };
+    provider.sheets[0] = { ...provider.sheets[0], merges: [rectOf(2, 0, 2, 1)] };
     expect(await sheets.apply(actionId!)).toBe(
       'This change no longer applies: change 1 (freeze): freezing 3 rows of "Sales" would freeze only part ' +
       "of the merged cells A3:A4. Unmerge them, or freeze rows up to one of their edges.");
     expect(provider.batches).toEqual([]);
+  });
+
+  it("merges cells as an auto-approvable deletion of their values, shown in reads before it applies", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!A2", { textFormat: { bold: true } });
+    provider.setFormat("Sales!B3", { textFormat: { italic: true } });
+    let sheets = gatekeeper();
+
+    let { actionId, action } = await sheets.queued([{ op: "mergeCells", range: "Sales!A2:B3" }]);
+    expect(action).toMatchObject({
+      title: 'Edit "Sales"', autoApprovable: true, actionKind: DELETE_SPREADSHEET_CONTENT,
+      description: 'In "Sales", merge A2:B3 into one cell, clearing every cell but A2.',
+    });
+    expect(await sheets.read("Sales!A2:B3", "raw")).toEqual({ range: "Sales!A2:B3", values: [["EMEA", null], [null, null]] });
+    // Google gives the cells a merge covers its top-left cell's formatting.
+    let previewed = await sheets.formats("Sales!A2:B3");
+    expect(previewed).toMatchObject({
+      formats: [[{ bold: true }, null], [null, null]], merges: ["A2:B3"], pendingCells: ["B2", "A3", "B3"],
+    });
+    // A value written into a covered cell would be dropped.
+    expect((await sheets.update([{ op: "writeCells", range: "Sales!B2", values: [[1]] }])).error).toBe(
+      "Change 1 (writeCells): B2 is covered by the merged cells A2:B3, which show only A2's value, so Google " +
+      "would drop the value written there. Write it to A2, or unmerge the cells first.");
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(changeRequests(provider.batches[0])).toEqual([{
+      mergeCells: { range: { sheetId: 0, startRowIndex: 1, endRowIndex: 3, startColumnIndex: 0, endColumnIndex: 2 }, mergeType: "MERGE_ALL" },
+    }]);
+    expect([provider.get("Sales!A2"), provider.get("Sales!B2"), provider.get("Sales!A3"), provider.get("Sales!B3")])
+      .toEqual(["EMEA", null, null, null]);
+    expect(await sheets.formats("Sales!A2:B3")).toEqual({
+      ...previewed, formats: [[{ bold: true }, { bold: true }], [{ bold: true }, { bold: true }]], pendingCells: undefined,
+    });
+
+    let unmerge = await sheets.queued([{ op: "unmergeCells", range: "Sales!A1:F20" }]);
+    expect(unmerge.action).toMatchObject({ autoApprovable: true, actionKind: EDIT_SPREADSHEET });
+    expect((await sheets.formats("Sales!A2:B3")).merges).toBeUndefined();
+    expect(await sheets.apply(unmerge.actionId!)).toBeNull();
+    expect(provider.sheets[0].merges).toEqual([]);
+  });
+
+  it("fails a merge whose cleared cells a collaborator edited since it was queued, without writing", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId } = await sheets.queued([{ op: "mergeCells", range: "Sales!A2:B2" }]);
+
+    provider.set("Sales!B2", 9);
+    expect(await sheets.apply(actionId!)).toBe(CHANGED);
+    expect(provider.commits).toBe(0);
   });
 });

@@ -16,10 +16,10 @@ import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry 
 import { canonicalFormula, compactFormula } from "./sheets-formula";
 import {
   isCellChange, isLayoutChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS,
-  MAX_TITLE_LENGTH, type LineOp, type PreparedChange, type ResizeOp,
+  MAX_TITLE_LENGTH, type LineOp, type MergeType, type PreparedChange, type ResizeOp,
 } from "./sheets-input";
 import {
-  a1Of, cellName, columnLetters, findSheet, isFormula, rectName, type EnteredValue, type Rect,
+  a1Of, cellName, columnLetters, findSheet, intersection, isFormula, rectName, type EnteredValue, type Rect,
 } from "./sheets-model";
 import type { SheetBorder, SheetColor } from "./sheets-read-types";
 import type {
@@ -191,6 +191,14 @@ function entriesAdded(work: Working, change: PlannedChange): number {
   }
   let sheet = work.sheets.find(candidate => candidate.id === change.sheetId)!;
   if (change.op === "resizeRows" || change.op === "resizeColumns") return sizesAdded(work, sheet, change);
+  if (change.op === "unmergeCells") return 0;
+  if (change.op === "mergeCells") {
+    return mergeCleared(change.rect, change.merge).reduce((total, rect) => {
+      let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
+      let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+      return total + unentered(work.cells, sheet.id, rows, columns) + unentered(work.formats, sheet.id, rows, columns);
+    }, 0);
+  }
   if (!isRangeChange(change)) return 0;
   let { rect } = change;
   if (change.op === "formatCells") return formatsAdded(work, sheet, rect, change.format);
@@ -272,6 +280,104 @@ function spanOf(rect: Rect, axis: Axis): [number, number] {
 
 function withSpan(rect: Rect, axis: Axis, start: number, end: number): Rect {
   return axis === "rows" ? { ...rect, startRow: start, endRow: end } : { ...rect, startColumn: start, endColumn: end };
+}
+
+// Whether `outer` holds every cell of `inner`.
+function contains(outer: Rect, inner: Rect): boolean {
+  return inner.startRow >= outer.startRow && inner.endRow <= outer.endRow &&
+    inner.startColumn >= outer.startColumn && inner.endColumn <= outer.endColumn;
+}
+
+/** The merged cells a merge of `rect` makes: the range whole, or each of its rows or columns. */
+export function mergeBlocks(rect: Rect, merge: MergeType): Rect[] {
+  if (merge === "ALL") return [rect];
+  let rows = merge === "ROWS";
+  let [start, end] = rows ? [rect.startRow, rect.endRow] : [rect.startColumn, rect.endColumn];
+  return Array.from({ length: end - start }, (_, i) =>
+    rows ? { ...rect, startRow: start + i, endRow: start + i + 1 } : { ...rect, startColumn: start + i, endColumn: start + i + 1 });
+}
+
+/**
+ * The cells of `rect` a merge clears, as a scratch spreadsheet showed Google clearing them: every
+ * cell of each merged block but its top-left, whose value the block shows.
+ */
+export function mergeCleared(rect: Rect, merge: MergeType): Rect[] {
+  let below = { ...rect, startRow: rect.startRow + 1 };
+  let right = { ...rect, startColumn: rect.startColumn + 1 };
+  let pieces = merge === "ALL" ? [{ ...right, endRow: rect.startRow + 1 }, below] : merge === "ROWS" ? [right] : [below];
+  return pieces.filter(piece => piece.startRow < piece.endRow && piece.startColumn < piece.endColumn);
+}
+
+// `sheet` with `merges` as its merged cells.
+function withMerges(sheet: SimSheet, merges: readonly Rect[]): SimSheet {
+  let { merges: _merges, ...rest } = sheet;
+  return merges.length > 0 ? { ...rest, merges } : rest;
+}
+
+// The first of `sheet`'s merges that overlaps `rect` without lying wholly in one of `blocks`.
+function cutMerge(sheet: SimSheet, rect: Rect, blocks: readonly Rect[]): Rect | undefined {
+  return (sheet.merges ?? []).find(merge =>
+    intersection(merge, rect) && !blocks.some(block => contains(block, merge)));
+}
+
+/**
+ * Why `sheet` cannot merge `rect` as `merge`, if it cannot: Google merges no part of a merge
+ * without the rest, which it replaces when the range holds it whole, and no frozen line with one
+ * that is not.
+ */
+function unmergeable(sheet: SimSheet, rect: Rect, merge: MergeType): string | undefined {
+  let blocks = mergeBlocks(rect, merge);
+  let cut = cutMerge(sheet, rect, blocks);
+  if (cut) {
+    return `merging ${rectName(rect)} would merge only part of the merged cells ${rectName(cut)}, and a ` +
+      "merge takes in all of a merged cell or none of it";
+  }
+  for (let axis of ["rows", "columns"] as const) {
+    let frozen = frozenCount(sheet, axis);
+    if (blocks.some(block => {
+      let [start, end] = spanOf(block, axis);
+      return start < frozen && frozen < end;
+    })) {
+      return `"${sheet.title}" freezes its first ${plural(frozen, axis === "rows" ? "row" : "column")}, ` +
+        `and merging ${rectName(rect)} would merge frozen ${axis} with others, which Google does not`;
+    }
+  }
+  return undefined;
+}
+
+/** Why `sheet` cannot unmerge `rect`, if it cannot: the range holds part of a merge. */
+function ununmergeable(sheet: SimSheet, rect: Rect): string | undefined {
+  let cut = cutMerge(sheet, rect, [rect]);
+  return cut && `${rectName(rect)} holds only part of the merged cells ${rectName(cut)}; unmerge a range ` +
+    "that holds all of them";
+}
+
+/**
+ * The first cell of `rect` that `values` gives a value and a merge of `sheet` covers, other than
+ * its top-left, whose value the merge shows: Google drops what is written there.
+ */
+function coveredWrite(
+  sheet: SimSheet, rect: Rect, values: readonly (readonly SheetCellInput[])[],
+): { cell: string; merge: Rect } | undefined {
+  for (let merge of sheet.merges ?? []) {
+    if (!intersection(merge, rect)) continue;
+    for (let row = Math.max(merge.startRow, rect.startRow); row < Math.min(merge.endRow, rect.endRow); row++) {
+      for (let column = Math.max(merge.startColumn, rect.startColumn); column < Math.min(merge.endColumn, rect.endColumn); column++) {
+        let head = row === merge.startRow && column === merge.startColumn;
+        if (!head && values[row - rect.startRow][column - rect.startColumn] !== null) {
+          return { cell: cellName(row, column), merge };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+// Why writing `values` there would lose one, for a change's refusal.
+function droppedWrite({ cell, merge }: { cell: string; merge: Rect }): string {
+  let head = cellName(merge.startRow, merge.startColumn);
+  return `${cell} is covered by the merged cells ${rectName(merge)}, which show only ${head}'s value, so ` +
+    `Google would drop the value written there. Write it to ${head}, or unmerge the cells first`;
 }
 
 /**
@@ -457,6 +563,7 @@ function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetF
     edge("left", c === 0, "innerVertical");
     edge("right", c === columns.length - 1, "innerVertical");
     update(row!, column!, entry => ({
+      ...entry,
       set: { ...entry.set, ...set },
       borders: { ...entry.borders, ...sides },
     }));
@@ -509,6 +616,10 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         recordFormat(work, sheet, rect, change.format);
         return formatRequests(range, change.format);
       }
+      if (change.op === "writeCells") {
+        let dropped = coveredWrite(sheet, rect, change.values);
+        if (dropped) throw conflict(droppedWrite(dropped));
+      }
       room(unentered(work.cells, sheet.id, rows, columns));
       rows.forEach((row, r) => columns.forEach((column, c) => {
         let input = change.op === "writeCells" ? change.values[r][c] : null;
@@ -524,6 +635,36 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
               fields: "userEnteredValue",
             },
           }];
+    }
+    case "mergeCells":
+    case "unmergeCells": {
+      let sheet = existing(change.sheetId);
+      let { rect } = change;
+      let outside = outsideCell(sheet, rect);
+      if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
+      let range = gridRange(change.sheetId, rect);
+      let reason = change.op === "mergeCells" ? unmergeable(sheet, rect, change.merge) : ununmergeable(sheet, rect);
+      if (reason !== undefined) throw conflict(reason);
+      // Merges the range holds whole are replaced, or undone.
+      let merges = (sheet.merges ?? []).filter(merge => !contains(rect, merge));
+      if (change.op === "unmergeCells") {
+        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withMerges(candidate, merges) : candidate);
+        return [{ unmergeCells: { range } }];
+      }
+      room(entriesAdded(work, change));
+      for (let cleared of mergeCleared(rect, change.merge)) {
+        let columns = linesAt(sheet.columns, cleared.startColumn, cleared.endColumn);
+        for (let row of linesAt(sheet.rows, cleared.startRow, cleared.endRow)) {
+          for (let column of columns) {
+            let key = cellKey(sheet.id, row!, column!);
+            enter(work, sheet.id, key, { input: null, at: work.log.length, by });
+            enterFormat(work, sheet.id, key, { set: {}, borders: {}, unknown: true });
+          }
+        }
+      }
+      merges.push(...mergeBlocks(rect, change.merge));
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withMerges(candidate, merges) : candidate);
+      return [{ mergeCells: { range, mergeType: `MERGE_${change.merge}` } }];
     }
     case "addSheet": {
       let { sheetId, title, index, rowCount, columnCount } = change;
@@ -754,6 +895,8 @@ export function resolveChanges(
         case "writeCells":
         case "clearRange":
         case "formatCells":
+        case "mergeCells":
+        case "unmergeCells":
           return resolveCells(work, change, label);
         case "addSheet": {
           let index = change.index ?? work.sheets.length;
@@ -856,7 +999,8 @@ function sheetNamed(work: Working, title: string, label: string): SimSheet {
 }
 
 function resolveCells(
-  work: Working, change: Extract<PreparedChange, { op: "writeCells" | "clearRange" | "formatCells" }>,
+  work: Working,
+  change: Extract<PreparedChange, { op: "writeCells" | "clearRange" | "formatCells" | "mergeCells" | "unmergeCells" }>,
   label: string,
 ): PlannedChange {
   let sheet = sheetNamed(work, change.sheet, label);
@@ -870,6 +1014,16 @@ function resolveCells(
   }
   if (change.op === "clearRange") return { op: change.op, sheetId: sheet.id, rect: change.rect };
   if (change.op === "formatCells") return { op: change.op, sheetId: sheet.id, rect: change.rect, format: change.format };
+  if (change.op === "mergeCells" || change.op === "unmergeCells") {
+    let reason = change.op === "mergeCells"
+      ? unmergeable(sheet, change.rect, change.merge) : ununmergeable(sheet, change.rect);
+    if (reason !== undefined) throw new Error(`${label}: ${reason}.`);
+    return change.op === "mergeCells"
+      ? { op: change.op, sheetId: sheet.id, rect: change.rect, merge: change.merge }
+      : { op: change.op, sheetId: sheet.id, rect: change.rect };
+  }
+  let dropped = coveredWrite(sheet, change.rect, change.values);
+  if (dropped) throw new Error(`${label}: ${droppedWrite(dropped)}.`);
   let titleOf = (name: string) => findSheet(work.sheets, name)?.title;
   let values = change.values.map((row, r) => row.map((value, c) => {
     if (!isFormula(value)) return value;
@@ -969,8 +1123,9 @@ function uncovered(area: SheetArea, other: SheetArea): SheetArea[] {
 
 /**
  * The cells `planned` overwrites or removes, as `grid`, the spreadsheet just before the batch,
- * holds them: each write's cells mapped back through the batch's own earlier changes, less those
- * of lines and sheets it creates; each deleted band of rows or columns; each deleted sheet. Each
+ * holds them: each write's cells, and those a merge clears, mapped back through the batch's own
+ * earlier changes, less those of lines and sheets it creates; each deleted band of rows or columns;
+ * each deleted sheet. Each
  * cell is in one area only. Throws `Error` when they are more than `MAX_GUARDED_CELLS`.
  */
 export function guardCells(grid: Grid, planned: readonly PlannedChange[]): SheetArea[] {
@@ -982,6 +1137,9 @@ export function guardCells(grid: Grid, planned: readonly PlannedChange[]): Sheet
     let covered: SheetArea[] = [];
     if (sheet && original) {
       if (isCellChange(change)) covered = mappedBack(original, sheet, change.rect);
+      else if (change.op === "mergeCells") {
+        covered = mergeCleared(change.rect, change.merge).flatMap(rect => mappedBack(original, sheet, rect));
+      }
       else if (change.op === "deleteSheet") {
         covered = [{
           sheetId: original.id,

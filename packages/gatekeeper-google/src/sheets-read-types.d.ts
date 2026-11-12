@@ -140,7 +140,8 @@ export type SpreadsheetFormats = {
   columnWidths: (number | null)[];
   /**
    * A1 names (no sheet, such as `B3`) of cells in this range whose formatting is not known until
-   * queued changes apply: cells of rows or columns a queued change inserts. They read `null`.
+   * queued changes apply: cells of rows or columns a queued change inserts, and cells a queued
+   * merge covers, which take its top-left cell's. They read `null`.
    */
   pendingCells?: string[];
   /**

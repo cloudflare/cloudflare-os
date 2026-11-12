@@ -43,11 +43,11 @@ export type FixtureGridRange = {
   endColumnIndex?: number;
 };
 
-/** `rect` of sheet `sheetId` as Google returns a `GridRange`, its zero fields left out. */
-export function gridRangeOf(sheetId: number, rect: Rect): FixtureGridRange {
+/** `cells` of sheet `sheetId` as Google returns a `GridRange`, its zero fields left out. */
+export function gridRangeOf(sheetId: number, cells: Rect): FixtureGridRange {
   let range = {
-    sheetId, startRowIndex: rect.startRow, endRowIndex: rect.endRow,
-    startColumnIndex: rect.startColumn, endColumnIndex: rect.endColumn,
+    sheetId, startRowIndex: cells.startRow, endRowIndex: cells.endRow,
+    startColumnIndex: cells.startColumn, endColumnIndex: cells.endColumn,
   };
   return Object.fromEntries(Object.entries(range).filter(([, value]) => value !== 0)) as FixtureGridRange;
 }

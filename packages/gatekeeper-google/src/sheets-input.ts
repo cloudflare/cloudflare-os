@@ -37,6 +37,11 @@ export const MAX_LINE_SIZE = 10_000;
 /** The changes that insert or delete rows or columns. */
 export type LineOp = "insertRows" | "deleteRows" | "insertColumns" | "deleteColumns";
 
+/** How a `mergeCells` change merges its range: whole, by row or by column. */
+export type MergeType = "ALL" | "ROWS" | "COLUMNS";
+
+const MERGE_TYPES: readonly MergeType[] = ["ALL", "ROWS", "COLUMNS"];
+
 /** The changes that resize rows or columns. */
 export type ResizeOp = "resizeRows" | "resizeColumns";
 
@@ -48,6 +53,8 @@ export type PreparedChange =
   | { op: "writeCells"; sheet: string; rect: Rect; values: SheetCellInput[][] }
   | { op: "clearRange"; sheet: string; rect: Rect }
   | { op: "formatCells"; sheet: string; rect: Rect; format: SheetFormatChange }
+  | { op: "mergeCells"; sheet: string; rect: Rect; merge: MergeType }
+  | { op: "unmergeCells"; sheet: string; rect: Rect }
   | { op: "addSheet"; title: string; index?: number; rowCount?: number; columnCount?: number }
   | { op: "renameSheet"; sheet: string; title: string }
   | { op: "duplicateSheet"; sheet: string; title?: string; index?: number }
@@ -68,6 +75,8 @@ const FIELDS: Record<SheetChange["op"], readonly string[]> = {
   writeCells: ["range", "values"],
   clearRange: ["range"],
   formatCells: ["range", "format"],
+  mergeCells: ["range", "merge"],
+  unmergeCells: ["range"],
   addSheet: ["title", "index", "rowCount", "columnCount"],
   renameSheet: ["sheet", "title"],
   duplicateSheet: ["sheet", "title", "index"],
@@ -322,14 +331,27 @@ function checkChange(change: SheetChange): PreparedChange {
   switch (change.op) {
     case "writeCells":
     case "clearRange":
-    case "formatCells": {
+    case "formatCells":
+    case "mergeCells":
+    case "unmergeCells": {
       let { sheet, rect } = rangeOf(change.range);
       let cells = cellCount(rect);
       if (cells > MAX_CHANGE_CELLS) {
         refuse(`${change.range} has ${cells.toLocaleString("en-US")} cells; a change may address at ` +
           `most ${MAX_CHANGE_CELLS.toLocaleString("en-US")}`);
       }
-      if (change.op === "clearRange") return { op: change.op, sheet, rect };
+      if (change.op === "clearRange" || change.op === "unmergeCells") return { op: change.op, sheet, rect };
+      if (change.op === "mergeCells") {
+        let merge = change.merge ?? "ALL";
+        if (!isOneOf(merge, MERGE_TYPES)) refuse(`merge must be ${listed(MERGE_TYPES)}`);
+        let rows = rect.endRow - rect.startRow;
+        let columns = rect.endColumn - rect.startColumn;
+        if (merge === "ALL" ? rows * columns === 1 : merge === "ROWS" ? columns === 1 : rows === 1) {
+          refuse(`${change.range} merged ${merge === "ALL" ? "whole" : `by ${merge.toLowerCase()}`} leaves ` +
+            "each cell alone, so nothing would be merged");
+        }
+        return { op: change.op, sheet, rect, merge };
+      }
       if (change.op === "formatCells") return { op: change.op, sheet, rect, format: checkFormat(change.format) };
       return { op: change.op, sheet, rect, values: checkValues(change.values, rect, change.range) };
     }
@@ -389,13 +411,14 @@ export function isCellChange<C extends { op: string }>(
 }
 
 /**
- * Whether a change acts on a range of cells, their values or their formatting, rather than on
- * rows, columns or sheets.
+ * Whether a change acts on a range of cells, their values, their formatting or how they are merged,
+ * rather than on rows, columns or sheets.
  */
 export function isRangeChange<C extends { op: string }>(
   change: C,
-): change is Extract<C, { op: "writeCells" | "clearRange" | "formatCells" }> {
-  return isCellChange(change) || change.op === "formatCells";
+): change is Extract<C, { op: "writeCells" | "clearRange" | "formatCells" | "mergeCells" | "unmergeCells" }> {
+  return isCellChange(change) || change.op === "formatCells" || change.op === "mergeCells" ||
+    change.op === "unmergeCells";
 }
 
 /**

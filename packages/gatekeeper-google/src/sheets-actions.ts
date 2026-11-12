@@ -87,9 +87,11 @@ const EDIT_SPREADSHEET: ActionKind = {
   tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column",
 };
 // What a user may let apply without asking: such a batch that also deletes a sheet, rows or
-// columns, which the spreadsheet's version history restores.
+// columns, or merges cells, which clears all but the top-left of each, all of which the
+// spreadsheet's version history restores.
 const DELETE_SPREADSHEET_CONTENT: ActionKind = {
-  tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows or columns",
+  tag: "delete-spreadsheet-content",
+  label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values",
 };
 // Everything else always waits for approval: a formula calling any other function, which may be
 // one of the spreadsheet's named functions, can make Google fetch a URL carrying the
@@ -101,11 +103,12 @@ const UPDATE_SPREADSHEET: ActionKind = {
 // The changes an `editSpreadsheet` batch may make: none removes a sheet, row or column.
 const KEEPING_OPS: ReadonlySet<string> = new Set([
   "writeCells", "clearRange", "formatCells", "addSheet", "renameSheet", "duplicateSheet",
-  "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze",
+  "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze", "unmergeCells",
 ]);
 
 // The changes that make a batch otherwise as safe as `editSpreadsheet` a `deleteSpreadsheetContent`.
-const DELETING_OPS: ReadonlySet<string> = new Set(["deleteSheet", "deleteRows", "deleteColumns"]);
+// A merge counts whether or not the cells it clears hold anything, which only a read could say.
+const DELETING_OPS: ReadonlySet<string> = new Set(["deleteSheet", "deleteRows", "deleteColumns", "mergeCells"]);
 
 /**
  * The kind a batch is queued as, so approving a kind approves no more than it says. A batch that
@@ -389,6 +392,21 @@ function describeChange(change: PlannedChange, titles: Map<number, string>, fiel
     }
     case "formatCells":
       return `In ${named(change.sheetId)}, format ${rectName(change.rect)}: ${formatWords(change.format, field)}`;
+    case "mergeCells": {
+      let { rect } = change;
+      let where = `In ${named(change.sheetId)}, merge`;
+      if (change.merge === "ALL") {
+        return `${where} ${rectName(rect)} into one cell, clearing every cell but ` +
+          cellName(rect.startRow, rect.startColumn);
+      }
+      return change.merge === "ROWS"
+        ? `${where} each row of ${rectName(rect)} into one cell, clearing every cell but those of column ` +
+          columnLetters(rect.startColumn)
+        : `${where} each column of ${rectName(rect)} into one cell, clearing every cell but those of row ` +
+          String(rect.startRow + 1);
+    }
+    case "unmergeCells":
+      return `In ${named(change.sheetId)}, unmerge the merged cells within ${rectName(change.rect)}`;
     case "addSheet":
       titles.set(change.sheetId, change.title);
       return `Add a sheet ${named(change.sheetId, "Title")} of ${plural(change.rowCount, "row")} and ` +

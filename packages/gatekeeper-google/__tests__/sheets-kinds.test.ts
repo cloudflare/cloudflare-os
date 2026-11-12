@@ -14,8 +14,10 @@ const CLEAR: Change = { op: "clearRange" };
 const FORMAT: Change = { op: "formatCells" };
 const KEEPING: Change[] = [
   "addSheet", "renameSheet", "duplicateSheet", "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze",
+  "unmergeCells",
 ].map(op => ({ op }));
-const DELETING: Change[] = ["deleteSheet", "deleteRows", "deleteColumns"].map(op => ({ op }));
+// A merge clears every cell it covers but the top-left.
+const DELETING: Change[] = ["deleteSheet", "deleteRows", "deleteColumns", "mergeCells"].map(op => ({ op }));
 
 describe("Google Sheets batch kinds", () => {
   it("queues only formatting as formatSheets, and only literal values and clears as editSheetValues", () => {
@@ -34,7 +36,7 @@ describe("Google Sheets batch kinds", () => {
     }
   });
 
-  it("queues a batch deleting a sheet, rows or columns as deleteSpreadsheetContent, alone or among other changes", () => {
+  it("queues a batch deleting a sheet, rows, columns or merged cells' values as deleteSpreadsheetContent, alone or among other changes", () => {
     for (let change of DELETING) {
       expect(batchKind([change]), change.op).toBe("deleteSpreadsheetContent");
       expect(batchKind([write(1), change, FORMAT]), change.op).toBe("deleteSpreadsheetContent");
@@ -91,7 +93,7 @@ describe("Google Sheets auto-approval verdicts", () => {
       { tag: "editSheetValues", label: "Sheet value edits" },
       { tag: "formatSheets", label: "Sheet formatting" },
       { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" },
-      { tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows or columns" },
+      { tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows, columns or merged cells' values" },
     ]);
     expect(await described("editSheetValues")).toMatchObject({
       autoApprovable: true, actionKind: { tag: "editSheetValues" },

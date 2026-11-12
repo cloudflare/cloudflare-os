@@ -879,8 +879,9 @@ of each sheet a batch adds. A batch that adds, copies or renames sheets or inser
 alone or together with values, clears and formatting, is queued as "Spreadsheet edits that keep
 every sheet, row and column", which a user may let apply without asking unless one of its formulas
 calls a function the paragraphs above exclude. A batch that also deletes a sheet, rows or columns is
-queued as "Spreadsheet changes that delete sheets, rows or columns", which a user may also let apply
-without asking, since the spreadsheet's version history restores what it deletes. Each batch is
+queued as "Spreadsheet changes that delete sheets, rows, columns or merged cells' values", which a
+user may also let apply without asking, since the spreadsheet's version history restores what it
+deletes. Each batch is
 queued as exactly one kind, so letting edits that keep every sheet, row and column apply without
 asking leaves batches of only literal values and clears, or only formatting, to their own kinds.
 Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's
@@ -940,6 +941,18 @@ included), and `freeze` sets how many leading rows or columns a sheet freezes. B
 row and column, and are queued as such. A freeze is refused when queued that would leave no row or
 column unfrozen, or freeze only part of a merge, as Google refuses both.
 
+`mergeCells` merges a range into one cell, or with `merge: "ROWS"` or `"COLUMNS"` each of its rows
+or columns, and `unmergeCells` unmerges every merge within a range. As a scratch spreadsheet showed,
+a merged cell shows its top-left cell's value, and Google clears every other cell it covers, gives
+them the top-left cell's formatting, and restores neither on unmerging; reads show the cleared cells
+blank and their formatting `null`, listed in `pendingCells`. A merge is refused when queued that would
+take in part of an existing merge (one the range holds whole is replaced) or merge frozen lines with
+others, as is an unmerge of a range holding part of one and a value written into a cell a merge
+covers, which Google accepts and drops. Since a merge clears cells, a batch with one is queued as
+"Spreadsheet changes that delete sheets, rows, columns or merged cells' values", which a user may
+let apply without asking, and its guard covers the cells it clears; an unmerge keeps every sheet,
+row and column.
+
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
 columns and sheets it deletes, as entered, the title and size of each sheet it addresses, and,
@@ -968,7 +981,6 @@ changes to rows, columns and sheets, and a queued batch is capped at 100 KiB. Wh
 queued, a read or a batch may involve at most 5,000,000 characters of formulas times their number,
 since each formula is rewritten through each of them, and hold at most 5 MiB of text as rewritten.
 Google allows 60 write requests a minute per user; a write over that quota stays pending.
-user; a write over that quota stays pending.
 
 ## Google Drive bindings
 

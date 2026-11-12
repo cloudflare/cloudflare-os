@@ -257,6 +257,11 @@ export type BorderSide = "top" | "bottom" | "left" | "right";
 export type FormatEntry = {
   set: Omit<SheetFormatChange, "borders">;
   borders: Partial<Record<BorderSide, SheetBorder | null>>;
+  /**
+   * Set on a cell a queued merge covers, which Google gives its merged cell's formatting: what that
+   * is, only Google can say.
+   */
+  unknown?: true;
 };
 
 /** `base`, a cell's formatting, with what `entry` sets on it; null when that leaves none set. */

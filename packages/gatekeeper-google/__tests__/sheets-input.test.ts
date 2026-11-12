@@ -43,10 +43,10 @@ describe("Sheets change input", () => {
     expect(refusal([])).toBe("Make between 1 and 50 changes at a time.");
     expect(refusal(Array.from({ length: 51 }, () => ({ op: "clearRange", range: "Sales!A1" }))))
       .toBe("Make between 1 and 50 changes at a time.");
-    expect(refusal([{ op: "mergeCells", range: "Sales!A1" } as unknown as SheetChange]))
-      .toBe("Change 1 (mergeCells): op must be one of writeCells, clearRange, formatCells, addSheet, " +
-        "renameSheet, duplicateSheet, deleteSheet, insertRows, deleteRows, insertColumns, deleteColumns, " +
-        "resizeRows, resizeColumns or freeze.");
+    expect(refusal([{ op: "sortRange", range: "Sales!A1" } as unknown as SheetChange]))
+      .toBe("Change 1 (sortRange): op must be one of writeCells, clearRange, formatCells, mergeCells, " +
+        "unmergeCells, addSheet, renameSheet, duplicateSheet, deleteSheet, insertRows, deleteRows, " +
+        "insertColumns, deleteColumns, resizeRows, resizeColumns or freeze.");
     // Changes of every kind count toward the 50.
     let mixed: SheetChange[] = Array.from({ length: 51 }, (_, i) =>
       i % 2 === 0 ? { op: "insertRows", sheet: "Sales", at: 1 } : { op: "clearRange", range: "Sales!A1" });
@@ -233,6 +233,31 @@ describe("Sheets layout change input", () => {
       .toBe("Change 1 (freeze): rows must be an integer from 0 to 10,000,000.");
     expect(refusal([{ op: "freeze", sheet: "Sales", columns: 1.5 }]))
       .toBe("Change 1 (freeze): columns must be an integer from 0 to 18,278.");
+  });
+});
+
+describe("Sheets merge change input", () => {
+  it("prepares merges, whole by default, and unmerges, with only what they declare", () => {
+    expect(prepareChanges([
+      { op: "mergeCells", range: "Sales!B2:C3" },
+      { op: "mergeCells", range: "Sales!B2:C3", merge: "ROWS" },
+      { op: "unmergeCells", range: "Sales!A1:F9", merge: "ALL" } as SheetChange,
+    ])).toEqual([
+      { op: "mergeCells", sheet: "Sales", rect: rect(1, 1, 2, 2), merge: "ALL" },
+      { op: "mergeCells", sheet: "Sales", rect: rect(1, 1, 2, 2), merge: "ROWS" },
+      { op: "unmergeCells", sheet: "Sales", rect: rect(0, 0, 9, 6) },
+    ]);
+  });
+
+  it("refuses an unknown merge, and one that would leave each cell alone", () => {
+    expect(refusal([{ op: "mergeCells", range: "Sales!A1:B2", merge: "all" } as unknown as SheetChange]))
+      .toBe("Change 1 (mergeCells): merge must be ALL, ROWS or COLUMNS.");
+    expect(refusal([{ op: "mergeCells", range: "Sales!A1" }]))
+      .toBe("Change 1 (mergeCells): Sales!A1 merged whole leaves each cell alone, so nothing would be merged.");
+    expect(refusal([{ op: "mergeCells", range: "Sales!A1:A3", merge: "ROWS" }]))
+      .toBe("Change 1 (mergeCells): Sales!A1:A3 merged by rows leaves each cell alone, so nothing would be merged.");
+    expect(refusal([{ op: "mergeCells", range: "Sales!A1:C1", merge: "COLUMNS" }]))
+      .toMatch(/merged by columns leaves each cell alone/);
   });
 });
 
