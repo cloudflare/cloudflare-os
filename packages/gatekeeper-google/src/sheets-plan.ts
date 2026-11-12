@@ -1261,20 +1261,27 @@ export function guardAfter(
   let addressed = new Set(guardedSheets(planned));
   // A formula names rows, columns and sheets as earlier structure leaves them, on any sheet, as do
   // those a copy takes from its original and those the guard digests, so a batch with one depends
-  // on every structural change queued before it. A copy also takes the formatting queued for its
-  // original, which records no change it came from, so it depends on every formatting change too.
+  // on every structural change queued before it. A copy also takes the formatting, line sizes,
+  // frozen lines and merges queued for its original, which record no change they came from, so it
+  // depends on every change to them too.
   let copies = planned.some(change => change.op === "duplicateSheet");
   let formulas = guardsFormula || copies ||
     planned.some(change => change.op === "writeCells" && change.values.some(row => row.some(isFormula)));
   let places = placesSheet(planned);
   for (let { id, action } of pending) {
-    if (action.payload.changes.some(change => (copies && change.op === "formatCells") ||
+    if (action.payload.changes.some(change => (copies && copiedLayout(change)) ||
       structuralSheets(change).some(sheetId => formulas || addressed.has(sheetId)) ||
       (places && (placesSheet([change]) || change.op === "deleteSheet")))) {
       after.add(id);
     }
   }
   return [...after].toSorted((a, b) => a - b);
+}
+
+/** Whether a change sets what a copy of its sheet takes as it stands: formatting or layout. */
+function copiedLayout(change: PlannedChange): boolean {
+  return change.op === "formatCells" || isLayoutChange(change) || change.op === "mergeCells" ||
+    change.op === "unmergeCells";
 }
 
 /** Titles for the approver of each sheet `planned` acts on, as `grid` has them, or creates. */

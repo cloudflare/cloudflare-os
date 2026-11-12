@@ -746,6 +746,22 @@ describe("Sheets batches built on queued changes", () => {
     expect(after([{ op: "deleteRows", sheet: "Sales", at: 5 }])).toEqual([3]);
   });
 
+  it("builds a copy on the formatting, sizes, frozen lines and merges queued for its sheet", () => {
+    // ask-bonk's case: a copy previews these, so rejecting one must not leave the copy to apply.
+    let layout = [
+      queued(11, [{ op: "resizeRows", sheetId: 0, start: 0, count: 2, size: 40 }]),
+      queued(12, [{ op: "freeze", sheetId: 0, rows: 2 }]),
+      queued(13, [{ op: "mergeCells", sheetId: 0, rect: rect(5, 0, 1, 2), merge: "ALL" }]),
+      queued(14, [{ op: "unmergeCells", sheetId: 0, rect: rect(5, 0, 1, 2) }]),
+      queued(15, [{ op: "formatCells", sheetId: 0, rect: rect(0, 0), format: { bold: true } }]),
+    ];
+    let laidOut = replayed(grid(SHEETS), layout);
+    let copy = resolveChanges(laidOut, prepareChanges([{ op: "duplicateSheet", sheet: "Sales" }]), minter(101));
+    expect(guardAfter(laidOut, layout, copy, guardCells(laidOut, copy))).toEqual([11, 12, 13, 14, 15]);
+    let rename = resolveChanges(laidOut, prepareChanges([{ op: "renameSheet", sheet: "It's", title: "X" }]), minter(101));
+    expect(guardAfter(laidOut, layout, rename, guardCells(laidOut, rename))).toEqual([]);
+  });
+
   it("builds on every change to the rows, columns or tab of a sheet it acts on", () => {
     expect(after([{ op: "clearRange", range: "'It''s'!Z99" }])).toEqual([2]);
     expect(after([{ op: "renameSheet", sheet: "It's", title: "Other" }])).toEqual([2]);
