@@ -60,7 +60,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
 
   const aside = useAsideState()
   const { openOutput } = aside.actions
-  const openChatOutput = useCallback((output: OutputItem) => openOutput(MOCK_WORKSPACE_ID, output), [openOutput])
+  const openChatOutput = useCallback((output: OutputItem) => openOutput({ workspaceId: MOCK_WORKSPACE_ID, chatId: 0 }, output), [openOutput])
 
   useEffect(() => {
     overseer.player.play()
@@ -72,7 +72,13 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
       <WorkspacesProvider>
         {/* Laid out as the app lays out a page, without the sidebar, so what a chat opens shows beside it. */}
         <div className="flex h-full p-2">
-          <SplitLayout aside={aside.shown && <AsidePane tabs={aside.tabs} actions={aside.actions} />} onOpenAside={aside.actions.show} onCloseAside={aside.actions.hide} edgeInset={8}>
+          <SplitLayout
+            aside={aside.shown && <AsidePane tabs={aside.tabs} fullScreen={aside.fullScreen} actions={aside.actions} />}
+            asideFullScreen={aside.fullScreen}
+            onOpenAside={aside.actions.show}
+            onCloseAside={aside.actions.hide}
+            edgeInset={8}
+          >
             <div className="relative flex min-h-0 flex-1 flex-col">
               <ChatPane
                 workspaceId={MOCK_WORKSPACE_ID}

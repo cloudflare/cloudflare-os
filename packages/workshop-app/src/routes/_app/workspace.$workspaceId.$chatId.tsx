@@ -23,7 +23,7 @@ function WorkspaceChat() {
   const navigate = useNavigate()
   const { openFile, openOutput } = useAside()
   // Stable, or every row of the chat renders again.
-  const openChatOutput = useCallback((output: OutputItem) => openOutput(workspaceId, output), [openOutput, workspaceId])
+  const openChatOutput = useCallback((output: OutputItem) => openOutput({ workspaceId, chatId }, output), [openOutput, workspaceId, chatId])
   return (
     <ChatPane
       // Keyed, so each chat gets its own session rather than reusing the previous one's.

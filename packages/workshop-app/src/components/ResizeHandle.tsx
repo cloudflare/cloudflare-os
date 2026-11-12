@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
-import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform, useVelocity } from 'motion/react'
+import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from 'motion/react'
 import { cn } from '@cloudflare/kumo/utils'
+import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
 import { clampSize } from './resizing'
 
 export type ResizeHandleProps = {
@@ -37,23 +38,15 @@ export type ResizeHandleProps = {
 // height it has, so it grows and shrinks about the pointer.
 const PILL_ROOM = 60
 const PILL_MARGIN = 8
-// How tall the pill is with the pointer at the edge of where it shows, and right on the divider.
-const IDLE_HEIGHT = [12, 40] as const
-const HELD_HEIGHT = [40, 52] as const
-const IDLE_OPACITY = 0.25
-const HELD_OPACITY = 0.7
 const ARRIVING_SCALE = 0.15
 const LEAVING_SCALE = 0.01
 // Kept while leaving, so it shrinks to a dot that fades rather than to nothing.
 const LEAVING_HEIGHT = 6
 // The height of the pill at the edge, where it does not answer to how near the pointer is.
 const EDGE_HEIGHT = 40
-const BOUNCY = { type: 'spring', mass: 0.7, stiffness: 500, damping: 18 } as const
-const SMOOTH = { duration: 0.2, bounce: 0 } as const
 
 type Point = { clientX: number; clientY: number }
 
-const between = ([from, to]: readonly [number, number], amount: number) => from + (to - from) * amount
 const contains = (box: DOMRect, x: number, y: number) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
 // 1 with the pointer on the divider, 0 at the edge of where the pill shows.
 const nearness = (box: DOMRect, x: number) => 1 - Math.min(1, Math.abs(x - (box.left + box.width / 2)) / (box.width / 2))
@@ -91,15 +84,12 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
   const scale = useMotionValue(ARRIVING_SCALE)
   const fade = useMotionValue(1)
   const floor = useMotionValue(0)
-  // A handle dragged fast lightens, so it does not smear across what it passes over.
-  const velocityX = useVelocity(pointerX)
-  const velocityY = useVelocity(pointerY)
-  const calm = useSpring(useTransform(() => Math.max(0.5, 1 - Math.hypot(velocityX.get(), velocityY.get()) / 5000)), SMOOTH)
+  const calm = useCalm(pointerX, pointerY)
 
   const height = useTransform(() => {
     const amount = (reduceMotion ? proximity : easedProximity).get()
-    const idle = between(IDLE_HEIGHT, amount)
-    const full = edge ? EDGE_HEIGHT : idle + (between(HELD_HEIGHT, amount) - idle) * grip.get()
+    const idle = between(IDLE_LENGTH, amount)
+    const full = edge ? EDGE_HEIGHT : idle + (between(HELD_LENGTH, amount) - idle) * grip.get()
     return Math.max(floor.get(), full * scale.get())
   })
   const opacity = useTransform(() => {

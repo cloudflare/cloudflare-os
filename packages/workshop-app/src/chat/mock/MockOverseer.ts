@@ -5,11 +5,19 @@ import type {
   AiChatMessage,
   AiChatMetadata,
   AiChatSubscriber,
+  PresenceSubscriber,
   SlashCommandRequest,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import { MockGadget } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
 import { AGENT, stamp, VIEWER, type MessageSource, type Scenario, type ScriptStep } from './scenario'
+
+// Who else has the workspace open, beside the viewer.
+const COLLABORATORS = [
+  { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' },
+  { type: 'user', id: 'alan@example.com', name: 'Alan Turing' },
+] as const
 
 const CHAT_ID = 0
 
@@ -35,6 +43,7 @@ export class MockOverseer {
   #actionSubscribers = new Set<ActionEvents>()
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
+  #gadgets = new Map<number, MockGadget>()
 
   constructor(scenario: Scenario) {
     this.#messages = [...scenario.history]
@@ -49,6 +58,23 @@ export class MockOverseer {
 
   /** Nothing to release: the handle `openWorkspace` gives out is this object, which outlives it. */
   [Symbol.dispose]() {}
+
+  /** Any id is a gadget: the scenarios' outputs are all documents. */
+  getGadget(id: number) {
+    let gadget = this.#gadgets.get(id)
+    if (!gadget) this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review')))
+    return gadget
+  }
+
+  /** The scenarios' gadgets keep their code. */
+  subscribeToWorkpieces() {
+    return lease(() => {})
+  }
+
+  subscribeToPresence(subscriber: PresenceSubscriber) {
+    subscriber.init([VIEWER, ...COLLABORATORS].map((user) => ({ key: user.id, user, role: 'build' })))
+    return lease(() => {})
+  }
 
   async listChats(): Promise<AiChatMetadata[]> {
     return [this.#metadata]

@@ -2,13 +2,20 @@ import { createContext, useContext, useState } from 'react'
 import type { ChatAttachment, OutputItem } from '@/chat/chatItems'
 import { closeTab, openTab, selectTab, type AsideItem, type AsideTabs } from './asideTabs'
 
+/** Where an output was opened from. */
+export type OutputSource = {
+  /** An output is only told from others within its workspace. */
+  workspaceId: string
+  /** Opened from a chat, it is shown with the changes proposed there. */
+  chatId?: number
+}
+
 /** What can be done with what is open beside the page. Each is stable. */
 export type AsideActions = {
   /** Opens something, and shows the pane if it was hidden. */
   open: (item: AsideItem) => void
   openFile: (file: ChatAttachment) => void
-  /** An output is only told from others within its workspace, so it is opened with that. */
-  openOutput: (workspaceId: string, output: OutputItem) => void
+  openOutput: (source: OutputSource, output: OutputItem) => void
   /** Shows another of what is open. */
   select: (key: string) => void
   /** Closes one of what is open. Closing the last one puts the pane away with it. */
@@ -21,6 +28,8 @@ export type AsideActions = {
   show: () => void
   /** Shows the pane, or puts it away. */
   toggle: () => void
+  /** Has the pane fill the window, or go back beside the page. */
+  setFullScreen: (on: boolean) => void
 }
 
 export const AsideContext = createContext<AsideActions | null>(null)
@@ -32,10 +41,12 @@ export const useAside = (): AsideActions => {
   return actions
 }
 
-/** What is open beside the page (see `asideTabs`), if anything, and whether the pane is showing. */
+/** What is open beside the page (see `asideTabs`), if anything, and how the pane is showing. */
 export type AsideState = {
   tabs?: AsideTabs
   shown: boolean
+  /** The pane fills the window. Only while it is shown. */
+  fullScreen: boolean
 }
 
 /**
@@ -43,22 +54,25 @@ export type AsideState = {
  * things still open in it, and shown with nothing open.
  */
 export const useAsideState = (): AsideState & { actions: AsideActions } => {
-  const [state, setState] = useState<AsideState>({ shown: false })
+  const [state, setState] = useState<AsideState>({ shown: false, fullScreen: false })
   const [actions] = useState((): AsideActions => {
-    const open = (item: AsideItem) => setState(({ tabs }) => ({ tabs: openTab(tabs, item), shown: true }))
+    const open = (item: AsideItem) => setState((current) => ({ ...current, tabs: openTab(current.tabs, item), shown: true }))
     return {
       open,
-      openFile: ({ id, name }) => open({ key: `file:${id}`, title: name }),
-      openOutput: (workspaceId, { workpieceId, title }) => open({ key: `output:${workspaceId}/${workpieceId}`, title }),
+      openFile: (file) => open({ key: `file:${file.id}`, title: file.name, kind: 'file', file }),
+      openOutput: ({ workspaceId, chatId }, { workpieceId, title, type, format }) =>
+        open({ key: `output:${workspaceId}/${workpieceId}`, title, kind: 'output', output: { workspaceId, workpieceId, type, format, chatId } }),
       select: (key) => setState((current) => ({ ...current, tabs: selectTab(current.tabs, key) })),
       closeTab: (key) => setState((current) => {
         const tabs = closeTab(current.tabs, key)
-        return { tabs, shown: current.shown && tabs !== undefined }
+        const shown = current.shown && tabs !== undefined
+        return { tabs, shown, fullScreen: shown && current.fullScreen }
       }),
-      closeAll: () => setState({ shown: false }),
-      hide: () => setState((current) => ({ ...current, shown: false })),
+      closeAll: () => setState({ shown: false, fullScreen: false }),
+      hide: () => setState((current) => ({ ...current, shown: false, fullScreen: false })),
       show: () => setState((current) => ({ ...current, shown: true })),
-      toggle: () => setState((current) => ({ ...current, shown: !current.shown })),
+      toggle: () => setState((current) => ({ ...current, shown: !current.shown, fullScreen: false })),
+      setFullScreen: (on) => setState((current) => ({ ...current, fullScreen: on && current.shown })),
     }
   })
   return { ...state, actions }

@@ -131,11 +131,13 @@ page out with). Several can be open, one of them shown; the rules for that are p
 open (`useAsideState`) and hands the ways to open it down (`useAside`). It stays open from one
 page to the next.
 
-The pane can be put away with things still open in it: by the arrow at the end of its header, or
-by dragging the gap far past the pane's narrowest, where the pane dims to say that letting go
-closes it. The sidebar's Library button brings it back; with nothing open it shows the pane
-empty. Opening something shows the pane too. Closing the last thing open puts the pane away with
-it.
+The pane can be put away with things still open in it: by the arrow at the end of its header, or by
+dragging the gap far past the pane's narrowest, where the pane dims to say that letting go closes
+it. It goes at the width it has then, with what is in it keeping that width and sliding out under
+the edge, and opens again as wide as before it was dragged. The sidebar's Library button brings it
+back; with nothing open it shows the pane empty, with no surface and no bar, which there is nothing
+to make room for. Opening something shows the pane too. Closing the last thing open puts the pane
+away with it.
 
 A pane that was put away can also be had back from the page's far edge, empty or not. As it goes,
 the page stops a little short of the edge and the handle stays out there for a moment, to show
@@ -143,10 +145,38 @@ where the pane went, then both slide away. A pointer that reaches the edge bring
 clicking the handle shows the pane, and so does pulling it out, which opens room as far as it is
 pulled. Only reaching the edge does it, not being near, because the page's scrollbar is there.
 
-For now the card (`SidePane`) is its header alone; what it shows of the thing itself is still to
-come. With more than one thing open the header starts with their count, which opens to the list
-of them and the way to close them all. Then the name of the one shown, which grows a button when
-pointed at that closes it (`SidePaneTitle`).
+The card (`SidePane`) is a header, then what is shown on a tinted surface that fills the rest of the
+card out to its sides and bottom, with rounded top corners and a line along its top only. With more
+than one thing open the header starts with their count, which opens to the list of them and the way
+to close them all. Then the name of the one shown, which grows a button when pointed at that closes
+it (`SidePaneTitle`). At its far end: who else has the workspace open, more (reload, close), a link
+to copy, full screen, and the arrow. The bar at the top of the surface, in the middle, pushes the
+header up out of the way and pulls it back down (`Grabber`); clicking it does the same. Its bar is
+the divider's pill, always out and staying put: it grows, darkens and springs as the pill does when
+taken hold of (`pill.ts` holds what the two share).
+
+A gadget runs live in the pane (`GadgetConnection`, plain and tested like `ChatSession`): its UI
+code is loaded into a page for a sandboxed frame with no origin (`gadgetSandbox.ts`, ported from
+`workshop-frontend`'s `GadgetUI`), and the page is connected to the gadget's server side once it
+asks, with a port it posts. Only messages from the pane's own frame are listened to. Opened from a
+chat, a gadget shows that chat's proposed changes. It is loaded again when its code changes: a
+change to its files in that chat, the chat's changes being accepted or thrown away, or its head
+moving. A burst of edits loads it once, and the page shown stays until the new one replaces it. Only
+the one shown is connected: going to another tab and back starts it over. Files and worktrees only
+say what they are, for now.
+
+Full screen has the pane fill the window to its very edges, with no frame or corners, over the
+sidebar and the page, which are made inert. The card leaves its place beside the page (which is
+kept, to go back to) and grows to the window's edges by animating the edges themselves, not a scale,
+so the gadget is laid out at each size rather than stretched, and its frame is never moved in the
+document, which would reload it. Escape leaves full screen, also from inside the gadget, whose page
+passes the key on.
+
+The header then has the app's mark, the name (which closes nothing there), who else is there, more
+(only reload), the link, and the way back. The mark, a button as in the sidebar, leaves full screen
+for the output's workspace's latest chat, with the output beside it (`latestChat`). The header is
+out until it is put away, and is put away and had back by the bar as beside the page; doing so
+squares off the surface's top corners as it goes, so they are square at the window's top.
 
 The gaps after the sidebar and between the two cards are dragged to resize (`ResizeHandle`). The
 handle only reports what is asked of it; whoever places it owns the size and its limits, as a
