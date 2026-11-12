@@ -101,6 +101,11 @@ export type StructuralElement = {
  */
 export type Table = {
   tableRows?: TableRow[];
+  /**
+   * The width of each column: `FIXED_WIDTH` with its `width`, or `EVENLY_DISTRIBUTED`, sharing
+   * what the fixed columns leave of the page's width.
+   */
+  tableStyle?: { tableColumnProperties?: { widthType?: string; width?: Dimension }[] };
   /** IDs of the suggestions that would insert this table; empty or absent for a table that exists. */
   suggestedInsertionIds?: string[];
   /** IDs of the suggestions that would delete this table. */
@@ -120,14 +125,46 @@ export type TableRow = {
   tableCells?: TableCell[];
   /**
    * The row's style: `tableHeader` is true on a row pinned as a header row that repeats on
-   * every page.
+   * every page, and `minRowHeight` is the least height the row takes, 0 left out.
    */
-  tableRowStyle?: { tableHeader?: boolean };
+  tableRowStyle?: { tableHeader?: boolean; minRowHeight?: Dimension };
   /** IDs of the suggestions that would insert this row; empty or absent for a row that exists. */
   suggestedInsertionIds?: string[];
   /** IDs of the suggestions that would delete this row. */
   suggestedDeletionIds?: string[];
 }
+
+/** A length; Google leaves out a magnitude of 0. Table lengths are in points (`PT`). */
+export type Dimension = { magnitude?: number; unit?: string };
+
+/** A colour that may be none: `color` left out, or with no `rgbColor`, is none. */
+export type OptionalColor = { color?: { rgbColor?: { red?: number; green?: number; blue?: number } } };
+
+/**
+ * One edge of a table cell. Google refuses an edge without a colour or a `dashStyle` (`SOLID`,
+ * `DOT` or `DASH`), and draws none for one 0 wide.
+ */
+export type TableCellBorder = { color?: OptionalColor; width?: Dimension; dashStyle?: string };
+
+/**
+ * A table cell's style. A field Google leaves out is the default an inserted table has:
+ * no shading, top alignment, 5pt of padding on each side, and a 1pt solid black border.
+ */
+export type TableCellStyle = {
+  rowSpan?: number;
+  columnSpan?: number;
+  backgroundColor?: OptionalColor;
+  /** `TOP`, `MIDDLE` or `BOTTOM`. */
+  contentAlignment?: string;
+  paddingTop?: Dimension;
+  paddingRight?: Dimension;
+  paddingBottom?: Dimension;
+  paddingLeft?: Dimension;
+  borderTop?: TableCellBorder;
+  borderRight?: TableCellBorder;
+  borderBottom?: TableCellBorder;
+  borderLeft?: TableCellBorder;
+};
 
 /**
  * One table cell, whose contents use the same recursive structure as the document body.
@@ -147,10 +184,7 @@ export type TableCell = {
    * covered cells stay in their rows' `tableCells`, empty and with spans of 1 like a cell that is
    * not merged, so every row lists as many cells as the table has columns.
    */
-  tableCellStyle?: {
-    rowSpan?: number;
-    columnSpan?: number;
-  };
+  tableCellStyle?: TableCellStyle;
   /**
    * IDs of the suggestions that would insert this cell; empty or absent for a cell that exists.
    * A suggested column marks its cells, not the rows that hold them.

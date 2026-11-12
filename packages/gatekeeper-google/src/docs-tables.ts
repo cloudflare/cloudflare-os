@@ -10,6 +10,8 @@ import {
   MAX_GOOGLE_DOC_REQUESTS, packTableRow, plainTextToDocRequests, StructuredContentError,
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
+import { coveredCells, readLook } from "./docs-table-look";
+import type { LookAttributes, TableLook } from "./docs-table-look";
 import type {
   BlockMapping, CellInlineRun, DocTabSnapshot, EditableMarkdown, EditableTable, InheritedFormat,
   MarkdownRange, NamedFormatting, TableCellEntry, TableMapping,
@@ -39,7 +41,10 @@ export const MAX_TAB_TABLE_CELLS = 5_000;
 
 /** The table a queued change applies to. */
 export type TableRef = {
-  /** Its HTML then, as the Markdown view showed it with every earlier queued change applied. */
+  /**
+   * Its HTML then, as the Markdown view showed it with every earlier queued change applied,
+   * without its look (`tableIdentity`).
+   */
   expected: string;
 };
 
@@ -71,15 +76,29 @@ type ExistingTableChange = Exclude<TableChange, NewTableChange>;
 // Line structure
 // ---------------------------------------------------------------------------
 
-/** The rows and cells of one table's HTML, as blocks of whole lines. */
+/**
+ * The rows and cells of one table's HTML, as blocks of whole lines, with where each opening tag
+ * stands and the style values of its look. `colgroup` is the line, line break included, that
+ * says the columns' widths, when the table has one.
+ */
 export type TableLines = {
+  tag: MarkdownRange;                         // "<table…>"
+  colgroup?: MarkdownRange;                   // "  <colgroup>…</colgroup>\n"
+  look: LookAttributes;
   rows: {
-    mdStart: number; mdEnd: number;          // "  <tr>\n" … "  </tr>\n"
-    cells: { mdStart: number; mdEnd: number; rowSpan: number; columnSpan: number; nested: boolean }[];
+    mdStart: number; mdEnd: number;          // "  <tr…>\n" … "  </tr>\n"
+    tag: MarkdownRange;                       // "<tr…>"
+    cells: {
+      mdStart: number; mdEnd: number; tag: MarkdownRange;
+      rowSpan: number; columnSpan: number; nested: boolean;
+    }[];
   }[];
 };
 
-const CELL_OPENING = /^    <td( rowspan="(\d+)")?( colspan="(\d+)")?>/;
+const TABLE_OPENING = /^<table(?: style="([^"]+)")?>$/;
+const COLGROUP = /^  (<colgroup>(?:<col(?: style="[^"]+")?>)+<\/colgroup>)$/;
+const ROW_OPENING = /^  <tr(?: style="([^"]+)")?>$/;
+const CELL_OPENING = /^    <td( rowspan="(\d+)")?( colspan="(\d+)")?(?: style="([^"]+)")?>/;
 
 function malformedTable(): Error {
   return new Error("The table's HTML is not laid out as the renderer lays a table out.");
@@ -93,16 +112,31 @@ export function tableLines(markdown: string, table: MarkdownRange): TableLines {
   let lines = markdown.slice(table.mdStart, table.mdEnd).split("\n");
   // The last line closes the table, so every line before it has to be closed before it.
   let last = lines.length - 1;
-  if (last < 1 || lines[0] !== "<table>" || lines[last] !== "</table>") throw malformedTable();
+  let tableOpening = TABLE_OPENING.exec(lines[0]);
+  if (last < 1 || !tableOpening || lines[last] !== "</table>") throw malformedTable();
+  let tag = { mdStart: table.mdStart, mdEnd: table.mdStart + lines[0].length };
+  let look: LookAttributes = { table: tableOpening[1] ?? "", rows: [], cells: [] };
   let rows: TableLines["rows"] = [];
   // Where the line at `index` starts in the Markdown.
-  let offset = table.mdStart + lines[0].length + 1;
+  let offset = tag.mdEnd + 1;
   let index = 1;
+  let colgroup: MarkdownRange | undefined;
+  let columns = COLGROUP.exec(lines[1]);
+  if (columns && last > 1) {
+    colgroup = { mdStart: offset, mdEnd: offset + lines[1].length + 1 };
+    look.colgroup = columns[1];
+    offset = colgroup.mdEnd;
+    index++;
+  }
   while (index < last) {
     let rowStart = offset;
-    if (lines[index] !== "  <tr>") throw malformedTable();
+    let row = ROW_OPENING.exec(lines[index]);
+    if (!row) throw malformedTable();
+    let rowTag = { mdStart: offset + 2, mdEnd: offset + lines[index].length };
+    look.rows.push(row[1] ?? "");
     offset += lines[index++].length + 1;
     let cells: TableLines["rows"][number]["cells"] = [];
+    let styles: string[] = [];
     while (lines[index] !== "  </tr>") {
       let cellStart = offset;
       let line = lines[index];
@@ -116,7 +150,7 @@ export function tableLines(markdown: string, table: MarkdownRange): TableLines {
         // A cell of several lines: each indented six spaces, up to the line that closes it.
         while (lines[index] !== "    </td>") {
           if (index >= last || !lines[index].startsWith("      ")) throw malformedTable();
-          if (lines[index] === "      <table>") nested = true;
+          if (/^ {6}<table[ >]/.test(lines[index])) nested = true;
           offset += lines[index++].length + 1;
         }
         offset += lines[index++].length + 1;
@@ -124,15 +158,18 @@ export function tableLines(markdown: string, table: MarkdownRange): TableLines {
       cells.push({
         mdStart: cellStart,
         mdEnd: offset,
+        tag: { mdStart: cellStart + 4, mdEnd: cellStart + opening[0].length },
         rowSpan: opening[2] ? Number(opening[2]) : 1,
         columnSpan: opening[4] ? Number(opening[4]) : 1,
         nested,
       });
+      styles.push(opening[5] ?? "");
     }
     offset += lines[index++].length + 1;
-    rows.push({ mdStart: rowStart, mdEnd: offset, cells });
+    look.cells.push(styles);
+    rows.push({ mdStart: rowStart, mdEnd: offset, tag: rowTag, cells });
   }
-  return { rows };
+  return { tag, ...(colgroup ? { colgroup } : {}), look, rows };
 }
 
 function notLaidOut(op: string): Error {
@@ -147,6 +184,19 @@ function linesOf(markdown: string, table: MarkdownRange, op: string): TableLines
   } catch {
     throw notLaidOut(op);
   }
+}
+
+/**
+ * The look of a table whose lines are parsed. Throws the refusal of a table that is not laid out
+ * as the renderer lays one out when its tags write no look exactly as the renderer would.
+ */
+export function readTableLook(lines: TableLines, op: string): TableLook {
+  let covered = coveredCells(lines.rows.map(row => row.cells));
+  let look = readLook(lines.look, covered);
+  if (!look || look.columns && look.columns.length !== (lines.rows[0]?.cells.length ?? 0)) {
+    throw notLaidOut(op);
+  }
+  return look;
 }
 
 /** The size of a table whose lines are parsed, for a change to its rows or columns. */
@@ -283,13 +333,26 @@ function completeCells(cells: string[][], count: number, width: number): string[
 // ---------------------------------------------------------------------------
 
 /**
- * A table's HTML without the numbers the renderer counts through the whole tab: where a
+ * A table's HTML without its look: the style of its `<table>`, `<tr>` and `<td>` tags, and its
+ * columns' widths, those of tables in its cells included. A change is kept to its table by this,
+ * so a collaborator restyling the table does not undo the changes queued for it.
+ */
+export function tableIdentity(html: string): string {
+  if (!html.includes(' style="') && !html.includes("<colgroup>")) return html;
+  return html.replace(/^ *<colgroup>.*\n/gm, "")
+    .replace(/(<(?:table|tr|td)(?: rowspan="\d+")?(?: colspan="\d+")?) style="[^"]*"/g, "$1");
+}
+
+/**
+ * A table's identity without the numbers the renderer counts through the whole tab: where a
  * numbered list in a cell starts, and the number of a footnote. Tables with one shape read
- * the same: they differ at most in numbers that an edit elsewhere in the tab can move.
+ * the same: they differ at most in their looks and in numbers that an edit elsewhere in the tab
+ * can move.
  */
 export function tableShape(html: string): string {
-  if (!html.includes(' start="') && !/\[\d/.test(html)) return html;
-  return html.replace(/ start="-?\d+"(?=>)/g, "").replace(/\[\d+\]/g, "[]");
+  let identity = tableIdentity(html);
+  if (!identity.includes(' start="') && !/\[\d/.test(identity)) return identity;
+  return identity.replace(/ start="-?\d+"(?=>)/g, "").replace(/\[\d+\]/g, "[]");
 }
 
 function htmlOf(content: EditableMarkdown, table: MarkdownRange): string {
@@ -299,7 +362,7 @@ function htmlOf(content: EditableMarkdown, table: MarkdownRange): string {
 /**
  * The place, among the content's tables, of the one table that reads the same as a reference
  * recorded. Throws when none does, when more than one does, or when the one that does no
- * longer reads exactly as recorded.
+ * longer reads exactly as recorded, its look aside.
  */
 export function resolveTable(content: EditableMarkdown, ref: TableRef, op: string): number {
   let changed = () => new Error(
@@ -315,7 +378,9 @@ export function resolveTable(content: EditableMarkdown, ref: TableRef, op: strin
     }
     found = index;
   }
-  if (found < 0 || htmlOf(content, content.tables[found]) !== ref.expected) throw changed();
+  if (found < 0 || tableIdentity(htmlOf(content, content.tables[found])) !== ref.expected) {
+    throw changed();
+  }
   return found;
 }
 
@@ -2151,11 +2216,14 @@ function tagAround(html: string, index: number): string {
 }
 
 const OWN_TAG = /^<\/?(?:td|tr|table)(?![0-9a-zA-Z])/;
+const LOOK_TAG = /^<(?:td|tr|table)(?![0-9a-zA-Z])/;
+const COLUMNS_TAG = /^<\/?col(?:group)?(?![0-9a-zA-Z])/;
 const CELL_TAG = /^<\/?td(?![0-9a-zA-Z])/;
 const OPENS_BLOCK = /^<(?:p|h[1-6]|ul|ol|li)(?![0-9a-zA-Z])/;
 const CLOSES_BLOCK = /^<\/(?:td|ul|ol|li)>/;
 const KNOWN_TAGS: readonly string[] = [
   "p", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "td", "tr", "table", "hr",
+  "colgroup", "col",
 ];
 
 /**
@@ -2190,6 +2258,12 @@ function tableTextRefusal(
   let want = tagAround(piece.text, offset);
   let got = tagAround(loose, stop.at);
 
+  if (LOOK_TAG.test(want) && (want.includes(' style="') || got.includes(' style="')) ||
+      COLUMNS_TAG.test(want) || COLUMNS_TAG.test(got)) {
+    return new Error(
+      "replaceText: a table's look, which its tags' style attributes and the <colgroup> line " +
+      "write, cannot be changed with replaceText(). Quote the text of cells, not their tags.");
+  }
   if (columnIndex < 0 || CELL_TAG.test(want) && OWN_TAG.test(got)) {
     return new Error(
       "replaceText: inside a table only the text of its cells can be replaced. Change rows " +

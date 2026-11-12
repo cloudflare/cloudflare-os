@@ -1,5 +1,5 @@
 import type {
-  GoogleDocsTab, ParagraphElement, StructuralElement, TextStyle,
+  GoogleDocsTab, ParagraphElement, StructuralElement, TableCellStyle, TextStyle,
 } from "../src/docs-api";
 
 type ParagraphPart =
@@ -24,7 +24,7 @@ type Suggestion = "insertion" | "deletion";
 type TableCellContent = {
   /** The cell's content in order: paragraphs, and tables nested in the cell. */
   paragraphs: (ParagraphSpec | TableSpec)[];
-  tableCellStyle?: { rowSpan?: number; columnSpan?: number };
+  tableCellStyle?: TableCellStyle;
   /** Marks the cell as a suggested insertion, or as suggested for deletion. */
   suggested?: Suggestion;
 };
@@ -36,6 +36,10 @@ type TableSpec = {
   headerRows?: number;
   /** Rows, by index, that are suggested: the row and each of its cells carry the suggestion. */
   suggestedRows?: Record<number, Suggestion>;
+  /** Each column's fixed width in points, or `null` for one evenly distributed. */
+  columns?: (number | null)[];
+  /** Each row's minimum height in points, as Google stores it: 0 leaves it out. */
+  heights?: number[];
 };
 type StructuralSpec = { structure: "sectionBreak" | "tableOfContents"; length?: number };
 type BlockSpec = ParagraphSpec | TableSpec | StructuralSpec;
@@ -189,11 +193,20 @@ function buildTable(startIndex: number, spec: TableSpec): StructuralElement {
         ...suggestionIds(suggested),
       };
     });
+    let header = rowIndex < (spec.headerRows ?? 0);
+    let height = spec.heights?.[rowIndex] ?? 0;
     return {
       startIndex: rowStart,
       endIndex: index,
       tableCells,
-      ...(rowIndex < (spec.headerRows ?? 0) ? { tableRowStyle: { tableHeader: true } } : {}),
+      ...(header || height > 0
+        ? {
+          tableRowStyle: {
+            ...(header ? { tableHeader: true } : {}),
+            ...(height > 0 ? { minRowHeight: { magnitude: height, unit: "PT" } } : {}),
+          },
+        }
+        : {}),
       ...suggestedRow,
     };
   });
@@ -201,7 +214,18 @@ function buildTable(startIndex: number, spec: TableSpec): StructuralElement {
   return {
     startIndex,
     endIndex: index + 1,
-    table: { tableRows },
+    table: {
+      tableRows,
+      ...(spec.columns
+        ? {
+          tableStyle: {
+            tableColumnProperties: spec.columns.map(width => width === null
+              ? { widthType: "EVENLY_DISTRIBUTED" }
+              : { widthType: "FIXED_WIDTH", width: { magnitude: width, unit: "PT" } }),
+          },
+        }
+        : {}),
+    },
   };
 }
 

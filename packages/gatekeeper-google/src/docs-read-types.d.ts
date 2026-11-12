@@ -83,6 +83,29 @@ export interface GoogleDocReadSession {
    * list item starts with its bullet character and a space, those show the bullet and are not
    * part of the item's text.
    *
+   * A table's look shows in `style` attributes, which a table as Google Docs adds it has none
+   * of. On `<td>`, after any spans, they give the cell's `background-color` (`#rrggbb`, or
+   * `transparent` for none), `vertical-align` (`top`, `middle` or `bottom`), `padding-top`,
+   * `-right`, `-bottom` and `-left` in points, and `border-top`, `-right`, `-bottom` and `-left`
+   * as `<width>pt solid|dotted|dashed #rrggbb` or `none`; four equal paddings or borders read
+   * as `padding` or `border`. What most cells share is written once on `<table>`, and a cell
+   * writes only what differs from it. Unstyled, a cell is unshaded, aligned to the top, padded
+   * 5pt and bordered `1pt solid #000000`. An edge two cells share shows on both, and a merged
+   * cell shows the look of the whole block. When a column has a fixed width, a line
+   * `  <colgroup><col><col style="width:120pt"></colgroup>` follows `<table>`, one `<col>` for
+   * each column, those without a width sharing what the others leave. A row's least height
+   * shows as `<tr style="height:30pt">`:
+   *
+   * ```
+   * <table style="border:1pt solid #cccccc">
+   *   <colgroup><col style="width:120pt"><col></colgroup>
+   *   <tr style="height:30pt">
+   *     <td style="background-color:#f3f3f3;vertical-align:middle"><p>Name</p></td>
+   *     <td><p></p></td>
+   *   </tr>
+   * </table>
+   * ```
+   *
    * This reads exactly one tab and never combines tabs, so pass an ID returned by `listTabs()`.
    * Omitting `tabId` is valid only when `listTabs()` returns exactly one tab.
    */

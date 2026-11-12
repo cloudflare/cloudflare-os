@@ -11,7 +11,7 @@ import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import {
   applyNewTable, applyTableChange, applyTextReplacement, checkTabTableCells, checkTableTarget,
   hiddenContent, MAX_TABLE_COLUMNS, replaceTableText, runParagraphReplacement, tableLines,
-  tableShape, tableSize, tableTextRequests,
+  tableIdentity, tableShape, tableSize, tableTextRequests,
 } from "./docs-tables";
 import type { HiddenContent, TableChange, TextReplacement } from "./docs-tables";
 import type { DocTableDeletion, DocTableInsertion, NewDocTable } from "./docs-types";
@@ -258,7 +258,8 @@ function tableAt(
 /**
  * Refuse a change to the table at `table` while another table of the content reads the same: a
  * queued change is kept to its table by how the table reads. Tables are compared by their
- * shape, without the list and footnote numbers an edit elsewhere in the tab can move.
+ * shape, without their looks and the list and footnote numbers an edit elsewhere in the tab can
+ * move.
  */
 function checkReadsAlone(content: EditableMarkdown, table: number, op: string): void {
   let shape = tableShape(htmlOf(content, content.tables[table]));
@@ -266,10 +267,11 @@ function checkReadsAlone(content: EditableMarkdown, table: number, op: string): 
     index !== table && tableShape(htmlOf(content, candidate)) === shape);
   if (other < 0) return;
   throw new Error(
-    `${op}: table ${table} reads the same as table ${other} of this tab (numbers in square ` +
-    "brackets and where numbered lists start aside), so the change could not be kept to the " +
-    "table it is meant for. Make the two differ first, for example by changing the text of a " +
-    `cell with replaceText(), then call ${op}() again.`);
+    `${op}: table ${table} reads the same as table ${other} of this tab (styles, column ` +
+    "widths, row heights, numbers in square brackets and where numbered lists start aside), " +
+    "so the change could not be kept to the table it is meant for. Make the two differ " +
+    "first, for example by changing the text of a cell with replaceText(), then call " +
+    `${op}() again.`);
 }
 
 /** The texts of `count` new lines of `width` cells each, as they are written: absent ones empty. */
@@ -321,7 +323,7 @@ function insertionChange(
       `${op}: at most ${MAX_CALL_CELL_COST / 2} cells that have text can be added at once, an ` +
       "empty cell counting as half of one. Add the rest with further calls.");
   }
-  let expected = htmlOf(content, target);
+  let expected = tableIdentity(htmlOf(content, target));
   return ofRows
     ? { type: "insertTableRows", at, cells: storedCells(given, count, columns), expected }
     : { type: "insertTableColumns", at, cells: storedCells(given, rows, count), expected };
@@ -337,7 +339,10 @@ function deletionChange(
   let shape = { type: op, at, count };
   checkTableTarget(content, table, shape, tab);
   checkReadsAlone(content, table, op);
-  return { ...shape, expected: htmlOf(content, target), ...hiddenContent(content, table, shape) };
+  return {
+    ...shape, expected: tableIdentity(htmlOf(content, target)),
+    ...hiddenContent(content, table, shape),
+  };
 }
 
 /** The change that deletes the table a call names. */
@@ -349,7 +354,10 @@ function tableDeletionChange(
   let shape = { type: op };
   checkTableTarget(content, table, shape, tab);
   checkReadsAlone(content, table, op);
-  return { ...shape, expected: htmlOf(content, target), ...hiddenContent(content, table, shape) };
+  return {
+    ...shape, expected: tableIdentity(htmlOf(content, target)),
+    ...hiddenContent(content, table, shape),
+  };
 }
 
 /**
@@ -476,7 +484,7 @@ function existingTableCard(
   if (change.type === "deleteTable") {
     let description = describe(
       `Delete a table of tab ${label}, with everything in it.${hiddenNotes(change)}`);
-    description.verbatim("Table", change.expected, "html");
+    description.verbatim("Table", htmlOf(content, target), "html");
     return { title: "Delete a table in Google Doc", description: located(description) };
   }
 

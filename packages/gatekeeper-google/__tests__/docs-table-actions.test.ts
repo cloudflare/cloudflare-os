@@ -138,10 +138,11 @@ const PAIR = () => buildTab(
   [heading("Team A"), TEAM, heading("Team B"), TEAM, para("End")]);
 
 const readsTheSame = (op: string, table: number, other: number) =>
-  `${op}: table ${table} reads the same as table ${other} of this tab (numbers in square ` +
-  "brackets and where numbered lists start aside), so the change could not be kept to the " +
-  "table it is meant for. Make the two differ first, for example by changing the text of a " +
-  `cell with replaceText(), then call ${op}() again.`;
+  `${op}: table ${table} reads the same as table ${other} of this tab (styles, column ` +
+  "widths, row heights, numbers in square brackets and where numbered lists start aside), " +
+  "so the change could not be kept to the table it is meant for. Make the two differ " +
+  "first, for example by changing the text of a cell with replaceText(), then call " +
+  `${op}() again.`;
 const tabCells = (op: string, held: number) =>
   `${op}: tables, rows and columns can be added only until the tables of a tab hold 5000 cells ` +
   `in all, a cell counting once for each paragraph in it, and those of this tab would hold ${held}.`;

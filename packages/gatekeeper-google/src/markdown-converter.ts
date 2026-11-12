@@ -6,6 +6,7 @@ import type {
   GoogleDocsRequest, GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table,
   TableCell, TableRow, TextStyle,
 } from "./docs-api";
+import { lookOfTable, renderLook } from "./docs-table-look";
 
 // ---------------------------------------------------------------------------
 // Source map types
@@ -85,12 +86,12 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
 export type EditableTable = MarkdownRange & {
   /**
    * One array per row, holding for each of its cells in order (cells covered by a merge
-   * included): thirty-two times the number of the cell's editable texts, plus the cell's flags
-   * (1 when it holds an item of a list that numbers any of its levels, 2 when it holds a
-   * footnote, 4 when it starts with anything but a paragraph of normal text outside a list, 8
-   * when it is one paragraph that holds a smart chip, or another element that is neither text
-   * nor an inline image, and no text beside it, 16 when it holds an element the rendering shows
-   * nothing for); then a start and an end for each text: the HTML between the tags of a
+   * included): 128 times the number of the cell's editable texts, plus the cell's flags (1 when
+   * it holds an item of a list that numbers any of its levels, 2 when it holds a footnote, 4
+   * when it starts with anything but a paragraph of normal text outside a list, 8 when it is one
+   * paragraph that holds a smart chip, or another element that is neither text nor an inline
+   * image, and no text beside it, 16 when it holds an element the rendering shows nothing for,
+   * and 32, 64 or both for what Google copies of its chips into a row added beside it); then a start and an end for each text: the HTML between the tags of a
    * paragraph whose text can be edited, as a half-open range counted from the first character
    * of the cell's first line.
    */
@@ -634,11 +635,14 @@ function tableToHtml(
 ): string {
   let rows = table.tableRows ?? [];
   let isCovered = map && coveredCellTracker(rows);
-  let lines = ["<table>"];
+  let look = renderLook(lookOfTable(table));
+  let lines = [`<table${look.table}>`];
+  if (look.colgroup !== undefined) lines.push(`  ${look.colgroup}`);
   for (let [rowIndex, row] of rows.entries()) {
-    lines.push("  <tr>");
+    lines.push(`  <tr${look.rows[rowIndex]}>`);
     let cells = (row.tableCells ?? []).map((cell, column) => tableCellToHtml(
-      cell, lists, listNumbers, subtitleItalic, !!isCovered && !isCovered(rowIndex, column, cell)));
+      cell, lists, listNumbers, subtitleItalic, !!isCovered && !isCovered(rowIndex, column, cell),
+      look.cells[rowIndex][column]));
     for (let cell of cells) lines.push(cell.html);
     lines.push("  </tr>");
     if (map) recordTableRow(map, row, cells, lists);
@@ -785,9 +789,9 @@ function holdsUnshownElement(paragraph: Paragraph): boolean {
 }
 
 /**
- * Render one cell. Its texts are counted from the first character of its first line, and it lists
- * none unless `editable`: a cell that a merged cell covers and a cell of a table inside another
- * cell are not.
+ * Render one cell, with `lookAttribute` after its spans. Its texts are counted from the first
+ * character of its first line, and it lists none unless `editable`: a cell that a merged cell
+ * covers and a cell of a table inside another cell are not.
  */
 function tableCellToHtml(
   cell: TableCell,
@@ -795,10 +799,11 @@ function tableCellToHtml(
   listNumbers: Map<string, number[]>,
   subtitleItalic: boolean,
   editable: boolean,
+  lookAttribute: string,
 ): RenderedHtml {
   let style = cell.tableCellStyle;
   let attributes = htmlIntegerAttribute("rowspan", style?.rowSpan) +
-    htmlIntegerAttribute("colspan", style?.columnSpan);
+    htmlIntegerAttribute("colspan", style?.columnSpan) + lookAttribute;
   let elements = cell.content ?? [];
   // Classify every element once: the list walk below revisits them as it groups nested items.
   let items = elements.map(element =>

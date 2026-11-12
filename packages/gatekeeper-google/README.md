@@ -387,7 +387,8 @@ its cells' paragraphs, headings and list items, in one cell or several, written 
 `&amp;`, `&lt;` and `&gt;` for `&`, `<` and `>`, `<br>` for a line break within a paragraph, and
 `<strong>`, `<em>`, `<s>` and `<a href>` for bold, italic, strikethrough and links. Everything else
 in the table has to stay as it is, so a replacement cannot add or remove paragraphs, list items,
-cells, rows or columns, and cannot change a table together with the text around it. The characters
+cells, rows or columns, change the table's look, or change a table together with the text around
+it. The characters
 a replacement keeps are not rewritten, and the only formatting sent for them is the bold, italic,
 strikethrough or link the replacement changes. A link that stays is never cleared, so a word
 corrected inside a link stays part of it, and a link pointed to another URL as a whole is only
@@ -405,6 +406,18 @@ shows it so too, so that the changes queued behind it find their tables as they 
 paragraph's style is told by how it reads (a heading by its level, anything else as normal text),
 and by the document while nothing waits before the change, which also tells a title and a subtitle
 apart. A subtitle reads as italic only where its named style makes it so.
+
+The HTML also shows a table's look, the parts of it a request can set: each cell's shading,
+vertical alignment, padding and borders as `style` on `<td>`, each fixed column width in a
+`<colgroup>` line after `<table>`, and each row's least height as `style` on `<tr>`. A field Google
+leaves out reads as the default a table added through the API has (no shading, top alignment, 5pt
+padding, a 1pt solid black border), and a table that sets only these defaults, explicitly or not,
+reads as plain `<table>`, as one added with Insert › Table in Google Docs does. What most cells share is written once on `<table>`, each
+longhand separately, a tie going to the default, and a cell writes only what differs from it,
+`transparent` for an unshaded cell under a shaded table. Google stores an edge on both cells that
+share it, and both show it. A merged cell shows its block: its shading, alignment and padding are
+the top-left cell's, and its right and bottom borders those Google keeps on the block's last column
+and row. A cell that a merged cell covers shows no look.
 
 A replacement that only adds paragraphs directly above or below a table (`<table>` replaced by
 `## Results`, a blank line and `<table>`) changes no table: it is applied as the same text added to
@@ -430,7 +443,11 @@ not refused, and neither is replacing the text of its cells. "The same" leaves o
 numbered list in a cell starts and the number of a footnote: both are counted through the whole
 tab, so an edit elsewhere moves them, and two tables that differ in nothing else would trade
 readings. Any number in square brackets counts as a footnote's, since the Markdown does not tell
-the two apart.
+the two apart. It leaves out the table's look too, and so does what a change remembers: a
+collaborator restyling a table, resizing its columns or rows, does not fail the changes queued for
+it. A replacement written against a cell's `style` attribute is the exception, since it is found
+by its text: it no longer matches once the cell is restyled, so quote the text of cells, not their
+tags.
 
 A queued change whose table was edited meanwhile, that was built on a change since rejected, or
 whose table another table has come to read the same as, fails without writing and says so. When a

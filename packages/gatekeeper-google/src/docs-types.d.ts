@@ -117,9 +117,10 @@ export type DocTableDeletion = {
  * whether or not they can open the Doc. A comment, reply or note holds at most 2048 bytes of UTF-8.
  * A Doc not created yet has no comments, and takes no comment writes until it is.
  *
- * `getContent()` shows each table as HTML that starts at a line reading exactly `<table>`,
- * directly followed by a `  <tr>` line; a paragraph whose text merely reads `<table>` is
- * followed by a blank line and is not a table. The table methods name a table by its position
+ * `getContent()` shows each table as HTML that starts at a line reading `<table>`, or
+ * `<table style="…">` for a styled table, directly followed by a `  <tr>` or `  <colgroup>`
+ * line; a paragraph whose text merely reads `<table>` is followed by a blank line and is not a
+ * table. The table methods name a table by its position
  * among the tab's tables, counting from 0 in the order `getContent()` shows them; a table inside
  * another table's cell is not counted and cannot be changed. Rows and columns count from 0 too:
  * each `  <tr>` line, indented two spaces, is a row, and each `    <td` line under it, indented
@@ -131,8 +132,9 @@ export type DocTableDeletion = {
  * in all, a cell counting once for each paragraph it holds.
  *
  * The rows and columns of a table can be changed, and the table deleted, only while no other
- * table of the tab reads the same as it does: the same HTML, apart from the number a numbered
- * list starts at and any number in square brackets, as a footnote's is. While two tables read
+ * table of the tab reads the same as it does: the same HTML, apart from its styles, column
+ * widths and row heights, the number a numbered list starts at and any number in square
+ * brackets, as a footnote's is. While two tables read
  * the same, such as two empty tables or two with only the same header row,
  * make them differ first, for example by changing the text of a cell with `replaceText()`
  * (quote the text above the table so that the match is unique), and then change either one.
@@ -181,9 +183,12 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * italic, strikethrough and links; Markdown syntax is plain text there. Everything else in the
    * table must stay as it is, down to the line breaks and indentation `getContent()` writes
    * between cells. A replacement cannot add or remove paragraphs, list items, cells, rows or
-   * columns (use the table methods for rows and columns), change a table together with the text
-   * around it, or change a cell that a merged cell covers, a cell that holds another table, a
-   * subtitle, or a paragraph that holds an image, smart chip or other element. It can add
+   * columns (use the table methods for rows and columns), change a table's look (its `style`
+   * attributes and `<colgroup>` line), change a table together with the text around it, or
+   * change a cell that a merged cell covers, a cell that holds another table, a subtitle, or a
+   * paragraph that holds an image, smart chip or other element. Quote the text of cells rather
+   * than their tags: a replacement that quotes a cell's `style` no longer matches once the cell
+   * is restyled. It can add
    * paragraphs directly above or below a table, with a blank line between them and the table,
    * unless the paragraph on that side of the table is read-only. That blank line has to stay: to
    * remove the paragraph next to a table, remove the blank line on the paragraph's other side

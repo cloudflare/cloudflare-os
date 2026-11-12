@@ -146,7 +146,8 @@ reader.insertTable({ rows: 1, columns: 1 });
  */
 const DOC_TABLE_GUIDANCE = [
   // A paragraph may read like a table; rows of a table inside a cell are not counted.
-  "reading exactly `<table>`",
+  "starts at a line reading `<table>`",
+  "`<table style=\"…\">` for a styled table",
   "are indented further and are not counted",
   // Which context keeps `after` in place, and how a tab's first paragraph is named.
   "names a later paragraph",
@@ -385,13 +386,19 @@ message.addAttachment(file);
     const commentPrefix = "   * ";
     const fence = commentPrefix + "```";
     const lines = source("docs-read-types.d.ts").split("\n");
-    expect(lines.filter(line => line === fence)).toHaveLength(2);
-    const exampleLines = lines.slice(lines.indexOf(fence) + 1, lines.lastIndexOf(fence));
-    for (const line of exampleLines) expect(line.startsWith(commentPrefix), line).toBe(true);
-    const example = exampleLines.map(line => line.slice(commentPrefix.length)).join("\n");
+    const fences = lines.flatMap((line, index) => line === fence ? [index] : []);
+    expect(fences).toHaveLength(4);
+    const examples = [0, 2].map(at => {
+      const exampleLines = lines.slice(fences[at] + 1, fences[at + 1]);
+      for (const line of exampleLines) expect(line.startsWith(commentPrefix), line).toBe(true);
+      return exampleLines.map(line => line.slice(commentPrefix.length)).join("\n");
+    });
 
-    const { markdown } = docTabToMarkdown(buildTab([
-      { runs: ["Before\n"] },
+    const grey = { color: { rgbColor: { red: 0.8, green: 0.8, blue: 0.8 } } };
+    const edge = { width: { magnitude: 1, unit: "PT" }, dashStyle: "SOLID", color: grey };
+    const ringed = { borderTop: edge, borderRight: edge, borderBottom: edge, borderLeft: edge };
+    const shade = { color: { rgbColor: { red: 0.953, green: 0.953, blue: 0.953 } } };
+    const rendered = [
       { table: [
         ["Name\n", "\n"],
         [
@@ -399,13 +406,26 @@ message.addAttachment(file);
           "Total\n",
         ],
       ] },
-      { runs: ["After\n"] },
-    ]));
-    const tableEnd = "</table>";
-    expect(markdown).toContain(tableEnd);
-    expect(example).toBe(
-      markdown.slice(markdown.indexOf("<table>"), markdown.indexOf(tableEnd) + tableEnd.length),
-    );
+      {
+        table: [[
+          {
+            paragraphs: [{ runs: ["Name\n"] }],
+            tableCellStyle: { ...ringed, backgroundColor: shade, contentAlignment: "MIDDLE" },
+          },
+          { paragraphs: [{ runs: ["\n"] }], tableCellStyle: ringed },
+        ]],
+        columns: [120, null],
+        heights: [30],
+      },
+    ].map(table => {
+      const { markdown } = docTabToMarkdown(buildTab([
+        { runs: ["Before\n"] }, table, { runs: ["After\n"] },
+      ]));
+      const tableEnd = "</table>";
+      expect(markdown).toContain(tableEnd);
+      return markdown.slice(markdown.indexOf("<table"), markdown.indexOf(tableEnd) + tableEnd.length);
+    });
+    expect(examples).toEqual(rendered);
   });
 
   it("gives a directly bound spreadsheet its own session and Drive only the read session", () => {
