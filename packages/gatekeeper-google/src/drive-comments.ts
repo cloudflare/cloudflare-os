@@ -700,7 +700,7 @@ async function postNote(
       throw new Error("The suggestion was made, but Google Docs did not save its note. Approve " +
         "it again to post the note.", { cause: error });
     }
-    if (failure === "rateLimited") throw new Error(RATE_LIMITED, { cause: error });
+    if (failure === "rateLimited") throw new Error(rateLimited("Google Docs"), { cause: error });
     if (docsLacksScope(error)) throw new Error(host.threads.grantMissing, { cause: error });
     throw new ActionApplyError("The suggestion was made, but Google Docs refused its note.",
       { cause: error });
@@ -779,9 +779,10 @@ function docsRefusal(error: unknown): string {
   return `Google Docs refused this${status ? ` [${status}]` : ""}.`;
 }
 
-/** Said of a send Google Docs refused for the rate of requests, which it may take later. */
-const RATE_LIMITED =
-  "Google Docs is limiting requests from this account. Approve it again in a minute.";
+/** Said of a send `google` refused for the rate of requests, which it may take later. */
+function rateLimited(google: string): string {
+  return `${google} is limiting requests from this account. Approve it again in a minute.`;
+}
 
 /** Drive's refusal, for good, of a send that posted nothing, in our words. */
 function refusal(error: unknown): string {
@@ -811,7 +812,12 @@ function unconfirmedSend(google: string, what: "comments" | "suggestions"): stri
     "anything already posted on the file.";
 }
 
-/** How a Docs send failed, as {@link sendOnce} reads a failure. */
+/**
+ * How a Docs send failed, as {@link sendOnce} reads a failure. A 401 is `unauthorized` here, where
+ * Drive reads one on a write that cannot be repeated as `absent`: Docs refused it before acting, so
+ * the write stays pending for an approval under the account's token as it is then, and sendOnce
+ * drops its marker, so that approval sends it at once.
+ */
 export function docsSendFailure(error: unknown): DriveWriteFailure {
   if (error instanceof GoogleApiError && error.providerStatus === "UNAUTHENTICATED") {
     return "unauthorized";
@@ -895,6 +901,7 @@ async function post(
     refusal: docs ? docsRefusal : threads.refusal,
     unconfirmed: unconfirmedSend(docs ? "Google Docs" : threads.via,
       action.kind === "suggestEdit" ? "suggestions" : "comments"),
+    rateLimited: rateLimited(docs ? "Google Docs" : threads.via),
     logFields: commentId => ({ commentId }),
   });
   let attempt = host.attempts.get(id) ?? { at: Date.now() };

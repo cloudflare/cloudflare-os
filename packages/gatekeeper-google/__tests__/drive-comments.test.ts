@@ -19,7 +19,7 @@ import {
 } from "../src/drive-comments";
 import type { DriveBindingScope } from "../src/drive-session";
 import {
-  readOnlyRefusal, writeRefusal, WRITES_GRANT_MISSING, type DriveWritesHost, type QueuedWrite,
+  CREDENTIALS_NOT_ACCEPTED, readOnlyRefusal, writeRefusal, WRITES_GRANT_MISSING, type DriveWritesHost, type QueuedWrite,
   type WriteAttempt,
 } from "../src/drive-writes";
 import { parseResourceUrl, type DriveAccessLevel } from "../src/resources";
@@ -1435,6 +1435,33 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     let id = await run.submit("createComment", { ...ANCHORED, anchor: { tabId: "t.9", text: "Costs" } });
     expect(await run.apply(id)).toBe(QUOTE_GONE);
     expect(run.docs.insertComment).not.toHaveBeenCalled();
+  });
+
+  // clanky: Docs refuses a stale token before it acts, so nothing is in doubt and the write is
+  // sent at once on its next approval, with no look and no window to wait out.
+  it("keeps a send Docs answered 401 pending, with no marker, and sends it once on the next approval", async () => {
+    for (let kind of ["createComment", "suggestEdit"] as const) {
+      let { docs, journal, attempts, submit, apply } = harness();
+      let sendOf = kind === "createComment" ? docs.insertComment : docs.suggest;
+      sendOf.mockRejectedValueOnce(docsRefused("UNAUTHENTICATED"));
+      let id = kind === "createComment" ? await submit(kind, ANCHORED) : await submit(kind, edit());
+      expect(await apply(id), kind).toBe(CREDENTIALS_NOT_ACCEPTED);
+      expect(journal.get(id)?.state, kind).toBe("pending");
+      expect(attempts.has(id), kind).toBe(false);
+      expect(await apply(id), kind).toBeNull();
+      expect(sendOf, kind).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  // clanky: a send through Docs names Docs when it is rate limited.
+  it("says Google Docs is limiting requests when a send through it is rate limited", async () => {
+    let { docs, journal, attempts, submit, apply } = harness();
+    docs.insertComment.mockRejectedValueOnce(docsRefused("RESOURCE_EXHAUSTED"));
+    let id = await submit("createComment", ANCHORED);
+    expect(await apply(id))
+      .toBe("Google Docs is limiting requests from this account. Approve it again in a minute.");
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(false);
   });
 
   it("is refused by a revision that moved after the read, and placed on the Doc as it is when approved again", async () => {

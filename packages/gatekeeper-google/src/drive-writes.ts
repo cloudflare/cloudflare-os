@@ -381,6 +381,11 @@ export type WriteStep<Sent> = {
   grantMissing?: string;
   /** Said when a send's outcome is not known. */
   unconfirmed: string;
+  /**
+   * Said of a send Google refused for the rate of requests, for a write sent through another
+   * Google API than Drive's. Drive's wording by default.
+   */
+  rateLimited?: string;
   /** What the log line of a send that worked, or was found, carries beyond the bound fields. */
   logFields?(sent: Sent): Partial<GoogleObservabilityFields>;
 };
@@ -403,8 +408,9 @@ const RATE_LIMITED =
  * fails for good with nothing changed: at a check, by Google's refusal, or when the last send its
  * limit allows is also found to have made nothing. The marker of a send a look proves empty stays
  * until the next send's replaces it, which is what counts the sends. A write that cannot be
- * repeated loses its marker on a rate limit and on a missing scope, when no send of it is in
- * doubt. A write that can be repeated keeps it through both and through a 401, so that its next
+ * repeated loses its marker on a rate limit, on a missing scope and on a 401 (which only a Docs
+ * send gives such a write), when no send of it is in doubt. A write that can be repeated keeps it
+ * through all three, so that its next
  * approval looks first: a change such a send made all the same is then found and bound, where an
  * approval with no marker would take it for someone else's.
  * @returns What the send made, or what a look found an earlier send had made.
@@ -461,12 +467,12 @@ export async function sendOnce<Sent>(
           ? { providerReasons: [...error.providerReasons] } : {}),
     });
     if (failure === "unknown") throw new Error(step.unconfirmed, { cause: error });
-    // The approval's one token was not accepted. The next approval loads the account's afresh.
-    if (failure === "unauthorized") throw new Error(CREDENTIALS_NOT_ACCEPTED, { cause: error });
+    // The approval's one token was not accepted, which the next approval's, loaded afresh, may be.
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.
-    let later = failure === "rateLimited" ? RATE_LIMITED
-      : isInsufficientScope(error) || docsLacksScope(error)
-        ? step.grantMissing ?? WRITES_GRANT_MISSING : undefined;
+    let later = failure === "unauthorized" ? CREDENTIALS_NOT_ACCEPTED
+      : failure === "rateLimited" ? step.rateLimited ?? RATE_LIMITED
+        : isInsufficientScope(error) || docsLacksScope(error)
+          ? step.grantMissing ?? WRITES_GRANT_MISSING : undefined;
     if (later !== undefined) {
       if (!step.repeatable) host.attempts.delete(id);
       throw new Error(later, { cause: error });
