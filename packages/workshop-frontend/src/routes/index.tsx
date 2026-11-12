@@ -54,14 +54,16 @@ function HomePage() {
 export function HomePageContent({ prompt }: HomeSearch) {
   useDocumentTitle("Home");
 
-  const { authenticatedApi, currentUser } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
+  // Whose remembered models to show: nobody's until the server has confirmed who is signed in.
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined;
   const navigate = useNavigate();
   const toasts = useKumoToastManager();
 
   // Starts on what this browser last saw, so the selector doesn't wait on the server.
-  const [models, setModels] = useState<AiChatAuthorInfo[]>(getCachedModels);
+  const [models, setModels] = useState<AiChatAuthorInfo[]>(() => getCachedModels(userId));
   const [selectedModel, setSelectedModel] = useState<string | null>(
-    () => getStoredSelectedModel(models),
+    () => getStoredSelectedModel(userId, models),
   );
   const [modelsLoading, setModelsLoading] = useState(models.length === 0);
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
@@ -76,11 +78,11 @@ export function HomePageContent({ prompt }: HomeSearch) {
   useEffect(() => {
     let cancelled = false;
     Promise.all([authenticatedApi.listModels(), syncSelectedModel(authenticatedApi)])
-      .then(([list]) => {
+      .then(([list, syncedUserId]) => {
         if (cancelled) return;
-        cacheModels(list);
+        cacheModels(syncedUserId, list);
         setModels(list);
-        setSelectedModel(getStoredSelectedModel(list));
+        setSelectedModel(getStoredSelectedModel(syncedUserId, list));
         setModelsLoading(false);
       })
       .catch((err) => {
@@ -99,8 +101,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const handleModelChange = useCallback((value: string | null) => {
     setSelectedModel(value);
-    persistSelectedModel(authenticatedApi, value);
-  }, [authenticatedApi]);
+    persistSelectedModel(authenticatedApi, userId, value);
+  }, [authenticatedApi, userId]);
 
   // Pre-create a provisional gadget as soon as the user starts interacting, so that navigation
   // after submit is instant. Same pattern as before — disposed on unmount if never consumed.

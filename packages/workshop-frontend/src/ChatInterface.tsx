@@ -2555,6 +2555,7 @@ function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo
 }
 
 function fallbackToStoredModelSelection(
+  userId: string | undefined,
   modelId: string | null,
   availableModels: AiChatAuthorInfo[],
 ): string | null {
@@ -2562,7 +2563,7 @@ function fallbackToStoredModelSelection(
     return modelId;
   }
 
-  return getStoredSelectedModel(availableModels);
+  return getStoredSelectedModel(userId, availableModels);
 }
 
 interface ChatInterfaceProps {
@@ -2813,7 +2814,9 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
-  const { authenticatedApi, currentUser } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
+  // Whose remembered models to show: nobody's until the server has confirmed who is signed in.
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined;
   // Read through a ref so that the chat subscription is not restarted when only this changes.
   const authenticatedApiRef = useRef(authenticatedApi);
   authenticatedApiRef.current = authenticatedApi;
@@ -2921,7 +2924,7 @@ function ChatInterface({
     new Set(),
   );
   // Starts on what this browser last saw, so a new chat's selector doesn't wait on the server.
-  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(getCachedModels);
+  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(() => getCachedModels(userId));
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<
@@ -3548,12 +3551,13 @@ function ChatInterface({
   // Update selected model when switching chats
   useEffect(() => {
     if (selectedChatId === null) {
-      setSelectedModel(getStoredSelectedModel(availableModels));
+      setSelectedModel(getStoredSelectedModel(userId, availableModels));
     } else {
       // An existing thread takes its active agent's model, else the one that last spoke.
-      setSelectedModel(fallbackToStoredModelSelection(chatAgent?.id ?? null, availableModels));
+      setSelectedModel(
+        fallbackToStoredModelSelection(userId, chatAgent?.id ?? null, availableModels));
     }
-  }, [selectedChatId, availableModels, chatAgent?.id]);
+  }, [selectedChatId, availableModels, chatAgent?.id, userId]);
 
   // Keep the ref in sync with selectedChatId state
   useEffect(() => {
@@ -4011,7 +4015,7 @@ function ChatInterface({
 
           // After subscribing, load the list of chats and models
           // This is safe because subscription will catch any new activity
-          const [chats, models] = await Promise.all([
+          const [chats, models, syncedUserId] = await Promise.all([
             overseer.listChats(),
             overseer.listModels(),
             syncSelectedModel(authenticatedApiRef.current),
@@ -4024,7 +4028,7 @@ function ChatInterface({
           setChatListReady(true);
 
           // The effect that follows the selected chat picks the model from these.
-          cacheModels(models);
+          cacheModels(syncedUserId, models);
           setAvailableModels(models);
           setModelsLoading(false);
 
@@ -4276,7 +4280,7 @@ function ChatInterface({
   // Handle model change
   const handleModelChange = (modelId: string | null) => {
     setSelectedModel(modelId);
-    persistSelectedModel(authenticatedApi, modelId);
+    persistSelectedModel(authenticatedApi, userId, modelId);
   };
 
   // Handle stopping the agent
