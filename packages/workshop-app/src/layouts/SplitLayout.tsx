@@ -182,6 +182,8 @@ export const SplitLayout = ({
   const alone = useMotionValue(asideAlone ? 1 : 0)
   const pageGrow = useTransform(() => (1 - share.get() * open.get()) * (1 - alone.get()))
   const pageOpacity = useTransform(alone, [0, 1], [1, 0])
+  const page = useRef<HTMLElement>(null)
+  const pageWidth = useMotionValue<number | 'auto'>('auto')
   // The edge's gap becomes the gap between the cards as the aside opens, and goes with the page.
   const gap = useTransform(() => (EDGE_GAP * peek.get() * (1 - open.get()) + GAP * open.get()) * (1 - alone.get()))
   // The handle is in the middle of the gap between the cards. At the edge it is as far from the
@@ -282,13 +284,21 @@ export const SplitLayout = ({
 
   // The aside grows over the page, or gives the room back, only when it is there before and after:
   // arriving or going as the page, it takes the page's place at once, as another page would.
+  // Meanwhile what is in the page keeps the width it has beside the aside, and is cut off by the
+  // page's edge, rather than being laid out at every width down to nothing: a page coming back
+  // would be measured at a few pixels wide, such as a conversation's rows, at thousands tall.
+  // Before paint, so it is never laid out at the width the page arrives at.
   const wasShown = useRef(shown)
-  useEffect(() => {
+  useLayoutEffect(() => {
     const to = asideAlone ? 1 : 0
-    if (reduceMotion || !shown || !wasShown.current) return alone.jump(to)
-    const going = animate(alone, to, OPENING_TIMING)
+    if (reduceMotion || !shown || !wasShown.current) {
+      pageWidth.jump('auto')
+      return alone.jump(to)
+    }
+    pageWidth.jump(to === 1 ? page.current!.clientWidth : (root.current!.clientWidth - GAP) * (1 - share.get()))
+    const going = animate(alone, to, { ...OPENING_TIMING, onComplete: () => to === 0 && pageWidth.jump('auto') })
     return () => going.stop()
-  }, [asideAlone, alone, reduceMotion])
+  }, [asideAlone, alone, reduceMotion, pageWidth, share])
   useEffect(() => {
     wasShown.current = shown
   }, [shown])
@@ -296,7 +306,9 @@ export const SplitLayout = ({
   return (
     <div ref={root} className={cn('flex min-w-0 flex-1', SCROLLBARS_AWAY)}>
       {/* Out of reach under an aside that fills the window, or the room. */}
-      <motion.main style={{ flexGrow: pageGrow, opacity: pageOpacity }} inert={asideFullScreen || asideAlone} className={PANE}>{children}</motion.main>
+      <motion.main ref={page} style={{ flexGrow: pageGrow, opacity: pageOpacity }} inert={asideFullScreen || asideAlone} className={PANE}>
+        <motion.div style={{ width: pageWidth }} className="flex min-h-0 flex-1 flex-col">{children}</motion.div>
+      </motion.main>
       <motion.div
         style={{ width: gap }}
         inert={asideFullScreen || asideAlone}

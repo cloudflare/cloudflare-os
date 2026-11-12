@@ -103,6 +103,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
   const named = parseAsideRef(open)
   // The chat's settings, in the chat's place, with nothing beside them.
   const [settings, setSettings] = useState(false)
+  // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
+  const [expanded, setExpanded] = useState(false)
   // Made once, so the chat's rows are not rendered again for them.
   const [handlers] = useState(() => ({
     onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
@@ -113,22 +115,32 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
   return (
     <div className="flex h-full p-2">
       <SplitLayout
-        aside={named && !settings && (
+        asideAlone={expanded && named !== undefined}
+        aside={named && !settings && (expanded ? (
+          <AsidePane
+            placement="page"
+            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
+            fullScreen={false}
+            onFullScreenChange={handlers.onFullScreenChange}
+            onCollapse={() => setExpanded(false)}
+          />
+        ) : (
           <AsidePane
             placement="beside"
             item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
             items={items}
             onSelect={setOpen}
             onHide={() => setOpen(undefined)}
+            onExpand={() => setExpanded(true)}
             onFullScreenChange={handlers.onFullScreenChange}
           />
-        )}
+        ))}
         onOpenAside={!named && !settings && items.length > 0 ? () => setOpen(items[0].key) : undefined}
         onCloseAside={() => setOpen(undefined)}
         edgeInset={8}
       >
         <div className="relative flex min-h-0 flex-1 flex-col">
-          {settings ? (
+          {expanded && named ? null : settings ? (
             <ChatSettingsPane
               {...CHAT}
               onBack={() => setSettings(false)}
