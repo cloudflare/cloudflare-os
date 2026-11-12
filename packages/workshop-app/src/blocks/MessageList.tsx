@@ -117,12 +117,14 @@ export const MessageList = ({ messages, children, history, streaming, ref }: Mes
 
   return (
     <div className="relative h-full min-h-0">
+      {/* Scrolled up and down only: a sideways swipe is never taken here, nor kept from going
+          on, so it is the browser's (back and forward). */}
       <div
         ref={scrollRef}
         role="region"
         aria-label="Conversation messages"
         tabIndex={0}
-        className="chat-fade h-full overflow-y-auto overscroll-contain [overflow-anchor:none]"
+        className="chat-fade h-full overflow-x-hidden overflow-y-auto overscroll-y-contain [overflow-anchor:none]"
       >
         <div
           ref={contentRef}
