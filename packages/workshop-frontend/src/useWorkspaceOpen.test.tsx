@@ -67,7 +67,7 @@ function WorkspaceProbe({ authenticatedApi }: { authenticatedApi: RpcStub<Authen
     )
   }
   if (state.error?.kind === 'message') return <p>{state.error.message}</p>
-  return <p>{state.metadata?.title}</p>
+  return <p>{state.connectionLost ? 'Reconnecting' : state.metadata?.title}</p>
 }
 
 describe('useWorkspaceOpen', () => {
@@ -78,6 +78,7 @@ describe('useWorkspaceOpen', () => {
     act(() => root?.unmount())
     container?.remove()
     document.title = ''
+    vi.useRealTimers()
     vi.restoreAllMocks()
   })
 
@@ -165,6 +166,52 @@ describe('useWorkspaceOpen', () => {
     expect(container.textContent).toContain('Share links are turned off for this workspace')
     expect(container.textContent)
       .toContain('Ask the workspace owner to add you directly, then try again.')
+  })
+
+  it('retries a reopen that fails on a live connection until it succeeds', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const open = () => disposableStub({
+      subscribeToMetadata: vi.fn<
+        (callback: (metadata: WorkspaceMetadata) => void) => Promise<RpcStub<{}>>
+      >(async callback => {
+          callback(METADATA)
+          return disposableStub({}) as RpcStub<{}>
+        }),
+    }) as unknown as RpcStub<Overseer>
+    const failedDispose = vi.fn<() => void>()
+    const failed = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => {
+        throw new Error('Durable Object reset because its code was updated.')
+      }),
+    }, failedDispose) as unknown as RpcStub<Overseer>
+    const openWorkspace = vi.fn<() => RpcStub<Overseer>>()
+      .mockReturnValueOnce(failed)
+      .mockReturnValueOnce(failed)
+      .mockReturnValue(open())
+    const reconnected = { openWorkspace } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(open())} />))
+    expect(container.textContent).toBe('Quarterly planning')
+
+    vi.useFakeTimers()
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={reconnected} />))
+    expect(container.textContent).toBe('Reconnecting')
+    expect(openWorkspace).toHaveBeenCalledOnce()
+
+    // Each wait is the longest its jittered backoff can be.
+    await act(async () => vi.advanceTimersByTimeAsync(1_150))
+    expect(container.textContent).toBe('Reconnecting')
+    expect(openWorkspace).toHaveBeenCalledTimes(2)
+
+    await act(async () => vi.advanceTimersByTimeAsync(2_300))
+    expect(container.textContent).toBe('Quarterly planning')
+    expect(failedDispose).toHaveBeenCalledTimes(2)
+
+    await act(async () => vi.advanceTimersByTimeAsync(60_000))
+    expect(openWorkspace).toHaveBeenCalledTimes(3)
   })
 
   describe('account prompts for opening gadgets', () => {
