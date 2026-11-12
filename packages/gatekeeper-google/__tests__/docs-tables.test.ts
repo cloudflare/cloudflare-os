@@ -4014,6 +4014,19 @@ describe("formatting a paragraph's named style already gives", () => {
     expect(message(queuedFirst(partly, "Notes", "End\n\n"))).toBe(retry);
     let upright = styledTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]);
     expect(message(queuedFirst(upright, "Notes", "End\n\n"))).toBe(retry);
+    // In a tab whose named styles give no formatting, or that came without them.
+    let plainStyles = { styles: [{ namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } }] };
+    let unstyled = styledTab([para("Other text"), { runs: ["Prefix Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], plainStyles);
+    expect(message(queuedFirst(unstyled, "Notes", "End\n\n"))).toBe(retry);
+    let bare = buildTab([para("Other text"), { runs: ["Prefix Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]);
+    expect(message(queuedFirst(bare, "Notes", "End\n\n"))).toBe(retry);
+    // With nothing waiting, the requests, built when it is prepared, refuse it by the document.
+    let bareRead = docTabToMarkdown(bare);
+    expect(message(() => textReplacementRequests(
+      bareRead, replacementIn(bareRead.markdown, "Notes", "End\n\n")))).toBe(
+      "replaceText: a paragraph break written inside a subtitle would make the rest of it a " +
+      "normal paragraph, without the subtitle's look. Write the break at the subtitle's end, " +
+      "or replace the whole subtitle.");
     // In a tab with no subtitle, a normal paragraph is split as it is with nothing waiting.
     let normal = styledTab([para("Other text"), para("Notes here"), para("After")]);
     expect(queuedFirst(normal, "Notes", "End\n\n")().markdown).toContain("End\n\n here\n");

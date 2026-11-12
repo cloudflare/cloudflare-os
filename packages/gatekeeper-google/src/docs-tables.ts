@@ -7,7 +7,7 @@ import {
   addRequest, applyMarkdownEdit, canonicalizeMarkdownReplacement, canonicalLinkDestination,
   cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
   dropInheritedFormatting, escapeHtml, isGoogleDocsStrippedCharacter, isSafeTableLink, lineStart,
-  listLineType, replacedRange, rewrittenBlockStyles,
+  listLineType, replacedRange, rewrittenBlockStyles, SPLIT_UNTOLD, splitsUnmarkedLine,
   MAX_GOOGLE_DOC_REQUESTS, packTableRow, plainTextToDocRequests, StructuredContentError,
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
@@ -2358,19 +2358,22 @@ export function applyTextReplacement(
     return applyMarkdownEdit(
       content, edit.matchStart, edit.matchStart + edit.oldMarkdown.length, rendered);
   });
-  if (!named) return edited;
   // Where the content reads as the document does, its blocks name each paragraph's style, and the
   // request builder says what it writes, and with which style. Otherwise only the replaced text is
-  // known to be written.
+  // known to be written, and a break inside a subtitle, which the request builder refuses, cannot
+  // be told apart: a line with no heading marker may be one wherever the document holds one,
+  // since an edit cannot make one.
   let source = documentOf(content, doc)?.sourceMap;
+  if (run && !source && doc?.sourceMap.blocks.some(block => block.namedStyleType === "SUBTITLE") &&
+      splitsUnmarkedLine(content.markdown, run.matchStart, run.oldMarkdown, run.rendered)) {
+    throw new Error(SPLIT_UNTOLD);
+  }
+  if (!named) return edited;
   let blocks = source?.blocks;
   let written = run && (source
     ? rewrittenBlockStyles(source, content.markdown, run.matchStart,
       run.matchStart + run.oldMarkdown.length, run.rendered)
-    : {
-      replaced: replacedRange(content.markdown, run.matchStart, run.oldMarkdown, run.rendered),
-      subtitles: doc?.sourceMap.blocks.some(block => block.namedStyleType === "SUBTITLE") ?? false,
-    });
+    : { replaced: replacedRange(content.markdown, run.matchStart, run.oldMarkdown, run.rendered) });
   return dropInheritedFormatting(content, edited, named, blocks && (start =>
     blocks.find(block => block.mdStart === start)?.namedStyleType), written);
 }

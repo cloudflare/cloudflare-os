@@ -2804,24 +2804,15 @@ export function dropInheritedFormatting(
       mdEnd: after - newlineRun(markdown, after - 1, -1) - (lastEnd - mdEnd),
     };
     // A break written inside a line, with text after it, splits off the rest as normal text.
-    // Without the document, the line's style is told only by how it reads, so a split that
-    // would refuse with it, once the changes before it apply, is refused now. A line with no
-    // heading marker may be a subtitle wherever the document holds one: an edit cannot make
-    // one.
+    // Without the document, the line's style is told only by how it reads, so a split of a
+    // heading that would refuse with it, once the changes before it apply, is refused now.
     let rest = old.slice(mdEnd, lastEnd);
     if (unknownStyles && rest !== "" && markdown.slice(writes.mdStart, writes.mdEnd).includes("\n")) {
       let line = parseLine(old.slice(lineStart(old, mdEnd), lastEnd));
       let keptStart = line.plainText.length - parseLine(rest).plainText.length;
       let keepsNormal = line.headingLevel !== null && line.spans.some(span =>
         span.end > keptStart && INHERITED_FIELDS.some(field => span[field] && named.NORMAL_TEXT?.[field]));
-      if (line.headingLevel === null && written.subtitles || keepsNormal) {
-        throw new Error(
-          "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
-          "normal text, and with earlier changes waiting on the tab, whether that text can read " +
-          "as it does cannot be told: this may be a subtitle, or the rest has a style normal " +
-          "text's named style gives. Retry once the earlier changes to this tab have been " +
-          "approved or rejected.");
-      }
+      if (keepsNormal) throw new Error(SPLIT_UNTOLD);
     }
   }
   let { protectedRanges, tables } = edited;
@@ -3354,6 +3345,29 @@ function blockRewrite(
   return { blockRange, targets };
 }
 
+/** The refusal of a split whose rest, with changes waiting, cannot be told to read as it does. */
+export const SPLIT_UNTOLD =
+  "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
+  "normal text, and with earlier changes waiting on the tab, whether that text can read " +
+  "as it does cannot be told: this may be a subtitle, or the rest has a style normal " +
+  "text's named style gives. Retry once the earlier changes to this tab have been " +
+  "approved or rejected.";
+
+/**
+ * Whether a replacement writes a paragraph break inside a line of `markdown` that has no heading
+ * marker, with text left after it there, which a subtitle refuses (`inlineWrite`).
+ */
+export function splitsUnmarkedLine(
+  markdown: string, matchStart: number, oldMarkdown: string, newMarkdown: string,
+): boolean {
+  let { mdStart, mdEnd } = replacedRange(markdown, matchStart, oldMarkdown, newMarkdown);
+  let written = newMarkdown.slice(
+    mdStart - matchStart, newMarkdown.length - (matchStart + oldMarkdown.length - mdEnd));
+  let lineEnd = markdown.indexOf("\n", mdEnd);
+  return written.includes("\n") && (lineEnd < 0 ? markdown.length : lineEnd) > mdEnd &&
+    headingLevelAt(markdown, lineStart(markdown, mdEnd)) === 0;
+}
+
 /**
  * The range of `markdown` a replacement of `oldMarkdown` at `matchStart` by `newMarkdown` changes,
  * once the text the two share at either end is left out, as the requests leave it.
@@ -3421,7 +3435,7 @@ export function rewrittenBlockStyles(
 export type WrittenStyles =
   | {
     rewrite: { mdStart: number; styles: string[]; rewritten: boolean[] };
-    keepsFirst?: never; replaced?: never; restated?: never; subtitles?: never;
+    keepsFirst?: never; replaced?: never; restated?: never;
   }
   | {
     keepsFirst?: boolean; replaced: MarkdownRange; rewrite?: never;
@@ -3430,8 +3444,6 @@ export type WrittenStyles =
      * the edit splits off a list item or heading.
      */
     restated?: (typeof INHERITED_FIELDS)[number][];
-    /** Where only `replaced` is known: whether the document holds a subtitle. */
-    subtitles?: boolean;
   };
 
 /**
