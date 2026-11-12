@@ -130,6 +130,46 @@ describe('syncSelectedModel', () => {
     expect(setPreferredModel).toHaveBeenCalledTimes(2)
   })
 
+  it('leaves a pick unsaved when only an earlier pick of the same model was saved', async () => {
+    const saves: { resolve: () => void; reject: (err: Error) => void }[] = []
+    setPreferredModel.mockImplementation(() => new Promise<void>((resolve, reject) => {
+      saves.push({ resolve, reject })
+    }))
+    const nextSave = async () => {
+      const index = saves.length
+      await vi.waitFor(() => expect(saves.length).toBeGreaterThan(index))
+    }
+    persistSelectedModel(api, 'alice', 'sonnet')
+    persistSelectedModel(api, 'alice', 'opus')
+    persistSelectedModel(api, 'alice', 'sonnet')
+    await vi.waitFor(() => expect(saves.length).toBe(1))
+    saves[0].resolve()
+    await nextSave()
+    saves[1].resolve()
+    await nextSave()
+    saves[2].reject(new Error('offline'))
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+    setPreferredModel.mockReset()
+    setPreferredModel.mockResolvedValue(undefined)
+    getPreferredModel.mockResolvedValue('opus')
+
+    await syncSelectedModel(api)
+
+    expect(setPreferredModel).toHaveBeenCalledExactlyOnceWith('sonnet')
+    expect(getStoredSelectedModel('alice', MODELS)).toBe('sonnet')
+  })
+
+  it('keeps a pick made before the user was confirmed, as during a reconnect', async () => {
+    persistSelectedModel(api, 'alice', 'sonnet')
+    await saved()
+
+    persistSelectedModel(api, undefined, null)
+    await syncSelectedModel(api)
+
+    expect(setPreferredModel).toHaveBeenLastCalledWith(null)
+    expect(getStoredSelectedModel('alice', MODELS)).toBeNull()
+  })
+
   it('keeps a model picked away from and back to while the preference was being fetched', async () => {
     persistSelectedModel(api, 'alice', 'opus')
     await saved()

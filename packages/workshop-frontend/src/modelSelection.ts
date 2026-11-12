@@ -10,7 +10,8 @@ import { logRpcFailure } from "./rpcErrors";
 // belongs to, and is read only for a user the server has confirmed: with no user, reads find
 // nothing and writes are dropped. All of it is best-effort, since storage can be full or blocked.
 const SELECTED = "lastSelectedModel";
-// Set while the choice above has yet to be saved to the server.
+// Set while the choice above has yet to be saved to the server, to a value naming the pick, so
+// that only the save of that very pick clears it.
 const UNSAVED = "lastSelectedModelUnsaved";
 const MODELS = "cachedModels";
 const NAMES = [SELECTED, UNSAVED, MODELS];
@@ -50,13 +51,19 @@ function write(name: string, userId: string | undefined, value: string | null): 
   }
 }
 
+// A pick made on this page while its user was yet to be confirmed, as during a reconnect, kept
+// for the sync that confirms them.
+let unclaimedPick: string | undefined;
+
 /** Forgets what this browser remembers of anyone's models, as when a user signs out. */
 export function forgetModelSelection(): void {
+  unclaimedPick = undefined;
   try {
     forgetOthers();
     for (const key of LEGACY_KEYS) localStorage.removeItem(key);
   } catch {
-    // Nothing more to be done; the entries are still only read for their own user.
+    // Nothing more to be done. Per-user entries are still read only for their own user, though
+    // any from before entries were kept per user go to the next user confirmed here.
   }
 }
 
@@ -151,20 +158,26 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
     reading.catch(() => {});
     userId = (await identity).id;
     adoptLegacySelection(userId);
+    if (unclaimedPick !== undefined) {
+      // Its save is already on its way, and it counts below as a pick newer than the answer.
+      write(SELECTED, userId, unclaimedPick);
+      unclaimedPick = undefined;
+    }
 
     const local = read(SELECTED, userId);
+    const unsaved = read(UNSAVED, userId);
     let answer: string | null;
-    if (local !== null && read(UNSAVED, userId) !== null) {
+    if (local !== null && unsaved !== null) {
       try {
         await inOrder(() => api.setPreferredModel(fromModelSelectValue(local)));
-        if (read(SELECTED, userId) === local) write(UNSAVED, userId, null);
+        if (read(UNSAVED, userId) === unsaved) write(UNSAVED, userId, null);
         return userId;
       } catch (err) {
         // A model that no longer resolves is refused; the server's preference, once it has been
         // read, then applies.
         logRpcFailure("Failed to save this browser's model choice:", err);
         answer = await inOrder(() => api.getPreferredModel());
-        if (read(SELECTED, userId) === local) write(UNSAVED, userId, null);
+        if (read(UNSAVED, userId) === unsaved) write(UNSAVED, userId, null);
       }
     } else {
       answer = await reading;
@@ -187,6 +200,7 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
  */
 export function cacheSelectedModel(userId: string | undefined, modelId: string | null): void {
   selectionRevision++;
+  unclaimedPick = userId === undefined ? toModelSelectValue(modelId) : undefined;
   write(SELECTED, userId, toModelSelectValue(modelId));
   write(UNSAVED, userId, null);
 }
@@ -199,9 +213,10 @@ export function persistSelectedModel(
 ): void {
   cacheSelectedModel(userId, modelId);
   // Until the save lands, so that a sync neither replaces the choice nor fails to retry it.
-  write(UNSAVED, userId, "1");
+  const pick = crypto.randomUUID();
+  write(UNSAVED, userId, pick);
   inOrder(() => api.setPreferredModel(modelId)).then(() => {
-    if (read(SELECTED, userId) === toModelSelectValue(modelId)) write(UNSAVED, userId, null);
+    if (read(UNSAVED, userId) === pick) write(UNSAVED, userId, null);
   }, (err: unknown) => {
     logRpcFailure("Failed to save the preferred model:", err);
   });
