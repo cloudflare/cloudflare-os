@@ -131,7 +131,7 @@ export type ConnectionItem = Row & {
 }
 export type NoticeItem = Row & {
   kind: 'notice'
-  notice: 'gadget' | 'callback' | 'unknown'
+  notice: 'callback' | 'unknown'
   text: string
   detail?: string
 }
@@ -682,10 +682,13 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         break
 
       case 'useGadget': {
+        // A step of the agent's work like any other. Logged once per use; a run of them says no
+        // more than one.
         carryOn()
-        const last = items.at(-1)
-        // Logged once per use; a run of them says no more than one.
-        if (last?.kind !== 'notice' || last.notice !== 'gadget') notice(message, 'gadget', 'Used the gadget')
+        const last = work.at(-1)
+        if (last?.type !== 'call' || last.icon !== 'plug') {
+          work.push(emitStep<CallEntry>(`gadget:${id}`, [], () => ({ type: 'call', icon: 'plug', label: 'Used the gadget', sections: [] })))
+        }
         break
       }
 

@@ -15,7 +15,6 @@ export const SystemBlocksPreview = () => {
     <>
       <Section title="SystemRow, FeedDivider (the context compacted, another model taking over, and what people did to the changes)">
         <Column>
-          <SystemRow icon="plug">Used the gadget</SystemRow>
           <SystemRow icon="code" detail={'{ key: "PLAT-230" }'}>onTicket() with env.TICKETS</SystemRow>
           <SystemRow icon="info">A message this version can’t show</SystemRow>
           <FeedDivider>Context compacted</FeedDivider>

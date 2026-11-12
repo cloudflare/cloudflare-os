@@ -1,6 +1,6 @@
 import {
   BookOpenIcon, BrainIcon, ChatTextIcon, CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon,
-  MagnifyingGlassIcon, PencilSimpleIcon, PlusIcon, StopIcon, type Icon,
+  MagnifyingGlassIcon, PencilSimpleIcon, PlugIcon, PlusIcon, StopIcon, type Icon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Badge } from '@cloudflare/kumo'
@@ -21,6 +21,7 @@ const ICONS = {
   branch: GitBranchIcon,
   list: ListBulletsIcon,
   stop: StopIcon,
+  plug: PlugIcon,
 } satisfies Record<string, Icon>
 
 /**
