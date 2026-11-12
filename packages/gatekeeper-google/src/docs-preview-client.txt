@@ -7,94 +7,175 @@
 const style = document.createElement('style');
 style.textContent = `
   :root { color-scheme: light dark; --page: #fff; --desk: #f1f3f4; --ink: #1f1f1f; --dim: #5f6368;
-    --line: #dadce0; --mark: #e6f4ea; --mark-ink: #137333; --gone: #fce8e6; --gone-ink: #a50e0e; }
+    --line: #dadce0; --mark: #e6f4ea; --mark-ink: #137333; --gone: #fce8e6; --gone-ink: #a50e0e;
+    --link: #1a73e8; --chip: #f1f3f4; --shine: #e8eaed;
+    --paper: 0 1px 2px rgb(60 64 67 / .2), 0 4px 14px rgb(60 64 67 / .1); }
   @media (prefers-color-scheme: dark) {
     :root { --page: #1f1f1f; --desk: #131314; --ink: #e3e3e3; --dim: #9aa0a6; --line: #3c4043;
-      --mark: #1e3a2a; --mark-ink: #81c995; --gone: #3b1f1d; --gone-ink: #f28b82; }
+      --mark: #1e3a2a; --mark-ink: #81c995; --gone: #3b1f1d; --gone-ink: #f28b82;
+      --link: #8ab4f8; --chip: #2d2f31; --shine: #3c4043; --paper: 0 0 0 1px var(--line); }
   }
   html, body { margin: 0; height: 100%; background: var(--desk); color: var(--ink);
     font: 11pt/1.5 Arial, Helvetica, sans-serif; }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  [hidden] { display: none !important; }
   #tabs { display: flex; gap: 4px; padding: 8px 16px 0; flex-wrap: wrap; }
-  #tabs button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
-    border-radius: 999px; background: transparent; color: var(--dim); cursor: pointer; }
+  #tabs button { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
+    border-radius: 999px; background: transparent; color: var(--dim); transition: background .15s; }
   #tabs button[aria-pressed="true"] { background: var(--page); color: var(--ink); }
   #page { box-sizing: border-box; max-width: 816px; min-height: calc(100% - 32px);
-    margin: 16px auto 120px; padding: 72px; background: var(--page);
-    border: 1px solid var(--line); overflow-wrap: anywhere; }
-  @media (max-width: 700px) { #page { padding: 24px; margin: 0 0 120px; border: 0; } }
-  #page > * { margin: 0; min-height: 1.5em; }
-  h1 { font-size: 20pt; font-weight: 400; padding: 20px 0 6px; }
-  h2 { font-size: 16pt; font-weight: 400; padding: 18px 0 6px; }
-  h3 { font-size: 14pt; font-weight: 400; color: var(--dim); padding: 16px 0 4px; }
-  h4, h5, h6 { font-size: 12pt; font-weight: 400; color: var(--dim); padding: 14px 0 4px; }
+    margin: 16px auto 120px; padding: 72px; background: var(--page); border-radius: 2px;
+    box-shadow: var(--paper); overflow-wrap: anywhere; animation: arrive .25s ease-out; }
+  @media (max-width: 700px) { #page { padding: 24px; margin: 0 0 120px; box-shadow: none; } }
+  #page > * { position: relative; margin: 0; min-height: 1.5em; }
+  h1, h2, h3, h4, h5, h6 { margin: 0; font-weight: 400; }
+  h1 { font-size: 20pt; padding: 20px 0 6px; }
+  h2 { font-size: 16pt; padding: 18px 0 6px; }
+  h3 { font-size: 14pt; padding: 16px 0 4px; }
+  h4, h5, h6 { font-size: 12pt; color: var(--dim); padding: 14px 0 4px; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: .7em 0; }
   .item { display: flex; gap: 8px; }
-  .item > .marker { flex: none; width: 1.5em; text-align: right; }
-  .link { color: #1a73e8; text-decoration: underline; cursor: help; }
-  table { border-collapse: collapse; margin: 8px 0; }
-  td, th { border: 1px solid var(--line); padding: 5px 7px; vertical-align: top; text-align: left; }
-  td > *, th > * { margin: 0; }
-  .added { background: var(--mark); color: var(--mark-ink); border-radius: 2px;
-    box-shadow: -6px 0 0 var(--mark), 6px 0 0 var(--mark); }
-  .removed { background: var(--gone); color: var(--gone-ink); border-radius: 2px;
-    box-shadow: -6px 0 0 var(--gone), 6px 0 0 var(--gone); text-decoration: line-through; }
+  .item > .marker { flex: none; min-width: 1.5em; text-align: right; }
+  .item > :last-child { flex: 1; min-width: 0; padding: 0; }
+  .b { font-weight: 700; } .i { font-style: italic; } .s { text-decoration: line-through; }
+  .link { color: var(--link); text-decoration: underline; cursor: help; }
+  .link.s { text-decoration: underline line-through; }
+  .chip { display: inline-block; padding: 0 8px; border-radius: 999px; background: var(--chip);
+    color: var(--dim); font-size: 9pt; line-height: 1.7; user-select: none; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  td, th { border: 1px solid var(--line); padding: 5px 7px; height: 1.5em; vertical-align: top; text-align: left; }
+  td > *, th > * { margin: 0; padding: 0; }
+  td ul, td ol { padding-left: 1.5em; }
+
+  /* A changed block carries a bar in the margin; what changed inside it is tinted. */
+  .added::before, .removed::before, .changed::before { content: ''; position: absolute;
+    left: -18px; top: 2px; bottom: 2px; width: 3px; border-radius: 2px; background: var(--mark-ink); }
+  .removed::before { background: var(--gone-ink); }
+  .added, ins { background: var(--mark); color: var(--mark-ink); text-decoration: none; }
+  .removed, del { background: var(--gone); color: var(--gone-ink); text-decoration: line-through; }
+  .added, .removed { border-radius: 2px; }
+  .added, .removed { box-shadow: -6px 0 0 var(--mark), 6px 0 0 var(--mark); }
+  .removed { box-shadow: -6px 0 0 var(--gone), 6px 0 0 var(--gone); }
+  ins, del { border-radius: 2px; padding: 1px 0; }
+  del + ins { margin-left: 3px; }
+  .fresh { animation: arrive .35s ease-out, glow 1.4s ease-out; }
+  .flash { animation: glow 1.4s ease-out; }
+  @keyframes arrive { from { opacity: 0; transform: translateY(4px); } }
+  @keyframes glow { 0%, 35% { filter: brightness(.9) saturate(2.2); } }
+
+  .ghost { height: 12px; margin: 14px 0 !important; min-height: 0 !important; border-radius: 6px;
+    background: linear-gradient(90deg, var(--chip) 25%, var(--shine) 50%, var(--chip) 75%) 0 0 / 200% 100%;
+    animation: shimmer 1.4s linear infinite; }
+  @keyframes shimmer { to { background-position: -200% 0; } }
+
   #stale { max-width: 816px; margin: 12px auto 0; padding: 0 16px; font-size: 12px;
     color: var(--gone-ink); }
-  #status { position: fixed; top: 8px; right: 12px; font-size: 12px; color: var(--dim); }
+  #bar { position: fixed; top: 10px; right: 14px; display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--dim); }
+  #nav { display: flex; align-items: center; gap: 2px; padding: 2px 4px 2px 12px;
+    border: 1px solid var(--line); border-radius: 999px; background: var(--page);
+    box-shadow: var(--paper); color: var(--ink); font-variant-numeric: tabular-nums; }
+  #nav button { width: 24px; height: 24px; border: 0; border-radius: 50%; background: none;
+    color: var(--dim); }
+  #nav button:hover { background: var(--chip); color: var(--ink); }
   #error { max-width: 480px; margin: 80px auto; text-align: center; color: var(--dim); }
-  #error button { font: inherit; margin-top: 12px; padding: 4px 12px; cursor: pointer; }
+  #error button { margin-top: 12px; padding: 4px 12px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 `;
 document.head.append(style);
 
-const tabBar = document.body.appendChild(document.createElement('div'));
+const make = (tag, className, text) => {
+  const element = document.createElement(tag);
+  if (className) element.className = className;
+  if (text) element.textContent = text;
+  return element;
+};
+
+const tabBar = document.body.appendChild(make('div'));
 tabBar.id = 'tabs';
-const staleNote = document.body.appendChild(document.createElement('div'));
+const staleNote = document.body.appendChild(make('div'));
 staleNote.id = 'stale';
 staleNote.hidden = true;
-const page = document.body.appendChild(document.createElement('div'));
+const page = document.body.appendChild(make('div'));
 page.id = 'page';
-const statusLine = document.body.appendChild(document.createElement('div'));
-statusLine.id = 'status';
+const bar = document.body.appendChild(make('div'));
+bar.id = 'bar';
+const statusLine = bar.appendChild(make('span'));
 statusLine.setAttribute('role', 'status');
+const nav = bar.appendChild(make('div'));
+nav.id = 'nav';
+nav.hidden = true;
+const navLabel = nav.appendChild(make('span'));
+const navButton = (label, text, step) => {
+  const button = nav.appendChild(make('button', '', text));
+  button.setAttribute('aria-label', label);
+  button.addEventListener('click', () => showChange(step));
+};
+navButton('Previous change', '↑', -1);
+navButton('Next change', '↓', 1);
 
 // ---------------------------------------------------------------------------------------------
-// Markdown, as GoogleDocReadSession.getContent() writes it: one paragraph per line, `\u000b` for
-// a line break inside one, two-space list nesting, backslash-escaped punctuation, and native
-// tables as raw HTML.
+// Markdown, read the way the gatekeeper's own converter reads it (markdown-converter.ts): a
+// blank line between blocks except inside a list, a pair of blank lines for an empty paragraph,
+// `\u000b` for a line break, two-space list nesting, a heading allowed inside a list item, and
+// native tables as raw HTML. Document text is not escaped, so a backslash escapes only
+// punctuation and a `*` or `~~` is formatting only where the rest of the line can close it.
+
+const STRUCTURES = new Set(['[Table of contents]', '[Section break]']);
+const EMPTY = { type: 'p', level: 0, text: '' };
 
 function parseBlocks(markdown) {
   const lines = markdown.split('\n');
   const blocks = [];
+  // An ordered item after the first is written `1.`, so its number is counted here.
+  const counters = [];
+  let blank = 0;
+  const pushEmpty = count => {
+    for (let n = 0; n < count; n++) blocks.push(EMPTY);
+  };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (line === '') {
+      blank++;
+      continue;
+    }
+    pushEmpty(blocks.length ? blank >> 1 : blank);
+    if (blank) counters.length = 0;
+    blank = 0;
     if (line.trim() === '<table>') {
       const start = i;
       for (let depth = 0; i < lines.length; i++) {
         if (lines[i].trim() === '<table>') depth++;
         if (lines[i].trim() === '</table>' && --depth === 0) break;
       }
-      blocks.push({ type: 'table', text: lines.slice(start, i + 1).join('\n') });
-      continue;
-    }
-    let match;
-    if ((match = /^(#{1,6}) (.*)$/.exec(line))) {
-      blocks.push({ type: `h${match[1].length}`, text: match[2] });
-    } else if ((match = /^((?: {2})*)- (.*)$/.exec(line))) {
-      blocks.push({ type: 'bullet', level: match[1].length / 2, text: match[2] });
-    } else if ((match = /^((?: {2})*)(\d+)\. (.*)$/.exec(line))) {
-      blocks.push({ type: 'number', level: match[1].length / 2, number: match[2], text: match[3] });
+      blocks.push({ type: 'table', level: 0, text: lines.slice(start, i + 1).join('\n') });
+    } else if (STRUCTURES.has(line)) {
+      blocks.push({ type: 'structure', level: 0, text: line.slice(1, -1) });
     } else {
-      blocks.push({ type: 'p', text: line });
+      const list = /^( *)(?:-|(\d+)\.) (.*)$/.exec(line);
+      const content = list ? list[3] : line;
+      const heading = /^(#{1,6}) (.*)$/.exec(content);
+      const block = {
+        type: list ? (list[2] ? 'number' : 'bullet') : 'p',
+        level: list ? list[1].length >> 1 : 0,
+        heading: heading?.[1].length,
+        text: heading ? heading[2] : content,
+      };
+      if (!list) counters.length = 0;
+      else counters.length = block.level + 1;
+      if (list?.[2]) block.number = counters[block.level] = (counters[block.level] ?? list[2] - 1) + 1;
+      blocks.push(block);
     }
   }
+  pushEmpty(blocks.length ? blank - 1 : blank);
   return blocks;
 }
 
-const MARKERS = [
-  ['***', ['strong', 'em']],
-  ['**', ['strong']],
-  ['*', ['em']],
-  ['~~', ['s']],
-];
+const BOLD = 1;
+const ITALIC = 2;
+const STRIKE = 4;
+const PUNCTUATION = /[!-/:-@[-`{-~]/;
+const PLACEHOLDER = /\\?\[(Image|Equation|Page break)\\?\]/y;
 
 function findUnescaped(text, target, from) {
   for (let i = from; i < text.length; i++) {
@@ -104,63 +185,130 @@ function findUnescaped(text, target, from) {
   return -1;
 }
 
-function unescape(text) {
-  return text.replace(/\\(.)/g, '$1');
+// The `)` that closes the link destination opening at `open`, or -1.
+function closingParen(text, open) {
+  for (let i = open + 1, depth = 1; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === '(') depth++;
+    else if (text[i] === ')' && --depth === 0) return i;
+  }
+  return -1;
 }
 
-function renderInline(text, parent) {
-  // Each open marker is the element its text goes into; closing one returns to its parent.
-  const open = [{ marker: null, into: parent }];
-  let buffer = '';
-  const flush = () => {
-    if (buffer) open.at(-1).into.append(buffer);
-    buffer = '';
+// One line's inline pieces: literal text, `*`/`~~` runs that may be formatting, links, and the
+// things that are not text.
+function scanInline(text) {
+  const pieces = [];
+  const literal = value => {
+    if (pieces.at(-1)?.literal) pieces.at(-1).text += value;
+    else pieces.push({ literal: true, text: value });
   };
-
   for (let i = 0; i < text.length;) {
     const character = text[i];
-    if (character === '\\' && i + 1 < text.length) {
-      buffer += text[i + 1];
+    PLACEHOLDER.lastIndex = i;
+    const placeholder = (character === '\\' || character === '[') && PLACEHOLDER.exec(text);
+    if (placeholder) {
+      pieces.push({ kind: 'chip', text: placeholder[1] });
+      i = PLACEHOLDER.lastIndex;
+    } else if (character === '\\' && PUNCTUATION.test(text[i + 1] ?? '')) {
+      literal(text[i + 1]);
       i += 2;
-      continue;
-    }
-    if (character === '\u000b') {
-      flush();
-      open.at(-1).into.append(document.createElement('br'));
+    } else if (character === '\u000b') {
+      pieces.push({ kind: 'br' });
       i++;
-      continue;
-    }
-    if (character === '[') {
+    } else if (text.startsWith('<hr>', i)) {
+      pieces.push({ kind: 'hr' });
+      i += 4;
+    } else if (character === '[') {
       const close = findUnescaped(text, ']', i + 1);
-      const end = close >= 0 && text[close + 1] === '(' ? findUnescaped(text, ')', close + 2) : -1;
-      if (end >= 0) {
-        flush();
-        const link = open.at(-1).into.appendChild(document.createElement('span'));
-        link.className = 'link';
-        link.title = unescape(text.slice(close + 2, end));
-        renderInline(text.slice(i + 1, close), link);
-        i = end + 1;
-        continue;
-      }
-    }
-    const marker = MARKERS.find(([token]) => text.startsWith(token, i));
-    if (marker) {
-      flush();
-      const [token, tags] = marker;
-      if (open.at(-1).marker === token) {
-        open.pop();
+      const end = close >= 0 && text[close + 1] === '(' ? closingParen(text, close + 1) : -1;
+      if (end < 0 || close === i + 1) {
+        literal(character);
+        i++;
       } else {
-        let into = open.at(-1).into;
-        for (const tag of tags) into = into.appendChild(document.createElement(tag));
-        open.push({ marker: token, into });
+        const href = text.slice(close + 2, end).replace(/\\([\\()])/g, '$1');
+        pieces.push({ label: text.slice(i + 1, close), href });
+        i = end + 1;
       }
-      i += token.length;
+    } else if (character === '*' || text.startsWith('~~', i)) {
+      let end = i;
+      while (text[end] === character) end++;
+      const size = end - i;
+      const raw = text.slice(i, end);
+      if (character === '*') pieces.push({ size, raw });
+      else if (size === 2 || size === 4) for (let n = 0; n < size; n += 2) pieces.push({ strike: true, raw: '~~' });
+      else literal(raw);
+      i = end;
+    } else {
+      literal(character);
+      i++;
+    }
+  }
+  return pieces;
+}
+
+const toggle = (state, { strike, size }) => strike ? state ^ STRIKE
+  : size === 1 ? state ^ ITALIC
+  : size === 2 ? state ^ BOLD
+  : size === 3 ? state ^ BOLD ^ ITALIC
+  : size === 4 && state & ITALIC ? state ^ BOLD
+  : undefined;
+
+// The line as runs of `{ text, style, href }`, plus `{ kind }` for what is not text.
+function inlineRuns(text, href, base = 0, runs = []) {
+  const pieces = scanInline(text);
+  const markers = pieces.filter(piece => piece.raw);
+  // Bit `state` of closable[n] is set when markers n onward can bring `state` back to plain.
+  const closable = new Uint8Array(markers.length + 1);
+  closable[markers.length] = 1;
+  for (let n = markers.length - 1; n >= 0; n--) {
+    closable[n] = closable[n + 1];
+    for (let state = 0; state < 8; state++) {
+      const next = toggle(state, markers[n]);
+      if (next !== undefined && closable[n + 1] & (1 << next)) closable[n] |= 1 << state;
+    }
+  }
+  let state = 0;
+  let n = 0;
+  for (const piece of pieces) {
+    if (piece.raw) {
+      const next = toggle(state, piece);
+      if (next !== undefined && closable[++n] & (1 << next)) state = next;
+      else runs.push({ text: piece.raw, style: base | state, href });
+    } else if (piece.label !== undefined) {
+      inlineRuns(piece.label, piece.href, base | state, runs);
+    } else {
+      runs.push({ kind: piece.kind, text: piece.text, style: base | state, href });
+    }
+  }
+  return runs;
+}
+
+// The line a word at a time, which is what a change inside it is told apart by.
+const wordsOf = text => inlineRuns(text).flatMap(run =>
+  run.kind ? [run] : run.text.match(/\s+|\S+/g).map(word => ({ ...run, text: word })));
+const wordKey = ({ kind, text, style, href }) => `${kind ?? ''}\u0000${style}\u0000${href ?? ''}\u0000${text}`;
+
+function renderInline(words, parent) {
+  let into;
+  let look;
+  for (const { kind, text, style, href, mark } of words) {
+    if (kind === 'br' || kind === 'hr') {
+      parent.append(make(kind));
+      look = undefined;
       continue;
     }
-    buffer += character;
-    i++;
+    const classes = [kind === 'chip' && 'chip', style & BOLD && 'b', style & ITALIC && 'i',
+      style & STRIKE && 's', href && 'link'].filter(Boolean).join(' ');
+    const next = `${mark ?? ''}\u0000${href ?? ''}\u0000${classes}`;
+    if (next !== look || kind) {
+      const tag = mark === 'added' ? 'ins' : mark === 'removed' ? 'del' : 'span';
+      into = classes || mark ? parent.appendChild(make(tag, classes)) : parent;
+      if (href) into.title = href;
+      look = kind ? undefined : next;
+    }
+    into.append(text);
   }
-  flush();
 }
 
 const TABLE_TAGS = new Set([
@@ -168,6 +316,8 @@ const TABLE_TAGS = new Set([
   'STRONG', 'EM', 'S', 'UL', 'OL', 'LI',
 ]);
 const TABLE_ATTRIBUTES = new Set(['colspan', 'rowspan', 'start', 'type']);
+// How the converter writes a list whose markers are in its text, or are zero-padded.
+const LIST_STYLE = /^list-style-type: [a-z-]+;?$/;
 
 // Rebuild a table from an inert parse, keeping only known tags and attributes. A link becomes
 // the same unfollowed span the Markdown path draws.
@@ -179,53 +329,52 @@ function copyTableNode(node, into) {
   if (node.nodeType !== Node.ELEMENT_NODE) return;
   let copy = into;
   if (node.tagName === 'A') {
-    copy = into.appendChild(document.createElement('span'));
-    copy.className = 'link';
+    copy = into.appendChild(make('span', 'link'));
     copy.title = node.getAttribute('href') ?? '';
   } else if (TABLE_TAGS.has(node.tagName)) {
-    copy = into.appendChild(document.createElement(node.tagName));
+    copy = into.appendChild(make(node.tagName));
     for (const { name, value } of node.attributes) {
       if (TABLE_ATTRIBUTES.has(name)) copy.setAttribute(name, value);
+      if (name === 'style' && LIST_STYLE.test(value)) copy.style.listStyleType = value.slice(17).replace(';', '');
     }
   }
   for (const child of node.childNodes) copyTableNode(child, copy);
 }
 
-function renderBlock(block) {
+function renderBlock(block, words = wordsOf(block.text)) {
   if (block.type === 'table') {
     const parsed = new DOMParser().parseFromString(block.text, 'text/html');
-    const holder = document.createElement('div');
+    const holder = make('div');
     for (const child of parsed.body.childNodes) copyTableNode(child, holder);
     return holder;
   }
-  if (block.type === 'bullet' || block.type === 'number') {
-    const item = document.createElement('div');
-    item.className = 'item';
-    item.style.paddingLeft = `${block.level * 24}px`;
-    const marker = item.appendChild(document.createElement('span'));
-    marker.className = 'marker';
-    marker.textContent = block.type === 'bullet' ? '•' : `${block.number}.`;
-    renderInline(block.text, item.appendChild(document.createElement('span')));
-    return item;
+  if (block.type === 'structure') {
+    const holder = make('div');
+    holder.append(make('span', 'chip', block.text));
+    return holder;
   }
-  const element = document.createElement(block.type);
-  renderInline(block.text, element);
-  return element;
+  const content = make(block.heading ? `h${block.heading}` : block.type === 'p' ? 'p' : 'span');
+  renderInline(words, content);
+  if (block.type === 'p') return content;
+  const item = make('div', 'item');
+  item.style.paddingLeft = `${block.level * 24 + 12}px`;
+  item.append(make('span', 'marker', block.type === 'bullet' ? '•' : `${block.number}.`), content);
+  return item;
 }
 
 // ---------------------------------------------------------------------------------------------
-// What the pending changes did, block by block
+// What the pending changes did: block by block, then word by word inside a block that was edited
 
-const blockKey = block => `${block.type}\u0000${block.level ?? ''}\u0000${block.text}`;
+const blockKey = block => `${block.type}\u0000${block.level}\u0000${block.heading ?? ''}\u0000${block.text}`;
 
 // Past this many comparisons, the stretch between the unchanged ends is shown as replaced whole.
 const DIFF_LIMIT = 1_000_000;
 
-// The tab's blocks in order, each marked 'added' when the saved tab lacks it, with the saved
-// tab's blocks that are gone marked 'removed' where they were.
-function diffBlocks(saved, current) {
-  const before = saved.map(blockKey);
-  const after = current.map(blockKey);
+// `current` in order, each item marked 'added' when `saved` lacks it, with the items of `saved`
+// that are gone marked 'removed' where they were.
+function diff(saved, current, keyOf) {
+  const before = saved.map(keyOf);
+  const after = current.map(keyOf);
   let start = 0;
   while (start < before.length && start < after.length && before[start] === after[start]) start++;
   let beforeEnd = before.length;
@@ -235,12 +384,12 @@ function diffBlocks(saved, current) {
     afterEnd--;
   }
 
-  const rows = current.slice(0, start).map(block => ({ block }));
+  const rows = current.slice(0, start).map(item => ({ item }));
   let i = start;
   let j = start;
   const width = afterEnd - start + 1;
   if ((beforeEnd - start) * (afterEnd - start) <= DIFF_LIMIT) {
-    // The longest run of blocks both stretches share, counted from each position to the end.
+    // The longest run both stretches share, counted from each position to the end.
     const common = new Uint32Array((beforeEnd - start + 1) * width);
     const cell = (row, column) => (row - start) * width + (column - start);
     for (let row = beforeEnd - 1; row >= start; row--) {
@@ -252,19 +401,59 @@ function diffBlocks(saved, current) {
     }
     while (i < beforeEnd && j < afterEnd) {
       if (before[i] === after[j]) {
-        rows.push({ block: current[j] });
+        rows.push({ item: current[j] });
         i++;
         j++;
       } else if (common[cell(i + 1, j)] >= common[cell(i, j + 1)]) {
-        rows.push({ block: saved[i++], mark: 'removed' });
+        rows.push({ item: saved[i++], mark: 'removed' });
       } else {
-        rows.push({ block: current[j++], mark: 'added' });
+        rows.push({ item: current[j++], mark: 'added' });
       }
     }
   }
-  while (i < beforeEnd) rows.push({ block: saved[i++], mark: 'removed' });
-  while (j < afterEnd) rows.push({ block: current[j++], mark: 'added' });
-  return rows.concat(current.slice(afterEnd).map(block => ({ block })));
+  while (i < beforeEnd) rows.push({ item: saved[i++], mark: 'removed' });
+  while (j < afterEnd) rows.push({ item: current[j++], mark: 'added' });
+  return rows.concat(current.slice(afterEnd).map(item => ({ item })));
+}
+
+// The words of `current` with what it gained and lost against `saved`, or undefined when the two
+// share too little to be one block edited rather than one block replacing another.
+function wordChanges(saved, current) {
+  if (saved.type !== current.type || saved.type === 'table' || saved.type === 'structure') return;
+  const rows = diff(wordsOf(saved.text), wordsOf(current.text), wordKey);
+  const count = skip => rows.filter(({ item, mark }) => mark !== skip && item.text?.trim()).length;
+  const kept = rows.filter(({ item, mark }) => !mark && item.text?.trim()).length;
+  if (kept * 2 < Math.max(count('added'), count('removed'))) return;
+  return rows.map(({ item, mark }) => ({ ...item, mark }));
+}
+
+// Where blocks went and others came in their place, show each pair that is one block edited as
+// that block with its changed words marked.
+function pairEdits(rows) {
+  const paired = [];
+  for (let i = 0; i < rows.length;) {
+    if (!rows[i].mark) {
+      paired.push(rows[i++]);
+      continue;
+    }
+    const removed = [];
+    const added = [];
+    // An empty paragraph has nothing to show as changed.
+    for (; rows[i]?.mark; i++) {
+      if (rows[i].mark === 'added') added.push(rows[i].item);
+      else if (rows[i].item.text) removed.push(rows[i].item);
+    }
+    for (let n = 0; n < Math.max(removed.length, added.length); n++) {
+      const words = removed[n] && added[n]?.text && wordChanges(removed[n], added[n]);
+      if (words) {
+        paired.push({ item: added[n], mark: 'changed', words });
+        continue;
+      }
+      if (removed[n]) paired.push({ item: removed[n], mark: 'removed' });
+      if (added[n]) paired.push({ item: added[n], mark: added[n].text ? 'added' : undefined });
+    }
+  }
+  return paired;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -274,16 +463,33 @@ let tabs = null;
 let tabId = null;
 let loaded = false;
 let generation = 0;
+// What the last drawing showed as changed, so the next one can tell what is new.
+let shown = new Set();
+// The first element of each stretch of changed blocks, and the one the navigator is on.
+let stops = [];
+let stop = -1;
+
+const motion = () => matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+
+function showChange(step) {
+  stop = (stop + step + stops.length) % stops.length;
+  navLabel.textContent = `${stop + 1} of ${stops.length}`;
+  stops[stop].scrollIntoView({ block: 'center', behavior: motion() });
+  for (let element = stops[stop]; element?.matches('.added, .removed, .changed'); element = element.nextElementSibling) {
+    element.classList.remove('fresh', 'flash');
+    void element.offsetWidth;
+    element.classList.add('flash');
+  }
+}
 
 function showError(error, retry) {
   page.hidden = true;
+  nav.hidden = true;
   document.getElementById('error')?.remove();
-  const box = document.body.appendChild(document.createElement('div'));
+  const box = document.body.appendChild(make('div'));
   box.id = 'error';
   box.append(`This document could not be loaded. ${error?.message ?? ''}`);
-  const button = box.appendChild(document.createElement('button'));
-  button.textContent = 'Try again';
-  button.addEventListener('click', () => {
+  box.appendChild(make('button', '', 'Try again')).addEventListener('click', () => {
     box.remove();
     retry();
   });
@@ -293,22 +499,33 @@ function renderTabs() {
   tabBar.replaceChildren();
   if (tabs.length < 2) return;
   for (const tab of tabs) {
-    const button = tabBar.appendChild(document.createElement('button'));
-    button.textContent = tab.title;
+    const button = tabBar.appendChild(make('button', '', tab.title));
     button.style.marginLeft = `${tab.nestingLevel * 12}px`;
     button.setAttribute('aria-pressed', String(tab.id === tabId));
     button.addEventListener('click', () => {
       tabId = tab.id;
       loaded = false;
+      shown = new Set();
       renderTabs();
       void load();
     });
   }
 }
 
+function showLoading() {
+  page.hidden = false;
+  page.setAttribute('aria-busy', 'true');
+  page.replaceChildren(...[38, 92, 100, 96, 71, 0, 100, 88, 94, 52].map(width => {
+    const line = make('div', width ? 'ghost' : '');
+    line.style.width = `${width}%`;
+    return line;
+  }));
+}
+
 async function load() {
   const current = ++generation;
-  statusLine.textContent = loaded ? 'Updating…' : 'Loading…';
+  if (loaded) statusLine.textContent = 'Updating…';
+  else showLoading();
   try {
     if (!tabs) {
       tabs = await gadget.listTabs();
@@ -319,19 +536,31 @@ async function load() {
     const { savedMarkdown, markdown, changes } = await gadget.getPendingChanges(tabId);
     if (current !== generation) return;
 
-    const rows = diffBlocks(parseBlocks(savedMarkdown), parseBlocks(markdown));
+    const rows = pairEdits(diff(parseBlocks(savedMarkdown), parseBlocks(markdown), blockKey));
     const scrollTop = document.scrollingElement.scrollTop;
-    let firstMarked = null;
-    page.replaceChildren(...rows.flatMap(({ block, mark }) => {
-      // An empty paragraph has nothing to show as changed.
-      if (block.text === '') return mark === 'removed' ? [] : [renderBlock(block)];
-      const element = renderBlock(block);
+    const drawn = new Set();
+    let firstFresh;
+    let marked = false;
+    stops = [];
+    page.replaceChildren(...rows.map(({ item, mark, words }) => {
+      const element = renderBlock(item, words);
       if (mark) {
+        const key = `${mark}\u0000${blockKey(item)}`;
+        drawn.add(key);
         element.classList.add(mark);
-        firstMarked ??= element;
+        if (!marked) stops.push(element);
+        if (loaded && !shown.has(key)) {
+          element.classList.add('fresh');
+          firstFresh ??= element;
+        }
       }
-      return [element];
+      marked = !!mark;
+      return element;
     }));
+    shown = drawn;
+    stop = -1;
+    nav.hidden = stops.length === 0;
+    navLabel.textContent = stops.length === 1 ? '1 change' : `${stops.length} changes`;
     // A change the document no longer fits is in neither copy, so the page cannot show it.
     const stale = changes.filter(change => change.stale).length;
     staleNote.hidden = stale === 0;
@@ -339,9 +568,11 @@ async function load() {
       ? '1 change no longer fits this document and is not shown.'
       : `${stale} changes no longer fit this document and are not shown.`;
     page.hidden = false;
+    page.removeAttribute('aria-busy');
     document.getElementById('error')?.remove();
     document.scrollingElement.scrollTop = scrollTop;
-    firstMarked?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    // A new change is what to look at; on opening, so is the first one there is.
+    (firstFresh ?? (loaded ? undefined : stops[0]))?.scrollIntoView({ block: 'nearest', behavior: motion() });
     statusLine.textContent = '';
     loaded = true;
   } catch (error) {
