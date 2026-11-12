@@ -1,0 +1,19 @@
+packages/gatekeeper-google/src/configurator/chat-account-configurator-ui.tsx
+  s_2b3f2ed31e2828::t_c9b6383c852873 40-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b2a206e55eaf50bb947eeb62bc6e426e75605619",
+  "prompts": {},
+  "sessions": {
+    "s_2b3f2ed31e2828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f9b8f47-71bf-42a2-94d1-feb3e5a6228a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
