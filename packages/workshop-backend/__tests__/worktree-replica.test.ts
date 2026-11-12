@@ -548,6 +548,41 @@ describe("worktree commands", () => {
       "dir/c.txt": "written\n", "new.txt": "new\n"});
   }));
 
+  it("cancels the pack of a submission it refuses before reading it", () => withCommands(async (impl, id) => {
+    let outcomes!: unknown[];
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        const {tree} = await replicator.snapshot(queue);
+        // A pack that never ends unless cancelled. It keeps producing, as an upload would: the
+        // RPC pipe carrying it learns of a cancellation on its next write.
+        const pending = () => {
+          let cancelled!: () => void;
+          const done = new Promise<void>(resolve => cancelled = resolve);
+          return {done, stream: new ReadableStream<Uint8Array>({
+            pull: async controller => {
+              await new Promise(resolve => setTimeout(resolve, 10));
+              controller.enqueue(new Uint8Array(1));
+            },
+            cancel: () => cancelled(),
+          })};
+        };
+        const settled = (done: Promise<void>) => Promise.race([done.then(() => true),
+          new Promise<boolean>(resolve => setTimeout(() => resolve(false), 1000))]);
+        const [malformed, unknownBase] = [pending(), pending()];
+        outcomes = [
+          await failure(replicator.submit(queue, tree, "not a tree ID", malformed.stream)),
+          await settled(malformed.done),
+          await failure(replicator.submit(queue, "ab".repeat(20), tree, unknownBase.stream)),
+          await settled(unknownBase.done),
+        ];
+        return "ran";
+      },
+    });
+    expect(await turn(impl, [[execute("command")]])).toEqual(["ran"]);
+    expect(outcomes).toEqual([expect.stringMatching(/Invalid git object id/), true,
+      expect.stringMatching(/base must be a tree/), true]);
+  }));
+
   it("refuses a base the execution didn't hand out or receive", () => withCommands(async (impl, id, base) => {
     let earlier!: string;
     const refused: string[] = [];

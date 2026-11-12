@@ -87,14 +87,19 @@ export class WorktreeReplicas {
 
   async #submit(worktreeId: WorkpieceId, from: GitOid, tree: GitOid,
                 pack: ReadableStream<Uint8Array>): Promise<WorktreeState> {
-    validateGitOid(tree);
-    this.requireLive();
-    // Checked once the earlier submissions are in, so that a submission may build on the tree
-    // of one still in flight.
-    if (!this.fetchableTrees(worktreeId).has(from)) {
+    try {
+      validateGitOid(tree);
+      this.requireLive();
+      // Checked once the earlier submissions are in, so that a submission may build on the tree
+      // of one still in flight.
+      if (!this.fetchableTrees(worktreeId).has(from)) {
+        throw new Error("A submission's base must be a tree that snapshot() or submit() " +
+            "returned for the worktree during this code execution, or one submitted to it.");
+      }
+    } catch (error) {
+      // Refused before reading the pack: release the caller's stream rather than leave it open.
       await pack.cancel();
-      throw new Error("A submission's base must be a tree that snapshot() or submit() returned " +
-          "for the worktree during this code execution, or one submitted to it.");
+      throw error;
     }
     let packed = new Set(await this.host.gitCache.consumePackFromGatekeeper(null, pack, true));
     this.requireLive();
