@@ -2775,13 +2775,14 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   }
 
   /**
-   * The ID `tabId` names among `tabs`, a simulation's: Google's for an add applied by then, but
-   * the provisional ID for one applied after the simulation was taken, which still lists the tab
-   * under it. Whatever is stored from it is read through `#adoptedTabId()` again.
+   * The ID `tabId` names among `tabs`, a simulation's: `tabId` itself while the simulation lists
+   * it, as it lists a provisional tab, edits replayed into it, until it sees the add's handoff
+   * (even beside the tab Google made, which it lists once the add lands); otherwise Google's ID
+   * for an applied add. Whatever is stored from it is read through `#adoptedTabId()` again.
    */
   #simulatedTabId(tabs: GoogleDocTabSnapshot[], tabId: string | undefined): string | undefined {
-    let adopted = this.#adoptedTabId(tabId);
-    return tabs.some(tab => tab.tabId === adopted) ? adopted : tabId;
+    return tabId === undefined || tabs.some(tab => tab.tabId === tabId)
+      ? tabId : this.#adoptedTabId(tabId);
   }
 
   reply(commentId: string, text: string): Promise<DriveCommentReply> {

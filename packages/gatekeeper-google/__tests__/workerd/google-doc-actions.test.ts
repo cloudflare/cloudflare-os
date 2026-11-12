@@ -2374,6 +2374,26 @@ describe("adding a Google Doc tab", () => {
       'Add a new, empty tab under tab "Notes" (new tab), after the tabs already there.');
   });
 
+  it("reads a new tab's queued edits while the replay lists it beside the tab Google made", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-alias-both", "Notes");
+    await hooks().submitAppend("add-tab-alias-both", "Hello", added.tabId);
+    // The add has landed, its reply not yet in: the replay lists Google's tab and the provisional
+    // one carrying the queued edit. Then the handoff records Google's ID before the read looks.
+    docs.addTab("t.google", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    expect((await hooks().listTabs("add-tab-alias-both")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, "t.google", added.tabId]);
+    await hooks().applyStorage("add-tab-alias-both", [
+      { kind: "put", key: "docAddedTabs", value: { [added.tabId]: "t.google" } },
+    ]);
+
+    expect(await hooks().readContent("add-tab-alias-both", added.tabId)).toBe("Hello\n");
+  });
+
   it("places a tab at an index and nests one under a tab still waiting", async () => {
     let docs = new DocsModel();
     docs.addTab("tab-2", "Second", undefined as unknown as string);
