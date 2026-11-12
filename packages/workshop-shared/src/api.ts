@@ -246,7 +246,7 @@ export type ChatReadState = {
   workspaceId: string;
   /** The chat's ID within its workspace. */
   chatId: number;
-  /** How many visible messages in the chat the user hasn't read. Zero means the chat is fully read. */
+  /** Visible messages the user hasn't read, including in muted chats. Zero means fully read. */
   unreadMessageCount: number;
   /**
    * Sequence of the last timeline record the user has read, inclusive: any visible messages after
@@ -286,25 +286,25 @@ export type ChatTimelineHead = {
  */
 export interface UnreadThread extends ChatReadState, ChatTimelineHead {}
 
-/** Unread totals for one workspace, e.g. for a badge next to it in the workspace list. */
+/** Unread totals excluding muted chats, e.g. for a badge next to a workspace. */
 export type WorkspaceUnreadSummary = {
   /** The workspace these totals are for. */
   workspaceId: string;
-  /** Number of chats in the workspace with at least one unread message. */
+  /** Number of unmuted chats in the workspace with at least one unread message. */
   unreadChatCount: number;
-  /** Total number of unread messages across all chats in the workspace. */
+  /** Total unread messages in the workspace's unmuted chats. */
   unreadMessageCount: number;
 };
 
-/** The user's unread totals for badges: overall and per workspace, without per-chat details. */
+/** Unread badge totals excluding muted chats: overall and per workspace, without per-chat details. */
 export type UserUnreadSummary = {
-  /** Number of chats with at least one unread message, across all of the user's workspaces. */
+  /** Number of unmuted chats with unread messages across all of the user's workspaces. */
   unreadChatCount: number;
-  /** Total number of unread messages across all of the user's workspaces. */
+  /** Total unread messages in unmuted chats across all of the user's workspaces. */
   unreadMessageCount: number;
   /**
-   * Totals for each workspace that has unread messages. Fully read workspaces are left out, so a
-   * workspace that isn't listed has nothing unread.
+   * Totals for each workspace with unread messages in unmuted chats. Workspaces with only muted
+   * unread chats or no unread messages are left out.
    */
   workspaces: WorkspaceUnreadSummary[];
 };
@@ -314,14 +314,14 @@ export type UserUnreadSummary = {
  * this has the new overall totals but only the one workspace whose totals changed, not all of them.
  */
 export type UnreadSummaryUpdate = {
-  /** Number of chats with unread messages across all of the user's workspaces. */
+  /** Number of unmuted chats with unread messages across all of the user's workspaces. */
   unreadChatCount: number;
-  /** Total unread messages across all of the user's workspaces. */
+  /** Total unread messages in unmuted chats across all of the user's workspaces. */
   unreadMessageCount: number;
   /**
    * New totals for the workspace that changed; replace your copy of that workspace's totals with
-   * these. If the counts are zero, the workspace now has nothing unread and should be dropped from
-   * your `UserUnreadSummary.workspaces` list.
+   * these. Zero counts mean there are no unread messages in unmuted chats; drop the workspace
+   * from your `UserUnreadSummary.workspaces` list.
    */
   workspace: WorkspaceUnreadSummary;
 };
@@ -3664,8 +3664,9 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Enable or mute this chat's unread badges and alerts for the current user. Normal chats default
-   * on; agent-spawned chats default off. Changing the preference marks existing activity handled,
-   * so enabling only notifies about future activity. Not available in use-only sessions.
+   * on; agent-spawned chats default off. Read history and unread dividers are preserved. Changing
+   * the preference clears queued alerts, so enabling only alerts about future activity.
+   * Not available in use-only sessions.
    */
   setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void>;
 

@@ -850,7 +850,7 @@ describe("UserDurableObject notifications", () => {
       answer.reject(new Error("Browser hidden"));
       await publishing.mock.results[0].value;
       expect(bodies(fetcher, "/v1/deliveries")).toEqual([]);
-      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
+      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(1);
     });
   });
 

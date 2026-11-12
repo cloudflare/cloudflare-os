@@ -5638,7 +5638,7 @@ function ChatInterface({
                         )}
                       </div>
                     </div>
-                    {!isRenaming && (
+                    {!isRenaming && notificationsEnabled && (
                       <UnreadBadge count={unreadMessageCount} />
                     )}
                     {!isRenaming && (
@@ -5661,7 +5661,7 @@ function ChatInterface({
                           <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount === 0} onClick={() => {
                             void unread?.markRead(overseer, chat.id).catch(() => {});
                           }}>Mark thread read</DropdownMenu.Item>
-                          <DropdownMenu.Item disabled={!unread?.chats || !notificationsEnabled || unreadMessageCount > 0} onClick={() => {
+                          <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount > 0} onClick={() => {
                             void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
                           <ChatNotificationsMenu overseer={overseer} chatId={chat.id}

@@ -35,9 +35,9 @@ interface Spawner extends RpcTarget {
 }
 
 it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned, enabled }))))(
-    "delivers permission alerts only when enabled (spawned: $spawned, enabled: $enabled)",
+    "preserves catch-up history and delivers enabled alerts (spawned: $spawned, enabled: $enabled)",
     async ({ spawned, enabled }) => {
-  const model = models.script([{ toolCall: { id: "ask", name: "executeCode", arguments: {
+  const model = models.script([{text: "A message to catch up on."}, { toolCall: { id: "ask", name: "executeCode", arguments: {
     code: "export default async function(self, env) { await env.TEST_AMBIENT.writeValue(7); }",
   } } }]);
   await using session = await openAgentSession(harness.url, {
@@ -76,6 +76,19 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
   }
   const defaultEnabled = !spawned;
   if (enabled !== defaultEnabled) await ws.setChatNotificationsEnabled(chatId, enabled);
+  await start();
+  await waitForIdleChat(ws, chatId);
+  if (enabled) await waitFor("the completion alert", async () => received.events.length === 1 ? true : null);
+  const state = (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)!;
+  expect(state).toMatchObject({notificationsEnabled: enabled, unreadMessageCount: 1});
+  expect((await api.getUnreadSummary()).unreadMessageCount).toBe(enabled ? 1 : 0);
+  await ws.setChatNotificationsEnabled(chatId, !enabled);
+  await ws.setChatNotificationsEnabled(chatId, enabled);
+  expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)).toEqual(state);
+  expect(received.events).toEqual(enabled ? [expect.objectContaining({chatId, kind: "taskCompleted"})] : []);
+  // A normal reading receipt still catches up a muted chat without enabling its badges or alerts.
+  await ws.markChatRead(chatId);
+  received.events.length = 0;
   await start();
   await waitForIdleChat(ws, chatId);
   await waitFor("a persisted pending permission request", async () =>

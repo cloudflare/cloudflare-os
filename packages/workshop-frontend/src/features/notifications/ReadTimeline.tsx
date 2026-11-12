@@ -81,16 +81,6 @@ export const ReadTimeline = ({
     const previous = receivedChat.current;
     if (previous === chat) return;
     receivedChat.current = chat;
-    if (chat.notificationsEnabled === false) {
-      latestAction.current = undefined;
-      pending.current = -1;
-      jumpSequence.current = undefined;
-      requestedPage.current = undefined;
-      onUnreadNavigation(false);
-      setJump(0);
-      setVisit({paused: false});
-      return;
-    }
     // A legacy thread's first cursor can confirm the local selection before its RPC fails.
     if (!previous && visit?.paused && chat.readThroughSequence + 1 === visit.divider) {
       latestAction.current = undefined;
@@ -271,9 +261,8 @@ export const ReadTimeline = ({
       value={{
         divider: visit?.divider,
         latestSequence,
-        notificationsEnabled: chat?.notificationsEnabled,
         markUnread: (sequence) => {
-          if (!workspaceId || !unread?.chats || latest.current.chat?.notificationsEnabled === false) return;
+          if (!workspaceId || !unread?.chats) return;
           const action = Symbol();
           latestAction.current = action;
           const previous = {visit: latest.current.visit, jump,

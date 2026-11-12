@@ -80,6 +80,16 @@ it("shows message counts in the summary and each thread, not just unread-thread 
   expect(container.querySelector('ul [aria-label="3 unread messages"]')).not.toBeNull();
 });
 
+it("keeps muted unread chats discoverable without navigation or row badges", async () => {
+  mock.unread = {...mock.unread!, state: {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []},
+    chats: [{...chats[0], notificationsEnabled: false}]};
+  await render();
+  expect(container.querySelector('a[href="/unread"]')?.textContent).toBe("Unread threads");
+  expect(container.querySelector('ul a')?.textContent).toContain("Unread elsewhere");
+  expect(container.querySelector('[aria-label="1 unread message"]')).toBeNull();
+  expect(action("Mark all read").disabled).toBe(false);
+});
+
 it("lists previews of only unread threads and opens the exact conversation", async () => {
   const router = await render();
   expect(container.textContent).not.toContain("Already read");

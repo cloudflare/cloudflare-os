@@ -810,17 +810,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return cursor.notificationsEnabled ?? !cursor.notificationsMutedByDefault;
   }
 
-  // Muting consumes known activity and queued alerts, so unmuting starts with future activity.
-  #silenceChat(cursor: ChatReadCursor, through = cursor.head?.latestSequence ?? -1): ChatReadCursor {
+  // Consume alerts independently of read history, so unmuting cannot replay them.
+  #skipChatNotifications(cursor: ChatReadCursor, through = cursor.head?.latestSequence ?? -1): ChatReadCursor {
     let events = this.#notificationChats.has(`${cursor.workspaceId}:${cursor.chatId}`)
       ? Array.from(this.storage.notificationOutbox.list({prefix: `${cursor.workspaceId}:${chatKeyPrefix(cursor.chatId)}`})) : [];
     for (let event of events) {
       through = Math.max(through, event.sequence);
       this.storage.notificationOutbox.deleteRecord(event);
     }
-    return {...cursor, unreadCount: 0,
-      readThroughSequence: Math.max(cursor.readThroughSequence, through),
-      readThroughVisibleSequence: cursor.latestVisibleSequence ?? 0,
+    return {...cursor,
       notifiedThroughSequence: Math.max(cursor.notifiedThroughSequence, through), notifiedEventIds: undefined};
   }
 
@@ -831,9 +829,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let current = this.#cursor(workspaceId, chatId);
     if (current.deleted || current.notificationsEnabled === enabled) return;
     this.ctx.storage.transactionSync(() => {
+      let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
       let cursor = {...current, ...this.#mergeHead(current, position), notificationsEnabled: enabled,
-        latestVisibleSequence: Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence)};
-      this.#storeCursor(this.#silenceChat(cursor, position.readThroughSequence));
+        latestVisibleSequence: latest, unreadCount: current.readThroughVisibleSequence === undefined
+          ? current.unreadCount : latest - current.readThroughVisibleSequence};
+      this.#storeCursor(this.#skipChatNotifications(cursor, position.readThroughSequence));
     });
     this.#unreadChanged(workspaceId, chatId);
     await this.#armExpirySweep();
@@ -851,7 +851,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let key = `${workspaceId}:${chatId}`;
     let current = this.#cursor(workspaceId, chatId);
     if (current.deleted) return false;
-    if (rewind && !this.#chatNotificationsEnabled({...current, ...this.#mergeHead(current, position)})) return false;
     let through = position.readThroughSequence;
     let visible = position.readThroughVisibleSequence;
     // An own-message arrival may already have advanced beyond this source-authorized boundary.
@@ -864,8 +863,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       readThroughSequence: through, readThroughVisibleSequence: visible,
       latestVisibleSequence: latest, unreadCount: latest - visible,
       notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline};
-    let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(
-      this.#chatNotificationsEnabled(cursor) ? cursor : this.#silenceChat(cursor)));
+    let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(cursor));
     if (changed) this.#unreadChanged(workspaceId, chatId);
     return changed;
   }
@@ -961,7 +959,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let workspaces = new Map<string, WorkspaceUnreadSummary>();
     let unreadChatCount = 0, unreadMessageCount = 0;
     for (let cursor of this.#readCursors.values()) {
-      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || cursor.unreadCount <= 0) continue;
+      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || cursor.unreadCount <= 0 ||
+          !this.#chatNotificationsEnabled(cursor)) continue;
       unreadChatCount++;
       unreadMessageCount += cursor.unreadCount;
       let summary = workspaces.get(cursor.workspaceId) ??
@@ -1106,7 +1105,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let hadNotifications = this.#notificationChats.has(key);
     let changed = this.ctx.storage.transactionSync(() => {
       if (!this.#chatNotificationsEnabled(cursor)) {
-        return this.#storeCursor(this.#silenceChat(cursor,
+        return this.#storeCursor(this.#skipChatNotifications(cursor,
           Math.max(progress.head.latestSequence, ...progress.notifications.map(event => event.sequence))));
       }
       let stored = this.#storeCursor(cursor);
@@ -1332,7 +1331,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             let updated = {...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
               unreadCount: latest - cursor.readThroughVisibleSequence};
             changed = this.#storeCursor(this.#chatNotificationsEnabled(updated) ? updated :
-              this.#silenceChat(updated, baseline.notifiedThroughSequence)) || changed;
+              this.#skipChatNotifications(updated, baseline.notifiedThroughSequence)) || changed;
           }
         }
       });

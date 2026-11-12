@@ -4,12 +4,15 @@ The workspace owns the timeline and message ordering. Each User DO owns its user
 horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
 for inbox, viewport and native bridge behavior.
 
-Chats created by `spawn()` or `spawnCallable()` default to muted unread counts and alerts,
+Chats created by `spawn()` or `spawnCallable()` default to muted badges and alerts,
 including permission alerts. Normal chats default to enabled. Each user can change either kind
 with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO
 stores the override on its private read cursor; source fanout carries the default from persisted
-`spawnerName`, without overriding the user's choice. Muting clears counts and queued alerts.
-Changing the preference consumes known activity, so enabling only notifies about future activity.
+`spawnerName`, without overriding the user's choice. Muting clears queued alerts and excludes the
+chat from badge rollups, without advancing its read horizon or clearing its unread count. Muted
+chats keep their catch-up divider, ordinary reading receipts and explicit read/unread actions.
+The unread inbox still includes them, with no badge. Changing the preference consumes known
+alert positions, so enabling only alerts about future activity while preserving unread history.
 The upgrade journals existing spawned chats through ordinary durable fanout to apply the default.
 
 ```mermaid
@@ -85,7 +88,8 @@ Three targeted local queries avoid transferring the full thread state for every 
 - `getUnreadThreads()` returns only unread rows, including display metadata, newest first.
 - `getWorkspaceUnreadState(workspaceId)` returns tracked thread horizons/counts for that workspace,
   including read rows, to merge into the Workspace DO's ordinary thread list. Missing rows are read.
-- `getUnreadSummary()` returns instance totals and nonzero per-workspace rollups, without thread rows.
+- `getUnreadSummary()` returns badge totals and nonzero per-workspace rollups, excluding muted chats
+  and without thread rows. Per-chat queries still return actual unread counts for muted chats.
 
 All three use hydrated local rows, write nothing, and query no other DO.
 `subscribeToUnreadState(scope, subscriber)` requires an explicit scope: `"summary"` sends no

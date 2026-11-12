@@ -400,31 +400,38 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
-  it("disables per-message unread while muted and resumes reading after unmuting at the same head", async () => {
-    const state = (enabled: boolean, readThrough = 2) => {
+  it("keeps a muted chat's catch-up divider while notifications are toggled", async () => {
+    const state = (enabled: boolean, readThrough = -1) => {
       const value = snapshot(1, readThrough);
-      return {...value, chats: value.chats.map(chat => ({...chat, notificationsEnabled: enabled}))};
+      return {...value, unreadChatCount: 0, unreadMessageCount: 0,
+        chats: value.chats.map(chat => ({...chat, notificationsEnabled: enabled}))};
     };
     await render(); await update(state(false)); await settle();
-    await markUnreadFrom(1);
-    expect(document.querySelector('[role="menuitem"]')?.getAttribute("aria-disabled")).toBe("true");
-    expect(markChatUnread).not.toHaveBeenCalled();
-    expect(container.querySelector("[data-unread-divider]")).toBeNull();
-    await updateChat(state(true));
-    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
-    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
+    expect(container.querySelector('[role="separator"]')?.textContent).toContain("New");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0);
+    await updateChat(state(false, 0));
     await updateChat(state(true, 0));
-    expect(container.textContent).toContain("automatic reading paused");
-    await updateChat(state(false));
-    expect(container.querySelector("[data-unread-divider]")).toBeNull();
-    await updateChat(state(true));
-    visibleBottom = 450;
-    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
-    await updateChat({...state(true), unreadChatCount: 1, unreadMessageCount: 1,
-      chats: [{...state(true).chats[0], unreadMessageCount: 1}]});
+    await updateChat(state(false, 0));
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("0");
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
     await settle();
-    expect(container.textContent).not.toContain("automatic reading paused");
-    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
+  });
+
+  it("allows marking a muted chat unread without clearing the selected divider", async () => {
+    const state = (readThrough: number) => {
+      const value = snapshot(1, readThrough);
+      return {...value, unreadChatCount: 0, unreadMessageCount: 0,
+        chats: value.chats.map(chat => ({...chat, notificationsEnabled: false}))};
+    };
+    await render(); await update(state(2)); await settle();
+    await markUnreadFrom(1);
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
+    await updateChat(state(0));
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
   });
 
   it.each(["before read", "before arrival", "after arrival"])("resumes after a remote read clears a no-op unread selection (ACK: %s)", async ackAt => {

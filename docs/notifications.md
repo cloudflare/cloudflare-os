@@ -241,8 +241,11 @@ requests still come through, since a task waiting on the user stays stuck until 
 
 Each chat also has a private **Mute notifications** / **Unmute notifications** choice in its
 thread menu. Chat muting suppresses both completion and permission alerts, clears queued alerts,
-and keeps unread badges at zero. Normal chats default on; agent-spawned chats default off.
-Turning notifications on applies to future activity. See [user-owned unread state](user-unread-state.md).
+and hides the chat's unread badges, including its contribution to workspace and app badges.
+Read history and the unread divider remain available when the user opens the chat; muted chats
+still appear in the unread inbox without badges. Normal chats default on; agent-spawned chats
+default off. Turning notifications on preserves unread history and alerts only about future
+activity. See [user-owned unread state](user-unread-state.md).
 
 ## Deployment contract
 

@@ -190,20 +190,23 @@ describe("spawned chat notifications", () => {
     });
     await evictDurableObject(fixture.workspace);
     await append(fixture, 2, "Later callback");
-    expect(await setRead(fixture, 2, true)).toBe(false);
-    await setRead(fixture, 0);
     for (const user of [fixture.user, reader]) {
       expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
-      expect(await user.getUnreadThreads()).toEqual([]);
+      expect(await user.getUnreadThreads()).toMatchObject([{chatId: 1, unreadMessageCount: 3}]);
       expect(await user.getWorkspaceUnreadState(fixture.workspaceId)).toMatchObject([
-        {chatId: 1, unreadMessageCount: 0, notificationsEnabled: false},
+        {chatId: 1, readThroughSequence: -1, unreadMessageCount: 3, notificationsEnabled: false},
       ]);
     }
+    await setRead(fixture, 0);
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: 0, unreadCount: 2});
+    expect(await setRead(fixture, 0, true)).toBe(true);
+    expect(await cursor(fixture)).toMatchObject({readThroughSequence: -1, unreadCount: 3});
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
     expect(await outbox(fixture)).toEqual([]);
     expect(publish).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("allows private overrides and only future activity after toggling (spawned: %s)", async spawned => {
+  it.each([false, true])("preserves unread history with private overrides and only future alerts (spawned: %s)", async spawned => {
     const fixture = await setup();
     if (spawned) await withImpl(fixture.workspace, async impl => {
       impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
@@ -217,9 +220,10 @@ describe("spawned chat notifications", () => {
     await evictDurableObject(fixture.user);
     await append(fixture, 1, "Muted activity");
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
-      .toMatchObject({notificationsEnabled: false, unreadMessageCount: 0});
-    await setEnabled(true);
+      .toMatchObject({notificationsEnabled: false, readThroughSequence: -1, unreadMessageCount: 2});
     expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    await setEnabled(true);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(2);
     expect(publish).not.toHaveBeenCalled();
     await evictDurableObject(fixture.user);
     await withImpl(fixture.workspace, async impl => {
@@ -231,17 +235,19 @@ describe("spawned chat notifications", () => {
     await drained(fixture);
     await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
-      .toMatchObject({notificationsEnabled: true, unreadMessageCount: 1});
+      .toMatchObject({notificationsEnabled: true, readThroughSequence: -1, unreadMessageCount: 3});
     expect((await reader.getWorkspaceUnreadState(fixture.workspaceId))[0])
-      .toMatchObject({notificationsEnabled: !spawned, unreadMessageCount: spawned ? 0 : 3});
+      .toMatchObject({notificationsEnabled: !spawned, unreadMessageCount: 3});
     // Retrying the same preference must not consume activity that arrived since it was enabled.
     await setEnabled(true);
-    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(1);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(3);
     await setEnabled(false);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    await setRead(fixture, 0);
     await setEnabled(true);
     await fixture.user.messageArrived(fixture.workspaceId, 1, {...progress(2), notifications: [event(2)]});
     await drained(fixture);
-    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(2);
     expect(publish).toHaveBeenCalledOnce();
   });
 
@@ -279,9 +285,9 @@ describe("spawned chat notifications", () => {
     await append(fixture, 1);
     await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
-      .toMatchObject({notificationsEnabled: true, unreadMessageCount: 1});
+      .toMatchObject({notificationsEnabled: true, unreadMessageCount: 2});
     expect((await reader.getWorkspaceUnreadState(fixture.workspaceId))[0])
-      .toMatchObject({notificationsEnabled: false, unreadMessageCount: 0});
+      .toMatchObject({notificationsEnabled: false, unreadMessageCount: 2});
   });
 
   it("retries upgrade cleanup after eviction without hiding ordinary chats", async () => {
@@ -326,7 +332,9 @@ describe("spawned chat notifications", () => {
     });
     for (const user of [fixture.user, reader]) {
       expect((await user.getUnreadSummary()).unreadMessageCount).toBe(1);
-      expect(await user.getUnreadThreads()).toMatchObject([{chatId: 2}]);
+      expect(await user.getUnreadThreads()).toMatchObject([
+        {chatId: 2}, {chatId: 1, notificationsEnabled: false, unreadMessageCount: 1},
+      ]);
     }
     expect(publish).toHaveBeenCalledOnce();
   });

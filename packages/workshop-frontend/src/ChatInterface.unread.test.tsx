@@ -70,7 +70,9 @@ it.each([
   {spawned: true, enabled: undefined, expectedEnabled: false},
   {spawned: true, enabled: true, expectedEnabled: true},
   {spawned: false, enabled: false, expectedEnabled: false},
-])("toggles chat notifications (spawned: $spawned, override: $enabled)", async ({spawned, enabled, expectedEnabled}) => {
+].flatMap(preference => [0, 2].map(count => ({...preference, count}))))(
+    "toggles notifications without disabling read actions (spawned: $spawned, override: $enabled, unread: $count)",
+    async ({spawned, enabled, expectedEnabled, count}) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   const server = makeOverseer();
   const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
@@ -82,7 +84,7 @@ it.each([
     setChatNotificationsEnabled: setNotifications,
   });
   mock.unread = {
-    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: 0,
+    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: count,
       notificationsEnabled: enabled}],
     subscribeToUpdates: () => () => {}, markRead: async () => {}, markUnread: async () => true,
     markAllRead: async () => {}, markWorkspaceRead: async () => {},
@@ -94,11 +96,14 @@ it.each([
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
   );
+  expect(document.querySelector('[aria-label="2 unread messages"]') !== null).toBe(expectedEnabled && count > 0);
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Notification test"]')!;
   await act(async () => trigger.click());
   const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
   expect(items.find(item => item.textContent === "Mark thread unread")?.getAttribute("aria-disabled"))
-    .toBe(expectedEnabled ? null : "true");
+    .toBe(count > 0 ? "true" : null);
+  expect(items.find(item => item.textContent === "Mark thread read")?.getAttribute("aria-disabled"))
+    .toBe(count > 0 ? null : "true");
   const toggle = items.find(item => item.textContent === (expectedEnabled ? "Mute notifications" : "Unmute notifications"))!;
   await act(async () => toggle.click());
   expect(setNotifications).toHaveBeenCalledWith(1, !expectedEnabled);
