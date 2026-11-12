@@ -192,10 +192,12 @@ a command runs Git, and fetching the head first avoids it.
 5. **A submission re-roots the chat's pin at a hidden commit** of the result tree, instead of
    being converted into OTs. File modes survive: later edits keep an entry's mode
    (`WorkspaceGitCache.writeChangedTree`), and so does accepting.
-6. **A command's handle lives in memory, bound to its execution, and accepts one submission.**
-   This fences out a command abandoned by a restart, which could otherwise submit against the
-   resumed execution's first snapshot (usually the same tree ID, since the crash rolled the
-   edits back). An identical retry returns the first result, so a lost reply never merges twice.
+6. **A command names its execution with its session's `ApprovalQueue`**, and its base with a
+   tree the execution returned from `snapshot()` or `submit()`, which the execution remembers in
+   memory. This fences out a command abandoned by a restart, which could otherwise submit
+   against the resumed execution's first snapshot (usually the same tree ID, since the crash
+   rolled the edits back): its queue belongs to the execution that crashed. Submissions aren't
+   idempotent; a container that loses a reply snapshots again rather than retrying.
 7. **Spanning requests are refused**, not served by a cache fill (see
    [Why spanning requests need storage](#why-spanning-requests-need-storage)).
 
@@ -230,8 +232,8 @@ Where the implementation departed from the design as first reviewed:
 - **The stored stub** (`926b2352`, reshaped later). What agent code passes on is the binding
   loopback, which fails once its execution ended. A gatekeeper instead stores the
   `WorktreeReplicator` the stub's `getReplicator()` returns during that execution: a persistent
-  stub whose `gitHead()` and `gitPull()` work at any time and whose `snapshot()` serves whichever
-  execution is running in the chat. (An earlier shape made the binding itself persistent, with a
+  stub whose `gitHead()` and `gitPull()` work at any time and whose `snapshot(queue)` and
+  `submit(queue, ...)` serve the queue's execution while it runs in the chat. (An earlier shape made the binding itself persistent, with a
   `WorktreeEndpoint` whose file methods still died with the execution; splitting the two kept
   `WorktreeSessionImpl` as on main.) So a gadget the agent passes the stub to can also get
   replica access.
@@ -239,8 +241,14 @@ Where the implementation departed from the design as first reviewed:
   tree but not the snapshot's, each object at a path where they differ must be stored or
   pullable, so a command can move a file the workspace never loaded. Submitted trees must also
   be canonical, which rejects names such as `..` and `sub/.git`.
-- **Retries** (`926b2352`). A failed submission frees its handle for a retry, and every call,
-  retries included, requires the execution to still be running.
+- **Retries** (`926b2352`, reshaped in `08890f79`). A failed submission can be retried with
+  the same base, and every call, retries included, requires the execution to still be running.
+- **Commands without handles** (`08890f79`). The reviewed design returned a one-submission
+  `WorktreeCommand` handle from `snapshot()`. Instead, `snapshot()` returns the state and
+  `submit()` takes the queue and base explicitly, so a command can chain submissions (each
+  result is a valid base) and a stored replicator can't act for an execution its holder's
+  session doesn't belong to. Until the runtime can unwrap stubs, the queue is identified by an
+  undeclared `claimExecution(token)` call that only the kernel's own `ApprovalQueueImpl` answers.
 - **Merging** (`926b2352`). A mode merges on its own, so one command's `chmod` survives another's
   edit (a binary file still takes the command's bytes), and merged changes are written deletions
   first, so a file replaced by a directory on one side alone isn't refused.
@@ -289,7 +297,7 @@ Each commit keeps the backend separate from tests and docs where it can, for ker
 - **`__tests__/worktree-replica.test.ts`** covers commands (refused outside an execution, saved
   with the step's transcript or lost before its barrier, tree fetches only during the execution,
   stored stubs, retries, parallel submissions and writes, mode merging, an execution ending
-  mid-submission, stale handles, file-versus-directory refusals, symlinks, `.git` entries and
+  mid-submission, refused bases and queues, chained submissions, file-versus-directory refusals, symlinks, `.git` entries and
   missing objects) and fetches (the pull's checks, the ancestry probe and its fallback to the
   next connection, deepens, the boundary pull from one connection, shallower clones, the
   spanning refusal, and refusal after deletion). Access is checked when a pull starts; a pack

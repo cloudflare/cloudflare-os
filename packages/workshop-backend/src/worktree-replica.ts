@@ -98,7 +98,7 @@ export class WorktreeReplicas {
       }
     } catch (error) {
       // Refused before reading the pack: release the caller's stream rather than leave it open.
-      await pack.cancel();
+      await pack.cancel().catch(() => {});
       throw error;
     }
     let packed = new Set(await this.host.gitCache.consumePackFromGatekeeper(null, pack, true));
@@ -371,7 +371,7 @@ export class WorktreeReplicatorImpl extends RpcTarget implements WorktreeReplica
     try {
       replicas = await this.host.worktreeReplicas(this.worktreeId, queue);
     } catch (error) {
-      await pack.cancel();
+      await pack.cancel().catch(() => {});
       throw error;
     }
     return replicas.submit(this.worktreeId, base, tree, pack);
