@@ -6481,6 +6481,12 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
    */
   openSession(): Promise<RpcStub<Session>>;
 
+  /**
+   * Get the code that draws this resource, to run as a gadget's UI with a session from
+   * `openSession()` as its `gadget`. Only available if `describe()` reports `hasPreview`.
+   */
+  getPreviewUi(): Promise<UiBundle>;
+
   /** Get the creation spec describing how this gatekeeper was originally created. */
   getCreationSpec(): Promise<GatekeeperCreationSpec>;
 

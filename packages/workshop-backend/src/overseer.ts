@@ -14161,6 +14161,12 @@ class GatekeeperClientImpl<Session extends RpcCompatible<Session>>
         this.joinedAs);
   }
 
+  async getPreviewUi(): Promise<UiBundle> {
+    // getPreviewUi is optional on Gatekeeper; a caller checks describe().hasPreview first.
+    return (this.facet as Fetcher<Gatekeeper<Session> &
+        Required<Pick<Gatekeeper<Session>, "getPreviewUi">>>).getPreviewUi();
+  }
+
   async getCreationSpec(): Promise<GatekeeperCreationSpec> {
     let record = this.#getRecord();
     if (!record.creationSpec) {

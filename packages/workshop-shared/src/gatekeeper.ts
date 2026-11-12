@@ -17,6 +17,7 @@
 // `Adapter` type is the root interface implemented by the service binding.
 
 import type { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
+import type { UiBundle } from "./api.js";
 
 /**
  * A pagination cursor.
@@ -319,6 +320,9 @@ export type ResourceDescription = {
 
   /** Indicates that getSlashCommandProvider() is available. */
   hasSlashCommands?: true;
+
+  /** Indicates that getPreviewUi() is available. */
+  hasPreview?: true;
 
   /**
    * Some resources implement the ability for the client to subscribe to events. The application
@@ -1147,6 +1151,15 @@ export interface Gatekeeper<Session> extends DurableObject {
 
   /** Returns the provider for describe().hasSlashCommands, if supported. */
   getSlashCommandProvider?(): Promise<SlashCommandProvider>;
+
+  /**
+   * Returns client-side code that draws this resource for a person, for describe().hasPreview.
+   *
+   * It runs as a gadget's UI does, with a session from `startSession()` in place of the gadget's
+   * server. It therefore holds no more than a gadget bound to this resource would, and its reads
+   * and actions go through the approval queue like any other.
+   */
+  getPreviewUi?(): Promise<UiBundle>;
 
   /**
    * Stream a self-contained Git pack containing the requested objects and related objects
