@@ -1,0 +1,37 @@
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.browser.test.tsx
+  s_99c049c8391965::t_4ed508273a06ec 72-75
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_99c049c8391965::t_4b638ac709af68 117-119,4696-4701,4734-4736,5422-5424,5427-5428,5461,6951
+packages/workshop-frontend/src/features/approvals/useBulkResolve.ts
+  s_99c049c8391965::t_0f1c970cd3f0d9 30,33-37,42-53,66-71,95-97,115,131,135-136,138-140,147-154,160-164,171-177,191,197,200-201,206,220-231
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.test.tsx
+  s_99c049c8391965::t_5c791b608412e4 63,122-148
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.tsx
+  s_99c049c8391965::t_204d738785c50a 11-13,58-62,88-90,170-178
+packages/workshop-frontend/src/features/approvals/useBulkResolve.test.tsx
+  s_2b3f2ed31e2828::t_5fde0766541e38 147-149,177,185,209-211,221-258,262-263
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "c40909b7b6e78e85518f7439eb2d849235fdb133",
+  "prompts": {},
+  "sessions": {
+    "s_2b3f2ed31e2828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f9b8f47-71bf-42a2-94d1-feb3e5a6228a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
