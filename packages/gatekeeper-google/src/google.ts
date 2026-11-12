@@ -3584,7 +3584,7 @@ export class GoogleDriveGatekeeperImpl
   /**
    * The Drive client the action handlers use. While an approval's token is set it answers that
    * token to every request, a refresh or a reload asked for after a 401 or a 403 included, so
-   * nothing is sent a second time under other credentials. Otherwise it is the connection's own
+   * nothing the approval sends after its identity read goes a second time under other credentials. Otherwise it is the connection's own
    * provider, under which a comment is applied.
    */
   #applyApi = new DriveApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts));
@@ -3798,13 +3798,18 @@ export class GoogleDriveGatekeeperImpl
         this.#attempts.delete(actionId);
         return;
       }
-      // Everything this approval asks of Drive goes out under the token the account stores now:
-      // the identity read, the look, the checks and the change. So the account that passes the
-      // fence is the one the change is made as, whatever is connected meanwhile, and a request
-      // Google refuses is never sent again under other credentials.
-      this.#approvalToken = await this.#getAccessToken({ reloadStored: true });
+      // Everything this approval asks of Drive after the identity read goes out under the token
+      // that read was answered under: the look, the checks and the change. So the account that
+      // passes the fence is the one the change is made as, whatever is connected meanwhile, and a
+      // request Google refuses is never sent again under other credentials. The read itself starts
+      // from the token the account stores now and may refresh it, as a token Google stopped
+      // accepting before its recorded expiry needs: the fence then checks whatever answered.
+      await this.#getAccessToken({ reloadStored: true });
       try {
-        let actor = await this.#identity(this.#applyApi);
+        let verified: string | undefined;
+        let actor = await this.#identity(
+          new DriveApi(async opts => (verified = await this.#getAccessToken(opts))));
+        this.#approvalToken = verified;
         if (record.fence.generation !== actor.permissionId &&
             this.#attempts.get(actionId) !== undefined) {
           // The kit would fail it for good and say to submit again. An earlier send may have

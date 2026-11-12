@@ -226,6 +226,8 @@ class DriveProvider {
   nextWrite?: Answer | "lost";
   /** How `about` answers: with a failure, or with the permission ID alone. */
   readonly about: { fail?: Answer; omitAddress?: boolean } = {};
+  /** Tokens Google no longer accepts, though their recorded expiry has not come: every request answers 401. */
+  readonly rejected = new Set<string>();
   /** What a person does in Drive as the next permission list is read, before it is answered. */
   duringPermissionRead?: () => void;
   #people = new Map<string, string>([
@@ -397,6 +399,7 @@ class DriveProvider {
     let token = (request.headers.get("Authorization") ?? "").replace(/^Bearer /, "");
     let call = `${request.method} ${url.pathname}`;
     this.requests.push({ call, token });
+    if (this.rejected.has(token)) return driveError({ status: 401, reason: "authError" });
     if (url.pathname === "/batch/drive/v3") {
       return this.#batch(new TextDecoder().decode(await request.arrayBuffer()));
     }
@@ -1536,6 +1539,29 @@ describe("sharing", () => {
     expect(calls.indexOf("GET /drive/v3/files/doc-1/permissions")).toBeGreaterThanOrEqual(0);
     expect(calls.indexOf("GET /drive/v3/files/doc-1/permissions"))
       .toBeLessThan(calls.indexOf(CREATE_ON_DOC));
+    expect(sent(CREATE_ON_DOC)).toHaveLength(1);
+    expect(provider.direct("doc-1")).toContainEqual(["perm-bob", "reader"]);
+  });
+
+  // Max: a stored token Google rejects before its expiry must be refreshed by the identity read,
+  // or every approval reloads it and fails until it expires.
+  it("refreshes a stored token Google stopped accepting during the identity read, and makes the change under the new one", async () => {
+    let drive = binding();
+    let { actionId } = await drive.queued("share", "doc-1", BOB, "reader");
+    // The account's stored token is rejected; a refresh, the next load after the approval's own,
+    // answers a new one for the same Google account.
+    await account().setDriveToken("stale-token");
+    await account().setDriveToken("fresh-token", 1);
+    provider.rejected.add("stale-token");
+    provider.forget();
+
+    expect(await drive.apply(actionId)).toBeNull();
+    expect(provider.requests.slice(0, 2)).toEqual([
+      { call: "GET /drive/v3/about", token: "stale-token" },
+      { call: "GET /drive/v3/about", token: "fresh-token" },
+    ]);
+    // After the identity read, everything goes out under the token it was answered under.
+    expect(provider.requests.slice(2).filter(({ token }) => token !== "fresh-token")).toEqual([]);
     expect(sent(CREATE_ON_DOC)).toHaveLength(1);
     expect(provider.direct("doc-1")).toContainEqual(["perm-bob", "reader"]);
   });
