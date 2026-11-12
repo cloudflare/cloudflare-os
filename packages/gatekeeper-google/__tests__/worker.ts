@@ -6,8 +6,15 @@ import type {
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
-import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
-import type { Cursor, DriveEntry, DriveScope, GoogleDriveFolderSession } from "../src/drive-types";
+import { COMMENT_ATTEMPT_PREFIX, type CommentAttempt } from "../src/drive-comments";
+import type { DriveBindingScope } from "../src/drive-session";
+import type {
+  Cursor, DocSuggestion, DriveComment, DriveCommentReply, DriveEntry, DriveScope,
+  GoogleDriveFolderSession,
+  GoogleDriveSession,
+} from "../src/drive-types";
+import type { DriveAccessLevel } from "../src/resources";
+import type { DocMetadata, GoogleDocSession, GoogleDocTab } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
@@ -31,10 +38,12 @@ export class UserAccount extends DurableObject<Env> {
     return { token: `test-access-token:${this.ctx.id}`, expires: new Date(8640000000000000) };
   }
 
+  /** The grants {@link setGranted} last recorded; none until then. */
   async getGrantedResourceUrlPatterns(): Promise<string[]> {
     return this.ctx.storage.kv.get<string[]>("granted") ?? [];
   }
 
+  /** Records the grants the account holds, as a test names them. */
   setGranted(patterns: string[]): void {
     this.ctx.storage.kv.put("granted", patterns);
   }
@@ -66,6 +75,40 @@ type SheetsCall = {
   observations: string[];
 };
 
+/** What one bound Google Doc session call returned or threw, and what it queued and observed. */
+type DocCall = {
+  value?: DriveComment | DriveCommentReply | DriveComment[] | DocSuggestion | DocMetadata;
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+  /** What each observation reported, in order. */
+  reports: { title: string; subresources?: string[] }[];
+};
+
+/** A Drive binding as a test names it: its scope and, for read and write, its access level. */
+type DriveBinding = { scope: DriveBindingScope; access?: DriveAccessLevel };
+
+/** What one Drive session call returned or threw, and what it queued and observed. */
+type DriveCall = {
+  /** A write's pending item, every page a comment listing yielded, or the binding's scope. */
+  value?: DriveComment | DriveCommentReply | DriveComment[][] | DriveScope;
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+  /** What each observation reported, in order. */
+  reports: { title: string; subresources?: string[] }[];
+};
+
+/** Every page a comment cursor yields, until it is exhausted. */
+async function drainComments(cursor: Cursor<DriveComment> & Disposable): Promise<DriveComment[][]> {
+  using owned = cursor;
+  let pages: DriveComment[][] = [];
+  for (let page = await owned.next(); page !== null; page = await owned.next()) pages.push(page);
+  return pages;
+}
+
 /** An error's message, so a test can assert on a failure that crossed the RPC boundary. */
 function failure(error: unknown): { error: string } {
   return { error: error instanceof Error ? error.message : String(error) };
@@ -76,9 +119,15 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionDescription?: string;
   actionFields: ActionField[] = [];
   readonly observations: string[] = [];
+  /** What each observation reported, in order. */
+  readonly reports: { title: string; subresources?: string[] }[] = [];
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description.description);
+    this.reports.push({
+      title: description.title,
+      ...(description.subresources ? { subresources: description.subresources } : {}),
+    });
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -310,8 +359,28 @@ export class TestHooks extends DurableObject<Env> {
     }
   }
 
-  async rejectAction(facetName: string, actionId: number): Promise<void> {
-    await this.#gatekeeper(facetName).rejectAction(actionId);
+  async rejectAction(facetName: string, actionId: number): Promise<void | { restart?: boolean }> {
+    return this.#gatekeeper(facetName).rejectAction(actionId);
+  }
+
+  /** Calls one method of a fresh bound Doc session, reporting what it queued and observed. */
+  async callDoc(facetName: string, method: keyof GoogleDocSession, args: unknown[]): Promise<DocCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#gatekeeper(facetName).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleDocSession & Disposable;
+    let outcome: { value?: DocCall["value"]; error?: string };
+    try {
+      let call = session[method] as (...args: unknown[]) => Promise<DocCall["value"]>;
+      outcome = { value: await call(...args) };
+    } catch (error) {
+      outcome = failure(error);
+    }
+    return {
+      ...outcome, actionId: queue.actionId, action: queue.action,
+      observations: queue.observations, reports: queue.reports,
+    };
   }
 
   #slides(facetName: string) {
@@ -386,6 +455,134 @@ export class TestHooks extends DurableObject<Env> {
   /** Leaves a Slides change claimed, as an activation that died while applying it would. */
   async orphanSlidesClaim(facetName: string, actionId: number): Promise<void> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
+  }
+
+  #drive(facetName: string, binding: DriveBinding) {
+    let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
+    return this.ctx.facets.get<GoogleDriveGatekeeperImpl>(facetName, () => ({
+      class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props: { userObjectId, ...binding } }),
+    }));
+  }
+
+  /**
+   * Ends the Drive gatekeeper `facetName` names: the next call starts another activation over the
+   * same storage, with whatever binding that call names.
+   */
+  async restartDrive(facetName: string): Promise<void> {
+    this.ctx.facets.abort(facetName, new Error("Restarted by the test."));
+  }
+
+  /** Records the grants the test user's Google account holds. */
+  async setDriveGrants(patterns: string[]): Promise<void> {
+    let account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromName("test-user"));
+    await (account as unknown as DurableObjectStub<UserAccount>).setGranted(patterns);
+  }
+
+  /**
+   * Calls one method of a fresh Drive session, after opening each folder of `path` in turn,
+   * reporting what it returned, queued and observed. A comment cursor is drained into its pages.
+   */
+  async callDrive(
+    facetName: string, binding: DriveBinding, method: keyof GoogleDriveFolderSession,
+    args: unknown[], path: string[] = [],
+  ): Promise<DriveCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleDriveSession & Disposable;
+    let outcome: { value?: DriveCall["value"]; error?: string };
+    let opened: Disposable[] = [];
+    try {
+      // One class serves every scope and the gatekeeper declares the account's shape, so a folder
+      // binding's session has the folder's methods although its type does not say so.
+      let target: GoogleDriveFolderSession = session as GoogleDriveFolderSession & Disposable;
+      for (let folderId of path) {
+        let folder = await target.openFolder(folderId) as GoogleDriveFolderSession & Disposable;
+        opened.push(folder);
+        target = folder;
+      }
+      let call = target[method] as (...args: unknown[]) => Promise<unknown>;
+      let value = await call(...args);
+      outcome = {
+        value: method === "listComments"
+          ? await drainComments(value as Parameters<typeof drainComments>[0])
+          : value as DriveCall["value"],
+      };
+    } catch (error) {
+      outcome = failure(error);
+    } finally {
+      for (let folder of opened.toReversed()) folder[Symbol.dispose]();
+    }
+    return {
+      ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations,
+      reports: queue.reports,
+    };
+  }
+
+  /** Applies a Drive comment write, returning the error message it failed with, if any. */
+  async applyDrive(facetName: string, binding: DriveBinding, actionId: number)
+      : Promise<string | null> {
+    try {
+      using cache = new RpcStub(new TestGitCache());
+      await this.#drive(facetName, binding).applyAction(actionId, cache);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** Rejects a Drive comment write, returning the error message it was refused with, if any. */
+  async rejectDrive(facetName: string, binding: DriveBinding, actionId: number)
+      : Promise<string | null> {
+    try {
+      await this.#drive(facetName, binding).rejectAction(actionId);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** The action kinds a Drive binding declares auto-approvable. */
+  async driveAutoApprovable(facetName: string, binding: DriveBinding): Promise<ActionKind[]> {
+    return this.#drive(facetName, binding).getAutoApprovableActions();
+  }
+
+  /** How a Drive binding describes its resource. */
+  async describeDrive(facetName: string, binding: DriveBinding): Promise<ResourceDescription> {
+    return this.#drive(facetName, binding).describe();
+  }
+
+  /** The type bundle a Drive binding hands the agent. */
+  async driveTypes(facetName: string, binding: DriveBinding): Promise<string> {
+    return this.#drive(facetName, binding).getTypeScriptTypes();
+  }
+
+  /** Leaves a Drive comment write claimed, as an activation that died while applying it would. */
+  async orphanDriveClaim(facetName: string, binding: DriveBinding, actionId: number)
+      : Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .claimTestAction(actionId);
+  }
+
+  /** Leaves a Drive comment write failed, as a resolution another activation finished would. */
+  async failDriveAction(facetName: string, binding: DriveBinding, actionId: number)
+      : Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .failTestAction(actionId);
+  }
+
+  /** The attempt markers a Drive binding holds, by action ID. */
+  async driveAttempts(facetName: string, binding: DriveBinding)
+      : Promise<Record<number, CommentAttempt>> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testAttempts();
+  }
+
+  /** Moves a Drive comment write's attempt marker `ms` into the past. */
+  async ageDriveAttempt(facetName: string, binding: DriveBinding, actionId: number, ms: number)
+      : Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .ageTestAttempt(actionId, ms);
   }
 
   #sheets(facetName: string) {
@@ -497,6 +694,45 @@ type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction
   // A second journal over the same storage claims it, so the live one never knew of the apply.
   let storage = (this as unknown as TestDurableObjectState).ctx.storage;
   new ActionJournal(storage.kv, { namespace: "slides" }).markClaimed(id);
+};
+
+type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
+  claimTestAction(id: number): void;
+  failTestAction(id: number): void;
+  testAttempts(): Record<number, CommentAttempt>;
+  ageTestAttempt(id: number, ms: number): void;
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).claimTestAction = function(
+  id: number,
+): void {
+  // A second journal over the same storage claims it, so the live one never knew of the apply.
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  new ActionJournal(storage.kv, { namespace: "drive" }).markClaimed(id);
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).failTestAction = function(
+  id: number,
+): void {
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  new ActionJournal(storage.kv, { namespace: "drive" }).markFailed(id, "Failed elsewhere.");
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testAttempts = function(
+): Record<number, CommentAttempt> {
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  return Object.fromEntries([...storage.kv.list<CommentAttempt>({ prefix: COMMENT_ATTEMPT_PREFIX })]
+    .map(([key, attempt]) => [Number(key.slice(COMMENT_ATTEMPT_PREFIX.length)), attempt]));
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).ageTestAttempt = function(
+  id: number, ms: number,
+): void {
+  let kv = (this as unknown as TestDurableObjectState).ctx.storage.kv;
+  let key = `${COMMENT_ATTEMPT_PREFIX}${id}`;
+  let attempt = kv.get<CommentAttempt>(key);
+  if (!attempt) throw new Error(`No attempt marker for action ${id}`);
+  kv.put(key, { ...attempt, at: attempt.at - ms });
 };
 
 type TestGoogleSheetsGatekeeper = GoogleSheetsGatekeeperImpl & {

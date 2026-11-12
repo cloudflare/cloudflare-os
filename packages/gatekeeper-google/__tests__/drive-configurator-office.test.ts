@@ -17,6 +17,7 @@ vi.mock("@gadgets/configurator-ui", () => ({
   Fragment: "Fragment",
   HierarchyPicker: "HierarchyPicker",
   Notice: "Notice",
+  RadioCards: "RadioCards",
   Section: "Section",
 }));
 
@@ -40,7 +41,8 @@ const COPY_DATE = "2026-10-04T00:00:00.000Z";
 async function open(accepted?: string[]) {
   vi.resetModules();
   const spec = (await import("../src/configurator/drive-configurator-ui")).default as unknown as Spec;
-  let values: Values = { ...spec.initial };
+  // These tests are of the Office flow: on Read only, readiness turns on the file alone.
+  let values: Values = { ...spec.initial, access: null };
   const ui = {
     inspectFile: vi.fn(async (_kind: string, _fileId: string): Promise<unknown> => ({ type: "native" })),
     listDriveNodes: vi.fn(async (_parentId: string): Promise<unknown> => ({ nodes: [] })),
@@ -48,6 +50,7 @@ async function open(accepted?: string[]) {
     hasConversionAccess: vi.fn(async () => false),
     convertFile: vi.fn(async (_kind: string, _fileId: string, _opts?: { reuse?: string }): Promise<unknown> =>
       ({ type: "needsAccess" })),
+    getWriteAccess: vi.fn(async () => ({ grant: "g", held: false })),
   };
   const ensureResources = vi.fn(async (_patterns: string[]) => true);
   const context = () => ({
@@ -118,7 +121,7 @@ describe.each([
   });
 
   // The configurator copies each type's pattern; a blueprint binding names one, as accepted.
-  it("binds the type the Workshop accepts, read-only as a Drive file when that is all it takes", async () => {
+  it("binds the type the Workshop accepts, as a Drive file when that is all it takes", async () => {
     const editable = await open([resource.urlPattern]);
     editable.choose(`${kind}:native-1`);
     await settle();
@@ -130,7 +133,8 @@ describe.each([
     expect(readOnly.ui.inspectFile).not.toHaveBeenCalled();
     expect(readOnly.ready()).toBe(true);
     expect(parseResourceUrl(readOnly.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
-    expect(readOnly.notices()).toEqual([{ tone: undefined, text: "Connects read-only as a Drive file." }]);
+    expect(readOnly.notices()).toEqual(
+      [{ tone: undefined, text: "Connects as a Drive file, whose content can be read but not edited." }]);
     expect(readOnly.action()).toBeUndefined();
   });
 
@@ -598,7 +602,7 @@ describe("the Drive picker on a Drive card account without an editable type's gr
   const DRIVE_TYPES = [GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE]
     .map(resource => resource.urlPattern);
 
-  it("connects a file read-only, and offers to ask for every editable type the account lacks", async () => {
+  it("connects a file as a Drive file, and offers to ask for every editable type the account lacks", async () => {
     const frame = await open([...DRIVE_TYPES, GOOGLE_DOC_RESOURCE.urlPattern]);
     const asked = Promise.withResolvers<boolean>();
     frame.ensureResources.mockReturnValue(asked.promise);
@@ -608,7 +612,8 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     expect(parseResourceUrl(frame.url())).toEqual({ kind: "driveFile", fileId: "native-1" });
     expect(frame.notices()).toEqual([{
       tone: undefined,
-      text: "Connects read-only as a Drive file. To edit it as a Google Sheets file, allow editing and choose it again.",
+      text: "Connects as a Drive file, whose content can be read but not edited. " +
+        "To edit it as a Google Sheets file, allow editing and choose it again.",
     }]);
 
     frame.action()!.onClick();
@@ -632,13 +637,15 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     frame.choose("slides:native-2");
     expect(frame.notices()).toEqual([{
       tone: undefined,
-      text: "Connects read-only as a Drive file. To edit it as a Google Slides file, allow editing and choose it again.",
+      text: "Connects as a Drive file, whose content can be read but not edited. " +
+        "To edit it as a Google Slides file, allow editing and choose it again.",
     }]);
 
     frame.action()!.onClick();
     await settle();
     expect(frame.notices()).toEqual([{
-      tone: undefined, text: "Editing isn't available here, so this connects read-only as a Drive file.",
+      tone: undefined,
+      text: "Editing isn't available here, so this connects as a Drive file, whose content can be read but not edited.",
     }]);
     expect(frame.action()).toBeUndefined();
     expect(frame.ready()).toBe(true);

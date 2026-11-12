@@ -28,11 +28,12 @@ import type {
 import type { ChatSpaceConfiguratorRpc } from "./configurator/chat-space-configurator-types";
 import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-configurator-types";
 import type {
-  DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
+  DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage, DriveWriteAccess,
 } from "./configurator/drive-configurator-types";
 import type { CreationLocationConfiguratorRpc } from "./configurator/creation-location-configurator-types";
 import {
-  BIGQUERY_HOST, CREATED_FILES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT,
+  BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl,
+  SHARED_DRIVES_GRANT,
 } from "./resources";
 
 /**
@@ -56,6 +57,13 @@ function googleToken(target: object, opts?: AccessTokenRequest): Promise<GoogleA
   let getToken = googleTokenGetters.get(target);
   if (!getToken) throw new Error("Google configurator is not initialized.");
   return getToken(opts);
+}
+
+/** Whether the account `target` was opened for holds `grant`, asked afresh on every call. */
+function holdsGrant(target: object, grant: string): Promise<boolean> {
+  let holds = grantChecks.get(target);
+  if (!holds) throw new Error("Google configurator is not initialized.");
+  return holds(grant);
 }
 
 /** A provider that re-asks on every call, so `fetchWithAuthRetry` can refresh a rejected token. */
@@ -707,6 +715,10 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
 
   async convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
     return officeConversion(this, kind).convertFile(fileId, opts);
+  }
+
+  async getWriteAccess(): Promise<DriveWriteAccess> {
+    return { grant: DRIVE_WRITES_GRANT, held: await holdsGrant(this, DRIVE_WRITES_GRANT) };
   }
 }
 

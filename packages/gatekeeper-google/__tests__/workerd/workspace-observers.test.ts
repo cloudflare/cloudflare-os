@@ -6,13 +6,15 @@
 import {env} from "cloudflare:workers";
 import {runInDurableObject} from "cloudflare:test";
 import {afterEach, describe, expect, it, vi} from "vitest";
+import type {GoogleDriveSession} from "../../src/drive-types";
+import {GatekeeperUserImpl} from "../../src/google";
 import {GOOGLE_DRIVE_RESOURCE, resourceUrlPatternsToOAuthScopes} from "../../src/resources";
 import {presentation, shape, slide, text} from "../slides-fixture";
-import type {TestHooks, WorkspaceBinding} from "./worker";
+import type {TestHooks, UserAccount, WorkspaceBinding} from "./worker";
 
 const testEnv = env as unknown as {
   GoogleDocGatekeeperImpl: DurableObjectNamespace;
-  UserAccount: DurableObjectNamespace;
+  UserAccount: DurableObjectNamespace<UserAccount>;
   TestHooks: DurableObjectNamespace<TestHooks>;
 };
 
@@ -43,7 +45,7 @@ type FileNode = {
   name: string;
   mimeType: string;
   trashed: boolean;
-  capabilities?: {canListChildren?: boolean; canDownload?: boolean};
+  capabilities?: {canListChildren?: boolean; canDownload?: boolean; canComment?: boolean};
 };
 
 type Observation = {
@@ -56,6 +58,8 @@ type Observation = {
 type WorkspaceBackendState = {
   /** The files each observer token may open, in Drive and in Docs, Sheets or Slides. */
   access: Map<string, string[]>;
+  /** Observer tokens that may open a file and not comment on it. */
+  viewers: Set<string>;
   /** Observer tokens whose lookups fail as an outage would. */
   failing: Set<string>;
   /**
@@ -137,15 +141,22 @@ const FILES: Record<string, FileNode> = {
  * Drive, Docs, Sheets and Slides as far as these reads and checks use them. Every lookup answers
  * the owner, and answers an observer only for the files `access` grants its token (Drive with
  * 404, the others with 403), failing with 500 for a token in `failing` and, in Docs, Sheets and
- * Slides, with a reasoned 403 for a token in `refusals`.
+ * Slides, with a reasoned 403 for a token in `refusals`. Drive says of each file it shows whether
+ * the account may comment on it: not a token in `viewers`, and anyone else. No file has comments.
+ * A token's revocation, which disconnecting an account asks for, succeeds.
  */
 function workspaceBackend(): WorkspaceBackend {
-  const state: WorkspaceBackendState = {access: new Map(), failing: new Set(), refusals: new Map(), lookups: []};
-  const visible = (token: string, id: string): FileNode | undefined =>
-    token === OWNER_TOKEN || state.access.get(token)?.includes(id) ? FILES[id] : undefined;
+  const state: WorkspaceBackendState = {
+    access: new Map(), viewers: new Set(), failing: new Set(), refusals: new Map(), lookups: [],
+  };
+  const visible = (token: string, id: string): FileNode | undefined => {
+    const node = token === OWNER_TOKEN || state.access.get(token)?.includes(id) ? FILES[id] : undefined;
+    return node && {...node, capabilities: {...node.capabilities, canComment: !state.viewers.has(token)}};
+  };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const token = new Headers(init.headers).get("Authorization")?.replace(/^Bearer /, "") ?? "";
     const observer = token !== OWNER_TOKEN;
+    if (url.hostname === "oauth2.googleapis.com" && url.pathname === "/revoke") return json({});
     if (url.pathname === "/batch/drive/v3") {
       const ids = [...String(init.body).matchAll(/GET \/drive\/v3\/files\/([^?]+)\?/g)]
         .map(match => decodeURIComponent(match[1]));
@@ -153,6 +164,7 @@ function workspaceBackend(): WorkspaceBackend {
       if (state.failing.has(token)) return json({error: {code: 500, message: "Backend error"}}, 500);
       return batchResponse(ids, id => visible(token, id));
     }
+    if (/^\/drive\/v3\/files\/[^/]+\/comments$/.test(url.pathname)) return json({comments: []});
     const id = decodeURIComponent(url.pathname.split("/").at(-1)!);
     if (observer) state.lookups.push(`${token} ${url.hostname} ${id}`);
     if (state.failing.has(token)) return json({error: {code: 500, message: "Backend error"}}, 500);
@@ -232,12 +244,19 @@ function workspaceHarness<K extends WorkspaceBinding["kind"]>(
     driveSession: async () => hook.openDriveSession(facetName, id, await propsOf("drive"), queueId),
     /**
      * An observer's account, which Google lets open `files`, holding a Drive grant only with
-     * `drive`.
+     * `drive`, and able to comment on those files unless `canComment` is false.
      */
-    observer: (token: string, files: string[], {drive = false} = {}): Promise<string> => {
+    observer: (
+        token: string, files: string[], {drive = false, canComment = true} = {},
+    ): Promise<string> => {
       backend.state.access.set(token, files);
+      if (!canComment) backend.state.viewers.add(token);
       return account(token, drive ? [GOOGLE_DRIVE_RESOURCE.urlPattern] : undefined);
     },
+    /** Disconnects the owner's Google account, as the Workshop does through `GatekeeperUser.revoke()`. */
+    disconnectOwner: () => runInDurableObject(
+      testEnv.UserAccount.get(testEnv.UserAccount.idFromName(`${name}-${OWNER_TOKEN}`)),
+      (instance: UserAccount) => instance.revoke()),
     addObserver: async (observerId: string, userObjectId: string) =>
       hook.workspaceAddObserver(facetName, id, await binding, queueId, observerId, userObjectId),
     verify: async (observers: Array<{id: string; userObjectId: string}>, subresources: string[]) =>
@@ -305,9 +324,69 @@ describe("Drive, Docs, Sheets and Slides observations", () => {
     ]);
     for (const observation of observations) expect(observation.excludeObservers).toBeUndefined();
   });
+
+  it("report the file, and nothing about comments, on a comment listing, the empty page included", async () => {
+    const drive = workspaceHarness(workspaceBackend(), "drive", {scope: {kind: "account"}});
+    using session = await drive.driveSession();
+    using cursor = await session.listComments(DOC);
+    expect(await cursor.next()).toBeNull();
+
+    const observations = await drive.observations();
+    expect(observations.map(observation => observation.title))
+      .toEqual(["Open Google Drive comments", "Read Google Drive comments"]);
+    for (const observation of observations) {
+      expect(observation.subresources).toEqual([`drive/file/${DOC}`]);
+      expect(observation.excludeObservers).toBeUndefined();
+    }
+  });
 });
 
+/**
+ * Lists a file's comments through a Drive account binding of `access`, and asks which of four
+ * observers may see what the listing's last observation reported: one who can open the file and
+ * comment on it, one who can only view it, one who holds no Drive grant, and one who cannot open
+ * it.
+ */
+async function commentObservers(access?: "write") {
+  const backend = workspaceBackend();
+  const drive = workspaceHarness(
+    backend, "drive", {scope: {kind: "account"}, ...(access ? {access} : {})});
+  using session = await drive.driveSession();
+  using cursor = await session.listComments(DOC);
+  expect(await cursor.next()).toBeNull();
+  const reported = (await drive.observations()).at(-1)?.subresources ?? [];
+  const observers = [
+    {id: "commenter", userObjectId: await drive.observer("commenter-token", [DOC], {drive: true})},
+    {
+      id: "viewer",
+      userObjectId: await drive.observer("viewer-token", [DOC], {drive: true, canComment: false}),
+    },
+    {id: "ungranted", userObjectId: await drive.observer("ungranted-token", [DOC])},
+    {id: "outsider", userObjectId: await drive.observer("outsider-token", [], {drive: true})},
+  ];
+  return {reported, allowed: await drive.verify(observers, reported), lookups: backend.state.lookups};
+}
+
 describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
+  it("admits to a file's comments whoever can open the file, whether or not they can comment on it", async () => {
+    const {reported, allowed, lookups} = await commentObservers();
+
+    expect(reported).toEqual([`drive/file/${DOC}`]);
+    expect(allowed).toEqual({allowedObserverIds: ["commenter", "viewer"]});
+    expect(lookups).toEqual(expect.arrayContaining([
+      `commenter-token drive ${DOC}`, `viewer-token drive ${DOC}`, `outsider-token drive ${DOC}`,
+    ]));
+    // Denied for the missing Drive grant, without Drive being asked.
+    expect(lookups.filter(lookup => lookup.startsWith("ungranted-token"))).toEqual([]);
+  });
+
+  it("checks a read and write binding's observers as a read-only one's", async () => {
+    const {reported, allowed} = await commentObservers("write");
+
+    expect(reported).toEqual([`drive/file/${DOC}`]);
+    expect(allowed).toEqual({allowedObserverIds: ["commenter", "viewer"]});
+  });
+
   it.each([
     {kind: "doc", scope: {documentId: DOC}, file: DOC, subresource: `docs/document/${DOC}`},
     {kind: "sheets", scope: {spreadsheetId: SHEET}, file: SHEET, subresource: `sheets/spreadsheet/${SHEET}`},
@@ -360,15 +439,21 @@ describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
   it.each([
     {
       kind: "doc", scope: {documentId: DOC}, valid: `docs/document/${DOC}`,
-      refused: ["sheets/spreadsheet/x", `drive/file/${DOC}`, "slides/presentation/x", "docs/document/d%6Fc"],
+      refused: [
+        "sheets/spreadsheet/x", `drive/file/${DOC}`, "slides/presentation/x", "docs/document/d%6Fc",
+        `drive/comments/${DOC}`,
+      ],
     },
     {
       kind: "sheets", scope: {spreadsheetId: SHEET}, valid: `sheets/spreadsheet/${SHEET}`,
-      refused: ["docs/document/x", `drive/file/${SHEET}`, "sheets/spreadsheet/x/sheet/0"],
+      refused: [
+        "docs/document/x", `drive/file/${SHEET}`, "sheets/spreadsheet/x/sheet/0",
+        `drive/comments/${DOC}`,
+      ],
     },
     {
       kind: "slides", scope: {presentationId: DECK}, valid: `slides/presentation/${DECK}`,
-      refused: ["sheets/spreadsheet/x", `drive/folder/${DECK}`],
+      refused: ["sheets/spreadsheet/x", `drive/folder/${DECK}`, `drive/comments/${DOC}`],
     },
     {
       kind: "drive", scope: {scope: {kind: "account"}}, valid: `drive/file/${DOC}`,
@@ -379,6 +464,8 @@ describe("Drive, Docs, Sheets and Slides verifyObserverAccess", () => {
         "drive/drive/x",
         "drive/file/x/folder/y",
         "drive/file",
+        // No binding reports a file's comments under an ID of their own.
+        `drive/comments/${DOC}`,
       ],
     },
   ] as const)("refuses the whole $kind call for an ID that binding never reports", async ({
@@ -449,5 +536,71 @@ describe("Drive, Docs, Sheets and Slides addObserver", () => {
     await expect(drive.addObserver("outsider", await drive.observer("outsider-token", [], {drive: true})))
       .rejects.toThrow("cannot access Drive data this workspace has read");
     await drive.addObserver("viewer", await drive.observer("viewer-token", [DOC], {drive: true}));
+  });
+});
+
+/**
+ * The four comment writes on `session`, each as a native promise: an RPC promise is callable, and
+ * `rejects` calls what it can.
+ */
+const commentWrites = (
+    session: Pick<GoogleDriveSession, "comment" | "suggestEdit" | "reply" | "resolve">,
+) => [
+  async () => await session.comment(DOC, "Hi"),
+  async () => await session.suggestEdit(DOC, "Hello", "Hi"),
+  async () => await session.reply(DOC, "doco.c1", "Yes."),
+  async () => await session.resolve(DOC, "doco.c1"),
+];
+
+describe("a read and write Drive binding's comment writes, by its account", () => {
+  it("name the step that allows changes while the account is connected and lacks the grant", async () => {
+    const drive = workspaceHarness(
+      workspaceBackend(), "drive", {scope: {kind: "account"}, access: "write"});
+    using session = await drive.driveSession();
+    for (const write of commentWrites(session)) {
+      await expect(write()).rejects.toThrow("select \"Allow changes\"");
+    }
+    expect(await drive.observations()).toEqual([]);
+  });
+
+  // A disconnected account records no grant either, but allowing changes cannot restore its
+  // connection: the binding names an account that is gone, and connecting again makes another.
+  it("fail as its reads do once the account is disconnected, naming no step that cannot help", async () => {
+    const drive = workspaceHarness(
+      workspaceBackend(), "drive", {scope: {kind: "account"}, access: "write"});
+    using session = await drive.driveSession();
+    await drive.disconnectOwner();
+    const disconnected = "The Google account this connection was made with has been disconnected";
+    for (const write of commentWrites(session)) {
+      await expect(write()).rejects.toThrow(disconnected);
+    }
+    await expect(Promise.resolve(session.getEntry(DOC))).rejects.toThrow(disconnected);
+    expect(await drive.observations()).toEqual([]);
+  });
+});
+
+/** The props the account's entrypoint mints a Drive binding with for `url`. */
+async function mintedProps(url: string) {
+  const ctx = {
+    props: {userObjectId: "account-id"},
+    exports: {GoogleDriveGatekeeperImpl: ({props}: {props: unknown}) => props},
+  };
+  const minted = await new GatekeeperUserImpl(ctx as never, {} as never).getGatekeeperClassFor(url);
+  return minted.class as unknown;
+}
+
+describe("a Drive resource URL's access level", () => {
+  it.each([
+    ["https://drive.google.com/drive/my-drive", {kind: "account"}],
+    ["https://drive.google.com/drive/folders/F1", {kind: "folder", folderId: "F1"}],
+    ["https://drive.google.com/file/d/D1/view", {kind: "file", fileId: "D1"}],
+  ])("reaches the binding's props only as ?access=write (%s)", async (url, scope) => {
+    for (const query of ["", "?access=read", "?access=WRITE", "?usp=sharing"]) {
+      // Strict, so that a props object holding an `access` key fails, one holding `undefined` too.
+      expect(await mintedProps(url + query), query)
+        .toStrictEqual({userObjectId: "account-id", scope});
+    }
+    expect(await mintedProps(`${url}?access=write`))
+      .toStrictEqual({userObjectId: "account-id", scope, access: "write"});
   });
 });

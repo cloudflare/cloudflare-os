@@ -353,10 +353,11 @@ describe("creating a Google Drive folder", () => {
     expect(await hooks().createResource("create-folder", FOLDER_PATTERN, "Q3 plans"))
       .toMatchObject({ action: { title: "Create Google Drive Folder: Q3 plans" } });
     expect(await hooks().describe("create-folder")).toMatchObject({
-      title: "Q3 plans", url: "https://drive.google.com/drive/", tsType: "GoogleDriveFolderSession",
+      title: "Q3 plans", url: "https://drive.google.com/drive/", tsType: "GoogleDriveFolderReadSession",
     });
     expect(await hooks().readDriveFolder("create-folder")).toEqual({
-      scope: { kind: "folder", folderId: "", rootFolderId: "", name: "Q3 plans" }, entries: null,
+      scope: { kind: "folder", folderId: "", rootFolderId: "", name: "Q3 plans", access: "read" },
+      entries: null,
     });
     expect(await hooks().lastObservations).toEqual([
       'Listed Drive folder "Q3 plans", not created yet: empty.',

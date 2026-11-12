@@ -1,11 +1,11 @@
 import {
-  Button, Field, Fragment, h, HierarchyPicker, Notice, Section,
+  Button, Field, Fragment, h, HierarchyPicker, Notice, RadioCards, Section,
   type ConfiguratorUIHierarchyAncestor, type ConfiguratorUIHierarchyItem,
   type ConfiguratorUIRenderContext, type ConfiguratorUISpec,
 } from "@gadgets/configurator-ui";
 import type {
-  DriveConfiguratorRpc, DriveConfiguratorValues, DriveNode, DriveNodeAncestor, OfficeConversionResult,
-  OfficeFileInspection, OfficeKind,
+  DriveConfiguratorRpc, DriveConfiguratorValues, DriveNode, DriveNodeAncestor, DriveWriteAccess,
+  OfficeConversionResult, OfficeFileInspection, OfficeKind,
 } from "./drive-configurator-types";
 
 // Must mirror `parseDriveUrl` and `parseDocsUrl` in resources.ts, which are what actually mint the
@@ -54,7 +54,7 @@ const allows = (accepted: readonly string[] | undefined, pattern: string) =>
 /**
  * The type a node binds among those the Workshop accepts (an older Workshop does not say, and takes
  * any), or undefined for a grouping or a type it does not take. A Docs, Sheets or Slides file binds
- * its editable type, or, where only Drive files are taken, a read-only Drive file.
+ * its editable type, or, where only Drive files are taken, binds as a Drive file.
  */
 const patternOf = (id: string, accepted: readonly string[] | undefined): string | undefined => {
   const editor = editorOf(id);
@@ -72,6 +72,25 @@ const editing = (id: string, accepted: readonly string[] | undefined): OfficeKin
   const editor = editorOf(id);
   return editor && patternOf(id, accepted) === EDITORS[editor].pattern ? editor : undefined;
 };
+
+/** Whether `id` connects as a Drive type, all of Drive, a folder or a Drive file, among those the Workshop accepts. */
+const bindsDrive = (id: string | null | undefined, accepted: readonly string[] | undefined): boolean => {
+  const pattern = id ? patternOf(id, accepted) : undefined;
+  return pattern === ACCOUNT_PATTERN || pattern === FOLDER_PATTERN || pattern === FILE_PATTERN;
+};
+
+/** Whether the values choose a read and write connection of a Drive type. */
+const writing = ({ target, access }: DriveConfiguratorValues, accepted: readonly string[] | undefined) =>
+  access === "write" && bindsDrive(target, accepted);
+
+/**
+ * The editable types the Google Drive card offers that the account has not granted. None for a
+ * blueprint's binding, which takes its own type alone, rather than all of Drive and folders too.
+ */
+const ungrantedEditors = (accepted: readonly string[] | undefined): string[] =>
+  accepted && allows(accepted, ACCOUNT_PATTERN) && allows(accepted, FOLDER_PATTERN)
+    ? Object.values(EDITORS).map(({ pattern }) => pattern).filter(pattern => !accepted.includes(pattern))
+    : [];
 
 const icon = (d: string, fill = "currentColor") => <svg viewBox="0 0 24 24" fill={fill}><path d={d} /></svg>;
 
@@ -253,9 +272,10 @@ const allow = async ({ ensureResources, setValues }: Context, grant: string) => 
 };
 
 /**
- * Asking for the editable types from a read-only file's notice: `busy` while Google's pop-up is
- * open, `error` when asking failed, and `unavailable` when the account held them already, so the
- * card leaves them out on purpose (an admin disabled them). A grant restarts the picker, clearing it.
+ * Asking for the editable types from the notice of a file that connects as a Drive file: `busy`
+ * while Google's pop-up is open, `error` when asking failed, and `unavailable` when the account
+ * held them already, so the card leaves them out on purpose (an admin disabled them). A grant
+ * restarts the picker, clearing it.
  */
 let editAccess: { busy?: boolean; error?: string; unavailable?: boolean } = {};
 
@@ -269,6 +289,72 @@ const allowEditing = async ({ ensureResources, setValues }: Context, grants: str
     (error: unknown) => ({ error: errorMessage(error, "Access wasn't allowed.") }));
   setValues({});
 };
+
+/**
+ * What the gatekeeper last said of whether the account allows changes, and what asking for that
+ * has come to. Module state, as the runtime keeps none for a module.
+ */
+let writes: {
+  known?: DriveWriteAccess;
+  /** The gatekeeper is being asked; Workshop has not answered the request; Google's window is open. */
+  busy?: "checking" | "asking" | "waiting";
+  /** A check has run long enough to say so. */
+  slow?: true;
+  error?: string;
+  /** The grant arrived through Allow changes, which the notice then says. */
+  allowed?: true;
+} = {};
+/** Bumped by every check, every Allow changes click and every return to Read only, so only the latest updates `writes`. */
+let writeRun = 0;
+
+/**
+ * Whether the form opened on Read and write because the resource URL asked for it, and the access
+ * choice has not been changed since. The choice sits below the list, so while this holds the form
+ * says the level in its first line.
+ */
+let presetWrite = false;
+
+/**
+ * Asks the gatekeeper whether the account allows changes. Never rejects: a failure is shown.
+ * `rerender` also shows the check's notice once it is slow.
+ */
+async function checkWrites(ui: DriveConfiguratorRpc, rerender?: () => void): Promise<void> {
+  const run = ++writeRun;
+  writes = { ...(writes.known ? { known: writes.known } : {}), busy: "checking" };
+  rerender?.();
+  const slow = setTimeout(() => {
+    if (run !== writeRun) return;
+    writes = { ...writes, slow: true };
+    rerender?.();
+  }, CHECKING_NOTICE_DELAY_MS);
+  try {
+    const known = await ui.getWriteAccess();
+    if (run !== writeRun) return;
+    writes = { known };
+  } catch (error) {
+    if (run !== writeRun) return;
+    writes = { error: errorMessage(error, "Couldn't check whether changes are allowed.") };
+  } finally {
+    clearTimeout(slow);
+  }
+  rerender?.();
+}
+
+/** The user's access choice. Read and write is checked against the account unless it is known to allow changes. */
+function chooseAccess(context: Context, next: string) {
+  const { setValues, ui } = context;
+  // A choice made here is the user's own, whichever card it is.
+  presetWrite = false;
+  if (next !== "write") {
+    // Lets go of a check or a wait in flight; what is known of the account stays.
+    writeRun++;
+    writes = writes.known ? { known: writes.known } : {};
+    setValues({ access: null });
+    return;
+  }
+  setValues({ access: "write" });
+  if (!writes.known?.held && writes.busy === undefined) void checkWrites(ui, () => setValues({}));
+}
 
 type OfficeFile = Extract<OfficeFileInspection, { type: "office" }>;
 type Converted = Extract<OfficeConversionResult, { type: "converted" }>;
@@ -447,31 +533,135 @@ function convertedText({ kind, copy }: Extract<Flow, { step: "converted" }>): st
     "The original is unchanged, and later edits to it won't sync.";
 }
 
+const AS_DRIVE_FILE = "Connects as a Drive file, whose content can be read but not edited.";
+
 /**
- * Says a Docs, Sheets or Slides file the Workshop takes only as a Drive file connects read-only, and
- * on the Google Drive card offers to ask for the editable types the account lacks.
+ * Says a Docs, Sheets or Slides file the Workshop takes only as a Drive file connects as a Drive
+ * file, and on the Google Drive card offers to ask for the editable types the account lacks.
  */
-function readOnlyNotice(context: Context) {
+function driveFileNotice(context: Context) {
   const { values: { target }, acceptedResourceUrlPatterns: accepted } = context;
   const editor = editorOf(target ?? "");
   if (!editor || patternOf(target!, accepted) !== FILE_PATTERN) return null;
-  // The editable types the Google Drive card offers that the account has not granted. None for a
-  // blueprint's binding, which takes its own type alone, rather than all of Drive and folders too.
-  const ungranted = accepted?.includes(ACCOUNT_PATTERN) && accepted.includes(FOLDER_PATTERN)
-    ? Object.values(EDITORS).map(({ pattern }) => pattern).filter(pattern => !accepted.includes(pattern))
-    : [];
-  if (editAccess.unavailable) return <Notice>Editing isn't available here, so this connects read-only as a Drive file.</Notice>;
-  if (!ungranted.length) return <Notice>Connects read-only as a Drive file.</Notice>;
+  const ungranted = ungrantedEditors(accepted);
+  if (editAccess.unavailable) {
+    return <Notice>
+      {"Editing isn't available here, so this connects as a Drive file, whose content can be read but not edited."}
+    </Notice>;
+  }
+  if (!ungranted.length) return <Notice>{AS_DRIVE_FILE}</Notice>;
   const action = { label: "Allow editing", disabled: editAccess.busy, onClick: () => void allowEditing(context, ungranted) };
   return editAccess.error
     ? <Notice tone="error" action={action}>{editAccess.error}</Notice>
     : <Notice action={action}>
-      {`Connects read-only as a Drive file. To edit it as a Google ${EDITORS[editor].title} file, allow editing and choose it again.`}
+      {`${AS_DRIVE_FILE} To edit it as a Google ${EDITORS[editor].title} file, allow editing and choose it again.`}
     </Notice>;
 }
 
+/**
+ * Asks for the grant from the click, then asks the gatekeeper until the account holds it. Once
+ * Workshop has answered, a newer click (after the window was closed, say) asks again and takes
+ * over.
+ */
+function allowChanges({ ensureResources, setValues, ui }: Context, known: DriveWriteAccess) {
+  const asked = ensureResources([known.grant]);
+  const run = ++writeRun;
+  const show = (next: typeof writes) => {
+    writes = next;
+    setValues({});
+  };
+  show({ known, busy: "asking" });
+  void (async () => {
+    try {
+      const held = await asked;
+      if (run !== writeRun) return;
+      show({ known, busy: "waiting" });
+      const deadline = Date.now() + ACCESS_WAIT_MS;
+      // When Workshop already sees the grant it opened no window, so ask once, at once.
+      for (let wait = held ? 0 : ACCESS_POLL_MS; Date.now() < deadline; wait = ACCESS_POLL_MS) {
+        await sleep(wait);
+        if (run !== writeRun) return;
+        const latest = await ui.getWriteAccess();
+        if (run !== writeRun) return;
+        if (latest.held) {
+          show({ known: latest, allowed: true });
+          return;
+        }
+        if (held) throw new Error("Google hasn't allowed changes. Select Allow changes to try again.");
+      }
+      throw new Error("Changes weren't allowed within 3 minutes. Select Allow changes to try again.");
+    } catch (error) {
+      if (run !== writeRun) return;
+      show({ known, error: errorMessage(error, "Changes weren't allowed.") });
+    }
+  })();
+}
+
+const WRITE_PROMPT = "Read and write needs one more permission from Google. Google will ask to " +
+  "let this app \"See, edit, create, and delete all your Google Drive files\". It is used only " +
+  "for changes you approve: a connection still reaches only what you choose.";
+
+/**
+ * Follows the prompt on a card that lacks an editable type. The consent asks again for everything
+ * the account has asked for before, and a type it grants makes Workshop restart the picker.
+ */
+const RESTART_HINT = "Allowing it can reset what you chose here: if it does, choose again.";
+
+const PRESET_READY = "Read and write access is chosen for this connection. To change it, see " +
+  "Access, below the list.";
+const PRESET_PENDING = "Read and write access is chosen for this connection, and needs one more " +
+  "step. See Access, below the list.";
+
+/**
+ * Says, as the form's first line, a level the resource URL chose and the user has not: the choice
+ * itself, and what it still needs of the account, sit below the list.
+ */
+function presetNotice(context: Context) {
+  if (!presetWrite || !writing(context.values, context.acceptedResourceUrlPatterns)) return null;
+  return <Notice>{writes.known?.held ? PRESET_READY : PRESET_PENDING}</Notice>;
+}
+
+/**
+ * The access choice, for a target that connects as a Drive type. Read and write is the default, so
+ * the account is asked whether it allows changes once a Drive target is first chosen with it.
+ */
+function accessField(context: Context) {
+  const { values, acceptedResourceUrlPatterns: accepted, ui, setValues } = context;
+  if (!bindsDrive(values.target, accepted)) return null;
+  if (writing(values, accepted) && !writes.known && writes.busy === undefined && !writes.error) {
+    void checkWrites(ui, () => setValues({}));
+  }
+  return <Field label="Access">
+    <RadioCards
+      value={values.access === "write" ? "write" : "read"}
+      options={[
+        { value: "write", title: "Read and write", description: "Comments can also be added, replied to and resolved. Each change waits for your approval." },
+        { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
+      ]}
+      onChange={next => chooseAccess(context, next)}
+    />
+  </Field>;
+}
+
+/** What a read and write choice still needs of the account, with the one step that gets it. */
+function writeNotice(context: Context) {
+  if (!writing(context.values, context.acceptedResourceUrlPatterns)) return null;
+  const { known, busy, slow, error, allowed } = writes;
+  if (known?.held) return allowed ? <Notice>Changes are allowed.</Notice> : null;
+  if (!known) {
+    if (busy === "checking") return slow ? <Notice>Checking whether changes are allowed…</Notice> : null;
+    const retry = { label: "Check again", onClick: () => void checkWrites(context.ui, () => context.setValues({})) };
+    return <Notice tone="error" action={retry}>{error ?? "Couldn't check whether changes are allowed."}</Notice>;
+  }
+  const ask = { label: "Allow changes", disabled: busy === "asking", onClick: () => allowChanges(context, known) };
+  if (error) return <Notice tone="error" action={ask}>{error}</Notice>;
+  if (busy === "waiting") return <Notice action={ask}>Waiting for permission in Google's window…</Notice>;
+  const restarts = ungrantedEditors(context.acceptedResourceUrlPatterns).length > 0;
+  return <Notice action={ask}>{restarts ? `${WRITE_PROMPT} ${RESTART_HINT}` : WRITE_PROMPT}</Notice>;
+}
+
 function officeNotices(context: Context) {
-  if (flow.step === "idle") return readOnlyNotice(context);
+  if (flow.step === "idle") return driveFileNotice(context);
   if (flow.step === "converted") return <Notice>{convertedText(flow)}</Notice>;
   // A notice describes the file chosen now; a choice the picker let go of takes its notice with it.
   if (flow.target !== context.values.target) return null;
@@ -525,40 +715,59 @@ function officeNotices(context: Context) {
 }
 
 export default {
-  initial: { target: null },
+  // Read and write by default; a resource URL that does not ask for it opens on Read only.
+  initial: { target: null, access: "write" },
   async initialValuesFromResourceUrl({ resourceUrl, ui, acceptedResourceUrlPatterns }) {
     if (!URL.canParse(resourceUrl)) return {};
-    const { pathname } = new URL(resourceUrl);
-    if (/^\/drive\/my-drive\/?$/.test(pathname)) return { target: ROOT_ID };
+    const url = new URL(resourceUrl);
+    const { pathname } = url;
+    // Read as `parseDriveUrl` reads it: exactly `write`. The account is asked here, before the
+    // first render, so the dialog opens knowing whether Allow changes is needed.
+    const seed = async (target: string) => {
+      if (url.searchParams.get("access") !== "write") return { target, access: null };
+      await checkWrites(ui);
+      presetWrite = true;
+      return { target, access: "write" };
+    };
+    if (/^\/drive\/my-drive\/?$/.test(pathname)) return seed(ROOT_ID);
     const folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(pathname);
-    if (folder) return { target: `folder:${decodeURIComponent(folder[1])}` };
+    if (folder) return seed(`folder:${decodeURIComponent(folder[1])}`);
     const file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(pathname);
-    if (file) return { target: `file:${decodeURIComponent(file[1])}` };
+    if (file) return seed(`file:${decodeURIComponent(file[1])}`);
     // An editor's URL, read as `parseDocsUrl` does, but only with an ID in Drive's alphabet, which
     // `inspectFile` requires.
     const [, path, d, id] = pathname.split("/");
     const kind = (Object.keys(EDITORS) as OfficeKind[]).find(kind => EDITORS[kind].path === path);
     if (!kind || d !== "d" || id === undefined || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) return {};
     const target = `${kind}:${id}`;
-    if (!editing(target, acceptedResourceUrlPatterns)) return { target };
+    // Bound as a Drive file on a card without its editable type, so its access is read as a
+    // Drive link's: Read only unless the URL asks for Read and write.
+    if (!editing(target, acceptedResourceUrlPatterns)) return seed(target);
     const checked = await check(ui, target);
     // Anything else stays chosen but unchecked, so its notice says why it cannot be connected.
     return checked === undefined ? {} : checked ? { target, checked } : { target };
   },
-  isReady: ({ values: { target, checked }, acceptedResourceUrlPatterns: accepted }) =>
-    typeof target === "string" && patternOf(target, accepted) !== undefined &&
-    (editing(target, accepted) === undefined || checked === target),
-  resourceUrl: ({ values: { target }, acceptedResourceUrlPatterns: accepted }) => {
+  isReady: ({ values, acceptedResourceUrlPatterns: accepted }) => {
+    const { target, checked } = values;
+    return typeof target === "string" && patternOf(target, accepted) !== undefined &&
+      (editing(target, accepted) === undefined || checked === target) &&
+      (!writing(values, accepted) || writes.known?.held === true);
+  },
+  resourceUrl: ({ values, acceptedResourceUrlPatterns: accepted }) => {
+    const { target } = values;
     const pattern = target ? patternOf(target, accepted) : undefined;
     if (!target || !pattern) throw new Error("Choose what to connect.");
     const id = encodeURIComponent(fileIdOf(target));
     const editor = editing(target, accepted);
-    return editor ? `https://docs.google.com/${EDITORS[editor].path}/d/${id}/edit` : pattern.replace(/:\w+Id\b/, () => id);
+    if (editor) return `https://docs.google.com/${EDITORS[editor].path}/d/${id}/edit`;
+    const url = pattern.replace(/:\w+Id\b/, () => id);
+    return writing(values, accepted) ? `${url}?access=write` : url;
   },
   render(context) {
     const { values: { target = null }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
     const pending = access;
     return <Section>
+      {presetNotice(context)}
       <Field label="What to connect">
         <HierarchyPicker
           name="target"
@@ -592,6 +801,8 @@ export default {
         />
       </Field>
       {officeNotices(context)}
+      {accessField(context)}
+      {writeNotice(context)}
       {pending && <Notice tone={pending.note?.tone} action={{ label: "Allow access", onClick: () => void allow(context, pending.grant) }}>
         {pending.note?.text ?? "Google will ask to let this app \"View and download all your Drive files\". It is used " +
           "only to list your shared drives: a connection still reaches only what you choose."}
