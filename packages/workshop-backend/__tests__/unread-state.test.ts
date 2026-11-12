@@ -172,6 +172,82 @@ describe("persisted visible positions", () => {
   });
 });
 
+describe("spawned chat notifications", () => {
+  it("excludes spawned chats from unread badges and alerts, including after eviction", async () => {
+    const fixture = await setup();
+    const {reader} = await addReader(fixture);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
+      write(impl, 0, "Task");
+      write(impl, 1, "Done");
+      // An outcome queued by the previous deployment must not produce an alert either.
+      impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 1, sequence: 1,
+        userId: fixture.user.id.toString(), kind: "permissionRequested"});
+      await impl.deliverDirtyChats();
+      expect([...impl.storage.chats.list()]).toHaveLength(2);
+    });
+    await evictDurableObject(fixture.workspace);
+    await append(fixture, 2, "Later callback");
+    expect(await setRead(fixture, 2, true)).toBe(false);
+    await setRead(fixture, 0);
+    for (const user of [fixture.user, reader]) {
+      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
+      expect(await user.getUnreadThreads()).toEqual([]);
+      expect(await user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+    }
+    expect(await outbox(fixture)).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it("retries upgrade cleanup after eviction without hiding ordinary chats", async () => {
+    const fixture = await setup();
+    const {reader} = await addReader(fixture);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification")
+      .mockRejectedValue(new Error("Push unavailable"));
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Old spawned result");
+      impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 1, sequence: 0,
+        userId: fixture.user.id.toString(), kind: "permissionRequested"});
+      impl.storage.chatMeta.put({id: 2, title: "Human chat", started: new Date(), lastActive: new Date()});
+      write(impl, 2, "Human result", 2);
+      await impl.deliverDirtyChats();
+      // Recreate pre-upgrade counts, then restore the spawned chat's existing metadata.
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
+      impl.storage.version.put(7);
+    });
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(2);
+    expect(await outbox(fixture)).toHaveLength(1);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        if (user.id.equals(reader.id)) throw new Error("Reader unavailable during cleanup");
+        await user.messageArrived(...args);
+      });
+      try {
+        await expect(impl.deliverDirtyChats()).rejects.toThrow("Reader unavailable during cleanup");
+        expect(impl.storage.dirtyChats.get(1)?.failedRecipients).toMatchObject([{userId: reader.id.toString()}]);
+      } finally {
+        restore();
+      }
+    });
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(1);
+    expect(await outbox(fixture)).toEqual([]);
+    expect((await reader.getUnreadSummary()).unreadMessageCount).toBe(2);
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => {
+      await impl.deliverDirtyChats();
+    });
+    for (const user of [fixture.user, reader]) {
+      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(1);
+      expect(await user.getUnreadThreads()).toMatchObject([{chatId: 2}]);
+    }
+    expect(publish).toHaveBeenCalledOnce();
+  });
+});
+
 describe("local counts and explicit read boundaries", () => {
   it("consumes a single own message only when caught up, preserving counts for gaps and other readers", async () => {
     const fixture = await setup(); const {reader, owner} = await addReader(fixture);

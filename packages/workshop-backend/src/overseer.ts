@@ -30,8 +30,8 @@ import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor }
 import type { BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings,
-  migrateToWorkpieceTypes,
+  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToSilentSpawnedChats,
+  migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -1280,6 +1280,9 @@ class OverseerImpl implements AgentHooks {
           }
         }
         let meta = this.storage.chatMeta.get(chatId);
+        // Spawned chats retain their history but never enter the unread inbox or alert queue.
+        // The removal handoff also clears counts and queued alerts from older deployments.
+        if (meta?.spawnerName !== undefined) meta = undefined;
         let counter = this.storage.nextChatSequences.get(chatId);
         let latestMessage = counter?.latestVisibleMessageSequence === undefined ? undefined :
           this.storage.chats.get(chatKey(chatId, counter.latestVisibleMessageSequence));
@@ -1362,7 +1365,7 @@ class OverseerImpl implements AgentHooks {
       rewind: boolean): Promise<boolean> {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
     let meta = this.storage.chatMeta.get(chatId);
-    if (!meta) return false;
+    if (!meta || meta.spawnerName !== undefined) return false;
     let counter = this.storage.nextChatSequences.get(chatId);
     let boundary = sequence ?? counter?.latestVisibleMessageSequence ?? -1;
     if (rewind && boundary < 0) return false;
@@ -1648,6 +1651,7 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
+      migrateToSilentSpawnedChats(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -9702,9 +9706,11 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Normal teardown and recovery of a logged outcome notify the same original caller. Only a
-  // person waits on completion; callbacks and spawned agents notify only when permission is needed.
+  // person waits on completion; callbacks notify only when permission is needed. Spawned chats
+  // stay silent even if a person starts a later turn in them.
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
-    if (!this.storage.chatMeta.get(chatId)) return;
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta || meta.spawnerName !== undefined) return;
     let awaitingDecision = this.#decisionWait(chatId)?.pending ?? false;
     if (!awaitingDecision && initiator.type !== "user") return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
@@ -11159,7 +11165,8 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // callback so the User DO can initialize under its thread mutex without another RPC.
       // Enrollment is best-effort: events racing this first registration are not guaranteed;
       // subsequent arrivals fan out normally once the User DO has recorded the listing.
-      let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()].map(meta => ({
+      let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()]
+        .filter(meta => meta.spawnerName === undefined).map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
         head: this.impl.chatHead(meta.id),
         headUpdatedAt: meta.lastActive,

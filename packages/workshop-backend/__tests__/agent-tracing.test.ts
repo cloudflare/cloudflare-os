@@ -168,6 +168,7 @@ interface TurnOptions {
   usageLimited?: boolean;
   // Who starts the turn: the owner by default, or a gadget, as for a spawned agent.
   initiator?: AiChatAuthorInfo;
+  spawned?: boolean;
 }
 
 // Seeds a chat whose owner asked something, then starts a turn from a request that stays open
@@ -176,6 +177,7 @@ function startTurn(responses: (() => Response)[], {
   config = { provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL },
   usageLimited = false,
   initiator = OWNER,
+  spawned = false,
 }: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
   let notifications: [string, UserNotification][] = [];
@@ -202,6 +204,7 @@ function startTurn(responses: (() => Response)[], {
     impl.storage.chatMeta.put({
       id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
       activeAgent: MODEL,
+      ...(spawned ? {spawnerName: "Spawner"} : {}),
     });
     impl.storage.chats.put({
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
@@ -473,9 +476,17 @@ describe("turn notifications", () => {
   it("does not tell anyone a spawned agent's turn completed", async () => {
     let turn = startTurn([reply], {
       initiator: { type: "gadget", id: "spawner", name: "Spawner" },
+      spawned: true,
     });
     turn.release();
 
+    await turn.session;
+    expect(turn.notifications).toEqual([]);
+  });
+
+  it("keeps a spawned chat silent when a user starts a later turn", async () => {
+    let turn = startTurn([reply], {spawned: true});
+    turn.release();
     await turn.session;
     expect(turn.notifications).toEqual([]);
   });
@@ -492,13 +503,14 @@ describe("turn notifications", () => {
 
   // The agent submits an action that waits for the user's decision while its step runs; the user
   // decides (or not) during the step, or once it is over and persisting.
-  it.each([
+  it.each(([
     { state: "pending", when: "during its step", kind: "permissionRequested" },
     { state: "rejected", when: "during its step", kind: "taskCompleted" },
     { state: "rejected", when: "as its step persists", kind: "taskCompleted" },
-  ] as const)("sends $kind when the awaited action is $state $when",
-      async ({ state, when, kind }) => {
-    let turn = startTurn([reply]);
+  ] as const).flatMap(test => [false, true].map(spawned => ({...test, spawned}))))(
+      "handles $kind when the awaited action is $state $when (spawned: $spawned)",
+      async ({ state, when, kind, spawned }) => {
+    let turn = startTurn([reply], {spawned});
     await turn.requested;
     await inOverseer(turn.workspace, async impl => {
       impl.storage.gatekeepers.put({
@@ -527,6 +539,6 @@ describe("turn notifications", () => {
     turn.release();
 
     await turn.session;
-    expect(turn.notifications).toEqual([notification(turn, kind)]);
+    expect(turn.notifications).toEqual(spawned ? [] : [notification(turn, kind)]);
   });
 });

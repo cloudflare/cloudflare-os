@@ -4,6 +4,13 @@ The workspace owns the timeline and message ordering. Each User DO owns its user
 horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
 for inbox, viewport and native bridge behavior.
 
+Chats created by `spawn()` or `spawnCallable()` keep their history but are excluded from unread
+counts, the unread inbox, and all user notifications, including permission alerts. This stays true
+for later callbacks and user-initiated turns in those chats. The workspace identifies them by
+their persisted `spawnerName`. On upgrade, it journals existing spawned chats through the same
+durable fanout as a removed thread, clearing readers' old counts and queued alerts without
+deleting the transcript. Explicit read commands and new collaborator admission cannot enroll them.
+
 ```mermaid
 flowchart LR
   Message[New timeline record] --> Workspace[Workspace DO]

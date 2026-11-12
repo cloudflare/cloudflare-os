@@ -1018,9 +1018,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Called by a workspace when one of its chats changes (see `ChatMessageProgress`), or with null
-   * when the chat was deleted. Saves the new unread count and queues any notifications before
-   * returning, so the workspace can stop retrying. Notifications are then delivered in the
-   * background, so a slow delivery never holds up the workspace.
+   * when the chat was deleted or excluded from unread tracking. Saves the new unread count and
+   * queues any notifications before returning, so the workspace can stop retrying. Notifications
+   * are then delivered in the background, so a slow delivery never holds up the workspace.
    */
   async messageArrived(workspaceId: string, chatId: number, progress: ChatMessageProgress | null): Promise<void> {
     if (!this.#hasWorkspace(workspaceId)) return;

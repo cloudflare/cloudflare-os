@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 7;
+export const OVERSEER_STORAGE_VERSION = 8;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -426,5 +426,26 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
   });
   host.logger.info("froze grants of every gadget", {
     event: "storage.migration.gadget-grants.completed",
+  });
+}
+
+/**
+ * Version 7 -> 8: spawned chats no longer participate in unread tracking or notifications.
+ * Journal their removal through the existing fanout so counts and queued alerts are cleared
+ * for every reader, with the ordinary alarm/retry behavior across resets.
+ */
+export function migrateToSilentSpawnedChats(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 7) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let meta of Array.from(host.storage.chatMeta.list())) {
+      if (meta.spawnerName === undefined) continue;
+      let dirty = {...host.storage.dirtyChats.get(meta.id), chatId: meta.id};
+      delete dirty.retryOnly;
+      host.storage.dirtyChats.put(dirty);
+    }
+    host.storage.version.put(8);
+  });
+  host.logger.info("silenced spawned chat notifications", {
+    event: "storage.migration.silent-spawned-chats.completed",
   });
 }
