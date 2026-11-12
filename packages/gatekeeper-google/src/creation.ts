@@ -8,7 +8,9 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import { buildDescription, sanitizeTitle } from "@gadgets/gatekeeper-kit/action-description";
 import { AccessTokenCache, type AccessTokenProvider } from "./auth-retry";
-import { DriveApi, FOLDER_MIME_TYPE, isFileInvisible, isListableFolderFile, type DriveFile } from "./drive-api";
+import {
+  DriveApi, isAddableFolderFile, isFileInvisible, isListableFolderFile, MY_DRIVE_ROOT, type DriveFile,
+} from "./drive-api";
 import type { GoogleVerifierApi } from "./google-verifier-types";
 import { obsContext } from "./observability";
 import {
@@ -74,22 +76,19 @@ export function creationAction(resource: SupportedResource, title: string): Acti
   };
 }
 
-/** Drive's alias for the root of My Drive, where the Docs, Sheets and Slides APIs create files. */
-const MY_DRIVE = "root";
-
 /**
  * The folder a creation's `configuration` puts it in: the Drive folder URL the creation location
  * configurator (`configurator/creation-location-configurator-ui.tsx`) minted, or, for null (no
  * choice), My Drive.
  */
 function creationFolderId(configuration: string | null): string {
-  if (configuration === null) return MY_DRIVE;
+  if (configuration === null) return MY_DRIVE_ROOT;
   let target = parseResourceUrl(configuration);
   if (target.kind !== "driveFolder") throw new Error("A new Google file can only be put in a Google Drive folder.");
   return target.folderId;
 }
 
-const folderName = (folderId: string) => folderId === MY_DRIVE ? "My Drive" : `the folder ${folderId}`;
+const folderName = (folderId: string) => folderId === MY_DRIVE_ROOT ? "My Drive" : `the folder ${folderId}`;
 
 /** What an approver's account is told when it lacks a grant a creation needs. */
 const MISSING_GRANTS: Record<string, string> = {
@@ -117,7 +116,7 @@ async function destinationFolder(drive: DriveApi, folderId: string): Promise<Dri
     if (isFileInvisible(error)) return undefined;
     throw error;
   });
-  if (folder?.mimeType !== FOLDER_MIME_TYPE || folder.trashed !== false || folder.capabilities?.canAddChildren !== true) {
+  if (!folder || !isAddableFolderFile(folder)) {
     throw new Error(`The Google account creating this can't add files to ${folderName(folderId)}. ` +
       "Approve it again with a folder that account can add files to.");
   }
@@ -200,34 +199,35 @@ export async function createFileOnce(
   let approverId = await (creator as unknown as Fetcher<GoogleVerifierApi>).getUserObjectId();
   let receipt = ctx.storage.kv.get<CreatedFile>(CREATED_FILE_KEY);
   let userObjectId = receipt?.userObjectId ?? approverId;
-  // Where the file is, or is about to be made: null while where it is, or whether a folder was
-  // made, is unknown.
-  let placedIn = receipt === undefined ? (inPlace ? folderId : MY_DRIVE)
-    : receipt.folderId === undefined ? MY_DRIVE : receipt.folderId;
+  // Where the file is, or is about to be made; null while unknown.
+  let { folderId: placedIn = MY_DRIVE_ROOT } = receipt ?? { folderId: inPlace ? folderId : MY_DRIVE_ROOT };
   let moving = placedIn !== folderId;
   // `root` names each account's own My Drive, so another approver's choice of it is elsewhere too.
-  if (userObjectId !== approverId && (moving || folderId === MY_DRIVE && configuration !== null)) {
+  if (userObjectId !== approverId && (moving || folderId === MY_DRIVE_ROOT && configuration !== null)) {
     throw new Error(`This ${FILE_NOUNS[kind]} was already created in another approver's Google ` +
       "account. Ask them to approve it" +
-      (placedIn === null || placedIn === MY_DRIVE ? "." : `, or approve it for ${folderName(placedIn)}.`));
+      (placedIn === null || placedIn === MY_DRIVE_ROOT ? "." : `, or approve it for ${folderName(placedIn)}.`));
   }
 
   let account = ctx.exports.UserAccount.get(ctx.exports.UserAccount.idFromString(userObjectId));
   let cache = new AccessTokenCache(opts => account.getAccessToken(opts));
   let getAccessToken: AccessTokenProvider = opts => cache.get(opts);
   let drive = new DriveApi(getAccessToken);
+  let record = (fileId: string, placed: string | null) =>
+    ctx.storage.kv.put(CREATED_FILE_KEY, { userObjectId, fileId, folderId: placed } satisfies CreatedFile);
   // Checked before anything is made, so a choice that can be checked in advance orphans no file.
   let making = receipt === undefined;
   await requireGrants(account, making && inPlace ? [CREATED_FILES_GRANT, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]
     : moving ? [CREATED_FILES_GRANT] : []);
-  let folder = moving || making && folderId !== MY_DRIVE ? await destinationFolder(drive, folderId) : undefined;
+  let folder = moving || making && folderId !== MY_DRIVE_ROOT
+    ? await destinationFolder(drive, folderId) : undefined;
 
   let fileId = receipt?.fileId;
   let made = false;
   if (create === undefined) {
     if (fileId === undefined) {
       fileId = await drive.generateFileId();
-      ctx.storage.kv.put(CREATED_FILE_KEY, { userObjectId, fileId, folderId: null } satisfies CreatedFile);
+      record(fileId, null);
     }
     // Sent again while it is unknown whether the ID was used. The ID is kept even after Drive
     // refuses: the request replays a lost reply, so the refused attempt may not have been the first.
@@ -247,9 +247,9 @@ export async function createFileOnce(
     });
   }
   if (moving && folder) {
-    ctx.storage.kv.put(CREATED_FILE_KEY, { userObjectId, fileId, folderId: null } satisfies CreatedFile);
+    record(fileId, null);
     await moveInto(drive, kind, fileId, folder);
   }
-  ctx.storage.kv.put(CREATED_FILE_KEY, { userObjectId, fileId, folderId } satisfies CreatedFile);
+  record(fileId, folderId);
   return { userObjectId, fileId, resourceUrl: nativeFileUrl(kind, fileId), getAccessToken };
 }

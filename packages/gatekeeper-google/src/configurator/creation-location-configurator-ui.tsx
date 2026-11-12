@@ -33,17 +33,17 @@ const TABS: ConfiguratorUIHierarchyTab[] = [
 
 const CANNOT_ADD = "This account can't add files here.";
 
+const placeable = (addable?: true) =>
+  ({ selectable: addable === true, unselectableReason: addable ? undefined : CANNOT_ADD, choice: HERE });
+
 const toItem = (node: DriveNode): ConfiguratorUIHierarchyItem => ({
   id: node.id,
   title: node.title,
   kind: node.kind === "sharedDrive" || node.listable ? "container" : "leaf",
   icon: node.kind === "sharedDrive" ? "shared-drives" : "folder",
   subtitle: node.detail,
-  selectable: node.addable === true,
-  unselectableReason: node.addable ? undefined : CANNOT_ADD,
-  choice: HERE,
-  path: node.path?.map(({ id, title, addable }) =>
-    ({ id, title, selectable: addable === true, unselectableReason: addable ? undefined : CANNOT_ADD, choice: HERE })),
+  ...placeable(node.addable),
+  path: node.path?.map(({ id, title, addable }) => ({ id, title, ...placeable(addable) })),
 });
 
 /**
@@ -79,11 +79,7 @@ const checkCanCreate = ({ ui, setValues }: Context) => {
 
 const ACCESS_POLL_MS = 2_000;
 const ACCESS_WAIT_MS = 3 * 60_000;
-const sleep = (ms: number) => {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-};
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * Polls for CREATED_FILES_GRANT for up to ACCESS_WAIT_MS, setting `canCreate` once it is held:

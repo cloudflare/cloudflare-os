@@ -31,6 +31,8 @@ let generatedIds: number;
 const folder = (id: string, name: string, canAddChildren = true): DriveFile =>
   ({ id, name, mimeType: FOLDER_MIME_TYPE, trashed: false, capabilities: { canListChildren: true, canAddChildren } });
 const folderUrl = (id: string) => `https://drive.google.com/drive/folders/${id}`;
+const cannotAdd = (id: string) => `The Google account creating this can't add files to the folder ${id}. ` +
+  "Approve it again with a folder that account can add files to.";
 
 function driveResponse(method: string, url: URL, body: unknown): Response {
   if (url.pathname.endsWith("/files/generateIds")) return Response.json({ ids: [`folder-new-${++generatedIds}`] });
@@ -261,10 +263,11 @@ const moves = () => requests.filter(({ method }) => method === "PATCH")
 const folderPosts = () => requests.filter(({ method, url }) => method === "POST" && url.href.startsWith(DRIVE_FILES));
 
 describe("creating where the approver chooses", () => {
+  const created = { resourceUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit" };
+
   it("keeps a file chosen for My Drive there, through its own API alone", async () => {
     await hooks().createResource("place-root", SHEETS_PATTERN, "Budget");
-    expect(await hooks().applyCreation("place-root", "test-user", folderUrl("root")))
-      .toEqual({ resourceUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit" });
+    expect(await hooks().applyCreation("place-root", "test-user", folderUrl("root"))).toEqual(created);
     expect(requests.map(({ url }) => url.hostname)).toEqual(["sheets.googleapis.com"]);
   });
 
@@ -272,7 +275,6 @@ describe("creating where the approver chooses", () => {
   it("moves a created file into the chosen folder, and a retry only where it is not", async () => {
     await hooks().grant("test-user", [CREATED_FILES_GRANT]);
     await hooks().createResource("place-folder", SHEETS_PATTERN, "Budget");
-    let created = { resourceUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit" };
 
     expect(await hooks().applyCreation("place-folder", "test-user", folderUrl("folder-1"))).toEqual(created);
     expect(moves()).toEqual([["folder-1", "root-id"]]);
@@ -293,8 +295,7 @@ describe("creating where the approver chooses", () => {
       error: expect.stringContaining(
         'The Google spreadsheet at https://docs.google.com/spreadsheets/d/sheet-1/edit was created, but moving it into "Plans" failed'),
     });
-    expect(await hooks().applyCreation("place-lost", "test-user", folderUrl("folder-1")))
-      .toEqual({ resourceUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit" });
+    expect(await hooks().applyCreation("place-lost", "test-user", folderUrl("folder-1"))).toEqual(created);
     expect(moves()).toHaveLength(1);
     expect(drive["sheet-1"].parents).toEqual(["folder-1"]);
     expect(sheetPosts()).toHaveLength(1);
@@ -305,7 +306,6 @@ describe("creating where the approver chooses", () => {
     await hooks().grant("test-user", [CREATED_FILES_GRANT]);
     await hooks().grant("other-user", [CREATED_FILES_GRANT]);
     await hooks().createResource("place-other", SHEETS_PATTERN, "Budget");
-    let created = { resourceUrl: "https://docs.google.com/spreadsheets/d/sheet-1/edit" };
     let elsewhere = "This Google spreadsheet was already created in another approver's Google account. " +
       "Ask them to approve it";
 
@@ -324,22 +324,18 @@ describe("creating where the approver chooses", () => {
 
   it.each([
     ["a folder the account can't add to", folderUrl("viewer-1"), [CREATED_FILES_GRANT],
-      "The Google account creating this can't add files to the folder viewer-1. " +
-      "Approve it again with a folder that account can add files to."],
+      cannotAdd("viewer-1")],
     ["a folder that is gone", folderUrl("missing-1"), [CREATED_FILES_GRANT],
-      "The Google account creating this can't add files to the folder missing-1. " +
-      "Approve it again with a folder that account can add files to."],
+      cannotAdd("missing-1")],
     ["a folder, without the created-files grant", folderUrl("folder-1"), [],
       "This Google account hasn't let this app put what it creates in Drive folders. " +
       "Approve it again and allow access when asked."],
     ["anything but a folder", "https://docs.google.com/document/d/doc-1/edit", [CREATED_FILES_GRANT],
       "A new Google file can only be put in a Google Drive folder."],
     ["a file named as a folder", folderUrl("sheet-1"), [CREATED_FILES_GRANT],
-      "The Google account creating this can't add files to the folder sheet-1. " +
-      "Approve it again with a folder that account can add files to."],
+      cannotAdd("sheet-1")],
     ["a trashed folder", folderUrl("trashed-1"), [CREATED_FILES_GRANT],
-      "The Google account creating this can't add files to the folder trashed-1. " +
-      "Approve it again with a folder that account can add files to."],
+      cannotAdd("trashed-1")],
   ])("refuses %s before creating anything", async (_name, configuration, grants, error) => {
     await hooks().grant("test-user", grants);
     await hooks().createResource("place-refused", SHEETS_PATTERN, "Budget");

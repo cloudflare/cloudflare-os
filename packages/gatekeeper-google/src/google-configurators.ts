@@ -619,8 +619,9 @@ async function listDriveNodes(
 ): Promise<DriveNodePage> {
   let linked = linkedDriveNodeId(query);
   if (linked) {
-    let node = await driveNode(picker, linked);
-    return { nodes: node && (!foldersOnly || node.kind === "folder") ? [node] : [] };
+    // Only a folder link can name a folder, so no other is read.
+    let node = foldersOnly && !linked.startsWith("folder:") ? null : await driveNode(picker, linked);
+    return { nodes: node ? [node] : [] };
   }
   let drive = new DriveApi(googleTokenProvider(picker));
   let page = {

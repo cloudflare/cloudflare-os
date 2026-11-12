@@ -77,27 +77,32 @@ const DRIVE_OBSERVATION_FIELDS =
   "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canDownload)";
 
 /**
- * Whether these facts describe a folder a binding may stand on: a live native folder whose
- * children this account can list.
+ * Whether these facts describe a live native folder holding `capability`: one whose children this
+ * account can list is one a binding may stand on, and one it can add children to takes a creation.
  *
- * The one definition of that triple. Both record shapes reach it through the adapters below, so a
- * scope check can never accidentally assert two of the three.
+ * The one definition of that triple. Every record shape reaches it through the adapters below, so a
+ * check can never accidentally assert two of the three.
  */
-function listableFolder(
+function liveFolderWith(
   mimeType: string | undefined, trashed: boolean | undefined,
-  canListChildren: boolean | undefined,
+  capability: boolean | undefined,
 ): boolean {
-  return mimeType === FOLDER_MIME_TYPE && trashed === false && canListChildren === true;
+  return mimeType === FOLDER_MIME_TYPE && trashed === false && capability === true;
 }
 
-/** {@link listableFolder} for the narrow ancestry-proof shape. */
+/** {@link liveFolderWith} listing, for the narrow ancestry-proof shape. */
 export function isListableFolderNode(node: DriveScopeNode): boolean {
-  return listableFolder(node.mimeType, node.trashed, node.canListChildren);
+  return liveFolderWith(node.mimeType, node.trashed, node.canListChildren);
 }
 
-/** {@link listableFolder} for a full file resource. */
+/** {@link liveFolderWith} listing, for a full file resource. */
 export function isListableFolderFile(file: DriveFile): boolean {
-  return listableFolder(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+  return liveFolderWith(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+}
+
+/** {@link liveFolderWith} adding children, for a full file resource. */
+export function isAddableFolderFile(file: DriveFile): boolean {
+  return liveFolderWith(file.mimeType, file.trashed, file.capabilities?.canAddChildren);
 }
 
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
@@ -154,7 +159,7 @@ export const SOURCE_MODIFIED_PROPERTY = "gadgetsSourceModified";
 export type DriveCopyLocation = "besideOriginal" | "myDrive";
 
 /** Drive's alias for the connected account's My Drive root folder. */
-const MY_DRIVE_ROOT = "root";
+export const MY_DRIVE_ROOT = "root";
 
 /** Clauses only the gatekeeper's own lookups add, never built from agent or iframe input. */
 type InternalDriveQuery = {
