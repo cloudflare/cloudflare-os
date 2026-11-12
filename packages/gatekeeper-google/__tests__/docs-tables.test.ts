@@ -1721,6 +1721,22 @@ describe("the cells a tab's tables hold", () => {
     expect(message(() => checkTabTableCells(mixed, MAX_TAB_TABLE_CELLS, "insertTable")))
       .toBe(tabCells("insertTable", 5005));
     expect(() => checkTabTableCells(mixed, 0, "insertTable")).not.toThrow();
+
+    // Paragraphs of only a rule, alone or two in a cell, and a rule inside a paragraph of text.
+    let rule = { runs: [{ horizontalRule: true as const }, "\n"] };
+    let ruled = read(buildTab([
+      para("Before"),
+      {
+        table: [[
+          cellOf(rule, rule), cellOf(rule),
+          cellOf({ runs: ["a", { horizontalRule: true }, "b\n"] }),
+        ]],
+      },
+      para("After"),
+    ]));
+    expect(tableAt(ruled, 0)).toContain("<td><hr></td>");
+    expect(message(() => checkTabTableCells(ruled, MAX_TAB_TABLE_CELLS, "insertTable")))
+      .toBe(tabCells("insertTable", 5004));
   });
 
   it("leaves a tab whose tables hold more every change that adds nothing", () => {

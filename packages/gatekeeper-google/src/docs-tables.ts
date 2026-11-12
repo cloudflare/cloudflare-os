@@ -893,10 +893,11 @@ export function addedTableCells(change: TableChange): number {
 }
 
 // A cell opens or closes, or one of its paragraphs starts: a list item, the heading it may be
-// written as aside, or a paragraph or heading outside a list. The item a list that skips a level
+// written as aside, a paragraph or heading outside a list, or a paragraph of only a rule, which
+// reads as a bare <hr> starting the cell or a line of it. The item a list that skips a level
 // opens to hold the next one reads as an empty item followed by its child does, so it counts too:
 // the budget may refuse a little early, but never lets a paragraph through uncounted.
-const CELL_PARTS = /<td[ >]|<\/td>|<li>|(?<!<li>)<(?:p|h[1-6])>/g;
+const CELL_PARTS = /<td[ >]|<\/td>|<li>|(?<!<li>)<(?:p|h[1-6])>|(?<=<td[^>]*>|\n *)<hr>/g;
 
 /**
  * The cells a table's HTML holds, each counting once for each paragraph of its own, and at least
