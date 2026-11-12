@@ -15,7 +15,7 @@ import {
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import {
-  GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
+  GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions, type GoogleDocStyles,
   type GoogleDocPendingChange, type GoogleDocPendingChanges, type GoogleDocReadSession,
   type GoogleDocTab, type GoogleDocImage, type GoogleDocImageBytes,
 } from "./docs-types";
@@ -1765,7 +1765,8 @@ function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
   operation:
-    "getContent" | "getPendingChanges" | "listImages" | "readImage" | "replaceText" | "appendText",
+    "getContent" | "getPendingChanges" | "getStyles" | "listImages" | "readImage" | "replaceText" |
+    "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
@@ -2881,6 +2882,25 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       });
       throw error;
     }
+  }
+
+  async getStyles(tabId?: string): Promise<GoogleDocStyles> {
+    let observation = {
+      title: "Read Google Doc styles",
+      description: "Read the styles of one tab of the document.",
+    };
+    let tab: GoogleDocTabSnapshot;
+    try {
+      tab = resolveGoogleDocTab(await this.#getSnapshot(), tabId, "getStyles");
+    } catch (error) {
+      // As in getContent(), the error says whether that tab exists.
+      await this.#authorizeRead(observation);
+      throw error;
+    }
+    await this.#authorizeRead({
+      ...observation, description: `Read the styles of tab ${googleDocTabLabel(tab)}.`,
+    });
+    return tab.styles;
   }
 
   async listImages(tabId?: string): Promise<GoogleDocImage[]> {

@@ -6,6 +6,8 @@ import type {
   EmbeddedObject, GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table, TableCell,
   TextStyle,
 } from "./docs-api";
+import { docTabStyles } from "./docs-styles";
+import type { GoogleDocStyles } from "./docs-types";
 
 // ---------------------------------------------------------------------------
 // Source map types
@@ -36,6 +38,8 @@ export type DocTabSnapshot = {
   bodyEndIndex: number;
   /** One entry per `[Image]` placeholder in `markdown`, in the order they appear. */
   images: DocTabImage[];
+  /** How the tab looks beyond what `markdown` says. */
+  styles: GoogleDocStyles;
 }
 
 /** An image, drawing or chart that `markdown` shows as an `[Image]` placeholder. */
@@ -64,7 +68,7 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
  * produces changes, so callers caching a {@link DocTabSnapshot} discard entries built by older
  * code. It lives here because edits to this file are what invalidate them.
  */
-export const MARKDOWN_RENDERING_VERSION = 7;
+export const MARKDOWN_RENDERING_VERSION = 8;
 
 type ListType = "bullet" | "numbered";
 
@@ -159,6 +163,7 @@ class MarkdownWriter {
 export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   let writer = new MarkdownWriter();
   let blocks: BlockMapping[] = [];
+  let starts: Parameters<typeof docTabStyles>[2] = [];
   let protectedRanges: MarkdownRange[] = [];
   let previousListId: string | undefined;
   let listNumbers = new Map<string, number[]>();
@@ -213,6 +218,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
       }
     }
     let mdStart = writer.length;
+    starts.push({ mdStart, paragraph: para });
 
     // Paragraph prefix (heading markers, list markers, etc.).
     let prefix = getParagraphPrefix(para, listItem, markdownListNumber);
@@ -252,6 +258,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
     images: tabImages(tab, elements),
+    styles: docTabStyles(tab, writer.text, starts),
   };
 }
 

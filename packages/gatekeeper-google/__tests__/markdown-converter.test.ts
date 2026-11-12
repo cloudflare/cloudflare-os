@@ -793,6 +793,53 @@ describe("Google Docs tables", () => {
     expect(docTabToMarkdown(tab).markdown).toContain("<p>Before [Image] after</p>");
   });
 
+  it("gives each paragraph's style by its line, and only what it sets over its named style", () => {
+    let tab = buildTab([
+      { runs: ["Report\n"], namedStyleType: "TITLE" },
+      { runs: ["Plain\n"] },
+      { table: [[{ paragraphs: [{ runs: ["Cell\n"] }] }]] },
+      { runs: ["Red and centered\n"] },
+    ]);
+    let blue = { color: { rgbColor: { blue: 1 } } };
+    tab.namedStyles = { styles: [
+      { namedStyleType: "NORMAL_TEXT",
+        textStyle: { fontSize: { magnitude: 11, unit: "PT" }, weightedFontFamily: { fontFamily: "Arial", weight: 400 } },
+        paragraphStyle: { namedStyleType: "NORMAL_TEXT", alignment: "START", lineSpacing: 115 } },
+      { namedStyleType: "TITLE",
+        textStyle: { fontSize: { magnitude: 26, unit: "PT" }, foregroundColor: blue },
+        paragraphStyle: { namedStyleType: "TITLE", spaceBelow: { magnitude: 3, unit: "PT" } } },
+    ] };
+    tab.documentStyle = {
+      pageSize: { width: { magnitude: 612, unit: "PT" } },
+      marginTop: { magnitude: 72, unit: "PT" }, marginLeft: { magnitude: 54, unit: "PT" }, marginRight: { unit: "PT" },
+    };
+    let paragraphs = tab.body.content.filter(element => element.paragraph).map(element => element.paragraph!);
+    // The title repeats what its named style says; the last paragraph departs from Normal text.
+    paragraphs[0].paragraphStyle.alignment = "START";
+    paragraphs[2].paragraphStyle.alignment = "CENTER";
+    paragraphs[2].elements[0].textRun!.textStyle = { foregroundColor: { color: { rgbColor: { red: 1 } } } };
+
+    let { markdown, styles } = docTabToMarkdown(tab);
+
+    let lines = markdown.split("\n");
+    expect(styles.paragraphs.map(({ line }) => lines[line])).toEqual(["# Report", "Plain", "Red and centered"]);
+    expect(styles).toEqual({
+      page: { width: 612, marginTop: 72, marginRight: 0, marginLeft: 54 },
+      named: {
+        NORMAL_TEXT: { fontFamily: "Arial", fontSize: 11, bold: false, alignment: "start", lineSpacing: 1.15 },
+        TITLE: {
+          fontFamily: "Arial", fontSize: 26, bold: false, color: "#0000ff", alignment: "start",
+          lineSpacing: 1.15, spaceBelow: 3,
+        },
+      },
+      paragraphs: [
+        { line: expect.any(Number), style: "TITLE" },
+        { line: expect.any(Number), style: "NORMAL_TEXT" },
+        { line: expect.any(Number), style: "NORMAL_TEXT", look: { color: "#ff0000", alignment: "center" } },
+      ],
+    });
+  });
+
   it("lists a tab's images in the order it writes their placeholders", () => {
     let inline = (id: string) => ({ richLink: { title: id, uri: "https://example.com" } });
     let tab = buildTab([

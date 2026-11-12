@@ -8,7 +8,7 @@ const style = document.createElement('style');
 style.textContent = `
   :root { color-scheme: light dark; --page: #fff; --desk: #f1f3f4; --ink: #1f1f1f; --dim: #5f6368;
     --line: #dadce0; --mark: #e6f4ea; --mark-ink: #137333; --gone: #fce8e6; --gone-ink: #a50e0e;
-    --link: #1a73e8; --chip: #f1f3f4; --shine: #e8eaed;
+    --link: #1a73e8; --chip: #f1f3f4; --shine: #e8eaed; --width: 816px; --pad: 72px;
     --paper: 0 1px 2px rgb(60 64 67 / .2), 0 4px 14px rgb(60 64 67 / .1); }
   @media (prefers-color-scheme: dark) {
     :root { --page: #1f1f1f; --desk: #131314; --ink: #e3e3e3; --dim: #9aa0a6; --line: #3c4043;
@@ -23,16 +23,19 @@ style.textContent = `
   #tabs button { font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
     border-radius: 999px; background: transparent; color: var(--dim); transition: background .15s; }
   #tabs button[aria-pressed="true"] { background: var(--page); color: var(--ink); }
-  #page { box-sizing: border-box; max-width: 816px; min-height: calc(100% - 32px);
-    margin: 16px auto 120px; padding: 72px; background: var(--page); border-radius: 2px;
-    box-shadow: var(--paper); overflow-wrap: anywhere; animation: arrive .25s ease-out; }
+  #page { box-sizing: border-box; max-width: var(--width); min-height: calc(100% - 32px);
+    margin: 16px auto 120px; padding: var(--pad); background: var(--page); border-radius: 2px;
+    box-shadow: var(--paper); overflow-wrap: anywhere; overflow-x: clip; animation: arrive .25s ease-out; }
   @media (max-width: 700px) { #page { padding: 24px; margin: 0 0 120px; box-shadow: none; } }
   #page > * { position: relative; margin: 0; min-height: 1.5em; }
+  /* The document's own spaces are kept, as Docs keeps them: code is indented with them. */
+  #page > p, #page > :is(h1, h2, h3, h4, h5, h6), .item > :last-child { white-space: pre-wrap; }
   h1, h2, h3, h4, h5, h6 { margin: 0; font-weight: 400; }
   h1 { font-size: 20pt; padding: 20px 0 6px; }
   h2 { font-size: 16pt; padding: 18px 0 6px; }
   h3 { font-size: 14pt; padding: 16px 0 4px; }
   h4, h5, h6 { font-size: 12pt; color: var(--dim); padding: 14px 0 4px; }
+  .break { display: block; height: 16px; margin: 56px -100vw; background: var(--desk); }
   hr { border: 0; border-top: 1px solid var(--line); margin: .7em 0; }
   .item { display: flex; gap: 8px; }
   .item > .marker { flex: none; min-width: 1.5em; text-align: right; }
@@ -167,6 +170,7 @@ function parseBlocks(markdown) {
         level: list ? list[1].length >> 1 : 0,
         heading: heading?.[1].length,
         text: heading ? heading[2] : content,
+        line: i,
       };
       if (!list) counters.length = 0;
       else counters.length = block.level + 1;
@@ -305,6 +309,12 @@ function renderInline(words, parent) {
       look = undefined;
       continue;
     }
+    // A page break is the gap between two sheets, unless it is the change being shown.
+    if (text === 'Page break' && kind && !mark) {
+      parent.appendChild(make('span', 'break')).setAttribute('aria-label', 'Page break');
+      look = undefined;
+      continue;
+    }
     const classes = [kind === 'chip' && 'chip', text === 'Image' && kind && 'slot', style & BOLD && 'b', style & ITALIC && 'i',
       style & STRIKE && 's', href && 'link'].filter(Boolean).join(' ');
     const next = `${mark ?? ''}\u0000${href ?? ''}\u0000${classes}`;
@@ -394,7 +404,7 @@ function diff(saved, current, keyOf) {
     afterEnd--;
   }
 
-  const rows = current.slice(0, start).map(item => ({ item }));
+  const rows = current.slice(0, start).map((item, n) => ({ item, was: saved[n] }));
   let i = start;
   let j = start;
   const width = afterEnd - start + 1;
@@ -411,9 +421,7 @@ function diff(saved, current, keyOf) {
     }
     while (i < beforeEnd && j < afterEnd) {
       if (before[i] === after[j]) {
-        rows.push({ item: current[j] });
-        i++;
-        j++;
+        rows.push({ item: current[j++], was: saved[i++] });
       } else if (common[cell(i + 1, j)] >= common[cell(i, j + 1)]) {
         rows.push({ item: saved[i++], mark: 'removed' });
       } else {
@@ -423,7 +431,7 @@ function diff(saved, current, keyOf) {
   }
   while (i < beforeEnd) rows.push({ item: saved[i++], mark: 'removed' });
   while (j < afterEnd) rows.push({ item: current[j++], mark: 'added' });
-  return rows.concat(current.slice(afterEnd).map(item => ({ item })));
+  return rows.concat(current.slice(afterEnd).map((item, n) => ({ item, was: saved[beforeEnd + n] })));
 }
 
 // The words of `current` with what it gained and lost against `saved`, or undefined when the two
@@ -456,14 +464,80 @@ function pairEdits(rows) {
     for (let n = 0; n < Math.max(removed.length, added.length); n++) {
       const words = removed[n] && added[n]?.text && wordChanges(removed[n], added[n]);
       if (words) {
-        paired.push({ item: added[n], mark: 'changed', words });
+        paired.push({ item: added[n], mark: 'changed', words, was: removed[n] });
         continue;
       }
-      if (removed[n]) paired.push({ item: removed[n], mark: 'removed' });
+      if (removed[n]) paired.push({ item: removed[n], mark: 'removed', was: removed[n] });
       if (added[n]) paired.push({ item: added[n], mark: added[n].text ? 'added' : undefined });
     }
   }
   return paired;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Styles: the document's own type, colors and alignment, where getStyles() gives them
+
+// Per tab: the saved Markdown the styles were read for, the named styles, and each paragraph's
+// style by its line in that Markdown.
+const looks = new Map();
+
+const styleOf = block => block.heading ? `HEADING_${block.heading}` : 'NORMAL_TEXT';
+
+async function readStyles(savedMarkdown, blocks) {
+  let tab = looks.get(tabId);
+  if (tab?.savedMarkdown === savedMarkdown) return tab;
+  const { page: sheet, named, paragraphs } = await gadget.getStyles(tabId);
+  const lines = new Map(paragraphs.map(paragraph => [paragraph.line, paragraph]));
+  // A paragraph whose style is not what its line reads as would put styles on the wrong blocks.
+  const fits = blocks.every(block => {
+    if (block.line === undefined) return true;
+    const style = lines.get(block.line)?.style;
+    return (style === 'TITLE' ? 'HEADING_1' : style?.startsWith('HEADING_') ? style : 'NORMAL_TEXT') === styleOf(block);
+  });
+  tab = { savedMarkdown, sheet, named, lines: fits ? lines : new Map() };
+  looks.set(tabId, tab);
+  return tab;
+}
+
+const SERIF = /times|georgia|garamond|merriweather|playfair|lora|cambria|baskerville|serif(?! ?pro)/i;
+const MONO = /mono|courier|consolas|source code|menlo/i;
+const COLOR = /^#[0-9a-f]{6}$/;
+
+// A color the document chose for a white page is kept only where it still reads on this one.
+function legible(color) {
+  if (!COLOR.test(color ?? '')) return false;
+  const [red, green, blue] = [1, 3, 5].map(at => {
+    const channel = parseInt(color.slice(at, at + 2), 16) / 255;
+    return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
+  });
+  const light = .2126 * red + .7152 * green + .0722 * blue;
+  // Contrast against this page: #1f1f1f in the dark, white otherwise.
+  return matchMedia('(prefers-color-scheme: dark)').matches ? (light + .05) / .064 >= 3.5 : 1.05 / (light + .05) >= 1.5;
+}
+
+// Draw `element`, which shows `block`, as the saved paragraph `was` is styled, or as its kind of
+// paragraph is when it is new.
+function applyLook(element, block, was, mark, styles) {
+  if (block.line === undefined) return;
+  const paragraph = styles.lines.get(was?.line);
+  const style = paragraph?.style ?? styleOf(block);
+  const look = { ...styles.named[style], ...paragraph?.look };
+  const text = block.type === 'p' ? element : element.lastChild;
+  const set = text.style;
+  if (look.fontFamily) {
+    const family = look.fontFamily.replace(/["\\]/g, '');
+    set.fontFamily = `"${family}", ${MONO.test(family) ? 'monospace' : SERIF.test(family) ? 'serif' : 'Arial, sans-serif'}`;
+  }
+  if (look.fontSize) set.fontSize = `${look.fontSize}pt`;
+  if (look.bold !== undefined) set.fontWeight = look.bold ? 700 : 400;
+  if (look.italic !== undefined) set.fontStyle = look.italic ? 'italic' : 'normal';
+  // The converter writes a subtitle as italic whatever its style says.
+  if (style === 'SUBTITLE') for (const run of text.querySelectorAll('.i')) run.classList.remove('i');
+  if (legible(look.color) && mark !== 'added' && mark !== 'removed') set.color = look.color;
+  if (look.alignment) set.textAlign = look.alignment;
+  if (look.lineSpacing) set.lineHeight = look.lineSpacing * 1.2;
+  if (look.spaceAbove !== undefined) element.style.paddingTop = `${look.spaceAbove}pt`;
+  if (look.spaceBelow !== undefined) element.style.paddingBottom = `${look.spaceBelow}pt`;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -593,14 +667,24 @@ async function load() {
     const { savedMarkdown, markdown, changes } = await gadget.getPendingChanges(tabId);
     if (current !== generation) return;
 
-    const rows = pairEdits(diff(parseBlocks(savedMarkdown), parseBlocks(markdown), blockKey));
+    const saved = parseBlocks(savedMarkdown);
+    // Without its styles the document is still drawn, in this page's own.
+    const styles = await readStyles(savedMarkdown, saved).catch(() => undefined);
+    if (current !== generation) return;
+    const rows = pairEdits(diff(saved, parseBlocks(markdown), blockKey));
+    const { width, marginTop, marginRight, marginLeft } = styles?.sheet ?? {};
+    if (width) {
+      page.style.setProperty('--width', `${width}pt`);
+      page.style.setProperty('--pad', `${marginTop}pt ${marginRight}pt ${marginTop}pt ${marginLeft}pt`);
+    }
     const scrollTop = document.scrollingElement.scrollTop;
     const drawn = new Set();
     let firstFresh;
     let marked = false;
     stops = [];
-    page.replaceChildren(...rows.map(({ item, mark, words }) => {
+    page.replaceChildren(...rows.map(({ item, mark, words, was }) => {
       const element = renderBlock(item, words);
+      if (styles) applyLook(element, item, was, mark, styles);
       if (mark) {
         const key = `${mark}\u0000${blockKey(item)}`;
         drawn.add(key);

@@ -38,6 +38,7 @@ function normalizedTab(
   return {
     tabId, title, index: 0, nestingLevel: 0, ...position,
     body: EMPTY_BODY, lists: {}, namedRanges: {}, inlineObjects: {}, positionedObjects: {},
+    namedStyles: {}, documentStyle: {},
   };
 }
 

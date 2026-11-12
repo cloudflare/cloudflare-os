@@ -74,6 +74,11 @@ class DocSession extends RpcTarget {
     return { savedMarkdown: saved, markdown, changes }
   }
 
+  getStyles() {
+    this.doc.calls.push('getStyles')
+    return { named: { HEADING_1: { color: '#4a86e8', alignment: 'center' } }, paragraphs: [{ line: 0, style: 'TITLE' }] }
+  }
+
   listImages() {
     this.doc.calls.push('listImages')
     return [{ id: 'photo', width: 120, height: 80, readable: true }]
@@ -159,8 +164,8 @@ it('reads the document through the connection session and redraws when an action
   const { doc, resolved, emit } = renderPane([action(1)])
 
   // One read gives the frame the saved tab, the tab with its pending changes, and the changes.
-  // The tab's images are listed once and read through the session.
-  const opened = ['listTabs', 'getPendingChanges', 'listImages', 'readImage photo']
+  // The tab's styles and images are read once, through the session.
+  const opened = ['listTabs', 'getPendingChanges', 'getStyles', 'listImages', 'readImage photo']
   await expect.poll(() => doc.calls).toEqual(opened)
   await expect.element(page.getByText('1 change waiting')).toBeVisible()
 

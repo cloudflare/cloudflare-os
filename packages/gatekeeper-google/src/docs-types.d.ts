@@ -142,6 +142,14 @@ export interface GoogleDocSession extends GoogleDocReadSession {
   getPendingChanges(tabId?: string): Promise<GoogleDocPendingChanges>;
 
   /**
+   * Return how tab `tabId` looks in Google Docs beyond what its Markdown says: its page, its named
+   * styles, and what each paragraph sets over its named style.
+   *
+   * The same tab selection rule as `getContent()` applies.
+   */
+  getStyles(tabId?: string): Promise<GoogleDocStyles>;
+
+  /**
    * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
    * the order the placeholders appear.
    *
@@ -154,6 +162,45 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * or is larger than 10 MB.
    */
   readImage(imageId: string, tabId?: string): Promise<GoogleDocImageBytes>;
+}
+
+/** How a paragraph's text is drawn. Lengths are in points and colors are `#rrggbb`. */
+export type GoogleDocLook = {
+  fontFamily?: string;
+  fontSize?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;
+  alignment?: "start" | "center" | "end" | "justify";
+
+  /** Line height as a multiple of single spacing. */
+  lineSpacing?: number;
+  spaceAbove?: number;
+  spaceBelow?: number;
+}
+
+/** How one tab looks, as Google Docs has it saved. */
+export type GoogleDocStyles = {
+  /** The page's width and margins in points, when the document sets them. */
+  page?: { width: number; marginTop: number; marginRight: number; marginLeft: number };
+
+  /**
+   * Each named style in full, by name: `NORMAL_TEXT`, `TITLE`, `SUBTITLE` and `HEADING_1` to
+   * `HEADING_6`.
+   */
+  named: Record<string, GoogleDocLook>;
+
+  /** The tab's paragraphs, in order. A table's paragraphs are not among them. */
+  paragraphs: {
+    /** The paragraph's line in `getPendingChanges().savedMarkdown`, counting from zero. */
+    line: number;
+
+    /** The named style the paragraph has. */
+    style: string;
+
+    /** What the paragraph, or all of its text, sets differently from that named style. */
+    look?: GoogleDocLook;
+  }[];
 }
 
 /** An image, drawing or chart in a tab. */
