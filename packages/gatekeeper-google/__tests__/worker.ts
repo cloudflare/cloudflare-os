@@ -402,15 +402,15 @@ export class TestHooks extends DurableObject<Env> {
   /** In one session: list the tab's images when `list` is set, then read each of `imageIds`. */
   async readImages(facetName: string, imageIds: string[], list: boolean): Promise<{
     images?: GoogleDocImage[];
-    read: ({ mimeType: string; size: number; text: string } | { error: string })[];
+    read: ({ mimeType: string; text: string } | { error: string })[];
   }> {
     return this.#withSession(facetName, async session => {
       let images = list ? await session.listImages() : undefined;
       let read = [];
       for (let id of imageIds) {
         try {
-          let { mimeType, size, content } = await session.readImage(id);
-          read.push({ mimeType, size, text: await new Response(content).text() });
+          let { mimeType, bytes } = await session.readImage(id);
+          read.push({ mimeType, text: new TextDecoder().decode(bytes) });
         } catch (error) {
           read.push({ error: (error as Error).message });
         }

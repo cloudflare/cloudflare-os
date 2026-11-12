@@ -174,20 +174,13 @@ export type GoogleDocImage = {
   readable: boolean;
 }
 
-/** One image's content, streamed. */
+/** One image's content. */
 export type GoogleDocImageBytes = {
   /** `image/png`, `image/jpeg`, `image/gif` or `image/webp`. */
   mimeType: string;
 
-  /** The image's size in bytes. */
-  size: number;
-
-  /**
-   * The bytes, read from Google as you read them. Read it whole with
-   * `await new Response(content).arrayBuffer()`. Read it straight away, and cancel it if you
-   * will not.
-   */
-  content: ReadableStream<Uint8Array>;
+  /** The image file's bytes. */
+  bytes: Uint8Array;
 }
 
 /**

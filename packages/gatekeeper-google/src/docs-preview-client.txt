@@ -473,8 +473,8 @@ function pairEdits(rows) {
 const pictures = new Map();
 
 async function readPicture(image) {
-  const { mimeType, content } = await gadget.readImage(image.id, tabId);
-  const blob = new Blob([await new Response(content).arrayBuffer()], { type: mimeType });
+  const { mimeType, bytes } = await gadget.readImage(image.id, tabId);
+  const blob = new Blob([bytes], { type: mimeType });
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);

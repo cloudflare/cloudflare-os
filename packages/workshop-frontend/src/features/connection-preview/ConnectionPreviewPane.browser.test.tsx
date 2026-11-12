@@ -82,16 +82,7 @@ class DocSession extends RpcTarget {
   readImage(id: string) {
     this.doc.calls.push(`readImage ${id}`)
     const bytes = Uint8Array.from(atob(PIXEL), character => character.charCodeAt(0))
-    return {
-      mimeType: 'image/png',
-      size: bytes.length,
-      content: new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(bytes)
-          controller.close()
-        },
-      }),
-    }
+    return { mimeType: 'image/png', bytes }
   }
 
   replaceText() {
@@ -168,7 +159,7 @@ it('reads the document through the connection session and redraws when an action
   const { doc, resolved, emit } = renderPane([action(1)])
 
   // One read gives the frame the saved tab, the tab with its pending changes, and the changes.
-  // The tab's images are listed once and read through the session, a stream each.
+  // The tab's images are listed once and read through the session.
   const opened = ['listTabs', 'getPendingChanges', 'listImages', 'readImage photo']
   await expect.poll(() => doc.calls).toEqual(opened)
   await expect.element(page.getByText('1 change waiting')).toBeVisible()

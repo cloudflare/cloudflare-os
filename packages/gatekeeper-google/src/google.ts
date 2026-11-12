@@ -1802,13 +1802,15 @@ async function openGoogleDocImage(contentUri: string): Promise<GoogleDocImageByt
     if (reason) throw new Error(`readImage: ${reason}`);
     return undefined;
   };
-  if (!response.ok || !response.body) return refuse(undefined);
+  if (!response.ok) return refuse(undefined);
   let mimeType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
   if (!DOC_IMAGE_TYPES.has(mimeType)) return refuse("this image's format cannot be read.");
-  // Google states an image's length; without it nothing bounds what the stream would carry.
+  // Google states an image's length; without it nothing bounds what would be read into memory.
   let size = Number(response.headers.get("content-length") ?? NaN);
   if (!(size <= MAX_DOC_IMAGE_BYTES)) return refuse("this image is larger than 10 MB.");
-  return { mimeType, size, content: response.body };
+  // TODO: return `response.body` as a stream again once capnweb can forward one into the gadget
+  // UI frame (https://github.com/cloudflare/capnweb/pull/296); until then the image is read whole.
+  return { mimeType, bytes: new Uint8Array(await response.arrayBuffer()) };
 }
 
 /** The agent-facing view of one tab: identity and position, never content. */
