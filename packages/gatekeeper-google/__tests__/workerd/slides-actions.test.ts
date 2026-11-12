@@ -403,6 +403,7 @@ function gatekeeper() {
     return outcome;
   };
   return {
+    facet,
     call,
     queued,
     /** `updateSlides` with text edits alone. */
@@ -1586,5 +1587,56 @@ describe("Google Slides backgrounds and theme", () => {
     expect(outline.slides[0].background).toBe("picture");
     expect(s1.background).toBe("picture");
     expect(JSON.stringify([outline, s1])).not.toContain("googleusercontent");
+  });
+});
+
+// What a bound presentation stores, by its literal keys, so that moving its code cannot move its
+// storage.
+describe("Google Slides stored layout", () => {
+  /** The value under `key`, as the synchronous KV reads it. */
+  async function stored(facet: string, key: string): Promise<unknown> {
+    let { kv } = await hooks().storedValue(facet, "slides", key);
+    return kv === undefined ? undefined : JSON.parse(kv);
+  }
+
+  const EDIT = { slideId: "s2", elementId: "b2", find: "Revenue: $10M", replace: "Revenue: $12M" };
+
+  it("keeps its journal under the keys it has always used, and nothing else", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    let first = await slides.edit([EDIT]);
+    let second = await slides.edit([{ ...EDIT, find: "Margin: 20%", replace: "Margin: 25%" }]);
+    expect(await hooks().storedKeys(slides.facet, "slides"))
+      .toEqual(["slides:action:1", "slides:action:2", "slides:nextActionId"]);
+    expect(await stored(slides.facet, "slides:action:1")).toEqual({
+      v: 2, state: "pending",
+      // Stored under its definition's name, which is not its kind's tag.
+      action: {
+        kind: "editText",
+        payload: {
+          changes: [{ op: "editText", ...EDIT }], slides: { s2: { number: 2, title: "Revenue" } },
+        },
+      },
+    });
+
+    expect(await slides.apply(first.actionId!)).toBeNull();
+    expect(await slides.reject(second.actionId!)).toBeNull();
+    let third = await slides.edit([{ ...EDIT, find: "Margin: 20%", replace: "Margin: 30%" }]);
+
+    expect(third.actionId).toBe(3);
+    expect(await hooks().storedKeys(slides.facet, "slides"))
+      .toEqual(["applied:slides:action:", "slides:action:3", "slides:nextActionId"]);
+    expect(await stored(slides.facet, "slides:nextActionId")).toBe(4);
+    expect(await stored(slides.facet, "applied:slides:action:")).toEqual([1]);
+  });
+
+  it("carries on a counter stored before it first starts", async () => {
+    new SlidesProvider(deck()).install();
+    let slides = gatekeeper();
+    await hooks().writeStored(
+      slides.facet, "slides", [{ kind: "put", key: "slides:nextActionId", value: 12 }], "kv");
+    await hooks().restartFacet(slides.facet);
+
+    expect((await slides.edit([EDIT])).actionId).toBe(12);
   });
 });

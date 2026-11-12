@@ -3180,3 +3180,136 @@ describe("Google Doc comments", () => {
     expect(docs.threads).toHaveLength(1);
   });
 });
+
+// What a bound Doc stores, by its literal keys, so that moving its code cannot move its storage.
+describe("Google Doc stored layout", () => {
+  /** The value under `key`, as the synchronous KV and the asynchronous API each read it. */
+  const stored = async (facet: string, key: string): Promise<{ kv?: unknown; async?: unknown }> => {
+    let { kv, async } = await hooks().storedValue(facet, "doc", key);
+    return {
+      ...kv === undefined ? {} : { kv: JSON.parse(kv) },
+      ...async === undefined ? {} : { async: JSON.parse(async) },
+    };
+  };
+
+  it("keeps its edits, counter, snapshot, receipt and revision under the keys it has always used", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.cleanupFailures = 1;
+    docs.install();
+    let facet = "stored-layout-doc";
+
+    let first = await hooks().submitAppend(facet, "first");
+    await hooks().readMetadata(facet);
+    expect(await hooks().storedKeys(facet, "doc")).toEqual([
+      "docMetadataRevision", "docSnapshot", "pending:action:1", "pending:nextActionId",
+    ]);
+    expect((await stored(facet, "pending:nextActionId")).kv).toBe(2);
+    expect((await stored(facet, "pending:action:1")).kv).toEqual({
+      type: "appendText", tabId: MAIN_TAB, submittedAt: expect.any(Number),
+      markdownVersion: MARKDOWN_RENDERING_VERSION, baseRevisionId: expect.any(String),
+      writeId: expect.any(String), markdown: "first",
+    });
+    expect((await stored(facet, "docMetadataRevision")).kv)
+      .toEqual({ revisionId: expect.any(String), observedAt: expect.any(Number) });
+
+    // The marker's cleanup fails, so the write's receipt stays for the next write to settle.
+    expect(await hooks().applyAction(facet, first)).toBeNull();
+    expect(await hooks().storedKeys(facet, "doc")).toEqual([
+      "docMetadataRevision", "docWriteReceipt", "pending:nextActionId",
+    ]);
+    expect((await stored(facet, "docWriteReceipt")).kv)
+      .toEqual({ actionId: first, markerId: expect.any(String) });
+
+    // A rejection drops the snapshot: the next read fetches the document again.
+    let second = await hooks().submitAppend(facet, "second");
+    let third = await hooks().submitAppend(facet, "third");
+    expect(await hooks().rejectAction(facet, third)).toBeUndefined();
+    expect(await hooks().storedKeys(facet, "doc")).toEqual([
+      "docMetadataRevision", "docWriteReceipt", `pending:action:${second}`, "pending:nextActionId",
+    ]);
+
+    // A comment write is numbered by the edits' counter, under a prefix of its own.
+    let comment = await hooks().callDoc(facet, "comment", ["Why?", { quote: "base" }]);
+    expect(comment.actionId).toBe(4);
+    expect((await stored(facet, "pending:nextActionId")).kv).toBe(5);
+    expect((await stored(facet, "docComments:action:4")).kv).toMatchObject({
+      v: 2, state: "pending", action: { kind: "createComment" },
+    });
+  });
+
+  it("reads and applies every stored edit shape, seeded before the Doc first starts", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "base");
+    docs.install();
+    let facet = "stored-layout-legacy";
+    let row = (id: number, value: Record<string, unknown>) =>
+      ({ kind: "put" as const, key: `pending:action:${id}`, value });
+    await hooks().writeStored(facet, "doc", [
+      // Stored before tabs and Markdown versions: neither its tab nor its rendering is known.
+      row(1, { type: "appendText", submittedAt: 0, baseRevisionId: "revision-1", markdown: "one" }),
+      row(2, {
+        type: "appendText", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, markdown: "two",
+        invalidatedReason: "Dropped earlier.",
+      }),
+      // Stored before write IDs: apply gives it one before it writes.
+      row(3, {
+        type: "appendText", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, markdown: "three",
+      }),
+      row(4, {
+        type: "appendText", documentId: "doc-1", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, writeId: "write-4", markdown: "four",
+      }),
+      // A field this code does not know is carried and ignored.
+      row(5, {
+        type: "replaceText", tabId: MAIN_TAB, submittedAt: 0,
+        markdownVersion: MARKDOWN_RENDERING_VERSION, writeId: "write-5",
+        oldMarkdown: "base", newMarkdown: "BASE", displayTab: "Main",
+      }),
+      { kind: "put", key: "pending:nextActionId", value: 6 },
+    ], "kv");
+    await hooks().restartFacet(facet);
+
+    expect(await hooks().readContent(facet)).toBe("BASE\n\nthree\n\nfour\n");
+    // The read records why the first can no longer be replayed, in its own record.
+    let first = (await stored(facet, "pending:action:1")).kv as Record<string, unknown>;
+    expect(first.invalidatedReason).toContain("queued under an earlier Markdown format");
+    expect(first).toMatchObject({ type: "appendText", markdown: "one" });
+
+    expect(await hooks().applyAction(facet, 1)).toContain("queued under an earlier Markdown format");
+    expect(await hooks().applyAction(facet, 2)).toBe("Dropped earlier.");
+    for (let id of [3, 4, 5]) expect(await hooks().applyAction(facet, id)).toBeNull();
+    expect(docs.text()).toBe("BASE\nthree\nfour");
+    expect(docs.contentBatches).toBe(3);
+    expect(await hooks().rejectAction(facet, 1)).toBeUndefined();
+    expect(await hooks().rejectAction(facet, 2)).toBeUndefined();
+
+    expect(await hooks().submitAppend(facet, "six")).toBe(6);
+  });
+
+  it("keeps a created document's first tab until the real class takes over", async () => {
+    new DocsModel().install();
+    let facet = "stored-layout-created";
+    await hooks().createResource(facet, DOC_PATTERN, "Plan");
+    expect(await hooks().applyCreation(facet)).toEqual({ resourceUrl: CREATED_DOC_URL });
+    expect((await stored(facet, "createdDocTab")).kv).toBe(MAIN_TAB);
+
+    await hooks().adoptCreated(facet);
+    expect(await hooks().readContent(facet)).toBe("\n");
+    expect(await hooks().storedKeys(facet, "doc")).not.toContain("createdDocTab");
+  });
+
+  it("reads through the synchronous KV what the asynchronous API wrote, and the reverse", async () => {
+    new DocsModel().install();
+    let facet = "stored-layout-apis";
+    let value = { formatVersion: 1, fetchedAt: 7 };
+    await hooks().writeStored(facet, "doc", [{ kind: "put", key: "docSnapshot", value }], "async");
+    expect(await stored(facet, "docSnapshot")).toEqual({ kv: value, async: value });
+    await hooks().writeStored(
+      facet, "doc", [{ kind: "put", key: "docSnapshotCheck", value: { fetchedAt: 7, checkedAt: 0 } }],
+      "kv");
+    expect((await stored(facet, "docSnapshotCheck")).async).toEqual({ fetchedAt: 7, checkedAt: 0 });
+  });
+});

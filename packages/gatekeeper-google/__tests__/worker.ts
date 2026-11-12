@@ -765,9 +765,80 @@ export class TestHooks extends DurableObject<Env> {
   async sheetsMarkers(facetName: string): Promise<(MarkerEntry | number)[]> {
     return (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).testMarkers();
   }
+
+  /** The facet a standalone file gatekeeper of `kind` runs as under `facetName`. */
+  #stored(facetName: string, kind: StoredGatekeeper): StoredLayoutHooks {
+    let facet = kind === "doc" ? this.#gatekeeper(facetName)
+      : kind === "sheets" ? this.#sheets(facetName) : this.#slides(facetName);
+    return facet as unknown as StoredLayoutHooks;
+  }
+
+  /** Every key the facet's storage holds, in key order. */
+  async storedKeys(facetName: string, kind: StoredGatekeeper): Promise<string[]> {
+    return this.#stored(facetName, kind).testStoredKeys();
+  }
+
+  /** The value under `key`, read through the synchronous KV and through the asynchronous API. */
+  async storedValue(facetName: string, kind: StoredGatekeeper, key: string): Promise<StoredValue> {
+    return this.#stored(facetName, kind).testStoredValue(key);
+  }
+
+  /** Writes `operations` to the facet's storage through the synchronous KV or the asynchronous API. */
+  async writeStored(
+    facetName: string, kind: StoredGatekeeper, operations: StorageOperation[], api: "kv" | "async",
+  ): Promise<void> {
+    await this.#stored(facetName, kind).testWriteStored(operations, api);
+  }
+
+  /**
+   * Ends the facet `facetName` names, whatever it runs: the next call constructs the class again
+   * over the same storage, so what was written since is what that construction finds.
+   */
+  async restartFacet(facetName: string): Promise<void> {
+    this.ctx.facets.abort(facetName, new Error("Restarted by the test."));
+  }
 }
 
 type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
+
+/** The standalone file gatekeepers whose stored layout the tests pin. */
+type StoredGatekeeper = "doc" | "sheets" | "slides";
+
+/**
+ * A value as the synchronous KV and the asynchronous storage API each read it, as JSON text so that
+ * any value crosses RPC; absent where nothing is stored.
+ */
+type StoredValue = { kv?: string; async?: string };
+
+/** Hooks on each standalone file gatekeeper that read and write its storage directly. */
+type StoredLayoutHooks = {
+  testStoredKeys(): string[];
+  testStoredValue(key: string): Promise<StoredValue>;
+  testWriteStored(operations: StorageOperation[], api: "kv" | "async"): Promise<void>;
+};
+
+const storedLayoutHooks: StoredLayoutHooks & ThisType<TestDurableObjectState> = {
+  testStoredKeys() {
+    return [...this.ctx.storage.kv.list()].map(([key]) => key);
+  },
+  async testStoredValue(key) {
+    let kv = this.ctx.storage.kv.get(key);
+    let read = await this.ctx.storage.get(key);
+    return {
+      ...kv === undefined ? {} : { kv: JSON.stringify(kv) },
+      ...read === undefined ? {} : { async: JSON.stringify(read) },
+    };
+  },
+  async testWriteStored(operations, api) {
+    for (let { key, value } of operations) {
+      if (api === "kv") this.ctx.storage.kv.put(key, value);
+      else await this.ctx.storage.put(key, value);
+    }
+  },
+};
+for (let gatekeeper of [GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl]) {
+  Object.assign(gatekeeper.prototype, storedLayoutHooks);
+}
 
 (GoogleDocGatekeeperImpl.prototype as TestGoogleDocGatekeeper).applyTestStorage = function(
   operations: StorageOperation[],

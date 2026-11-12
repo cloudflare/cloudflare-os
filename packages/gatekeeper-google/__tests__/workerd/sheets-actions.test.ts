@@ -728,6 +728,7 @@ function gatekeeper() {
     hooks().callSheets(facet, method as never, args);
   let update = (changes: SheetChange[]) => call("updateSpreadsheet", changes);
   return {
+    facet,
     call,
     update,
     queued: async (changes: SheetChange[]) => {
@@ -2203,5 +2204,64 @@ describe("Google Sheets formatting", () => {
     expect(await sheets.apply(format.actionId!)).toBeNull();
     expect(await sheets.apply(copy.actionId!)).toBeNull();
     expect(await sheets.formats("Copy!A1:A2")).toEqual(previewed);
+  });
+});
+
+// What a bound spreadsheet stores, by its literal keys, so that moving its code cannot move its
+// storage.
+describe("Google Sheets stored layout", () => {
+  /** The value under `key`, as the synchronous KV reads it. */
+  async function stored(facet: string, key: string): Promise<unknown> {
+    let { kv } = await hooks().storedValue(facet, "sheets", key);
+    return kv === undefined ? undefined : JSON.parse(kv);
+  }
+
+  it("keeps its journal and markers under the keys it has always used", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    let second = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
+    expect(await hooks().storedKeys(sheets.facet, "sheets"))
+      .toEqual(["sheets:action:1", "sheets:action:2", "sheets:nextActionId"]);
+    expect(await stored(sheets.facet, "sheets:action:1")).toEqual({
+      v: 2, state: "pending",
+      action: {
+        kind: "editSheetValues",
+        payload: {
+          changes: [expect.objectContaining({ op: "writeCells", sheetId: 0 })],
+          sheets: { 0: "Sales" }, guard: expect.any(Object),
+          marker: { id: expect.any(Number), token: expect.any(String) },
+        },
+      },
+    });
+
+    expect(await sheets.apply(first.actionId!)).toBeNull();
+    expect(await sheets.reject(second.actionId!)).toBeNull();
+    let third = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[8]] }]);
+
+    expect(third.actionId).toBe(3);
+    expect(await hooks().storedKeys(sheets.facet, "sheets")).toEqual([
+      "applied:sheets:action:", "sheets:action:3", "sheets:nextActionId", "sheets:staleMarkers",
+    ]);
+    expect(await stored(sheets.facet, "sheets:nextActionId")).toBe(4);
+    expect(await stored(sheets.facet, "applied:sheets:action:")).toEqual([1]);
+    expect(await stored(sheets.facet, "sheets:staleMarkers"))
+      .toEqual([{ id: markerOf(provider.batches[0]), sentAt: expect.any(Number) }]);
+  });
+
+  it("reads a marker list and journal stored before it first starts", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    // A bare ID is a marker last sent long ago; a counter carries on from where it was.
+    await hooks().writeStored(sheets.facet, "sheets", [
+      { kind: "put", key: "sheets:staleMarkers", value: [9] },
+      { kind: "put", key: "sheets:nextActionId", value: 12 },
+    ], "kv");
+    await hooks().restartFacet(sheets.facet);
+
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    expect(actionId).toBe(12);
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.batches.map(deletedBy)).toEqual([[9]]);
   });
 });
