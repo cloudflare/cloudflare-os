@@ -1,0 +1,19 @@
+plans/approval-experience.md
+  s_99c049c8391965::t_7cdb543a5939fc 1-426
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "589702d08c24a6c96c08e678b0a25421c97ddfba",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
