@@ -899,10 +899,13 @@ export function addedTableCells(change: TableChange): number {
 export function checkTabTableCells(content: EditableMarkdown, added: number, op: string): void {
   if (added === 0) return;
   let held = 0;
+  // Every paragraph a table's HTML shows counts, those of tables inside its cells and those no
+  // replacement can edit included: the whole document has to be read back.
   for (let table of content.tables) {
-    for (let row = 0; row < table.rows.length; row++) {
-      for (let cell of tableRowCells(table, row)) held += Math.max(1, cell.texts.length);
-    }
+    let html = content.markdown.slice(table.mdStart, table.mdEnd);
+    let paragraphs = html.match(/<(?:p|h[1-6]|li)>/g)?.length ?? 0;
+    let cells = html.match(/<td[ >]/g)?.length ?? 0;
+    held += Math.max(paragraphs, cells);
   }
   if (held + added > MAX_TAB_TABLE_CELLS) {
     throw new Error(

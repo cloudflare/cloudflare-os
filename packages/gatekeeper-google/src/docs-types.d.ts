@@ -251,7 +251,7 @@ export type DocTableCell = {
  * tables after it, and adding or deleting rows or columns renumbers those after them.
  *
  * Tables, rows and columns can be added only until the tables of one tab hold 5,000 cells
- * in all, a cell counting once for each paragraph it holds.
+ * in all, a cell counting once for each paragraph it holds, a table inside a cell included.
  *
  * The rows and columns of a table can be changed, and the table deleted, only while no other
  * table of the tab reads the same as it does: the same HTML, apart from its styles, column

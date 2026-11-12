@@ -617,7 +617,8 @@ The limits, and what each is for:
 - The text of one change's cells holds at most 2,000 paragraph breaks, the limit text edits have,
   since each becomes a paragraph.
 - Tables, rows and columns are added only until the tables of one tab hold 5,000 cells in all, a
-  cell counting once for each paragraph it holds: a document is read whole, in one answer of
+  cell counting once for each paragraph it holds, those of tables inside cells and those no
+  replacement can edit included: a document is read whole, in one answer of
   limited size, and one whose tables grow far past that cannot be read, and so cannot be changed,
   through the connection (see [Known limitations](#known-limitations)).
 - One deletion removes at most 19,005 rows or columns, the most requests a batch holds.

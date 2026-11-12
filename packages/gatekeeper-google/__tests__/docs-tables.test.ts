@@ -1637,6 +1637,16 @@ describe("the cells a tab's tables hold", () => {
   const full = docTabToMarkdown(FULL);
   const content = contentOf(full);
 
+  it("counts the paragraphs of a table inside a cell, which no replacement edits", () => {
+    // ask-bonk's case: a 200 x 20 table nested in one cell holds 4,000 of the tab's cells.
+    let nested = buildTab([
+      para("Before"), { table: [[cellOf(para("outer"), sized(200, 20), para("end"))]] }, para("After"),
+    ]);
+    let held = contentOf(docTabToMarkdown(nested));
+    expect(message(() => checkTabTableCells(held, 2_000, "insertTable"))).toBe(tabCells("insertTable", 6_002));
+    expect(() => checkTabTableCells(held, 998, "insertTable")).not.toThrow();
+  });
+
   it("takes an addition that brings the tab's tables to the limit", () => {
     let applied = expectSameAsGoogle(FULL, addRows(content, 1, 1, tenCells()));
     expect(tableTexts(applied, 1).length).toBe(2);
