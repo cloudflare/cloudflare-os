@@ -257,6 +257,18 @@ const DOCS_API_BASE = "https://docs.googleapis.com/v1/documents";
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
 
+/**
+ * The longest a Docs write's requests can take before it settles or is abandoned: three attempts
+ * (the first, one after an auth refresh, one after a reconnect changed the stored token).
+ */
+export const DOCS_WRITE_MAX_MS = 3 * REQUEST_TIMEOUT_MS;
+
+/**
+ * A Docs write Google answered with success while reporting that its comment update was not
+ * saved (`commentUpdateState`), so that comment or reply was not posted.
+ */
+export class DocsCommentNotSavedError extends Error {}
+
 export class GoogleDocsApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -436,6 +448,7 @@ export class GoogleDocsApi {
   ): Promise<string> {
     let result = await this.#write(documentId,
       [{ insertComment: { content, range } }], { requiredRevisionId }, "insert comment");
+    requireCommentSaved(result.commentUpdateState);
     let id = result.replies?.[0]?.insertComment?.commentThread?.commentId;
     if (typeof id !== "string" || !id) throw new Error("Google Docs returned no comment ID");
     return id;
@@ -461,8 +474,9 @@ export class GoogleDocsApi {
 
   /** Reply to suggestion `suggestionId`'s thread with `content`. */
   async replyToSuggestion(documentId: string, suggestionId: string, content: string): Promise<void> {
-    await this.#write(documentId,
+    let result = await this.#write(documentId,
       [{ addCommentReply: { suggestionId, post: { content } } }], {}, "reply to suggestion");
+    requireCommentSaved(result.commentUpdateState);
   }
 
   async #write(
@@ -475,6 +489,7 @@ export class GoogleDocsApi {
     return this.#request<{
       replies?: { insertComment?: { commentThread?: { commentId?: unknown } } }[];
       suggestionResponses?: { createdSuggestionIds?: unknown[] }[];
+      commentUpdateState?: unknown;
     }>(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}:batchUpdate`,
       {
@@ -489,12 +504,21 @@ export class GoogleDocsApi {
   }
 }
 
+/** Refuses a comment update Google answered as not saved. */
+function requireCommentSaved(state: unknown): void {
+  if (state === "ALL_FAILED_UNKNOWN_REASON") {
+    throw new DocsCommentNotSavedError("Google Docs did not save the comment.");
+  }
+}
+
 /**
  * How a Docs write failed: refused before it applied (`absent`), refused for rate (`rateLimited`),
  * or with no answer that says whether it applied (`unknown`). Google checks a batch whole before
  * it applies any of it, so every answer of a status it gives is a refusal.
  */
 export function docsWriteFailure(error: unknown): "absent" | "rateLimited" | "unknown" {
+  // Google said what it did not save, and nothing else was in the batch.
+  if (error instanceof DocsCommentNotSavedError) return "absent";
   if (!(error instanceof GoogleApiError)) return "unknown";
   let { providerStatus, providerReasons } = error;
   if (providerStatus === "RESOURCE_EXHAUSTED" ||

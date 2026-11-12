@@ -1540,3 +1540,62 @@ describe("how a Docs write failed", () => {
     expect(docsWriteFailure(new Error("The operation was aborted due to timeout"))).toBe("unknown");
   });
 });
+
+describe("Docs writes, held to what Google answers", () => {
+  const NOT_SAVED = "Google Docs answered that it did not save this comment, so nothing was " +
+    "posted. Approve it again to post it.";
+
+  it("keeps a comment Docs did not save pending, and posts it when approved again", async () => {
+    let { DocsCommentNotSavedError } = await import("../src/docs-api");
+    let { docs, journal, attempts, submit, apply } = harness();
+    docs.insertComment.mockRejectedValueOnce(new DocsCommentNotSavedError("x"));
+    let id = await submit("createComment", ANCHORED);
+    expect(await apply(id)).toBe(NOT_SAVED);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.has(id)).toBe(false);
+    expect(await apply(id)).toBeNull();
+    expect(docs.insertComment).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a note Docs did not save to post again, never the suggestion", async () => {
+    let { DocsCommentNotSavedError } = await import("../src/docs-api");
+    let { docs, attempts, submit, apply } = harness();
+    docs.replyToSuggestion.mockRejectedValueOnce(new DocsCommentNotSavedError("x"));
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await apply(id)).toBe("The suggestion was made, but Google Docs did not save its " +
+      "note. Approve it again to post the note.");
+    expect(attempts.get(id)).toEqual({ at: expect.any(Number), suggestionId: "suggest.s1" });
+    expect(await apply(id)).toBeNull();
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+    expect(docs.replyToSuggestion).toHaveBeenCalledTimes(2);
+  });
+
+  it("checks the binding again before a note left to post is sent", async () => {
+    let { api, docs, journal, submit, apply, refuse } = harness();
+    docs.replyToSuggestion.mockRejectedValueOnce(docsRefused("RESOURCE_EXHAUSTED"));
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await apply(id)).toMatch(/limiting requests/);
+    // The grant was withdrawn: the note waits, sent nowhere.
+    refuse(WRITES_GRANT_MISSING);
+    expect(await apply(id)).toBe(WRITES_GRANT_MISSING);
+    expect(docs.replyToSuggestion).toHaveBeenCalledTimes(1);
+    // The account can no longer comment: the note fails for good, and says the suggestion stands.
+    refuse(undefined);
+    api.getScopeNodes.mockImplementation(async ids => ids.map(nodeId => ({ id: nodeId, canComment: false })));
+    expect(await apply(id)).toBe("The suggestion was made, but its note was not posted: The " +
+      "connected account can no longer comment on that file.");
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+    expect(docs.replyToSuggestion).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no positional write without the revision it was placed on", async () => {
+    let { doc, docs, journal, submit, apply } = harness();
+    let id = await submit("suggestEdit", edit());
+    doc.current = { ...docOf(DOC_TEXT), revisionId: undefined };
+    expect(await apply(id)).toBe("Google Docs did not give the connected account the Doc's " +
+      "revision, so the quoted text can't be held in place while this is sent.");
+    expect(journal.get(id)?.state).toBe("failed");
+    expect(docs.suggest).not.toHaveBeenCalled();
+  });
+});

@@ -4030,7 +4030,9 @@ export class GoogleDriveSessionImpl extends RpcTarget
     let { note, tabId } = options;
     let queued = await this.#queueComment(fileId, "suggestEdit", async (target, base) => {
       let checked = checkSuggestion(oldText, newText, note);
-      return { ...base, tabId: await this.#quotedTab(target, checked.oldText, tabId), ...checked };
+      return {
+        ...base, tabId: await this.#quotedTab(target, checked.oldText, tabId, true), ...checked,
+      };
     });
     return pendingSuggestion(queued.id, queued.payload);
   }
@@ -4121,11 +4123,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
   }
 
   /**
-   * The ID of the tab of a Google Doc in which `quote` occurs exactly once. Reading the Doc is a
+   * The ID of the tab of a Google Doc in which `quote` occurs exactly once; with `wholeChips`, as
+   * for text a suggestion replaces, refused when it takes in part of a chip. Reading the Doc is a
    * content read, authorized as one.
    */
   async #quotedTab(
-    target: CommentTarget, quote: string, tabId: string | undefined,
+    target: CommentTarget, quote: string, tabId: string | undefined, wholeChips = false,
   ): Promise<string> {
     if (target.mimeType !== GOOGLE_DOC_MIME_TYPE) {
       throw new Error("Quoting and suggested edits work only on Google Docs.");
@@ -4138,7 +4141,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
         description: `Read the text of Google Doc ${documentId} to find the quoted text.`,
       }));
     let tab = selectTab(document, tabId);
-    locateQuote(tab, quote);
+    locateQuote(tab, quote, { wholeChips });
     return tab.tabId;
   }
 

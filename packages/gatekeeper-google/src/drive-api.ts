@@ -764,8 +764,9 @@ export function checkCommentContent(
 const COMMENT_WRITE_TIMEOUT_MS = 20_000;
 
 /**
- * The longest a comment write's requests can take before it settles or is abandoned, so a write
- * not found this long after it began was not left in flight by that attempt.
+ * The longest a comment write's requests through Drive can take before it settles or is
+ * abandoned, so a write not found this long after it began was not left in flight by that attempt.
+ * A write through Docs has its own bound, `DOCS_WRITE_MAX_MS`.
  */
 export const COMMENT_WRITE_MAX_MS = 3 * COMMENT_WRITE_TIMEOUT_MS;
 

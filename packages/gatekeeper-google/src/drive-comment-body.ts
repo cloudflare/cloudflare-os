@@ -77,22 +77,35 @@ function tabText(tab: GoogleDocsTab): { text: string; pieces: Piece[] } {
   return { text: chunks.join(""), pieces };
 }
 
-/** The tab index of text offset `offset`, as the start (or, `end`, the exclusive end) of a range. */
-function indexAt(pieces: Piece[], offset: number, end: boolean): number {
+/** The refusal for replacing part of a chip, which takes one index however long its text reads. */
+const PARTIAL_CHIP = "That text takes in part of a smart chip (a person, date or link), which " +
+  "can only be replaced whole. Include all of the chip's text, or none of it.";
+
+/**
+ * The tab index of text offset `offset`, as the start (or, `end`, the exclusive end) of a range.
+ * A chip the offset falls inside is taken whole, or, with `wholeChips`, refused.
+ */
+function indexAt(pieces: Piece[], offset: number, end: boolean, wholeChips: boolean): number {
   let piece = pieces.find(candidate => end
     ? offset > candidate.at && offset <= candidate.at + candidate.length
     : offset >= candidate.at && offset < candidate.at + candidate.length);
   if (!piece) throw new Error("That text could not be placed in the document.");
-  // A chip is quoted whole, whatever part of its text the quote takes.
-  if (!piece.run) return end ? piece.endIndex : piece.startIndex;
+  if (!piece.run) {
+    let inside = end ? offset < piece.at + piece.length : offset > piece.at;
+    if (inside && wholeChips) throw new Error(PARTIAL_CHIP);
+    return end ? piece.endIndex : piece.startIndex;
+  }
   return piece.startIndex + offset - piece.at;
 }
 
 /**
  * Finds `quote`, trimmed, in the tab's text, where it must occur exactly once; neither side is
- * normalized. Returns the range it takes in the tab; a chip the quote takes part of is taken whole.
+ * normalized. Returns the range it takes in the tab. A chip the quote takes part of is taken
+ * whole, as a comment's anchor; with `wholeChips`, as for text a suggestion replaces, it is refused.
  */
-export function locateQuote(tab: GoogleDocsTab, quote: string): DocsRange {
+export function locateQuote(
+  tab: GoogleDocsTab, quote: string, { wholeChips = false }: { wholeChips?: boolean } = {},
+): DocsRange {
   let needle = quote.trim();
   if (!needle) throw new Error("The quote is empty.");
   // The Markdown the agent read separates paragraphs differently from the Doc's own text.
@@ -111,8 +124,8 @@ export function locateQuote(tab: GoogleDocsTab, quote: string): DocsRange {
     throw new Error(`That text appears ${count} times; quote more of it so it is unique.`);
   }
   return {
-    startIndex: indexAt(pieces, first, false),
-    endIndex: indexAt(pieces, first + needle.length, true),
+    startIndex: indexAt(pieces, first, false, wholeChips),
+    endIndex: indexAt(pieces, first + needle.length, true, wholeChips),
     tabId: tab.tabId,
   };
 }

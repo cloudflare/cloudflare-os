@@ -31,7 +31,8 @@ import {
   type DriveScopeNode,
 } from "./drive-api";
 import {
-  docsFileInvisible, docsLacksScope, docsWriteFailure, docsWriteInvalid, type DocsRange,
+  DOCS_WRITE_MAX_MS, DocsCommentNotSavedError, docsFileInvisible, docsLacksScope,
+  docsWriteFailure, docsWriteInvalid, type DocsRange,
   type DocsSuggestionRecord, type GoogleDocsApi, type GoogleDocsDocument,
 } from "./docs-api";
 import { locateQuote, selectTab } from "./drive-comment-body";
@@ -150,6 +151,10 @@ const NO_LONGER_IN_SCOPE = "That file is no longer in this connection's scope.";
 const CANNOT_COMMENT = "The connected account can no longer comment on that file.";
 const QUOTE_GONE = "The quoted text is no longer in the Doc exactly once, so this can't be " +
   "attached to it. Queue it again with text the Doc has now.";
+const NO_REVISION = "Google Docs did not give the connected account the Doc's revision, so the " +
+  "quoted text can't be held in place while this is sent.";
+const COMMENT_NOT_SAVED = "Google Docs answered that it did not save this comment, so nothing was " +
+  "posted. Approve it again to post it.";
 const DOC_CHANGED_WHILE_SENT = "The Google Doc changed while this was being sent, so nothing " +
   "was posted. Approve it again to place it on the Doc as it is now.";
 
@@ -162,7 +167,8 @@ const PARENT_EXCERPT_CHARS = 200;
 /** How far Drive's clock may run behind ours. */
 const CLOCK_SKEW_MS = 10_000;
 /** How long after a send began Drive may date what it posted: well past the write's own timeout. */
-const RECONCILE_WINDOW_MS = Math.max(5 * 60 * 1000, 2 * COMMENT_WRITE_MAX_MS);
+const RECONCILE_WINDOW_MS =
+  Math.max(5 * 60 * 1000, 2 * Math.max(COMMENT_WRITE_MAX_MS, DOCS_WRITE_MAX_MS));
 /** Most pages one look for a posted comment reads. */
 const MAX_RECONCILE_PAGES = 50;
 
@@ -690,12 +696,16 @@ async function place(
   let { document, suggestions } = await readDoc(host, action.payload.fileId, false);
   let range: DocsRange;
   try {
-    range = locateQuote(selectTab(document, quoted.tabId), quoted.text);
+    range = locateQuote(selectTab(document, quoted.tabId), quoted.text,
+      { wholeChips: action.kind === "suggestEdit" });
   } catch (error) {
     throw new ActionApplyError(QUOTE_GONE, { cause: error });
   }
+  // A range is placed by the read: without its revision to send on, an edit made meanwhile would
+  // move it. Google gives one to every account that can comment, so this is not expected.
+  if (!document.revisionId) throw new ActionApplyError(NO_REVISION);
   return {
-    range, ...(document.revisionId ? { revisionId: document.revisionId } : {}),
+    range, revisionId: document.revisionId,
     mySuggestions: suggestions.filter(({ headPost }) => headPost.me)
       .map(({ suggestionId }) => suggestionId),
   };
@@ -729,6 +739,13 @@ async function postNote(
     if (!conclusive) throw notShownYet(noteAttempt);
     await requireSightedLook(host, { kind: "suggestEdit", payload });
   }
+  // The note is a write of its own: the binding's checks hold for it as for the suggestion, and
+  // the suggestion's ID stays in the marker whatever they answer.
+  await requireStillAllowed(host, { kind: "suggestEdit", payload }).catch((error: unknown) => {
+    if (!(error instanceof ActionApplyError)) throw error;
+    throw new ActionApplyError(`The suggestion was made, but its note was not posted: ${
+      error.message}`, { cause: error });
+  });
   host.attempts.put(id, { ...marked, noteAt: Date.now() });
   try {
     await host.docs.replyToSuggestion(payload.fileId, suggestionId, note);
@@ -741,6 +758,10 @@ async function postNote(
     }
     // Nothing was posted: the next approval sends the note again, never the suggestion.
     host.attempts.put(id, marked);
+    if (error instanceof DocsCommentNotSavedError) {
+      throw new Error("The suggestion was made, but Google Docs did not save its note. Approve " +
+        "it again to post the note.", { cause: error });
+    }
     if (failure === "rateLimited") throw new Error(rateLimited("Google Docs"), { cause: error });
     if (docsLacksScope(error)) throw new Error(WRITES_GRANT_MISSING, { cause: error });
     throw new ActionApplyError("The suggestion was made, but Google Docs refused its note.",
@@ -924,6 +945,7 @@ async function post(
         "twice; rejecting it leaves anything already posted on the file.", { cause: error });
     }
     host.attempts.delete(id);
+    if (error instanceof DocsCommentNotSavedError) throw new Error(COMMENT_NOT_SAVED, { cause: error });
     if (failure === "rateLimited") throw new Error(rateLimited(google), { cause: error });
     // The token lacks the scope, which allowing changes again lifts, as when the account says so.
     if (placement ? docsLacksScope(error) : isInsufficientScope(error)) {

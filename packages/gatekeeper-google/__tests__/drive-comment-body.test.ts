@@ -160,6 +160,14 @@ describe("locateQuote", () => {
     // "Ask " is 1..5, the person chip 5..6, " by " 6..10, the date chip 10..11.
     expect(locateQuote(found, "Ask Alice by Oct 21, 2026")).toEqual({ startIndex: 1, endIndex: 11, tabId: "t.0" });
     expect(locateQuote(found, "lice by")).toEqual({ startIndex: 5, endIndex: 9, tabId: "t.0" });
+    // Text a suggestion replaces may take a chip only whole: deleting it whole would replace more
+    // than was asked.
+    expect(locateQuote(found, "Ask Alice by", { wholeChips: true }))
+      .toEqual({ startIndex: 1, endIndex: 9, tabId: "t.0" });
+    for (let part of ["lice by", "Ask Ali", "Alic"]) {
+      expect(() => locateQuote(found, part, { wholeChips: true }), part)
+        .toThrow("That text takes in part of a smart chip");
+    }
   });
 
   it("refuses text that appears more than once, counting overlaps", () => {
