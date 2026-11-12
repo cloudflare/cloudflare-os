@@ -217,7 +217,7 @@ export async function createFileOnce(
     ctx.storage.kv.put(CREATED_FILE_KEY, { userObjectId, fileId, folderId: placed } satisfies CreatedFile);
   // Checked before anything is made, so a choice that can be checked in advance orphans no file.
   let making = receipt === undefined;
-  await requireGrants(account, making && inPlace ? [CREATED_FILES_GRANT, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]
+  await requireGrants(account, inPlace ? [CREATED_FILES_GRANT, GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern]
     : moving ? [CREATED_FILES_GRANT] : []);
   let folder = moving || making && folderId !== MY_DRIVE_ROOT
     ? await destinationFolder(drive, folderId) : undefined;
@@ -231,12 +231,10 @@ export async function createFileOnce(
     }
     // Sent again while it is unknown whether the ID was used. The ID is kept even after Drive
     // refuses: the request replays a lost reply, so the refused attempt may not have been the first.
-    if (making || placedIn === null) {
-      // A 409 says an earlier attempt made the folder, which may be trashed or deleted since.
-      if (!await drive.createFolder(props.creation.title, folderId, fileId) &&
-          !isListableFolderFile(await readCreated(drive, kind, fileId))) throw goneError(kind);
-      made = true;
-    }
+    made = making || placedIn === null;
+    let fresh = made && await drive.createFolder(props.creation.title, folderId, fileId);
+    // A folder an earlier attempt made (a 409, or the receipt) may be trashed or deleted since.
+    if (!fresh && !isListableFolderFile(await readCreated(drive, kind, fileId))) throw goneError(kind);
   } else if (fileId === undefined) {
     fileId = await create(props.creation.title, getAccessToken);
     made = true;

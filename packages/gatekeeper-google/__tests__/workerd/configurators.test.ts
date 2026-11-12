@@ -162,6 +162,35 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
     });
 
+    // The creation picker's My Drive tab is Drive's `root` alias, so a pasted folder's path must
+    // start there, or at the Shared drives tab, for the picker to open it where it lives.
+    it("places a pasted folder link for a creation under its tab", async () => {
+      const folder = (id: string, name: string, parents?: string[], driveId?: string) => ({
+        id, name, mimeType: FOLDER, trashed: false, ...parents && { parents }, ...driveId && { driveId },
+        capabilities: { canListChildren: true, canAddChildren: true },
+      });
+      stubDrive({
+        "/files/root": folder("0AMyRoot", "My Drive"),
+        "/files/0AMyRoot": folder("0AMyRoot", "My Drive"),
+        "/files/plans": folder("plans", "Plans", ["0AMyRoot"]),
+        "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
+        "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+      const pasted = async (id: string) =>
+        (await creating.listFolders("folder:root", `https://drive.google.com/drive/folders/${id}`, null)).nodes;
+
+      await expect(pasted("plans")).resolves.toEqual([{
+        id: "folder:plans", title: "Plans", kind: "folder", listable: true, addable: true,
+        path: [{ id: "folder:root", title: "My Drive", listable: true, addable: true }],
+      }]);
+      await expect(pasted("0AMyRoot"))
+        .resolves.toMatchObject([{ id: "folder:root", title: "My Drive", addable: true, path: [] }]);
+      await expect(pasted("specs")).resolves.toMatchObject([{
+        id: "folder:specs", path: [{ id: "shared-drives" }, { id: "folder:0ADrive", title: "Engineering" }],
+      }]);
+    });
+
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing
     // of the target, so what the shortcut offers is decided by the target as read.
     it("offers a shortcut only for a target that could be connected", async () => {

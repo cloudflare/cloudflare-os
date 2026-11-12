@@ -710,6 +710,19 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
   }
 }
 
+/** The creation picker's My Drive tab: Drive's alias for its root, where a new file lands unmoved. */
+const MY_DRIVE_TAB = "folder:root";
+
+/**
+ * `node` under the creation picker's tabs. `drivePath` gives My Drive's root an empty path, and a
+ * path in My Drive starts at the root's real ID, where the picker's tab is its alias.
+ */
+function underMyDriveTab(node: DriveNode): DriveNode {
+  if (node.path?.length === 0) return { ...node, id: MY_DRIVE_TAB, title: "My Drive" };
+  let [top, ...below] = node.path ?? [];
+  return top && top.id !== SHARED_DRIVES.id ? { ...node, path: [{ ...top, id: MY_DRIVE_TAB }, ...below] } : node;
+}
+
 /** The picker of the folder a new Doc, Sheet, Presentation or folder is created in. */
 @validateRpc()
 export class CreationLocationConfiguratorUI extends RpcTarget implements CreationLocationConfiguratorRpc {
@@ -721,7 +734,8 @@ export class CreationLocationConfiguratorUI extends RpcTarget implements Creatio
   }
 
   async listFolders(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
-    return listDriveNodes(this, parentId, query, cursor, true);
+    let page = await listDriveNodes(this, parentId, query, cursor, true);
+    return { ...page, nodes: page.nodes.map(underMyDriveTab) };
   }
 
   async hasCreationAccess(): Promise<boolean> {

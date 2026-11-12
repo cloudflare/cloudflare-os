@@ -326,13 +326,14 @@ approved, writing nothing.
 
 A folder is created under an ID Drive generated for it (`files.generateIds`), recorded before the
 create is sent, so a create whose reply is lost is sent again, by the request and by a retried
-approval, and Drive, which answers 409 for an ID already used, makes the folder once. After a 409
-the folder is read back, so a retry finding it trashed or deleted since is refused. The Docs,
-Sheets and Slides create calls take no such ID or idempotency key. A retried approval after a lost
-reply binds the file already created (the gatekeeper records it), but one of those files can still
-be orphaned in the approver's Drive: by a create request that times out or fails with a 5xx after
-Google acted, or a crash between Google's reply and that record being written. A creation rejected
-after an approval whose success was lost orphans a folder too. A created file's ID is logged
+approval, and Drive, which answers 409 for an ID already used, makes the folder once. A retry that
+did not make the folder, after a 409 or a success, reads it back and is refused if it was trashed
+or deleted since, and every attempt needs both grants. The Docs, Sheets and Slides create calls
+take no such ID or idempotency key. A retried approval after a lost reply binds the file already
+created (the gatekeeper records it), but one of those files can still be orphaned in the approver's
+Drive: by a create request that times out or fails with a 5xx after Google acted, or a crash
+between Google's reply and that record being written. A creation rejected after an approval whose
+success was lost orphans a folder too. A created file's ID is logged
 (`google.creation.file.created`) once its create's reply arrives; an orphan whose reply was lost
 has to be found in the approver's Drive.
 

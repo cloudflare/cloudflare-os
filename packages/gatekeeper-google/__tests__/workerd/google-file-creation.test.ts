@@ -396,20 +396,33 @@ describe("creating a Google Drive folder", () => {
     expect(drive["folder-new-1"].parents).toEqual(["root-id"]);
   });
 
-  it("refuses a retry whose folder was trashed after its create's reply was lost", async () => {
+  it.each([
+    ["its create's reply was lost", ["lost", "lost", "lost"] as const],
+    ["it was made", [] as const],
+  ])("refuses a retry whose folder was trashed after %s", async (name, answers) => {
     await hooks().grant("test-user", grants);
-    await hooks().createResource("create-folder-trashed", FOLDER_PATTERN, "Q3 plans");
-    createAnswers = ["lost", "lost", "lost"];
-    expect(await hooks().applyCreation("create-folder-trashed", "test-user", folderUrl("folder-1")))
-      .toMatchObject({ error: expect.stringContaining("503") });
+    await hooks().createResource(name, FOLDER_PATTERN, "Q3 plans");
+    createAnswers = [...answers];
+    await hooks().applyCreation(name, "test-user", folderUrl("folder-1"));
 
-    // The retry's create is answered 409, so the folder made under the ID is read back.
+    // The retry's create is answered 409, or not sent once the receipt says it was made, so the
+    // folder made under the ID is read back.
     drive["folder-new-1"].trashed = true;
-    expect(await hooks().applyCreation("create-folder-trashed", "test-user", folderUrl("folder-1"))).toEqual({
+    expect(await hooks().applyCreation(name, "test-user", folderUrl("folder-1"))).toEqual({
       error: "The Google Drive folder created for this approval is gone or in the trash, or its Google " +
         "account can no longer reach it. Reject the creation and ask for a new one.",
     });
     expect(generatedIds).toBe(1);
+  });
+
+  it("needs the Drive folder grant again on a retry", async () => {
+    await hooks().grant("test-user", grants);
+    await hooks().createResource("create-folder-regrant", FOLDER_PATTERN, "Q3 plans");
+    expect(await hooks().applyCreation("create-folder-regrant", "test-user", folderUrl("folder-1"))).toEqual(created);
+
+    await hooks().grant("test-user", [CREATED_FILES_GRANT]);
+    expect(await hooks().applyCreation("create-folder-regrant", "test-user", folderUrl("folder-1")))
+      .toEqual({ error: expect.stringContaining("hasn't granted Google Drive Folder access") });
   });
 
   it.each([
