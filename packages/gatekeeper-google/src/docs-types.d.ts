@@ -140,6 +140,54 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * The same tab selection rule as `getContent()` applies.
    */
   getPendingChanges(tabId?: string): Promise<GoogleDocPendingChanges>;
+
+  /**
+   * Return the images in tab `tabId`, one for each `[Image]` placeholder in `getContent()`, in
+   * the order the placeholders appear.
+   *
+   * The same tab selection rule as `getContent()` applies.
+   */
+  listImages(tabId?: string): Promise<GoogleDocImage[]>;
+
+  /**
+   * Read one image `listImages()` returned for tab `tabId`. Throws if the image is not readable
+   * or is larger than 10 MB.
+   */
+  readImage(imageId: string, tabId?: string): Promise<GoogleDocImageBytes>;
+}
+
+/** An image, drawing or chart in a tab. */
+export type GoogleDocImage = {
+  /** Identifies this image within its tab. Pass it to `readImage()`. */
+  id: string;
+
+  /** Displayed width, in points. */
+  width: number;
+
+  /** Displayed height, in points. */
+  height: number;
+
+  /** The image's alt text, when it has any. */
+  description?: string;
+
+  /** False for a drawing, which has a size but no content `readImage()` could return. */
+  readable: boolean;
+}
+
+/** One image's content, streamed. */
+export type GoogleDocImageBytes = {
+  /** `image/png`, `image/jpeg`, `image/gif` or `image/webp`. */
+  mimeType: string;
+
+  /** The image's size in bytes. */
+  size: number;
+
+  /**
+   * The bytes, read from Google as you read them. Read it whole with
+   * `await new Response(content).arrayBuffer()`. Read it straight away, and cancel it if you
+   * will not.
+   */
+  content: ReadableStream<Uint8Array>;
 }
 
 /**

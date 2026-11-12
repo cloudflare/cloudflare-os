@@ -75,6 +75,7 @@ type ModelTab = {
   text: string;
   table?: { before: string; rows: string[][]; after: string };
   body?: GoogleDocsTab["body"];
+  inlineObjects?: GoogleDocsTab["inlineObjects"];
   links: { start: number; end: number; url: string }[];
   paragraphStyles?: string[];
   paragraphLists?: ModelListSlot[];
@@ -130,6 +131,12 @@ class DocsModel {
   /** Full `documents.get` calls, excluding the lightweight revision probe. */
   documentFetches = 0;
   revisionProbes = 0;
+  /** Requests for an image's bytes. */
+  imageFetches = 0;
+  /** How many of the next image requests Google refuses, as it does once an address lapses. */
+  lapsedImageFetches = 0;
+  /** The length Google states for an image, when not its real one. */
+  imageLength?: number;
   /** Every provider request, of any kind. */
   fetches = 0;
   /** The body of each `documents.create` call. */
@@ -237,6 +244,24 @@ class DocsModel {
     this.#tab(tabId).body = body;
   }
 
+  /** One paragraph per image, each an inline object Google serves at docs.google.com/<id>. */
+  setImages(tabId: string, images: { id: string; drawing?: true }[]): void {
+    let { body } = buildTab(images.map(({ id }) => ({
+      runs: [{ richLink: { title: id, uri: "https://example.com" } }, "\n"],
+    })));
+    let inlineObjects: NonNullable<GoogleDocsTab["inlineObjects"]> = {};
+    for (let [index, { id, drawing }] of images.entries()) {
+      let element = body.content[index + 1].paragraph!.elements[0];
+      delete element.richLink;
+      element.inlineObjectElement = { inlineObjectId: id };
+      inlineObjects[id] = { inlineObjectProperties: { embeddedObject: {
+        size: { width: { magnitude: 120 }, height: { magnitude: 80 } },
+        ...drawing ? {} : { imageProperties: { contentUri: `https://docs.google.com/${id}` } },
+      } } };
+    }
+    Object.assign(this.#tab(tabId), { body, inlineObjects });
+  }
+
   text(tabId = MAIN_TAB): string {
     let tab = this.#tab(tabId);
     if (!tab.body) return tab.text;
@@ -304,6 +329,18 @@ class DocsModel {
         id: "doc-1", name: "Test document", modifiedTime: this.driveModifiedTime,
         ...this.driveMimeType ? { mimeType: this.driveMimeType } : {},
       });
+    }
+    if (url.hostname === "docs.google.com") {
+      this.imageFetches++;
+      if (this.lapsedImageFetches > 0) {
+        this.lapsedImageFetches--;
+        return new Response("gone", { status: 403 });
+      }
+      let bytes = new TextEncoder().encode(`bytes of ${url.pathname.slice(1)}`);
+      return new Response(bytes, { headers: {
+        "content-type": "image/png",
+        "content-length": String(this.imageLength ?? bytes.length),
+      } });
     }
     if (url.hostname !== "docs.googleapis.com") {
       throw new Error(`Unexpected provider request: ${url}`);
@@ -862,7 +899,7 @@ class DocsModel {
     body ??= buildTab([{ runs: [text] }]).body;
     return {
       tabProperties: { tabId: tab.id, title: tab.title },
-      documentTab: { body, lists, namedRanges },
+      documentTab: { body, lists, namedRanges, inlineObjects: tab.inlineObjects },
       childTabs: this.tabs.filter(child => child.parentId === tab.id)
         .map(child => this.#documentTab(child)),
     };
@@ -1997,6 +2034,65 @@ describe("Google Doc with no revision ID", () => {
   });
 });
 
+describe("Google Doc images", () => {
+  const LISTED = `Read the images in tab "Main" (${MAIN_TAB}).`;
+
+  it("lists a tab's images and reads one under the same observation", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }, { id: "sketch", drawing: true }]);
+    docs.install();
+
+    let { images, read } = await hooks().readImages("images-listed", ["photo"], true);
+
+    expect(images).toEqual([
+      { id: "photo", width: 120, height: 80, readable: true },
+      { id: "sketch", width: 120, height: 80, readable: false },
+    ]);
+    expect(read).toEqual([{ mimeType: "image/png", size: 14, text: "bytes of photo" }]);
+    expect(await hooks().lastObservations).toEqual([LISTED]);
+  });
+
+  it("reports an image read that no listing covers", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    docs.install();
+
+    let { read } = await hooks().readImages("images-unlisted", ["photo"], false);
+
+    expect(read).toEqual([{ mimeType: "image/png", size: 14, text: "bytes of photo" }]);
+    expect(await hooks().lastObservations)
+      .toEqual([`Read an image in tab "Main" (${MAIN_TAB}).`]);
+  });
+
+  it("refuses a drawing, an unknown image and one over the size limit", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }, { id: "sketch", drawing: true }]);
+    docs.imageLength = 10 * 1024 * 1024 + 1;
+    docs.install();
+
+    let { read } = await hooks().readImages("images-refused", ["sketch", "nope", "photo"], true);
+
+    expect(read).toEqual([
+      { error: expect.stringContaining('no readable image with ID "sketch"') },
+      { error: expect.stringContaining('no readable image with ID "nope"') },
+      { error: "readImage: this image is larger than 10 MB." },
+    ]);
+  });
+
+  it("reads the document again when an image's address has lapsed", async () => {
+    let docs = new DocsModel();
+    docs.setImages(MAIN_TAB, [{ id: "photo" }]);
+    docs.lapsedImageFetches = 1;
+    docs.install();
+
+    let { read } = await hooks().readImages("images-lapsed", ["photo"], true);
+
+    expect(read).toEqual([{ mimeType: "image/png", size: 14, text: "bytes of photo" }]);
+    expect(docs.documentFetches).toBe(2);
+    expect(docs.imageFetches).toBe(2);
+  });
+});
+
 describe("Google Doc pending changes", () => {
   it("returns a tab as saved and as edited, with the changes between them", async () => {
     let docs = new DocsModel();
@@ -2293,7 +2389,7 @@ function tabSnapshot(tabId: string, title: string) {
   return {
     tabId, title, index: 0, nestingLevel: 0,
     markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [] }, bodyEndIndex: 8,
-    committedWriteIds: [],
+    images: [], committedWriteIds: [],
   };
 }
 

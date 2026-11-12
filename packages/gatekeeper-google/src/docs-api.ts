@@ -43,6 +43,20 @@ export type GoogleDocsTab = {
   lists: Record<string, DocList>;
   /** Named ranges anchored in this tab. */
   namedRanges: NamedRanges;
+  /** Objects placed in the text, by the ID an `inlineObjectElement` names. */
+  inlineObjects?: Record<string, { inlineObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
+  /** Objects tethered to a paragraph, by the ID its `positionedObjectIds` names. */
+  positionedObjects?:
+    Record<string, { positionedObjectProperties?: { embeddedObject?: EmbeddedObject } }>;
+}
+
+/** An image, drawing or chart embedded in a tab. */
+export type EmbeddedObject = {
+  /** Alt text. */
+  description?: string;
+  size?: { width?: { magnitude?: number }; height?: { magnitude?: number } };
+  /** Present only for an image, whose `contentUri` serves its bytes for a short while. */
+  imageProperties?: { contentUri?: string };
 }
 
 /** Named ranges grouped by name, as `documents.get` returns them. */
@@ -217,7 +231,8 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
       seen.add(tabId);
 
       if (!documentTab || typeof documentTab !== "object") throw new Error(INVALID_TAB);
-      let { body, lists, namedRanges } = documentTab as Record<string, unknown>;
+      let { body, lists, namedRanges, inlineObjects, positionedObjects } =
+        documentTab as Record<string, unknown>;
       // A real body always holds at least a section break, and `bodyEndIndex` arithmetic assumes
       // it: an empty one would place an append at index -1.
       if (!body || typeof body !== "object" || !("content" in body) ||
@@ -236,6 +251,8 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
         body: { content },
         lists: tabCollection<GoogleDocsTab["lists"]>(lists),
         namedRanges: tabCollection<NamedRanges>(namedRanges),
+        inlineObjects: tabCollection<GoogleDocsTab["inlineObjects"]>(inlineObjects),
+        positionedObjects: tabCollection<GoogleDocsTab["positionedObjects"]>(positionedObjects),
       });
 
       if (childTabs === undefined) continue;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TextStyle } from "../src/docs-api";
+import type { Paragraph, TextStyle } from "../src/docs-api";
 import {
   applyMarkdownEdit, canonicalizeMarkdownForWrite, canonicalizeMarkdownReplacement,
   computeReplaceOperations,
@@ -791,6 +791,48 @@ describe("Google Docs tables", () => {
     Object.assign(element, { inlineObjectElement: { inlineObjectId: "image-1" } });
 
     expect(docTabToMarkdown(tab).markdown).toContain("<p>Before [Image] after</p>");
+  });
+
+  it("lists a tab's images in the order it writes their placeholders", () => {
+    let inline = (id: string) => ({ richLink: { title: id, uri: "https://example.com" } });
+    let tab = buildTab([
+      { runs: ["Before ", inline("inline-body"), "\n"] },
+      { table: [[{ paragraphs: [{ runs: [inline("inline-cell"), "\n"] }] }]] },
+      { runs: ["After\n"] },
+    ]);
+    let swap = (paragraph: Paragraph) => {
+      for (let element of paragraph.elements) {
+        if (!element.richLink) continue;
+        element.inlineObjectElement = { inlineObjectId: element.richLink.richLinkProperties!.title };
+        delete element.richLink;
+      }
+    };
+    swap(tab.body.content[1].paragraph!);
+    swap(tab.body.content[2].table!.tableRows![0].tableCells![0].content![0].paragraph!);
+    tab.body.content[1].paragraph!.positionedObjectIds = ["positioned"];
+    tab.inlineObjects = {
+      "inline-body": { inlineObjectProperties: { embeddedObject: {
+        description: "A chart",
+        size: { width: { magnitude: 300 }, height: { magnitude: 150 } },
+        imageProperties: { contentUri: "https://docs.google.com/image/body" },
+      } } },
+      // A drawing: sized, with nothing to fetch.
+      "inline-cell": { inlineObjectProperties: { embeddedObject: {
+        size: { width: { magnitude: 40 }, height: { magnitude: 20 } },
+      } } },
+    };
+
+    let { markdown, images } = docTabToMarkdown(tab);
+
+    expect(markdown.match(/\[Image\\?\]/g)).toHaveLength(3);
+    expect(images).toEqual([
+      { id: "positioned", width: 0, height: 0 },
+      {
+        id: "inline-body", width: 300, height: 150, description: "A chart",
+        contentUri: "https://docs.google.com/image/body",
+      },
+      { id: "inline-cell", width: 40, height: 20 },
+    ]);
   });
 
   it("marks positioned images in body and table paragraphs", () => {

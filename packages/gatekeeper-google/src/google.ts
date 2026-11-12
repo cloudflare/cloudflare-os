@@ -17,7 +17,7 @@ import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogl
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
   type GoogleDocPendingChange, type GoogleDocPendingChanges, type GoogleDocReadSession,
-  type GoogleDocTab,
+  type GoogleDocTab, type GoogleDocImage, type GoogleDocImageBytes,
 } from "./docs-types";
 import {
   DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
@@ -1764,7 +1764,8 @@ async function googleDocRevisionUnchanged(
 function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
-  operation: "getContent" | "getPendingChanges" | "replaceText" | "appendText",
+  operation:
+    "getContent" | "getPendingChanges" | "listImages" | "readImage" | "replaceText" | "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
@@ -1781,6 +1782,33 @@ function resolveGoogleDocTab(
       `Call listTabs() to refresh the tab list.`);
   }
   return tab;
+}
+
+const DOC_IMAGE_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_DOC_IMAGE_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Open the image Google serves at `contentUri`, or return undefined when it no longer serves it:
+ * the address lasts minutes, and a snapshot can outlive it.
+ */
+async function openGoogleDocImage(contentUri: string): Promise<GoogleDocImageBytes | undefined> {
+  let url = new URL(contentUri);
+  if (url.protocol !== "https:" || !/(^|\.)(google|googleusercontent)\.com$/.test(url.hostname)) {
+    throw new Error("Google Docs returned an image address outside Google");
+  }
+  let response = await fetch(url);
+  let refuse = async (reason: string | undefined) => {
+    await response.body?.cancel().catch(() => undefined);
+    if (reason) throw new Error(`readImage: ${reason}`);
+    return undefined;
+  };
+  if (!response.ok || !response.body) return refuse(undefined);
+  let mimeType = response.headers.get("content-type")?.split(";")[0].trim().toLowerCase() ?? "";
+  if (!DOC_IMAGE_TYPES.has(mimeType)) return refuse("this image's format cannot be read.");
+  // Google states an image's length; without it nothing bounds what the stream would carry.
+  let size = Number(response.headers.get("content-length") ?? NaN);
+  if (!(size <= MAX_DOC_IMAGE_BYTES)) return refuse("this image is larger than 10 MB.");
+  return { mimeType, size, content: response.body };
 }
 
 /** The agent-facing view of one tab: identity and position, never content. */
@@ -2607,6 +2635,9 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     return this.#comments.resolve(commentId, text);
   }
 
+  /** The images listImages() has returned, as tab ID and image ID. */
+  #listedImages = new Set<string>();
+
   // Every read authorizes through here, which reports the document it read as its subresource.
   #authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void> {
     return this.#approvalQueue.authorizeObservation({
@@ -2831,6 +2862,63 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
         `with its pending changes.`,
     });
     return { savedMarkdown: tab.markdown, markdown: selected.markdown, changes };
+  }
+
+  /** The tab an image read names, authorizing the attempt when there is no such tab. */
+  async #imageTab(
+    tabId: string | undefined, operation: "listImages" | "readImage",
+  ): Promise<GoogleDocTabSnapshot> {
+    let snapshot = await this.#getSnapshot();
+    try {
+      return resolveGoogleDocTab(snapshot, tabId, operation);
+    } catch (error) {
+      // As in getContent(), the error says whether that tab exists.
+      await this.#authorizeRead({
+        title: "Read Google Doc images",
+        description: "Read the images of one tab of the document.",
+      });
+      throw error;
+    }
+  }
+
+  async listImages(tabId?: string): Promise<GoogleDocImage[]> {
+    let tab = await this.#imageTab(tabId, "listImages");
+    await this.#authorizeRead({
+      title: "Read Google Doc images",
+      description: `Read the images in tab ${googleDocTabLabel(tab)}.`,
+    });
+    return tab.images.map(({ contentUri, ...image }) => {
+      this.#listedImages.add(`${tab.tabId}\u0000${image.id}`);
+      return { ...image, readable: contentUri !== undefined };
+    });
+  }
+
+  async readImage(imageId: string, tabId?: string): Promise<GoogleDocImageBytes> {
+    let tab = await this.#imageTab(tabId, "readImage");
+    // listImages() has already reported reading this tab's images; a read without it reports here.
+    if (!this.#listedImages.has(`${tab.tabId}\u0000${imageId}`)) {
+      await this.#authorizeRead({
+        title: "Read Google Doc images",
+        description: `Read an image in tab ${googleDocTabLabel(tab)}.`,
+      });
+    }
+    let contentUri = (tab: GoogleDocTabSnapshot) => {
+      let uri = tab.images.find(image => image.id === imageId)?.contentUri;
+      if (!uri) {
+        throw new Error(
+          `readImage: tab "${tab.tabId}" has no readable image with ID "${imageId}". ` +
+          `Call listImages("${tab.tabId}") to see its images.`);
+      }
+      return uri;
+    };
+    let image = await openGoogleDocImage(contentUri(tab));
+    if (!image) {
+      // The address has lapsed, so the document is read again for a current one.
+      await this.#storage.delete(DOC_SNAPSHOT_KEY);
+      image = await openGoogleDocImage(contentUri(await this.#imageTab(tab.tabId, "readImage")));
+    }
+    if (!image) throw new Error("readImage: Google Docs did not return this image.");
+    return image;
   }
 
   async replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {
