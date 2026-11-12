@@ -407,7 +407,9 @@ heading the document's owner made bold, in a cell or outside tables. The read of
 shows it so too, so that the changes queued behind it find their tables as they will be. A
 paragraph's style is told by how it reads (a heading by its level, anything else as normal text),
 and by the document while nothing waits before the change, which also tells a title and a subtitle
-apart. A subtitle reads as italic only where its named style makes it so.
+apart. With changes waiting, a replacement that writes bold, italic or strikethrough into a line a
+title or subtitle would read otherwise than its marker's style does is refused until they are
+decided, since how it reads then cannot be told. A subtitle reads as italic only where its named style makes it so.
 
 The HTML also shows a table's look, the parts of it a request can set: each cell's shading,
 vertical alignment, padding and borders as `style` on `<td>`, each fixed column width in a

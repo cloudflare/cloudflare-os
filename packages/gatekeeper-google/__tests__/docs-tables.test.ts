@@ -3898,6 +3898,28 @@ describe("formatting a paragraph's named style already gives", () => {
     expectStyledSameAsGoogle(bold, "Notes here", "**Intro**\n\n**Notes** here");
   });
 
+  it("refuses formatting a subtitle's style would read otherwise, while an earlier change waits", () => {
+    // ask-bonk's case: with an edit queued elsewhere, the replay cannot see that this is a subtitle.
+    let styles = {
+      styles: [
+        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
+        { namedStyleType: "SUBTITLE", textStyle: { bold: true } },
+      ],
+    };
+    let tab = styledTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], styles);
+    let before = docTabToMarkdown(tab);
+    let first = applyTextReplacement(contentOf(before), replacementIn(before.markdown, "Other text", "Elsewhere"), TAB, before);
+    let bold = replacementIn(first.markdown, "Notes here", "**Notes here**");
+    expect(message(() => applyTextReplacement(first, bold, TAB, before))).toBe(
+      "replaceText: in this tab a subtitle reads its bold, italic or strikethrough otherwise than " +
+      "other text, and with earlier changes waiting on the tab, whether this paragraph is one " +
+      "cannot be told. Retry once the earlier changes to this tab have been approved or rejected.");
+    // Formatting both styles read alike, and any formatting with nothing waiting, are taken.
+    expect(() => applyTextReplacement(first, replacementIn(first.markdown, "Notes here", "*Notes* here"), TAB, before))
+      .not.toThrow();
+    expectStyledSameAsGoogle(tab, "Notes here", "**Notes here**");
+  });
+
   it("reads a subtitle as italic only where its named style makes it so", () => {
     let subtitle: ParagraphSpec = { runs: ["Sub\n"], namedStyleType: "SUBTITLE" };
     expect(docTabToMarkdown(styledTab([subtitle])).markdown).toBe("Sub\n");

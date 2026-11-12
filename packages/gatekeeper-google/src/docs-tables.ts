@@ -2337,7 +2337,7 @@ export function applyTextReplacement(
   let rewrite = source && run && rewrittenBlockStyles(source, content.markdown, run.matchStart,
     run.matchStart + run.oldMarkdown.length, run.rendered);
   return dropInheritedFormatting(content, edited, named, blocks && (start =>
-    blocks.find(block => block.mdStart === start)?.namedStyleType), rewrite);
+    blocks.find(block => block.mdStart === start)?.namedStyleType), rewrite, !source);
 }
 
 /** The requests of a stored `replaceText` against the fresh tab. */

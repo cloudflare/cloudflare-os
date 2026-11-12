@@ -2682,6 +2682,7 @@ export function dropInheritedFormatting(
   content: EditableMarkdown, edited: EditableMarkdown, named: NamedFormatting,
   styleAt?: (lineStart: number) => string | undefined,
   written?: WrittenStyles,
+  unknownStyles = false,
 ): EditableMarkdown {
   let rewrite = written?.rewrite;
   if (Object.keys(named).length === 0 || edited.markdown === content.markdown) return edited;
@@ -2713,9 +2714,22 @@ export function dropInheritedFormatting(
       headingLevelAt(content.markdown, start) === level;
     let style = blockStyle ?? (keeps ? styleAt?.(start) : undefined) ??
       (level > 0 ? `HEADING_${level}` : "NORMAL_TEXT");
-    let format: InheritedFormat = { ...named[style] };
-    if (style === "SUBTITLE") delete format.italic;
+    let format = inheritedFormatOf(named, style);
     let block = parseLine(line);
+    // Without the document, a line that reads as normal text may be a subtitle, and a level-one
+    // heading a title. Where that style would read this line otherwise, the read cannot be told.
+    let alternative = level === 0 ? "SUBTITLE" : level === 1 ? "TITLE" : undefined;
+    if (unknownStyles && alternative && style !== alternative) {
+      let other = inheritedFormatOf(named, alternative);
+      if (block.spans.some(span => INHERITED_FIELDS.some(field =>
+        span[field] && !format[field] !== !other[field]))) {
+        throw new Error(
+          `replaceText: in this tab a ${alternative === "TITLE" ? "title" : "subtitle"} reads ` +
+          "its bold, italic or strikethrough otherwise than other text, and with earlier changes " +
+          "waiting on the tab, whether this paragraph is one cannot be told. Retry once the " +
+          "earlier changes to this tab have been approved or rejected.");
+      }
+    }
     if (!block.spans.some(span => INHERITED_FIELDS.some(field => format[field] && span[field]))) {
       continue;
     }
@@ -2731,6 +2745,13 @@ export function dropInheritedFormatting(
     tables = shiftRangesAfter(tables, end, offset);
   }
   return { markdown, protectedRanges, tables };
+}
+
+/** What text in a paragraph of `style` reads as inherited, a subtitle's italic aside. */
+function inheritedFormatOf(named: NamedFormatting, style: string): InheritedFormat {
+  let format: InheritedFormat = { ...named[style] };
+  if (style === "SUBTITLE") delete format.italic;
+  return format;
 }
 
 /** How many lines of `markdown` that hold anything start in [from, to). */
