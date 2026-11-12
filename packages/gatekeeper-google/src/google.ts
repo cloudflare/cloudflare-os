@@ -2548,7 +2548,7 @@ export class GoogleDocGatekeeperImpl
         assertGoogleDocAddUnsent(snapshot.tabs, action);
       } catch (error) {
         invalidateGoogleDocAction(pendingActions, pending[pendingIndex],
-          `Pending Google Doc tab was not added: ${errorMessage(error)} ` +
+          `Pending Google Doc tab add was refused: ${errorMessage(error)} ` +
           "Edits queued for it must be queued again for a tab listTabs() shows.");
         this.#simulationCache.current = undefined;
         throw error;
