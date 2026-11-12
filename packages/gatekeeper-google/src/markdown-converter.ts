@@ -2803,6 +2803,27 @@ export function dropInheritedFormatting(
       mdStart: before + newlineRun(markdown, before, 1) + mdStart - firstLine,
       mdEnd: after - newlineRun(markdown, after - 1, -1) - (lastEnd - mdEnd),
     };
+    // A break written inside a line, with text after it, splits off the rest as normal text.
+    // Without the document, the line's style is told only by how it reads, so a split that
+    // would refuse with it, once the changes before it apply, is refused now.
+    let rest = old.slice(mdEnd, lastEnd);
+    if (unknownStyles && rest !== "" && markdown.slice(writes.mdStart, writes.mdEnd).includes("\n")) {
+      let line = parseLine(old.slice(lineStart(old, mdEnd), lastEnd));
+      let italicLine = line.headingLevel === null && line.listType === null &&
+        line.plainText !== "" && line.spans.some(span =>
+          span.italic && span.start === 0 && span.end === line.plainText.length);
+      let keptStart = line.plainText.length - parseLine(rest).plainText.length;
+      let keepsNormal = line.headingLevel !== null && line.spans.some(span =>
+        span.end > keptStart && INHERITED_FIELDS.some(field => span[field] && named.NORMAL_TEXT?.[field]));
+      if (italicLine && named.SUBTITLE?.italic || keepsNormal) {
+        throw new Error(
+          "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
+          "normal text, and with earlier changes waiting on the tab, whether that text can read " +
+          "as it does cannot be told: this may be a subtitle, or the rest has a style normal " +
+          "text's named style gives. Retry once the earlier changes to this tab have been " +
+          "approved or rejected.");
+      }
+    }
   }
   let { protectedRanges, tables } = edited;
   let first = lineStart(markdown, prefixLen);

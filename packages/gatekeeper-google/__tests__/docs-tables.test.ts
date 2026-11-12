@@ -3989,6 +3989,41 @@ describe("formatting a paragraph's named style already gives", () => {
       "paragraph.");
   });
 
+  it("refuses such a break while an earlier change waits, as the replay would then", () => {
+    let queuedFirst = (tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string) => {
+      let before = docTabToMarkdown(tab);
+      let first = applyTextReplacement(
+        contentOf(before), replacementIn(before.markdown, "Other text", "Elsewhere"), TAB, before);
+      return () => applyTextReplacement(
+        first, replacementIn(first.markdown, oldMarkdown, newMarkdown), TAB, before);
+    };
+    let retry =
+      "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
+      "normal text, and with earlier changes waiting on the tab, whether that text can read " +
+      "as it does cannot be told: this may be a subtitle, or the rest has a style normal " +
+      "text's named style gives. Retry once the earlier changes to this tab have been " +
+      "approved or rejected.";
+    let subtitle = styledTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], {
+      styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }],
+    });
+    expect(message(queuedFirst(subtitle, "Notes", "End\n\n"))).toBe(retry);
+    let heading = styledTab([para("Other text"), {
+      runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
+    }, para("After")], {
+      styles: [
+        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: true } },
+        { namedStyleType: "HEADING_2", textStyle: { bold: false } },
+      ],
+    });
+    expect(message(queuedFirst(heading, "Notes", "End\n\n"))).toBe(retry);
+    // A heading whose rest normal text reads alike is taken, as is a break at a line's end.
+    let plain = styledTab([para("Other text"), {
+      runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
+    }, para("After")]);
+    expect(queuedFirst(plain, "Notes", "End\n\n")().markdown).toContain("## End\n\n **here**\n");
+    expect(() => queuedFirst(subtitle, "*Notes here*", "*Notes here*\n\nEnd")()).not.toThrow();
+  });
+
   it("refuses an edit beside kept text its named style also formats, while an earlier change waits", () => {
     let tab = styledTab([
       para("Other text"),
