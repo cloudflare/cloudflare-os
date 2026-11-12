@@ -2415,7 +2415,7 @@ describe("adding a Google Doc tab", () => {
     expect(docs.contentBatches).toBe(0);
   });
 
-  it("finds the tab an add made when Google's reply was lost", async () => {
+  it("refuses an add whose reply was lost, leaving the tab it made in the document", async () => {
     let docs = new DocsModel();
     docs.ambiguousContentResponses = 1;
     docs.install();
@@ -2426,37 +2426,41 @@ describe("adding a Google Doc tab", () => {
     let made = docs.tabs[1];
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 60_000);
-    // Read meanwhile, the tab shows once, and the edit queued for it still lands there.
+    // Read meanwhile, the tab Google made shows, once, and the provisional one is gone.
     expect((await hooks().listTabs("add-tab-lost")).map(tab => tab.id)).toEqual([MAIN_TAB, made.id]);
-    expect(await hooks().readContent("add-tab-lost", added.tabId)).toBe("Hello\n");
+    await expect(Promise.resolve(hooks().readContent("add-tab-lost", added.tabId)))
+      .rejects.toThrow(`no tab with ID "${added.tabId}" exists`);
 
-    expect(await hooks().applyAction("add-tab-lost", added.actionId)).toBeNull();
+    expect(await hooks().applyAction("add-tab-lost", added.actionId))
+      .toContain('Google Docs added the tab "Notes", but its reply was lost');
+    expect(await hooks().applyAction("add-tab-lost", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
     expect(docs.tabs).toHaveLength(2);
     expect(docs.contentBatches).toBe(1);
-    expect(await hooks().applyAction("add-tab-lost", appendId)).toBeNull();
-    expect(docs.text(made.id)).toBe("Hello");
+    expect(docs.text(made.id)).toBe("");
   });
 
-  it("refuses to guess which tab a lost add made when two match", async () => {
+  it("refuses a lost add whose tab was replaced by a collaborator's with its title", async () => {
     let docs = new DocsModel();
     docs.ambiguousContentResponses = 1;
     docs.install();
-    let added = await addTab("add-tab-twins", "Notes");
-    let appendId = await hooks().submitAppend("add-tab-twins", "Hello", added.tabId);
+    let added = await addTab("add-tab-replaced", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-replaced", "Hello", added.tabId);
 
-    expect(await hooks().applyAction("add-tab-twins", added.actionId)).toMatch(/content response lost/);
-    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
-    docs.externalEdit();
+    expect(await hooks().applyAction("add-tab-replaced", added.actionId))
+      .toMatch(/content response lost/);
+    // The marker stays in the first tab while the tab the add made is replaced.
+    docs.removeTab(docs.tabs[1].id);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    expect(docs.markers.size).toBe(1);
 
-    expect(await hooks().applyAction("add-tab-twins", added.actionId))
-      .toContain("since then 2 tabs have appeared in its place, so which tab it is is unknown");
-    expect(await hooks().applyAction("add-tab-twins", added.actionId))
-      .toContain("Pending Google Doc tab could not be adopted");
-    // With the add invalidated, the edit queued for its tab has no tab to go to.
-    expect(await hooks().applyAction("add-tab-twins", appendId))
+    expect(await hooks().applyAction("add-tab-replaced", added.actionId))
+      .toContain("its reply was lost, and nothing else tells which tab it is");
+    expect(await hooks().applyAction("add-tab-replaced", appendId))
       .toContain(`no tab with ID "${added.tabId}" exists`);
-    expect(docs.contentBatches).toBe(1);
+    expect(docs.text("t.collaborator")).toBe("Theirs");
   });
+
   it("refuses to adopt a collaborator's tab bearing the title of one renamed since", async () => {
     let docs = new DocsModel();
     docs.ambiguousContentResponses = 1;
@@ -2471,7 +2475,7 @@ describe("adding a Google Doc tab", () => {
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-renamed", added.actionId))
-      .toContain("since then 2 tabs have appeared in its place");
+      .toContain("its reply was lost, and nothing else tells which tab it is");
     expect(await hooks().applyAction("add-tab-renamed", appendId))
       .toContain(`no tab with ID "${added.tabId}" exists`);
     expect(docs.text("t.collaborator")).toBe("");
@@ -2564,7 +2568,7 @@ describe("adding a Google Doc tab", () => {
     if (interfere) {
       interfere();
       docs.externalEdit();
-      expect(await hooks().applyAction(facet, added.actionId)).toContain("unknown");
+      expect(await hooks().applyAction(facet, added.actionId)).not.toBeNull();
     }
 
     await expect(Promise.resolve(hooks().rejectAction(facet, added.actionId))).resolves.not.toThrow();
