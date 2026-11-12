@@ -124,6 +124,8 @@ type RequestKind = "content" | "cleanup" | "create" | "read";
 class DocsModel {
   cleanupFailures = 0;
   ambiguousContentResponses = 0;
+  /** How many content batches to fail before Google applies them, as a dropped connection can. */
+  unsentContentRequests = 0;
   contentBatches = 0;
   maxMarkerCount = 0;
   /** Google withholds `revisionId` from a caller without edit access. */
@@ -355,6 +357,10 @@ class DocsModel {
       return Response.json({
         error: { code: 400, status: "FAILED_PRECONDITION", message: OFFICE_REFUSAL },
       }, { status: 400 });
+    }
+    if (!isDelete && this.unsentContentRequests > 0) {
+      this.unsentContentRequests--;
+      throw new Error("connection dropped before the request reached Google");
     }
     if (isDelete && this.cleanupFailures > 0) {
       this.cleanupFailures--;
@@ -2471,7 +2477,7 @@ describe("adding a Google Doc tab", () => {
     expect(docs.text("t.collaborator")).toBe("");
   });
 
-  it("finds the tab a lost add made after its marker's tab was deleted, rather than add another",
+  it("refuses a lost add whose marker's tab was deleted, rather than guess or add another",
     async () => {
       let docs = new DocsModel();
       docs.addTab("tab-2", "Second", undefined as unknown as string);
@@ -2486,12 +2492,48 @@ describe("adding a Google Doc tab", () => {
       expect(docs.markerTabIds).toEqual([MAIN_TAB]);
       docs.removeTab(MAIN_TAB);
 
-      expect(await hooks().applyAction("add-tab-host-gone", added.actionId)).toBeNull();
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
+        .toContain("no marker of it is left, and a tab has appeared in its place");
       expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
       expect(docs.contentBatches).toBe(1);
-      expect(await hooks().applyAction("add-tab-host-gone", appendId)).toBeNull();
-      expect(docs.text(docs.tabs.find(tab => tab.title === "Notes")!.id)).toBe("Hello");
+      expect(await hooks().applyAction("add-tab-host-gone", appendId))
+        .toContain(`no tab with ID "${added.tabId}" exists`);
+      expect(docs.text(docs.tabs.find(tab => tab.title === "Notes")!.id)).toBe("");
     });
+
+  it("refuses to adopt a collaborator's tab after a send that never reached Google", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-unsent", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-unsent", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-unsent", added.actionId))
+      .toMatch(/connection dropped/);
+    expect(docs.tabs).toHaveLength(1);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-unsent", added.actionId))
+      .toContain("whether it was added is unknown");
+    expect(await hooks().applyAction("add-tab-unsent", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("Theirs");
+    expect(docs.tabs).toHaveLength(2);
+  });
+
+  it("sends an add again after a send that never reached Google, when no tab appeared", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.install();
+    let added = await addTab("add-tab-resend", "Notes");
+
+    expect(await hooks().applyAction("add-tab-resend", added.actionId))
+      .toMatch(/connection dropped/);
+    expect(await hooks().applyAction("add-tab-resend", added.actionId)).toBeNull();
+    expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes"]);
+  });
 
   it("sends a refused add again rather than adopt a tab with its title", async () => {
     let docs = new DocsModel();

@@ -1848,35 +1848,50 @@ function newGoogleDocTab({ provisionalTabId, title }: GoogleDocAddTabAction): Go
 }
 
 /**
- * The tab an add that may have landed made, found without its reply: undefined when no tab has
- * appeared in its place since `knownTabIds` was recorded. Every tab that has is looked at,
- * whatever its title, so that a collaborator's tab cannot pass for one renamed since; unless
- * exactly one has, bearing the add's title, it is refused, since the edits queued for the tab must
- * not land in another.
+ * The tabs that have appeared in an add's place since it was sent, whatever their titles: tabs
+ * under its parent outside the `knownTabIds` recorded before the send.
  */
-function googleDocAddedTab<T extends DocTabSnapshot>(
+function googleDocTabsAppeared<T extends DocTabSnapshot>(
   tabs: T[], action: GoogleDocAddTabAction,
-): T | undefined {
+): T[] {
   if (action.knownTabIds === undefined) {
     throw new Error(`The tabs the add of "${action.title}" was sent beside are not recorded.`);
   }
   let known = new Set(action.knownTabIds);
-  let appeared = tabs.filter(tab => !known.has(tab.tabId) && tab.parentTabId === action.parentTabId);
-  if (appeared.length === 0) return undefined;
-  if (appeared.length === 1 && appeared[0].title === action.title) return appeared[0];
-  throw new Error(
-    `Google Docs may have added the tab "${action.title}", but since then ` +
-    (appeared.length === 1 ? `one tab titled "${appeared[0].title}" has` : `${appeared.length} tabs have`) +
-    " appeared in its place, so which tab it is is unknown.");
+  return tabs.filter(tab => !known.has(tab.tabId) && tab.parentTabId === action.parentTabId);
 }
 
-/** The tab an add whose marker the document holds made, which must still be there. */
+/**
+ * The tab an add whose marker the document holds made, found without its reply. Every tab that
+ * has appeared in its place is looked at, so that a collaborator's tab cannot pass for one renamed
+ * since; unless exactly one has, bearing the add's title, it is refused, since the edits queued
+ * for the tab must not land in another.
+ */
 function googleDocCommittedAddTab<T extends DocTabSnapshot>(
   tabs: T[], action: GoogleDocAddTabAction,
 ): T {
-  let tab = googleDocAddedTab(tabs, action);
-  if (!tab) throw new Error(`Google Docs added the tab "${action.title}", but it has since been removed.`);
-  return tab;
+  let appeared = googleDocTabsAppeared(tabs, action);
+  if (appeared.length === 1 && appeared[0].title === action.title) return appeared[0];
+  throw new Error(appeared.length === 0
+    ? `Google Docs added the tab "${action.title}", but it has since been removed.`
+    : `Google Docs added the tab "${action.title}", but since then ` +
+      (appeared.length === 1 ? `one tab titled "${appeared[0].title}" has` : `${appeared.length} tabs have`) +
+      " appeared in its place, so which tab it is is unknown.");
+}
+
+/**
+ * Refuses to send again an add whose earlier send has no known outcome and whose marker is gone,
+ * once any tab has appeared in its place. Nothing ties that tab to this add, whose send may never
+ * have reached Google, so it is not adopted; nor is the add sent again, which could make a second.
+ */
+function assertGoogleDocAddUnsent(tabs: DocTabSnapshot[], action: GoogleDocAddTabAction): void {
+  let appeared = googleDocTabsAppeared(tabs, action);
+  if (appeared.length > 0) {
+    throw new Error(
+      `The add of tab "${action.title}" may have reached Google, but no marker of it is left, and ` +
+      `${appeared.length === 1 ? "a tab has" : `${appeared.length} tabs have`} appeared in its place ` +
+      "since, so whether it was added is unknown.");
+  }
 }
 
 /** The ID of the tab an `addDocumentTab` reply names, if it names one. */
@@ -2551,16 +2566,15 @@ export class GoogleDocGatekeeperImpl
     }
     let [writeMarker] = markers;
     /**
-     * The ID of the tab an add made, looked for on a retry that finds its marker, and on one whose
-     * earlier send may have landed though its marker is gone: a top-level add's marker is in
-     * another tab, which a collaborator may have deleted. Sending again would add a second tab.
+     * The ID of the tab an add made, looked for on a retry that finds its marker. One whose earlier
+     * send has no known outcome and whose marker is gone (a top-level add's marker is in another
+     * tab, which a collaborator may have deleted) is checked before it is sent again.
      */
     let addedTabId: string | undefined;
     if (action.type === "addTab" && (writeMarker || action.knownTabIds !== undefined)) {
       try {
-        addedTabId = writeMarker
-          ? googleDocCommittedAddTab(snapshot.tabs, action).tabId
-          : googleDocAddedTab(snapshot.tabs, action)?.tabId;
+        if (writeMarker) addedTabId = googleDocCommittedAddTab(snapshot.tabs, action).tabId;
+        else assertGoogleDocAddUnsent(snapshot.tabs, action);
       } catch (error) {
         invalidateGoogleDocAction(pendingActions, pending[pendingIndex],
           `Pending Google Doc tab could not be adopted: ${errorMessage(error)} ` +
@@ -2569,7 +2583,7 @@ export class GoogleDocGatekeeperImpl
         throw error;
       }
     }
-    if (!writeMarker && addedTabId === undefined) {
+    if (!writeMarker) {
       let materialized: { tab: GoogleDocTabSnapshot; requests: any[] };
       try {
         materialized = materializeGoogleDocAction(snapshot, action);
@@ -2633,13 +2647,7 @@ export class GoogleDocGatekeeperImpl
         });
       }
     } else {
-      this.ctx.storage.transactionSync(() => {
-        // An add whose marker is gone, found by the tab it made: there is nothing to clean up.
-        if (action.type === "addTab" && addedTabId) {
-          adoptGoogleDocTab(this.ctx.storage.kv, action.provisionalTabId, addedTabId);
-        }
-        pendingActions.remove(actionId);
-      });
+      pendingActions.remove(actionId);
     }
     this.#simulationCache.current = undefined;
 
