@@ -1577,7 +1577,6 @@ describe("folder-scoped native sessions", () => {
   });
 });
 
-/** A Doc whose second paragraph is the heading the quoted text sits under. */
 /** The text of headedDoc()'s tab from index 1, where a tab's text starts. */
 const HEADED_TEXT = "Plan\nLaunch\nThe launch is in May.\nWe ship in May and June.\n";
 
@@ -1591,6 +1590,7 @@ function docsError(status: number, rpc: string, message: string): Response {
   return Response.json({ error: { code: status, status: rpc, message } }, { status });
 }
 
+/** A Doc whose second paragraph is the heading the quoted text sits under. */
 function headedDoc() {
   let tab = buildTab([
     { runs: ["Plan\n"], namedStyleType: "TITLE" },
