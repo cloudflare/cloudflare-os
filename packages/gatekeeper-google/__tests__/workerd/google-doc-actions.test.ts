@@ -2356,6 +2356,24 @@ describe("adding a Google Doc tab", () => {
     expect(docs.text(made.id)).toBe("Hello\nMore");
   });
 
+  it("finds a new tab by the ID the simulation lists when its add applied after the replay", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-alias-gap", "Notes");
+    expect((await hooks().listTabs("add-tab-alias-gap")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, added.tabId]);
+    // The state a handoff leaves between a replay and the read that uses it: Google's ID recorded
+    // for the provisional one, while the replay still lists the tab under the provisional one.
+    await hooks().applyStorage("add-tab-alias-gap", [
+      { kind: "put", key: "docAddedTabs", value: { [added.tabId]: "t.google" } },
+    ]);
+
+    expect(await hooks().readContent("add-tab-alias-gap", added.tabId)).toBe("\n");
+    let child = await addTab("add-tab-alias-gap", "Child", { parentTabId: added.tabId });
+    expect(child.action.description).toBe(
+      'Add a new, empty tab under tab "Notes" (new tab), after the tabs already there.');
+  });
+
   it("places a tab at an index and nests one under a tab still waiting", async () => {
     let docs = new DocsModel();
     docs.addTab("tab-2", "Second", undefined as unknown as string);

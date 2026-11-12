@@ -1846,7 +1846,9 @@ function googleDocSimulatedContent(tab: GoogleDocTabSnapshot): GoogleDocSimulate
 }
 
 /** A tab `addTab()` queued, rendered as Google adds it: empty. */
-function newGoogleDocTab({ provisionalTabId, title }: GoogleDocAddTabAction): GoogleDocTabSnapshot {
+function newGoogleDocTab(
+  { provisionalTabId, title }: Pick<GoogleDocAddTabAction, "provisionalTabId" | "title">,
+): GoogleDocTabSnapshot {
   return { ...docTabToMarkdown(blankDocsTab(provisionalTabId, title)), committedWriteIds: [] };
 }
 
@@ -2772,6 +2774,16 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     return adoptedGoogleDocTabId(this.#storage.kv, tabId);
   }
 
+  /**
+   * The ID `tabId` names among `tabs`, a simulation's: Google's for an add applied by then, but
+   * the provisional ID for one applied after the simulation was taken, which still lists the tab
+   * under it. Whatever is stored from it is read through `#adoptedTabId()` again.
+   */
+  #simulatedTabId(tabs: GoogleDocTabSnapshot[], tabId: string | undefined): string | undefined {
+    let adopted = this.#adoptedTabId(tabId);
+    return tabs.some(tab => tab.tabId === adopted) ? adopted : tabId;
+  }
+
   reply(commentId: string, text: string): Promise<DriveCommentReply> {
     return this.#comments.reply(commentId, text);
   }
@@ -2849,7 +2861,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   }> {
     let simulation = await this.#simulate();
     let { snapshot, tabs } = simulation;
-    let tab = resolveGoogleDocTab({ ...snapshot, tabs }, this.#adoptedTabId(tabId), operation);
+    let tab = resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
     let content = simulation.contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab);
     return {snapshot, tab, ...content};
   }
@@ -2950,10 +2962,13 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     checkDocTabTitle(title);
     let { index } = options;
     let provisionalTabId = `${PROVISIONAL_TAB_PREFIX}${crypto.randomUUID()}`;
-    let simulation, action: GoogleDocAddTabAction, tabs;
+    let simulation, action: GoogleDocAddTabAction, tabs, simulatedParent;
     try {
       simulation = await this.#simulate();
-      let parentTabId = this.#adoptedTabId(options.parentTabId);
+      simulatedParent = this.#simulatedTabId(simulation.tabs, options.parentTabId);
+      tabs = insertDocTab(simulation.tabs, newGoogleDocTab({ provisionalTabId, title }),
+        { parentTabId: simulatedParent, index });
+      let parentTabId = this.#adoptedTabId(simulatedParent);
       action = {
         type: "addTab",
         provisionalTabId,
@@ -2964,7 +2979,6 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
         baseRevisionId: simulation.snapshot.revisionId,
         writeId: crypto.randomUUID(),
       };
-      tabs = insertDocTab(simulation.tabs, newGoogleDocTab(action), { parentTabId, index });
     } catch (error) {
       // The error says whether that parent exists, and how many tabs it holds.
       await this.#authorizeRead({
@@ -2974,9 +2988,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       throw error;
     }
 
-    let { parentTabId } = action;
-    let parent = simulation.tabs.find(tab => tab.tabId === parentTabId);
-    let siblings = tabs.filter(tab => tab.parentTabId === parentTabId).length;
+    let parent = simulation.tabs.find(tab => tab.tabId === simulatedParent);
+    let siblings = tabs.filter(tab => tab.parentTabId === simulatedParent).length;
     let description = buildDescription(
       `Add a new, empty tab ${parent ? `under tab ${googleDocTabLabel(parent)}` : "at the top level"}` +
       (index === undefined ? ", after the tabs already there." :
