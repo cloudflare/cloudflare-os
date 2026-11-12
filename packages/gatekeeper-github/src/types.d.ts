@@ -1066,9 +1066,9 @@ export interface GitHubEventHook {
    * retried, while the first call may still be running. So an event may arrive more than once,
    * even twice at once, or out of order: key any work on `event.id` to keep it idempotent. One
    * this throws for is retried with backoff, eight attempts in all, and disabling the hook ends its
-   * retries. One that keeps hanging loses its older events. An event can also be missed, as when
-   * GitHub can't reach this deployment for hours, so a gadget that must see every change should
-   * also read the repository now and then.
+   * retries. One that keeps hanging is paused, for longer each time, and an event still waiting a
+   * day later is dropped. An event can also be missed, as when GitHub can't reach this deployment
+   * for hours, so a gadget that must see every change should also read the repository now and then.
    */
   receiveEvent(event: GitHubEvent): Promise<void>;
 }

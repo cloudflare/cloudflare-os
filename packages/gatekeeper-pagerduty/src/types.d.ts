@@ -318,9 +318,9 @@ export interface PagerDutyEventHook {
    * 4 minutes the call counts as failed and the event is retried, while the first call may still
    * be running. So an event may arrive more than once, even twice at once, or out of order: key
    * any work on `event.id` to keep it idempotent. One this throws for is retried with backoff,
-   * eight attempts in all, and disabling the hook ends its retries. One that keeps hanging loses
-   * its older events. An event can also be missed, so a gadget that must see every incident
-   * should also list them now and then.
+   * eight attempts in all, and disabling the hook ends its retries. One that keeps hanging is
+   * paused, for longer each time, and an event still waiting a day later is dropped. An event can
+   * also be missed, so a gadget that must see every incident should also list them now and then.
    */
   receiveEvent(event: PagerDutyEvent): Promise<void>;
 }

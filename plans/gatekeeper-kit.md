@@ -2459,7 +2459,8 @@ hook's stubs, and one delivery — start a firing through the `HookInitiator`, h
 message to the binding's delivery stub, dispose what was read. `HookRegistry` is that copy made
 once, over the `HookDeliveryQueue` (`./hook-delivery-queue`: deduplication, backoff, attempts
 counted before the call with a 30 s dispatch cutoff and a 4-minute deadline, and a pool with
-slow-start that keeps a hung hook to one slot; see [`docs/hook-delivery.md`](../docs/hook-delivery.md))
+slow-start and a pause after a timeout that keep a hung hook to one slot now and then; see
+[`docs/hook-delivery.md`](../docs/hook-delivery.md))
 the same drivers already shared. The keys are the ones they wrote, so the ports migrated nothing.
 Each now aliases its delivery interface to `HookDelivery`, calls `set()` inside
 `ctx.storage.transactionSync()`, and keeps its own alarm.

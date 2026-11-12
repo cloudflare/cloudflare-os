@@ -29,25 +29,27 @@ rejects with can read as a delivery, and a synchronous throw is a failed attempt
 
 ## The pool
 
-A run keeps up to 20 attempts in flight and refills a slot as each settles, so a hook that hangs
-holds back only its own messages:
+A run keeps up to 20 attempts in flight and refills a slot as each settles, from the hooks that
+have come ready, in the order they did, so a hook that hangs holds back only its own messages:
 
-- **Slow-start.** A hook gets one slot until it delivers in the run, then 4, and none after a
-  timeout of either stage. A hung hook holds one slot per run, and a hung `startHook()` can't
-  refill its slot every 30 s.
-- **One forward pass** over the due index, 200 entries a page, its end recomputed per page so rows
-  that come due or are queued meanwhile are found; `enqueue()` wakes a run in flight to look. Rows
-  a hook has no slot for yet are kept per hook and started as its slots free. A run reads at most
-  50,000 entries.
+- **Slow-start.** A hook gets one slot until it delivers in the run, then 4. Four even for a hook
+  alone on its driver: more calls at once into one gadget make races and rate limits likelier, and
+  a burst only drains more slowly. A hung `startHook()` can't refill its slot every 30 s.
+- **The pause.** A timeout of either stage pauses the hook for a minute, doubling with each
+  timeout in a row up to an hour, and a delivery ends it. A hook that hangs is tried once a pause,
+  and its driver idles in between instead of running all day.
+- **Ready hooks.** A hook with pending rows is filed by when it next needs a run: its first due
+  row, or the end of its pause if later. A run reads the ready ones, and up to 4 rows of each;
+  `enqueue()` wakes a run in flight to look again. `nextDue()` is the first hook's time.
 - **Budgets.** A run starts attempts for 2 minutes and at most 200 of them, then waits for those in
   flight: about 6 minutes in all. The rest stays due for the next run.
-- **The trim.** A hook whose `deliver` times out with no delivery in the run keeps only its newest
-  1,000 passed-over rows, and a run trims at most 2,000. A never-tried row is deleted, so a
-  duplicate push queues it again; a tried one is finished, as it may have reached the gadget. A
-  dispatch timeout trims nothing: that is the kernel stalling, not the hook.
+- **Expiry.** A row still due a day after it came due is dropped without a call when a run reaches
+  its hook, up to 1,000 at a time. It is finished, as it may have reached the gadget. A hook that
+  keeps hanging holds about a day of messages, not an unbounded backlog.
 
 Each run starts with every count at zero and waits for its own attempts, so a run that ends with a
-row due is followed by one that starts at least one. No timer wakes a full pool, so nothing spins.
+hook ready is followed by one that starts at least one. No timer wakes a full pool, so nothing
+spins.
 
 ## Counting and dropping
 
@@ -67,10 +69,9 @@ a hook disabled meanwhile, or a row deleted and queued again, is left as it is.
 
 ## The run report
 
-The queue calls `onRunReport(report)` once at the end of a run in which anything failed, timed out
-or was dropped or trimmed, or the read budget ran out; a clean run reports nothing. The report
-holds counts only, never an error, a message or a hook id, since a hook's exception can quote the
-private message it failed on:
+The queue calls `onRunReport(report)` once at the end of a run in which anything failed, timed out,
+was dropped or expired; a clean run reports nothing. The report holds counts only, never an error,
+a message or a hook id, since a hook's exception can quote the private message it failed on:
 
 | Field | Counts |
 |---|---|
@@ -80,20 +81,31 @@ private message it failed on:
 | `dispatchTimeouts` | firings that missed the 30 s cutoff |
 | `deliverTimeouts` | attempts that ran past T_kit; each is a call that may still be running |
 | `dropped` | rows dropped after `MAX_DELIVERY_ATTEMPTS` |
-| `trimmed` | rows dropped from a hung hook's backlog |
-| `readBudgetReached` | the scan stopped at 50,000 entries, so hooks behind them weren't reached |
+| `expired` | rows dropped still due a day after they came due |
 
 Each driver logs it at `warn` as `<prefix>.delivery.report` (`hooks.` for GitHub and PagerDuty,
 `gmail.hooks.`, `chat.hooks.`, `outlook.hooks.`). A run waits for every attempt to settle, even after
 a storage write has thrown, then reports, then rethrows the first such error.
 
-## Write order
+## Storage
+
+| Key | Holds |
+|---|---|
+| `msg:<hook>:<id>` | a row: pending `{ message, attempts, at }`, or finished `{ deliveredAt }` |
+| `queue:due:<hook>:<time>:<id>` | each pending row, by when it is due |
+| `queue:ready:<time>:<hook>`, `queue:readyAt:<hook>` | each hook with pending rows, by when it next needs a run |
+| `queue:paused:<hook>` | `{ timeouts, until }`, until the hook delivers |
+| `queue:finished:<time>:<hook>:<id>` | each finished row, by when it finished |
+| `queue:indexed` | the layout, `2`. Rows in an older one (unset, or `true` for one due index across hooks) are indexed again on first use. |
 
 Every write files the row's new index entry first, then the row, and deletes the old entry last. A
 write that throws leaves at worst an extra entry, which is dropped when read, never a row without a
-due entry, which `enqueue()` would then ignore for good. Finishing a row trusts its caller to have
-checked the entry it holds is the row's own, so `cancel()` deletes an entry its row has outlived
-instead of finishing the row again, which would move its dedupe window.
+due entry, which `enqueue()` would then ignore for good. A row's hook is filed as ready before the
+row is stored, and later only once its rows are, so a write that throws leaves the hook filed
+early, which a run corrects when it finds nothing due; after a delivery, at worst at its pause's
+end. Finishing a row trusts its caller to have checked the entry it holds is the row's own, so
+`cancel()` deletes an entry its row has outlived instead of finishing the row again, which would
+move its dedupe window.
 
 ## The drivers' alarm
 
@@ -123,7 +135,7 @@ Each gatekeeper's agent-facing hook docs (`types.d.ts`) say: return within a min
 after 4 minutes an attempt counts as failed and is retried while the first call may still be
 running; a hook may be called twice for one event, even at once, so it should deduplicate on the
 event's id; one that keeps failing is called up to 8 times for an event, and one that keeps hanging
-loses its older events.
+is paused for longer each time, and an event still waiting a day later is dropped.
 
 ## What isn't bounded
 
@@ -131,7 +143,6 @@ loses its older events.
 - **Work before `run()`:** Chat's account tracking, Gmail's and Outlook's sync, Outlook's
   subscriptions, GitHub's hourly webhook check. No driver's alarm has an overall worst case; the
   fallback alarm restarts one that is killed.
-- **What the pool can't see.** 20 hung hooks on one driver fill it. A row queued behind the scan
-  in its current millisecond, or a retry coming due while no slot frees, waits for the next run. A
-  slow hook within its deadline whose events outpace it has an unbounded backlog, and past 50,000
-  due rows the hooks behind it go unreached until it catches up.
+- **What the pool can't see.** 20 hooks hanging at once fill it until their attempts time out. A
+  retry coming due while no slot frees waits for the next run. A slow hook within its deadline
+  whose events outpace it falls up to a day behind, and expiry drops what it can't reach.

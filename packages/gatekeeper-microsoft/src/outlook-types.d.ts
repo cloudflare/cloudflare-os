@@ -282,7 +282,7 @@ export type NewMessage = {
  * a minute or two: after 4 minutes the call counts as failed and the message is retried, while
  * the first call may still be running. So a message may arrive more than once, even twice at
  * once, or out of order: key on `message.id`. Throwing retries it later. A hook that keeps
- * hanging loses its older messages.
+ * hanging is paused, for longer each time, and a message still waiting a day later is dropped.
  */
 export interface NewMessageHook {
   receiveMessage(entry: NewMessage): Promise<void>;

@@ -267,7 +267,7 @@ after the hook ran redelivers the message. A firing that fails, whether the hook
 Workshop refuses to start it or it runs past four minutes, is retried with backoff from one minute
 up to an hour, eight attempts in all, before the message is dropped; disabling or deleting the hook
 ends its retries. A retry can overlap a call still running past four minutes, and a hook that keeps
-hanging loses its older messages.
+hanging is paused, for longer each time; a message still waiting a day later is dropped.
 Actions a hook queued stay approvable after it is disabled.
 
 Underneath, each Google account has one Workspace Events subscription per conversation, shared by
