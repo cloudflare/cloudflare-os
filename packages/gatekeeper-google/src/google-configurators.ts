@@ -10,7 +10,8 @@ import { GoogleAccessToken } from "./google-api";
 import { AccessTokenProvider, AccessTokenRequest } from "./auth-retry";
 import {
   DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, isFileInvisible,
-  isListableFolderFile, isListableFolderNode, type DriveFile, type DriveFileList, type DriveScopeNode,
+  isListableFolderFile, isListableFolderNode, MY_DRIVE_ROOT, type DriveFile, type DriveFileList,
+  type DriveScopeNode,
 } from "./drive-api";
 import type {
   BigQueryConfiguratorRpc, BigQueryNode, BigQueryNodeKind, BigQueryNodePage,
@@ -781,7 +782,7 @@ export class CreationLocationConfiguratorUI extends RpcTarget implements Creatio
     if (target?.kind !== "driveFolder") return null;
     // Drive's `root` alias, which resourceUrl() mints for My Drive, and getFolder() knows only by
     // its real ID.
-    if (target.folderId === "root") return MY_DRIVE_TAB;
+    if (target.folderId === MY_DRIVE_ROOT) return MY_DRIVE_TAB;
     let folder = await this.getFolder(`folder:${target.folderId}`);
     return folder?.addable ? folder.id : null;
   }
