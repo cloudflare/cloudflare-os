@@ -3869,6 +3869,25 @@ describe("formatting a paragraph's named style already gives", () => {
     expect(() => applyTableChange(simulated, table)).not.toThrow();
   });
 
+  it("reads a paragraph written before or after a styled one by the style it is written with", () => {
+    // ask-bonk's case: a bold subtitle, with a bold paragraph written in front of it.
+    let bold = styledTab([para("Before"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], {
+      styles: [
+        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
+        { namedStyleType: "SUBTITLE", textStyle: { bold: true } },
+      ],
+    });
+    let { simulated, applied } = expectStyledSameAsGoogle(bold, "Notes here", "**Intro**\n\nNotes here");
+    expect(simulated.markdown).toContain("\n**Intro**\n\nNotes here\n");
+    let table = newTable([["a"]], "\n**Intro**\n");
+    let fresh = docTabToMarkdown(applied);
+    expect(() => applyTableChange(contentOf(fresh), table, fresh)).not.toThrow();
+    expect(() => applyTableChange(simulated, table)).not.toThrow();
+    expectStyledSameAsGoogle(bold, "Notes here", "Notes here\n\n**Outro**");
+    expectStyledSameAsGoogle(bold, "Notes here", "**Notes** here");
+    expectStyledSameAsGoogle(bold, "Notes here", "**Intro**\n\n**Notes** here");
+  });
+
   it("reads a subtitle as italic only where its named style makes it so", () => {
     let subtitle: ParagraphSpec = { runs: ["Sub\n"], namedStyleType: "SUBTITLE" };
     expect(docTabToMarkdown(styledTab([subtitle])).markdown).toBe("Sub\n");

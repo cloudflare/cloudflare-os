@@ -6,7 +6,8 @@ import type { DocsLocation, GoogleDocsRequest, TableCellLocation, TextStyle } fr
 import {
   addRequest, applyMarkdownEdit, canonicalizeMarkdownReplacement, canonicalLinkDestination,
   cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
-  dropInheritedFormatting, escapeHtml, isGoogleDocsStrippedCharacter, isSafeTableLink, lineStart, listLineType,
+  dropInheritedFormatting, escapeHtml, isGoogleDocsStrippedCharacter, isSafeTableLink, lineStart,
+  listLineType, rewrittenBlockStyles,
   MAX_GOOGLE_DOC_REQUESTS, packTableRow, plainTextToDocRequests, StructuredContentError,
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
@@ -2317,17 +2318,23 @@ export function applyTextReplacement(
     if (!result) throw new Error(NO_LONGER_IN_TABLE);
     return result.content;
   }
+  let run: { matchStart: number; oldMarkdown: string; rendered: string } | undefined;
   let edited = runParagraphReplacement(content, replacement, edit => {
     let rendered = canonicalizeMarkdownReplacement(edit.oldMarkdown, edit.newMarkdown);
     if (edit.oldMarkdown === rendered) return content;
+    run = { matchStart: edit.matchStart, oldMarkdown: edit.oldMarkdown, rendered };
     return applyMarkdownEdit(
       content, edit.matchStart, edit.matchStart + edit.oldMarkdown.length, rendered);
   });
   if (!named) return edited;
-  // Where the content reads as the document does, its blocks name each paragraph's style.
-  let blocks = documentOf(content, doc)?.sourceMap.blocks;
+  // Where the content reads as the document does, its blocks name each paragraph's style, and the
+  // request builder says which style each block it rewrites is written with.
+  let source = documentOf(content, doc)?.sourceMap;
+  let blocks = source?.blocks;
+  let rewrite = source && run && rewrittenBlockStyles(source, content.markdown, run.matchStart,
+    run.matchStart + run.oldMarkdown.length, run.rendered);
   return dropInheritedFormatting(content, edited, named, blocks && (start =>
-    blocks.find(block => block.mdStart === start)?.namedStyleType));
+    blocks.find(block => block.mdStart === start)?.namedStyleType), rewrite);
 }
 
 /** The requests of a stored `replaceText` against the fresh tab. */

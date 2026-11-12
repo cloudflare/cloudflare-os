@@ -2675,13 +2675,16 @@ function normalizeChangedListBoundaries(
  * it, which Google stores as inherited. Only the lines the edit changed are looked at; a line that
  * was there before reads no such style, since Google never stores one. A line reads as the style
  * its heading marker names, or as normal text, unless the edit leaves its marker as it was and
- * `styleAt` names the style of the paragraph that starts there before the edit. A subtitle keeps
- * its italic, which a read shows inherited.
+ * `styleAt` names the style of the paragraph that starts there before the edit. A replacement that
+ * rewrites whole blocks, or one that writes only new paragraphs, says so in `written`, from
+ * `rewrittenBlockStyles`. A subtitle keeps its italic, which a read shows inherited.
  */
 export function dropInheritedFormatting(
   content: EditableMarkdown, edited: EditableMarkdown, named: NamedFormatting,
   styleAt?: (lineStart: number) => string | undefined,
+  written?: WrittenStyles,
 ): EditableMarkdown {
+  let rewrite = written?.rewrite;
   if (Object.keys(named).length === 0 || edited.markdown === content.markdown) return edited;
   let { prefixLen, suffixLen } = markdownReplacementBounds(content.markdown, edited.markdown);
   let { markdown } = edited;
@@ -2702,10 +2705,14 @@ export function dropInheritedFormatting(
     let line = markdown.slice(start, end);
     let marker = /^(?: *(?:- |\d+\. ))?(#{1,6} )?/.exec(line)!;
     let level = marker[1] ? marker[1].length - 1 : 0;
-    // The paragraph keeps the style it had only while the edit leaves its heading marker as it
-    // was: one the edit gives another marker takes the style that marker names.
-    let keeps = start <= prefixLen && headingLevelAt(content.markdown, start) === level;
-    let style = (keeps ? styleAt?.(start) : undefined) ??
+    // A rewrite of whole blocks gives each the style its requests do. Otherwise the paragraph
+    // keeps the style it had only while the edit leaves its heading marker as it was: one the
+    // edit gives another marker takes the style that marker names.
+    let blockStyle = rewrite && start >= rewrite.mdStart
+      ? rewrite.styles[nonBlankLines(markdown, rewrite.mdStart, start)] : undefined;
+    let keeps = !rewrite && written?.keepsFirst !== false && start <= prefixLen &&
+      headingLevelAt(content.markdown, start) === level;
+    let style = blockStyle ?? (keeps ? styleAt?.(start) : undefined) ??
       (level > 0 ? `HEADING_${level}` : "NORMAL_TEXT");
     let format: InheritedFormat = { ...named[style] };
     if (style === "SUBTITLE") delete format.italic;
@@ -2725,6 +2732,18 @@ export function dropInheritedFormatting(
     tables = shiftRangesAfter(tables, end, offset);
   }
   return { markdown, protectedRanges, tables };
+}
+
+/** How many lines of `markdown` that hold anything start in [from, to). */
+function nonBlankLines(markdown: string, from: number, to: number): number {
+  let count = 0;
+  for (let at = from; at < to;) {
+    let end = markdown.indexOf("\n", at);
+    if (end < 0) end = markdown.length;
+    if (end > at) count++;
+    at = end + 1;
+  }
+  return count;
 }
 
 /** The heading level the line of `markdown` starting at `start` is written with, 0 for none. */
@@ -2982,58 +3001,16 @@ export function computeReplaceOperations(
   let trimmedOld = oldText.slice(prefixLen, oldText.length - suffixLen);
   assertMarkdownRangeEditable(sourceMap.protectedRanges, trimmedMatchStart, trimmedMatchEnd);
 
-  let blockRange = blockReplacementRange(
-    sourceMap,
-    trimmedMatchStart,
-    trimmedMatchEnd,
-    BLOCK_SYNTAX_LINE.test(trimmedNew),
-    trimmedOld.includes("\n"),
-  );
-  if (blockRange) {
-    assertMarkdownRangeEditable(
-      sourceMap.protectedRanges, blockRange.mdStart, blockRange.mdEnd - 1,
-    );
-    let rewritten = (
-      literalMarkdownSlice(sourceMap, markdown, blockRange.mdStart, trimmedMatchStart) +
-      trimmedNew +
-      literalMarkdownSlice(sourceMap, markdown, trimmedMatchEnd, blockRange.mdEnd)
-    ).replace(/\n$/, "");
-    // Leading newlines extend the separator before the range, which already holds its breaks.
-    let lead = newlineRun(rewritten, 0, 1);
-    let before = newlineRun(markdown, blockRange.mdStart - 1, -1);
-    let blockMarkdown = "\n".repeat(Math.ceil((before + lead) / 2) - Math.ceil(before / 2)) +
-      rewritten.slice(lead);
-    // The range's last block ends at its final break, so each break a trailing run renders after
-    // the text adds an empty paragraph.
-    let trail = /[^\n]\n+$/.test(blockMarkdown)
-      ? newlineRun(blockMarkdown, blockMarkdown.length - 1, -1) : 0;
-    let targets = parseMarkdownForWrite(blockMarkdown.slice(0, blockMarkdown.length - trail));
-    for (let empty = 0; empty < Math.ceil(trail / 2); empty++) targets.push(parseLine(""));
+  let rewrite = blockRewrite(sourceMap, markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew,
+    trimmedOld.includes("\n"));
+  if (rewrite) {
+    let { blockRange, targets } = rewrite;
     let requests = rewriteBlocks(sourceMap, markdown, blockRange.blocks, targets, tabId);
     return { requests, trimmedOld, trimmedNew };
   }
 
-  let docRange = mdRangeToDocRange(sourceMap, trimmedMatchStart, trimmedMatchEnd);
-  if (!docRange) {
-    throw new Error(
-      "replaceText: could not map the Markdown range to document indices. " +
-      "The match may span unsupported content.");
-  }
-  let insertMarkdown = fragmentInsertMarkdown(
-    markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew, docRange.startsAfterParagraph);
-  let preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
-  // Paragraphs split off the one written into would inherit its list and style. Text that ends in
-  // a break, written at a paragraph's start, holds only paragraphs split off ahead of it.
-  let ahead = !docRange.startsAfterParagraph && preserveTrailingNewline
-    ? sourceMap.blocks.find(block => block.docStart === docRange.start) : undefined;
-  let writeOptions: MarkdownWriteOptions = {
-    resetParagraphs: true,
-    // A removed bullet leaves its indent behind.
-    resetIndent: ahead?.listId !== undefined,
-    preserveLeadingParagraph: !ahead ||
-      ahead.listId === undefined && ahead.namedStyleType === "NORMAL_TEXT",
-    preserveTrailingNewline,
-  };
+  let { docRange, insertMarkdown, writeOptions } =
+    inlineWrite(sourceMap, markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew);
   if (!docRange.startsAfterParagraph) {
     writeOptions.sourceTextStyle = mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd);
   }
@@ -3051,6 +3028,41 @@ export function computeReplaceOperations(
       parseMarkdownForWrite(insertMarkdown), docRange.start, tabId, writeOptions, requests);
   }
   return { requests, trimmedOld, trimmedNew };
+}
+
+/**
+ * Where a trimmed replacement that edits inside a paragraph writes, what it writes there, and how:
+ * whether its first paragraph keeps the style of the one written into.
+ */
+function inlineWrite(
+  sourceMap: SourceMap, markdown: string, trimmedMatchStart: number, trimmedMatchEnd: number,
+  trimmedNew: string,
+): { docRange: DocRange; insertMarkdown: string; writeOptions: MarkdownWriteOptions } {
+  let docRange = mdRangeToDocRange(sourceMap, trimmedMatchStart, trimmedMatchEnd);
+  if (!docRange) {
+    throw new Error(
+      "replaceText: could not map the Markdown range to document indices. " +
+      "The match may span unsupported content.");
+  }
+  let insertMarkdown = fragmentInsertMarkdown(
+    markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew, docRange.startsAfterParagraph);
+  let preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
+  // Paragraphs split off the one written into would inherit its list and style. Text that ends in
+  // a break, written at a paragraph's start, holds only paragraphs split off ahead of it.
+  let start = docRange.start;
+  let ahead = !docRange.startsAfterParagraph && preserveTrailingNewline
+    ? sourceMap.blocks.find(block => block.docStart === start) : undefined;
+  return {
+    docRange, insertMarkdown,
+    writeOptions: {
+      resetParagraphs: true,
+      // A removed bullet leaves its indent behind.
+      resetIndent: ahead?.listId !== undefined,
+      preserveLeadingParagraph: !ahead ||
+        ahead.listId === undefined && ahead.namedStyleType === "NORMAL_TEXT",
+      preserveTrailingNewline,
+    },
+  };
 }
 
 function newlineRun(text: string, index: number, step: 1 | -1): number {
@@ -3085,6 +3097,79 @@ function fragmentInsertMarkdown(
     fragment.slice(lead, fragment.length - trail) +
     "\n".repeat(Math.max(0, breaks(trail + after) - followingBreaks));
 }
+
+/**
+ * The whole blocks a trimmed replacement rewrites, and the blocks it writes in their place, when it
+ * takes that path: when it writes block syntax or crosses a paragraph break.
+ */
+function blockRewrite(
+  sourceMap: SourceMap, markdown: string, trimmedMatchStart: number, trimmedMatchEnd: number,
+  trimmedNew: string, crossesBreak: boolean,
+): { blockRange: NonNullable<ReturnType<typeof blockReplacementRange>>; targets: ParsedBlock[] } | undefined {
+  let blockRange = blockReplacementRange(
+    sourceMap, trimmedMatchStart, trimmedMatchEnd, BLOCK_SYNTAX_LINE.test(trimmedNew), crossesBreak,
+  );
+  if (!blockRange) return undefined;
+  assertMarkdownRangeEditable(sourceMap.protectedRanges, blockRange.mdStart, blockRange.mdEnd - 1);
+  let rewritten = (
+    literalMarkdownSlice(sourceMap, markdown, blockRange.mdStart, trimmedMatchStart) +
+    trimmedNew +
+    literalMarkdownSlice(sourceMap, markdown, trimmedMatchEnd, blockRange.mdEnd)
+  ).replace(/\n$/, "");
+  // Leading newlines extend the separator before the range, which already holds its breaks.
+  let lead = newlineRun(rewritten, 0, 1);
+  let before = newlineRun(markdown, blockRange.mdStart - 1, -1);
+  let blockMarkdown = "\n".repeat(Math.ceil((before + lead) / 2) - Math.ceil(before / 2)) +
+    rewritten.slice(lead);
+  // The range's last block ends at its final break, so each break a trailing run renders after
+  // the text adds an empty paragraph.
+  let trail = /[^\n]\n+$/.test(blockMarkdown)
+    ? newlineRun(blockMarkdown, blockMarkdown.length - 1, -1) : 0;
+  let targets = parseMarkdownForWrite(blockMarkdown.slice(0, blockMarkdown.length - trail));
+  for (let empty = 0; empty < Math.ceil(trail / 2); empty++) targets.push(parseLine(""));
+  return { blockRange, targets };
+}
+
+/**
+ * The paragraph styles a replacement's requests write (`WrittenStyles`). A rewrite of whole blocks
+ * gives each block that has text the style of the paragraph it is paired with where that paragraph
+ * keeps its style or gives it (a title or a subtitle), and otherwise the style its heading marker
+ * names.
+ */
+export function rewrittenBlockStyles(
+  sourceMap: SourceMap, markdown: string, matchStart: number, matchEnd: number, newMarkdown: string,
+): WrittenStyles | undefined {
+  let oldText = markdown.slice(matchStart, matchEnd);
+  if (oldText === newMarkdown) return undefined;
+  let { prefixLen, suffixLen } = markdownReplacementBounds(oldText, newMarkdown);
+  let trimmedStart = matchStart + prefixLen;
+  let trimmedEnd = matchEnd - suffixLen;
+  let trimmedNew = newMarkdown.slice(prefixLen, newMarkdown.length - suffixLen);
+  let rewrite = blockRewrite(sourceMap, markdown, trimmedStart, trimmedEnd, trimmedNew,
+    oldText.slice(prefixLen, oldText.length - suffixLen).includes("\n"));
+  if (!rewrite) {
+    let { writeOptions } = inlineWrite(sourceMap, markdown, trimmedStart, trimmedEnd, trimmedNew);
+    return { keepsFirst: writeOptions.preserveLeadingParagraph === true };
+  }
+  let { blockRange: { blocks, mdStart }, targets } = rewrite;
+  let paired = new Map(alignSourceBlocks(blocks, targets, markdown).map(([s, t]) => [t, blocks[s]]));
+  let styles = targets.flatMap((target, index) => {
+    if (target.plainText === "" && target.listType === null) return [];
+    let source = paired.get(index);
+    return [source && isUnchangedBlock(source, target, markdown)
+      ? source.namedStyleType : targetNamedStyle(target, source)];
+  });
+  return { rewrite: { mdStart, styles } };
+}
+
+/**
+ * The paragraph styles a replacement's requests write: for a rewrite of whole blocks, where they
+ * start and each block's style; for an edit inside a paragraph, whether its first line keeps the
+ * style of the paragraph written into, or every line it writes takes the style its marker names.
+ */
+export type WrittenStyles =
+  | { rewrite: { mdStart: number; styles: string[] }; keepsFirst?: never }
+  | { keepsFirst: boolean; rewrite?: never };
 
 /**
  * Rewrite whole source blocks paragraph by paragraph, so each kept paragraph keeps its own list and
