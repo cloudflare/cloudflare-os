@@ -1,6 +1,5 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
-import { Badge } from '@cloudflare/kumo'
 import {
   ArrowClockwiseIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
   CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon,
@@ -75,7 +74,7 @@ const COMMITS_AT = 0.2
  * fills the window; filling the window, it goes back. Before those are who else is looking at it,
  * more that can be done with it (which beside the page includes putting the pane away), and a link
  * to it. Beside the page, the header starts with how many things the page has to show, which
- * opens to the list of them, then the name of the one shown, marked when the page does not have it.
+ * opens to the list of them, then the name of the one shown.
  *
  * What is shown fills the card under the header, out to its sides and bottom, with rounded top
  * corners and a line along the top. The bar at its top pushes the header up out of the way, and
@@ -150,7 +149,6 @@ export const SidePane = (props: SidePaneProps) => {
               <SidePaneTitle title={active.title} icon={active.icon} />
             </HeaderBubble>
           )}
-          {active && !listed && <Badge variant="neutral" className="shrink-0">Not in this chat</Badge>}
           <span className="ms-auto flex shrink-0 items-center gap-1.5">
             {people.length > 0 && (
               <HeaderBubble className="me-1.5">
