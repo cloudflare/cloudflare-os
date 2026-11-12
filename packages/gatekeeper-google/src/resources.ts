@@ -43,7 +43,7 @@ const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
 export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/document/d/:docId/*",
   title: "Google Doc",
-  description: "Read and edit documents you choose.",
+  description: "Read, edit and comment on documents you choose.",
   grantable: true,
   creatable: true,
   creationConfigurator: true,
@@ -159,9 +159,9 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
       "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
       "Slides, PDFs, other files and comments. Connect all of Drive, or just one shared drive, " +
       "folder or file, as read only or as read and write, which also lets agents comment on " +
-      "files with your approval; a Doc, spreadsheet or presentation connected on its own can be " +
-      "edited, with your approval, but not commented on. A connection request asks for read and " +
-      "write by adding ?access=write to the URL.",
+      "files with your approval; a Doc connected on its own can be edited and commented on, and " +
+      "a spreadsheet or presentation connected on its own edited, with your approval. A " +
+      "connection request asks for read and write by adding ?access=write to the URL.",
   grantable: true,
 };
 

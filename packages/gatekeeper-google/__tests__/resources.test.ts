@@ -68,10 +68,11 @@ describe("resource declarations", () => {
       "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
       "Slides, PDFs, other files and comments. Connect all of Drive, or just one shared drive, " +
       "folder or file, as read only or as read and write, which also lets agents comment on " +
-      "files with your approval; a Doc, spreadsheet or presentation connected on its own can be " +
-      "edited, with your approval, but not commented on. A connection request asks for read and " +
-      "write by adding ?access=write to the URL.",
+      "files with your approval; a Doc connected on its own can be edited and commented on, and " +
+      "a spreadsheet or presentation connected on its own edited, with your approval. A " +
+      "connection request asks for read and write by adding ?access=write to the URL.",
     );
+    expect(GOOGLE_DOC_RESOURCE.description).toBe("Read, edit and comment on documents you choose.");
     expect(GOOGLE_DRIVE_FOLDER_RESOURCE.description).toBe(
       "Browse a selected folder or shared drive, search its direct children, and read native " +
       "Google Docs, Sheets and Slides, PDFs as text, any other file's content as bytes, and " +
