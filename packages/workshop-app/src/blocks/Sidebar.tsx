@@ -87,7 +87,7 @@ export const Sidebar = ({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 px-2 py-2.5">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 px-1.5 py-2.5">
       <header className="flex items-center gap-2">
         <div className="mr-auto flex">{home}</div>
         {workspacesButton}
