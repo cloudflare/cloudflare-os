@@ -125,14 +125,16 @@ export type SheetBatch = {
 /**
  * The payload of each kind of queued change. A batch is queued as `editSheetValues` when it only
  * enters literal values and clears cells, `formatSheets` when it only formats cells,
- * `editSpreadsheet` when it otherwise deletes no sheet, row or column and its formulas call only
- * functions that compute from the spreadsheet alone, and `updateSpreadsheet` otherwise; they differ
- * in nothing but which kinds a user may let apply without asking.
+ * `updateSpreadsheet` when a formula calls a function that does not compute from the spreadsheet
+ * alone or a change is not one this module classifies, `deleteSpreadsheetContent` when it
+ * otherwise deletes a sheet, rows or columns, and `editSpreadsheet` otherwise; they differ in
+ * nothing but which kinds a user may let apply without asking.
  */
 export type SheetsActions = {
   editSheetValues: SheetBatch;
   formatSheets: SheetBatch;
   editSpreadsheet: SheetBatch;
+  deleteSpreadsheetContent: SheetBatch;
   updateSpreadsheet: SheetBatch;
 };
 

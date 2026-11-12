@@ -47,15 +47,19 @@ const CHANGED = "This change no longer applies: cells it overwrites or deletes, 
   "changed since it was queued.";
 
 const EDIT_SPREADSHEET = { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" };
+const DELETE_SPREADSHEET_CONTENT = {
+  tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows or columns",
+};
 /** The kind of every change a user cannot let apply without asking. */
 const UPDATE_SPREADSHEET = {
-  tag: "update-spreadsheet", label: "Spreadsheet changes that delete or run unchecked formulas",
+  tag: "update-spreadsheet", label: "Spreadsheet changes that run unchecked formulas",
 };
 /** The kinds of change a user may let apply without asking. */
 const AUTO_APPROVABLE = [
   { tag: "editSheetValues", label: "Sheet value edits" },
   { tag: "formatSheets", label: "Sheet formatting" },
   EDIT_SPREADSHEET,
+  DELETE_SPREADSHEET_CONTENT,
 ];
 
 /** Fields of a cell's value, which no format read may ask for. */
@@ -1721,7 +1725,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     // Q4, It's, Sales and the copy of Sales.
-    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: false, actionKind: UPDATE_SPREADSHEET });
+    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: true, actionKind: DELETE_SPREADSHEET_CONTENT });
     expect(action!.description).toContain(
       "Makes 12 changes, all or none of which are applied:\n\n" +
       '1. Add a sheet "Q4" of 5 rows and 3 columns at position 3\n' +
@@ -1782,8 +1786,8 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     expect(action).toMatchObject({
       title: 'Edit "Q3 Plan"',
       description: 'Delete the sheet "Q3 Plan" (10 rows, 4 columns) and everything on it.',
-      autoApprovable: false,
-      actionKind: UPDATE_SPREADSHEET,
+      autoApprovable: true,
+      actionKind: DELETE_SPREADSHEET_CONTENT,
     });
     expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales"]);
 

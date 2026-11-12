@@ -33,11 +33,18 @@ describe("Google Sheets batch kinds", () => {
     }
   });
 
-  it("queues a batch deleting a sheet, rows or columns as updateSpreadsheet, alone or among other changes", () => {
+  it("queues a batch deleting a sheet, rows or columns as deleteSpreadsheetContent, alone or among other changes", () => {
     for (let change of DELETING) {
-      expect(batchKind([change]), change.op).toBe("updateSpreadsheet");
-      expect(batchKind([write(1), change, FORMAT]), change.op).toBe("updateSpreadsheet");
-      expect(batchKind([...KEEPING, change]), change.op).toBe("updateSpreadsheet");
+      expect(batchKind([change]), change.op).toBe("deleteSpreadsheetContent");
+      expect(batchKind([write(1), change, FORMAT]), change.op).toBe("deleteSpreadsheetContent");
+      expect(batchKind([...KEEPING, change, write("=SUM(A1:A2)")]), change.op).toBe("deleteSpreadsheetContent");
+    }
+  });
+
+  it("queues a deleting batch with an unchecked formula or an unclassified change as updateSpreadsheet", () => {
+    for (let change of DELETING) {
+      expect(batchKind([change, write("=MYFETCH(A1)")]), change.op).toBe("updateSpreadsheet");
+      expect(batchKind([change, { op: "sortRange" }]), change.op).toBe("updateSpreadsheet");
     }
   });
 
@@ -76,13 +83,14 @@ describe("Google Sheets auto-approval verdicts", () => {
     return description!;
   }
 
-  it("lets a user auto-approve value edits, formatting and edits that keep every sheet, row and column", async () => {
+  it("lets a user auto-approve value edits, formatting, edits that keep every sheet, row and column, and deletions", async () => {
     expect(SHEETS_ACTIONS.bind(
       new ActionJournal<SheetsAction>(new FakeKv(), { namespace: "sheets" }), {} as SheetsHost,
     ).autoApprovableKinds()).toEqual([
       { tag: "editSheetValues", label: "Sheet value edits" },
       { tag: "formatSheets", label: "Sheet formatting" },
       { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" },
+      { tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows or columns" },
     ]);
     expect(await described("editSheetValues")).toMatchObject({
       autoApprovable: true, actionKind: { tag: "editSheetValues" },
@@ -93,12 +101,15 @@ describe("Google Sheets auto-approval verdicts", () => {
     expect(await described("editSpreadsheet")).toMatchObject({
       autoApprovable: true, actionKind: { tag: "edit-spreadsheet" },
     });
+    expect(await described("deleteSpreadsheetContent")).toMatchObject({
+      autoApprovable: true, actionKind: { tag: "delete-spreadsheet-content" },
+    });
   });
 
-  it("never auto-approves a batch that deletes or runs unchecked formulas", async () => {
+  it("never auto-approves a batch that runs unchecked formulas", async () => {
     expect(await described("updateSpreadsheet")).toMatchObject({
       autoApprovable: false,
-      actionKind: { tag: "update-spreadsheet", label: "Spreadsheet changes that delete or run unchecked formulas" },
+      actionKind: { tag: "update-spreadsheet", label: "Spreadsheet changes that run unchecked formulas" },
     });
   });
 });

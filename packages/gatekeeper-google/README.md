@@ -786,8 +786,8 @@ already holds are not inspected, and one of its named functions could wrap a ref
 a batch with a formula may apply without asking, as "Spreadsheet edits that keep every sheet, row
 and column" (below), only when every function its formulas call is a built-in the gatekeeper
 knows computes from the spreadsheet alone, such as `SUM`, `IF`, `VLOOKUP` or `FILTER`. The batch
-waits for approval as "Spreadsheet changes that delete or run unchecked formulas" when a formula
-has any of these:
+waits for approval as "Spreadsheet changes that run unchecked formulas" when a formula has any of
+these:
 
 - a call to any other name, including `HYPERLINK`, whose link carries what the formula puts in it
   to the site a click opens, and `LET` and `LAMBDA`, whose names can take a listed function's name
@@ -820,8 +820,9 @@ renames, so it never needs an ID the spreadsheet has not assigned yet. The gatek
 of each sheet a batch adds. A batch that adds, copies or renames sheets or inserts rows or columns,
 alone or together with values, clears and formatting, is queued as "Spreadsheet edits that keep
 every sheet, row and column", which a user may let apply without asking unless one of its formulas
-calls a function the paragraphs above exclude. A batch that deletes a sheet, rows or columns always
-waits for approval, as "Spreadsheet changes that delete or run unchecked formulas". Each batch is
+calls a function the paragraphs above exclude. A batch that also deletes a sheet, rows or columns is
+queued as "Spreadsheet changes that delete sheets, rows or columns", which a user may also let apply
+without asking, since the spreadsheet's version history restores what it deletes. Each batch is
 queued as exactly one kind, so letting edits that keep every sheet, row and column apply without
 asking leaves batches of only literal values and clears, or only formatting, to their own kinds.
 Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's

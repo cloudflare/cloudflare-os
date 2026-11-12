@@ -86,12 +86,16 @@ const FORMAT_SHEETS: ActionKind = { tag: "formatSheets", label: "Sheet formattin
 const EDIT_SPREADSHEET: ActionKind = {
   tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column",
 };
-// Everything else always waits for approval: deleting a sheet, rows or columns removes their
-// contents, and a formula calling any other function, which may be one of the spreadsheet's named
-// functions, can make Google fetch a URL carrying the spreadsheet's data. A change this module
-// does not classify lands here too.
+// What a user may let apply without asking: such a batch that also deletes a sheet, rows or
+// columns, which the spreadsheet's version history restores.
+const DELETE_SPREADSHEET_CONTENT: ActionKind = {
+  tag: "delete-spreadsheet-content", label: "Spreadsheet changes that delete sheets, rows or columns",
+};
+// Everything else always waits for approval: a formula calling any other function, which may be
+// one of the spreadsheet's named functions, can make Google fetch a URL carrying the
+// spreadsheet's data. A change this module does not classify lands here too.
 const UPDATE_SPREADSHEET: ActionKind = {
-  tag: "update-spreadsheet", label: "Spreadsheet changes that delete or run unchecked formulas",
+  tag: "update-spreadsheet", label: "Spreadsheet changes that run unchecked formulas",
 };
 
 // The changes an `editSpreadsheet` batch may make: none removes a sheet, row or column.
@@ -99,6 +103,9 @@ const KEEPING_OPS: ReadonlySet<string> = new Set([
   "writeCells", "clearRange", "formatCells", "addSheet", "renameSheet", "duplicateSheet",
   "insertRows", "insertColumns",
 ]);
+
+// The changes that make a batch otherwise as safe as `editSpreadsheet` a `deleteSpreadsheetContent`.
+const DELETING_OPS: ReadonlySet<string> = new Set(["deleteSheet", "deleteRows", "deleteColumns"]);
 
 /**
  * The kind a batch is queued as, so approving a kind approves no more than it says. A batch that
@@ -113,9 +120,11 @@ export function batchKind(
     change.op === "writeCells" ? change.values!.flat().filter(isFormula) : []);
   let cellsOnly = changes.every(change => change.op === "clearRange" || change.op === "writeCells");
   if (cellsOnly && formulas.length === 0) return "editSheetValues";
-  let keeps = changes.every(change => KEEPING_OPS.has(change.op)) &&
-    formulas.every(callsOnlySpreadsheetFunctions);
-  return keeps ? "editSpreadsheet" : "updateSpreadsheet";
+  if (!formulas.every(callsOnlySpreadsheetFunctions)) return "updateSpreadsheet";
+  if (!changes.every(change => KEEPING_OPS.has(change.op) || DELETING_OPS.has(change.op))) {
+    return "updateSpreadsheet";
+  }
+  return changes.some(change => DELETING_OPS.has(change.op)) ? "deleteSpreadsheetContent" : "editSpreadsheet";
 }
 
 // Sending a batch: the first send, and resends once an answer was lost.
@@ -454,5 +463,7 @@ export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),
   formatSheets: sheetBatch(FORMAT_SHEETS, true),
   editSpreadsheet: sheetBatch(EDIT_SPREADSHEET, true),
+  deleteSpreadsheetContent: sheetBatch(DELETE_SPREADSHEET_CONTENT, true),
+  // Runs a formula that may make Google fetch a URL carrying the spreadsheet's data.
   updateSpreadsheet: sheetBatch(UPDATE_SPREADSHEET, false),
 }, { fence: "none", vendorId: "google" });

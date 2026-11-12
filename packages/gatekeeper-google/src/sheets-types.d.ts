@@ -192,11 +192,11 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * columns, in ranges too, are numbered as earlier changes that insert or delete some leave them:
    * to delete rows 3 and 7, delete row 7 first (or delete row 3, then row 6).
    *
-   * The user may let a batch apply without asking unless it deletes a sheet, rows or columns, or
-   * has a formula calling a function other than common built-ins that compute only from the
-   * spreadsheet (arithmetic, logic, statistics, text, dates, lookups and arrays; not `HYPERLINK`,
-   * `LET`, `LAMBDA`, nor any of the spreadsheet's named functions), or naming anything but cells,
-   * called functions, `TRUE` and `FALSE`, such as a named range; such a batch waits for approval.
+   * The user may let a batch apply without asking unless it has a formula calling a function other
+   * than common built-ins that compute only from the spreadsheet (arithmetic, logic, statistics,
+   * text, dates, lookups and arrays; not `HYPERLINK`, `LET`, `LAMBDA`, nor any of the
+   * spreadsheet's named functions), or naming anything but cells, called functions, `TRUE` and
+   * `FALSE`, such as a named range; such a batch waits for approval.
    * Formulas calling `IMPORTRANGE`, which reads another spreadsheet, or `IMPORTDATA`, `IMPORTHTML`,
    * `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, are refused.
    *
