@@ -1462,7 +1462,7 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     waiting.docs.suggest.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
     let pending = await waiting.submit("suggestEdit", edit());
     expect(await waiting.apply(pending)).toBe(UNCONFIRMED_SUGGESTION);
-    expect(await waiting.apply(pending)).toMatch(/^Google Drive may still be posting this/);
+    expect(await waiting.apply(pending)).toMatch(/^Google Docs may still be posting this/);
     expect(waiting.docs.suggest).toHaveBeenCalledTimes(1);
     // Found nothing once the window closed: that send made nothing, so it is sent again.
     waiting.aged(pending);
@@ -1553,7 +1553,7 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     lost.docs.replyToSuggestion.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));
     let other = await lost.submit("suggestEdit", edit({ note: "It moved." }));
     expect(await lost.apply(other)).toMatch(/^The suggestion was made/);
-    expect(await lost.apply(other)).toMatch(/^Google Drive may still be posting this/);
+    expect(await lost.apply(other)).toMatch(/^Google Docs may still be posting this/);
     lost.attempts.set(other, { ...lost.attempts.get(other)!, noteAt: Date.now() - 10 * 60_000 });
     expect(await lost.apply(other)).toBeNull();
     expect(lost.docs.suggest).toHaveBeenCalledTimes(1);

@@ -804,7 +804,7 @@ async function postNote(
       host.attempts.put(id, { ...marked, postedId: suggestionId });
       return;
     }
-    if (!conclusive) throw notShownYet(noteAttempt, host.threads.via);
+    if (!conclusive) throw notShownYet(noteAttempt, "Google Docs");
     await requireSightedLook(host, { kind: "suggestEdit", payload });
   }
   // The note is a write of its own: the binding's checks hold for it as for the suggestion, and
@@ -974,7 +974,10 @@ async function post(
       }
       return found;
     }
-    if (!conclusive) throw notShownYet(prior, threads.via);
+    // A suggestion is looked for in the Doc; a comment, anchored or not, in the binding's listing.
+    if (!conclusive) {
+      throw notShownYet(prior, action.kind === "suggestEdit" ? "Google Docs" : threads.via);
+    }
     await requireSightedLook(host, action);
     // The window closed with nothing found by an account that would see it: that send posted
     // nothing.
