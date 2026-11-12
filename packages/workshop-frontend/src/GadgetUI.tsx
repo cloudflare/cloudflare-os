@@ -145,7 +145,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, refreshSignal, isVisib
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
-  const [error, setError] = useState<{ message: string; stub?: RpcStub<GadgetClient> } | null>(null)
+  const [error, setError] = useState<{ message: string; stub?: GadgetUiSource } | null>(null)
   const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
   const [isInvalidated, setIsInvalidated] = useState(false)

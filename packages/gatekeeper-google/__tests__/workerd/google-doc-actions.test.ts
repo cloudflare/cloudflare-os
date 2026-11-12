@@ -2115,13 +2115,12 @@ describe("Google Doc pending changes", () => {
     expect(docs.text()).toBe("Before");
   });
 
-  // This pool resolves a .txt import to its path, not its text, so the code itself is checked
-  // where it runs: the Workshop's ConnectionPreviewPane browser test.
+  // What the code does is checked where it runs: the Workshop's ConnectionPreviewPane browser test.
   it("offers a preview", async () => {
     new DocsModel().install();
 
     expect(await hooks().describe("pending-preview")).toMatchObject({ hasPreview: true });
-    expect(await hooks().previewUi("pending-preview")).toMatch(/docs-preview-client/);
+    expect(await hooks().previewUi("pending-preview")).toContain("gadget.getPendingChanges(");
   });
 
   it("authorizes one read of the tab, like getContent()", async () => {
