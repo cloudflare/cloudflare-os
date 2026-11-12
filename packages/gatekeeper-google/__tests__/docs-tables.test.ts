@@ -1655,11 +1655,14 @@ describe("the cells a tab's tables hold", () => {
     }, para("After")])));
     // 2, then 1 for the cell holding the table and 1 for the table's own cell.
     expect(message(() => checkTabTableCells(alone, 4_997, "insertTable"))).toBe(tabCells("insertTable", 5_001));
-    let skipped = contentOf(docTabToMarkdown(buildTab([para("Before"), {
-      table: [[cellOf(item("deep", "DEEP", 1))]],
-    }, para("After")], ALL_LISTS)));
-    expect(tableAt(skipped, 0)).toContain('<ul style="list-style-type: none"><li><ul');
-    expect(() => checkTabTableCells(skipped, 4_999, "insertTable")).not.toThrow();
+    // ask-bonk's case: an empty numbered item and its child are two paragraphs. A list that skips a
+    // level writes the same HTML for its placeholder item, so it counts it too, erring on refusing.
+    let numbered = { NN: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }, { glyphType: "DECIMAL" }] } } };
+    let parent = contentOf(docTabToMarkdown(buildTab([para("Before"), {
+      table: [[cellOf(item("", "NN"), item("child", "NN", 1))]],
+    }, para("After")], numbered)));
+    expect(tableAt(parent, 0)).toMatch(/<li><[uo]l/);
+    expect(message(() => checkTabTableCells(parent, 4_999, "insertTable"))).toBe(tabCells("insertTable", 5_001));
   });
 
   it("counts a list item written as a heading once", () => {
