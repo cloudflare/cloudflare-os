@@ -1,0 +1,29 @@
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.browser.test.tsx
+  s_104932cc5fb866::t_17bdcf2688327c 56-61,83,128-130,137-138,146-153
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.tsx
+  s_99c049c8391965::t_10162fe6a9345f 28,111,194-199
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "93c22bd6c97c3324bd2c8c7c2a34f5460e5c9cde",
+  "prompts": {},
+  "sessions": {
+    "s_104932cc5fb866": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "165a216a-ab6c-417c-94e1-f1ddefca60f1",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
