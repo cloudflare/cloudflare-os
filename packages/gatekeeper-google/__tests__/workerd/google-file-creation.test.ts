@@ -397,13 +397,13 @@ describe("creating a Google Drive folder", () => {
   });
 
   it.each([
-    ["its create's reply was lost", ["lost", "lost", "lost"] as const],
-    ["it was made", [] as const],
-  ])("refuses a retry whose folder was trashed after %s", async (name, answers) => {
+    ["its create's reply was lost", ["lost", "lost", "lost"] as const, { error: expect.stringContaining("503") }],
+    ["it was made", [] as const, created],
+  ])("refuses a retry whose folder was trashed after %s", async (name, answers, first) => {
     await hooks().grant("test-user", grants);
     await hooks().createResource(name, FOLDER_PATTERN, "Q3 plans");
     createAnswers = [...answers];
-    await hooks().applyCreation(name, "test-user", folderUrl("folder-1"));
+    expect(await hooks().applyCreation(name, "test-user", folderUrl("folder-1"))).toEqual(first);
 
     // The retry's create is answered 409, or not sent once the receipt says it was made, so the
     // folder made under the ID is read back.
@@ -413,6 +413,18 @@ describe("creating a Google Drive folder", () => {
         "account can no longer reach it. Reject the creation and ask for a new one.",
     });
     expect(generatedIds).toBe(1);
+  });
+
+  it("tells another approver a folder whose create was refused may have been made", async () => {
+    await hooks().grant("test-user", grants);
+    await hooks().createResource("create-folder-other", FOLDER_PATTERN, "Q3 plans");
+    createAnswers = ["refused"];
+    expect(await hooks().applyCreation("create-folder-other", "test-user", folderUrl("folder-1")))
+      .toMatchObject({ error: expect.stringContaining("403") });
+    expect(await hooks().applyCreation("create-folder-other", "other-user", folderUrl("folder-1"))).toEqual({
+      error: "This Google Drive folder may have been created in another approver's Google account. " +
+        "Ask them to approve it.",
+    });
   });
 
   it("needs the Drive folder grant again on a retry", async () => {

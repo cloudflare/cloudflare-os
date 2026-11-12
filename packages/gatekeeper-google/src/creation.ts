@@ -204,8 +204,9 @@ export async function createFileOnce(
   let moving = placedIn !== folderId;
   // `root` names each account's own My Drive, so another approver's choice of it is elsewhere too.
   if (userObjectId !== approverId && (moving || folderId === MY_DRIVE_ROOT && configuration !== null)) {
-    throw new Error(`This ${FILE_NOUNS[kind]} was already created in another approver's Google ` +
-      "account. Ask them to approve it" +
+    // A folder whose create was sent, with no answer recorded, may not exist.
+    throw new Error(`This ${FILE_NOUNS[kind]} ${inPlace && placedIn === null ? "may have been" : "was already"} ` +
+      "created in another approver's Google account. Ask them to approve it" +
       (placedIn === null || placedIn === MY_DRIVE_ROOT ? "." : `, or approve it for ${folderName(placedIn)}.`));
   }
 
