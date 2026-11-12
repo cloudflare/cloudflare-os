@@ -4747,6 +4747,26 @@ describe("merging and splitting cells", () => {
       "(counting from 0), which Google Docs styles as a whole. Name all of its cells or none of them.");
   });
 
+  it("reads a merged block's outer edges through a merged cell it holds on that edge", () => {
+    // ask-bonk's case: the block's right edge runs through a merged cell whose right edge is blue.
+    let edge = (red: number, blue: number) =>
+      ({ width: pt(2), dashStyle: "SOLID", color: { color: { rgbColor: { red, blue } } } });
+    let tab = buildTab([para("Before"), { table: [
+      [{ paragraphs: [para("a")], tableCellStyle: { borderRight: edge(1, 0) } },
+        { paragraphs: [para("bc")], tableCellStyle: { columnSpan: 2 } },
+        { paragraphs: [para("")], tableCellStyle: { borderRight: edge(0, 1) } }],
+      ["d\n", "e\n", "f\n"],
+    ] }, para("After")]);
+    expect(tableAt(read(tab), 0)).toContain('<td colspan="2" style="border-right:2pt solid #0000ff">');
+    let applied = expectSameAsGoogle(tab, merge(read(tab), 0, 0, 1, 3));
+    expect(tableAt(read(applied), 0)).toContain('<td colspan="3" style="border-right:2pt solid #0000ff">');
+    let tall = buildTab([para("Before"), { table: [
+      ["a\n", "b\n"],
+      [{ paragraphs: [para("cd")], tableCellStyle: { columnSpan: 2, borderBottom: edge(0, 1) } }, "\n"],
+    ] }, para("After")]);
+    expectSameAsGoogle(tall, merge(read(tall), 0, 0, 2, 2));
+  });
+
   it("splits a merged cell, its text staying in the top-left cell and the others empty", () => {
     let tab = table(
       [{ paragraphs: [para("ab"), para("cd")], tableCellStyle: { rowSpan: 2, columnSpan: 2, backgroundColor: { color: { rgbColor: { green: 1 } } } } },

@@ -1377,6 +1377,18 @@ function cellBlock(
 
 const EMPTY_PARAGRAPH = "<p></p>";
 
+/** The row and column of the merged cell, or the cell, that covers the cell at `row`, `column`. */
+function headAt(spans: readonly (readonly Spans[])[], row: number, column: number): [number, number] {
+  let covered = coveredCells(spans);
+  for (let r = row; r >= 0; r--) {
+    for (let c = column; c >= 0; c--) {
+      let { rowSpan, columnSpan } = spans[r][c];
+      if (!covered[r][c] && r + rowSpan > row && c + columnSpan > column) return [r, c];
+    }
+  }
+  return [row, column];
+}
+
 /** A merge or a split, checked against its table, with the table's lines and the cells' spans. */
 type CheckedMerge = CheckedLook & { look: TableLook; entries: TableCellEntry[][] };
 
@@ -1510,8 +1522,12 @@ function applyMerge(
   });
   let joined = withTable(content, table, spliceText(content.markdown, edits), packed);
   let headLook = look.cells[row][column]!;
-  let edgeOf = (r: number, c: number, side: "right" | "bottom") =>
-    look.cells[r][c]?.[`border-${side}`] ?? headLook[`border-${side}`];
+  // The block's right and bottom edges are those of the cells along them, a merged cell the
+  // block holds there included: such a cell is whole inside the block, so it ends on that edge.
+  let edgeOf = (r: number, c: number, side: "right" | "bottom") => {
+    let [hr, hc] = headAt(spans, r, c);
+    return look.cells[hr][hc]?.[`border-${side}`] ?? headLook[`border-${side}`];
+  };
   let cells = look.cells.map((cellsOfRow, r) => cellsOfRow.map((cell, c) => {
     if (r < row || r >= row + rows || c < column || c >= column + columns) return cell;
     if (r !== row || c !== column) return null;
