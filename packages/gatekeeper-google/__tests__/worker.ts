@@ -13,7 +13,9 @@ import type {
 } from "../src/drive-types";
 import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
-import type { DocMetadata, GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import type {
+  DocMetadata, GoogleDocPendingChanges, GoogleDocSession, GoogleDocTab,
+} from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
@@ -387,6 +389,10 @@ export class TestHooks extends DurableObject<Env> {
 
   async listTabs(facetName: string): Promise<GoogleDocTab[]> {
     return this.#withSession(facetName, session => session.listTabs());
+  }
+
+  async readPendingChanges(facetName: string, tabId?: string): Promise<GoogleDocPendingChanges> {
+    return this.#withSession(facetName, session => session.getPendingChanges(tabId));
   }
 
   async applyStorage(facetName: string, operations: StorageOperation[]): Promise<void> {

@@ -15,7 +15,8 @@ import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
-  type GoogleDocReadSession, type GoogleDocTab,
+  type GoogleDocPendingChange, type GoogleDocPendingChanges, type GoogleDocReadSession,
+  type GoogleDocTab,
 } from "./docs-types";
 import {
   DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
@@ -1761,7 +1762,7 @@ async function googleDocRevisionUnchanged(
 function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
-  operation: "getContent" | "replaceText" | "appendText",
+  operation: "getContent" | "getPendingChanges" | "replaceText" | "appendText",
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
@@ -2633,7 +2634,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
    */
   async #getSimulatedContent(
     tabId: string | undefined,
-    operation: "getContent" | "replaceText" | "appendText",
+    operation: "getContent" | "getPendingChanges" | "replaceText" | "appendText",
   ): Promise<GoogleDocSimulatedContent & {
     snapshot: GoogleDocSnapshot,
     tab: GoogleDocTabSnapshot,
@@ -2784,6 +2785,44 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
         `Read the full simulated content of tab ${googleDocTabLabel(selected.tab)} as Markdown.`,
     });
     return selected.markdown;
+  }
+
+  async getPendingChanges(tabId?: string): Promise<GoogleDocPendingChanges> {
+    let selected;
+    try {
+      selected = await this.#getSimulatedContent(tabId, "getPendingChanges");
+    } catch (error) {
+      // As in getContent(), the error says whether that tab exists.
+      await this.#authorizeRead({
+        title: "Read Google Doc pending changes",
+        description: "Read the pending changes of one tab of the document.",
+      });
+      throw error;
+    }
+    let { snapshot, tab } = selected;
+
+    // Listed after the replay above, which is what marks an edit that no longer fits.
+    let pending = this.#pendingActions.list();
+    let changes = pending.flatMap(({ id, action }): GoogleDocPendingChange[] => {
+      // An edit from before tabs were addressable belongs to the only tab, or to none.
+      let actionTabId = action.tabId ?? (snapshot.tabs.length === 1 ? tab.tabId : undefined);
+      if (actionTabId !== tab.tabId) return [];
+      // Its write landed though the response was lost, so the saved content already holds it.
+      if (action.writeId !== undefined && tab.committedWriteIds.includes(action.writeId)) return [];
+      let stale = action.invalidatedReason ? { stale: true as const } : {};
+      return [action.type === "replaceText"
+        ? { id, ...stale, type: action.type,
+            oldMarkdown: action.oldMarkdown, newMarkdown: action.newMarkdown }
+        : { id, ...stale, type: action.type, markdown: action.markdown }];
+    });
+
+    await this.#authorizeRead({
+      title: "Read Google Doc pending changes",
+      description:
+        `Read the saved and simulated content of tab ${googleDocTabLabel(tab)} as Markdown, ` +
+        `with its pending changes.`,
+    });
+    return { savedMarkdown: tab.markdown, markdown: selected.markdown, changes };
   }
 
   async replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {

@@ -131,4 +131,47 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
+
+  /**
+   * Return tab `tabId` as Google Docs has it saved, alongside what `getContent()` returns for it,
+   * and the changes that make the difference. A change made here may reach Google Docs later;
+   * until it does it is pending, and `getContent()` already shows it.
+   *
+   * The same tab selection rule as `getContent()` applies.
+   */
+  getPendingChanges(tabId?: string): Promise<GoogleDocPendingChanges>;
+}
+
+/**
+ * One change that Google Docs has not saved yet: the method that made it and the arguments it was
+ * given.
+ */
+export type GoogleDocPendingChange = {
+  /** Identifies this change among the document's pending changes. */
+  id: number;
+
+  /**
+   * Set when the document has changed so that this change no longer fits. A stale change is left
+   * out of `markdown` and will not be saved.
+   */
+  stale?: true;
+} & ({
+  type: "replaceText";
+  oldMarkdown: string;
+  newMarkdown: string;
+} | {
+  type: "appendText";
+  markdown: string;
+});
+
+/** One tab before and after its pending changes. */
+export type GoogleDocPendingChanges = {
+  /** The tab as Google Docs has it saved, as Markdown. */
+  savedMarkdown: string;
+
+  /** The tab with its pending changes, exactly as `getContent()` returns it. */
+  markdown: string;
+
+  /** The tab's pending changes, oldest first. */
+  changes: GoogleDocPendingChange[];
 }

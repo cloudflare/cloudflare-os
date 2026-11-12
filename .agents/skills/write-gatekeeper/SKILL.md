@@ -279,6 +279,27 @@ Keep in mind that the agent calling the API (or the agent writing a gadget to ca
 
 For concrete examples, see the Google gatekeeper's Google Docs simulation/cache handling and BigQuery dry-run scope enforcement.
 
+#### Revealing pending changes
+
+A session may let its caller see what is still pending, for a preview that draws what is about to
+change. Every session that does uses one shape (reference: `GoogleDocSession.getPendingChanges()`):
+
+- Name the read `getPendingChanges(scope?)`, scoped as the session's content read is (a tab, a
+  sheet), and return `{ changes, ... }`.
+- Each change is `{ id, stale?, type, ...args }`, oldest first, the order they apply in. `type` is
+  the session method that made it and `args` are that method's arguments, without the scope. `id`
+  is the action's number. `stale: true` marks a change that can no longer be applied; simulated
+  content leaves it out.
+- Beside `changes`, return the saved and the simulated content in the resource's own format, the
+  simulated one identical to what the content read returns.
+- Leave out changes outside the scope and any whose write has already reached the provider.
+- It is a read: authorize one observation, reporting what the content read reports.
+- In `types.d.ts`, call a change "pending" until the provider has saved it. The rule against
+  mentioning approvals still holds.
+
+Cancelling a change and subscribing to changes are not part of this shape yet; do not add either to
+one gatekeeper alone.
+
 ### Observer verification
 
 This is responsibility 7. The gatekeeper reports what each disclosure depends on; the Workshop tracks those dependencies and asks, through `verifyObserverAccess()`, which observers can access them. Which collaborators it asks about, and when, is the Workshop's policy (`docs/observers.md` §10), not part of the gatekeeper's contract: answer correctly for whichever observers a call names.

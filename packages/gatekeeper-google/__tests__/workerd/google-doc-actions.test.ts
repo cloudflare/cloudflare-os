@@ -1997,6 +1997,114 @@ describe("Google Doc with no revision ID", () => {
   });
 });
 
+describe("Google Doc pending changes", () => {
+  it("returns a tab as saved and as edited, with the changes between them", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Before");
+    docs.install();
+    let replaceId = await hooks().submitReplace("pending-list", "Before", "After");
+    let appendId = await hooks().submitAppend("pending-list", "added");
+
+    let pending = await hooks().readPendingChanges("pending-list");
+
+    expect(pending).toEqual({
+      savedMarkdown: "Before\n",
+      markdown: await hooks().readContent("pending-list"),
+      changes: [
+        { id: replaceId, type: "replaceText", oldMarkdown: "Before", newMarkdown: "After" },
+        { id: appendId, type: "appendText", markdown: "added" },
+      ],
+    });
+    expect(pending.markdown).toBe("After\n\nadded\n");
+    expect(docs.text()).toBe("Before");
+  });
+
+  it("authorizes one read of the tab, like getContent()", async () => {
+    let docs = new DocsModel();
+    docs.install();
+
+    await hooks().readPendingChanges("pending-observation");
+
+    expect(await hooks().lastObservations).toEqual([
+      `Read the saved and simulated content of tab "Main" (${MAIN_TAB}) as Markdown, ` +
+      "with its pending changes.",
+    ]);
+  });
+
+  it("marks an edit the document no longer fits as stale and leaves it out", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "target");
+    docs.install();
+    let actionId = await hooks().submitReplace("pending-stale", "target", "changed");
+
+    docs.externalEdit(MAIN_TAB, "rewritten");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+
+    expect(await hooks().readPendingChanges("pending-stale")).toEqual({
+      savedMarkdown: "rewritten\n",
+      markdown: "rewritten\n",
+      changes: [{
+        id: actionId, stale: true, type: "replaceText", oldMarkdown: "target", newMarkdown: "changed",
+      }],
+    });
+  });
+
+  it("lists only the edits of the tab it names", async () => {
+    nestedDocs();
+    let actionId = await hooks().submitAppend("pending-tabs", "added", "details");
+
+    expect((await hooks().readPendingChanges("pending-tabs", MAIN_TAB)).changes).toEqual([]);
+    expect((await hooks().readPendingChanges("pending-tabs", "details")).changes)
+      .toEqual([{ id: actionId, type: "appendText", markdown: "added" }]);
+  });
+
+  it("requires a tab for a document with several, as getContent() does", async () => {
+    nestedDocs();
+
+    await expect(Promise.resolve(hooks().readPendingChanges("pending-no-tab")))
+      .rejects.toThrow("getPendingChanges: tabId is required for documents with multiple tabs.");
+    expect(await hooks().lastObservations)
+      .toEqual(["Read the pending changes of one tab of the document."]);
+  });
+
+  it("stops listing an edit once it is applied or rejected", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Before");
+    docs.install();
+    let appliedId = await hooks().submitAppend("pending-resolved", "kept");
+    let rejectedId = await hooks().submitAppend("pending-resolved", "dropped");
+
+    expect(await hooks().applyAction("pending-resolved", appliedId)).toBeNull();
+    await hooks().rejectAction("pending-resolved", rejectedId);
+
+    expect(await hooks().readPendingChanges("pending-resolved")).toEqual({
+      savedMarkdown: "Before\n\nkept\n",
+      markdown: "Before\n\nkept\n",
+      changes: [],
+    });
+  });
+
+  // The action is still pending for the overseer, but Google already holds its write, so the
+  // saved content shows it and there is no difference left to attribute to it.
+  it("does not list an edit whose write landed though its response was lost", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let actionId = await hooks().submitAppend("pending-lost-response", "first");
+    expect(await hooks().applyAction("pending-lost-response", actionId))
+      .toMatch(/content response lost/);
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+
+    let pending = await hooks().readPendingChanges("pending-lost-response");
+
+    expect(pending.changes).toEqual([]);
+    expect(pending.savedMarkdown).toBe(pending.markdown);
+    expect(pending.markdown.match(/first/g)).toHaveLength(1);
+  });
+});
+
 /** A nested document whose three tabs all hold the same text, so an edit cannot be mistaken. */
 function nestedDocs(): DocsModel {
   let docs = new DocsModel();
