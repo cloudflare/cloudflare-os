@@ -65,8 +65,11 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import styles from "./ChatInterface.module.css";
 import {
+  cacheModels,
+  getCachedModels,
   getStoredSelectedModel,
   persistSelectedModel,
+  syncSelectedModel,
 } from "./modelSelection";
 import {
   Overseer,
@@ -2810,7 +2813,10 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
-  const { currentUser } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser } = useAuthenticatedApi();
+  // Read through a ref so that the chat subscription is not restarted when only this changes.
+  const authenticatedApiRef = useRef(authenticatedApi);
+  authenticatedApiRef.current = authenticatedApi;
   const unread = useUnreadState();
   const getOverseer = useCallback(() => overseer, [overseer]);
   const cacheRef = useRef<ChatCache>({
@@ -2914,10 +2920,10 @@ function ChatInterface({
   const [processingConnections, setProcessingConnections] = useState<Set<string>>(
     new Set(),
   );
-  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(
-    [],
-  );
+  // Starts on what this browser last saw, so a new chat's selector doesn't wait on the server.
+  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(getCachedModels);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<
     "chat" | "connections"
   >("chat");
@@ -4008,6 +4014,7 @@ function ChatInterface({
           const [chats, models] = await Promise.all([
             overseer.listChats(),
             overseer.listModels(),
+            syncSelectedModel(authenticatedApiRef.current),
           ]);
 
           chats.forEach((chat) => {
@@ -4016,13 +4023,15 @@ function ChatInterface({
           bumpChatListVersion();
           setChatListReady(true);
 
+          // The effect that follows the selected chat picks the model from these.
+          cacheModels(models);
           setAvailableModels(models);
-
-          setSelectedModel(getStoredSelectedModel(models));
+          setModelsLoading(false);
 
           forceUpdate();
         }
       } catch (err) {
+        if (isMounted) setModelsLoading(false);
         if (!logRpcFailure("Failed to subscribe to chats:", err)) {
           reportIssue('chat.subscription-load', err)
           toasts.add({ title: "Unable to load conversations", variant: "error" });
@@ -4267,7 +4276,7 @@ function ChatInterface({
   // Handle model change
   const handleModelChange = (modelId: string | null) => {
     setSelectedModel(modelId);
-    persistSelectedModel(modelId);
+    persistSelectedModel(authenticatedApi, modelId);
   };
 
   // Handle stopping the agent
@@ -5709,6 +5718,7 @@ function ChatInterface({
             isAgentActive={false}
             models={availableModels}
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
+            modelsLoading={modelsLoading}
             onModelChange={handleModelChange}
             showThinkingTraces={showThinkingTraces}
             onToggleThinkingTraces={toggleShowThinkingTraces}
@@ -6777,6 +6787,7 @@ function ChatInterface({
                       id: selectedModel,
                       name: chatAgent?.id === selectedModel ? chatAgent.name : undefined,
                     }}
+                    modelsLoading={modelsLoading}
                     onModelChange={handleModelChange}
                     pendingConsoleLogCount={pendingConsoleLogCount}
                     consoleLogPreview={consoleLogPreview}

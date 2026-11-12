@@ -2393,6 +2393,7 @@ export default function GadgetEditor() {
               }}
               overseer={overseer.stub}
               publicApi={publicApi}
+              authenticatedApi={authenticatedApi}
               onClose={() => setBlueprintUpdateDialogOpen(false)}
               onProposed={chatId => {
                 setBlueprintUpdateDialogOpen(false)
