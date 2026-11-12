@@ -2674,8 +2674,9 @@ function normalizeChangedListBoundaries(
  * it: without the bold, italic or strikethrough written into a paragraph whose named style gives
  * it, which Google stores as inherited. Only the lines the edit changed are looked at; a line that
  * was there before reads no such style, since Google never stores one. A line reads as the style
- * its heading marker names, or as normal text, unless `styleAt` names the style of the paragraph
- * that starts there before the edit. A subtitle keeps its italic, which a read shows inherited.
+ * its heading marker names, or as normal text, unless the edit leaves its marker as it was and
+ * `styleAt` names the style of the paragraph that starts there before the edit. A subtitle keeps
+ * its italic, which a read shows inherited.
  */
 export function dropInheritedFormatting(
   content: EditableMarkdown, edited: EditableMarkdown, named: NamedFormatting,
@@ -2701,7 +2702,10 @@ export function dropInheritedFormatting(
     let line = markdown.slice(start, end);
     let marker = /^(?: *(?:- |\d+\. ))?(#{1,6} )?/.exec(line)!;
     let level = marker[1] ? marker[1].length - 1 : 0;
-    let style = (start <= prefixLen ? styleAt?.(start) : undefined) ??
+    // The paragraph keeps the style it had only while the edit leaves its heading marker as it
+    // was: one the edit gives another marker takes the style that marker names.
+    let keeps = start <= prefixLen && headingLevelAt(content.markdown, start) === level;
+    let style = (keeps ? styleAt?.(start) : undefined) ??
       (level > 0 ? `HEADING_${level}` : "NORMAL_TEXT");
     let format: InheritedFormat = { ...named[style] };
     if (style === "SUBTITLE") delete format.italic;
@@ -2721,6 +2725,14 @@ export function dropInheritedFormatting(
     tables = shiftRangesAfter(tables, end, offset);
   }
   return { markdown, protectedRanges, tables };
+}
+
+/** The heading level the line of `markdown` starting at `start` is written with, 0 for none. */
+function headingLevelAt(markdown: string, start: number): number {
+  let end = markdown.indexOf("\n", start);
+  let line = markdown.slice(start, end < 0 ? markdown.length : end);
+  let heading = /^(?: *(?:- |\d+\. ))?(#{1,6}) /.exec(line);
+  return heading ? heading[1].length : 0;
 }
 
 function shiftRangesAfter<T extends MarkdownRange>(ranges: T[], from: number, offset: number): T[] {

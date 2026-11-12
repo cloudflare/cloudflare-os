@@ -3856,6 +3856,19 @@ describe("formatting a paragraph's named style already gives", () => {
     expect(tableAt(simulated, 0)).toContain("<h6>Cell notes</h6>");
   });
 
+  it("reads a paragraph a replacement gives another style by that style, as Google does", () => {
+    // ask-bonk's case: a Heading 6, italic by its style, written as normal text keeps its italic.
+    let { simulated } = expectStyledSameAsGoogle(body(), "###### Notes here", "*Notes* here");
+    expect(simulated.markdown).toContain("\n*Notes* here\n");
+    expectStyledSameAsGoogle(body(), "## Results here", "**Results** here");
+    expectStyledSameAsGoogle(body(), "###### Notes here", "## *Notes* **here**");
+    // A table placed after the paragraph as the read shows it finds it once Google applies it.
+    let fresh = docTabToMarkdown(expectStyledSameAsGoogle(body(), "###### Notes here", "*Notes* here").applied);
+    let table = newTable([["a"]], "\n*Notes* here\n");
+    expect(() => applyTableChange(contentOf(fresh), table, fresh)).not.toThrow();
+    expect(() => applyTableChange(simulated, table)).not.toThrow();
+  });
+
   it("reads a subtitle as italic only where its named style makes it so", () => {
     let subtitle: ParagraphSpec = { runs: ["Sub\n"], namedStyleType: "SUBTITLE" };
     expect(docTabToMarkdown(styledTab([subtitle])).markdown).toBe("Sub\n");
