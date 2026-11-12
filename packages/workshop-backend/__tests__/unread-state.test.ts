@@ -186,6 +186,33 @@ describe("persisted visible positions", () => {
 });
 
 describe("chat notification preferences", () => {
+  it.each(["read", "alarm"] as const)("consumes legacy queued alerts for a muted chat on %s", async recovery => {
+    const fixture = await setup(undefined, false);
+    await append(fixture, 0);
+    const alert = {...event(0), kind: "permissionRequested" as const};
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
+    await runInDurableObject(fixture.user, async (instance, ctx) => {
+      // Seed through the live collections so the hydrated queue headers stay in sync.
+      const storage = instance["storage"];
+      const current = storage.chatReadCursors.get(`${fixture.workspaceId}:1`)!;
+      // A pre-upgrade delivery may still be queued when the current default becomes muted.
+      storage.chatReadCursors.put({...current, notifiedThroughSequence: -1});
+      storage.notificationOutbox.put({...alert, workspaceId: fixture.workspaceId, chatId: 1,
+        expiresAt: new Date(Date.now() + 60_000), failedSubscriptions: ["offline-device"]});
+      await ctx.storage.setAlarm(Date.now() + 30_000);
+    });
+    if (recovery === "read") await setRead(fixture, 0);
+    else {
+      await evictDurableObject(fixture.user);
+      await runDurableObjectAlarm(fixture.user);
+    }
+    expect(await outbox(fixture)).toEqual([]);
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 0,
+      unreadCount: recovery === "read" ? 0 : 1});
+    expect(publish).not.toHaveBeenCalled();
+    expect(await runInDurableObject(fixture.user, (_instance, ctx) => ctx.storage.getAlarm())).toBeNull();
+  });
+
   it.each([false, true])("preserves a collaborator's delayed first arrival across preference and reopen (enabled: %s)", async enabled => {
     const fixture = await setup(); const {reader, owner} = await addReader(fixture);
     await withImpl(fixture.workspace, async impl => {

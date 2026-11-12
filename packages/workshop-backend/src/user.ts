@@ -850,6 +850,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let key = `${workspaceId}:${chatId}`;
     let current = this.#cursor(workspaceId, chatId);
     if (current.deleted) return false;
+    let hadNotifications = this.#notificationChats.has(key);
     let through = position.readThroughSequence;
     let visible = position.readThroughVisibleSequence;
     // An own-message arrival may already have advanced beyond this source-authorized boundary.
@@ -862,8 +863,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       readThroughSequence: through, readThroughVisibleSequence: visible,
       latestVisibleSequence: latest, unreadCount: latest - visible,
       notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline};
-    let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(cursor));
+    let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(
+      this.#chatNotificationsEnabled(cursor) ? cursor : this.#skipChatNotifications(cursor)));
     if (changed) this.#unreadChanged(workspaceId, chatId);
+    if (hadNotifications) await this.#armExpirySweep();
     return changed;
   }
 
@@ -880,7 +883,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         for (let event of events) {
           if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
           let cursor = this.#readCursors.get(key);
-          if (!cursor || cursor.deleted || !this.#chatNotificationsEnabled(cursor)) return;
+          if (!cursor || cursor.deleted) return;
+          if (!this.#chatNotificationsEnabled(cursor)) {
+            this.ctx.storage.transactionSync(() => this.#storeCursor(this.#skipChatNotifications(cursor)));
+            return;
+          }
           let expired = event.expiresAt.getTime() <= Date.now();
           // Arrivals deliver new work; only alarm/restart recovery retries failed destinations.
           if (!expired && event.failedSubscriptions !== undefined && !retryFailures) continue;
