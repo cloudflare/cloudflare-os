@@ -260,7 +260,13 @@ export default function GatekeeperModal({
   const selectPortalContainer = useDialogSelectPortalContainer()
 
   const [spawnerDisplayName, setSpawnerDisplayName] = useState('')
-  const [spawnerModelId, setSpawnerModelId] = useState<string | null>(null)
+  // Wrapped, so that a pick of "None" (null) is told from no pick at all. Until there is a pick the
+  // form shows the model a new chat would start on, read at render since the user may be confirmed
+  // only after the models load, as when the connection drops while this is open.
+  const [spawnerModelPick, setSpawnerModelPick] = useState<{ modelId: string | null } | null>(null)
+  const spawnerModelId = spawnerModelPick
+    ? spawnerModelPick.modelId
+    : getStoredSelectedModel(userId, availableModels) ?? availableModels[0]?.id ?? null
   const [spawnerEnv, setSpawnerEnv] = useState<SpawnerEnvRow[]>([])
   const spawnerEnvError = validateSpawnerEnv(spawnerEnv)
 
@@ -411,7 +417,7 @@ export default function GatekeeperModal({
     setConfiguratorSelectionReady(null)
     setSelectedModelId(undefined)
     setSpawnerDisplayName('')
-    setSpawnerModelId(null)
+    setSpawnerModelPick(null)
     setSpawnerEnv(
       (spawnerEnvCandidatesRef.current ?? []).map(entry => ({ ...entry, enabled: true })))
 
@@ -421,9 +427,6 @@ export default function GatekeeperModal({
       setAvailableModels(models)
       setDecisionModels(decisions)
       setSelectedModelId((models[0] ?? decisions[0])?.id)
-      if (models.length > 0) {
-        setSpawnerModelId(getStoredSelectedModel(userId, models) ?? models[0].id)
-      }
     }).catch(err => {
       if (cancelled) return
       console.error('Failed to load models:', err)
@@ -936,7 +939,7 @@ export default function GatekeeperModal({
                     env={spawnerEnv}
                     envError={spawnerEnvError}
                     onDisplayNameChange={setSpawnerDisplayName}
-                    onModelIdChange={setSpawnerModelId}
+                    onModelIdChange={modelId => setSpawnerModelPick({ modelId })}
                     onEnvChange={setSpawnerEnv}
                     selectContainer={selectPortalContainer}
                   />

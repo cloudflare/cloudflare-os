@@ -12,6 +12,10 @@ import type { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 const testState = vi.hoisted(() => ({
+  /** The confirmed signed-in user, if any. */
+  userId: undefined as string | undefined,
+  /** The chat models offered, in place of the one the tests otherwise share. */
+  chatModels: null as AiChatAuthorInfo[] | null,
   authenticatedApi: null as RpcStub<AuthenticatedApi> | null,
   readinessEvents: [] as (boolean | null)[],
   ready: null as boolean | null,
@@ -40,7 +44,11 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => ({
 vi.mock('./connectHandoff', () => ({ openConnectWindow }))
 
 vi.mock('./AuthContext', () => ({
-  useAuthenticatedApi: () => ({ authenticatedApi: testState.authenticatedApi }),
+  useAuthenticatedApi: () => ({
+    authenticatedApi: testState.authenticatedApi,
+    currentUser: testState.userId === undefined ? null : { type: 'user', id: testState.userId, name: 'Alice' },
+    isCurrentUserConfirmed: testState.userId !== undefined,
+  }),
 }))
 
 vi.mock('./ResourceConfiguratorHost', async () => {
@@ -143,7 +151,7 @@ function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds
     ui: { [Symbol.dispose]() {} },
   }))
   return {
-    listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [CHAT_MODEL],
+    listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : testState.chatModels ?? [CHAT_MODEL],
     listGatekeeperVendors: async () => [{
       id: 'catalog',
       description: VENDOR,
@@ -170,6 +178,9 @@ afterEach(() => {
   act(() => root?.unmount())
   container?.remove()
   testState.authenticatedApi = null
+  testState.userId = undefined
+  testState.chatModels = null
+  localStorage.clear()
   testState.readinessEvents = []
   testState.ready = null
   testState.collectedUrl = 'https://catalog.example.com/'
@@ -497,6 +508,33 @@ describe('GatekeeperModal agent spawner request', () => {
     await vi.waitFor(() => {
       expect(document.body.querySelector('[aria-label="Agent display name"]')).not.toBeNull()
     })
+  })
+
+  // The user is unconfirmed while a dropped connection is re-established, which the modal can be
+  // open across.
+  it("starts the Agent form on the user's remembered model once they are confirmed", async () => {
+    testState.authenticatedApi = authenticatedApi()
+    testState.chatModels = [CHAT_MODEL, { type: 'agent', id: 'other-model', name: 'Other model' }]
+    localStorage.setItem('lastSelectedModel:alice', 'other-model')
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+    const render = () => act(async () => root!.render(<GatekeeperModal
+      open
+      onClose={() => {}}
+      getOverseer={() => { throw new Error('not called') }}
+      onCreated={() => Promise.resolve()}
+      initialVendorId="agent-spawner"
+    />))
+    const picker = () => document.body.querySelector('[aria-label="Agent model"]')
+
+    await render()
+    await vi.waitFor(() => expect(picker()?.textContent).toContain('Chat model'))
+
+    testState.userId = 'alice'
+    await render()
+
+    expect(picker()?.textContent).toContain('Other model')
   })
 })
 
