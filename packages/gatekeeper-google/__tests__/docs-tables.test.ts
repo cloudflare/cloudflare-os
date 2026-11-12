@@ -3911,6 +3911,51 @@ describe("formatting a paragraph's named style already gives", () => {
     expect(tableAt(simulated, 0)).toContain("<h6>Cell notes</h6>");
   });
 
+  it("sends bold written over a cell heading's explicit bold: false, which reads the same", () => {
+    let unbolded = styledTab([
+      para("Before"),
+      { table: [[cellOf({ runs: [{ text: "Title", style: { bold: false } }, "\n"], namedStyleType: "HEADING_2" })]] },
+      para("After"),
+    ]);
+    let before = docTabToMarkdown(unbolded);
+    let oldMarkdown = "<h2>Title</h2>";
+    let newMarkdown = "<h2><strong>Title</strong></h2>";
+    let requests = textReplacementRequests(
+      before, { ...replacementIn(before.markdown, oldMarkdown, newMarkdown), inTable: true });
+    expect(requests).toContainEqual({
+      updateTextStyle: expect.objectContaining({ textStyle: { bold: true }, fields: "bold" }),
+    });
+    let { simulated, applied } = expectStyledSameAsGoogle(unbolded, oldMarkdown, newMarkdown, true);
+    // Google stores the bold as the heading's own, so the text turns bold and reads as it did.
+    expect(cellParagraph(applied, 0, 0).paragraph.elements[0].textRun?.textStyle?.bold)
+      .toBeUndefined();
+    expect(tableAt(simulated, 0)).toContain("<h2>Title</h2>");
+  });
+
+  it("reads a word left with no link by the styles that request writes, and a row change applies", () => {
+    let linked = styledTab([
+      para("Before"),
+      {
+        table: [
+          [cellOf({
+            runs: [{ text: "Cell", style: { bold: true, link: { url: "https://example.com/" } } }, " results\n"],
+            namedStyleType: "HEADING_2",
+          })],
+          ["a\n"],
+        ],
+      },
+      para("After"),
+    ]);
+    let { simulated, applied } = expectStyledSameAsGoogle(
+      linked, '<h2><a href="https://example.com/"><strong>Cell</strong></a> results</h2>',
+      "<h2><strong>Cell</strong> results</h2>", true);
+    expect(tableAt(simulated, 0)).toContain("<h2>Cell results</h2>");
+    let rows = addRows(simulated, 0, 2, [["x"]]);
+    let fresh = docTabToMarkdown(applied);
+    expect(applyTableChange(contentOf(fresh), rows, fresh).markdown)
+      .toBe(applyTableChange(simulated, rows).markdown);
+  });
+
   it("refuses formatting in a cell's <h1> that a title would read otherwise than a heading", () => {
     let title: ParagraphSpec = { runs: ["Notes here\n"], namedStyleType: "TITLE" };
     let titled = (styles: NonNullable<GoogleDocsTab["namedStyles"]>["styles"]) => styledTab([

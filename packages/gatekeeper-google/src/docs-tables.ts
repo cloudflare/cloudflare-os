@@ -2565,8 +2565,10 @@ type TextPlan = {
   linkBeside: boolean;
   /** The link inserted text can only have taken from the text beside it, if there is one. */
   keptLink?: string;
+  /** The text once the replacement is made. */
+  text: string;
   segments: PlanSegment[];
-  /** The HTML of the text once the replacement is made. */
+  /** The HTML of the text as Google reads it once the plan's requests are applied. */
   html: string;
 };
 
@@ -2586,13 +2588,8 @@ function formatPieces(
   return pieces;
 }
 
-/**
- * The plan of one text's change. Where `inherited` names a style the paragraph's named style gives,
- * text the change styles reads without it once Google has applied the change.
- */
-function planText(
-  oldHtml: string, newHtml: string, tabId: string, inherited: InheritedFormat = {},
-): TextPlan {
+/** The plan of one text's change, without the HTML its requests leave. */
+function planText(oldHtml: string, newHtml: string, tabId: string): Omit<TextPlan, "html"> {
   let before = parseCellInline(oldHtml);
   let after = parseCellInline(newHtml);
   let { prefix, suffix } = commonBounds(before.text, after.text);
@@ -2667,42 +2664,85 @@ function planText(
     inserted,
     linkBeside,
     ...(keptLink === undefined ? {} : { keptLink }),
+    text,
     segments,
-    html: cellInlineHtml(segments.map(segment => {
-      // A style the change sends reads as the text's own only where the named style differs.
-      let shown = (style: keyof InheritedFormat) => !!segment.next[style] &&
-        !(inherited[style] && (!segment.old || !segment.old[style] !== !segment.next[style]));
-      return {
-        text: text.slice(segment.start, segment.end),
-        bold: shown("bold"),
-        italic: shown("italic"),
-        strikethrough: shown("strikethrough"),
-        link: segment.link,
-      };
-    })),
   };
 }
 
+/** The bit of each shown style in a character's mask. */
+const STYLE_BITS = { bold: 1, italic: 2, strikethrough: 4 } as const;
+
 /**
- * Plan the change of the text of the cell paragraph that `piece` opens, by the named style its
- * tag gives. An `<h1>` is a title or a level-one heading, which the read does not tell apart, so
- * a change the two would read otherwise is refused.
+ * The HTML of a text once Google has applied its plan's requests, as a read shows it. A kept
+ * character starts with the styles it showed and an inserted one with none. A field a request
+ * writes then reads as the text's own only where it is written `true` and `inherited`, what the
+ * paragraph's named style gives, does not hold it: Google stores a written style equal to the
+ * named style's as inherited, and a cleared one too, and a read shows only what text sets itself.
+ * A field no request writes reads as it did. Links read as the plan gives them.
+ */
+function requestedHtml(
+  plan: Omit<TextPlan, "html">, requests: readonly TextRequest[], inherited: InheritedFormat,
+): string {
+  let masks = new Uint8Array(plan.text.length);
+  for (let { start, end, old } of plan.segments) {
+    if (!old) continue;
+    let mask = 0;
+    for (let style of SHOWN_STYLES) if (old[style]) mask |= STYLE_BITS[style];
+    masks.fill(mask, start, end);
+  }
+  for (let request of requests) {
+    if (!("style" in request)) continue;
+    let [start, end, textStyle, fields] = request.style;
+    let named = fields.split(",");
+    let clear = 0;
+    let set = 0;
+    for (let style of SHOWN_STYLES) {
+      if (!named.includes(style)) continue;
+      clear |= STYLE_BITS[style];
+      if (textStyle[style] === true && !inherited[style]) set |= STYLE_BITS[style];
+    }
+    for (let at = start; at < end; at++) masks[at] = masks[at] & ~clear | set;
+  }
+  let runs: CellInlineRun[] = [];
+  for (let { start, end, link } of plan.segments) {
+    for (let from = start; from < end;) {
+      let to = from + 1;
+      while (to < end && masks[to] === masks[from]) to++;
+      runs.push({
+        text: plan.text.slice(from, to),
+        bold: !!(masks[from] & STYLE_BITS.bold),
+        italic: !!(masks[from] & STYLE_BITS.italic),
+        strikethrough: !!(masks[from] & STYLE_BITS.strikethrough),
+        link,
+      });
+      from = to;
+    }
+  }
+  return cellInlineHtml(runs);
+}
+
+/**
+ * Plan the change of the text of the cell paragraph that `piece` opens, and its requests, read by
+ * the named style its tag gives. An `<h1>` is a title or a level-one heading, which the read does
+ * not tell apart, so a change the two would read otherwise is refused.
  */
 function planCellText(
   oldHtml: string, newHtml: string, tabId: string, named: NamedFormatting | null, piece: string,
-): TextPlan {
+): { plan: TextPlan; requests: TextRequest[] } {
   let tag = /<(h[1-6]|p|li)\b[^>]*>[^<]*$/.exec(piece)?.[1];
   let style = tag?.startsWith("h") ? `HEADING_${tag[1]}` : "NORMAL_TEXT";
-  let plan = planText(oldHtml, newHtml, tabId, named?.[style]);
+  let drafted = planText(oldHtml, newHtml, tabId);
+  let requests = textPlanRequests(drafted, tabId);
+  let html = requestedHtml(drafted, requests, named?.[style] ?? {});
   if (style === "HEADING_1" && named &&
-      planText(oldHtml, newHtml, tabId, named.TITLE).html !== plan.html) {
+      requestedHtml(drafted, requests, named.TITLE ?? {}) !== html) {
     throw new Error(
       "replaceText: in this tab a title reads its bold, italic or strikethrough otherwise than a " +
       "level-one heading does, and an <h1> in a table cell may be either, so how this change " +
       "would read cannot be told. Change the heading's text without changing its bold, italic " +
       "or strikethrough.");
   }
-  return plan;
+  return { plan: { ...drafted, html }, requests };
 }
 
 /** A request of a text's plan, with its indexes counted from the start of the text's paragraph. */
@@ -2732,7 +2772,7 @@ function stretches(
 }
 
 /** The requests that make the change of one text's plan, in the order they are sent. */
-function textPlanRequests(plan: TextPlan, tabId: string): TextRequest[] {
+function textPlanRequests(plan: Omit<TextPlan, "html">, tabId: string): TextRequest[] {
   let requests: TextRequest[] = [];
   let { segments } = plan;
   if (plan.deleteStart < plan.deleteEnd) {
@@ -3080,11 +3120,13 @@ function readTableText(
   let count = 0;
   for (let [index, text] of texts.entries()) {
     let old = html.slice(text.start, text.end);
-    let plan = written[index] === old ? undefined
+    let planned = written[index] === old ? undefined
       : planCellText(old, written[index], tabId, named, pieces[index]);
-    plans.push(plan);
-    // A text whose HTML stays as it is needs no request, however it was written.
-    let needed = plan && plan.html !== old ? textPlanRequests(plan, tabId) : undefined;
+    plans.push(planned?.plan);
+    // A plan's requests are sent even where its HTML reads as the old did: what Google stores
+    // can differ where the read cannot tell, as for bold written over a heading's explicit
+    // `bold: false`.
+    let needed = planned && planned.requests.length > 0 ? planned.requests : undefined;
     requests.push(needed);
     count += needed?.length ?? 0;
   }
