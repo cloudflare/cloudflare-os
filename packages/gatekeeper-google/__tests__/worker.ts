@@ -121,7 +121,8 @@ type SheetsCall = {
 
 /** What one bound Google Doc session call returned or threw, and what it queued and observed. */
 type DocCall = {
-  value?: DriveComment | DriveCommentReply | DriveComment[] | DocSuggestion | DocMetadata;
+  /** A write's pending item, a metadata read, or the provisional ID of a tab queued with `addTab()`. */
+  value?: DriveComment | DriveCommentReply | DriveComment[] | DocSuggestion | DocMetadata | string;
   error?: string;
   actionId?: number;
   action?: ActionDescription;

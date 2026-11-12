@@ -239,6 +239,25 @@ message.addAttachment(file);
     expect(writeTypes).toContain("appendText(markdown: string, tabId?: string): Promise<void>;");
   });
 
+  it("lets a directly bound Doc add a tab, and only a bound Doc", () => {
+    expect(source("docs-types.d.ts")).toContain(
+      "addTab(title: string, options?: { parentTabId?: string; index?: number }): Promise<string>;",
+    );
+    expect(source("docs-read-types.d.ts")).not.toContain("addTab");
+    expect(compileAgentTypes(docBundle() + `
+declare const doc: GoogleDocSession;
+async function use(): Promise<void> {
+  const tabId: string = await doc.addTab("Notes");
+  const child: string = await doc.addTab("Details", { parentTabId: tabId, index: 0 });
+  await doc.appendText("Hello", child);
+}
+// @ts-expect-error A new tab has a title.
+doc.addTab();
+// @ts-expect-error A new tab is placed by its parent's ID, not by an object.
+doc.addTab("Notes", { parentTabId: { id: "t.0" } });
+`)).toEqual([]);
+  });
+
   it("gives a directly bound spreadsheet its own session and Drive only the read session", () => {
     expect(topLevelNames(vendorBundle())).toContain("GoogleSpreadsheetSession");
     expect(compileAgentTypes(vendorBundle() + `
