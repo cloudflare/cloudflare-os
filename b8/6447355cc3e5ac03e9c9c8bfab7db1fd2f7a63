@@ -1,0 +1,49 @@
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.test.tsx
+  s_1ecc0303fce4fa::t_a73eea7c578753 66,130,152-183
+packages/workshop-frontend/src/features/approvals/useBulkResolve.test.tsx
+  s_1ecc0303fce4fa::t_ce74c120ca3ec3 485-534
+packages/workshop-frontend/src/useAutoApproval.test.tsx
+  s_1ecc0303fce4fa::t_6c45a8348edcab 1-138
+packages/workshop-frontend/src/useAutoApproval.ts
+  s_99c049c8391965::t_869e1fa746431f 32-34,72
+packages/workshop-frontend/src/features/approvals/PendingChangeGroupRow.tsx
+  s_932b8fe9643834::t_3fd843ebacaf17 40,52-53,136-144
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.browser.test.tsx
+  s_99c049c8391965::t_21d9a2fe1bfece 78-79
+packages/workshop-frontend/src/features/approvals/PendingChangesTray.tsx
+  s_99c049c8391965::t_72a8d07f738760 12-13,94-102,180,182-189,215
+packages/workshop-frontend/src/features/approvals/useBulkResolve.ts
+  s_99c049c8391965::t_1ee8212ad0029d 27-31,36-47,83-84,87-96,227-233,285-290,313-315,322-323,327-333
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b86447355cc3e5ac03e9c9c8bfab7db1fd2f7a63",
+  "prompts": {},
+  "sessions": {
+    "s_1ecc0303fce4fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba8cdb65-1849-4cc2-aad1-1b9665f743d4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_932b8fe9643834": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e076b926-9f1c-4cf4-8928-a494847dbd46",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
