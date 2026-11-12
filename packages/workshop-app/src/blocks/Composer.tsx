@@ -99,7 +99,7 @@ export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPl
       <form
         ref={formRef}
         data-file-drag={isFileDragActive || undefined}
-        className="relative overflow-clip rounded-[21px] bg-[#fbfbfb] ring-1 ring-kumo-line transition-shadow duration-100 hover:ring-kumo-focus/8 has-focus-visible:ring-kumo-focus/8 data-file-drag:ring-kumo-focus/8 motion-reduce:transition-none dark:bg-kumo-canvas"
+        className="relative overflow-clip rounded-[21px] bg-kumo-elevated ring-1 ring-kumo-line transition-shadow duration-100 hover:ring-kumo-focus/8 has-focus-visible:ring-kumo-focus/8 data-file-drag:ring-kumo-focus/8 motion-reduce:transition-none"
         {...dropHandlers}
         onSubmit={(event) => {
           event.preventDefault()
