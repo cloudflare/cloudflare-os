@@ -58,7 +58,7 @@ export const TimelineReadItem = ({
             />
             <DropdownMenu.Content>
               <DropdownMenu.Item
-                disabled={start > timeline.latestSequence}
+                disabled={timeline.notificationsEnabled === false || start > timeline.latestSequence}
                 onClick={() => timeline.markUnread(start)}
               >
                 Mark unread from here

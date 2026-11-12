@@ -400,6 +400,33 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
+  it("disables per-message unread while muted and resumes reading after unmuting at the same head", async () => {
+    const state = (enabled: boolean, readThrough = 2) => {
+      const value = snapshot(1, readThrough);
+      return {...value, chats: value.chats.map(chat => ({...chat, notificationsEnabled: enabled}))};
+    };
+    await render(); await update(state(false)); await settle();
+    await markUnreadFrom(1);
+    expect(document.querySelector('[role="menuitem"]')?.getAttribute("aria-disabled")).toBe("true");
+    expect(markChatUnread).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-unread-divider]")).toBeNull();
+    await updateChat(state(true));
+    await act(async () => document.querySelector<HTMLElement>('[role="menuitem"]')!.click());
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
+    await updateChat(state(true, 0));
+    expect(container.textContent).toContain("automatic reading paused");
+    await updateChat(state(false));
+    expect(container.querySelector("[data-unread-divider]")).toBeNull();
+    await updateChat(state(true));
+    visibleBottom = 450;
+    await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);
+    await updateChat({...state(true), unreadChatCount: 1, unreadMessageCount: 1,
+      chats: [{...state(true).chats[0], unreadMessageCount: 1}]});
+    await settle();
+    expect(container.textContent).not.toContain("automatic reading paused");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
+  });
+
   it.each(["before read", "before arrival", "after arrival"])("resumes after a remote read clears a no-op unread selection (ACK: %s)", async ackAt => {
     await render(); await update(snapshot(1, 0)); await settle();
     const ack = Promise.withResolvers<boolean>();

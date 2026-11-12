@@ -104,7 +104,7 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
   expect(initial.latestActivityAt).toBeInstanceOf(Date);
   expect(await owner.getUnreadThreads()).toEqual([initial]);
   expect(await owner.getWorkspaceUnreadState(workspaceId)).toEqual([
-    {workspaceId, chatId, unreadMessageCount: 1, readThroughSequence: -1},
+    {workspaceId, chatId, unreadMessageCount: 1, readThroughSequence: -1, notificationsEnabled: true},
   ]);
   expect(await owner.getUnreadSummary()).toEqual({unreadChatCount: 1, unreadMessageCount: 1,
     workspaces: [{workspaceId, unreadChatCount: 1, unreadMessageCount: 1}]});
