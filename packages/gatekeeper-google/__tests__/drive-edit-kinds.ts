@@ -16,3 +16,10 @@ export const DRIVE_SLIDES_KINDS: ActionKind[] = [
   { tag: "arrange-slides", label: "Adding, copying and reordering slides" },
   { tag: "skipSlides", label: "Skipping slides" },
 ].map(kind => onDrive(kind, "presentation"));
+
+/** The Sheets kinds a user may let apply without asking, as a read and write Drive binding lists them. */
+export const DRIVE_SHEETS_KINDS: ActionKind[] = [
+  { tag: "editSheetValues", label: "Sheet value edits" },
+  { tag: "formatSheets", label: "Sheet formatting" },
+  { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" },
+].map(kind => onDrive(kind, "spreadsheet"));

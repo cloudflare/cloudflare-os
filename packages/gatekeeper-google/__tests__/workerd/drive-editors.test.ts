@@ -5,7 +5,7 @@ import { GooglePresentationReadSessionImpl, GooglePresentationSessionImpl } from
 import type { DriveBindingScope } from "../../src/drive-session";
 import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import { DriveFiles, DOC_MIME, FOLDER_MIME, SLIDES_MIME } from "../drive-files";
-import { DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
+import { DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 import { presentation, shape, slide, text } from "../slides-fixture";
 import { serveFakes, SlidesProvider, type ProviderFake } from "../slides-provider";
 
@@ -315,8 +315,10 @@ describe("Slides edits through a read and write Drive binding", () => {
   });
 
   it("lists the presentations' kinds where the binding can edit them", async () => {
-    expect(await connection(ACCOUNT).autoApprovable()).toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS]);
-    expect(await connection(FOLDER).autoApprovable()).toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS]);
+    expect(await connection(ACCOUNT).autoApprovable())
+      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS]);
+    expect(await connection(FOLDER).autoApprovable())
+      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS]);
 
     // An exact-file binding lists its own file's editor alone, once it has described the file.
     let doc = connection(fileBinding("doc-1"));

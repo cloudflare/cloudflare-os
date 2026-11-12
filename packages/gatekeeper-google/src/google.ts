@@ -37,13 +37,16 @@ import {
   type GoogleSlidesGatekeeperImplProps,
 } from "./slides";
 import {
-  getGoogleSheetsTypesCode, GoogleSpreadsheetReadSessionImpl, type GoogleSheetsGatekeeperImplProps,
+  getGoogleSheetsTypesCode, GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl,
+  type GoogleSheetsGatekeeperImplProps,
 } from "./sheets";
 import type { GooglePresentationReadSession } from "./slides-read-types";
 import type { GooglePresentationSession } from "./slides-types";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import SLIDES_TYPES_CODE from "./slides-types.txt";
+import SHEETS_TYPES_CODE from "./sheets-types.txt";
 import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
+import type { GoogleSpreadsheetSession } from "./sheets-types";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import {
   applyMarkdownEdit, assertMarkdownWriteComplexity, canonicalizeMarkdownForWrite,
@@ -187,7 +190,8 @@ import {
 } from "./oauth";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
-  GMAIL_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
+  stripTypeModulePrefix,
 } from "./type-bundle";
 
 let googleDocTypesCode: string | undefined;
@@ -224,9 +228,11 @@ function getGoogleDriveTypesCode(write: boolean): string {
   return [
     DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE, COMMENT_TYPES_CODE,
     getDriveReadAgentTypesCode(),
-    ...(write
-      ? [stripTypeModulePrefix(SLIDES_TYPES_CODE, SLIDES_TYPES_MODULE_PREFIX), getDriveAgentTypesCode()]
-      : []),
+    ...(write ? [
+      stripTypeModulePrefix(SHEETS_TYPES_CODE, SHEETS_TYPES_MODULE_PREFIX),
+      stripTypeModulePrefix(SLIDES_TYPES_CODE, SLIDES_TYPES_MODULE_PREFIX),
+      getDriveAgentTypesCode(),
+    ] : []),
   ].join("\n");
 }
 
@@ -3897,14 +3903,18 @@ export class GoogleDriveGatekeeperImpl
     // An edit is not tied to an account, so it is sent under the connection's own token.
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
+      sheets: (fileId: string) => this.#editors.sheetsHost(fileId),
     },
   };
   #editApis = {
     slides: new GoogleSlidesApi(opts => this.#getAccessToken(opts)),
+    sheets: new GoogleSheetsApi(opts => this.#getAccessToken(opts)),
   };
   #actions = DRIVE_ACTIONS.bind(this.#journal, this.#host);
   #reads = new ReadGate();
   #editors = new DriveFileEditors({
+    kv: this.ctx.storage.kv,
+    sheets: this.#editApis.sheets,
     journal: this.#journal,
     submit: (queue, name, payload) =>
       this.#actions.submit(queue, name as keyof DriveActions, payload as never),
@@ -4007,7 +4017,7 @@ export class GoogleDriveGatekeeperImpl
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: titled("Google Drive Account"),
         snippet: write
-          ? `Read and write: ${reads}, queue edits to Google Slides presentations, read and queue comments, change who files are shared with, and move files`
+          ? `Read and write: ${reads}, queue edits to Google Sheets and Slides files, read and queue comments, change who files are shared with, and move files`
           : `Read-only: ${reads}, and read comments`,
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: write ? "GoogleDriveSession" : "GoogleDriveReadSession",
@@ -4024,7 +4034,7 @@ export class GoogleDriveGatekeeperImpl
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: titled(folder.name),
         snippet: write
-          ? `Read and write: ${reads}, queue edits to Google Slides presentations among direct children, read and queue comments on direct children, change who they and the folder are shared with, and move them within Drive folder "${folder.name}"`
+          ? `Read and write: ${reads}, queue edits to Google Sheets and Slides files among direct children, read and queue comments on direct children, change who they and the folder are shared with, and move them within Drive folder "${folder.name}"`
           : `Read-only: ${reads}, and read comments on direct children in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: write ? "GoogleDriveFolderSession" : "GoogleDriveFolderReadSession",
@@ -4037,7 +4047,7 @@ export class GoogleDriveGatekeeperImpl
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: titled(file.name),
       snippet: write
-        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", queue edits to it when it is a Google Slides presentation, read and queue comments on it, and change who it is shared with`
+        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", queue edits to it when it is a Google Sheets or Slides file, read and queue comments on it, and change who it is shared with`
         : `Read-only: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, and comments, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: write ? "GoogleDriveFileSession" : "GoogleDriveReadSession",
@@ -4068,6 +4078,7 @@ export class GoogleDriveGatekeeperImpl
     if (isSimulated(props)) return new UncreatedDriveFolderSessionImpl(props.creation.title, approvalQueue.dup());
     // Only an undecided or claimed write can be applied again, so no other marker is read again.
     this.#attempts.sweep(new Set(this.#journal.listPending().map(({ id }) => id)));
+    this.#editors.sweep();
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
     // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
     // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
@@ -4479,10 +4490,15 @@ export class GoogleDriveSessionImpl extends RpcTarget
         new GoogleDocReadSessionImpl(this.#docsApi, this.#driveApi, documentId, queue, read));
   }
 
-  async openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetReadSession> {
+  async openGoogleSheet(
+    fileId: string,
+  ): Promise<GoogleSpreadsheetReadSession | GoogleSpreadsheetSession> {
+    let editors = this.#editors;
     return this.#openNative(fileId, GOOGLE_SHEET_MIME_TYPE, "Google Sheet",
-      (spreadsheetId, queue, read) =>
-        new GoogleSpreadsheetReadSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
+      (spreadsheetId, queue, read, target) => editors
+        ? new GoogleSpreadsheetSessionImpl(
+          this.#sheetsApi, spreadsheetId, queue, read, editors.sheets(target, queue))
+        : new GoogleSpreadsheetReadSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
   }
 
   async openGoogleSlides(
@@ -5061,7 +5077,7 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
     throw new Error(UNCREATED_FOLDER);
   }
 
-  async openGoogleSheet(_fileId: string): Promise<GoogleSpreadsheetReadSession> {
+  async openGoogleSheet(_fileId: string): Promise<GoogleSpreadsheetSession> {
     throw new Error(UNCREATED_FOLDER);
   }
 

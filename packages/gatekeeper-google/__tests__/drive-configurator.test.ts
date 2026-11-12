@@ -781,7 +781,10 @@ describe("the Drive picker's access choice", () => {
     await expect(asked.prefill("https://docs.google.com/spreadsheets/d/S1/edit?access=write"))
       .resolves.toEqual({ target: "sheets:S1", access: "write" });
     expect(asked.ui.getWriteAccess).toHaveBeenCalledTimes(1);
-    expect(asked.notices()).toEqual(info(PRESET_PENDING, AS_DRIVE_FILE, WRITE_PROMPT));
+    expect(asked.notices()).toEqual(info(
+      PRESET_PENDING,
+      "Connects as a Drive file, whose content can be edited, each change with your approval.",
+      WRITE_PROMPT));
   });
 
   it("says the choice may have to be made again on a card that lacks an editable type", async () => {

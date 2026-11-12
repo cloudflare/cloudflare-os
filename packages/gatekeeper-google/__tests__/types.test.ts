@@ -110,6 +110,7 @@ function driveReadBundle(): string {
 function driveWriteBundle(): string {
   return [
     driveReadBundle(),
+    stripTypeModulePrefix(source("sheets-types.txt"), SHEETS_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("slides-types.txt"), SLIDES_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
   ].join("\n");
@@ -259,7 +260,7 @@ doc.addTab("Notes", { parentTabId: { id: "t.0" } });
 `)).toEqual([]);
   });
 
-  it("gives a directly bound spreadsheet its own session and Drive only the read session", () => {
+  it("gives a spreadsheet's write session to its own binding and to a read and write Drive one", () => {
     expect(topLevelNames(vendorBundle())).toContain("GoogleSpreadsheetSession");
     expect(compileAgentTypes(vendorBundle() + `
 declare const sheet: GoogleSpreadsheetSession;
@@ -292,14 +293,14 @@ sheet.updateSpreadsheet([{ op: "addSheet" }]);
     expect(compileAgentTypes(sheetsBundle() +
       "\nconst readable: GoogleSpreadsheetReadSession = null! as GoogleSpreadsheetSession;\n"))
       .toEqual([]);
-    // Neither Drive bundle carries a spreadsheet write type: a read and write Drive binding edits
-    // no spreadsheet.
-    for (const bundle of [driveReadBundle, driveWriteBundle]) {
-      const driveNames = topLevelNames(bundle());
-      expect(driveNames).toContain("GoogleSpreadsheetReadSession");
-      expect(driveNames).not.toContain("GoogleSpreadsheetSession");
-      expect(driveNames).not.toContain("SheetChange");
-    }
+    // Only a read and write Drive binding's bundle carries the spreadsheet write types.
+    const readNames = topLevelNames(driveReadBundle());
+    expect(readNames).toContain("GoogleSpreadsheetReadSession");
+    expect(readNames).not.toContain("GoogleSpreadsheetSession");
+    expect(readNames).not.toContain("SheetChange");
+    const writeNames = topLevelNames(driveWriteBundle());
+    expect(writeNames).toContain("GoogleSpreadsheetSession");
+    expect(writeNames).toContain("SheetChange");
     expect(source("sheets-types.d.ts")).toContain(
       "export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession",
     );
@@ -350,15 +351,18 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     expect(readTypes).not.toContain("GoogleSpreadsheetSession>");
     expect(readTypes).not.toContain("GooglePresentationSession>");
     expect(topLevelNames(driveReadBundle())).not.toContain("GooglePresentationSession");
+    expect(topLevelNames(driveReadBundle())).not.toContain("GoogleSpreadsheetSession");
   });
 
-  it("hands out editable presentations from every read and write Drive session", () => {
+  it("hands out editable spreadsheets and presentations from every read and write Drive session", () => {
     const writeTypes = source("drive-types.d.ts");
     expect(writeTypes.split("openGoogleSlides(fileId: string): Promise<GooglePresentationSession>;"))
       .toHaveLength(4);
+    expect(writeTypes.split("openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;"))
+      .toHaveLength(4);
     expect(writeTypes).not.toContain("GoogleDocSession>");
-    expect(writeTypes).not.toContain("GoogleSpreadsheetSession>");
     expect(topLevelNames(driveWriteBundle())).toContain("GooglePresentationSession");
+    expect(topLevelNames(driveWriteBundle())).toContain("GoogleSpreadsheetSession");
     expect(compileAgentTypes(driveWriteBundle() + `
       declare const drive: GoogleDriveSession;
       declare const folder: GoogleDriveFolderSession;
@@ -367,6 +371,8 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
         for (const binding of [drive, folder, file]) {
           const deck = await binding.openGoogleSlides("deck");
           await deck.updateSlides([{ op: "editText", slideId: "s", elementId: "e", find: "a", replace: "b" }]);
+          const sheet = await binding.openGoogleSheet("sheet");
+          await sheet.updateSpreadsheet([{ op: "clearRange", range: "Sheet1!A1:B2" }]);
         }
       }
     `)).toEqual([]);

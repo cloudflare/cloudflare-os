@@ -16,9 +16,7 @@ import { Mutex } from "./mutex";
 import { explainUnopenedFile } from "./office-conversion";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
-import {
-  batchKind, MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry,
-} from "./sheets-actions";
+import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
 import {
   BlankSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges,
   type SheetArea,
@@ -50,7 +48,6 @@ const MAX_FORMATS_READ_LENGTH = 5 * 1024 * 1024;
 // The markers batches left, each deleted by a later batch once no send of it can still commit.
 // Outside the journal's `sheets:action:` prefix and its counter.
 const STALE_MARKERS_KEY = "sheets:staleMarkers";
-const MAX_STALE_MARKERS = 20;
 
 type Env = Cloudflare.Env;
 
@@ -63,18 +60,6 @@ function randomId(): number {
   return id;
 }
 
-/**
- * The markers to store: every one a send could still commit, and of the rest the
- * `MAX_STALE_MARKERS` most recently sent. The first part is bounded too: Google takes at most 60
- * write requests a minute from a user, so about 600 markers at most are sent within the window, a
- * few tens of KB, under the 128 KiB a stored value may hold.
- */
-function retainedMarkers(entries: readonly MarkerEntry[], now: number): MarkerEntry[] {
-  let open = (entry: MarkerEntry) => now < entry.sentAt + MARKER_RETENTION_MS;
-  let closed = new Set(entries.filter(entry => !open(entry))
-    .toSorted((a, b) => a.sentAt - b.sentAt).slice(-MAX_STALE_MARKERS));
-  return entries.filter(entry => open(entry) || closed.has(entry));
-}
 
 let sheetsTypesCode: string | undefined;
 

@@ -651,11 +651,6 @@ describe("the Drive picker on a Drive card account without an editable type's gr
       text: "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
         "Read and write access.",
     }]);
-    frame.choose("sheets:native-1");
-    expect(frame.notices()).toEqual([{
-      tone: undefined,
-      text: "Editing isn't available here, so this connects as a Drive file, whose content can be read but not edited.",
-    }]);
     expect(frame.action()).toBeUndefined();
     expect(frame.ready()).toBe(true);
   });

@@ -8,6 +8,7 @@ import {
   type DrivePermissionRecord, type DriveScopeNode,
 } from "../src/drive-api";
 import type { DriveWritesHost, WriteAttempt } from "../src/drive-writes";
+import type { SheetsActions } from "../src/sheets-simulation";
 import type { SlidesActions } from "../src/slides-simulation";
 import { FakeKv } from "./fake-kv";
 
@@ -16,7 +17,7 @@ const SHARING: ActionKind = { tag: "driveSharing", label: "Drive sharing" };
 const MOVES: ActionKind = { tag: "driveMoves", label: "Drive moves" };
 
 /** The writes of the Drive API itself, apart from the edits of native files. */
-type DriveWrite = Exclude<keyof DriveActions, keyof SlidesActions>;
+type DriveWrite = Exclude<keyof DriveActions, keyof SlidesActions | keyof SheetsActions>;
 
 /** What each definition declares, by the name its records are stored under. */
 const DECLARED: Record<DriveWrite, { actionKind: ActionKind; autoApprovable: boolean }> = {
@@ -183,6 +184,7 @@ function harness() {
     docs: NO_DOCS,
     editors: {
       slides: () => { throw new Error("No Slides edit is applied here."); },
+      sheets: () => { throw new Error("No Sheets edit is applied here."); },
     },
     scope: () => ({ kind: "account" }),
     writeRefusal: async () => undefined,

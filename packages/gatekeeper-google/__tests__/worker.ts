@@ -204,6 +204,8 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly reports: { title: string; subresources?: string[] }[] = [];
   /** Every action submitted, in the order the calls arrived. */
   readonly submitted: SubmittedAction[] = [];
+  /** Holds the next submission open until `released`, calling `reach` once it has arrived. */
+  holdSubmission?: { reach(): void; released: Promise<void> };
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description.description);
@@ -218,6 +220,12 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   }
 
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
+    let held = this.holdSubmission;
+    if (held) {
+      this.holdSubmission = undefined;
+      held.reach();
+      await held.released;
+    }
     this.submitted.push({ actionId, title: description.title });
     this.actionId = actionId;
     this.action = description;
@@ -735,6 +743,75 @@ export class TestHooks extends DurableObject<Env> {
     return { outcomes, submitted };
   }
 
+  /** Releases the submission {@link holdDriveSubmission} holds, once it has settled. */
+  #heldSubmission?: () => Promise<{ error?: string }>;
+
+  /**
+   * Calls `method` of a native session opened as {@link callDriveNative} opens one, and returns
+   * once the call has reached its submission, which stays unanswered, and what the call allocated
+   * staged, until {@link releaseDriveSubmission}.
+   */
+  async holdDriveSubmission(
+    facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string,
+    method: string, args: unknown[],
+  ): Promise<void> {
+    let queue = new TestApprovalQueue();
+    let reached = Promise.withResolvers<void>();
+    let released = Promise.withResolvers<void>();
+    queue.holdSubmission = { reach: reached.resolve, released: released.promise };
+    let approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    let session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as unknown as GoogleDriveFolderSession & Disposable;
+    let native = await callOn(session, opener, [fileId]) as Disposable;
+    let calling = settle(callOn(native, method, args));
+    await reached.promise;
+    this.#heldSubmission = async () => {
+      released.resolve();
+      let outcome = await calling;
+      native[Symbol.dispose]();
+      session[Symbol.dispose]();
+      approvalQueue[Symbol.dispose]();
+      return outcome;
+    };
+  }
+
+  /** Answers the submission {@link holdDriveSubmission} holds, reporting how its call ended. */
+  async releaseDriveSubmission(): Promise<{ error?: string }> {
+    let release = this.#heldSubmission;
+    this.#heldSubmission = undefined;
+    if (!release) throw new Error("No submission is held.");
+    return release();
+  }
+
+  /** What a Drive binding stores under `key`, as JSON, or `null` for nothing. */
+  async driveStored(facetName: string, binding: DriveBinding, key: string): Promise<string | null> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testStored(key);
+  }
+
+  /** Stores `json` under `key` of a Drive binding's storage, or deletes the key for `null`. */
+  async writeDriveStored(
+    facetName: string, binding: DriveBinding, key: string, json: string | null,
+  ): Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .writeTestStored(key, json);
+  }
+
+  /**
+   * Retires `count` writes in a Drive binding's journal, as approvals of writes no session here
+   * queued would: each fills the journal's memory of applied numbers.
+   */
+  async retireDriveActions(facetName: string, binding: DriveBinding, count: number): Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .retireTestActions(count);
+  }
+
+  /** The keys a Drive binding stores under `prefix`, in key order. */
+  async driveStoredKeys(facetName: string, binding: DriveBinding, prefix: string): Promise<string[]> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .testStoredKeys(prefix);
+  }
+
   /** Runs `use` on native file `fileId`, opened as {@link callDriveNative} opens it. */
   async #onDriveNative(
     facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string, path: string[],
@@ -1026,6 +1103,45 @@ type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
   testQueued(): number[];
   testAttempts(): Record<number, WriteAttempt>;
   ageTestAttempt(id: number, ms: number): void;
+  testStored(key: string): string | null;
+  writeTestStored(key: string, json: string | null): void;
+  testStoredKeys(prefix: string): string[];
+  retireTestActions(count: number): void;
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).retireTestActions = function(
+  count: number,
+): void {
+  // A second journal over the same storage, which the live one reads afresh on every call.
+  let journal = new ActionJournal((this as unknown as TestDurableObjectState).ctx.storage.kv,
+    { namespace: "drive" });
+  for (let i = 0; i < count; i++) {
+    let id = journal.allocate({ kind: "createComment", payload: {} });
+    journal.markSubmitted(id);
+    journal.retire(id);
+  }
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testStored = function(
+  key: string,
+): string | null {
+  let value = (this as unknown as TestDurableObjectState).ctx.storage.kv.get(key);
+  return value === undefined ? null : JSON.stringify(value);
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).writeTestStored = function(
+  key: string, json: string | null,
+): void {
+  let { kv } = (this as unknown as TestDurableObjectState).ctx.storage;
+  if (json === null) kv.delete(key);
+  else kv.put(key, JSON.parse(json));
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testStoredKeys = function(
+  prefix: string,
+): string[] {
+  let { kv } = (this as unknown as TestDurableObjectState).ctx.storage;
+  return [...kv.list({ prefix })].map(([key]) => key);
 };
 
 (GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).claimTestAction = function(

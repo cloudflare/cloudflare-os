@@ -561,7 +561,7 @@ function convertedText({ kind, copy }: Extract<Flow, { step: "converted" }>): st
 const AS_DRIVE_FILE = "Connects as a Drive file, whose content can be read but not edited.";
 
 /** The files a read and write Drive connection edits. */
-const EDITED_AS_DRIVE_FILES: ReadonlySet<OfficeKind> = new Set(["slides"]);
+const EDITED_AS_DRIVE_FILES: ReadonlySet<OfficeKind> = new Set(["sheets", "slides"]);
 
 /**
  * What a file of `editor` connected as a Drive file can have done to its content: edited when the

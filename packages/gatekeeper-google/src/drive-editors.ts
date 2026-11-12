@@ -14,9 +14,15 @@ import type {
 } from "@gadgets/gatekeeper-kit/actions";
 import { ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
 import type { DriveScopeNode } from "./drive-api";
-import { GOOGLE_SLIDES_MIME_TYPE } from "./drive-session";
+import { GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "./drive-session";
 import { isLiftable, type DriveWriteTargetPayload } from "./drive-writes";
 import { QueuedChanges } from "./queued-changes";
+import type { SheetsChangeQueue } from "./sheets";
+import {
+  MARKER_RETENTION_MS, retainedMarkers, SHEETS_DEFINITIONS, type MarkerEntry, type SheetsHost,
+} from "./sheets-actions";
+import type { GoogleSheetsApi } from "./sheets-api";
+import type { SheetsAction, SheetsActions } from "./sheets-simulation";
 import type { SlidesChangeQueue } from "./slides";
 import { SLIDES_DEFINITIONS, type SlidesHost } from "./slides-actions";
 import type { SlidesAction, SlidesActions } from "./slides-simulation";
@@ -33,11 +39,18 @@ export type DriveEdit<P> = {
 export type DriveEdits<M> = { [K in keyof M]: DriveEdit<M[K]> };
 
 /** The editors a Drive binding edits files through. */
-export type DriveEditorName = "slides";
+export type DriveEditorName = "slides" | "sheets";
+
+/** A spreadsheet's host, which also records the changes applied to that spreadsheet. */
+export type DriveSheetsHost = SheetsHost & {
+  /** Records that change `id` was applied, as {@link SheetsHost.applied} then answers. */
+  recordApplied(id: number): void;
+};
 
 /** What applying an edit needs of the Drive gatekeeper: each editor's host for one file. */
 export type DriveEditorHosts = {
   slides(fileId: string): SlidesHost;
+  sheets(fileId: string): DriveSheetsHost;
 };
 
 /** The part of a Drive binding's action host the edits use. */
@@ -51,6 +64,11 @@ type DriveEditor<H> = {
   /** What its files are called, in a label: "presentation". */
   noun: string;
   host(drive: DriveEditorsHost, fileId: string): H;
+  /**
+   * Called once change `id` to file `fileId` was applied, before the action set retires its
+   * record, so that nothing between the write and the record's retirement can miss it.
+   */
+  applied?(drive: DriveEditorsHost, fileId: string, id: number): void;
 };
 
 /** The most the two fields that name the file take of a card, in UTF-8 bytes. */
@@ -100,6 +118,7 @@ export function onDriveFile<P, H>(
       withFile(target, await definition.describe(change, editor.host(drive, target.fileId))),
     apply: async ({ target, change }, drive, ctx) => {
       let result = await definition.apply(change, editor.host(drive, target.fileId), ctx);
+      editor.applied?.(drive, target.fileId, ctx.id);
       return result?.action === undefined ? undefined : { action: { target, change: result.action } };
     },
     ...(reject ? {
@@ -132,9 +151,20 @@ const SLIDES_EDITOR: DriveEditor<SlidesHost> = {
 export const DRIVE_SLIDES_DEFINITIONS = onDriveFiles<SlidesActions, SlidesHost>(
   SLIDES_DEFINITIONS, SLIDES_EDITOR);
 
+const SHEETS_EDITOR: DriveEditor<SheetsHost> = {
+  name: "sheets", mimeType: GOOGLE_SHEET_MIME_TYPE, noun: "spreadsheet",
+  host: (drive, fileId) => drive.editors.sheets(fileId),
+  applied: (drive, fileId, id) => drive.editors.sheets(fileId).recordApplied(id),
+};
+
+/** The Sheets changes a Drive binding queues, by the names the editor's definitions have. */
+export const DRIVE_SHEETS_DEFINITIONS = onDriveFiles<SheetsActions, SheetsHost>(
+  SHEETS_DEFINITIONS, SHEETS_EDITOR);
+
 /** Each editor, with the kind tag of each of its definitions by the definition's name. */
 const EDITORS: { editor: { name: DriveEditorName; mimeType: string }; tags: Record<string, string> }[] = [
   { editor: SLIDES_EDITOR, tags: tagsOf(DRIVE_SLIDES_DEFINITIONS) },
+  { editor: SHEETS_EDITOR, tags: tagsOf(DRIVE_SHEETS_DEFINITIONS) },
 ];
 
 /** The editor whose definition each name is, for a record of the Drive journal. */
@@ -189,8 +219,40 @@ export const EDIT_NOT_ALLOWED = "The connected Google account cannot edit that f
 export const EDIT_OUT_OF_ORDER = "Changes to one file apply in the order they were queued. " +
   "Approve or reject the earlier change to this file first.";
 
+/** Where a spreadsheet's state is kept, by its file ID. */
+export const SHEETS_STATE_PREFIX = "driveSheets:file:";
+
+/** How many applied changes a spreadsheet's state remembers, twice the journal's capacity. */
+const MAX_APPLIED = 100;
+
+/** How many spreadsheets' states a sweep keeps beyond those it must. */
+const MAX_IDLE_SHEETS = 20;
+
+/**
+ * What a Drive binding keeps of one spreadsheet, as its own binding keeps it for its one file: the
+ * markers its batches left, the numbers of its last applied changes, and the numbers allocated for
+ * its changes the journal may still hold, which keep the rest until those are decided.
+ */
+type SheetsFileState = {
+  /** A bare ID is a marker last sent long ago. */
+  markers: (MarkerEntry | number)[];
+  applied: number[];
+  queued: number[];
+  /** When it was last written, by which a sweep drops the oldest idle states first. */
+  at: number;
+};
+
 /** What {@link DriveFileEditors} needs of its Drive gatekeeper. */
 export type DriveFileEditorsOptions = {
+  /** The binding's storage, where each spreadsheet's state is kept. */
+  kv: {
+    get<T>(key: string): T | undefined;
+    put<T>(key: string, value: T): void;
+    delete(key: string): unknown;
+    list<T>(options: { prefix: string }): Iterable<[string, T]>;
+  };
+  /** The Sheets API an approved change is written with. */
+  sheets: GoogleSheetsApi;
   journal: Pick<ActionJournal<DriveRecord>,
     "get" | "listPending" | "listUndecided" | "markSubmitted" | "markFailed">;
   /** Queues edit `payload` as definition `name` through `queue`. */
@@ -234,6 +296,86 @@ export class DriveFileEditors {
         },
         change => this.#options.submit(queue, kind, { target, change })),
     };
+  }
+
+  /** The change queue of a spreadsheet a session opened, found as `target`. */
+  sheets(target: DriveWriteTargetPayload, queue: ActionSubmitter): SheetsChangeQueue {
+    let changes = this.#changes<SheetsAction>("sheets", target.fileId);
+    // Each number is noted in the step that allocates it, so a sweep keeps the spreadsheet's state
+    // while the journal holds the change, a change no submission answer reached included.
+    let noting: ActionSubmitter = {
+      submitAction: (id, description) => {
+        this.#updateSheets(target.fileId, state => ({ ...state, queued: [...state.queued, id] }));
+        return queue.submitAction(id, description);
+      },
+    };
+    return {
+      snapshot: read => changes.snapshot(read),
+      queue: (kind, prepare) => changes.queue(
+        async () => {
+          await this.#requireEditable("sheets", target);
+          return prepare();
+        },
+        change => this.#options.submit(noting, kind, { target, change })),
+      // The proof that opened the change's turn found the file editable.
+      editable: () => Promise.resolve(true),
+    };
+  }
+
+  /** The host an approved change to spreadsheet `fileId` is written with. */
+  sheetsHost(fileId: string): DriveSheetsHost {
+    return {
+      api: this.#options.sheets,
+      spreadsheetId: fileId,
+      applied: id => this.#sheetsState(fileId).applied.includes(id),
+      markers: {
+        read: () => this.#sheetsState(fileId).markers
+          .map(entry => typeof entry === "number" ? { id: entry, sentAt: 0 } : entry),
+        write: entries => this.#updateSheets(fileId, state =>
+          ({ ...state, markers: retainedMarkers(entries, Date.now()) })),
+      },
+      now: () => Date.now(),
+      recordApplied: id => this.#updateSheets(fileId, state => ({
+        ...state,
+        applied: [...state.applied.filter(applied => applied !== id), id].slice(-MAX_APPLIED),
+        queued: state.queued.filter(queued => queued !== id),
+      })),
+    };
+  }
+
+  /**
+   * Drops what no change can still need: a spreadsheet's state once the journal holds none of the
+   * numbers noted in it and no marker it keeps can still land, and past those, all but the
+   * spreadsheets written most recently.
+   */
+  sweep(): void {
+    let { kv, journal } = this.#options;
+    let now = Date.now();
+    let idle: [string, SheetsFileState][] = [];
+    for (let [key, state] of kv.list<SheetsFileState>({ prefix: SHEETS_STATE_PREFIX })) {
+      let queued = state.queued.filter(id => journal.get(id) !== undefined);
+      let landing = state.markers.some(entry =>
+        typeof entry !== "number" && now < entry.sentAt + MARKER_RETENTION_MS);
+      if (queued.length > 0 || landing) {
+        if (queued.length !== state.queued.length) kv.put(key, { ...state, queued });
+      } else {
+        idle.push([key, state]);
+      }
+    }
+    // Its markers' later deletion and its applied numbers serve no change still queued.
+    for (let [key] of idle.toSorted((a, b) => b[1].at - a[1].at).slice(MAX_IDLE_SHEETS)) {
+      kv.delete(key);
+    }
+  }
+
+  #sheetsState(fileId: string): SheetsFileState {
+    return this.#options.kv.get<SheetsFileState>(`${SHEETS_STATE_PREFIX}${fileId}`) ??
+      { markers: [], applied: [], queued: [], at: 0 };
+  }
+
+  #updateSheets(fileId: string, update: (state: SheetsFileState) => SheetsFileState): void {
+    this.#options.kv.put(`${SHEETS_STATE_PREFIX}${fileId}`,
+      { ...update(this.#sheetsState(fileId)), at: Date.now() });
   }
 
   /**
