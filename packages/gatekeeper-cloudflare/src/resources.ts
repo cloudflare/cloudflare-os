@@ -9,6 +9,7 @@ const CANONICAL_ACCOUNT_ID_PATTERN = /^[a-f\d]{32}$/;
 const ACCOUNT_FRAGMENT = "account";
 
 export const ACCOUNT_OBSERVABILITY_RESOURCE: SupportedResource = {
+  id: "account-observability",
   urlPattern: `${DASHBOARD_ORIGIN}/:accountId/workers-and-pages/observability`,
   title: "Cloudflare account observability",
   description: "Query logs, metrics, invocations, and traces across an account's Workers.",
@@ -16,6 +17,7 @@ export const ACCOUNT_OBSERVABILITY_RESOURCE: SupportedResource = {
 };
 
 export const WORKER_OBSERVABILITY_RESOURCE: SupportedResource = {
+  id: "worker-observability",
   urlPattern:
     `${DASHBOARD_ORIGIN}/:accountId/workers/services/view/:workerName/production/observability`,
   title: "Cloudflare Worker observability",

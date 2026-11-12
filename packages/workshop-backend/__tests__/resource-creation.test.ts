@@ -1,12 +1,13 @@
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import type {
-  Gatekeeper, SupportedResource, VendorDescription,
+import {
+  getResourceTypeId, type Gatekeeper, type SupportedResource, type VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { AdminSettings } from "../src/admin-settings";
+import type { AdminSettingActor } from "../src/admin-access";
 import type { AdminConfig } from "../src/storage-schema/admin-settings-storage";
 
 declare module "cloudflare:workers" {
@@ -23,6 +24,8 @@ const CREATION: SupportedResource = {
   urlPattern: "example://environment/*", title: "Environment", description: "Create an environment",
   connectable: false, creatable: true, creationConfigurator: true,
 };
+const ACTOR: AdminSettingActor =
+    { admin: "admin", sessionId: "session", via: "cli", method: "setResourceEnabled" };
 let counter = 0;
 
 function fixture(resources: SupportedResource[] = [CREATION], config: Partial<AdminConfig> = {}) {
@@ -31,7 +34,7 @@ function fixture(resources: SupportedResource[] = [CREATION], config: Partial<Ad
   };
   const createResource = vi.fn(async (pattern: string, _title: string) => ({
     class: {} as DurableObjectClass<Gatekeeper<unknown>>,
-    resource: resources.find(r => r.urlPattern === pattern)!,
+    resource: resources.find(r => getResourceTypeId(r) === pattern)!,
     action: { title: "Create environment", description: "Create a fresh environment" },
   }));
   const vendor = { describe: async () => description, getSupportedResources: async () => resources,
@@ -193,5 +196,47 @@ describe("agent resource discovery", () => {
         type: "connectionRequest", resourceUrlPattern: EXISTING.urlPattern,
       }]);
     });
+  });
+});
+
+
+describe("stable resource type IDs", () => {
+  it("keeps older providers' persisted references as patterns until they advertise IDs", async () => {
+    const { inUser, inAdmin } = fixture();
+    const minted = await inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build"));
+    expect(minted.resourceTypeId).toBeUndefined();
+    expect(minted.typeUrlPattern).toBe(CREATION.urlPattern);
+    await inAdmin(admin => admin.setResourceEnabled("example", CREATION.urlPattern, false, ACTOR));
+    const config = await inAdmin(async admin => admin.getAdminConfig());
+    expect(config.disabledResources).toEqual({ example: [CREATION.urlPattern] });
+    expect(config.disabledResourceTypeIds).toEqual({});
+  });
+
+  it("mints by ID rather than the current pattern and records that identity", async () => {
+    const modern = { ...CREATION, id: "environment" };
+    const { inUser, createResource } = fixture([modern]);
+    expect(await inUser(user => user.createResourceGatekeeper("example", "environment", "Build")))
+      .toMatchObject({ resourceTypeId: "environment", typeUrlPattern: modern.urlPattern });
+    expect(createResource).toHaveBeenCalledWith("environment", "Build");
+    await expect(inUser(user => user.createResourceGatekeeper(
+      "example", "unknown", "Build", modern.urlPattern))).rejects.toThrow("does not advertise");
+  });
+
+  it("retains an unmatched legacy restriction until an admin explicitly clears it", async () => {
+    const modern = { ...CREATION, id: "environment" };
+    const retired = "https://example.com/old-environment/*";
+    const { inAdmin } = fixture([modern]);
+    await inAdmin(admin => admin.updateAdminConfig({ disabledResources: { example: [retired] } }, ACTOR));
+    const before = await inAdmin(admin => admin.getSettings("admin"));
+    expect(before.resourceVendors).toMatchObject([{
+      resources: [{ resourceTypeId: "environment", enabled: false }, { urlPattern: retired, enabled: false }],
+    }]);
+    await inAdmin(admin => admin.setResourceEnabled("example", "environment", true, ACTOR));
+    expect((await inAdmin(admin => admin.getSettings("admin"))).resourceVendors)
+      .toMatchObject([{ resources: [{ resourceTypeId: "environment", enabled: false },
+        { urlPattern: retired, enabled: false }] }]);
+    await inAdmin(admin => admin.setResourceEnabled("example", retired, true, ACTOR));
+    expect((await inAdmin(admin => admin.getSettings("admin"))).resourceVendors)
+      .toMatchObject([{ resources: [{ resourceTypeId: "environment", enabled: true }] }]);
   });
 });

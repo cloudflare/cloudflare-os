@@ -249,16 +249,19 @@ export function supportedResources(env: Env): {
 } {
   const origin = instanceUrl(env);
   const mergeRequest: SupportedResource = {
+    id: "merge-request",
     urlPattern: `${origin}/:project+/-/merge_requests/:iid{/*}?`,
     title: "GitLab Merge Request",
     description: "Read and manage a specific GitLab merge request and its review threads.",
   };
   const issue: SupportedResource = {
+    id: "issue",
     urlPattern: `${origin}/:project+/-/issues/:iid{/*}?`,
     title: "GitLab Issue",
     description: "Read and manage a specific GitLab issue.",
   };
   const project: SupportedResource = {
+    id: "project",
     urlPattern: `${origin}/:project+`,
     title: "GitLab Project",
     description: "Read and manage issues, merge requests, reviews, and code in a GitLab project.",

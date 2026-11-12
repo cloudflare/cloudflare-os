@@ -13,6 +13,7 @@ import {
   VendorDescription,
   SupportedResource,
   resolveRequestedResource,
+  getResourceTypeId, getGrantedResourceTypeIds,
 } from '@gadgets/workshop-shared/gatekeeper'
 import { WorkshopButton } from './components/WorkshopControls'
 import Avatar from './components/Avatar'
@@ -58,14 +59,14 @@ function requiredResourceUrlPatterns(
     ? account.supportedResources
     : vendor?.supportedResources
   if (!supportedResources) return []
-  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl)
-  return resolved.ok && resolved.resource.grantable ? [resolved.resource.urlPattern] : []
+  const resolved = resolveRequestedResource(supportedResources, need.resourceUrl, need.resourceTypeId)
+  return resolved.ok && resolved.resource.grantable ? [getResourceTypeId(resolved.resource)] : []
 }
 
 // Older account records may not list which resources were granted. Ask the gatekeeper to check
 // instead of assuming the account has access.
 function missingResourceUrlPatterns(account: AccountInfo, required: string[]): string[] {
-  const granted = account.description.grantedResourceUrlPatterns
+  const granted = getGrantedResourceTypeIds(account.description, account.supportedResources)
   return granted === undefined ? required : required.filter(pattern => !granted.includes(pattern))
 }
 
@@ -255,9 +256,9 @@ export default function ObserverConfigModal({
             ...current,
             description: {
               ...current.description,
-              grantedResourceUrlPatterns: [
+              grantedResourceTypeIds: [
                 ...new Set([
-                  ...(current.description.grantedResourceUrlPatterns ?? []),
+                  ...(getGrantedResourceTypeIds(current.description, current.supportedResources) ?? []),
                   ...missing,
                 ]),
               ],

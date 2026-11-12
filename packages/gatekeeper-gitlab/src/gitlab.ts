@@ -24,6 +24,7 @@ import {
   type SupportedResource,
   type VendorDescription,
   workerVersionTag,
+  resourceTypeUrlPattern,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
   connectHandoffPageHtml, errorPageHtml, htmlResponse, INVALID_LINK_HTML,
@@ -656,6 +657,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async startResourceConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     const context = {
       instanceUrl: instanceUrl(this.env),
       read: accountReader(this.env, this.ctx.exports, this.ctx.props.userObjectId),

@@ -206,10 +206,29 @@ describe("AdminSettings records each admin's change before making it", () => {
         [{ setting: "modelModes", key: "claude-fable-5-1", after: "disabled" }]);
   });
 
+  it("records stable resource restrictions before changing policy", async () => {
+    const { inDo, records, events, config, audit } = adminSettings();
+    const setEnabled = (enabled: boolean) => inDo(admin => {
+      Object.assign(admin, { vendors: new Map([["vendor", {
+        getSupportedResources: async () => [{ id: "repository", urlPattern: "https://example.test/:repo",
+          title: "Repository", description: "Read code" }],
+      }]]) });
+      return admin.setResourceEnabled("vendor", "repository", enabled, ACTOR);
+    });
+    await setEnabled(false);
+    expect(records()[0]!.changes).toEqual([
+      { setting: "disabledResourceTypeIds", key: "vendor", after: '["repository"]' },
+    ]);
+    expect(events.slice(-2)).toEqual(["audit", "kv:.adminConfig"]);
+    audit.fail = true;
+    await expect(setEnabled(true)).rejects.toThrow("audit log unavailable");
+    expect((await config()).disabledResourceTypeIds).toEqual({ vendor: ["repository"] });
+  });
+
   it("keeps an excerpt of an over-long value, and cuts an over-long key", async () => {
     const { inDo, records } = adminSettings();
     const pattern = "p".repeat(12_000);
-    await inDo(admin => admin.setResourceEnabled("vendor", pattern, false, ACTOR));
+    await inDo(admin => admin.updateAdminConfig({ disabledResources: { vendor: [pattern] } }, ACTOR));
     const [change] = records()[0]!.changes;
     expect(change).toStrictEqual({
       setting: "disabledResources", key: "vendor",
@@ -218,7 +237,8 @@ describe("AdminSettings records each admin's change before making it", () => {
     });
 
     const vendor = "v".repeat(300);
-    await inDo(admin => admin.setResourceEnabled(vendor, "pattern", false, ACTOR));
+    await inDo(admin => admin.updateAdminConfig(
+        { disabledResources: { vendor: [pattern], [vendor]: ["pattern"] } }, ACTOR));
     expect(records()[1]!.changes).toStrictEqual([{
       setting: "disabledResources",
       key: `${"v".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`,

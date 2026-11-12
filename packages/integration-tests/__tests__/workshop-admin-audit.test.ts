@@ -180,31 +180,42 @@ it("records every setting change, before it takes effect", async () => {
   }
   last = await newSetting(last);
 
-  // Past it, the values are excerpts from a little before their first difference.
-  const pattern = `https://gadgets-test.example/${"p".repeat(12_000 - 29)}`;
-  expect(pattern).toHaveLength(12_000);
-  const disabled = JSON.stringify([pattern]);
+  // Resource restrictions use the advertised stable ID and are audited as that identity.
   try {
-    await admin.setResourceEnabled(TEST_VENDOR_ID, pattern, false);
+    await admin.setResourceEnabled(TEST_VENDOR_ID, "thing", false);
+    last = await expectRecord(last, "setResourceEnabled",
+        [{ setting: "disabledResourceTypeIds", key: TEST_VENDOR_ID, after: '["thing"]' }]);
+  } finally {
+    await admin.setResourceEnabled(TEST_VENDOR_ID, "thing", true);
+  }
+  last = await expectRecord(last, "setResourceEnabled",
+      [{ setting: "disabledResourceTypeIds", key: TEST_VENDOR_ID, before: '["thing"]' }]);
+
+  // Past the audit value limit, the values are excerpts. Use a real setting that accepts a long
+  // list, rather than inventing an unadvertised resource type that the setter must refuse.
+  const hosts = Array.from({ length: 200 }, (_, i) => `${"h".repeat(50)}-${i}.example.test`);
+  const serialized = JSON.stringify(hosts);
+  expect(serialized.length).toBeGreaterThan(MAX_ADMIN_AUDIT_VALUE_LENGTH);
+  try {
+    await admin.setRestrictedWebFetchHosts(hosts);
     last = await newSetting(last);
-    expect(last.method).toBe("setResourceEnabled");
+    expect(last.method).toBe("setRestrictedWebFetchHosts");
     expect(last.changes).toHaveLength(1);
     const [change] = last.changes;
     expect(change).toMatchObject({
-      setting: "disabledResources", key: TEST_VENDOR_ID, excerpt: { offset: 0, afterLength: 12_004 },
+      setting: "restrictedWebFetchHosts", excerpt: { offset: 0, afterLength: serialized.length },
     });
-    expect(change).not.toHaveProperty("before");
     expect(change!.after!.length).toBeLessThanOrEqual(MAX_ADMIN_AUDIT_VALUE_LENGTH);
-    expect(disabled.startsWith(change!.after!)).toBe(true);
+    expect(serialized.startsWith(change!.after!)).toBe(true);
   } finally {
-    await admin.setResourceEnabled(TEST_VENDOR_ID, pattern, true);
+    await admin.setRestrictedWebFetchHosts(settings.restrictedWebFetchHosts);
   }
   last = await newSetting(last);
-  expect(last.method).toBe("setResourceEnabled");
+  expect(last.method).toBe("setRestrictedWebFetchHosts");
   expect(last.changes).toEqual([expect.objectContaining({
-    setting: "disabledResources", key: TEST_VENDOR_ID, excerpt: { offset: 0, beforeLength: 12_004 },
+    setting: "restrictedWebFetchHosts", excerpt: { offset: 0, beforeLength: serialized.length,
+      afterLength: JSON.stringify(settings.restrictedWebFetchHosts).length },
   })]);
-  expect(last.changes[0]).not.toHaveProperty("after");
 
   try {
     await admin.setUpdateCheckIntervalMinutes(120);

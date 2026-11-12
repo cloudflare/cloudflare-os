@@ -1,7 +1,7 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
-import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -1999,7 +1999,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return (await Promise.all(promises)).filter(value => value !== null);
   }
 
-  async connectAccount(vendorId: string, resourceUrlPatterns?: string[]): Promise<ConnectFlowStart> {
+  async connectAccount(vendorId: string, resourceTypeIds?: string[]): Promise<ConnectFlowStart> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) {
       throw new Error("No such service: " + vendorId);
@@ -2019,7 +2019,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     let callback = this.ctx.exports.GatekeeperConnectCallbackImpl({props});
 
-    let {url} = await vendor.connectAccount(callback, {resourceUrlPatterns});
+    let resources = await vendor.getSupportedResources({ userId: this.storage.profile.get().id });
+    let usesIds = resources.some(resource => resource.id !== undefined);
+    let {url} = await vendor.connectAccount(callback, usesIds
+        ? {resourceTypeIds} : {resourceUrlPatterns: resourceTypeIds});
     let nonce = await this.openConnectFlow(accountId);
     logger.info("account connect started", {
       event: "account.connect.started", vendorId, accountId,
@@ -2306,15 +2309,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Make the account's grant cover the resource types `resourceUrlPatterns` names. Only the
+   * Make the account's grant cover the resource types `resourceTypeIds` names. Only the
    * gatekeeper knows what it was granted, so it decides: it returns the URL of a consent flow that
    * widens the grant, opened here as a connect flow, or no URL when the grant already covers them.
    */
-  async ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
+  async ensureAccountResources(accountId: number, resourceTypeIds: string[])
       : Promise<ConnectFlowStart | null> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
-    let { url } = await record.account.ensureResources(resourceUrlPatterns);
+    let { url } = await record.account.ensureResources(resourceTypeIds);
     if (url === undefined) {
       // Nothing to grant, yet callers ask for what the account's stored description doesn't list as
       // granted, so that list is out of date. A gatekeeper that renames a resource type's
@@ -2353,6 +2356,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let config = await readAdminConfig(this.env);
     let disabledGatekeeperSet = new Set(config.disabledGatekeepers);
 
+    const subscriberUserId = this.storage.profile.get().id;
     async function notifyAdd(record: ConnectedAccountRecord) {
       // Ambient (auto-provisioned) accounts only appear in the Connectors list when their vendor is
       // "optional" — i.e. the user opted in and can manage/remove it. "enabled" (forced) accounts have
@@ -2405,8 +2409,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       try {
         supportedResources = await record.account.getSupportedResources();
         supportedResources =
-            filterEnabledResources(config, record.vendorId, supportedResources);
+            filterEnabledResources(config, record.vendorId, supportedResources,
+              config.disabledResources[record.vendorId]?.length
+                ? await vendor.getSupportedResources({ userId: subscriberUserId })
+                : supportedResources);
       } catch (err) {
+        supportedResources = [];
         logger.warn("failed to get supported resources for connected account", {
           event: "connected.account.supported.resources.failed",
           accountId: record.id, vendorId: record.vendorId, error: err,
@@ -2508,18 +2516,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async startResourceConfigurator(
       accountId: number,
-      resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+      resourceTypeId: string): Promise<ResourceConfiguratorFrame> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
-    return record.account.startResourceConfigurator(resourceUrlPattern);
+    return record.account.startResourceConfigurator(resourceTypeId);
   }
 
-  async startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+  async startCreationConfigurator(accountId: number, resourceTypeId: string)
       : Promise<GatekeeperUiFrame> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
     return (record.account as unknown as CreationConfiguratorStub)
-        .startCreationConfigurator(resourceUrlPattern);
+        .startCreationConfigurator(resourceTypeId);
   }
 
   /**
@@ -2865,12 +2873,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async getGatekeeperClassFor(accountId: number, url: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
-                  typeUrlPattern: string}> {
+                  typeUrlPattern: string, resourceTypeId?: string}> {
     let account = this.storage.connectedAccounts.get(accountId);
     if (!account) throw new Error("No such account.");
     let {class: cls, resource} = await account.account.getGatekeeperClassFor(url);
     await this.#assertResourceEnabled(account.vendorId, resource);
-    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
+    return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern,
+      resourceTypeId: resource.id};
   }
 
   /**
@@ -2878,24 +2887,27 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * GatekeeperVendor.createResource()). It belongs to no account; the returned `action` is the
    * creation to queue.
    */
-  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string)
+  async createResourceGatekeeper(
+      vendorId: string, resourceTypeId: string | undefined, title: string, legacyUrlPattern?: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, typeUrlPattern: string,
-                  action: ActionDescription}> {
+                  resourceTypeId?: string, action: ActionDescription}> {
     let vendor = this.vendors.get(vendorId);
     if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
-    let advertised = (await vendor.getSupportedResources({ userId: this.storage.profile.get().id }))
-        .find(r => r.urlPattern === resourceUrlPattern && r.creatable);
-    if (!advertised) {
-      throw new Error(`This vendor does not advertise creation of "${resourceUrlPattern}". ` +
+    let advertised = findResourceType(
+        await vendor.getSupportedResources({ userId: this.storage.profile.get().id }),
+        resourceTypeId, legacyUrlPattern);
+    if (!advertised?.creatable) {
+      throw new Error(`This vendor does not advertise creation of "${resourceTypeId ?? legacyUrlPattern}". ` +
           "Call listConnectableResources to see the available creations.");
     }
     await this.#assertResourceEnabled(vendorId, advertised);
     let {class: cls, resource, action} = await (vendor as unknown as ResourceCreatorStub)
-        .createResource(resourceUrlPattern, title);
-    if (resource.urlPattern !== resourceUrlPattern) {
+        .createResource(getResourceTypeId(advertised), title);
+    if (getResourceTypeId(resource) !== getResourceTypeId(advertised)) {
       throw new Error("Created resource type does not match the requested type.");
     }
-    return {class: cls, typeUrlPattern: resource.urlPattern, action};
+    return {class: cls, typeUrlPattern: resource.urlPattern,
+      resourceTypeId: resource.id, action};
   }
 
   // Block whole gatekeepers + disabled resources at the core-side chokepoints where a gatekeeper
@@ -2912,7 +2924,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error(
           `The "${vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
     }
-    if (isResourceDisabled(config, normalized, resource.urlPattern)) {
+    // Only legacy restrictions need the vendor catalog to distinguish a removed pattern from a
+    // type narrowed out of this account's list. ID-only policy checks need no additional RPC.
+    let advertised = config.disabledResources[normalized]?.length
+      ? await this.vendors.get(normalized)!.getSupportedResources({ userId: this.storage.profile.get().id })
+      : [resource];
+    if (isResourceDisabled(config, normalized, resource, advertised)) {
       throw new Error(
           `The "${resource.title}" resource is disabled on this deployment by an administrator.`);
     }

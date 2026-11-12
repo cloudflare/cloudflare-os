@@ -40,6 +40,7 @@ import type {
 const VENDOR_HOST = "gadgets-test.example";
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [{
+  id: "thing",
   urlPattern: `https://${VENDOR_HOST}/things/*`,
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
