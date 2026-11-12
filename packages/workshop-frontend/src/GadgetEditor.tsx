@@ -74,6 +74,7 @@ import { useActionEntries, useActions } from './useActions'
 import { ConnectionPreviewPane } from './features/connection-preview/ConnectionPreviewPane'
 import type { ConnectionPreview } from './features/connection-preview/connectionPreview'
 import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
+import { usePendingConnectionPreviews } from './features/connection-preview/usePendingConnectionPreviews'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -1059,6 +1060,11 @@ export default function GadgetEditor() {
     if (!isSinglePaneLayout()) openConnectionPreview(preview)
   })
 
+  // A preview that is closed while its connection has changes waiting can be opened again.
+  const shownPreviewId = showingActivity ? connectionPreview?.gatekeeperId : undefined
+  const closedPreviews = usePendingConnectionPreviews(overseerStub)
+    .filter(preview => preview.gatekeeperId !== shownPreviewId)
+
   const closeWorkspacePane = useCallback(() => {
     if (connectionPreview) dismissConnectionPreview(connectionPreview.gatekeeperId)
     if (workspaceView?.mode !== 'activity') {
@@ -1794,6 +1800,17 @@ export default function GadgetEditor() {
             onViewActivity={openActivity}
             restricted={metadata?.containsRestrictedData === true}
           />
+
+          {closedPreviews.map(preview => (
+            <WorkshopIconButton
+              key={preview.gatekeeperId}
+              onClick={() => openConnectionPreview(preview)}
+              title={`Preview ${preview.title}`}
+              aria-label={`Preview ${preview.title}`}
+            >
+              <FileText size={15} />
+            </WorkshopIconButton>
+          ))}
 
           {showReconnecting && <ReconnectingChip />}
 

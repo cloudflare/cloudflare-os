@@ -2,19 +2,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { RpcStub } from 'capnweb'
 import type { Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { useActionEntries } from '../../useActions'
-import { safeExternalUrl } from '../../utils/safeExternalUrl'
-import type { ConnectionPreview } from './connectionPreview'
-
-const offersPreview = async (overseer: RpcStub<Overseer>, gatekeeperId: WorkpieceId) => {
-  const client = overseer.getGatekeeperById(gatekeeperId)
-  try {
-    return (await client.describe()).hasPreview === true
-  } catch {
-    return false
-  } finally {
-    client[Symbol.dispose]()
-  }
-}
+import { offersPreview, previewOf, type ConnectionPreview } from './connectionPreview'
 
 /**
  * Opens a connection's preview when work on it starts: at the first read or change of a
@@ -33,8 +21,6 @@ export const useAutoOpenConnectionPreview = (
   const entries = useRef(new Set<number>())
   const started = useRef(new Set<WorkpieceId>())
   const dismissed = useRef(new Set<WorkpieceId>())
-  // Asking a gatekeeper to describe its resource can cost it calls to its provider.
-  const offers = useRef(new Map<WorkpieceId, Promise<boolean>>())
 
   useActionEntries(overseer, entry => {
     // Subscribing replays what this session already received, which is not new work.
@@ -49,15 +35,10 @@ export const useAutoOpenConnectionPreview = (
     if (!queued && (entry.type !== 'observation' || started.current.has(gatekeeperId))) return
     started.current.add(gatekeeperId)
 
-    let offered = offers.current.get(gatekeeperId)
-    if (!offered) offers.current.set(gatekeeperId, offered = offersPreview(overseer, gatekeeperId))
-    void offered.then(hasPreview => {
-      if (!hasPreview || dismissed.current.has(gatekeeperId)) return
-      onOpenRef.current({
-        gatekeeperId,
-        title: entry.resourceTitle,
-        url: safeExternalUrl(entry.resourceUrl) ?? undefined,
-      })
+    void offersPreview(overseer, gatekeeperId).then(offered => {
+      if (offered && !dismissed.current.has(gatekeeperId)) {
+        onOpenRef.current(previewOf({ ...entry, gatekeeperId }))
+      }
     })
   })
   // After useActionEntries, so its replay has run by the time this is set.
