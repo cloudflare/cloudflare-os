@@ -8,7 +8,7 @@ import { BlankSpreadsheet } from "../src/sheets-api";
 import { formatRequests, gridRange } from "../src/sheets-plan";
 import type { SheetCellFormat } from "../src/sheets-read-types";
 import {
-  applyChange, gridOf, resolveArea, simulatedFormats, type Grid, type PlannedChange,
+  applyChange, formatPiecesToFetch, gridOf, resolveArea, simulatedFormats, type Grid, type PlannedChange,
 } from "../src/sheets-simulation";
 import type { SheetFormatChange } from "../src/sheets-types";
 import { FORMAT_READBACK, formatSheet, rect, sheet } from "./sheets-fixture";
@@ -371,6 +371,21 @@ describe("simulated format reads", () => {
     expect(read(rect(0, 0, 3, 2))).toEqual(["A1:B2"]);
     expect(read(rect(0, 2))).toBeUndefined();
     expect(read(rect(1, 1, 6, 4))).toEqual(["A1:B2", "D6:E6"]);
+  });
+
+  it("reads the sizes beside inserted lines from the runs Google holds, not the span between them", () => {
+    // ask-bonk's case: two deletions leave rows 1-2 and 100,003-100,004 beside an inserted column.
+    let base = gridOf({ sheets: [sheet(0, "Sales", { rowCount: 100_004, columnCount: 1 })] });
+    let queued = withChanges(base, [
+      { op: "deleteRows", sheetId: 0, start: 2, count: 50_000 },
+      { op: "deleteRows", sheetId: 0, start: 2, count: 50_000 },
+      { op: "insertColumns", sheetId: 0, start: 1, count: 1 },
+    ]);
+    let pieces = formatPiecesToFetch(queued, resolveArea(queued, { sheet: "Sales", rect: rect(0, 1, 4, 1) }));
+    expect(pieces).toEqual([
+      { sheetId: 0, rect: { startRow: 0, endRow: 2, startColumn: 0, endColumn: 1 } },
+      { sheetId: 0, rect: { startRow: 100_002, endRow: 100_004, startColumn: 0, endColumn: 1 } },
+    ]);
   });
 
   it("lists merges in reading order, whatever order Google keeps them in", () => {

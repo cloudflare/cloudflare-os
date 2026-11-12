@@ -641,13 +641,18 @@ export function basePiecesOf(grid: Grid, areas: readonly { sheetId: number; rect
  */
 export function rangesToFetch(grid: Grid, areas: readonly { sheetId: number; rect: Rect }[]): SheetArea[] {
   let pieces = basePiecesOf(grid, areas);
+  checkReadSize(pieces);
+  return pieces;
+}
+
+/** Refuse a read of more pieces, or more cells, than one read of the queued state may make. */
+function checkReadSize(pieces: readonly SheetArea[]): void {
   let cells = pieces.reduce((total, { rect }) =>
     total + (rect.endRow - rect.startRow) * (rect.endColumn - rect.startColumn), 0);
   if (pieces.length > MAX_READ_PIECES || cells > MAX_READ_CELLS) {
     throw new Error("These ranges cannot be read with the queued changes applied. Read fewer cells, " +
       "or approve or reject the queued changes first.");
   }
-  return pieces;
 }
 
 /**
@@ -658,25 +663,23 @@ export function rangesToFetch(grid: Grid, areas: readonly { sheetId: number; rec
 export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[] {
   let pieces = rangesToFetch(grid, [area]);
   let sheet = sheetOf(grid, area.sheetId);
-  if (pieces.length > 0 || sheet.source === undefined) return pieces;
+  let source = sheet.source;
+  if (pieces.length > 0 || source === undefined) return pieces;
   let { rect } = area;
-  let base = (lines: Lines, start: number, end: number) => linesAt(lines, start, end)
-    .flatMap(line => {
-      let index = line === undefined ? undefined : baseIndexOf(line);
-      return index === undefined ? [] : [index];
-    });
-  let rows = base(sheet.rows, rect.startRow, rect.endRow);
-  let columns = base(sheet.columns, rect.startColumn, rect.endColumn);
-  let span = (indexes: number[]) => ({ start: Math.min(...indexes), end: Math.max(...indexes) + 1 });
-  if (rows.length > 0 && columns.length === 0) {
-    let { start, end } = span(rows);
-    return [{ sheetId: sheet.source, rect: { startRow: start, endRow: end, startColumn: 0, endColumn: 1 } }];
-  }
-  if (columns.length > 0 && rows.length === 0) {
-    let { start, end } = span(columns);
-    return [{ sheetId: sheet.source, rect: { startRow: 0, endRow: 1, startColumn: start, endColumn: end } }];
-  }
-  return pieces;
+  // The runs of lines Google holds among the area's, each read beside the sheet's first line of
+  // the other kind: the lines between them that queued changes delete are not read.
+  let rows = basePieces(sheet.rows, rect.startRow, rect.endRow);
+  let columns = basePieces(sheet.columns, rect.startColumn, rect.endColumn);
+  let rowRuns = (run: { start: number; length: number }) => ({
+    sheetId: source, rect: { startRow: run.start, endRow: run.start + run.length, startColumn: 0, endColumn: 1 },
+  });
+  let columnRuns = (run: { start: number; length: number }) => ({
+    sheetId: source, rect: { startRow: 0, endRow: 1, startColumn: run.start, endColumn: run.start + run.length },
+  });
+  let lines = rows.length > 0 && columns.length === 0 ? rows.map(rowRuns)
+    : columns.length > 0 && rows.length === 0 ? columns.map(columnRuns) : [];
+  checkReadSize(lines);
+  return lines;
 }
 
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */
