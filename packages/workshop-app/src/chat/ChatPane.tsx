@@ -6,6 +6,7 @@ import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
 import { WorkLog } from '@/blocks/WorkLog'
+import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -30,6 +31,7 @@ export type ChatPaneProps = {
    */
   onOpenAttachment?: ChatItemHandlers['onOpenAttachment']
   onOpenOutput?: ChatItemHandlers['onOpenOutput']
+  outputHref?: ChatItemHandlers['outputHref']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
 }
@@ -37,7 +39,7 @@ export type ChatPaneProps = {
 const LIVE_WORK = 'live:work'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAttachment, onOpenOutput, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -56,6 +58,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const items = chat.status === 'ready' ? chat.items : undefined
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const restricted = workspace?.containsRestrictedData === true
+  useDocumentTitle(title ?? 'Chat')
 
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)
@@ -70,6 +73,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       }),
       onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
       onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
+      outputHref,
       onApprove: actions.approveAction,
       onDeny: actions.rejectAction,
       // TODO: confirm, then `Overseer.setAutoApprovedActionKind`, with the auto-approval settings.
@@ -82,7 +86,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, onSetUpConnection, onAlwaysApprove])
+  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove])
 
 
   const messages = useMemo(() => {

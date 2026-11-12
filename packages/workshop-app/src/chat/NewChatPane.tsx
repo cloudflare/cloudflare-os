@@ -3,6 +3,7 @@ import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatStart } from '@/blocks/ChatStart'
 import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
+import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
@@ -27,6 +28,7 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
   // The message being sent, shown until the conversation opens; or why it could not be sent.
   const [pending, setPending] = useState<string>()
   const [problem, setProblem] = useState<string>()
+  useDocumentTitle('New chat')
 
   const send = async (text: string) => {
     if (pending) return

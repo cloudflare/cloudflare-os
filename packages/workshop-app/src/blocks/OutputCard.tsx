@@ -3,6 +3,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { ArrowUpRightIcon, GitBranchIcon } from '@phosphor-icons/react'
 import { CARD } from '@/components/Card'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
+import { LinkButton } from '@/components/LinkButton'
 
 export type OutputCardProps = {
   title: string
@@ -11,6 +12,9 @@ export type OutputCardProps = {
   draft?: boolean
   /** What the gadget is, when its blueprint says; otherwise it reads as an app. */
   format?: { noun: string; icon: FormatIconName }
+  /** The output's own page, so that it can be opened in another tab. */
+  href?: string
+  /** Opens it in place, such as beside the chat. */
   onOpen: () => void
 }
 
@@ -21,9 +25,9 @@ const caption = ({ kind, draft, format }: Pick<OutputCardProps, 'kind' | 'draft'
 }
 
 /** Something the agent made that can be opened: a document, an app, a checkout of code. */
-export const OutputCard = ({ title, kind, draft, format, onOpen }: OutputCardProps) => (
-  <button
-    type="button"
+export const OutputCard = ({ title, kind, draft, format, href, onOpen }: OutputCardProps) => (
+  <LinkButton
+    href={href}
     onClick={onOpen}
     className={cn(CARD, 'group flex w-fit max-w-[min(100%,28rem)] min-w-[min(100%,20rem)] items-center gap-3 p-2 pe-4 text-left text-base/5 hover:bg-kumo-tint')}
   >
@@ -38,5 +42,5 @@ export const OutputCard = ({ title, kind, draft, format, onOpen }: OutputCardPro
       </span>
     </span>
     <ArrowUpRightIcon aria-hidden="true" weight="bold" className="size-4 shrink-0 text-kumo-subtle group-hover:text-kumo-default" />
-  </button>
+  </LinkButton>
 )

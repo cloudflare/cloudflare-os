@@ -23,7 +23,8 @@ export type WorkspaceNavProps = {
 export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspace, notice, rail = false }: WorkspaceNavProps) => {
   const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay()
   const Item = rail ? WorkspaceRailItem : WorkspaceListItem
-  const underlay = cn('pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 bg-kumo-fill', rail ? 'rounded-xl' : 'rounded-2xl')
+  // On the rail, a tint of the text colour: black at 8%, white in dark mode.
+  const underlay = cn('pointer-events-none absolute inset-x-0 top-0 -z-10 h-0', rail ? 'rounded-xl bg-kumo-contrast/8' : 'rounded-2xl bg-kumo-fill')
 
   return (
     // The rail is one button wide, with no room for a scrollbar beside it.

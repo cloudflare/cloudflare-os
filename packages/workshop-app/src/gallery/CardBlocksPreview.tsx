@@ -3,6 +3,7 @@ import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { HookCard } from '@/blocks/HookCard'
 import { OutputCard } from '@/blocks/OutputCard'
+import { OutputListItem } from '@/blocks/OutputListItem'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
 import { fields } from './ToolBlocksPreview'
@@ -24,12 +25,18 @@ export const CardBlocksPreview = () => {
 
   return (
     <>
-      <Section title="OutputCard (draft document, accepted document, app with no format, worktree)">
+      <Section title="OutputCard (draft document, accepted document that links to its page so it opens in another tab with a modifier, app with no format, worktree)">
         <Column>
           <OutputCard title="Q3 platform review" kind="gadget" draft format={{ noun: 'Document', icon: 'fileText' }} onOpen={() => say('open the draft document')} />
-          <OutputCard title="Q3 platform review" kind="gadget" format={{ noun: 'Document', icon: 'fileText' }} onOpen={() => say('open the document')} />
+          <OutputCard title="Q3 platform review" kind="gadget" format={{ noun: 'Document', icon: 'fileText' }} href="#q3-platform-review" onOpen={() => say('open the document')} />
           <OutputCard title="Jira dashboard with a title long enough that it has to be cut off" kind="gadget" draft onOpen={() => say('open the app')} />
           <OutputCard title="Fix export timeout" kind="worktree" onOpen={() => say('open the worktree')} />
+        </Column>
+      </Section>
+      <Section title="OutputListItem (in the library: a document, an app with no format and a long title, both linking to their page)">
+        <Column>
+          <OutputListItem title="Q3 platform review" subtitle="Document · Engineering Notes · 4 hours ago" icon="fileText" href="#q3-platform-review" onSelect={() => say('open the document')} />
+          <OutputListItem title="Jira dashboard with a title long enough that it has to be cut off" subtitle="App · Platform · Shared by Grace Hopper · Oct 27" href="#jira-dashboard" onSelect={() => say('open the app')} />
         </Column>
       </Section>
       <Section title="ActionCard (the request opens from every card but the restricted one, which shows it in full: pending, with a standing approval, incomplete, restricted and incomplete, approved, denied)">

@@ -1,4 +1,5 @@
 import { cn } from '@cloudflare/kumo/utils'
+import { LinkButton } from '@/components/LinkButton'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 
 export type WorkspaceListItemProps = {
@@ -10,6 +11,8 @@ export type WorkspaceListItemProps = {
   subtitle?: string
   unread?: boolean
   selected?: boolean
+  /** The workspace's address, so that it can be opened in another tab. */
+  href?: string
   onSelect: () => void
 }
 
@@ -21,10 +24,11 @@ export const WorkspaceListItem = ({
   subtitle,
   unread,
   selected,
+  href,
   onSelect,
 }: WorkspaceListItemProps) => (
-  <button
-    type="button"
+  <LinkButton
+    href={href}
     data-workspace-id={id}
     onClick={onSelect}
     aria-current={selected || undefined}
@@ -41,5 +45,5 @@ export const WorkspaceListItem = ({
       {subtitle && <span className="block truncate text-kumo-subtle">{subtitle}</span>}
     </span>
     {unread && <span role="img" aria-label="Unread" className="size-2 shrink-0 rounded-full bg-kumo-brand" />}
-  </button>
+  </LinkButton>
 )

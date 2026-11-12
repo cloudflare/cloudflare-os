@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useEffectEvent, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 import { animate, motion, useMotionValue, useReducedMotion, useSpring, useTransform } from 'motion/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { BOUNCY, HELD_LENGTH, HELD_OPACITY, IDLE_LENGTH, IDLE_OPACITY, SMOOTH, between, useCalm } from './pill'
@@ -32,6 +32,11 @@ export type ResizeHandleProps = {
   hint?: boolean
   /** The pill has come out, for the pointer, focus or a hint, or is on its way back in. */
   onReach?: (reached: boolean) => void
+  /**
+   * How far either side of the divider the pointer brings the pill out, in pixels. Less over
+   * what is used close to the divider, such as a narrow rail of buttons.
+   */
+  reach?: { left: number; right: number }
 }
 
 // The pill is drawn in a box this tall that follows the pointer, and is centred in it at whatever
@@ -47,9 +52,14 @@ const EDGE_HEIGHT = 40
 
 type Point = { clientX: number; clientY: number }
 
+const REACH = { left: 28, right: 28 }
+
 const contains = (box: DOMRect, x: number, y: number) => x >= box.left && x <= box.right && y >= box.top && y <= box.bottom
-// 1 with the pointer on the divider, 0 at the edge of where the pill shows.
-const nearness = (box: DOMRect, x: number) => 1 - Math.min(1, Math.abs(x - (box.left + box.width / 2)) / (box.width / 2))
+// 1 with the pointer on the divider, 0 at the edge of where the pill shows on that side.
+const nearness = (box: DOMRect, x: number, left: number) => {
+  const divider = box.left + left
+  return 1 - Math.min(1, Math.abs(x - divider) / (x < divider ? left : box.width - left))
+}
 
 /**
  * The divider between two things set side by side, dragged to resize them. It is centred on its
@@ -59,7 +69,9 @@ const nearness = (box: DOMRect, x: number) => 1 - Math.min(1, Math.abs(x - (box.
  *
  * It only reports what is asked of it. Whoever places it owns the size, and its limits.
  */
-export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, onStep, onReset, edge, hint = false, onReach, 'aria-label': label }: ResizeHandleProps) => {
+export const ResizeHandle = ({
+  value, min, max, onDragStart, onDrag, onDragEnd, onStep, onReset, edge, hint = false, onReach, reach = REACH, 'aria-label': label,
+}: ResizeHandleProps) => {
   const reduceMotion = useReducedMotion()
   const atEdge = edge !== undefined
   const [shown, setShown] = useState(false)
@@ -155,7 +167,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
       pointerX.set(clientX)
       pointerY.set(clientY)
     }
-    proximity.set(nearness(box, clientX))
+    proximity.set(nearness(box, clientX, reach.left))
     top.set(next)
   }
 
@@ -201,7 +213,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
     // A finger is only ever near while it holds the handle.
     if (event.pointerType === 'touch') return
     const inside = contains(box, event.clientX, event.clientY)
-    const middleX = box.left + box.width / 2
+    const middleX = box.left + reach.left
     const reachedEdge = edge === 'right' ? event.clientX >= middleX - 1 : edge === 'left' ? event.clientX <= middleX + 1 : true
     if (inside && (near.current || reachedEdge)) {
       const arriving = !near.current
@@ -273,7 +285,12 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
   }
 
   return (
-    <div ref={zone} className="pointer-events-none absolute inset-y-10 left-1/2 w-14 -translate-x-1/2">
+    // `--divider` is where the divider is in the strip, which reaches further to one side than the other.
+    <div
+      ref={zone}
+      style={{ left: -reach.left, width: reach.left + reach.right, '--divider': `${reach.left}px` } as CSSProperties}
+      className="pointer-events-none absolute inset-y-10"
+    >
       <div
         role="separator"
         tabIndex={0}
@@ -286,9 +303,9 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
           'absolute inset-y-0 touch-none outline-none',
           held ? 'cursor-grabbing' : 'cursor-grab',
           // At the edge it is in the way of nothing only once the pill is out.
-          edge === 'right' && 'right-0 left-[calc(50%-0.5rem)]',
-          edge === 'left' && 'right-[calc(50%-0.5rem)] left-0',
-          !atEdge && 'left-1/2 w-4 -translate-x-1/2',
+          edge === 'right' && 'right-0 left-[calc(var(--divider)-0.5rem)]',
+          edge === 'left' && 'right-[calc(100%-var(--divider)-0.5rem)] left-0',
+          !atEdge && 'left-(--divider) w-4 -translate-x-1/2',
           atEdge && !shown ? 'pointer-events-none' : 'pointer-events-auto',
         )}
         onPointerDown={take}
@@ -330,7 +347,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
         <motion.div
           aria-hidden="true"
           // Wider at the edge, where it is all there is to see of what it brings back.
-          className={cn('absolute top-0 left-1/2 flex items-center transition-[width,margin] duration-200 motion-reduce:transition-none', atEdge ? '-ml-1 w-2' : '-ml-0.75 w-1.5')}
+          className={cn('absolute top-0 left-(--divider) flex items-center transition-[width,margin] duration-200 motion-reduce:transition-none', atEdge ? '-ml-1 w-2' : '-ml-0.75 w-1.5')}
           style={{ y: reduceMotion ? top : easedTop, height: PILL_ROOM }}
         >
           <motion.div className="w-full rounded-full bg-kumo-contrast" style={{ height, opacity }} />

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
-import { useAsideState } from '@/aside/AsideContext'
+import { asideItemFor, chatAsideItems, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
 import { AsidePane } from '@/aside/AsidePane'
-import type { OutputItem } from '@/chat/chatItems'
 import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
+import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
+import { useChatSnapshot } from '@/chat/useChatSession'
 import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import type { Scenario } from '@/chat/mock/scenario'
@@ -58,10 +59,6 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
     }
   })
 
-  const aside = useAsideState()
-  const { openOutput } = aside.actions
-  const openChatOutput = useCallback((output: OutputItem) => openOutput({ workspaceId: MOCK_WORKSPACE_ID, chatId: 0 }, output), [openOutput])
-
   useEffect(() => {
     overseer.player.play()
     return () => overseer.player.pause()
@@ -70,36 +67,75 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   return (
     <ApiContext value={session}>
       <WorkspacesProvider>
-        {/* Laid out as the app lays out a page, without the sidebar, so what a chat opens shows beside it. */}
-        <div className="flex h-full p-2">
-          <SplitLayout
-            aside={aside.shown && <AsidePane tabs={aside.tabs} fullScreen={aside.fullScreen} actions={aside.actions} />}
-            asideFullScreen={aside.fullScreen}
-            onOpenAside={aside.actions.show}
-            onCloseAside={aside.actions.hide}
-            edgeInset={8}
-          >
-            <div className="relative flex min-h-0 flex-1 flex-col">
-              <ChatPane
-                workspaceId={MOCK_WORKSPACE_ID}
-                chatId={0}
-                onOpenWorkspace={onOpenScenarios}
-                onOpenAttachment={aside.actions.openFile}
-                onOpenOutput={openChatOutput}
-                onSetUpConnection={onSetUpConnection}
-                onAlwaysApprove={onAlwaysApprove}
-              />
-              <MockControls
-                scenarios={SCENARIOS}
-                scenario={scenario}
-                player={overseer.player}
-                onSelectScenario={onSelectScenario}
-                onRestart={onRestart}
-              />
-            </div>
-          </SplitLayout>
-        </div>
+        <ChatSessionsProvider>
+          <MockLayout onOpenScenarios={onOpenScenarios} onSetUpConnection={onSetUpConnection} onAlwaysApprove={onAlwaysApprove}>
+            <MockControls
+              scenarios={SCENARIOS}
+              scenario={scenario}
+              player={overseer.player}
+              onSelectScenario={onSelectScenario}
+              onRestart={onRestart}
+            />
+          </MockLayout>
+        </ChatSessionsProvider>
       </WorkspacesProvider>
     </ApiContext>
+  )
+}
+
+const CHAT = { workspaceId: MOCK_WORKSPACE_ID, chatId: 0 }
+
+/**
+ * Laid out as the app lays out a chat, without the sidebar, so what it opens shows beside it. What
+ * is shown is kept here rather than in the URL, which belongs to the scenario.
+ */
+const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, children }: {
+  onOpenScenarios: () => void
+  onSetUpConnection: ChatPaneProps['onSetUpConnection']
+  onAlwaysApprove: ChatPaneProps['onAlwaysApprove']
+  /** Over the chat, such as the player's controls. */
+  children: ReactNode
+}) => {
+  const chat = useChatSnapshot(CHAT)
+  const items = useMemo(() => chatAsideItems(CHAT.workspaceId, CHAT.chatId, chat), [chat])
+  const [open, setOpen] = useState<string>()
+  const named = parseAsideRef(open)
+  // Made once, so the chat's rows are not rendered again for them.
+  const [handlers] = useState(() => ({
+    onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
+    onOpenOutput: (output: { workpieceId: number }) => setOpen(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId })),
+    onFullScreenChange: () => {},
+  }))
+
+  return (
+    <div className="flex h-full p-2">
+      <SplitLayout
+        aside={named && (
+          <AsidePane
+            placement="beside"
+            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
+            items={items}
+            onSelect={setOpen}
+            onHide={() => setOpen(undefined)}
+            onFullScreenChange={handlers.onFullScreenChange}
+          />
+        )}
+        onOpenAside={!named && items.length > 0 ? () => setOpen(items[0].key) : undefined}
+        onCloseAside={() => setOpen(undefined)}
+        edgeInset={8}
+      >
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <ChatPane
+            {...CHAT}
+            onOpenWorkspace={onOpenScenarios}
+            onOpenAttachment={handlers.onOpenAttachment}
+            onOpenOutput={handlers.onOpenOutput}
+            onSetUpConnection={onSetUpConnection}
+            onAlwaysApprove={onAlwaysApprove}
+          />
+          {children}
+        </div>
+      </SplitLayout>
+    </div>
   )
 }
