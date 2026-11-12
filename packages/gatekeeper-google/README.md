@@ -476,7 +476,8 @@ its other side.
 
 A table is named by its position among the tab's tables, counting from 0, and its rows and columns
 from 0 too; `insertTable()` returns the position of the table it adds. A queued change to an
-existing table (rows or columns added or deleted, the table deleted) remembers how its table read
+existing table (rows or columns added or deleted, cells restyled, merged or split, widths or
+heights set, the table deleted) remembers how its table read
 when it was requested, and is kept to that table by one rule: it applies only while exactly one
 table of the tab reads so, wherever in the tab that table then is. So such a change is refused
 while another table of the tab reads the same (two empty tables, two that hold only the same header

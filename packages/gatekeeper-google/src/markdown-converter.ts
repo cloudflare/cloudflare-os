@@ -86,14 +86,16 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
 export type EditableTable = MarkdownRange & {
   /**
    * One array per row, holding for each of its cells in order (cells covered by a merge
-   * included): 128 times the number of the cell's editable texts, plus the cell's flags (1 when
+   * included): 256 times the number of the cell's editable texts, plus the cell's flags (1 when
    * it holds an item of a list that numbers any of its levels, 2 when it holds a footnote, 4
    * when it starts with anything but a paragraph of normal text outside a list, 8 when it is one
    * paragraph that holds a smart chip, or another element that is neither text nor an inline
    * image, and no text beside it, 16 when it holds an element the rendering shows nothing for,
-   * and 32, 64 or both for what Google copies of its chips into a row added beside it); then a start and an end for each text: the HTML between the tags of a
-   * paragraph whose text can be edited, as a half-open range counted from the first character
-   * of the cell's first line.
+   * 32, 64 or both for what Google copies of its chips into a row added beside it, and 128 when
+   * some of its texts are titles); then a start and an end for each text: the HTML between the
+   * tags of a paragraph whose text can be edited, as a half-open range counted from the first
+   * character of the cell's first line; then, with 128 set, the number of its titles and the
+   * index of each among its texts.
    */
   rows: number[][];
   /**
@@ -586,7 +588,6 @@ function holdsOnlyText(paragraph: Paragraph): boolean {
     !!element.textRun && !element.textRun.content.includes(CHIP_PLACEHOLDER));
 }
 
-/** An editable text in rendered HTML, and the start index of the paragraph it came from. */
 /** An editable text: where it is, where its paragraph starts, and whether that is a title. */
 type RenderedText = { start: number; end: number; docStart: number; title?: true };
 
