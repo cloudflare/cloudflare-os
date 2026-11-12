@@ -1,29 +1,42 @@
 packages/workshop-frontend/src/Activity.tsx
   s_99c049c8391965::t_19fa956d7005d3 1,20,22
+  s_99c049c8391965::t_c5f74fa3147d9b 1,20,22
 packages/workshop-frontend/src/ActivityNotifications.tsx
   s_99c049c8391965::t_89968a0a0551e4 16
+  s_99c049c8391965::t_c44a62a6795956 16
 packages/workshop-frontend/src/features/approvals/PendingChangeGroupRow.tsx
   s_99c049c8391965::t_c6297bad0ad082 1-165
+  s_99c049c8391965::t_1fabef97737933 1-165
 packages/workshop-frontend/src/features/approvals/PendingChangesTray.test.tsx
   s_99c049c8391965::t_ccc92c1dd86fc4 1-217
+  s_99c049c8391965::t_0d18e03f50a67f 1-217
 packages/workshop-frontend/src/features/approvals/PendingChangesTray.tsx
   s_99c049c8391965::t_ab1aafca4e265e 1-191
+  s_99c049c8391965::t_df6998b2c7f06f 1-191
 packages/workshop-frontend/src/features/approvals/ReviewRequest.tsx
   s_99c049c8391965::t_1bd8b2fea41ec8 1-140
+  s_99c049c8391965::t_134f1c01cbbad5 1-140
 packages/workshop-frontend/src/features/approvals/autoApprovalRules.test.ts
   s_99c049c8391965::t_2e64f74775035d 1-97
+  s_4abfb7321aa0e2::t_f333f161502163 1-97
 packages/workshop-frontend/src/features/approvals/autoApprovalRules.ts
   s_99c049c8391965::t_0d8084706337f9 1-72
+  s_99c049c8391965::t_4f42967e29a48e 1-72
 packages/workshop-frontend/src/features/approvals/pendingChangeGroups.test.ts
   s_99c049c8391965::t_d648279a18181d 1-160
+  s_99c049c8391965::t_865a96e7f4235d 1-160
 packages/workshop-frontend/src/features/approvals/pendingChangeGroups.ts
   s_99c049c8391965::t_8da2d6dfbc8aff 1-101
+  s_99c049c8391965::t_6504cb37fec155 1-101
 packages/workshop-frontend/src/features/approvals/useBulkResolve.test.tsx
   s_99c049c8391965::t_e52eb01a7c8536 1-167
+  s_99c049c8391965::t_85b4a71ca2019e 1-167
 packages/workshop-frontend/src/features/approvals/useBulkResolve.ts
   s_99c049c8391965::t_1c803102de137e 1-102
+  s_99c049c8391965::t_f5c8cca1ee581e 1-102
 packages/workshop-frontend/src/utils/formatRelativeTime.ts
   s_99c049c8391965::t_ddd16861a5119e 1-13
+  s_99c049c8391965::t_84cb40d45a659c 1-13
 ---
 {
   "schema_version": "authorship/3.0.0",
@@ -31,6 +44,14 @@ packages/workshop-frontend/src/utils/formatRelativeTime.ts
   "base_commit_sha": "987d88b09fbc2cc9e27497a11403938df0028790",
   "prompts": {},
   "sessions": {
+    "s_4abfb7321aa0e2": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "b4ef13d8-0243-4337-8591-95e217471c5f",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
     "s_99c049c8391965": {
       "agent_id": {
         "tool": "claude",
