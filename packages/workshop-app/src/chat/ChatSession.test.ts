@@ -84,6 +84,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
     disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
+    setChatTitle: vi.fn<Overseer['setChatTitle']>(async () => {}),
   }
 
   const overseer: ChatOverseer = {
@@ -814,6 +815,21 @@ describe('ChatSession', () => {
 
       expect(fake.retryAgent).toHaveBeenCalledExactlyOnceWith(4, 'model-1')
       expect(fake.denyConnectionRequest).toHaveBeenCalledExactlyOnceWith('request-1')
+    })
+
+    it('shows a new title at once, and puts the old one back when it is refused', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(4, 'Chat', 1)]))
+      const session = await started(fake, 4)
+
+      await session.rename('Q3 review')
+      expect(fake.setChatTitle).toHaveBeenCalledExactlyOnceWith(4, 'Q3 review')
+      expect(ready(session).title).toBe('Q3 review')
+
+      fake.setChatTitle.mockRejectedValueOnce(new Error('No'))
+      const refused = session.rename('Something else')
+      expect(ready(session).title).toBe('Something else')
+      await expect(refused).rejects.toThrow('No')
+      expect(ready(session).title).toBe('Q3 review')
     })
 
     it('reports what could not be done, until the next thing is asked', async () => {

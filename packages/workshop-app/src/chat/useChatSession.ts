@@ -5,7 +5,7 @@ import { useChatSessions } from './ChatSessionsContext'
 /** What can be asked of a chat. Each is stable for the life of the session. */
 export type ChatActions = Pick<
   ChatSession,
-  'send' | 'loadEarlier' | 'findQuoted' | 'retry' | 'approveAction' | 'rejectAction' | 'denyConnection' | 'setHookEnabled'
+  'send' | 'loadEarlier' | 'findQuoted' | 'retry' | 'approveAction' | 'rejectAction' | 'denyConnection' | 'setHookEnabled' | 'rename'
 >
 
 const LOADING: ChatSnapshot = { status: 'loading' }

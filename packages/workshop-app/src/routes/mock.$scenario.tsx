@@ -3,6 +3,7 @@ import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
 import { asideItemFor, chatAsideItems, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
 import { AsidePane } from '@/aside/AsidePane'
 import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
+import { ChatSettingsPane } from '@/chat/ChatSettingsPane'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { useChatSnapshot } from '@/chat/useChatSession'
 import { MockControls } from '@/chat/mock/MockControls'
@@ -100,6 +101,8 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
   const items = useMemo(() => chatAsideItems(CHAT.workspaceId, CHAT.chatId, chat), [chat])
   const [open, setOpen] = useState<string>()
   const named = parseAsideRef(open)
+  // The chat's settings, in the chat's place, with nothing beside them.
+  const [settings, setSettings] = useState(false)
   // Made once, so the chat's rows are not rendered again for them.
   const [handlers] = useState(() => ({
     onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
@@ -110,7 +113,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
   return (
     <div className="flex h-full p-2">
       <SplitLayout
-        aside={named && (
+        aside={named && !settings && (
           <AsidePane
             placement="beside"
             item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
@@ -120,19 +123,32 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
             onFullScreenChange={handlers.onFullScreenChange}
           />
         )}
-        onOpenAside={!named && items.length > 0 ? () => setOpen(items[0].key) : undefined}
+        onOpenAside={!named && !settings && items.length > 0 ? () => setOpen(items[0].key) : undefined}
         onCloseAside={() => setOpen(undefined)}
         edgeInset={8}
       >
         <div className="relative flex min-h-0 flex-1 flex-col">
-          <ChatPane
-            {...CHAT}
-            onOpenWorkspace={onOpenScenarios}
-            onOpenAttachment={handlers.onOpenAttachment}
-            onOpenOutput={handlers.onOpenOutput}
-            onSetUpConnection={onSetUpConnection}
-            onAlwaysApprove={onAlwaysApprove}
-          />
+          {settings ? (
+            <ChatSettingsPane
+              {...CHAT}
+              onBack={() => setSettings(false)}
+              onOpenWorkspace={onOpenScenarios}
+              onOpenItem={(item) => {
+                setOpen(item.key)
+                setSettings(false)
+              }}
+            />
+          ) : (
+            <ChatPane
+              {...CHAT}
+              onOpenWorkspace={onOpenScenarios}
+              onOpenSettings={() => setSettings(true)}
+              onOpenAttachment={handlers.onOpenAttachment}
+              onOpenOutput={handlers.onOpenOutput}
+              onSetUpConnection={onSetUpConnection}
+              onAlwaysApprove={onAlwaysApprove}
+            />
+          )}
           {children}
         </div>
       </SplitLayout>

@@ -21,7 +21,10 @@ declare module '@tanstack/react-router' {
     chatTitle?: string
     /** This step showed the aside, so putting it away goes back (`useAsideNavigation`). */
     asideOpenedHere?: boolean
-    /** This page was opened from the one before it: an output's, expanded from beside a chat. The way back to that goes back. */
+    /**
+     * This page was opened from the one before it: an output's, expanded from beside a chat, or a
+     * chat's settings, from the chat. The way back to that goes back.
+     */
     fromChat?: boolean
   }
 }

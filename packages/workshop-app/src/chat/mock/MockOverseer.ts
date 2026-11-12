@@ -152,6 +152,10 @@ export class MockOverseer {
     this.player.fire('onAcceptConnection')
   }
 
+  async setChatTitle(_chatId: number, title: string) {
+    this.#setMetadata({ title })
+  }
+
   async denyConnectionRequest(requestId: string) {
     this.#resolveConnection(requestId, { state: 'denied' })
     this.player.fire('onDenyConnection')
