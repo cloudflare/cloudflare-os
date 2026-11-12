@@ -273,7 +273,17 @@ describe("spawned chat notifications", () => {
       impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled));
     await setEnabled(false);
     await evictDurableObject(fixture.user);
-    await append(fixture, 1, "Muted activity");
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 1, "Muted activity");
+      for (const kind of ["taskCompleted", "permissionRequested"] as const) {
+        impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 1, sequence: 1,
+          userId: fixture.user.id.toString(), kind});
+      }
+      await impl.deliverDirtyChats();
+    });
+    expect(await outbox(fixture)).toEqual([]);
+    expect(await cursor(fixture)).toMatchObject({notifiedThroughSequence: 1});
+    expect(publish).not.toHaveBeenCalled();
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
       .toMatchObject({notificationsEnabled: false, readThroughSequence: -1, unreadMessageCount: 2});
     expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);

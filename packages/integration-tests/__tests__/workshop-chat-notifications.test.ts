@@ -85,7 +85,10 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
   await ws.setChatNotificationsEnabled(chatId, !enabled);
   await ws.setChatNotificationsEnabled(chatId, enabled);
   expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)).toEqual(state);
-  expect(received.events).toEqual(enabled ? [expect.objectContaining({chatId, kind: "taskCompleted"})] : []);
+  // The backend's unread-state tests prove muted suppression and no replay against the outbox.
+  // Public RPC exposes no delivery-drained signal, so an empty callback list here would not prove
+  // that a muted alert cannot arrive later. Keep delivery assertions positive at this layer.
+  if (enabled) expect(received.events).toEqual([expect.objectContaining({chatId, kind: "taskCompleted"})]);
   // A normal reading receipt still catches up a muted chat without enabling its badges or alerts.
   await ws.markChatRead(chatId);
   received.events.length = 0;
@@ -93,9 +96,10 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
   await waitForIdleChat(ws, chatId);
   await waitFor("a persisted pending permission request", async () =>
     (await ws.listActions({ filter: "pending" })).entries.length === 1 ? true : null);
-  if (enabled) await waitFor("the permission alert", async () => received.events.length === 1 ? true : null);
-  else await new Promise(resolve => setTimeout(resolve, 200));
-  expect(received.events).toEqual(enabled ? [expect.objectContaining({ chatId, kind: "permissionRequested" })] : []);
+  if (enabled) {
+    await waitFor("the permission alert", async () => received.events.length === 1 ? true : null);
+    expect(received.events).toEqual([expect.objectContaining({ chatId, kind: "permissionRequested" })]);
+  }
   expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId))
     .toMatchObject({ notificationsEnabled: enabled, unreadMessageCount: 0 });
   expect(model.remainingSteps()).toBe(0);
