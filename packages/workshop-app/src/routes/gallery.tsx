@@ -219,14 +219,25 @@ function Gallery() {
       </Section>
       <HeaderPreview />
       <ShellPreview />
-      <Section title="Sidebar (approach a neighbour from the active row or a distant row)">
-        <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
-          <Sidebar
-            user={{ name: 'Ada Lovelace' }}
-            workspaces={previewWorkspaces}
-            selectedWorkspaceId={selectedWorkspace}
-            onSelectWorkspace={setSelectedWorkspace}
-          />
+      <Section title="Sidebar, expanded and collapsed to a rail (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">
+        <div className="flex gap-4">
+          <div className="flex h-96 w-80 max-w-full rounded-3xl bg-kumo-base p-2">
+            <Sidebar
+              user={{ name: 'Ada Lovelace' }}
+              workspaces={previewWorkspaces}
+              selectedWorkspaceId={selectedWorkspace}
+              onSelectWorkspace={setSelectedWorkspace}
+            />
+          </div>
+          <div className="flex h-[32rem] w-14 shrink-0 rounded-3xl bg-kumo-canvas p-2">
+            <Sidebar
+              user={{ name: 'Ada Lovelace' }}
+              workspaces={previewWorkspaces}
+              selectedWorkspaceId={selectedWorkspace}
+              onSelectWorkspace={setSelectedWorkspace}
+              collapsed
+            />
+          </div>
         </div>
       </Section>
       <MascotPreview />

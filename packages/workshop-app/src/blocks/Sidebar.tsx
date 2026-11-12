@@ -4,10 +4,9 @@ import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
 import { LogoIcon } from '@/components/LogoIcon'
-import { WorkspaceListItem, type WorkspaceListItemProps } from './WorkspaceListItem'
-import { useWorkspaceUnderlay } from './useWorkspaceUnderlay'
+import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
 
-export type SidebarWorkspace = Omit<WorkspaceListItemProps, 'selected' | 'onSelect'> & { id: string }
+export type { SidebarWorkspace }
 
 export type SidebarProps = {
   user: { name: string; avatarUrl?: string }
@@ -20,7 +19,11 @@ export type SidebarProps = {
   connections?: ReactNode
   /** The library, which opens beside the page, and whether it is showing. */
   library?: { shown: boolean; onToggle: () => void }
+  /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
+  collapsed?: boolean
 }
+
+const RailDivider = () => <span aria-hidden="true" className="my-4 h-px w-4 shrink-0 bg-kumo-line" />
 
 /** The sidebar: global buttons on top, the workspaces, then the user and connections. */
 export const Sidebar = ({
@@ -31,49 +34,65 @@ export const Sidebar = ({
   notice,
   connections,
   library,
+  collapsed = false,
 }: SidebarProps) => {
-  const { listRef, underlayRef, hoverUnderlayRef } = useWorkspaceUnderlay()
+  const home = <Button icon={<LogoIcon />} aria-label="Home" className="[&>svg]:size-[1.5em]" />
+  const workspacesButton = <Button icon={FolderIcon} aria-label="Workspaces" />
+  const libraryButton = (
+    <Button
+      icon={CirclesFourIcon}
+      aria-label="Library"
+      aria-pressed={library?.shown}
+      onClick={library?.onToggle}
+      className="aria-pressed:bg-kumo-tint"
+    />
+  )
+  const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+  const account = <Button icon={<Avatar name={user.name} src={user.avatarUrl} />} aria-label="Account" />
+  const nav = (
+    <WorkspaceNav
+      key={collapsed ? 'rail' : 'list'}
+      workspaces={workspaces}
+      selectedWorkspaceId={selectedWorkspaceId}
+      onSelectWorkspace={onSelectWorkspace}
+      notice={notice}
+      rail={collapsed}
+    />
+  )
+
+  if (collapsed) {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col items-center p-0.5">
+        <header className="flex flex-col items-center">
+          {home}
+          <RailDivider />
+          <div className="flex flex-col gap-1.5">
+            {search}
+            {libraryButton}
+            {workspacesButton}
+          </div>
+          <RailDivider />
+        </header>
+        {nav}
+        <footer className="mt-3 flex flex-col items-center gap-1">
+          <ConnectButton />
+          {account}
+        </footer>
+      </div>
+    )
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-0.5">
       <header className="flex items-center gap-2">
-        <Button icon={<LogoIcon />} aria-label="Home" className="mr-auto [&>svg]:size-[1.5em]" />
-        <Button icon={FolderIcon} aria-label="Workspaces" />
-        <Button
-          icon={CirclesFourIcon}
-          aria-label="Library"
-          aria-pressed={library?.shown}
-          onClick={library?.onToggle}
-          className="aria-pressed:bg-kumo-tint"
-        />
-        <Button icon={MagnifyingGlassIcon} aria-label="Search" />
+        <div className="mr-auto flex">{home}</div>
+        {workspacesButton}
+        {libraryButton}
+        {search}
       </header>
-      <nav aria-label="Workspaces" className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto">
-        <div ref={listRef} className="relative isolate flex shrink-0 flex-col">
-          <div
-            ref={underlayRef}
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded-2xl bg-kumo-fill"
-          />
-          <div
-            ref={hoverUnderlayRef}
-            aria-hidden="true"
-            className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-0 rounded-2xl bg-kumo-fill"
-          />
-          {workspaces.map(({ id, ...workspace }) => (
-            <WorkspaceListItem
-              key={id}
-              id={id}
-              {...workspace}
-              selected={id === selectedWorkspaceId}
-              onSelect={() => onSelectWorkspace(id)}
-            />
-          ))}
-        </div>
-        {notice && <p className="px-3 py-2 text-base text-kumo-subtle">{notice}</p>}
-      </nav>
+      {nav}
       <footer className="flex items-center justify-between">
-        <Button icon={<Avatar name={user.name} src={user.avatarUrl} />} aria-label="Account" />
+        {account}
         <ConnectButton>{connections}</ConnectButton>
       </footer>
     </div>

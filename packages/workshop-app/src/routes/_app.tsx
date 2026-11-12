@@ -61,7 +61,7 @@ const AppFrame = () => {
   return (
     <AsideContext value={aside.actions}>
       <AppShell
-        sidebar={
+        sidebar={(collapsed) => (
           <Sidebar
             user={{ name: user.name }}
             workspaces={workspaces}
@@ -70,8 +70,9 @@ const AppFrame = () => {
             notice={notice}
             connections={placeholderLogos}
             library={{ shown: aside.shown, onToggle: aside.actions.toggle }}
+            collapsed={collapsed}
           />
-        }
+        )}
         aside={aside.shown && (
           <AsidePane tabs={aside.tabs} fullScreen={aside.fullScreen} actions={aside.actions} onOpenLatestChat={(id) => void openLatestChat(id)} />
         )}

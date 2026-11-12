@@ -21,13 +21,13 @@ export type ResizeHandleProps = {
   /** A double click, which asks for the size things started at. */
   onReset: () => void
   /**
-   * The divider is at the right edge of everything, with nothing after it yet. It then comes out
-   * only for a pointer that has reached the edge, not for one that is near: what is before it has
-   * an edge of its own to be used there, such as a scrollbar. Out, it is taken hold of anywhere
-   * from the pill to the edge. The pill there is a fixture rather than something that follows
-   * the pointer: it keeps to the middle of the gap, at one height.
+   * The divider is at this edge of everything, with nothing past it yet. It then comes out only
+   * for a pointer that has reached the edge, not for one that is near: what is beside it has an
+   * edge of its own to be used there, such as a scrollbar. Out, it is taken hold of anywhere from
+   * the pill to the edge. The pill there is a fixture rather than something that follows the
+   * pointer: it keeps to the middle of the gap, at one height.
    */
-  edge?: boolean
+  edge?: 'left' | 'right'
   /** Brings the pill out for as long as it is set, to show that the handle is there. */
   hint?: boolean
   /** The pill has come out, for the pointer, focus or a hint, or is on its way back in. */
@@ -59,8 +59,9 @@ const nearness = (box: DOMRect, x: number) => 1 - Math.min(1, Math.abs(x - (box.
  *
  * It only reports what is asked of it. Whoever places it owns the size, and its limits.
  */
-export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, onStep, onReset, edge = false, hint = false, onReach, 'aria-label': label }: ResizeHandleProps) => {
+export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, onStep, onReset, edge, hint = false, onReach, 'aria-label': label }: ResizeHandleProps) => {
   const reduceMotion = useReducedMotion()
+  const atEdge = edge !== undefined
   const [shown, setShown] = useState(false)
   const [held, setHeld] = useState(false)
   // The strip along the gap within which the pill shows. The part that is dragged is narrower.
@@ -89,7 +90,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
   const height = useTransform(() => {
     const amount = (reduceMotion ? proximity : easedProximity).get()
     const idle = between(IDLE_LENGTH, amount)
-    const full = edge ? EDGE_HEIGHT : idle + (between(HELD_LENGTH, amount) - idle) * grip.get()
+    const full = atEdge ? EDGE_HEIGHT : idle + (between(HELD_LENGTH, amount) - idle) * grip.get()
     return Math.max(floor.get(), full * scale.get())
   })
   const opacity = useTransform(() => {
@@ -143,7 +144,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
    * was not following the pointer until now.
    */
   const follow = ({ clientX, clientY }: Point, box: DOMRect, atOnce = false) => {
-    const next = edge
+    const next = atEdge
       ? middle(box)
       : clampSize(clientY - box.top - PILL_ROOM / 2, PILL_MARGIN, Math.max(PILL_MARGIN, box.height - PILL_ROOM - PILL_MARGIN))
     if (atOnce) {
@@ -200,7 +201,9 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
     // A finger is only ever near while it holds the handle.
     if (event.pointerType === 'touch') return
     const inside = contains(box, event.clientX, event.clientY)
-    if (inside && (near.current || !edge || event.clientX >= box.left + box.width / 2 - 1)) {
+    const middleX = box.left + box.width / 2
+    const reachedEdge = edge === 'right' ? event.clientX >= middleX - 1 : edge === 'left' ? event.clientX <= middleX + 1 : true
+    if (inside && (near.current || reachedEdge)) {
       const arriving = !near.current
       near.current = true
       if (arriving && (leaving.current || !kept())) arrive()
@@ -230,7 +233,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
   // A pill that is out when the divider comes to be at the edge goes to the middle from where
   // the pointer had it.
   const edgeChanged = useEffectEvent(() => {
-    if (edge) toMiddle(false)
+    if (atEdge) toMiddle(false)
   })
   useEffect(() => edgeChanged(), [edge])
   useEffect(() => {
@@ -283,8 +286,10 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
           'absolute inset-y-0 touch-none outline-none',
           held ? 'cursor-grabbing' : 'cursor-grab',
           // At the edge it is in the way of nothing only once the pill is out.
-          edge ? 'right-0 left-[calc(50%-0.5rem)]' : 'left-1/2 w-4 -translate-x-1/2',
-          edge && !shown ? 'pointer-events-none' : 'pointer-events-auto',
+          edge === 'right' && 'right-0 left-[calc(50%-0.5rem)]',
+          edge === 'left' && 'right-[calc(50%-0.5rem)] left-0',
+          !atEdge && 'left-1/2 w-4 -translate-x-1/2',
+          atEdge && !shown ? 'pointer-events-none' : 'pointer-events-auto',
         )}
         onPointerDown={take}
         onPointerMove={(event) => {
@@ -325,7 +330,7 @@ export const ResizeHandle = ({ value, min, max, onDragStart, onDrag, onDragEnd, 
         <motion.div
           aria-hidden="true"
           // Wider at the edge, where it is all there is to see of what it brings back.
-          className={cn('absolute top-0 left-1/2 flex items-center transition-[width,margin] duration-200 motion-reduce:transition-none', edge ? '-ml-1 w-2' : '-ml-0.75 w-1.5')}
+          className={cn('absolute top-0 left-1/2 flex items-center transition-[width,margin] duration-200 motion-reduce:transition-none', atEdge ? '-ml-1 w-2' : '-ml-0.75 w-1.5')}
           style={{ y: reduceMotion ? top : easedTop, height: PILL_ROOM }}
         >
           <motion.div className="w-full rounded-full bg-kumo-contrast" style={{ height, opacity }} />
