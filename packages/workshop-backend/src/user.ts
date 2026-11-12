@@ -1315,7 +1315,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.ctx.storage.transactionSync(() => {
         for (let baseline of notificationBaselines) {
           let cursor = this.#readCursors.get(`${workspaceId}:${baseline.chatId}`);
-          if (cursor?.deleted || (!cursor && !firstAdmission)) continue;
+          if (cursor?.deleted || (!firstAdmission && cursor?.readThroughVisibleSequence === undefined)) continue;
           let visible = baseline.readThroughVisibleSequence ?? 0;
           if (!cursor || cursor.readThroughVisibleSequence === undefined) {
             this.#storeCursor({workspaceId, chatId: baseline.chatId,

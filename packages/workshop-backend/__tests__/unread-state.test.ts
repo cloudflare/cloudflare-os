@@ -174,6 +174,32 @@ describe("persisted visible positions", () => {
 });
 
 describe("spawned chat notifications", () => {
+  it.each([false, true])("preserves a collaborator's delayed first arrival across preference and reopen (enabled: %s)", async enabled => {
+    const fixture = await setup(); const {reader, owner} = await addReader(fixture);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({id: 2, title: "New chat", started: new Date(), lastActive: new Date()});
+      await impl.deliverDirtyChats();
+      await impl.setChatNotificationsEnabled(reader.id.toString(), 2, enabled);
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        if (user.id.equals(reader.id)) throw new Error("Reader temporarily unavailable");
+        await user.messageArrived(...args);
+      });
+      try {
+        write(impl, 0, "First arrival", 2);
+        await expect(impl.deliverDirtyChats()).rejects.toThrow("Reader temporarily unavailable");
+      } finally {
+        restore();
+      }
+    });
+    await evictDurableObject(reader);
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
+    await withImpl(fixture.workspace, impl => impl.deliverDirtyChats());
+    expect((await reader.getWorkspaceUnreadState(fixture.workspaceId)).find(chat => chat.chatId === 2))
+      .toMatchObject({notificationsEnabled: enabled, readThroughSequence: -1, unreadMessageCount: 1});
+    expect(await reader.getUnreadThreads()).toMatchObject([{chatId: 2, unreadMessageCount: 1}]);
+    expect((await reader.getUnreadSummary()).unreadMessageCount).toBe(enabled ? 1 : 0);
+  });
+
   it.each([false, true])("does not enroll legacy history through a preference and metadata update (enabled: %s)", async enabled => {
     const fixture = await setup();
     await withImpl(fixture.workspace, async impl => {

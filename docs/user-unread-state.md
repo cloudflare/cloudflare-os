@@ -225,8 +225,8 @@ storage is retained until every callback ACKs, then physically wiped. A reset af
 still resumes that wipe. No recipient fetches the source during removal.
 
 Successful first admission seeds the captured existing tails as read. Ordinary reopen does not
-initialize missing cursors or consume pending new-thread arrivals. Initial join remains the
-existing best-effort flow: events racing the registration callback need not be covered. Once
+initialize missing or preference-only cursors or consume pending new-thread arrivals. Initial join
+remains the existing best-effort flow: events racing the registration callback need not be covered. Once
 registration completes, new events follow the durable handoff above. There is no extra enrollment
 catch-up RPC or background admission lifecycle.
 
