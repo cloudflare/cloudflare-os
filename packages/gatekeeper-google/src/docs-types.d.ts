@@ -267,11 +267,12 @@ export interface GoogleDocSession extends GoogleDocReadSession {
 
   /**
    * Add rows to a table in tab `tabId`, with their text when `rows.cells` gives it. To add a
-   * row at the end of a table, leave `rows.at` out. New cells hold plain paragraphs. They take
-   * the look (cell shading, alignment, font, size and colour) of the cells of the row they go
-   * before, or of the last row when they are added at the end, and never
-   * their bold, italic, strikethrough, links, list items or headings; a new cell holds default
-   * text where that row's cell in its column starts with a heading or a list item.
+   * row at the end of a table, leave `rows.at` out. New cells hold plain paragraphs and take
+   * the look of the cells of the row they go before, or of the last row when they are added at
+   * the end: cell shading, alignment, padding, borders, font, size and colour, and the row's
+   * height. They never take their bold, italic, strikethrough, links, list items or headings; a
+   * new cell holds default text where that row's cell in its column starts with a heading or a
+   * list item.
    *
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
    * The rows of a table with merged cells cannot be changed, nor those of a table that holds
@@ -290,7 +291,7 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * fills one new column of a table of three rows. To add a column at the end of a table, leave
    * `columns.at` out. New cells hold plain paragraphs and take the look of the cells of the
    * column they go before, or of the last column when they are added at the end, as for
-   * `insertTableRows()`.
+   * `insertTableRows()`, and its width.
    *
    * Columns can be added until the table has 20, and only to a table of at most 500 rows.
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.

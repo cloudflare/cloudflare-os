@@ -4,7 +4,8 @@
 
 import type {
   Bullet, DocsLocation, DocsRange, GoogleDocsRequest, GoogleDocsTab, Paragraph, ParagraphElement,
-  ParagraphStyle, StructuralElement, Table, TableCell, TableCellLocation, TableRow, TextStyle,
+  ParagraphStyle, StructuralElement, Table, TableCell, TableCellLocation, TableCellStyle, TableRow,
+  TextStyle,
 } from "../src/docs-api";
 import {
   docTabToMarkdown, isGoogleDocsStrippedCharacter, tableRowCells,
@@ -46,6 +47,20 @@ const HEADING_LOOK_FONT_SIZE: Dimension = { magnitude: 16, unit: "PT" };
 
 /** The character a text run holds in place of a building block's chip. */
 const CHIP_PLACEHOLDER = "\uE907";
+
+/** What `insertTable` stores on each cell, as probe D1 read it: no border fields. */
+const INSERTED_CELL_STYLE: TableCellStyle = {
+  rowSpan: 1, columnSpan: 1, backgroundColor: {}, contentAlignment: "TOP",
+  paddingLeft: { magnitude: 5, unit: "PT" }, paddingRight: { magnitude: 5, unit: "PT" },
+  paddingTop: { magnitude: 5, unit: "PT" }, paddingBottom: { magnitude: 5, unit: "PT" },
+};
+
+/**
+ * The width the model narrows a fixed column to when a column is added beside one that shares
+ * the page's width: what probe S2c saw for a cell of plain text and 5pt padding. Google does it
+ * only sometimes; the model always does, so a change that does not set the widths back shows.
+ */
+const NARROWED_WIDTH = 13;
 
 const OUTSIDE_PARAGRAPH = "The insertion index must be inside the bounds of an existing paragraph.";
 const WITHIN_GRAPHEME = "The insertion index cannot be within a grapheme cluster.";
@@ -475,6 +490,9 @@ function applyRequest(tab: GoogleDocsTab, request: GoogleDocsRequest, options: M
     return deleteTableColumn(tab, request.deleteTableColumn.tableCellLocation);
   }
   if ("pinTableHeaderRows" in request) return pinTableHeaderRows(tab, request.pinTableHeaderRows);
+  if ("updateTableColumnProperties" in request) {
+    return updateTableColumnProperties(tab, request.updateTableColumnProperties);
+  }
   notModelled(`the request ${Object.keys(request).join(", ")}`);
 }
 
@@ -848,11 +866,17 @@ function insertTable(
   let tableRows = Array.from({ length: rows }, (): TableRow => ({
     startIndex: 0,
     endIndex: 0,
-    tableCells: Array.from({ length: columns }, () =>
-      cellOf(plainParagraph(structuredClone(headingLook)))),
+    tableCells: Array.from({ length: columns }, () => ({
+      ...cellOf(plainParagraph(structuredClone(headingLook))),
+      tableCellStyle: structuredClone(INSERTED_CELL_STYLE),
+    })),
+    tableRowStyle: { minRowHeight: { unit: "PT" } },
   }));
+  let tableStyle = {
+    tableColumnProperties: Array.from({ length: columns }, () => ({ widthType: "EVENLY_DISTRIBUTED" })),
+  };
   place.container.splice(place.position, 1,
-    before, { startIndex: 0, endIndex: 0, table: { tableRows } }, after);
+    before, { startIndex: 0, endIndex: 0, table: { tableRows, tableStyle } }, after);
 }
 
 /** The cell a row or column request names, in a table whose rows and columns can be changed. */
@@ -966,6 +990,8 @@ function insertTableRow(
       table.docStart === place.element.startIndex)
     : undefined;
   let entries = flags && tableRowCells(flags, rowIndex);
+  let header = reference.tableRowStyle?.tableHeader === true;
+  let height = reference.tableRowStyle?.minRowHeight;
   let row: TableRow = {
     startIndex: 0,
     endIndex: 0,
@@ -973,11 +999,17 @@ function insertTableRow(
       let paragraph = newCellParagraph(cell, options);
       let chip = copiedChip(cell, entries?.[column]?.loneChip === true);
       if (chip) paragraph.paragraph.elements.unshift(chip);
-      return cellOf(paragraph);
+      return withCopiedStyle(cellOf(paragraph), cell);
     }),
-    // A row added beside a pinned header row is pinned too.
-    ...(reference.tableRowStyle?.tableHeader === true
-      ? { tableRowStyle: { tableHeader: true } }
+    // A row added beside a pinned header row is pinned too, and every row takes the height of
+    // the row it copies, as probe S1 saw.
+    ...(header || height
+      ? {
+        tableRowStyle: {
+          ...(header ? { tableHeader: true } : {}),
+          ...(height ? { minRowHeight: structuredClone(height) } : {}),
+        },
+      }
       : {}),
   };
   rows.splice(below ? rowIndex + 1 : rowIndex, 0, row);
@@ -987,16 +1019,34 @@ function insertTableRow(
 function insertTableColumn(
   tab: GoogleDocsTab, location: TableCellLocation, right: boolean, options: ModelOptions,
 ): void {
-  let { rows, columnIndex } = namedCell(tab, location, "insertTableColumn");
+  let { place, rows, columnIndex } = namedCell(tab, location, "insertTableColumn");
+  let at = right ? columnIndex + 1 : columnIndex;
   for (let row of rows) {
     let cells = row.tableCells ?? [];
     let reference = cells[columnIndex];
     if (!reference) notModelled("insertTableColumn on a table whose rows differ in length");
-    // A new column copies no chip.
-    cells.splice(right ? columnIndex + 1 : columnIndex, 0,
-      cellOf(newCellParagraph(reference, options)));
+    // A new column copies no chip, but the cells' styles, as probe S2 saw.
+    cells.splice(at, 0, withCopiedStyle(cellOf(newCellParagraph(reference, options)), reference));
     row.tableCells = cells;
   }
+  // The new column takes the width of the column it copies. Beside one that shares the page's
+  // width, Google may narrow the fixed columns, as probe S2c saw.
+  let properties = place.table.tableStyle?.tableColumnProperties;
+  if (!properties) return;
+  let copied = structuredClone(properties[columnIndex]);
+  if (copied?.widthType !== "FIXED_WIDTH") {
+    for (let column of properties) {
+      if (column.widthType === "FIXED_WIDTH") column.width = { magnitude: NARROWED_WIDTH, unit: "PT" };
+    }
+  }
+  properties.splice(at, 0, copied ?? { widthType: "EVENLY_DISTRIBUTED" });
+}
+
+/** `cell` with the style of the cell it copies, as Google copies it into a row or column. */
+function withCopiedStyle(cell: TableCell, reference: TableCell): TableCell {
+  return reference.tableCellStyle
+    ? { ...cell, tableCellStyle: { ...structuredClone(reference.tableCellStyle), rowSpan: 1, columnSpan: 1 } }
+    : cell;
 }
 
 function deleteTableRow(tab: GoogleDocsTab, location: TableCellLocation): void {
@@ -1015,6 +1065,7 @@ function deleteTableColumn(tab: GoogleDocsTab, location: TableCellLocation): voi
     }
     row.tableCells?.splice(columnIndex, 1);
   }
+  place.table.tableStyle?.tableColumnProperties?.splice(columnIndex, 1);
   // A table that loses its last column is gone, and the paragraphs around it stay.
   if (rows.every(row => !row.tableCells?.length)) place.container.splice(place.position, 1);
   renumberFootnotes(tab);
@@ -1036,5 +1087,38 @@ function pinTableHeaderRows(
   for (let [index, row] of rows.entries()) {
     if (index < count) row.tableRowStyle = { ...row.tableRowStyle, tableHeader: true };
     else if (row.tableRowStyle) delete row.tableRowStyle.tableHeader;
+  }
+}
+
+/**
+ * Set the width of columns, as probe R5 saw: the others keep theirs, an empty list names every
+ * column, and a fixed width under 5pt is refused.
+ */
+function updateTableColumnProperties(
+  tab: GoogleDocsTab,
+  { tableStartLocation, columnIndices, tableColumnProperties, fields }: Extract<
+    GoogleDocsRequest, { updateTableColumnProperties: unknown }
+  >["updateTableColumnProperties"],
+): void {
+  requireTab(tab, tableStartLocation);
+  let place = tableAt(tab.body.content, tableStartLocation.index);
+  if (!place) throw new Error(INVALID_TABLE_START);
+  if (fields !== "widthType,width" && fields !== "widthType") notModelled(`fields ${fields}`);
+  let columns = place.table.tableRows?.[0]?.tableCells?.length ?? 0;
+  let { widthType, width } = tableColumnProperties;
+  if (widthType === "FIXED_WIDTH" && !width) {
+    throw new Error("Width value must be provided when updating column width to fixed width.");
+  }
+  if (widthType === "FIXED_WIDTH" && width!.magnitude < 5) {
+    throw new Error("Column width must not be less than minimum column width: 5.");
+  }
+  let style = place.table.tableStyle ??= {};
+  let properties = style.tableColumnProperties ??=
+    Array.from({ length: columns }, () => ({ widthType: "EVENLY_DISTRIBUTED" }));
+  for (let column of columnIndices.length === 0 ? properties.keys() : columnIndices) {
+    if (column >= columns) notModelled(`a column index ${column} past the table`);
+    properties[column] = widthType === "FIXED_WIDTH"
+      ? { widthType, width: structuredClone(width) }
+      : { widthType };
   }
 }

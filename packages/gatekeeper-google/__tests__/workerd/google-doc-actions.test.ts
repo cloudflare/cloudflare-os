@@ -63,6 +63,9 @@ function requestTabId(
   if ("deleteParagraphBullets" in request) return request.deleteParagraphBullets.range.tabId;
   if ("insertTable" in request) return request.insertTable.location.tabId;
   if ("pinTableHeaderRows" in request) return request.pinTableHeaderRows.tableStartLocation.tabId;
+  if ("updateTableColumnProperties" in request) {
+    return request.updateTableColumnProperties.tableStartLocation.tabId;
+  }
   // A row or column request names its table, and the table's start names the tab.
   let cell = "insertTableRow" in request ? request.insertTableRow.tableCellLocation
     : "insertTableColumn" in request ? request.insertTableColumn.tableCellLocation

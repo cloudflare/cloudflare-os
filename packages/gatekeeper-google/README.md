@@ -466,7 +466,8 @@ table that its `after` text ends in, or at the end of the tab. Google Docs keeps
 each side of a table, so one empty paragraph is added with it: after the new table, or between the
 two tables when it follows one. Every cell of a new table, and that paragraph, is reset to a normal
 paragraph with no list and no indent, in default text. A row or column added to a table takes the
-look of the cells beside it, as Google copies it: cell shading, alignment, font, size and colour.
+look of the cells beside it, as Google copies it: cell shading, alignment, padding, borders, font,
+size and colour, and the row's least height or the column's width.
 It never takes their bold, italic, strikethrough, links, list items or headings, so new cells read
 as plain paragraphs; a cell added beside one that starts with a heading or a list item is reset to
 default text, since the request that takes the heading off takes the rest with it. "Beside" is the
@@ -474,7 +475,11 @@ row or column the new ones go before, or the last one when they go at the end. T
 table pins keep their count when a row is added beside one: Google would pin the new row as well,
 so the change pins the count again. A row added above a header row therefore becomes a header row,
 and the last of the rows that were pinned stops being one; the approval card does not say so, since
-pinning is not something the Markdown shows. Borders and widths are Google's choice. Where a cell
+pinning is not something the Markdown shows. Google copies a cell's borders as the cell stores them,
+so an edge it shares with the line beside the new one can read differently on its two sides. A
+column added beside one that shares the page's width can make Google narrow the table's fixed
+columns, and only sometimes, so such a change sets every fixed width back to what it was. Reads
+show all of this as it will be. Where a cell
 beside the new rows holds one dropdown, person chip, date chip, rich link or placeholder and no
 text, Google Docs copies it into each new row, as the status tables it offers as building blocks
 need: a dropdown of the same choices set to its first, and the placeholder character for the

@@ -2,7 +2,7 @@
 // queued change replays over that rendering, and which batchUpdate requests make the same change
 // in the document. Everything here is a pure function of a rendering; nothing mutates its input.
 
-import type { GoogleDocsRequest, TextStyle } from "./docs-api";
+import type { DocsLocation, GoogleDocsRequest, TextStyle } from "./docs-api";
 import {
   addRequest, applyMarkdownEdit, canonicalizeMarkdownReplacement, canonicalLinkDestination,
   cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
@@ -10,7 +10,10 @@ import {
   MAX_GOOGLE_DOC_REQUESTS, packTableRow, plainTextToDocRequests, StructuredContentError,
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
-import { coveredCells, readLook } from "./docs-table-look";
+import {
+  coveredCells, lookWithColumns, lookWithoutColumns, lookWithoutRows, lookWithRows, readLook,
+  renderLook,
+} from "./docs-table-look";
 import type { LookAttributes, TableLook } from "./docs-table-look";
 import type {
   BlockMapping, CellInlineRun, DocTabSnapshot, EditableMarkdown, EditableTable, InheritedFormat,
@@ -889,6 +892,42 @@ function withTable(
   };
 }
 
+/**
+ * The content once the table at `table` reads with `look`: its opening tags written anew, and
+ * each cell's texts moved by the change in the length of its own. The text of the table stays
+ * as it is.
+ */
+function restyleTable(content: EditableMarkdown, table: number, look: TableLook): EditableMarkdown {
+  let target = content.tables[table];
+  let lines = tableLines(content.markdown, target);
+  let rendered = renderLook(look);
+  let edits: TextEdit[] = [{
+    start: lines.tag.mdStart, end: lines.tag.mdEnd, text: `<table${rendered.table}>`,
+  }];
+  let colgroup = rendered.colgroup === undefined ? "" : `  ${rendered.colgroup}\n`;
+  let afterTag = lines.tag.mdEnd + 1;
+  edits.push(lines.colgroup
+    ? { start: lines.colgroup.mdStart, end: lines.colgroup.mdEnd, text: colgroup }
+    : { start: afterTag, end: afterTag, text: colgroup });
+  let packed = lines.rows.map((row, r) => {
+    edits.push({ start: row.tag.mdStart, end: row.tag.mdEnd, text: `<tr${rendered.rows[r]}>` });
+    let entries = tableRowCells(target, r);
+    for (let [c, cell] of row.cells.entries()) {
+      let text = `<td${spanAttribute("rowspan", cell.rowSpan)}` +
+        `${spanAttribute("colspan", cell.columnSpan)}${rendered.cells[r][c]}>`;
+      edits.push({ start: cell.tag.mdStart, end: cell.tag.mdEnd, text });
+      let moved = text.length - (cell.tag.mdEnd - cell.tag.mdStart);
+      entries[c] = {
+        ...entries[c], texts: entries[c].texts.map(([start, end]) => [start + moved, end + moved]),
+      };
+    }
+    return packTableRow(entries);
+  });
+  return withTable(content, table, spliceText(content.markdown, edits), packed);
+}
+
+const spanAttribute = (name: string, span: number): string => span > 1 ? ` ${name}="${span}"` : "";
+
 /** Replay a change to the rows or columns of the table at `table`. */
 function applyLineChange(
   content: EditableMarkdown, table: number,
@@ -898,6 +937,7 @@ function applyLineChange(
   let { lines, rows, columns } = checkLineChange(content, table, shape, doc);
   let target = content.tables[table];
   let { at, count } = shape;
+  let look = readTableLook(lines, change.type);
   let edits: TextEdit[] = [];
   let packed: number[][];
   switch (change.type) {
@@ -942,7 +982,15 @@ function applyLineChange(
       });
       break;
   }
-  return withTable(content, table, spliceText(content.markdown, edits), packed);
+  let changed = withTable(content, table, spliceText(content.markdown, edits), packed);
+  // The cells and lines Google adds copy the look of those beside them, and those it deletes
+  // take theirs away.
+  return restyleTable(changed, table, {
+    insertTableRows: lookWithRows,
+    insertTableColumns: lookWithColumns,
+    deleteTableRows: lookWithoutRows,
+    deleteTableColumns: lookWithoutColumns,
+  }[change.type](look, at, count));
 }
 
 /** Replay the deletion of the table at `table`. */
@@ -1204,6 +1252,34 @@ export function applyTableChange(
 // The requests of a change
 // ---------------------------------------------------------------------------
 
+/**
+ * Set the fixed widths of a table's columns back to what `look` gives them, once `count` columns
+ * have been added before column `at`, copying column `reference`. A column added beside one that
+ * shares the page's width can make Google narrow the fixed columns to what their text needs,
+ * and only sometimes: live probes saw a 120pt column cut to 13pt beside two such columns, and two
+ * 200pt ones kept.
+ */
+function restoreFixedWidths(
+  requests: GoogleDocsRequest[], tableStartLocation: DocsLocation, look: TableLook,
+  reference: number, at: number, count: number,
+): void {
+  let { columns } = look;
+  if (!columns || columns[reference] !== null) return;
+  let byWidth = new Map<number, number[]>();
+  for (let [column, width] of columns.entries()) {
+    if (width !== null) byWidth.set(width, [...byWidth.get(width) ?? [], column < at ? column : column + count]);
+  }
+  for (let [width, columnIndices] of byWidth) {
+    addRequest(requests, {
+      updateTableColumnProperties: {
+        tableStartLocation, columnIndices,
+        tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: width, unit: "PT" } },
+        fields: "widthType,width",
+      },
+    });
+  }
+}
+
 /** The requests that make a change in the fresh tab, after the checks its replay makes. */
 export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): GoogleDocsRequest[] {
   let content = tabContent(tab);
@@ -1309,6 +1385,9 @@ export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): G
           },
         });
       }
+      restoreFixedWidths(requests, tableStartLocation,
+        readTableLook(tableLines(content.markdown, content.tables[position]), change.type),
+        reference, at, count);
       for (let row = rows - 1; row >= 0; row--) {
         let indexes = tableRowIndexes(table, row);
         let start = atEnd ? indexes.docEnd : indexes.cells[at].docStart;

@@ -158,7 +158,7 @@ const DOC_TABLE_GUIDANCE = [
   "only until the tables of one tab hold 5,000 cells",
   // A new cell takes its neighbour's look and none of what the HTML shows; which neighbour.
   "their bold, italic, strikethrough, links, list items or headings",
-  "or of the last row when they are added at the end",
+  "or of the last row when they are added at",
   "or of the last column when they are added at the end",
   // The refusals nothing in `getContent()` shows coming.
   "Rows cannot be added beside a cell of chips and no text",

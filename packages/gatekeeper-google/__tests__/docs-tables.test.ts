@@ -6,8 +6,8 @@ import {
   addedTableCells, applyNewTable, applyTableChange, applyTextReplacement, changesTables,
   checkTabTableCells, checkTableTarget, classifyReplacement, hiddenContent, MAX_TAB_TABLE_CELLS,
   MAX_TABLE_TEXT_REQUESTS, namesTable, parseCellInline, replaceTableText, resolveTable,
-  runParagraphReplacement, tableChangeRequests, tableHtml, tableLines, TableReplayGate,
-  tableShape, tableSize, tableTextRequests, textReplacementRequests,
+  runParagraphReplacement, tableChangeRequests, tableHtml, tableIdentity, tableLines,
+  TableReplayGate, tableShape, tableSize, tableTextRequests, textReplacementRequests,
 } from "../src/docs-tables";
 import type {
   ReplacementPlace, TableChange, TableChangeShape, TableDeletionShape, TableRef, TextReplacement,
@@ -101,7 +101,7 @@ function editableTables(tables: readonly EditableTable[]): EditableTable[] {
 
 /** The reference a queued change records of the table at `table`. */
 const refOf = (content: EditableMarkdown, table: number): TableRef =>
-  ({ expected: tableAt(content, table) });
+  ({ expected: tableIdentity(tableAt(content, table)) });
 
 const addRows = (
   content: EditableMarkdown, table: number, at: number, cells: string[][],
@@ -4467,5 +4467,91 @@ describe("random sequences of changes", () => {
     // Most steps are made; the rest are refused by the request builder and by the replay alike.
     expect(made).toBeGreaterThan(700);
     expect(refused).toBeGreaterThan(100);
+  });
+});
+
+describe("a table's look through changes to its rows and columns", () => {
+  const pt = (magnitude: number) => ({ magnitude, unit: "PT" });
+  const red = { color: { rgbColor: { red: 1 } } };
+  const blue = { color: { rgbColor: { blue: 1 } } };
+  const SHADED: CellSpec = {
+    paragraphs: [para("e")],
+    tableCellStyle: {
+      backgroundColor: { color: { rgbColor: { red: 1, green: 0.8 } } }, contentAlignment: "MIDDLE",
+      paddingLeft: pt(9), borderRight: { width: pt(2), dashStyle: "SOLID", color: red },
+      borderBottom: { width: pt(3), dashStyle: "DASH", color: blue },
+    },
+  };
+  const styled = (): GoogleDocsTab => buildTab([para("Before"), {
+    table: [
+      ["a\n", "b\n", "c\n"],
+      ["d\n", SHADED, { paragraphs: [para("f")], tableCellStyle: { borderLeft: { width: pt(2), dashStyle: "SOLID", color: red } } }],
+      ["g\n", { paragraphs: [para("h")], tableCellStyle: { borderTop: { width: pt(3), dashStyle: "DASH", color: blue } } }, "i\n"],
+    ],
+    columns: [null, 120, null],
+    heights: [0, 40, 0],
+  }, para("After")]);
+  const SHADED_TAG = '<td style="background-color:#ffcc00;vertical-align:middle;padding-left:9pt;' +
+    'border-right:2pt solid #ff0000;border-bottom:3pt dashed #0000ff">';
+
+  it("gives added rows the look and height of the row they copy, as Google does", () => {
+    for (let [at, cells] of [[1, [["x", "y", "z"]]], [2, [[], []]], [3, [["end"]]]] as const) {
+      let tab = styled();
+      let applied = expectSameAsGoogle(tab, addRows(read(tab), 0, at, cells.map(row => [...row])));
+      let html = tableAt(read(applied), 0);
+      let reference = Math.min(at, 2);
+      let copies = html.split(SHADED_TAG).length - 1;
+      expect(copies, `at ${at}`).toBe(reference === 1 ? 1 + cells.length : 1);
+      expect(html.split('<tr style="height:40pt">').length - 1).toBe(reference === 1 ? 1 + cells.length : 1);
+    }
+  });
+
+  it("gives added columns the look and width of the column they copy, and keeps fixed widths", () => {
+    let tab = styled();
+    let applied = expectSameAsGoogle(tab, addColumns(read(tab), 0, 1, [["n"], [""], [""]]));
+    expect(tableAt(read(applied), 0)).toContain(
+      '  <colgroup><col><col style="width:120pt"><col style="width:120pt"><col></colgroup>');
+    // Beside a column that shares the page's width, the fixed widths are set again.
+    let atEnd = addColumns(read(tab), 0, 3, [["n"], [""], [""]]);
+    let requests = tableChangeRequests(docTabToMarkdown(tab), atEnd);
+    expect(requests.filter(request => "updateTableColumnProperties" in request)).toEqual([{
+      updateTableColumnProperties: {
+        tableStartLocation: { index: docTabToMarkdown(tab).sourceMap.tables[0].docStart, tabId: TAB },
+        columnIndices: [1],
+        tableColumnProperties: { widthType: "FIXED_WIDTH", width: { magnitude: 120, unit: "PT" } },
+        fields: "widthType,width",
+      },
+    }]);
+    applied = expectSameAsGoogle(tab, atEnd);
+    expect(tableAt(read(applied), 0)).toContain(
+      '  <colgroup><col><col style="width:120pt"><col><col></colgroup>');
+  });
+
+  it("takes the look of deleted rows and columns away with them", () => {
+    let tab = styled();
+    let applied = expectSameAsGoogle(tab, dropColumns(read(tab), 0, 1));
+    let html = tableAt(read(applied), 0);
+    expect(html).not.toContain("<colgroup>");
+    expect(html).toContain('<td style="border-left:2pt solid #ff0000"><p>f</p></td>');
+    applied = expectSameAsGoogle(tab, dropRows(read(tab), 0, 1));
+    expect(tableAt(read(applied), 0)).not.toContain("height:40pt");
+    expect(tableAt(read(applied), 0)).toContain('<td style="border-top:3pt dashed #0000ff"><p>h</p></td>');
+  });
+
+  it("writes the table's own style again when an added row changes what most cells share", () => {
+    let shaded = (text: string): CellSpec =>
+      ({ paragraphs: [para(text)], tableCellStyle: { backgroundColor: { color: { rgbColor: { green: 1 } } } } });
+    let tab = buildTab([para("Before"), { table: [[shaded("a"), shaded("b")], ["c\n", "d\n"]] }, para("After")]);
+    expect(tableAt(read(tab), 0).startsWith("<table>\n")).toBe(true);
+    let applied = expectSameAsGoogle(tab, addRows(read(tab), 0, 0, [["x", "y"]]));
+    expect(tableAt(read(applied), 0)).toContain(
+      '<table style="background-color:#00ff00">\n  <tr>\n    <td><p>x</p></td>');
+  });
+
+  it("keeps a table Google adds plain, though it stores every default", () => {
+    let tab = buildTab([para("Before"), para("After")]);
+    let applied = expectSameAsGoogle(tab, newTable([["a", "b"]], "Before"));
+    expect(tableAt(read(applied), 0).startsWith("<table>\n  <tr>\n    <td><p>a</p></td>")).toBe(true);
+    expect(JSON.stringify(applied.body.content)).toContain('"paddingTop":{"magnitude":5');
   });
 });

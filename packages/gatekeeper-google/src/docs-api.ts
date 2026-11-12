@@ -387,7 +387,17 @@ export type GoogleDocsRequest =
   | { insertTableColumn: { tableCellLocation: TableCellLocation; insertRight: boolean } }
   | { deleteTableRow: { tableCellLocation: TableCellLocation } }
   | { deleteTableColumn: { tableCellLocation: TableCellLocation } }
-  | { pinTableHeaderRows: { tableStartLocation: DocsLocation; pinnedHeaderRowsCount: number } };
+  | { pinTableHeaderRows: { tableStartLocation: DocsLocation; pinnedHeaderRowsCount: number } }
+  | {
+    updateTableColumnProperties: {
+      tableStartLocation: DocsLocation;
+      columnIndices: number[];
+      tableColumnProperties: {
+        widthType: "FIXED_WIDTH" | "EVENLY_DISTRIBUTED"; width?: { magnitude: number; unit: "PT" };
+      };
+      fields: string;
+    };
+  };
 
 // ---------------------------------------------------------------------------
 // API client

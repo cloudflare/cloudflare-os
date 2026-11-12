@@ -338,3 +338,53 @@ export function readLook(
       row.every((style, c) => style === styleAttribute(attributes.cells[r][c])));
   return same ? look : undefined;
 }
+
+// ---------------------------------------------------------------------------
+// How rows and columns change a look
+// ---------------------------------------------------------------------------
+
+// Each changes a table without merged cells, as the row and column changes are kept to.
+
+/**
+ * `look` with `count` rows added before row `at`: each takes the cells' looks and the least
+ * height of the row it goes before, or of the last row at the end, as Google copies them.
+ */
+export function lookWithRows(look: TableLook, at: number, count: number): TableLook {
+  let reference = Math.min(at, look.cells.length - 1);
+  return {
+    ...look,
+    cells: look.cells.toSpliced(at, 0, ...Array.from({ length: count }, () => look.cells[reference])),
+    rows: look.rows.toSpliced(at, 0, ...Array.from({ length: count }, () => look.rows[reference])),
+  };
+}
+
+/**
+ * `look` with `count` columns added before column `at`: each takes the cells' looks and the
+ * width of the column it goes before, or of the last column at the end.
+ */
+export function lookWithColumns(look: TableLook, at: number, count: number): TableLook {
+  let copies = <T>(line: readonly T[]) => {
+    let reference = Math.min(at, line.length - 1);
+    return line.toSpliced(at, 0, ...Array.from({ length: count }, () => line[reference]));
+  };
+  return {
+    ...look,
+    cells: look.cells.map(copies),
+    ...(look.columns ? { columns: copies(look.columns) } : {}),
+  };
+}
+
+/** `look` without rows `at` to `at + count - 1`. */
+export function lookWithoutRows(look: TableLook, at: number, count: number): TableLook {
+  return { ...look, cells: look.cells.toSpliced(at, count), rows: look.rows.toSpliced(at, count) };
+}
+
+/** `look` without columns `at` to `at + count - 1`. */
+export function lookWithoutColumns(look: TableLook, at: number, count: number): TableLook {
+  let columns = look.columns?.toSpliced(at, count);
+  return {
+    cells: look.cells.map(row => row.toSpliced(at, count)),
+    ...(columns?.some(width => width !== null) ? { columns } : {}),
+    rows: look.rows,
+  };
+}
