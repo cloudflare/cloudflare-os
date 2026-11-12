@@ -5,6 +5,7 @@ import type { RpcStub } from 'capnweb'
 import type { AiChatAuthorInfo, AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import {
   cacheModels,
+  forgetModelSelection,
   getCachedModels,
   getStoredSelectedModel,
   NO_AGENT_OPTION_VALUE,
@@ -18,12 +19,14 @@ const MODELS = [OPUS, SONNET]
 
 const getPreferredModel = vi.fn<() => Promise<string | null>>()
 const setPreferredModel = vi.fn<(id: string | null) => Promise<void>>()
-const api = { getPreferredModel, setPreferredModel } as unknown as RpcStub<AuthenticatedApi>
+const whoami = vi.fn<() => Promise<AiChatAuthorInfo>>()
+const api = { getPreferredModel, setPreferredModel, whoami } as unknown as RpcStub<AuthenticatedApi>
 
 beforeEach(() => {
   vi.resetAllMocks()
   localStorage.clear()
   getPreferredModel.mockResolvedValue(null)
+  whoami.mockResolvedValue({ type: 'user', id: 'alice', name: 'Alice' })
   setPreferredModel.mockResolvedValue(undefined)
   vi.spyOn(console, 'error').mockImplementation(() => {})
 })
@@ -145,6 +148,46 @@ describe('syncSelectedModel', () => {
     await expect(syncSelectedModel(api)).resolves.toBeUndefined()
 
     expect(getStoredSelectedModel(MODELS)).toBe('sonnet')
+  })
+})
+
+describe('a browser shared between users', () => {
+  it("drops another user's unsaved choice and models instead of saving them", async () => {
+    await syncSelectedModel(api)
+    cacheModels(MODELS)
+    setPreferredModel.mockRejectedValueOnce(new Error('offline'))
+    persistSelectedModel(api, 'sonnet')
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+    setPreferredModel.mockClear()
+
+    whoami.mockResolvedValue({ type: 'user', id: 'bob', name: 'Bob' })
+    getPreferredModel.mockResolvedValue('opus')
+    await syncSelectedModel(api)
+
+    expect(setPreferredModel).not.toHaveBeenCalled()
+    expect(getStoredSelectedModel(MODELS)).toBe('opus')
+    expect(getCachedModels()).toEqual([])
+  })
+
+  it('still saves an unsaved choice for the user who made it', async () => {
+    await syncSelectedModel(api)
+    setPreferredModel.mockRejectedValueOnce(new Error('offline'))
+    persistSelectedModel(api, 'sonnet')
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+
+    await syncSelectedModel(api)
+
+    expect(setPreferredModel).toHaveBeenLastCalledWith('sonnet')
+  })
+
+  it('forgets everything on sign-out', () => {
+    cacheModels(MODELS)
+    persistSelectedModel(api, 'sonnet')
+
+    forgetModelSelection()
+
+    expect(getCachedModels()).toEqual([])
+    expect(getStoredSelectedModel(MODELS)).toBe('opus')
   })
 })
 

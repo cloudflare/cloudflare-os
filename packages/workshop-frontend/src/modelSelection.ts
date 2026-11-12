@@ -8,6 +8,15 @@ const LAST_SELECTED_MODEL_KEY = "lastSelectedModel";
 // Set once this browser's copy has been reconciled with the server's.
 const PREFERENCE_SYNCED_KEY = "lastSelectedModelSynced";
 const CACHED_MODELS_KEY = "cachedModels";
+// The user the keys above were stored for, since browser storage outlives a session.
+const OWNER_KEY = "modelSelectionOwner";
+
+/** Forgets what this browser remembers of a user's models, as when they sign out. */
+export function forgetModelSelection(): void {
+  for (const key of [LAST_SELECTED_MODEL_KEY, PREFERENCE_SYNCED_KEY, CACHED_MODELS_KEY, OWNER_KEY]) {
+    localStorage.removeItem(key);
+  }
+}
 
 // Counts this page's picks, so that an answer to a read started before a pick is known to be stale.
 let selectionRevision = 0;
@@ -73,7 +82,15 @@ export function getStoredSelectedModel(
  */
 export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise<void> {
   try {
+    // A session can end without a sign-out, so what another user left here is dropped rather than
+    // saved as this user's choice. Storage with no owner predates owners and is taken as theirs.
+    // A pick made on this page meanwhile is this user's own, so it stands.
     const revision = selectionRevision;
+    const { id } = await api.whoami();
+    const owner = localStorage.getItem(OWNER_KEY);
+    if (owner !== null && owner !== id && selectionRevision === revision) forgetModelSelection();
+    localStorage.setItem(OWNER_KEY, id);
+
     const local = localStorage.getItem(LAST_SELECTED_MODEL_KEY);
     if (local !== null && localStorage.getItem(PREFERENCE_SYNCED_KEY) === null) {
       // This browser's choice predates picks being saved for the user, so it is newer than the
