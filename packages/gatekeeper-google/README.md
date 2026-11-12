@@ -462,8 +462,9 @@ pinning is not something the Markdown shows. Borders and widths are Google's cho
 What cannot be applied exactly is refused. Each of the following is refused when the call is made,
 before anything is queued, with the two exceptions named after the list:
 
-- changing the rows or columns of a table with a merged cell, or the text of a merged cell or of
-  one it covers, since Google's row and column requests do not treat a merged cell as a cell;
+- changing the rows or columns of a table with a merged cell, since Google's row and column
+  requests do not treat a merged cell as a cell, or the text of a cell a merged cell covers, which
+  Google writes into the merged cell. The merged cell's own text can be replaced;
 - changing anything in a table inside a cell, or the text of the cell holding it;
 - changing the text of a cell paragraph that holds an image, smart chip, footnote or rule, or that
   is a subtitle;

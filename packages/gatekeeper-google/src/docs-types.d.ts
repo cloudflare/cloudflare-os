@@ -182,7 +182,7 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * table must stay as it is, down to the line breaks and indentation `getContent()` writes
    * between cells. A replacement cannot add or remove paragraphs, list items, cells, rows or
    * columns (use the table methods for rows and columns), change a table together with the text
-   * around it, or change a merged cell or a cell it covers, a cell that holds another table, a
+   * around it, or change a cell that a merged cell covers, a cell that holds another table, a
    * subtitle, or a paragraph that holds an image, smart chip or other element. It can add
    * paragraphs directly above or below a table, with a blank line between them and the table,
    * unless the paragraph on that side of the table is read-only. That blank line has to stay: to

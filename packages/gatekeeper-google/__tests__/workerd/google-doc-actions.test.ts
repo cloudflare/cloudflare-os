@@ -1250,6 +1250,19 @@ describe("Google Doc tables", () => {
     );
   });
 
+  it("replaces the text of a merged cell", async () => {
+    let docs = docsWithBody(buildTab([paragraph("Before"), { table: [
+      [{ paragraphs: [paragraph("Head")], tableCellStyle: { rowSpan: 2, columnSpan: 2 } }, "\n",
+        "a\n"],
+      ["\n", "\n", "b\n"],
+    ] }, paragraph("After")]).body);
+
+    let preview = await editApplies(
+      docs, "table-merged-text", "replaceText", "<p>Head</p>", "<p><strong>Top</strong></p>");
+    expect(preview).toContain(
+      "<td rowspan=\"2\" colspan=\"2\"><p><strong>Top</strong></p></td>\n    <td><p></p></td>");
+  });
+
   it("refuses an append when the tab ends in a table", async () => {
     let docs = new DocsModel();
     docs.setBody(MAIN_TAB, buildTab([{ table: [["Cell\n"]] }]).body);
@@ -2111,13 +2124,14 @@ describe("Google Doc tables", () => {
         ["deleteTableRows", [{ table: 0, at: 1 }], `deleteTableRows: ${MERGED}`],
         ["deleteTableColumns", [{ table: 0, at: 1 }], `deleteTableColumns: ${MERGED}`],
       ]],
-    ["refuses a replacement in a merged cell",
+    ["refuses a replacement in a cell a merged cell covers",
       () => buildTab([paragraph("Before"), { table: [
         [{ paragraphs: [paragraph("Head")], tableCellStyle: { columnSpan: 2 } }, "\n"],
         ["a\n", "b\n"],
       ] }, paragraph("After")]),
-      [["replaceText", ["<p>Head</p>", "<p>Top</p>"],
-        "replaceText: a merged cell, or a cell one covers, cannot be edited."]]],
+      [["replaceText", ["<p>Head</p></td>\n    <td><p></p></td>",
+        "<p>Head</p></td>\n    <td><p>Top</p></td>"],
+      "replaceText: a cell that a merged cell covers cannot be edited. Edit the merged cell."]]],
     ["refuses a replacement in a cell holding a table",
       () => buildTab([paragraph("Before"), { table: [[
         { paragraphs: [paragraph("Outer"), table(["Inner"]), paragraph("")] },

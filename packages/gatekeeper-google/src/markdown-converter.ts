@@ -613,12 +613,12 @@ function tableToHtml(
   map?: Pick<TableMapping, "rows" | "docRows">,
 ): string {
   let rows = table.tableRows ?? [];
-  let isMerged = map && mergedCellTracker(rows);
+  let isCovered = map && coveredCellTracker(rows);
   let lines = ["<table>"];
   for (let [rowIndex, row] of rows.entries()) {
     lines.push("  <tr>");
     let cells = (row.tableCells ?? []).map((cell, column) => tableCellToHtml(
-      cell, lists, listNumbers, subtitleItalic, !!isMerged && !isMerged(rowIndex, column, cell)));
+      cell, lists, listNumbers, subtitleItalic, !!isCovered && !isCovered(rowIndex, column, cell)));
     for (let cell of cells) lines.push(cell.html);
     lines.push("  </tr>");
     if (map) recordTableRow(map, row, cells, lists);
@@ -629,10 +629,11 @@ function tableToHtml(
 
 /**
  * Track the merged cells of a table. The function returned is called for every cell in row order,
- * and says whether the cell is merged or covered by a merged one: a cell that spans rows or
- * columns covers every other cell its spans reach, below it and to its right.
+ * and says whether the cell is covered by a merged one: a cell that spans rows or columns covers
+ * every other cell its spans reach, below it and to its right. Google puts text sent to a covered
+ * cell into the merged cell, whose own text has ordinary indexes.
  */
-function mergedCellTracker(
+function coveredCellTracker(
   rows: readonly TableRow[],
 ): (row: number, column: number, cell: TableCell) => boolean {
   let width = 0;
@@ -647,7 +648,7 @@ function mergedCellTracker(
     for (let reached = column; reached < end; reached++) {
       coveredBefore[reached] = Math.max(coveredBefore[reached] ?? 0, row + rowSpan);
     }
-    return true;
+    return false;
   };
 }
 
@@ -742,7 +743,7 @@ function holdsUnshownElement(paragraph: Paragraph): boolean {
 
 /**
  * Render one cell. Its texts are counted from the first character of its first line, and it lists
- * none unless `editable`: a merged cell, a cell one covers and a cell of a table inside another
+ * none unless `editable`: a cell that a merged cell covers and a cell of a table inside another
  * cell are not.
  */
 function tableCellToHtml(

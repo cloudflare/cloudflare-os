@@ -2153,13 +2153,14 @@ function tableTextRefusal(
       "deleteTableColumns(), and remove a table with deleteTable().");
   }
   let cell = lines.rows[rowIndex].cells[columnIndex];
-  // A merged cell covers the cells its spans reach, below it and to its right.
-  let merged = lines.rows.slice(0, rowIndex + 1).some((row, headRow) =>
+  // A merged cell covers the other cells its spans reach, below it and to its right.
+  let covered = lines.rows.slice(0, rowIndex + 1).some((row, headRow) =>
     row.cells.slice(0, columnIndex + 1).some((head, headColumn) =>
-      (head.rowSpan > 1 || head.columnSpan > 1) &&
+      (headRow !== rowIndex || headColumn !== columnIndex) &&
       headRow + head.rowSpan > rowIndex && headColumn + head.columnSpan > columnIndex));
-  if (merged) {
-    return new Error("replaceText: a merged cell, or a cell one covers, cannot be edited.");
+  if (covered) {
+    return new Error(
+      "replaceText: a cell that a merged cell covers cannot be edited. Edit the merged cell.");
   }
   if (cell.nested) {
     return new Error("replaceText: a cell that holds another table cannot be edited.");

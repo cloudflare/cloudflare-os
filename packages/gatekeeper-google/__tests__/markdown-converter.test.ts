@@ -1357,7 +1357,7 @@ describe("Google Docs table map", () => {
     expect(mappedTexts(snapshot).map(text => text.html)).toEqual(["Plain", "Last"]);
   });
 
-  it("lists no text for cells it cannot edit", () => {
+  it("lists no text for cells it cannot edit, and a merged cell's own text", () => {
     let tab = buildTab([{ table: [
       [
         { paragraphs: [{ runs: ["Merged\n"] }], tableCellStyle: { rowSpan: 2, columnSpan: 2 } },
@@ -1396,9 +1396,11 @@ describe("Google Docs table map", () => {
     expect(snapshot.markdown).toContain("<td><p>[Image] positioned</p></td>");
     expect(snapshot.markdown).toContain("<td><p><em>Summary</em></p></td>");
     expect(table.rows.map((_, row) => tableRowCells(table, row).map(cell => cell.texts.length)))
-      .toEqual([[0, 0, 1], [0, 0, 1], [0, 0, 0], [0, 0, 0], [0, 0, 1]]);
-    expect(mappedTexts(snapshot).map(text => text.html)).toEqual(["free", "free too", "Plain"]);
+      .toEqual([[1, 0, 1], [0, 0, 1], [0, 0, 0], [0, 0, 0], [0, 0, 1]]);
+    expect(mappedTexts(snapshot).map(text => text.html))
+      .toEqual(["Merged", "free", "free too", "Plain"]);
     expect(mappedTexts(snapshot).map(text => text.paragraph)).toEqual([
+      fixtureCell(tab, 1, 0, 0).startIndex + 1,
       fixtureCell(tab, 1, 0, 2).startIndex + 1,
       fixtureCell(tab, 1, 1, 2).startIndex + 1,
       fixtureCell(tab, 1, 4, 2).endIndex - "Plain\n".length,
@@ -1414,7 +1416,7 @@ describe("Google Docs table map", () => {
     ] }]);
 
     expect(mappedTexts(docTabToMarkdown(tab)).map(text => text.html))
-      .toEqual(["a", "b", "c", "d", "e", "f", "g", "h"]);
+      .toEqual(["wide", "a", "tall", "b", "c", "d", "e", "f", "g", "h"]);
   });
 
   it("keeps a paragraph editable whose text Google would strip from an insert", () => {

@@ -2779,7 +2779,8 @@ const WHITE_SPACE = "replaceText: the line breaks and indentation between a tabl
 const STRUCTURE = "replaceText: inside a table only the text of its cells can be replaced. " +
   "Change rows and columns with insertTableRows(), insertTableColumns(), deleteTableRows() " +
   "and deleteTableColumns(), and remove a table with deleteTable().";
-const MERGED_CELL = "replaceText: a merged cell, or a cell one covers, cannot be edited.";
+const COVERED_CELL =
+  "replaceText: a cell that a merged cell covers cannot be edited. Edit the merged cell.";
 const NESTED_CELL = "replaceText: a cell that holds another table cannot be edited.";
 const PARAGRAPH_BREAK = "replaceText: the text of a paragraph in a table cell cannot hold a " +
   "paragraph break. Write <br> for a line break within the paragraph; a paragraph cannot be " +
@@ -2886,7 +2887,9 @@ describe("refusals of a replacement in table cells", () => {
       .toBe(STRUCTURE);
     expect(cellRefusal(PLAIN, QUOTED, "<td><p>Fix login</p><p>more</p></td>\n    <td><p>Open</p></td>"))
       .toBe(PARAGRAPHS);
-    expect(cellRefusal(MERGED, "<p>Notes</p>", "<p>Note</p>")).toBe(MERGED_CELL);
+    expect(cellRefusal(MERGED,
+      "<p>Notes</p></td>\n    <td><p></p></td>", "<p>Notes</p></td>\n  <td><p>x</p></td>"))
+      .toBe(COVERED_CELL);
     expect(cellRefusal(WIDE, WIDE_ROW, "    <td><p>Fix login</p></td>\n  <td><p>Ana</p></td>\n"))
       .toBe(STRUCTURE);
     // White space beside the tags a text is written with is text.
@@ -2896,14 +2899,57 @@ describe("refusals of a replacement in table cells", () => {
       PLAIN, QUOTED, "<td><p><strong>Fix</strong> <strong>login</strong></p></td>\n    <td><p>Open</p></td>");
   });
 
-  it("refuses a change in a merged cell, a cell one covers and a cell that holds a table", () => {
-    expect(cellRefusal(MERGED, "<td colspan=\"2\"><p>Notes</p></td>", "<td colspan=\"2\"><p>Note</p></td>"))
-      .toBe(MERGED_CELL);
+  it("replaces the text of a merged cell, which a replacement quoting its covered cells keeps", () => {
+    let tall = buildTab([
+      para("Before"),
+      {
+        table: [
+          [{ paragraphs: [para("Q1")], tableCellStyle: { rowSpan: 2 } }, "Jan\n"],
+          ["\n", "Feb\n"],
+          ["Q2\n", "Apr\n"],
+        ],
+      },
+      para("After"),
+    ]);
+    let square = buildTab([
+      para("Before"),
+      {
+        table: [
+          [{ paragraphs: [para("Total"), para("of all")], tableCellStyle:
+            { rowSpan: 2, columnSpan: 2 } }, "\n", "a\n"],
+          ["\n", "\n", "b\n"],
+        ],
+      },
+      para("After"),
+    ]);
+    let replacements: [GoogleDocsTab, string, string][] = [
+      [MERGED, "<p>Notes</p>", "<p>Note <strong>well</strong></p>"],
+      [MERGED, "<td><p>Open</p></td>\n    <td colspan=\"2\"><p>Notes</p></td>",
+        "<td><p>Done</p></td>\n    <td colspan=\"2\"><p>Notes</p></td>"],
+      [MERGED, "<p>Notes</p></td>\n    <td><p></p></td>", "<p>Later</p></td>\n    <td><p></p></td>"],
+      [tall, "<p>Q1</p>", "<p><em>First</em> quarter</p>"],
+      [tall, "<p>Q1</p></td>\n    <td><p>Jan</p>", "<p>H1</p></td>\n    <td><p>January</p>"],
+      [square, "<p>of all</p>", "<p>of <a href=\"https://e.com\">all</a></p>"],
+      [square, "<p>Total</p>", "<p></p>"],
+    ];
+    for (let [tab, oldMarkdown, newMarkdown] of replacements) {
+      expectCellTextSameAsGoogle(tab, oldMarkdown, newMarkdown);
+    }
+    expect(cellRefusal(tall, "<td><p></p></td>\n    <td><p>Feb</p>",
+      "<td><p>covered</p></td>\n    <td><p>Feb</p>")).toBe(COVERED_CELL);
+    expect(cellRefusal(square, "<td><p></p></td>\n    <td><p>b</p>",
+      "<td><p>x</p></td>\n    <td><p>b</p>")).toBe(COVERED_CELL);
+  });
+
+  it("refuses a change in a cell a merged cell covers and in a cell that holds a table", () => {
     expect(cellRefusal(MERGED,
       "<p>Notes</p></td>\n    <td><p></p></td>", "<p>Notes</p></td>\n    <td><p>covered</p></td>"))
-      .toBe(MERGED_CELL);
+      .toBe(COVERED_CELL);
+    expect(cellRefusal(MERGED,
+      "<p>Notes</p></td>\n    <td><p></p></td>", "<p>Note</p></td>\n    <td><p>covered</p></td>"))
+      .toBe(COVERED_CELL);
     expect(cellRefusal(MERGED, "<p>Notes</p></td>", "<p>Notes</p><p>More</p></td>"))
-      .toBe(MERGED_CELL);
+      .toBe(PARAGRAPHS);
     expect(cellRefusal(ODD, "<p>x</p>", "<p>changed</p>")).toBe(NESTED_CELL);
     expect(cellRefusal(ODD, "<p>in</p>", "<p>out</p>")).toBe(NESTED_CELL);
   });

@@ -1410,8 +1410,9 @@ describe("a replacement prepared", () => {
       { table: [[{ paragraphs: [para("head")], tableCellStyle: { columnSpan: 2 } }, "\n"]] },
       para("After"),
     ]));
-    expect(message(() => replace(wide, "<p>head</p>", "<p>changed</p>")))
-      .toBe("replaceText: a merged cell, or a cell one covers, cannot be edited.");
+    expect(message(() => replace(wide,
+      "<p>head</p></td>\n    <td><p></p></td>", "<p>head</p></td>\n    <td><p>x</p></td>")))
+      .toBe("replaceText: a cell that a merged cell covers cannot be edited. Edit the merged cell.");
     // The paragraph path would take this as an edit that sends nothing; typed into the table's
     // closing tag, it is a change to the table.
     expect(message(() => replace(from, "</table>\n\nAfter", "<\\/table>\n\nAfter")))
