@@ -1787,6 +1787,19 @@ describe("Docs writes, held to what Google answers", () => {
     expect(docs.replyToSuggestion).toHaveBeenCalledTimes(2);
   });
 
+  // clanky: a 401 on the note is the same stale token as on the suggestion, so it waits too.
+  it("keeps a suggestion's note pending when Docs answers its send 401, and posts it once next time", async () => {
+    let { docs, journal, attempts, submit, apply } = harness();
+    docs.replyToSuggestion.mockRejectedValueOnce(docsRefused("UNAUTHENTICATED"));
+    let id = await submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await apply(id)).toMatch(/^The suggestion was made, but Google did not accept this connection's credentials for its note/);
+    expect(journal.get(id)?.state).toBe("pending");
+    expect(attempts.get(id)).toEqual({ at: expect.any(Number), suggestionId: "suggest.s1" });
+    expect(await apply(id)).toBeNull();
+    expect(docs.suggest).toHaveBeenCalledTimes(1);
+    expect(docs.replyToSuggestion).toHaveBeenCalledTimes(2);
+  });
+
   it("checks the binding again before a note left to post is sent", async () => {
     let { api, docs, journal, submit, apply, refuse } = harness();
     docs.replyToSuggestion.mockRejectedValueOnce(docsRefused("RESOURCE_EXHAUSTED"));

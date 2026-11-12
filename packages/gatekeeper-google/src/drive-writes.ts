@@ -57,7 +57,8 @@ export function readOnlyRefusal(scope: DriveBindingScope): string {
 
 /**
  * The most this deployment lets a Drive connection do, from the Worker's `GOOGLE_DRIVE_ACCESS`:
- * `"write"` when it is unset, empty or `write`, and `"read"` for any other value, the safe side.
+ * `"write"` when it is unset, empty or `write` (trimmed, in any case), and `"read"` for any other
+ * value, the safe side.
  */
 export function driveAccessCap(env: { GOOGLE_DRIVE_ACCESS?: string }): DriveBindingAccess {
   let value = env.GOOGLE_DRIVE_ACCESS?.trim().toLowerCase();

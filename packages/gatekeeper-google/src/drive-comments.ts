@@ -688,7 +688,7 @@ async function postNote(
   try {
     await host.docs.replyToSuggestion(payload.fileId, suggestionId, note);
   } catch (error) {
-    let failure = docsWriteFailure(error);
+    let failure = docsSendFailure(error);
     if (failure === "unknown") {
       throw new Error("The suggestion was made, but Google Docs did not confirm whether its " +
         "note was posted. Approving it again first checks the suggestion, so the note is not " +
@@ -701,6 +701,12 @@ async function postNote(
         "it again to post the note.", { cause: error });
     }
     if (failure === "rateLimited") throw new Error(rateLimited("Google Docs"), { cause: error });
+    // As for the suggestion: the next approval's token, loaded afresh, may be accepted.
+    if (failure === "unauthorized") {
+      throw new Error("The suggestion was made, but Google did not accept this connection's " +
+        "credentials for its note. Approve it again to post the note; if it is refused the same " +
+        "way, reconnect the Google account.", { cause: error });
+    }
     if (docsLacksScope(error)) throw new Error(host.threads.grantMissing, { cause: error });
     throw new ActionApplyError("The suggestion was made, but Google Docs refused its note.",
       { cause: error });
