@@ -23,9 +23,15 @@ export type DropdownMenuProps = TriggerContent & {
   align?: 'start' | 'center' | 'end'
   /**
    * Open over the trigger, keeping the popup's anchored corner where the trigger was. Otherwise the
-   * popup opens beside the anchor and a ghost close button replaces the trigger.
+   * popup opens beside the anchor and a ghost close button replaces the trigger, unless `keepTrigger`.
    */
   inPlace?: boolean
+  /**
+   * Leave the trigger showing as it is while the menu is open, rather than replacing it with a close
+   * button. The menu then morphs out of a circle beside the trigger rather than out of the trigger
+   * itself, so it never passes over it. Has no effect in place, where the popup covers the trigger.
+   */
+  keepTrigger?: boolean
   /** How long the opening morph takes, in milliseconds. Every other timing scales with it. */
   duration?: number
 }
@@ -50,15 +56,18 @@ const DropdownMenuRoot = ({
   side = 'bottom',
   align = 'start',
   inPlace = false,
+  keepTrigger = false,
   duration = 360,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const time = { '--menu-time': duration / BASE_DURATION } as CSSProperties
   const iconNode = renderIcon(icon)
+  const keepsTrigger = keepTrigger && !inPlace
+  const closesFromTrigger = !inPlace && !keepsTrigger
   // Stays mounted: the × must persist while it fades out during the closing morph,
   // after Kumo has already reported the menu as closed.
   // A circle as tall as the trigger, at its start edge (where an icon sits) or its end edge.
-  const close = !inPlace && (
+  const close = closesFromTrigger && (
     <span aria-hidden="true" className={cn('dropdown-menu-close absolute inset-y-0 aspect-square', align === 'end' ? 'end-0' : 'start-0')}>
       <XIcon weight="bold" className="size-3.5" />
     </span>
@@ -75,7 +84,7 @@ const DropdownMenuRoot = ({
             variant={triggerVariant}
             style={{ ...props.style, ...time }}
             icon={iconNode ? <>{iconNode}{close}</> : undefined}
-            aria-label={open && !inPlace ? 'Close menu' : ariaLabel}
+            aria-label={open && closesFromTrigger ? 'Close menu' : ariaLabel}
             className={cn('dropdown-menu-trigger relative', triggerClassName)}
           >
             {iconNode ? label : <>{label}{close}</>}
@@ -92,7 +101,7 @@ const DropdownMenuRoot = ({
             if (inPlace) return side === 'top' || side === 'bottom' ? -anchor.height : -anchor.width
             // Open, a wide trigger is just the × circle at one end. Beside it, sit next to the
             // circle rather than past the rest of the button.
-            const pastClose = anchorRef ? 0 : anchor.width - anchor.height
+            const pastClose = anchorRef || keepsTrigger ? 0 : anchor.width - anchor.height
             const closeAtEnd = align === 'end'
             return (side === 'right' && !closeAtEnd) || (side === 'left' && closeAtEnd) ? 8 - pastClose : 8
           }}
@@ -102,6 +111,7 @@ const DropdownMenuRoot = ({
           <Menu.Popup
             ref={popupRef}
             data-in-place={inPlace || undefined}
+            data-keep-trigger={keepsTrigger || undefined}
             data-variant={triggerVariant}
             style={time}
             aria-label={ariaLabel ?? (typeof label === 'string' ? label : undefined)}

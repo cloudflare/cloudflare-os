@@ -310,6 +310,25 @@
   --menu-feather: clamp(0px, calc(60px * var(--menu-closed)), 12px);
 }
 
+/* A menu that keeps its trigger morphs out of a point beside it instead, and back into
+   it (measured in useMenuMorph), so the one motion that carries it back also makes it
+   vanish. Its corners keep their full radius at every size, which rounds the surface
+   off completely while it is small, rather than shrinking with it to a square. With no
+   trigger copy to hand over to, the surface fades in and out at the ends of the morph,
+   and there is nothing to recoil past. */
+.dropdown-menu[data-keep-trigger] {
+  --menu-radius: 21px;
+  --menu-close-easing: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.dropdown-menu[data-keep-trigger] .dropdown-menu-ghost {
+  display: none;
+}
+
+.dropdown-menu[data-keep-trigger] .dropdown-menu-surface {
+  opacity: clamp(0, var(--menu-size) / 0.1, 1);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open],
   .dropdown-menu-content {

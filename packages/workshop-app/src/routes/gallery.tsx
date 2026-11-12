@@ -100,6 +100,7 @@ const DropdownMenuPlayground = () => {
   const [align, setAlign] = useState<Align>('start')
   const [trigger, setTrigger] = useState<TriggerKind>('icon-text')
   const [inPlace, setInPlace] = useState(false)
+  const [keepTrigger, setKeepTrigger] = useState(false)
   const [duration, setDuration] = useState(360)
   const [action, setAction] = useState('Open the menu to preview the morph.')
 
@@ -116,16 +117,18 @@ const DropdownMenuPlayground = () => {
           tabs={DURATIONS.map((value) => ({ value: String(value), label: `${value}ms` }))}
         />
         <Switch label="In place" checked={inPlace} onCheckedChange={setInPlace} />
+        <Switch label="Keep trigger" checked={keepTrigger} disabled={inPlace} onCheckedChange={setKeepTrigger} />
       </div>
       {/* Room on every side, so the chosen placement is not flipped by collision handling. */}
       <div className="grid h-[28rem] place-items-center rounded-3xl ring-1 ring-kumo-line">
         <DropdownMenu
           // Remount on change so an open menu never straddles two placements.
-          key={`${side}-${align}-${trigger}-${inPlace}`}
+          key={`${side}-${align}-${trigger}-${inPlace}-${keepTrigger}`}
           {...triggerContent(trigger)}
           side={side}
           align={align}
           inPlace={inPlace}
+          keepTrigger={keepTrigger}
           duration={duration}
         >
           <NewItems onSelect={(item) => setAction(`Preview: new ${item.toLowerCase()} selected.`)} />
@@ -160,7 +163,7 @@ function Gallery() {
         <Button variant="ghost">Ghost</Button>
         <Button variant="primary">Primary</Button>
       </Section>
-      <Section title="DropdownMenu (side, align, trigger and in-place toggles)">
+      <Section title="DropdownMenu (side, align, trigger, in-place and keep-trigger toggles)">
         <DropdownMenuPlayground />
       </Section>
       <Section title="Avatar">
