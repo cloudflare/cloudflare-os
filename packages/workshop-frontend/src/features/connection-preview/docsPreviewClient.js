@@ -1,0 +1,365 @@
+/* global gadget */
+// SPIKE: a hand-written gadget-format client for a Google Doc connection. It runs in the gadget
+// UI frame, where `gadget` is the connection's own session (GoogleDocSession) rather than a
+// gadget server. A real preview would ship with the gatekeeper; this one lives in the Workshop
+// only to prove the frame and the stub work together.
+//
+// Everything the document says is set as text or built node by node. Nothing from it is parsed
+// as HTML into this document, and links are shown but not followed.
+
+const style = document.createElement('style');
+style.textContent = `
+  :root { color-scheme: light dark; --page: #fff; --desk: #f1f3f4; --ink: #1f1f1f; --dim: #5f6368;
+    --line: #dadce0; --mark: #e6f4ea; --mark-ink: #137333; --gone: #fce8e6; --gone-ink: #a50e0e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --page: #1f1f1f; --desk: #131314; --ink: #e3e3e3; --dim: #9aa0a6; --line: #3c4043;
+      --mark: #1e3a2a; --mark-ink: #81c995; --gone: #3b1f1d; --gone-ink: #f28b82; }
+  }
+  html, body { margin: 0; height: 100%; background: var(--desk); color: var(--ink);
+    font: 11pt/1.5 Arial, Helvetica, sans-serif; }
+  #tabs { display: flex; gap: 4px; padding: 8px 16px 0; flex-wrap: wrap; }
+  #tabs button { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
+    border-radius: 999px; background: transparent; color: var(--dim); cursor: pointer; }
+  #tabs button[aria-pressed="true"] { background: var(--page); color: var(--ink); }
+  #page { box-sizing: border-box; max-width: 816px; min-height: calc(100% - 32px);
+    margin: 16px auto 120px; padding: 72px; background: var(--page);
+    border: 1px solid var(--line); overflow-wrap: anywhere; }
+  @media (max-width: 700px) { #page { padding: 24px; margin: 0 0 120px; border: 0; } }
+  #page > * { margin: 0; min-height: 1.5em; }
+  h1 { font-size: 20pt; font-weight: 400; padding: 20px 0 6px; }
+  h2 { font-size: 16pt; font-weight: 400; padding: 18px 0 6px; }
+  h3 { font-size: 14pt; font-weight: 400; color: var(--dim); padding: 16px 0 4px; }
+  h4, h5, h6 { font-size: 12pt; font-weight: 400; color: var(--dim); padding: 14px 0 4px; }
+  .item { display: flex; gap: 8px; }
+  .item > .marker { flex: none; width: 1.5em; text-align: right; }
+  .link { color: #1a73e8; text-decoration: underline; cursor: help; }
+  table { border-collapse: collapse; margin: 8px 0; }
+  td, th { border: 1px solid var(--line); padding: 5px 7px; vertical-align: top; text-align: left; }
+  td > *, th > * { margin: 0; }
+  .added { background: var(--mark); color: var(--mark-ink); border-radius: 2px;
+    box-shadow: -6px 0 0 var(--mark), 6px 0 0 var(--mark); }
+  .removed { background: var(--gone); color: var(--gone-ink); border-radius: 2px;
+    box-shadow: -6px 0 0 var(--gone), 6px 0 0 var(--gone); text-decoration: line-through; }
+  #stale { max-width: 816px; margin: 12px auto 0; padding: 0 16px; font-size: 12px;
+    color: var(--gone-ink); }
+  #status { position: fixed; top: 8px; right: 12px; font-size: 12px; color: var(--dim); }
+  #error { max-width: 480px; margin: 80px auto; text-align: center; color: var(--dim); }
+  #error button { font: inherit; margin-top: 12px; padding: 4px 12px; cursor: pointer; }
+`;
+document.head.append(style);
+
+const tabBar = document.body.appendChild(document.createElement('div'));
+tabBar.id = 'tabs';
+const staleNote = document.body.appendChild(document.createElement('div'));
+staleNote.id = 'stale';
+staleNote.hidden = true;
+const page = document.body.appendChild(document.createElement('div'));
+page.id = 'page';
+const statusLine = document.body.appendChild(document.createElement('div'));
+statusLine.id = 'status';
+statusLine.setAttribute('role', 'status');
+
+// ---------------------------------------------------------------------------------------------
+// Markdown, as GoogleDocReadSession.getContent() writes it: one paragraph per line, `\u000b` for
+// a line break inside one, two-space list nesting, backslash-escaped punctuation, and native
+// tables as raw HTML.
+
+function parseBlocks(markdown) {
+  const lines = markdown.split('\n');
+  const blocks = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.trim() === '<table>') {
+      const start = i;
+      for (let depth = 0; i < lines.length; i++) {
+        if (lines[i].trim() === '<table>') depth++;
+        if (lines[i].trim() === '</table>' && --depth === 0) break;
+      }
+      blocks.push({ type: 'table', text: lines.slice(start, i + 1).join('\n') });
+      continue;
+    }
+    let match;
+    if ((match = /^(#{1,6}) (.*)$/.exec(line))) {
+      blocks.push({ type: `h${match[1].length}`, text: match[2] });
+    } else if ((match = /^((?: {2})*)- (.*)$/.exec(line))) {
+      blocks.push({ type: 'bullet', level: match[1].length / 2, text: match[2] });
+    } else if ((match = /^((?: {2})*)(\d+)\. (.*)$/.exec(line))) {
+      blocks.push({ type: 'number', level: match[1].length / 2, number: match[2], text: match[3] });
+    } else {
+      blocks.push({ type: 'p', text: line });
+    }
+  }
+  return blocks;
+}
+
+const MARKERS = [
+  ['***', ['strong', 'em']],
+  ['**', ['strong']],
+  ['*', ['em']],
+  ['~~', ['s']],
+];
+
+function findUnescaped(text, target, from) {
+  for (let i = from; i < text.length; i++) {
+    if (text[i] === '\\') i++;
+    else if (text[i] === target) return i;
+  }
+  return -1;
+}
+
+function unescape(text) {
+  return text.replace(/\\(.)/g, '$1');
+}
+
+function renderInline(text, parent) {
+  // Each open marker is the element its text goes into; closing one returns to its parent.
+  const open = [{ marker: null, into: parent }];
+  let buffer = '';
+  const flush = () => {
+    if (buffer) open.at(-1).into.append(buffer);
+    buffer = '';
+  };
+
+  for (let i = 0; i < text.length;) {
+    const character = text[i];
+    if (character === '\\' && i + 1 < text.length) {
+      buffer += text[i + 1];
+      i += 2;
+      continue;
+    }
+    if (character === '\u000b') {
+      flush();
+      open.at(-1).into.append(document.createElement('br'));
+      i++;
+      continue;
+    }
+    if (character === '[') {
+      const close = findUnescaped(text, ']', i + 1);
+      const end = close >= 0 && text[close + 1] === '(' ? findUnescaped(text, ')', close + 2) : -1;
+      if (end >= 0) {
+        flush();
+        const link = open.at(-1).into.appendChild(document.createElement('span'));
+        link.className = 'link';
+        link.title = unescape(text.slice(close + 2, end));
+        renderInline(text.slice(i + 1, close), link);
+        i = end + 1;
+        continue;
+      }
+    }
+    const marker = MARKERS.find(([token]) => text.startsWith(token, i));
+    if (marker) {
+      flush();
+      const [token, tags] = marker;
+      if (open.at(-1).marker === token) {
+        open.pop();
+      } else {
+        let into = open.at(-1).into;
+        for (const tag of tags) into = into.appendChild(document.createElement(tag));
+        open.push({ marker: token, into });
+      }
+      i += token.length;
+      continue;
+    }
+    buffer += character;
+    i++;
+  }
+  flush();
+}
+
+const TABLE_TAGS = new Set([
+  'TABLE', 'THEAD', 'TBODY', 'TR', 'TD', 'TH', 'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BR', 'HR',
+  'STRONG', 'EM', 'S', 'UL', 'OL', 'LI',
+]);
+const TABLE_ATTRIBUTES = new Set(['colspan', 'rowspan', 'start', 'type']);
+
+// Rebuild a table from an inert parse, keeping only known tags and attributes. A link becomes
+// the same unfollowed span the Markdown path draws.
+function copyTableNode(node, into) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    into.append(node.data);
+    return;
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) return;
+  let copy = into;
+  if (node.tagName === 'A') {
+    copy = into.appendChild(document.createElement('span'));
+    copy.className = 'link';
+    copy.title = node.getAttribute('href') ?? '';
+  } else if (TABLE_TAGS.has(node.tagName)) {
+    copy = into.appendChild(document.createElement(node.tagName));
+    for (const { name, value } of node.attributes) {
+      if (TABLE_ATTRIBUTES.has(name)) copy.setAttribute(name, value);
+    }
+  }
+  for (const child of node.childNodes) copyTableNode(child, copy);
+}
+
+function renderBlock(block) {
+  if (block.type === 'table') {
+    const parsed = new DOMParser().parseFromString(block.text, 'text/html');
+    const holder = document.createElement('div');
+    for (const child of parsed.body.childNodes) copyTableNode(child, holder);
+    return holder;
+  }
+  if (block.type === 'bullet' || block.type === 'number') {
+    const item = document.createElement('div');
+    item.className = 'item';
+    item.style.paddingLeft = `${block.level * 24}px`;
+    const marker = item.appendChild(document.createElement('span'));
+    marker.className = 'marker';
+    marker.textContent = block.type === 'bullet' ? '•' : `${block.number}.`;
+    renderInline(block.text, item.appendChild(document.createElement('span')));
+    return item;
+  }
+  const element = document.createElement(block.type);
+  renderInline(block.text, element);
+  return element;
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the pending changes did, block by block
+
+const blockKey = block => `${block.type}\u0000${block.level ?? ''}\u0000${block.text}`;
+
+// Past this many comparisons, the stretch between the unchanged ends is shown as replaced whole.
+const DIFF_LIMIT = 1_000_000;
+
+// The tab's blocks in order, each marked 'added' when the saved tab lacks it, with the saved
+// tab's blocks that are gone marked 'removed' where they were.
+function diffBlocks(saved, current) {
+  const before = saved.map(blockKey);
+  const after = current.map(blockKey);
+  let start = 0;
+  while (start < before.length && start < after.length && before[start] === after[start]) start++;
+  let beforeEnd = before.length;
+  let afterEnd = after.length;
+  while (beforeEnd > start && afterEnd > start && before[beforeEnd - 1] === after[afterEnd - 1]) {
+    beforeEnd--;
+    afterEnd--;
+  }
+
+  const rows = current.slice(0, start).map(block => ({ block }));
+  let i = start;
+  let j = start;
+  const width = afterEnd - start + 1;
+  if ((beforeEnd - start) * (afterEnd - start) <= DIFF_LIMIT) {
+    // The longest run of blocks both stretches share, counted from each position to the end.
+    const common = new Uint32Array((beforeEnd - start + 1) * width);
+    const cell = (row, column) => (row - start) * width + (column - start);
+    for (let row = beforeEnd - 1; row >= start; row--) {
+      for (let column = afterEnd - 1; column >= start; column--) {
+        common[cell(row, column)] = before[row] === after[column]
+          ? common[cell(row + 1, column + 1)] + 1
+          : Math.max(common[cell(row + 1, column)], common[cell(row, column + 1)]);
+      }
+    }
+    while (i < beforeEnd && j < afterEnd) {
+      if (before[i] === after[j]) {
+        rows.push({ block: current[j] });
+        i++;
+        j++;
+      } else if (common[cell(i + 1, j)] >= common[cell(i, j + 1)]) {
+        rows.push({ block: saved[i++], mark: 'removed' });
+      } else {
+        rows.push({ block: current[j++], mark: 'added' });
+      }
+    }
+  }
+  while (i < beforeEnd) rows.push({ block: saved[i++], mark: 'removed' });
+  while (j < afterEnd) rows.push({ block: current[j++], mark: 'added' });
+  return rows.concat(current.slice(afterEnd).map(block => ({ block })));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Loading and refreshing
+
+let tabs = null;
+let tabId = null;
+let loaded = false;
+let generation = 0;
+
+function showError(error, retry) {
+  page.hidden = true;
+  document.getElementById('error')?.remove();
+  const box = document.body.appendChild(document.createElement('div'));
+  box.id = 'error';
+  box.append(`This document could not be loaded. ${error?.message ?? ''}`);
+  const button = box.appendChild(document.createElement('button'));
+  button.textContent = 'Try again';
+  button.addEventListener('click', () => {
+    box.remove();
+    retry();
+  });
+}
+
+function renderTabs() {
+  tabBar.replaceChildren();
+  if (tabs.length < 2) return;
+  for (const tab of tabs) {
+    const button = tabBar.appendChild(document.createElement('button'));
+    button.textContent = tab.title;
+    button.style.marginLeft = `${tab.nestingLevel * 12}px`;
+    button.setAttribute('aria-pressed', String(tab.id === tabId));
+    button.addEventListener('click', () => {
+      tabId = tab.id;
+      loaded = false;
+      renderTabs();
+      void load();
+    });
+  }
+}
+
+async function load() {
+  const current = ++generation;
+  statusLine.textContent = loaded ? 'Updating…' : 'Loading…';
+  try {
+    if (!tabs) {
+      tabs = await gadget.listTabs();
+      tabId ??= tabs[0]?.id;
+      renderTabs();
+    }
+    // One read: the tab as saved, the tab with its pending changes, and those changes.
+    const { savedMarkdown, markdown, changes } = await gadget.getPendingChanges(tabId);
+    if (current !== generation) return;
+
+    const rows = diffBlocks(parseBlocks(savedMarkdown), parseBlocks(markdown));
+    const scrollTop = document.scrollingElement.scrollTop;
+    let firstMarked = null;
+    page.replaceChildren(...rows.flatMap(({ block, mark }) => {
+      // An empty paragraph has nothing to show as changed.
+      if (block.text === '') return mark === 'removed' ? [] : [renderBlock(block)];
+      const element = renderBlock(block);
+      if (mark) {
+        element.classList.add(mark);
+        firstMarked ??= element;
+      }
+      return [element];
+    }));
+    // A change the document no longer fits is in neither copy, so the page cannot show it.
+    const stale = changes.filter(change => change.stale).length;
+    staleNote.hidden = stale === 0;
+    staleNote.textContent = stale === 1
+      ? '1 change no longer fits this document and is not shown.'
+      : `${stale} changes no longer fit this document and are not shown.`;
+    page.hidden = false;
+    document.getElementById('error')?.remove();
+    document.scrollingElement.scrollTop = scrollTop;
+    firstMarked?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    statusLine.textContent = '';
+    loaded = true;
+  } catch (error) {
+    if (current !== generation) return;
+    statusLine.textContent = '';
+    // A tab that has gone needs the list again.
+    tabs = null;
+    showError(error, load);
+  }
+}
+
+// The Workshop says when an action on this connection was queued, applied or discarded. A gadget
+// cannot see the action log, so nothing inside the frame could tell.
+window.addEventListener('message', event => {
+  if (event.source === window.parent && event.data?.type === 'refresh') void load();
+});
+
+void load();

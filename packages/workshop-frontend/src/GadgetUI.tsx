@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { ConsoleLogEvent, UiBundle } from '@gadgets/workshop-shared/api'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
@@ -106,10 +106,21 @@ const createSandboxedHtml = (jsCode: string): string => {
 </html>`.trim()
 }
 
+/**
+ * What the frame runs: its code, and the stub that code calls as `gadget`. A gadget supplies both
+ * (GadgetClient); a connection preview supplies code for the connection's own session.
+ */
+export type GadgetUiSource = {
+  getUiBundle(chatId?: number): PromiseLike<UiBundle | null>
+  connectToGadget(chatId?: number): PromiseLike<RpcStub<any>>
+}
+
 interface GadgetUIProps {
-  gadget: RpcStub<GadgetClient>
+  gadget: GadgetUiSource
   height: string
   reloadTrigger?: number
+  // Each change posts `{type: 'refresh'}` into the frame, for code that redraws without reloading.
+  refreshSignal?: number
   isVisible?: boolean
   chatId?: number
   onConsoleLog?: (log: ConsoleLogEvent) => void
@@ -130,7 +141,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, refreshSignal, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
@@ -406,6 +417,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       resetConnection(new Error('Gadget RPC session was closed.'))
     }
   }, [])
+
+  useEffect(() => {
+    // The frame's origin is opaque, so no narrower target exists; the message carries no data.
+    if (refreshSignal) iframeRef.current?.contentWindow?.postMessage({ type: 'refresh' }, '*')
+  }, [refreshSignal])
 
   if (!isVisible && !hasLoaded) {
     // Don't render anything if not visible and never loaded
