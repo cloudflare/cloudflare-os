@@ -1,0 +1,25 @@
+packages/workshop-frontend/src/GadgetEditor.tsx
+  s_99c049c8391965::t_b5e6ebb38d3fc1 2052-2053
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_99c049c8391965::t_f211c7e6a353ff 79-81,203-219,234,236,250,270,276,279,287-288,294-303,309,322-323,337-340
+packages/workshop-frontend/src/action-test-harness.ts
+  s_99c049c8391965::t_df72908ab3cc64 33-35
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_99c049c8391965::t_39d5d34ed1dcbd 113-117,119,121,2606-2611,2812-2813,2826,4677-4788,5384-5393,5399-5401,5426,5442-5444,5547-5558,5560-5567,6921-6931,6933-6941,6943-6945
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "7192cf87b0d1d5102a99941992984b1f57fe6e6f",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
