@@ -9,6 +9,7 @@ import type {
   Overseer,
 } from '@gadgets/workshop-shared/api'
 import { reportIssue } from './errorReporting'
+import { classifyRpcError } from './rpcErrors'
 import { linkActionLog } from './useActions'
 import { useDocumentTitle } from './useDocumentTitle'
 import {
@@ -19,6 +20,7 @@ import {
 const OBSERVER_CANCELLED = 'OBSERVER_CONFIG_CANCELLED'
 const REOPEN_BACKOFF_MS = 1_000
 const REOPEN_MAX_BACKOFF_MS = 60_000
+const REOPEN_RETRIES_BEFORE_REPORT = 2
 
 export type WorkspaceLoadError =
   | { kind: 'open'; failure: WorkspaceOpenFailureKind }
@@ -203,8 +205,15 @@ export function useWorkspaceOpen({
           } else {
             if (!connectionLost) setConnectionLost(true)
             // On a live connection nothing else replaces the stub that failed to reopen.
-            const backoff = Math.min(
-              REOPEN_BACKOFF_MS * 2 ** reopenFailuresRef.current++, REOPEN_MAX_BACKOFF_MS)
+            // A socket that dropped mid-reopen is the connection manager's to recover, so it does
+            // not count. Only a failure two retries have not cured is reported, and an expired
+            // session never is.
+            const errorClass = classifyRpcError(caught)
+            const failures = errorClass === 'connection' ? 0 : reopenFailuresRef.current++
+            if (failures === REOPEN_RETRIES_BEFORE_REPORT && errorClass !== 'auth') {
+              reportIssue('gadget.reopen', caught, { severity: 'warning', gadgetId: id })
+            }
+            const backoff = Math.min(REOPEN_BACKOFF_MS * 2 ** failures, REOPEN_MAX_BACKOFF_MS)
             reopenTimer = setTimeout(
               () => setReloadNonce(value => value + 1), backoff * (0.85 + 0.3 * Math.random()))
           }
