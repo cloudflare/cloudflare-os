@@ -17,6 +17,7 @@ import type {
   TableMapping,
 } from "../src/markdown-converter";
 import { BULLET_LIST, buildTab, cellTab, CHECK_LIST } from "./doc-fixture";
+import { applyDocsRequests, indentedParagraphs } from "./docs-body-model";
 
 /** A segment with a document counterpart, as opposed to a Markdown-syntax-only one. */
 type ContentSegment = Exclude<Segment, { syntaxOnly: true }>;
@@ -3069,5 +3070,92 @@ describe("computeReplaceOperations", () => {
       ["NORMAL_TEXT", 9, 20],
       ["HEADING_1", 20, 25],
     ]);
+  });
+});
+
+describe("computeReplaceOperations, written as its replay reads", () => {
+  /**
+   * Every phrasing of the one edit that turns `markdown` into `result`, quoting up to three
+   * characters on either side of where the text goes, as a range and its replacement. None of
+   * them splits a pair of emphasis markers.
+   */
+  function phrasings(markdown: string, result: string): [number, number, string][] {
+    let found: [number, number, string][] = [];
+    let added = result.length - markdown.length;
+    for (let at = 0; at <= markdown.length; at++) {
+      let text = result.slice(at, at + added);
+      if (markdown.slice(0, at) + text + markdown.slice(at) !== result) continue;
+      if (markdown[at - 1] === "*") continue;
+      for (let start = Math.max(0, at - 3); start <= at; start++) {
+        for (let end = at; end <= Math.min(markdown.length, at + 3); end++) {
+          let newMarkdown = markdown.slice(start, at) + text + markdown.slice(at, end);
+          if (start < end && !markdown.slice(start, end).includes("*")) {
+            found.push([start, end, newMarkdown]);
+          }
+        }
+      }
+    }
+    return found;
+  }
+
+  /** The replacement's requests, applied by the model, read as the converter's replay of it. */
+  function expectAsReplayed(
+    tab: GoogleDocsTab, start: number, end: number, newMarkdown: string,
+  ): void {
+    let snapshot = docTabToMarkdown(tab);
+    let rendered = canonicalizeMarkdownReplacement(snapshot.markdown.slice(start, end), newMarkdown);
+    let content: EditableMarkdown = {
+      markdown: snapshot.markdown, protectedRanges: snapshot.sourceMap.protectedRanges, tables: [],
+    };
+    let replayed = applyMarkdownEdit(content, start, end, rendered).markdown;
+    let { requests } = computeReplaceOperations(
+      snapshot.sourceMap, snapshot.markdown, start, end, rendered, TAB_ID);
+    for (let copyStyles of [false, true]) {
+      let applied = applyDocsRequests(tab, requests, { copyStyles });
+      expect(docTabToMarkdown(applied).markdown, JSON.stringify([start, end, newMarkdown]))
+        .toBe(replayed);
+      expect(indentedParagraphs(applied)).toEqual([]);
+    }
+  }
+
+  it("writes a heading in front of empty paragraphs with as many as it shows", () => {
+    let para = (text: string) => ({ runs: [`${text}\n`] });
+    for (let empties of [1, 2, 3]) {
+      for (let last of [[para("End")], []]) {
+        let tab = buildTab(
+          [para("Before"), ...Array.from({ length: empties }, () => para("")), ...last]);
+        let { markdown } = docTabToMarkdown(tab);
+        for (let text of ["## Notes", "## Notes\n\nSee below", "See above\n\n## Notes",
+          "See below"]) {
+          let result = markdown.replace("Before\n\n", `Before\n\n${text}\n\n`);
+          for (let [start, end, newMarkdown] of phrasings(markdown, result)) {
+            expectAsReplayed(tab, start, end, newMarkdown);
+          }
+        }
+      }
+    }
+  });
+
+  it("takes a plain paragraph written in front of a list item or subtitle out of it", () => {
+    let none = { glyphType: "NONE" };
+    let lists = { ...BULLET_LIST, markerless: { listProperties: { nestingLevels: [none, none] } } };
+    let targets = [
+      { runs: ["Notes\n"], bullet: { listId: "markerless" } },
+      { runs: ["Notes\n"], bullet: { listId: "markerless", nestingLevel: 1 } },
+      { runs: ["Notes\n"], bullet: { listId: "L1" } },
+      { runs: ["Notes\n"], namedStyleType: "SUBTITLE" },
+      { runs: ["Notes\n"] },
+    ];
+    for (let target of targets) {
+      let tab = buildTab([{ runs: ["Before\n"] }, target, { runs: ["End\n"] }], lists);
+      let { markdown } = docTabToMarkdown(tab);
+      let at = markdown.indexOf("\n\n") + 2;
+      for (let text of ["Caption", "One\n\nTwo", "**Caption**", "## Head"]) {
+        let result = `${markdown.slice(0, at)}${text}\n\n${markdown.slice(at)}`;
+        for (let [start, end, newMarkdown] of phrasings(markdown, result)) {
+          expectAsReplayed(tab, start, end, newMarkdown);
+        }
+      }
+    }
   });
 });

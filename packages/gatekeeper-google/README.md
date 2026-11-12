@@ -415,27 +415,6 @@ be emptied but not removed: it is the paragraph Google Docs keeps beside a table
 two tables, a tab's first before a table, its last after one), or a read-only paragraph stands on
 its other side.
 
-A second gap is known, in how text edits are applied to paragraphs: text that holds a heading or a
-list item, written directly in front of an empty paragraph, is written with one more empty
-paragraph after it than the read and the approval card show. Text added below a table goes in front
-of the paragraph after the table, so it meets this where that paragraph is empty, as the one
-`insertTable()` leaves after a new table is: `</table>` replaced by `</table>`, a blank line and
-`## Notes` leaves two empty paragraphs under the heading where a read showed one, and a plain
-paragraph written after the heading has the two under it. Text made only of plain paragraphs does
-not meet this, nor does text added above a table or in front of a paragraph that has text. A
-`replaceText` outside tables that writes such text in front of an empty paragraph reads the same
-way.
-
-A third is of the same kind: a plain paragraph written directly in front of an item of a list whose
-items show no marker is written as an item of that list. Such an item reads as a plain line, and
-items of one list are a line break apart, so the new paragraph reads with one line break after it
-where the read and the approval card showed a blank line; of several plain paragraphs written there,
-the first becomes an item of the list and reads as it was shown. Text added below a table meets
-this where the paragraph after the table is such an item: `</table>` replaced by `</table>`, a
-blank line and `Caption`. A heading written there is not affected, nor is text added above a table
-or in front of an item that shows its marker. A `replaceText` outside tables that writes a plain
-paragraph in front of such an item reads the same way.
-
 A table is named by its position among the tab's tables, counting from 0, and its rows and columns
 from 0 too; `insertTable()` returns the position of the table it adds. A queued change to an
 existing table (rows or columns added or deleted, the table deleted) remembers how its table read

@@ -3580,9 +3580,6 @@ describe("a replacement beside a table", () => {
             .toBe(converterReplay(content, place.equivalent));
           expect(textReplacementRequests(before, replacement))
             .toEqual(converterRequests(before, place.equivalent));
-          // A heading written into an empty paragraph is one of the paragraph path's own gaps,
-          // with or without a table: its replay shows one paragraph fewer than its requests make.
-          if (line === "" && place.side === "after" && text.startsWith("#")) continue;
           expectParagraphTextSameAsGoogle(tab(), oldMarkdown, newMarkdown, matchStart);
         }
       }
@@ -3603,37 +3600,25 @@ describe("a replacement beside a table", () => {
     }
   });
 
-  it("writes one empty paragraph too many where a heading goes in front of an empty one", () => {
-    // A gap of the paragraph path's own, held to its size: its requests for text that holds a
-    // heading, written in front of an empty paragraph, make one empty paragraph more than its
-    // replay shows, also where a plain paragraph of that text is the one in front of the empty
-    // paragraph. Below a table that is the paragraph a new table comes with, inside the tab and
-    // at its end; the same replacement with no table near does the same. Text made only of
-    // plain paragraphs is written there as its replay shows.
+  it("writes a heading in front of an empty paragraph as its replay shows", () => {
+    // Below a table that is the paragraph a new table comes with, inside the tab and at its end;
+    // the same replacement with no table near goes the same way.
     let places: [tab: GoogleDocsTab, oldMarkdown: string, lead: string, tail: string][] = [
       [buildTab([para("Before"), grid(["a", "b"]), para(""), para("End")]),
         "</table>", "</table>\n\n", ""],
       [buildTab([para("Before"), grid(["a", "b"]), para("")]), "</table>", "</table>\n\n", ""],
       [buildTab([para("Before"), para(""), para("End")]), "Before\n\n", "Before\n\n", "\n\n"],
+      [buildTab([para("Before"), para(""), para(""), para("End")]),
+        "Before\n\n", "Before\n\n", "\n\n"],
+      [buildTab([para("Before"), para("")]), "Before\n\n", "Before\n\n", "\n\n"],
     ];
-    let texts: [string, number][] = [
-      ["## Notes", 1],
-      ["## Notes\n\nSee below", 1],
-      ["See above\n\n## Notes", 1],
-      ["See below", 0],
-      ["See above\n\nSee below", 0],
-    ];
+    let texts = ["## Notes", "## Notes\n\nSee below", "See above\n\n## Notes", "See below",
+      "See above\n\nSee below", "## Notes\n\n", "## Notes\n\n\n\n"];
     for (let [tab, oldMarkdown, lead, tail] of places) {
-      for (let [text, extra] of texts) {
-        let before = docTabToMarkdown(tab);
-        let replacement = replacementIn(before.markdown, oldMarkdown, `${lead}${text}${tail}`);
-        let simulated = applyTextReplacement(contentOf(before), replacement, TAB).markdown;
-        let requests = textReplacementRequests(before, replacement);
-        let written = simulated.indexOf(`${text}\n\n`) + text.length + 2;
-        let fresh = simulated.slice(0, written) + "\n\n".repeat(extra) + simulated.slice(written);
-        for (let options of MODELS) {
-          expect(docTabToMarkdown(applyDocsRequests(tab, requests, options)).markdown).toBe(fresh);
-        }
+      for (let text of texts) {
+        let { simulated, fresh } = replacementOutcome(tab, oldMarkdown, `${lead}${text}${tail}`);
+        expect(fresh).toBe(simulated);
+        expect(fresh).toContain(text.replace(/\n+$/, ""));
       }
     }
   });
@@ -3657,12 +3642,10 @@ function replacementOutcome(
 }
 
 describe("text written in front of a list item that shows no marker", () => {
-  // Another gap of the paragraph path's own, held to its size. An item of a list whose level
-  // has no marker reads as a plain line, and the path writes a plain paragraph in front of it
-  // as it does in front of a plain paragraph: with nothing that takes the new paragraph out of
-  // the list it is typed into. Text added below a table goes in front of the paragraph after
-  // the table, so it meets this where that paragraph is such an item; the same replacement
-  // with no table near does the same.
+  // An item of a list whose level has no marker reads as a plain line, so a plain paragraph
+  // written in front of it is taken out of the list it is typed into. Text added below a table
+  // goes in front of the paragraph after the table, so it meets this where that paragraph is
+  // such an item; the same replacement with no table near goes the same way.
   const places: [tab: () => GoogleDocsTab, write: (text: string) => [string, string]][] = [
     [
       () => buildTab(
@@ -3674,22 +3657,34 @@ describe("text written in front of a list item that shows no marker", () => {
       text => ["Notes", `${text}\n\nNotes`],
     ],
   ];
-  it("writes one plain paragraph as an item of that list, a line break short of its replay", () => {
+  it("writes plain paragraphs there as paragraphs of their own, as their replay shows", () => {
     for (let [tab, write] of places) {
-      let { simulated, fresh, applied } = replacementOutcome(tab(), ...write("Caption"));
-      expect(simulated).toContain("Caption\n\nNotes\n\nEnd\n");
-      // Items of one list are a line break apart.
-      expect(fresh).toBe(simulated.replace("Caption\n\nNotes", "Caption\nNotes"));
-      expect(bodyParagraph(applied, 1).bullet?.listId).toBe("Q1");
+      for (let text of ["Caption", "One\n\nTwo", "*Caption*"]) {
+        let { simulated, fresh, applied } = replacementOutcome(tab(), ...write(text));
+        expect(fresh).toBe(simulated);
+        let added = text.split("\n\n").length;
+        let lists = Array.from({ length: added + 1 },
+          (_, index) => bodyParagraph(applied, index + 1).bullet?.listId);
+        expect(lists)
+          .toEqual([...Array(added).fill(undefined), "Q1"]);
+        // A removed bullet leaves its indent behind, which is reset too.
+        expect(indentedParagraphs(applied)).toEqual([]);
+      }
     }
   });
 
-  it("reads several plain paragraphs as written, the first of them an item of that list", () => {
-    for (let [tab, write] of places) {
-      let { simulated, fresh, applied } = replacementOutcome(tab(), ...write("One\n\nTwo"));
+  it("writes a plain paragraph in front of a subtitle as a normal paragraph", () => {
+    let subtitle: ParagraphSpec = { runs: ["Notes\n"], namedStyleType: "SUBTITLE" };
+    for (let tab of [
+      () => buildTab([para("Before"), grid(["a", "b"]), subtitle, para("End")]),
+      () => buildTab([para("Before"), subtitle, para("End")]),
+    ]) {
+      let oldMarkdown = tab().body.content.some(element => element.table) ? "</table>" : "Before";
+      let { simulated, fresh, applied } =
+        replacementOutcome(tab(), oldMarkdown, `${oldMarkdown}\n\nCaption`);
       expect(fresh).toBe(simulated);
-      expect([1, 2, 3].map(index => bodyParagraph(applied, index).bullet?.listId))
-        .toEqual(["Q1", undefined, "Q1"]);
+      expect([1, 2].map(index => bodyParagraph(applied, index).paragraphStyle?.namedStyleType))
+        .toEqual(["NORMAL_TEXT", "SUBTITLE"]);
     }
   });
 
@@ -4310,11 +4305,7 @@ describe("random sequences of changes", () => {
           default:
             if (target) {
               let above = random() < 0.5;
-              // A heading written into an empty paragraph is a gap of the paragraph path's own:
-              // below a table whose next paragraph is empty, only plain paragraphs are added.
-              let emptyBelow = content.markdown[target.mdEnd + 2] === "\n";
-              let text = pick(above || !emptyBelow
-                ? ["Plain words", "## A heading", "One\n\nTwo"] : ["Plain words", "One\n\nTwo"]);
+              let text = pick(["Plain words", "## A heading", "One\n\nTwo"]);
               step = above
                 ? {
                   type: "replaceText", matchStart: target.mdStart, oldMarkdown: "<table>",

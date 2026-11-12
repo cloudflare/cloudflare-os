@@ -2843,8 +2843,12 @@ export function computeReplaceOperations(
     let before = newlineRun(markdown, blockRange.mdStart - 1, -1);
     let blockMarkdown = "\n".repeat(Math.ceil((before + lead) / 2) - Math.ceil(before / 2)) +
       rewritten.slice(lead);
-    let targets = parseMarkdownForWrite(blockMarkdown);
-    if (/[^\n]\n+$/.test(blockMarkdown)) targets.push(parseLine(""));
+    // The range's last block ends at its final break, so each break a trailing run renders after
+    // the text adds an empty paragraph.
+    let trail = /[^\n]\n+$/.test(blockMarkdown)
+      ? newlineRun(blockMarkdown, blockMarkdown.length - 1, -1) : 0;
+    let targets = parseMarkdownForWrite(blockMarkdown.slice(0, blockMarkdown.length - trail));
+    for (let empty = 0; empty < Math.ceil(trail / 2); empty++) targets.push(parseLine(""));
     let requests = rewriteBlocks(sourceMap, markdown, blockRange.blocks, targets, tabId);
     return { requests, trimmedOld, trimmedNew };
   }
@@ -2857,11 +2861,18 @@ export function computeReplaceOperations(
   }
   let insertMarkdown = fragmentInsertMarkdown(
     markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew, docRange.startsAfterParagraph);
-  // Paragraphs split off the one written into would inherit its list and style.
+  let preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
+  // Paragraphs split off the one written into would inherit its list and style. Text that ends in
+  // a break, written at a paragraph's start, holds only paragraphs split off ahead of it.
+  let ahead = !docRange.startsAfterParagraph && preserveTrailingNewline
+    ? sourceMap.blocks.find(block => block.docStart === docRange.start) : undefined;
   let writeOptions: MarkdownWriteOptions = {
     resetParagraphs: true,
-    preserveLeadingParagraph: true,
-    preserveTrailingNewline: /[^\n]\n+$/.test(insertMarkdown),
+    // A removed bullet leaves its indent behind.
+    resetIndent: ahead?.listId !== undefined,
+    preserveLeadingParagraph: !ahead ||
+      ahead.listId === undefined && ahead.namedStyleType === "NORMAL_TEXT",
+    preserveTrailingNewline,
   };
   if (!docRange.startsAfterParagraph) {
     writeOptions.sourceTextStyle = mappedTextStyle(sourceMap, trimmedMatchStart, trimmedMatchEnd);
