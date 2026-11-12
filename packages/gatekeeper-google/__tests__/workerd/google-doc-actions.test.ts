@@ -2535,6 +2535,48 @@ describe("adding a Google Doc tab", () => {
     expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes"]);
   });
 
+  // Denying always withdraws (#857): no refusal on this path may leave an action that cannot be
+  // denied, or hold back the edits queued behind it for other tabs.
+  it.each([
+    ["an ambiguous adoption", (docs: DocsModel): (() => void) | undefined => {
+      docs.ambiguousContentResponses = 1;
+      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    }],
+    ["a send with no known outcome and no marker left", (docs: DocsModel): (() => void) | undefined => {
+      docs.unsentContentRequests = 1;
+      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    }],
+    ["a lost reply that is denied instead of retried", (docs: DocsModel): (() => void) | undefined => {
+      docs.ambiguousContentResponses = 1;
+      return undefined;
+    }],
+  ] as const)("withdraws an add, and the edits for its tab, on deny after %s", async (_case, arrange) => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    let interfere = arrange(docs);
+    docs.install();
+    let facet = `add-tab-deny-${_case.replace(/\W+/g, "-")}`;
+    let added = await addTab(facet, "Notes");
+    let appendToNew = await hooks().submitAppend(facet, "Hello", added.tabId);
+    let appendToMain = await hooks().submitAppend(facet, "Still applies", MAIN_TAB);
+
+    expect(await hooks().applyAction(facet, added.actionId)).not.toBeNull();
+    if (interfere) {
+      interfere();
+      docs.externalEdit();
+      expect(await hooks().applyAction(facet, added.actionId)).toContain("unknown");
+    }
+
+    await expect(Promise.resolve(hooks().rejectAction(facet, added.actionId))).resolves.not.toThrow();
+    expect(await hooks().applyAction(facet, appendToNew))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    await expect(Promise.resolve(hooks().rejectAction(facet, appendToNew))).resolves.not.toThrow();
+    expect(await hooks().applyAction(facet, appendToMain)).toBeNull();
+    expect(docs.text(MAIN_TAB)).toContain("Still applies");
+    // Nothing is left pending to block a later approval.
+    expect(await hooks().applyAction(facet, added.actionId)).toMatch(/Unknown pending/);
+  });
+
   it("sends a refused add again rather than adopt a tab with its title", async () => {
     let docs = new DocsModel();
     docs.refusesEdits = true;
