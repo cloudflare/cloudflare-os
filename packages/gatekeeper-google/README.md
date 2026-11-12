@@ -395,8 +395,8 @@ lost is refused on the retry: Google names a new tab only in that reply, takes n
 caller, and puts no marker sent with the add in the tab it makes, so a title and place could be a
 collaborator's tab. The tab it made stays in the Doc, and denying the add withdraws it and the
 edits queued for its tab. A retry that finds no marker (a top-level add's marker is in another
-tab, which may have been deleted) sends the add again only when no tab has appeared in its place,
-and otherwise fails, since nothing ties such a tab to the add.
+tab, which may have been deleted) sends the add again only when no tab has appeared anywhere in
+the Doc since, and otherwise fails, since nothing ties such a tab to the add.
 
 Listing comments costs one `documents.get` that asks only for the comment threads (a field mask:
 about 1 KB on a small Doc against 18 KB for the whole). Queuing a comment or suggestion costs a Drive

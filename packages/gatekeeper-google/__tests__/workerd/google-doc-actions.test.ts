@@ -2521,12 +2521,32 @@ describe("adding a Google Doc tab", () => {
       docs.removeTab(MAIN_TAB);
 
       expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
-        .toContain("no marker of it is left, and a tab has appeared in its place");
+        .toContain("no marker of it is left, and a tab has appeared in the document since");
       expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
       expect(docs.contentBatches).toBe(1);
       expect(await hooks().applyAction("add-tab-host-gone", appendId))
         .toContain(`no tab with ID "${added.tabId}" exists`);
       expect(docs.text(docs.tabs.find(tab => tab.title === "Notes")!.id)).toBe("");
+    });
+
+  it("refuses a lost add whose tab was moved under another parent, rather than add another",
+    async () => {
+      let docs = new DocsModel();
+      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.ambiguousContentResponses = 1;
+      docs.install();
+      let added = await addTab("add-tab-moved", "Notes");
+
+      expect(await hooks().applyAction("add-tab-moved", added.actionId))
+        .toMatch(/content response lost/);
+      // A collaborator moves the new tab under "Second", then deletes the tab holding the marker.
+      docs.tabs.find(tab => tab.title === "Notes")!.parentId = "tab-2";
+      docs.removeTab(MAIN_TAB);
+
+      expect(await hooks().applyAction("add-tab-moved", added.actionId))
+        .toContain("no marker of it is left, and a tab has appeared in the document since");
+      expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+      expect(docs.contentBatches).toBe(1);
     });
 
   it("refuses to adopt a collaborator's tab after a send that never reached Google", async () => {

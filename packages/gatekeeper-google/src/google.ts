@@ -1861,18 +1861,19 @@ function googleDocLostAddError(action: GoogleDocAddTabAction): Error {
 
 /**
  * Refuses to send again an add whose earlier send has no known outcome and whose marker is gone,
- * once any tab has appeared in its place (under its parent, outside the `knownTabIds` recorded
- * before that send). Nothing ties that tab to this add, whose send may never have reached Google,
- * so it is not adopted; nor is the add sent again, which could make a second.
+ * once any tab has appeared anywhere in the document since (outside the `knownTabIds` recorded
+ * before that send): a collaborator may have moved the tab it made under another parent. Nothing
+ * ties such a tab to this add, whose send may never have reached Google, so it is not adopted; nor
+ * is the add sent again, which could make a second.
  */
 function assertGoogleDocAddUnsent(tabs: DocTabSnapshot[], action: GoogleDocAddTabAction): void {
   let known = new Set(action.knownTabIds);
-  let appeared = tabs.filter(tab => !known.has(tab.tabId) && tab.parentTabId === action.parentTabId);
+  let appeared = tabs.filter(tab => !known.has(tab.tabId));
   if (appeared.length > 0) {
     throw new Error(
       `The add of tab "${action.title}" may have reached Google, but no marker of it is left, and ` +
-      `${appeared.length === 1 ? "a tab has" : `${appeared.length} tabs have`} appeared in its place ` +
-      "since, so whether it was added is unknown.");
+      `${appeared.length === 1 ? "a tab has" : `${appeared.length} tabs have`} appeared in the ` +
+      "document since, so whether it was added is unknown.");
   }
 }
 
