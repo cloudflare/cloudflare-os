@@ -216,6 +216,10 @@ export type ChatFeed = {
 
 export const EMPTY_FEED: ChatFeed = { items: [], work: [], pinned: [] }
 
+// The error the workspace ends a stopped turn with (`cancelAgent` in overseer.ts). It only says
+// what someone did on purpose, so it is not shown.
+const STOPPED_ERROR = 'User requested to stop agent.'
+
 // What each item or step was built from. One is reused, object and all, while these are
 // unchanged, so what did not change is not rendered again.
 const DEPS = new WeakMap<object, readonly unknown[]>()
@@ -696,6 +700,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
       }
 
       case 'error': {
+        if (message.message === STOPPED_ERROR) break
         carryOn()
         const usageLimit = message.code === 'usage_limit'
         const recovery = index === messages.length - 1 && !context.agentActive ? (usageLimit ? 'continue' : 'retry') : undefined
