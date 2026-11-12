@@ -89,8 +89,10 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
     }
 
     const preferred = await inOrder(() => api.getPreferredModel());
-    // A pick made while this was in flight is newer than the answer.
-    if (preferred !== null && selectionRevision === revision) {
+    // A pick made while this was in flight, here or in another tab, is newer than the answer.
+    const overtaken = selectionRevision !== revision ||
+        localStorage.getItem(LAST_SELECTED_MODEL_KEY) !== local;
+    if (preferred !== null && !overtaken) {
       localStorage.setItem(LAST_SELECTED_MODEL_KEY, preferred);
     }
     localStorage.setItem(PREFERENCE_SYNCED_KEY, "1");

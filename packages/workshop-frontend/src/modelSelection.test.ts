@@ -123,6 +123,21 @@ describe('syncSelectedModel', () => {
     expect(getStoredSelectedModel(MODELS)).toBe('opus')
   })
 
+  it('keeps a model picked in another tab while the preference was being fetched', async () => {
+    persistSelectedModel(api, 'opus')
+    let answer!: (preferred: string | null) => void
+    getPreferredModel.mockReturnValue(new Promise(resolve => { answer = resolve }))
+
+    const syncing = syncSelectedModel(api)
+    await vi.waitFor(() => expect(getPreferredModel).toHaveBeenCalled())
+    // The other tab shares this browser's storage, but not this page's state.
+    localStorage.setItem('lastSelectedModel', 'sonnet')
+    answer('opus')
+    await syncing
+
+    expect(getStoredSelectedModel(MODELS)).toBe('sonnet')
+  })
+
   it("keeps the browser's choice when the server can't be reached", async () => {
     persistSelectedModel(api, 'sonnet')
     getPreferredModel.mockRejectedValue(new Error('offline'))
