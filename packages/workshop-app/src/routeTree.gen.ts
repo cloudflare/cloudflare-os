@@ -16,6 +16,7 @@ import { Route as MockIndexRouteImport } from './routes/mock.index'
 import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
 import { Route as AppWorkspaceWorkspaceIdChatIdRouteImport } from './routes/_app/workspace.$workspaceId.$chatId'
+import { Route as AppWorkspaceWorkspaceIdNewRouteImport } from './routes/_app/workspace.$workspaceId.new'
 
 const AppRoute = AppRouteImport.update({
   id: '/_app',
@@ -53,6 +54,12 @@ const AppWorkspaceWorkspaceIdChatIdRoute =
     path: '/workspace/$workspaceId/$chatId',
     getParentRoute: () => AppRoute,
   } as any)
+const AppWorkspaceWorkspaceIdNewRoute =
+  AppWorkspaceWorkspaceIdNewRouteImport.update({
+    id: '/workspace/$workspaceId/new',
+    path: '/workspace/$workspaceId/new',
+    getParentRoute: () => AppRoute,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
@@ -60,6 +67,7 @@ export interface FileRoutesByFullPath {
   '/mock/$scenario': typeof MockScenarioRoute
   '/mock/': typeof MockIndexRoute
   '/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
+  '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesByTo {
@@ -68,6 +76,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/mock': typeof MockIndexRoute
   '/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
+  '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRoutesById {
@@ -78,6 +87,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/mock/': typeof MockIndexRoute
   '/_app/workspace/$workspaceId/$chatId': typeof AppWorkspaceWorkspaceIdChatIdRoute
+  '/_app/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/_app/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 export interface FileRouteTypes {
@@ -88,6 +98,7 @@ export interface FileRouteTypes {
     | '/mock/$scenario'
     | '/mock/'
     | '/workspace/$workspaceId/$chatId'
+    | '/workspace/$workspaceId/new'
     | '/workspace/$workspaceId/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -96,6 +107,7 @@ export interface FileRouteTypes {
     | '/'
     | '/mock'
     | '/workspace/$workspaceId/$chatId'
+    | '/workspace/$workspaceId/new'
     | '/workspace/$workspaceId'
   id:
     | '__root__'
@@ -105,6 +117,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/mock/'
     | '/_app/workspace/$workspaceId/$chatId'
+    | '/_app/workspace/$workspaceId/new'
     | '/_app/workspace/$workspaceId/'
   fileRoutesById: FileRoutesById
 }
@@ -166,18 +179,27 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppWorkspaceWorkspaceIdChatIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/workspace/$workspaceId/new': {
+      id: '/_app/workspace/$workspaceId/new'
+      path: '/workspace/$workspaceId/new'
+      fullPath: '/workspace/$workspaceId/new'
+      preLoaderRoute: typeof AppWorkspaceWorkspaceIdNewRouteImport
+      parentRoute: typeof AppRoute
+    }
   }
 }
 
 interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppWorkspaceWorkspaceIdChatIdRoute: typeof AppWorkspaceWorkspaceIdChatIdRoute
+  AppWorkspaceWorkspaceIdNewRoute: typeof AppWorkspaceWorkspaceIdNewRoute
   AppWorkspaceWorkspaceIdIndexRoute: typeof AppWorkspaceWorkspaceIdIndexRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppWorkspaceWorkspaceIdChatIdRoute: AppWorkspaceWorkspaceIdChatIdRoute,
+  AppWorkspaceWorkspaceIdNewRoute: AppWorkspaceWorkspaceIdNewRoute,
   AppWorkspaceWorkspaceIdIndexRoute: AppWorkspaceWorkspaceIdIndexRoute,
 }
 
