@@ -2170,16 +2170,16 @@ export class GoogleDocGatekeeperImpl
     if (!receipt) return document;
 
     // The marker ID is exact, but its tab is not recorded, so every tab is searched for it.
-    let markerExists = document.tabs.some(
+    let markerTab = document.tabs.find(
       tab => googleDocNamedRanges(tab).some(({ id }) => id === receipt.markerId),
     );
-    if (!markerExists) {
+    if (!markerTab) {
       this.#clearDocWriteReceipt(receipt.markerId);
       return document;
     }
 
     let { documentId } = this.#bound;
-    await api.deleteNamedRange(documentId, receipt.markerId);
+    await api.deleteNamedRange(documentId, receipt.markerId, markerTab.tabId);
     this.#clearDocWriteReceipt(receipt.markerId);
     return api.getDocument(documentId);
   }
@@ -2360,13 +2360,14 @@ export class GoogleDocGatekeeperImpl
     let doc = await api.getDocument(documentId);
     doc = await this.#reconcileDocWriteReceipt(api, doc);
     let snapshot = googleDocSnapshot(doc);
-    let markerIds = [...new Set(googleDocActionTabs(doc.tabs, action.tabId)
-        .flatMap(tab => googleDocNamedRangeIds(tab, writeMarkerName)))];
-    if (markerIds.length > 1) {
+    // A marker is found with its tab, which deleting it must name.
+    let markers = googleDocActionTabs(doc.tabs, action.tabId).flatMap(tab =>
+      googleDocNamedRangeIds(tab, writeMarkerName).map(id => ({ id, tabId: tab.tabId })));
+    if (new Set(markers.map(({ id }) => id)).size > 1) {
       throw new Error(`Google Docs returned multiple write markers for action ${actionId}`);
     }
-    let [writeMarkerId] = markerIds;
-    if (!writeMarkerId) {
+    let [writeMarker] = markers;
+    if (!writeMarker) {
       let materialized: { tab: GoogleDocTabSnapshot; requests: any[] };
       try {
         materialized = materializeGoogleDocAction(snapshot, action);
@@ -2398,14 +2399,14 @@ export class GoogleDocGatekeeperImpl
         if (!result.writeMarkerId) {
           throw new Error(`Google Docs did not return a write marker for action ${actionId}`);
         }
-        writeMarkerId = result.writeMarkerId;
+        writeMarker = { id: result.writeMarkerId, tabId: tab.tabId };
       }
     }
-    if (writeMarkerId) {
-      this.#handoffDocWriteReceipt(actionId, writeMarkerId, pendingActions);
+    if (writeMarker) {
+      this.#handoffDocWriteReceipt(actionId, writeMarker.id, pendingActions);
       try {
-        await api.deleteNamedRange(documentId, writeMarkerId);
-        this.#clearDocWriteReceipt(writeMarkerId);
+        await api.deleteNamedRange(documentId, writeMarker.id, writeMarker.tabId);
+        this.#clearDocWriteReceipt(writeMarker.id);
       } catch (error) {
         logger.warn("failed to clean up Google Doc write marker", {
           event: "google.doc.write-marker.cleanup.failed", actionId, error,
@@ -2420,10 +2421,10 @@ export class GoogleDocGatekeeperImpl
     // new revision now, to be replayed over it; otherwise the next read fetches it, and an approval
     // that nobody reads after costs no full document read.
     let later = pending.slice(pendingIndex + 1).filter(record => !record.action.invalidatedReason);
-    if (writeMarkerId && later.length === 0) return;
+    if (writeMarker && later.length === 0) return;
     try {
       let refreshedSnapshot = snapshot;
-      if (writeMarkerId) {
+      if (writeMarker) {
         refreshedSnapshot = googleDocSnapshot(await api.getDocument(documentId));
       }
       await this.ctx.storage.put(DOC_SNAPSHOT_KEY, refreshedSnapshot);

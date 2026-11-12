@@ -403,14 +403,20 @@ export class GoogleDocsApi {
     return update;
   }
 
-  /** Delete one named range by its exact provider ID. */
-  async deleteNamedRange(documentId: string, namedRangeId: string): Promise<void> {
+  /**
+   * Delete one named range by its exact provider ID, in tab `tabId`. Google finds the range only
+   * in the tabs a deletion names once the document has more than one tab: without them it answers
+   * that no range has that ID.
+   */
+  async deleteNamedRange(documentId: string, namedRangeId: string, tabId: string): Promise<void> {
     await this.#request(
       `${DOCS_API_BASE}/${encodeURIComponent(documentId)}:batchUpdate`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requests: [{ deleteNamedRange: { namedRangeId } }] }),
+        body: JSON.stringify({
+          requests: [{ deleteNamedRange: { namedRangeId, tabsCriteria: { tabIds: [tabId] } } }],
+        }),
       },
       "delete named range",
     );

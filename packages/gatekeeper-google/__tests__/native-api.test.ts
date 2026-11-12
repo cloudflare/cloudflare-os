@@ -244,7 +244,7 @@ describe("native Google content API safety", () => {
     });
   });
 
-  it("deletes a named range by exact ID without write control", async () => {
+  it("deletes a named range by exact ID in its tab, without write control", async () => {
     let requestedUrl: string | undefined;
     let requestInit: RequestInit | undefined;
     vi.stubGlobal("fetch", vi.fn(async (
@@ -255,13 +255,13 @@ describe("native Google content API safety", () => {
       return Response.json({});
     }));
 
-    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1");
+    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1", "t.2");
 
     expect(requestedUrl).toBe(
       "https://docs.googleapis.com/v1/documents/doc-1:batchUpdate",
     );
     expect(JSON.parse(String(requestInit?.body))).toEqual({
-      requests: [{ deleteNamedRange: { namedRangeId: "range-1" } }],
+      requests: [{ deleteNamedRange: { namedRangeId: "range-1", tabsCriteria: { tabIds: ["t.2"] } } }],
     });
   });
   it("cancels an unknown-length response once streamed bytes exceed the limit", async () => {

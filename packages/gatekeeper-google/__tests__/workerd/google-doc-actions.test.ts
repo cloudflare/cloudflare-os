@@ -12,7 +12,7 @@ type DocCoordinate = { tabId?: string };
 
 type BatchRequest = {
   createNamedRange?: { name: string; range: DocCoordinate };
-  deleteNamedRange?: { namedRangeId: string };
+  deleteNamedRange?: { namedRangeId: string; tabsCriteria?: { tabIds: string[] } };
   insertText?: { location: DocCoordinate & { index: number }; text: string };
   deleteContentRange?: { range: DocCoordinate & { startIndex: number; endIndex: number } };
   updateParagraphStyle?: {
@@ -357,6 +357,15 @@ class DocsModel {
     if (isDelete && this.cleanupFailures > 0) {
       this.cleanupFailures--;
       throw new Error("cleanup failed");
+    }
+    // Once there are several tabs, Google finds a named range only in the tabs a deletion names.
+    let deletion = isDelete ? body.requests[0].deleteNamedRange! : undefined;
+    let markerTab = deletion && this.markers.get(deletion.namedRangeId)?.tabId;
+    if (deletion && markerTab && this.tabs.length > 1 &&
+        !deletion.tabsCriteria?.tabIds.includes(markerTab)) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        message: `Invalid requests[0].deleteNamedRange: No named range with ID: ${deletion.namedRangeId}` } },
+        { status: 400 });
     }
     if (body.writeControl?.requiredRevisionId &&
         body.writeControl.requiredRevisionId !== `revision-${this.#revision}`) {
@@ -2029,6 +2038,20 @@ describe("Google Doc tab isolation", () => {
     expect(docs.text("metrics")).toContain("added");
     expect(docs.text(MAIN_TAB)).toBe("shared");
     expect(docs.text("details")).toBe("shared");
+  });
+
+  it("removes each marker from its tab, so the next edit applies too", async () => {
+    let docs = nestedDocs();
+    let first = await hooks().submitAppend("tabs-cleanup", "one", "metrics");
+    let second = await hooks().submitAppend("tabs-cleanup", "two", MAIN_TAB);
+
+    expect(await hooks().applyAction("tabs-cleanup", first)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(await hooks().applyAction("tabs-cleanup", second)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(docs.deletedMarkerIds).toHaveLength(2);
+    expect(docs.text("metrics")).toBe("shared\none");
+    expect(docs.text(MAIN_TAB)).toBe("shared\ntwo");
   });
 
   it("replaces identical text in the selected tab only", async () => {
