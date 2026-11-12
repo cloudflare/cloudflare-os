@@ -2089,9 +2089,14 @@ type MarkdownWriteOptions = {
   /**
    * Make the paragraph that a kept final break splits off a plain one: it takes the list and
    * style of the paragraph written into, which the Markdown does not show on it. `list` says
-   * whether that paragraph is a list item, whose bullet and indent then go too.
+   * whether that paragraph is a list item, whose bullet and indent then go. `restyle` says
+   * whether its named style is not normal text; naming a style resets the look of its text, so
+   * `runs`, its kept text's bold, italic, strikethrough and links counted from its start, are
+   * then written again.
    */
-  resetTrailingParagraph?: { list: boolean };
+  resetTrailingParagraph?: {
+    list: boolean; restyle: boolean; runs: { start: number; end: number; textStyle: TextStyle }[];
+  };
   /** Receives the index of each block needing bullets, for a caller that creates them itself. */
   bulleted?: (index: number) => void;
 };
@@ -2504,11 +2509,11 @@ function blocksToDocRequests(
     }
     return change;
   });
-  if (options.preserveTrailingNewline && options.resetTrailingParagraph) {
-    let { list } = options.resetTrailingParagraph;
+  let trailing = options.preserveTrailingNewline ? options.resetTrailingParagraph : undefined;
+  if (trailing) {
     paragraphChanges.push({
-      startIndex: offset, endIndex: offset + 1, deleteBullets: list,
-      namedStyleType: "NORMAL_TEXT", clearIndent: list,
+      startIndex: offset, endIndex: offset + 1, deleteBullets: trailing.list,
+      namedStyleType: trailing.restyle ? "NORMAL_TEXT" : undefined, clearIndent: trailing.list,
     });
   }
   // Bullets go first: removing them indents each paragraph to keep its nesting visible, and the
@@ -2523,6 +2528,16 @@ function blocksToDocRequests(
       previous.clearIndent === next.clearIndent)) {
     addRequest(requests, updateParagraphStyleRequest(
       { startIndex, endIndex, tabId }, namedStyleType, clearIndent));
+  }
+  for (let run of trailing?.restyle ? trailing.runs : []) {
+    let fields = (["bold", "italic", "strikethrough", "link"] as const)
+      .filter(field => run.textStyle[field]);
+    addRequest(requests, {
+      updateTextStyle: {
+        range: { startIndex: offset + run.start, endIndex: offset + run.end, tabId },
+        textStyle: run.textStyle, fields: fields.join(","),
+      },
+    });
   }
 
   // Reset inherited inline styling across all inserted text in one request. Starting at the first
@@ -3207,8 +3222,21 @@ function inlineWrite(
   let { end } = docRange;
   let split = !ahead && preserveTrailingNewline && !docRange.startsAfterParagraph
     ? sourceMap.blocks.find(block => block.docStart <= end && end < block.docEnd) : undefined;
-  let splitStyled = split &&
-    (split.listId !== undefined || split.namedStyleType !== "NORMAL_TEXT");
+  let restyle = split !== undefined && split.namedStyleType !== "NORMAL_TEXT";
+  let runs: { start: number; end: number; textStyle: TextStyle }[] = [];
+  for (let segment of restyle ? split!.segments : []) {
+    if ("syntaxOnly" in segment) continue;
+    let from = Math.max(segment.docStart, end);
+    let to = Math.min(segment.docEnd, split!.docEnd - 1);
+    let { bold, italic, strikethrough, link } = segment.textStyle;
+    let textStyle: TextStyle = {
+      ...bold ? { bold } : {}, ...italic ? { italic } : {},
+      ...strikethrough ? { strikethrough } : {}, ...link ? { link } : {},
+    };
+    if (from < to && Object.keys(textStyle).length > 0) {
+      runs.push({ start: from - end, end: to - end, textStyle });
+    }
+  }
   return {
     docRange, insertMarkdown,
     writeOptions: {
@@ -3218,7 +3246,8 @@ function inlineWrite(
       preserveLeadingParagraph: !ahead ||
         ahead.listId === undefined && ahead.namedStyleType === "NORMAL_TEXT",
       preserveTrailingNewline,
-      ...(splitStyled ? { resetTrailingParagraph: { list: split!.listId !== undefined } } : {}),
+      ...(split && (restyle || split.listId !== undefined)
+        ? { resetTrailingParagraph: { list: split.listId !== undefined, restyle, runs } } : {}),
     },
   };
 }
@@ -3318,9 +3347,15 @@ export function rewrittenBlockStyles(
     markdown.slice(trimmedStart, trimmedEnd).includes("\n"));
   if (!rewrite) {
     let { writeOptions } = inlineWrite(sourceMap, markdown, trimmedStart, trimmedEnd, trimmedNew);
+    // A paragraph split off and given another style has its kept text written again.
+    let lineEnd = markdown.indexOf("\n", trimmedEnd);
+    let rewritesRest = writeOptions.resetTrailingParagraph?.restyle === true;
     return {
       keepsFirst: writeOptions.preserveLeadingParagraph === true,
-      replaced: { mdStart: trimmedStart, mdEnd: trimmedEnd },
+      replaced: {
+        mdStart: trimmedStart,
+        mdEnd: rewritesRest ? lineEnd < 0 ? markdown.length : lineEnd : trimmedEnd,
+      },
     };
   }
   let { blockRange: { blocks, mdStart }, targets } = rewrite;

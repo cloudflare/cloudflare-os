@@ -3920,6 +3920,22 @@ describe("formatting a paragraph's named style already gives", () => {
       .simulated.markdown).toContain("## New here\n");
   });
 
+  it("keeps the formatting of the rest of a list item or heading a written break splits off", () => {
+    let runs = ["Notes ", { text: "here", style: { bold: true } }, "\n"];
+    for (let target of [
+      { runs, bullet: { listId: "Q1" } }, { runs, namedStyleType: "HEADING_2" },
+    ] as ParagraphSpec[]) {
+      let tab = { ...buildTab([para("Before"), target, para("After")], ALL_LISTS), namedStyles: NAMED_STYLES };
+      let { simulated, applied } = expectStyledSameAsGoogle(tab, "Notes", "End\n\n");
+      expect(simulated.markdown).toContain("End\n\n **here**\n");
+      // A table placed after that text as the read shows it finds it once Google applies it.
+      let table = newTable([["a"]], "\n **here**\n");
+      let fresh = docTabToMarkdown(applied);
+      expect(applyTableChange(contentOf(fresh), table, fresh).markdown)
+        .toBe(applyTableChange(simulated, table).markdown);
+    }
+  });
+
   it("refuses an edit beside kept text its named style also formats, while an earlier change waits", () => {
     let tab = styledTab([
       para("Other text"),

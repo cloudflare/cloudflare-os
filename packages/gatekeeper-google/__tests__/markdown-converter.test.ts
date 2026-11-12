@@ -3169,9 +3169,16 @@ describe("computeReplaceOperations, written as its replay reads", () => {
   });
 
   it("keeps a list item's or heading's style on text written after its marker", () => {
+    // The rest of the paragraph keeps its formatting and links.
+    let formatted = ["Notes ", { text: "here", style: { bold: true } }, "\n"];
+    let linked = ["Notes ", { text: "here", style: { italic: true, link: { url: "https://example.com/" } } }, "\n"];
     let targets = [
       { runs: ["Notes here\n"], bullet: { listId: "L1" } },
       { runs: ["Notes here\n"], namedStyleType: "HEADING_2" },
+      { runs: formatted, bullet: { listId: "L1" } },
+      { runs: formatted, namedStyleType: "HEADING_2" },
+      { runs: linked, bullet: { listId: "L1" } },
+      { runs: linked, namedStyleType: "HEADING_2" },
     ];
     for (let target of targets) {
       let tab = buildTab([{ runs: ["Before\n"] }, target, { runs: ["After\n"] }], BULLET_LIST);
@@ -3180,8 +3187,7 @@ describe("computeReplaceOperations, written as its replay reads", () => {
         ["Notes here", "End\n\n"],
         ["Notes", "End\n\n"],
         ["Notes here", "End\n\nNotes here"],
-        ["here", "x\n\nhere"],
-        ["here", "x\n\n"],
+        ...target.runs.length === 1 ? [["here", "x\n\nhere"], ["here", "x\n\n"]] : [],
       ]) {
         let start = markdown.indexOf(oldMarkdown);
         expectAsReplayed(tab, start, start + oldMarkdown.length, newMarkdown);
