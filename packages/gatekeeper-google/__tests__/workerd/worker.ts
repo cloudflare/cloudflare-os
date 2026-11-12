@@ -244,6 +244,17 @@ class TestApprovalQueue extends RpcTarget {
   }
 
   [Symbol.dispose](): void {}
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 /** Keeps the controller a subscription binds, where the Overseer would store it. */

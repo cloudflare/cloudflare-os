@@ -1248,15 +1248,24 @@ the producer's error; if the status has not failed, preserve the consumer's own 
 draining the stream, require `complete` before accepting the transfer. Cancel an unfinished stream
 and dispose the capability when done.
 
-The transfer also supports a native container consumer, but container hydration is not enabled
-by this capability alone; it requires the separate kernel worktree-replica bootstrap support.
-That consumer must bind its bootstrap capability to an authorized immutable commit, request depth
-one with no tree/blob filters, stream directly to native Git using its own limits rather than
-the DO cache's, and close the bootstrap capability after hydration. No guest-supplied Git
-commands, ref discovery, arbitrary URLs, or provider credentials belong in that bootstrap
-interface. Packs are self-contained (no `have` negotiation or thin-pack dependencies). Native
-consumers must record their shallow boundary because the raw pack does not carry Git protocol
-shallow-info.
+The same capability serves native Git in a container that has mounted a worktree (see
+[`docs/worktree-replicas.md`](../../docs/worktree-replicas.md)). The container gatekeeper's
+`serveGitUploadPack()` parses the container's fetch into a structured pull, and the kernel asks
+the provider for what the workspace doesn't store, passing the container's `haves`, its
+`shallow` boundary and any deepen (`commitHistory`, including `relative`) as hints. Packs stay self-contained (no thin-pack dependencies); the transfer's
+`shallowInfo()` reports the provider's `shallow-info` lines, which the raw pack doesn't carry.
+Cache fills never send `have`s.
+
+A container gatekeeper that mounts a worktree calls the Worktree stub's `getReplicator()` while
+the agent's call that passed the stub is running (the stub itself stops working when that code
+execution ends), and stores the persistent `WorktreeReplicator` it returns. It clones the
+worktree with native Git from a guest-local URL it invents, answering Git's requests with
+`serveGitUploadPack(request, replicator)` (`gatekeeper-kit/git-upload-pack`), and syncs around
+each command with `replicator.snapshot(queue)` and `replicator.submit(queue, base, tree, pack)`,
+passing the ApprovalQueue of the session through which the agent's code asked for the command.
+The API is
+`workshop-shared/src/worktree-replica.ts`, and the Git command sequence is in
+[`docs/worktree-replicas.md`](../../docs/worktree-replicas.md#a-command-from-the-containers-side).
 
 ## Other module boundaries
 

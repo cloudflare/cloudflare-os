@@ -4217,9 +4217,9 @@ export type ChatCodeBase = {
    * but the content carries over -- `prior` describes the closed stream, and in-flight
    * submissions are transformed onto the new generation (see submitCodeChange()). **Destructive**
    * (a revert, draft discard, or agent turn abort erased already-applied changes, or
-   * updateChatFromMainline() re-rooted pins): content other clients may have transformed against
-   * is gone, so they must discard local state and rebuild. Pin additions do *not* bump -- they
-   * only append changes.
+   * updateChatFromMainline() or an agent step re-rooted pins): content other clients may have
+   * transformed against is gone, so they must discard local state and rebuild. Pin additions do
+   * *not* bump -- they only append changes.
    */
   generation: number;
 
@@ -4327,6 +4327,10 @@ export type ChatGadgetPinState = ChatGadgetPin & {
    * that was merged; accepting then fast-forwards the head from here through the merge commit
    * (see Overseer.mergeChanges()). A revert puts back what the earliest update it covers
    * records the pin had before (see AiChatMessageBody.mainlineMerge).
+   *
+   * A worktree's is always its accepted commit (WorktreeSummary.pinBase). An agent step can
+   * re-root a worktree's pin at a commit of its own, holding the result of a command it ran
+   * there, which then differs from this; accepting commits the chat's content on this commit.
    */
   mergedCommit: string;
 };
@@ -5901,7 +5905,8 @@ export type ApplyBlueprintResult = {
  * The WorkpieceSummary of a worktree: a checkout of an external git repository that an agent
  * works in (see AiChatMessageBody.createdWorktrees). It has no app and no bindings; the UI shows
  * only its code. Its three commits are the worktree's state as the chat sees it; the OT rows of
- * the chat's current epoch compose on `pinBase`.
+ * the chat's current epoch compose on the chat pin's `baseCommit`, which is `pinBase` unless an
+ * agent step re-rooted the pin (see ChatGadgetPinState.mergedCommit).
  */
 export type WorktreeSummary = {
   id: WorkpieceId;

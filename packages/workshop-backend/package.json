@@ -9,7 +9,7 @@
     "build:worker": "node scripts/build-browser-runtime.ts && pnpm exec capnweb-validate build --out .wrangler/validate",
     "clean": "rm -rf dist",
     "test:integration": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run --config vitest.integration.config.ts",
-    "test:run": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run && vitest run --config vitest.integration.config.ts",
+    "test:run": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest run && vitest run --config vitest.integration.config.ts && vitest run --config vitest.native.config.ts",
     "test:watch": "node scripts/build-browser-runtime.ts && node scripts/build-bundled-blueprints.ts && vitest",
     "import:bundled-blueprint": "node scripts/import-bundled-blueprint.ts"
   },
@@ -18,6 +18,7 @@
     "@earendil-works/pi-agent-core": "1.5.0",
     "@earendil-works/pi-ai": "1.5.0",
     "@gadgets/error-reporting": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/observability": "workspace:*",
     "@gadgets/typed-storage": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
@@ -37,6 +38,7 @@
     "dompurify": "^3.4.17",
     "esbuild": "^0.28.2",
     "fast-check": "catalog:",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:",
     "wrangler": "catalog:"

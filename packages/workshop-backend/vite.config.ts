@@ -84,6 +84,7 @@ export default {
         ...vitestTask([
           { command: 'vitest run', idleSeconds: 120 },
           'vitest run --config vitest.integration.config.ts',
+          'vitest run --config vitest.native.config.ts',
         ]),
         dependsOn: [
           '@gadgets/typed-storage#build', 'build:bundled-blueprints', 'build:browser-runtime',
