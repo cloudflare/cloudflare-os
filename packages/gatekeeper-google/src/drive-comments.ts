@@ -286,8 +286,9 @@ export type CommentAttempt = {
   /** A suggested edit's suggestion, once it is known to be made: what remains is its note. */
   suggestionId?: string;
   /**
-   * What a comment, reply or resolve posted, once Google confirmed it: a retry answers with it
-   * and never looks, since the post may have been edited or deleted since.
+   * What the write posted, once it is over: a comment, reply or resolve Google confirmed or a look
+   * found, or a suggested edit's suggestion once its note is too. A retry answers with it and never
+   * looks, since the post may have been edited or deleted since.
    */
   postedId?: string;
   /** When the note's send began, once one has: a retry looks for it before sending again. */
@@ -799,7 +800,10 @@ async function postNote(
         "posted can't be checked, and it won't be sent again. Reject it to clear it.");
     }
     let from = noteAttempt.at - CLOCK_SKEW_MS;
-    if (thread.replies.some(reply => myPostFrom(reply, from) && reply.content === note)) return;
+    if (thread.replies.some(reply => myPostFrom(reply, from) && reply.content === note)) {
+      host.attempts.put(id, { ...marked, postedId: suggestionId });
+      return;
+    }
     if (!conclusive) throw notShownYet(noteAttempt, host.threads.via);
     await requireSightedLook(host, { kind: "suggestEdit", payload });
   }
@@ -831,6 +835,8 @@ async function postNote(
     throw new ActionApplyError("The suggestion was made, but Google Docs refused its note.",
       { cause: error });
   }
+  // Over: a retry, after an apply that could not be recorded, must not post the note again.
+  host.attempts.put(id, { ...marked, postedId: suggestionId });
 }
 
 /**

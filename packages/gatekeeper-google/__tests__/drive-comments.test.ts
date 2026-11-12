@@ -1433,7 +1433,7 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
       { insertText: { location: { index: 18, tabId: "t.0" }, text: "June" } },
     ], "rev-1");
     expect(docs.replyToSuggestion).toHaveBeenCalledWith("doc-1", "suggest.s1", "It moved.");
-    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1", noteAt: expect.any(Number) });
+    expect(attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1", postedId: "suggest.s1" });
 
     let deletion = harness();
     expect(await deletion.apply(await deletion.submit("suggestEdit", edit({ newText: "" })))).toBeNull();
@@ -1515,6 +1515,26 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     bare.docs.suggest.mockResolvedValue({ id: "suggest.s1", threadSaved: false });
     expect(await bare.apply(await bare.submit("suggestEdit", edit()))).toBeNull();
     expect(bare.docs.suggest).toHaveBeenCalledTimes(1);
+  });
+
+  // bonk: a note Google confirmed must hold even once the note no longer reads as it was sent.
+  it("never posts a confirmed note again after a retire that did not land, though the note was edited since", async () => {
+    let kv = new FaultyKv();
+    let run = harness({ kind: "account" }, kv);
+    run.keepSuggestions();
+    let id = await run.submit("suggestEdit", edit({ note: "It moved." }));
+    kv.failNextRetire = true;
+    expect(await run.apply(id)).toBe("storage failure");
+    expect(run.attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1", postedId: "suggest.s1" });
+    run.doc.suggestions[0].replies[0].content = "It moved to June.";
+    let long = Date.now() - 10 * 60_000;
+    run.attempts.set(id, { ...run.attempts.get(id)!, at: long, noteAt: long });
+
+    run.adopt(id);
+    expect(await run.apply(id)).toBeNull();
+    expect(run.docs.suggest).toHaveBeenCalledTimes(1);
+    expect(run.docs.replyToSuggestion).toHaveBeenCalledTimes(1);
+    expect(run.journal.get(id)).toBeUndefined();
   });
 
   it("never makes a suggestion twice when only its note is left to post", async () => {
