@@ -954,6 +954,9 @@ export function prepareTextReplacement(
     }
     return { edit: run, rendered: canonical };
   });
+  // The replay refuses what it cannot show as it will read, such as formatting a title's or a
+  // subtitle's style decides while earlier changes wait: such a call is refused, not queued.
+  let replayed = applyTextReplacement(content, replacement, tab.tabId, tab).markdown;
   let prose = `Replace text in tab ${label}.`;
   if (edit === replacement) {
     return {
@@ -969,7 +972,6 @@ export function prepareTextReplacement(
   // What a read returns is the replay of the replacement as it is stored. That replay takes
   // the replacement as written wherever the content accepts it, also where only the requests
   // had to be built for the change beside the table, and the two can leave a list differently.
-  let replayed = applyTextReplacement(content, replacement, tab.tabId, tab).markdown;
   return {
     inTable: false, prose, syntax: "markdown",
     shown: {

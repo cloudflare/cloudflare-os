@@ -1644,3 +1644,22 @@ describe("mergeTableCells and unmergeTableCells", () => {
       "top-left cell of the merged cell.");
   });
 });
+
+describe("a replacement the replay refuses", () => {
+  it("is refused when it is called, not queued to fail on the next read", () => {
+    // ask-bonk's case: with an edit waiting, bold written into a bold-styled subtitle.
+    let tab = {
+      ...buildTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]),
+      namedStyles: {
+        styles: [
+          { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
+          { namedStyleType: "SUBTITLE", textStyle: { bold: true } },
+        ],
+      },
+    };
+    let waiting = edited(read(tab), "Other text", "Elsewhere");
+    expect(message(() => replace(waiting, "Notes here", "**Notes here**"))).toContain(
+      "replaceText: in this tab a subtitle reads its bold, italic or strikethrough otherwise");
+    expect(() => replace(read(tab), "Notes here", "**Notes here**")).not.toThrow();
+  });
+});
