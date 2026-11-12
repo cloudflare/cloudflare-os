@@ -1,0 +1,21 @@
+packages/workshop-backend/__tests__/rejection-restart.test.ts
+  s_99c049c8391965::t_9f0f96278077de 1-217
+packages/workshop-backend/src/overseer.ts
+  s_99c049c8391965::t_8defb3c16e9a90 544-547,5412-5452,12536-12539,12554-12556
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b5395e384ccb8cfbd5c3f81977435123844cd472",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
