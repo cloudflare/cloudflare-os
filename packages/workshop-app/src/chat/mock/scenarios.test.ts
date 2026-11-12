@@ -151,11 +151,10 @@ describe('scenarios', () => {
     const { ready, rows, seen } = await watch(scenario('output'), (chat) => of(chat.rows(), 'output').map(({ draft }) => draft))
 
     expect(seen).toEqual(new Set([true, false]))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant', 'output', 'divider', 'divider'])
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant', 'output', 'divider'])
     expect(ready().pinned).toMatchObject([
       { kind: 'output', title: 'Q3 platform review', format: { noun: 'Document' } },
       { label: 'You saved edits' },
-      { label: 'Changes applied' },
     ])
   })
 
@@ -166,7 +165,7 @@ describe('scenarios', () => {
     expect(of(rows(), 'error').map(({ recovery }) => recovery)).toEqual([undefined, undefined, 'continue'])
   })
 
-  it('steer-slash: a steer waits unread and is the same row once read; another model and the compaction are marked', async () => {
+  it('steer-slash: a steer waits unread and is the same row once read; the compaction is marked', async () => {
     const { rows, seen } = await watch(scenario('steer-slash'), (chat) => [
       ...of(chat.rows(), 'user').filter(({ text }) => text === 'Keep it under 100 words.').map(({ key, unread }) => `${key} ${unread ? 'unread' : 'read'}`),
       ...(chat.ready().activity === 'Compacting the conversation…' ? ['compacting'] : []),
@@ -175,7 +174,7 @@ describe('scenarios', () => {
     const [steer] = of(rows(), 'user').filter(({ text }) => text === 'Keep it under 100 words.')
     expect(seen).toEqual(new Set([`${steer.key} unread`, `${steer.key} read`, 'compacting']))
     expect(rows().map((row) => (row.kind === 'divider' ? row.marks : row.kind))).toEqual([
-      'user', 'assistant', 'user', 'model', 'assistant', 'user', 'assistant', 'user', 'compaction',
+      'user', 'assistant', 'user', 'assistant', 'user', 'assistant', 'user', 'compaction',
     ])
     expect(of(rows(), 'user')[0].parts[0]).toEqual({ type: 'command', name: 'release-notes' })
   })

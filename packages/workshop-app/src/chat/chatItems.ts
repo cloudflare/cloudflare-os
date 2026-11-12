@@ -136,11 +136,11 @@ export type NoticeItem = Row & {
   detail?: string
 }
 /**
- * A point in the conversation rather than something said: the context was compacted, another
- * model took over, or a person did something to the chat's changes (saved edits, accepted them,
- * discarded them).
+ * A point in the conversation rather than something said: the context was compacted, or a person
+ * did something to the chat's changes (saved edits, accepted them, discarded them). Which model
+ * wrote a message is in its details, so another taking over is not marked.
  */
-export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'model' | 'changes' | 'merge' | 'revert'; label: string }
+export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'changes' | 'merge' | 'revert'; label: string }
 export type ErrorItem = Row & {
   kind: 'error'
   text: string
@@ -473,7 +473,6 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   let acts: DividerItem[] = []
   // The steps since the last message. They are never rows: the next message leaves them behind.
   let work: ToolEntry[] = []
-  let model: string | undefined
 
   /**
    * Puts the approvals decided before `time` into the conversation. Each lands after everything
@@ -578,12 +577,6 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         if (!text && calls.length === 0) break
         carryOn()
 
-        if (model !== undefined && model !== message.author.id) {
-          const { name } = message.author
-          items.push(emit<DividerItem>(`model:${id}`, [name], () => ({ kind: 'divider', id, marks: 'model', label: `Switched to ${name}` })))
-        }
-        model = message.author.id
-
         const thought = message.reasoning?.trim() ? message.reasoning : undefined
         if (text) {
           // What led to the message goes with it, for whoever asks, and the next lot starts over.
@@ -674,9 +667,9 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         break
 
       case 'merge':
-        // The viewer's own are accepted on their own as each turn ends (see autoAccept.ts), so
-        // they are not put as something the viewer did.
-        act(message, 'merge', message.author.id === viewerId ? 'Changes applied' : `${message.author.name} applied changes`)
+        // The viewer's own are accepted on their own as each turn ends (see autoAccept.ts), which
+        // says nothing they would not expect, so only someone else's is marked.
+        if (message.author.id !== viewerId) act(message, 'merge', `${message.author.name} applied changes`)
         break
 
       case 'revert':

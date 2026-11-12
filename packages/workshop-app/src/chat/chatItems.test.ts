@@ -406,12 +406,11 @@ describe('toChatFeed', () => {
   })
 
   describe('system rows', () => {
-    it('marks saved edits, accepts and discards, as the viewer’s own or by name', () => {
+    it('marks saved edits, accepts and discards, as the viewer’s own or by name, but not the viewer’s own accepts', () => {
       const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
       const result = feed(changes(), merge(), changes({ author: other }), revert(2, other), changes(), merge(other))
       expect(only(result, 'divider').map(({ marks, label }) => [marks, label])).toEqual([
         ['changes', 'You saved edits'],
-        ['merge', 'Changes applied'],
         ['changes', 'Grace Hopper saved edits'],
         ['revert', 'Grace Hopper discarded changes'],
         ['changes', 'You saved edits'],
@@ -422,10 +421,10 @@ describe('toChatFeed', () => {
     it('puts what someone did after an answer below what the answer produced', () => {
       const turn = [user('make a report'), agent({ text: 'Here it is', toolCalls: [createGadget(1)] }), created(1), changes(), merge()]
       const open = feed(...turn)
-      expect(kinds(open)).toEqual(['user', 'assistant', 'output', 'divider', 'divider'])
-      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You saved edits' }, { label: 'Changes applied' }])
+      expect(kinds(open)).toEqual(['user', 'assistant', 'output', 'divider'])
+      expect(open.pinned).toMatchObject([{ kind: 'output', draft: false }, { label: 'You saved edits' }])
 
-      expect(kinds(feed(...turn, user('thanks')))).toEqual(['user', 'assistant', 'output', 'divider', 'divider', 'user'])
+      expect(kinds(feed(...turn, user('thanks')))).toEqual(['user', 'assistant', 'output', 'divider', 'user'])
     })
 
     it('leaves it where it happened when the agent carried on afterwards', () => {
@@ -434,10 +433,10 @@ describe('toChatFeed', () => {
         agent({ text: 'Creating it', toolCalls: [createGadget(1)] }),
         changes(),
         agent({ text: 'I see your edits; finishing up' }),
-        merge(),
+        merge({ type: 'user', id: 'grace@example.com', name: 'Grace Hopper' }),
       )
       expect(rows(result).map((row) => (row.kind === 'divider' ? row.label : row.kind))).toEqual([
-        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'Changes applied',
+        'user', 'assistant', 'You saved edits', 'assistant', 'output', 'Grace Hopper applied changes',
       ])
     })
 
@@ -456,13 +455,11 @@ describe('toChatFeed', () => {
       expect(only(feed(error('Out of credits', { code: 'usage_limit' })), 'error')).toMatchObject([{ usageLimit: true, recovery: 'continue' }])
     })
 
-    it('says when another model took over', () => {
-      const result = feed(agent({ text: 'one' }), agent({ text: 'two' }), agent({ author: FAST_AGENT, text: 'three' }))
+    it('leaves another model taking over to the messages’ details', () => {
+      const result = feed(agent({ text: 'one' }), agent({ author: FAST_AGENT, text: 'two' }))
       expect(result.items).toMatchObject([
-        { kind: 'assistant' },
-        { kind: 'assistant' },
-        { kind: 'divider', marks: 'model', label: 'Switched to Mock Model Fast' },
-        { kind: 'assistant', text: 'three' },
+        { kind: 'assistant', sender: 'Mock Model' },
+        { kind: 'assistant', sender: 'Mock Model Fast', text: 'two' },
       ])
     })
 
