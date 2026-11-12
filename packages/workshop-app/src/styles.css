@@ -86,8 +86,8 @@
 .chat-fade {
   --chat-fade-top: 0;
   --chat-fade-bottom: 0;
-  --chat-fade-floor: calc(1 - 0.65 * var(--chat-fade-top));
-  --chat-fade-length: calc(var(--chat-fade-top) * (var(--header-height, 0px) + 2.5rem) / 2);
+  --chat-fade-floor: calc(1 - 0.8 * var(--chat-fade-top));
+  --chat-fade-length: calc(var(--chat-fade-top) * (var(--header-height, 0px) + 2.5rem) * 1.25);
   --chat-fade-bottom-length: calc(var(--chat-fade-bottom) * (var(--composer-half, 0px) + 1.25rem));
   mask-image:
     linear-gradient(#000 0 0),
