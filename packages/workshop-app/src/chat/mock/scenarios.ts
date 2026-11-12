@@ -476,10 +476,10 @@ const longRound = (round: number): Array<MessageSource | MessageSource[]> => {
 const longHistory: Scenario = {
   id: 'long-history',
   title: 'A long conversation',
-  description: 'More than 300 mixed messages, to exercise paging and virtual pages. It ends in a reply to a message from near the start: click its quote to go there. Send a message for a new answer.',
+  description: 'More than 300 mixed messages, to exercise paging and virtual pages. It ends in a reply to a message from near the start, with an image to open beside the chat: click its quote to go there. Send a message for a new answer.',
   history: history([
     ...Array.from({ length: 60 }, (_, round) => longRound(round)).flat(),
-    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?')),
+    user(withQuote('Request 3: update src/module-2.ts and check it still runs.', 'Does that one still pass?'), { attachments: [REVIEW_FILES[0]] }),
     agent({ text: 'Yes: `src/module-2.ts` has passed every check since.' }),
   ]),
   script: when('onSend', turn(say(agent({ text: 'Noted. That makes sixty-one.' })))),
