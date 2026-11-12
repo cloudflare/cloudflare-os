@@ -2,19 +2,80 @@ import type { RpcStub } from "capnweb";
 import type { AiChatAuthorInfo, AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "./rpcErrors";
 
-// This browser's copy of the user's preferred model, which lets a picker start on it without
-// waiting on the server. The server's copy is the one that follows the user between browsers.
-const LAST_SELECTED_MODEL_KEY = "lastSelectedModel";
-// Set once this browser's copy has been reconciled with the server's.
-const PREFERENCE_SYNCED_KEY = "lastSelectedModelSynced";
-const CACHED_MODELS_KEY = "cachedModels";
-// The user the keys above were stored for, since browser storage outlives a session.
-const OWNER_KEY = "modelSelectionOwner";
+// This browser's copy of the user's preferred model and of the models offered to them, which lets
+// a picker start on them without waiting on the server. The server's copy of the preference is the
+// one that follows the user between browsers.
+//
+// Browser storage outlives a session, so each name below is stored under the ID of the user it
+// belongs to, and is read only for a user the server has confirmed: with no user, reads find
+// nothing and writes are dropped. All of it is best-effort, since storage can be full or blocked.
+const SELECTED = "lastSelectedModel";
+// Set while the choice above has yet to be saved to the server.
+const UNSAVED = "lastSelectedModelUnsaved";
+const MODELS = "cachedModels";
+const NAMES = [SELECTED, UNSAVED, MODELS];
+// What browsers stored, for whoever used them, before any of it was kept per user.
+const LEGACY_SYNCED = "lastSelectedModelSynced";
+const LEGACY_KEYS = [SELECTED, LEGACY_SYNCED, MODELS, "modelSelectionOwner"];
 
-/** Forgets what this browser remembers of a user's models, as when they sign out. */
+function read(name: string, userId: string | undefined): string | null {
+  if (userId === undefined) return null;
+  try {
+    return localStorage.getItem(`${name}:${userId}`);
+  } catch {
+    return null;
+  }
+}
+
+/** Removes every user's stored entries, apart from those of `userId` if given. */
+function forgetOthers(userId?: string): void {
+  for (const key of Object.keys(localStorage)) {
+    const name = NAMES.find((candidate) => key.startsWith(`${candidate}:`));
+    if (name !== undefined && key !== `${name}:${userId}`) localStorage.removeItem(key);
+  }
+}
+
+function write(name: string, userId: string | undefined, value: string | null): void {
+  if (userId === undefined) return;
+  try {
+    if (value === null) {
+      localStorage.removeItem(`${name}:${userId}`);
+    } else {
+      // A shared browser keeps one user's entries, rather than gathering everyone's.
+      forgetOthers(userId);
+      localStorage.setItem(`${name}:${userId}`, value);
+    }
+  } catch {
+    // The server's copy then stands in for this browser's.
+  }
+}
+
+/** Forgets what this browser remembers of anyone's models, as when a user signs out. */
 export function forgetModelSelection(): void {
-  for (const key of [LAST_SELECTED_MODEL_KEY, PREFERENCE_SYNCED_KEY, CACHED_MODELS_KEY, OWNER_KEY]) {
-    localStorage.removeItem(key);
+  try {
+    forgetOthers();
+    for (const key of LEGACY_KEYS) localStorage.removeItem(key);
+  } catch {
+    // Nothing more to be done; the entries are still only read for their own user.
+  }
+}
+
+/**
+ * Hands what a browser stored before entries were kept per user to `userId`, the first user
+ * confirmed in it since, unless they already have a choice of their own.
+ */
+function adoptLegacySelection(userId: string): void {
+  try {
+    const selected = localStorage.getItem(SELECTED);
+    if (selected !== null && read(SELECTED, userId) === null) {
+      write(SELECTED, userId, selected);
+      // An unsynced choice predates picks being saved for the user, so it is newer than the
+      // server's, which dates from onboarding.
+      if (localStorage.getItem(LEGACY_SYNCED) === null) write(UNSAVED, userId, "1");
+    }
+    for (const key of LEGACY_KEYS) localStorage.removeItem(key);
+  } catch {
+    // The server's preference then applies.
   }
 }
 
@@ -31,34 +92,33 @@ function inOrder<T>(request: () => Promise<T>): Promise<T> {
 }
 
 /**
- * The models this browser last saw offered, or none if it has seen none. A picker starts on these,
- * so that it shows the user's model at once, and replaces them when the server answers.
+ * The models this browser last saw offered to `userId`, or none if it has seen none. A picker
+ * starts on these, so that it shows the user's model at once, and replaces them when the server
+ * answers.
  */
-export function getCachedModels(): AiChatAuthorInfo[] {
+export function getCachedModels(userId: string | undefined): AiChatAuthorInfo[] {
   try {
-    const cached: unknown = JSON.parse(localStorage.getItem(CACHED_MODELS_KEY) ?? "[]");
+    const cached: unknown = JSON.parse(read(MODELS, userId) ?? "[]");
     return Array.isArray(cached) ? cached : [];
   } catch {
     return [];
   }
 }
 
-/** Remembers the offered models for getCachedModels(). */
-export function cacheModels(models: AiChatAuthorInfo[]): void {
-  try {
-    localStorage.setItem(CACHED_MODELS_KEY, JSON.stringify(models));
-  } catch {
-    // Only an optimisation: a picker then starts empty and waits on the server.
-  }
+/** Remembers the models offered to `userId` for getCachedModels(). */
+export function cacheModels(userId: string | undefined, models: AiChatAuthorInfo[]): void {
+  write(MODELS, userId, JSON.stringify(models));
 }
 
 /** Sentinel used for UI values and localStorage so an explicit null choice can persist. */
 export const NO_AGENT_OPTION_VALUE = "__gadgets_no_agent__";
 
+/** The model a new chat of `userId`'s starts on: their remembered choice, if still offered. */
 export function getStoredSelectedModel(
+  userId: string | undefined,
   models: AiChatAuthorInfo[],
 ): string | null {
-  const storedModel = localStorage.getItem(LAST_SELECTED_MODEL_KEY);
+  const storedModel = read(SELECTED, userId);
 
   if (storedModel === NO_AGENT_OPTION_VALUE) {
     return null;
@@ -75,69 +135,75 @@ export function getStoredSelectedModel(
 /**
  * Brings this browser's remembered model in line with the user's preferred model, so that a new
  * chat starts on the model they last picked in any browser. A picker shows the browser's copy
- * meanwhile, then reads getStoredSelectedModel() again once this settles. It never rejects: when
- * the server can't be reached, the browser's own copy stands.
+ * meanwhile, then reads getStoredSelectedModel() again once this settles, for the user whose ID
+ * this resolves to. It never rejects: when the server can't be reached, the browser's own copy
+ * stands, and the ID is undefined if the user couldn't be confirmed either.
  *
  * The server holds "No agent" as no preference, so that choice stays in the browser that made it.
  */
-export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise<void> {
+export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise<string | undefined> {
+  let userId: string | undefined;
   try {
-    // A session can end without a sign-out, so what another user left here is dropped rather than
-    // saved as this user's choice. Storage with no owner predates owners and is taken as theirs.
-    // A pick made on this page meanwhile is this user's own, so it stands.
     const revision = selectionRevision;
-    const { id } = await api.whoami();
-    const owner = localStorage.getItem(OWNER_KEY);
-    if (owner !== null && owner !== id && selectionRevision === revision) forgetModelSelection();
-    localStorage.setItem(OWNER_KEY, id);
+    // Asked together, so that knowing whose storage to read costs no round trip of its own.
+    const identity = api.whoami();
+    const reading = inOrder(() => api.getPreferredModel());
+    reading.catch(() => {});
+    userId = (await identity).id;
+    adoptLegacySelection(userId);
 
-    const local = localStorage.getItem(LAST_SELECTED_MODEL_KEY);
-    if (local !== null && localStorage.getItem(PREFERENCE_SYNCED_KEY) === null) {
-      // This browser's choice predates picks being saved for the user, so it is newer than the
-      // server's, which dates from onboarding.
+    const local = read(SELECTED, userId);
+    let answer: string | null;
+    if (local !== null && read(UNSAVED, userId) !== null) {
       try {
         await inOrder(() => api.setPreferredModel(fromModelSelectValue(local)));
-        localStorage.setItem(PREFERENCE_SYNCED_KEY, "1");
-        return;
+        if (read(SELECTED, userId) === local) write(UNSAVED, userId, null);
+        return userId;
       } catch (err) {
-        // A model that no longer resolves is refused; the server's preference then applies.
+        // A model that no longer resolves is refused; the server's preference, once it has been
+        // read, then applies.
         logRpcFailure("Failed to save this browser's model choice:", err);
+        answer = await inOrder(() => api.getPreferredModel());
+        if (read(SELECTED, userId) === local) write(UNSAVED, userId, null);
       }
+    } else {
+      answer = await reading;
     }
 
-    const preferred = await inOrder(() => api.getPreferredModel());
-    // A pick made while this was in flight, here or in another tab, is newer than the answer.
-    const overtaken = selectionRevision !== revision ||
-        localStorage.getItem(LAST_SELECTED_MODEL_KEY) !== local;
-    if (preferred !== null && !overtaken) {
-      localStorage.setItem(LAST_SELECTED_MODEL_KEY, preferred);
-    }
-    localStorage.setItem(PREFERENCE_SYNCED_KEY, "1");
+    // A pick made while this was in flight, here or in another tab, is newer than the answer, as
+    // is one whose save failed meanwhile, which the next sync saves.
+    const overtaken = selectionRevision !== revision || read(SELECTED, userId) !== local ||
+        read(UNSAVED, userId) !== null;
+    if (answer !== null && !overtaken) write(SELECTED, userId, answer);
   } catch (err) {
     logRpcFailure("Failed to load the preferred model:", err);
   }
+  return userId;
 }
 
-/** Remembers a model choice in this browser alone, for a caller that saves it to the server itself. */
-export function cacheSelectedModel(modelId: string | null): void {
+/**
+ * Remembers a model choice of `userId`'s in this browser alone, for a caller that saves it to the
+ * server itself.
+ */
+export function cacheSelectedModel(userId: string | undefined, modelId: string | null): void {
   selectionRevision++;
-  localStorage.setItem(
-    LAST_SELECTED_MODEL_KEY,
-    modelId ?? NO_AGENT_OPTION_VALUE,
-  );
-  localStorage.setItem(PREFERENCE_SYNCED_KEY, "1");
+  write(SELECTED, userId, toModelSelectValue(modelId));
+  write(UNSAVED, userId, null);
 }
 
-/** Remembers a model choice as the user's preferred model, in this browser and on the server. */
+/** Remembers a model choice as `userId`'s preferred model, in this browser and on the server. */
 export function persistSelectedModel(
   api: RpcStub<AuthenticatedApi>,
+  userId: string | undefined,
   modelId: string | null,
 ): void {
-  cacheSelectedModel(modelId);
-  inOrder(() => api.setPreferredModel(modelId)).catch((err: unknown) => {
+  cacheSelectedModel(userId, modelId);
+  // Until the save lands, so that a sync neither replaces the choice nor fails to retry it.
+  write(UNSAVED, userId, "1");
+  inOrder(() => api.setPreferredModel(modelId)).then(() => {
+    if (read(SELECTED, userId) === toModelSelectValue(modelId)) write(UNSAVED, userId, null);
+  }, (err: unknown) => {
     logRpcFailure("Failed to save the preferred model:", err);
-    // The next syncSelectedModel() then saves this browser's choice rather than replacing it.
-    localStorage.removeItem(PREFERENCE_SYNCED_KEY);
   });
 }
 

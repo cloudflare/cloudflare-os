@@ -41,6 +41,7 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { getStoredSelectedModel } from './modelSelection'
 import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 export interface GatekeeperModalProps {
@@ -228,7 +229,8 @@ export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceUrlPattern, initialAccountId,
 }: GatekeeperModalProps) {
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined
   const toasts = useKumoToastManager()
 
   const [selectedConnectionId, setSelectedConnectionId] = useState<ConnectionTypeId | null>(null)
@@ -420,12 +422,7 @@ export default function GatekeeperModal({
       setDecisionModels(decisions)
       setSelectedModelId((models[0] ?? decisions[0])?.id)
       if (models.length > 0) {
-        const lastSelected = localStorage.getItem('lastSelectedModel')
-        if (lastSelected && models.some(m => m.id === lastSelected)) {
-          setSpawnerModelId(lastSelected)
-        } else {
-          setSpawnerModelId(models[0].id)
-        }
+        setSpawnerModelId(getStoredSelectedModel(userId, models) ?? models[0].id)
       }
     }).catch(err => {
       if (cancelled) return

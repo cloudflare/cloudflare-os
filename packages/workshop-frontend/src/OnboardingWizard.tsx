@@ -333,7 +333,7 @@ export default function OnboardingWizard({
       }
       // selectedModelId is null when the user chose "No agent" or didn't pick one
       await authenticatedApi.setPreferredModel(selectedModelId)
-      cacheSelectedModel(selectedModelId)
+      cacheSelectedModel(currentUser?.id, selectedModelId)
       // The tools are optional, so one that fails (say, an admin disabled it meanwhile) is
       // reported and doesn't keep the user in onboarding.
       const ambientToProvision = ambientVendors.filter((v) => !switchedOffAmbientIds.has(v.id))
