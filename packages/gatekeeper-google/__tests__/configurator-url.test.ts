@@ -57,8 +57,8 @@ const configurableUrl = (
   values: Record<string, unknown>,
 ) => configurator.resourceUrl!({ values, ui: noUi });
 
-const renderedCopy = (configurator: { render?: (context: never) => unknown }) =>
-  JSON.stringify(configurator.render!({ values: {}, setValues() {}, ui: noUi } as never));
+const renderedCopy = (configurator: { render?: (context: never) => unknown }, ui: unknown = noUi) =>
+  JSON.stringify(configurator.render!({ values: {}, setValues() {}, ui } as never));
 describe("Gmail configurator URLs", () => {
   it.for([
     ["the whole mailbox", { mode: "all" }, { kind: "gmail" }],
@@ -241,7 +241,8 @@ describe("Google Chat configurator URLs", () => {
   });
 
   it("explains that a conversation connection is shareable but an account one is not", () => {
-    expect(renderedCopy(chatAccountConfigurator))
+    // The account configurator checks the account's grant when it first renders.
+    expect(renderedCopy(chatAccountConfigurator, { canStartConversations: async () => true }))
       .toContain("cannot be shared with collaborators");
     expect(renderedCopy(chatSpaceConfigurator))
       .toContain("only if their own Google account can open it too");

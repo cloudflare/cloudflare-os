@@ -1114,7 +1114,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     if (resourceUrlPattern === GOOGLE_CHAT_RESOURCE.urlPattern) {
       return {
         iframeHtml: CHAT_ACCOUNT_CONFIGURATOR_HTML,
-        ui: new RpcStub(new ChatAccountConfiguratorUI()),
+        ui: new RpcStub(new ChatAccountConfiguratorUI(holds)),
       };
     }
 

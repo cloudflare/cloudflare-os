@@ -803,8 +803,11 @@ const WITHDRAWN_ATTEMPT = "but an earlier attempt may already have posted it in 
 
 const LEAVE_YOURSELF_OUT = "Leave yourself out: you are in every conversation you send to.";
 
+// The dialog requestConnection opens checks the account's grant itself and offers to allow access,
+// even where the Workshop's stored description still lists the resource as granted.
 const GRANT_TO_START = "Ask the user to grant the Google Chat Account access again: an agent can request it " +
-  `with requestConnection, vendorId "google" and resourceUrl "${GOOGLE_CHAT_RESOURCE.urlPattern}". ` +
+  `with requestConnection, vendorId "google" and resourceUrl "${GOOGLE_CHAT_RESOURCE.urlPattern}", whose ` +
+  "dialog asks the user to allow access. Once they do, this connection can start conversations too. " +
   "Messages in conversations that already exist still send.";
 
 const peopleNames = (people: ChatNewConversation["members"]) =>

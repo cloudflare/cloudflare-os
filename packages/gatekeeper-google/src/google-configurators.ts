@@ -30,7 +30,9 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type {
   DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
 } from "./configurator/drive-configurator-types";
-import { BIGQUERY_HOST, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import {
+  BIGQUERY_HOST, GOOGLE_CHAT_RESOURCE, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT,
+} from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -419,7 +421,17 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
-export class ChatAccountConfiguratorUI extends RpcTarget implements ChatAccountConfiguratorRpc {}
+export class ChatAccountConfiguratorUI extends RpcTarget implements ChatAccountConfiguratorRpc {
+  /** `holds` says whether the account holds a grant, asked afresh: one can arrive while the dialog is open. */
+  constructor(holds: (grant: string) => Promise<boolean>) {
+    super();
+    grantChecks.set(this, holds);
+  }
+
+  async canStartConversations(): Promise<boolean> {
+    return grantChecks.get(this)!(GOOGLE_CHAT_RESOURCE.urlPattern);
+  }
+}
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
