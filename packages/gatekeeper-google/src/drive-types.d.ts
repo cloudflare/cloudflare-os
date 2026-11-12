@@ -40,7 +40,10 @@ export type DriveSuggestEditOptions = {
  * read-only binding, whose `getScope()` reports `access: "read"`.
  */
 export interface DriveCommentWrites {
-  /** Queue a plain-text comment on an in-scope file. `quote` works only on native Google Docs. */
+  /**
+   * Queue a plain-text comment on an in-scope file. `quote` works only on native Google Docs. To
+   * propose other text for a passage rather than remark on it, use `suggestEdit()`.
+   */
   comment(fileId: string, text: string, options?: DriveCommentOptions): Promise<DriveComment>;
 
   /**
@@ -49,7 +52,8 @@ export interface DriveCommentWrites {
    * characters without line breaks. Approved, it is a suggestion in the Doc that someone who can
    * edit it accepts or rejects there, as one made in the editor in Suggesting mode; the Doc's text
    * does not change until then. At approval `oldText` must still occur exactly once in the tab.
-   * Native Google Docs only.
+   * Native Google Docs only. To remark on a passage without proposing a change, use `comment()`
+   * with `quote`.
    */
   suggestEdit(
     fileId: string, oldText: string, newText: string, options?: DriveSuggestEditOptions,

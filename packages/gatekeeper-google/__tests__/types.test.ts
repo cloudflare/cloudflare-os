@@ -515,9 +515,69 @@ const widened: GoogleDriveSession = readOnly;
 `)).toEqual([]);
   });
 
-  it("points each Doc, Sheets and Slides session at the Drive binding that has its comments", () => {
+  it("gives a directly bound Doc its own comments, and says when to use which write", () => {
+    const docTypes = source("docs-types.d.ts");
+    for (const signature of [
+      "listComments(): Promise<DriveComment[]>;",
+      "comment(text: string, options: DocCommentOptions): Promise<DriveComment>;",
+      "oldText: string, newText: string, options?: DocSuggestEditOptions,\n  ): Promise<DocSuggestion>;",
+      "reply(commentId: string, text: string): Promise<DriveCommentReply>;",
+      "resolve(commentId: string, text?: string): Promise<DriveCommentReply>;",
+    ]) {
+      expect(docTypes.split(signature), signature).toHaveLength(2);
+    }
+    // A list item continues indented, so runs of spaces are folded too.
+    const docProse = prose("docs-types.d.ts").replace(/ {2,}/g, " ");
+    for (const phrase of [
+      "`replaceText()` and `appendText()` change the Doc's text once the user approves them.",
+      "`suggestEdit()` leaves a suggestion in the Doc, as one made in Suggesting mode, which " +
+        "someone who can edit the Doc accepts or rejects there; the text does not change until then.",
+      "`comment()` is a remark on a passage of the Doc, attached to the text it quotes.",
+      "`reply()` and `resolve()` answer the comments `listComments()` returns.",
+      "A comment attached to no text, or an answer to one, takes a Google Drive connection to the " +
+        "file with read and write access: request the resource URL " +
+        "`https://drive.google.com/file/d/<id>/view?access=write`, where `<id>` is `getMetadata().id`.",
+      "An email address written after `@` or `+` in the text mentions that person: Google emails " +
+        "them the text, whether or not they can open the Doc.",
+      "A comment, reply or note holds at most 2048 bytes of UTF-8.",
+      "must occur exactly once in the tab as Google has it saved, not counting edits still waiting " +
+        "for approval",
+      "an ID returned by `listTabs()`, omitted only when there is one tab.",
+      "Fails for an account that can only view the Doc",
+      "Fails for a comment attached to no text, saying which Drive connection can answer it",
+    ]) {
+      expect(docProse, phrase).toContain(phrase);
+    }
+    expect(prose("drive-types.d.ts")).toContain(
+      "To propose other text for a passage rather than remark on it, use `suggestEdit()`.");
+    expect(prose("drive-types.d.ts")).toContain(
+      "To remark on a passage without proposing a change, use `comment()` with `quote`.");
+    expect(compileAgentTypes(docBundle() + `
+declare const doc: GoogleDocSession;
+async function use(): Promise<void> {
+  const comments: DriveComment[] = await doc.listComments();
+  const queued: DriveComment = await doc.comment("Why?", { quote: "May", tabId: "t.0" });
+  const once: DriveComment = await doc.comment("Why?", { quote: "May" });
+  const suggested: DocSuggestion = await doc.suggestEdit("May", "June", { note: "It moved." });
+  const reply: DriveCommentReply = await doc.reply(comments[0].id, "Agreed.");
+  await doc.resolve(comments[0].id);
+  await doc.resolve(comments[0].id, "Fixed.");
+}
+// @ts-expect-error A comment on a bound Doc quotes the text it is about.
+doc.comment("Why?");
+// @ts-expect-error A comment on a bound Doc quotes the text it is about.
+doc.comment("Why?", {});
+// @ts-expect-error A bound Doc's methods take no file ID.
+doc.comment("doc-1", "Why?", { quote: "May" });
+// @ts-expect-error A bound Doc's methods take no file ID.
+doc.reply("doc-1", "doco.x", "Agreed.");
+// @ts-expect-error A bound Doc's methods take no file ID.
+doc.suggestEdit("doc-1", "May", "June", {});
+`)).toEqual([]);
+  });
+
+  it("points each Sheets and Slides session at the Drive binding that has its comments", () => {
     for (const [name, owner, url, bundle] of [
-      ["docs-types.d.ts", "The document's", "https://drive.google.com/file/d/<documentId>/view", docBundle],
       ["sheets-types.d.ts", "The spreadsheet's", "https://drive.google.com/file/d/<id>/view", sheetsBundle],
       ["slides-types.d.ts", "The presentation's", "https://drive.google.com/file/d/<id>/view", slidesBundle],
     ] as const) {

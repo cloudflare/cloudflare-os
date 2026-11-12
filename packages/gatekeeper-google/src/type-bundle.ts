@@ -1,5 +1,6 @@
 /** Module-only prefix of the Google Docs declaration. */
 export const DOCS_TYPES_MODULE_PREFIX =
+  'import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";\n' +
   'import type { GoogleDocReadSession } from "./docs-read-types";\n' +
   'export type { DocMetadata, GoogleDocReadSession, GoogleDocTab } from "./docs-read-types";\n\n';
 

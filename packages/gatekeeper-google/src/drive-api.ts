@@ -752,8 +752,10 @@ export function checkCommentContent(
   let bytes = utf8ByteLength(content);
   if (bytes > maxBytes) {
     let api = maxBytes === MAX_COMMENT_BYTES ? "Google Drive allows" : "Google Docs allows";
+    // A reply through Docs is one to a directly bound Doc's comment, where every write has it.
     throw new Error(`The ${what} is ${bytes} bytes of UTF-8; ${api} at most ${maxBytes}${
-      maxBytes === MAX_COMMENT_BYTES ? "" : " on a comment that quotes a Doc or a suggestion's note"}.`);
+      maxBytes === MAX_COMMENT_BYTES || what === "reply" ? ""
+        : " on a comment that quotes a Doc or a suggestion's note"}.`);
   }
 }
 

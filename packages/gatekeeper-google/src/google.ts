@@ -13,7 +13,13 @@ import {
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
-import { GoogleDocSession, DocMetadata, type GoogleDocReadSession, type GoogleDocTab } from "./docs-types";
+import {
+  GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
+  type GoogleDocReadSession, type GoogleDocTab,
+} from "./docs-types";
+import {
+  DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
+} from "./doc-comments";
 import {
   BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
   type GoogleDocsTab,
@@ -1474,6 +1480,9 @@ export class GoogleVerifier extends WorkerEntrypoint<Env, GoogleVerifierProps>
   }
 }
 
+/** Where a {@link PendingActionStore} keeps the next unused action ID, starting at 1. */
+const PENDING_NEXT_ACTION_ID_KEY = "pending:nextActionId";
+
 class PendingActionStore<Action> {
   #kv: DurableObjectStorage["kv"];
 
@@ -1486,8 +1495,8 @@ class PendingActionStore<Action> {
   }
 
   submit(action: Action): number {
-    let id = this.#kv.get<number>("pending:nextActionId") ?? 1;
-    this.#kv.put("pending:nextActionId", id + 1);
+    let id = this.#kv.get<number>(PENDING_NEXT_ACTION_ID_KEY) ?? 1;
+    this.#kv.put(PENDING_NEXT_ACTION_ID_KEY, id + 1);
     this.#kv.put(this.#actionKey(id), action);
     return id;
   }
@@ -2105,6 +2114,25 @@ export class GoogleDocGatekeeperImpl
         this.ctx.exports.UserAccount.idFromString(this.#bound.userObjectId));
     return stub.getAccessToken(opts);
   });
+  // Comment writes keep the comment engine's own records. Their journal takes its IDs from the
+  // edit store's counter, which holds the next unused ID and starts at 1 as a journal's does, so an
+  // approval ID names one action of this binding, edit or comment: applyAction() and rejectAction()
+  // tell the two apart by whether this journal holds it. A namespace would start a second counter.
+  #commentJournal = new ActionJournal<DriveCommentAction>(this.ctx.storage.kv, {
+    legacyKeys: { nextIdKey: PENDING_NEXT_ACTION_ID_KEY, recordPrefix: "docComments:action:" },
+  });
+  #commentAttempts = commentAttempts(this.ctx.storage.kv);
+  #comments = DOC_COMMENT_ACTIONS.bind(this.#commentJournal, {
+    // Read at apply: a Doc not created yet takes no comment writes, so none applies before it is.
+    threads: docsThreads(() => this.#bound.documentId,
+      new GoogleDocsApi(opts => this.#getAccessToken(opts)),
+      new DriveApi(opts => this.#getAccessToken(opts))),
+    docs: new GoogleDocsApi(opts => this.#getAccessToken(opts)),
+    // Not gated on Drive's read and write choice, as the Doc's edits are not.
+    writeRefusal: async () => undefined,
+    attempts: this.#commentAttempts,
+  });
+  #reads = new ReadGate();
 
   constructor(ctx: DurableObjectState<GoogleDocGatekeeperImplProps>, env: Env) {
     super(ctx, env);
@@ -2214,13 +2242,19 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [EDIT_DOCUMENT_ACTION];
+    return [EDIT_DOCUMENT_ACTION, ...this.#comments.autoApprovableKinds()];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<GoogleDocSession> {
     let props = this.ctx.props;
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+    // Only an undecided or claimed comment write can be applied again, so no other marker is read.
+    this.#commentAttempts.sweep(new Set(this.#commentJournal.listPending().map(({ id }) => id)));
+    let comments: DocCommentQueue = {
+      submit: (queue, kind, payload) => this.#comments.submit(queue, kind, payload),
+      undecided: read => this.#reads.read(() => read(this.#commentJournal.listUndecided())),
+    };
     // A blank document always has a revision, so the session never reaches Drive for one.
     return new GoogleDocSessionImpl(
         isSimulated(props)
@@ -2231,15 +2265,48 @@ export class GoogleDocGatekeeperImpl
         approvalQueue.dup(),
         pendingActions,
         this.ctx.storage,
-        this.#simulationCache);
+        this.#simulationCache,
+        comments);
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
-    return this.#actions.run(() => this.#applyAction(actionId));
+    return this.#actions.run(() => this.#isComment(actionId)
+      ? this.#applyComment(actionId) : this.#applyAction(actionId));
   }
 
   async rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
-    return this.#actions.run(() => this.#rejectAction(actionId));
+    return this.#actions.run(() => this.#isComment(actionId)
+      ? this.#rejectComment(actionId) : this.#rejectAction(actionId));
+  }
+
+  /** Whether `actionId` names a comment write, pending or already applied, rather than an edit. */
+  #isComment(actionId: number): boolean {
+    return this.#commentJournal.get(actionId) !== undefined ||
+      this.#commentJournal.wasApplied(actionId);
+  }
+
+  /**
+   * Applies a comment write, and then drops its attempt marker, as a Drive binding does. A claim an
+   * earlier apply left is handed back as undecided first: the marker decides whether its send is
+   * looked for before anything is sent again. Comments depend on no edit, so they are applied in
+   * any order.
+   */
+  #applyComment(actionId: number): Promise<void> {
+    return this.#reads.resolve(async () => {
+      if (this.#commentJournal.get(actionId)?.state === "claimed") {
+        this.#commentJournal.restorePending(actionId);
+      }
+      await this.#comments.apply(actionId);
+      this.#commentAttempts.delete(actionId);
+    });
+  }
+
+  /** Withdraws a comment write. No edit waits on it, so nothing restarts. */
+  #rejectComment(actionId: number): Promise<void> {
+    return this.#reads.resolve(async () => {
+      await this.#comments.reject(actionId);
+      this.#commentAttempts.delete(actionId);
+    });
   }
 
   async applyCreation(creator: Fetcher<GatekeeperUserVerifier>, configuration: string | null)
@@ -2443,6 +2510,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #simulationCache: GoogleDocSimulationCacheHolder;
   /** What every read reports: the document, or nothing for one not created yet. */
   #subresources: string[];
+  #comments: DocCommentSession;
 
   constructor(
     docsApi: GoogleDocReader,
@@ -2452,6 +2520,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     pendingActions: PendingActionStore<GoogleDocAction>,
     storage: DurableObjectStorage,
     simulationCache: GoogleDocSimulationCacheHolder,
+    comments: DocCommentQueue,
   ) {
     super();
     this.#docsApi = docsApi;
@@ -2464,6 +2533,37 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     this.#subresources = documentId === UNCREATED_FILE_ID
       ? []
       : [fileSubresourceId({kind: "document", fileId: documentId})];
+    this.#comments = new DocCommentSession({
+      documentId, docs: docsApi, drive: driveApi, comments, approvalQueue,
+      authorizeRead: description => this.#authorizeRead(description),
+      onlyInPendingEdits: async (tabId, quote) => {
+        if (this.#pendingActions.list().length === 0) return false;
+        let { tab, markdown } = await this.#getSimulatedContent(tabId, "getContent");
+        return !tab.markdown.includes(quote) && markdown.includes(quote);
+      },
+    });
+  }
+
+  listComments(): Promise<DriveComment[]> {
+    return this.#comments.listComments();
+  }
+
+  comment(text: string, options: DocCommentOptions): Promise<DriveComment> {
+    return this.#comments.comment(text, options);
+  }
+
+  suggestEdit(
+    oldText: string, newText: string, options?: DocSuggestEditOptions,
+  ): Promise<DocSuggestion> {
+    return this.#comments.suggestEdit(oldText, newText, options);
+  }
+
+  reply(commentId: string, text: string): Promise<DriveCommentReply> {
+    return this.#comments.reply(commentId, text);
+  }
+
+  resolve(commentId: string, text?: string): Promise<DriveCommentReply> {
+    return this.#comments.resolve(commentId, text);
   }
 
   // Every read authorizes through here, which reports the document it read as its subresource.

@@ -9,7 +9,8 @@ import type { GoogleAccessToken } from "../src/google-api";
 import { COMMENT_ATTEMPT_PREFIX, type CommentAttempt } from "../src/drive-comments";
 import type { DriveBindingScope } from "../src/drive-session";
 import type {
-  Cursor, DriveComment, DriveCommentReply, DriveEntry, DriveScope, GoogleDriveFolderSession,
+  Cursor, DocSuggestion, DriveComment, DriveCommentReply, DriveEntry, DriveScope,
+  GoogleDriveFolderSession,
   GoogleDriveSession,
 } from "../src/drive-types";
 import type { DriveAccessLevel } from "../src/resources";
@@ -72,6 +73,17 @@ type SheetsCall = {
   actionId?: number;
   action?: ActionDescription;
   observations: string[];
+};
+
+/** What one bound Google Doc session call returned or threw, and what it queued and observed. */
+type DocCall = {
+  value?: DriveComment | DriveCommentReply | DriveComment[] | DocSuggestion;
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+  /** What each observation reported, in order. */
+  reports: { title: string; subresources?: string[] }[];
 };
 
 /** A Drive binding as a test names it: its scope and, for read and write, its access level. */
@@ -347,8 +359,28 @@ export class TestHooks extends DurableObject<Env> {
     }
   }
 
-  async rejectAction(facetName: string, actionId: number): Promise<void> {
-    await this.#gatekeeper(facetName).rejectAction(actionId);
+  async rejectAction(facetName: string, actionId: number): Promise<void | { restart?: boolean }> {
+    return this.#gatekeeper(facetName).rejectAction(actionId);
+  }
+
+  /** Calls one method of a fresh bound Doc session, reporting what it queued and observed. */
+  async callDoc(facetName: string, method: keyof GoogleDocSession, args: unknown[]): Promise<DocCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#gatekeeper(facetName).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as GoogleDocSession & Disposable;
+    let outcome: { value?: DocCall["value"]; error?: string };
+    try {
+      let call = session[method] as (...args: unknown[]) => Promise<DocCall["value"]>;
+      outcome = { value: await call(...args) };
+    } catch (error) {
+      outcome = failure(error);
+    }
+    return {
+      ...outcome, actionId: queue.actionId, action: queue.action,
+      observations: queue.observations, reports: queue.reports,
+    };
   }
 
   #slides(facetName: string) {

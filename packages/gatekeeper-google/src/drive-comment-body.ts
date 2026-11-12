@@ -186,10 +186,10 @@ export function checkSuggestion(oldText: string, newText: string, note?: string)
   return { oldText: old, newText, note: checked };
 }
 
-/** A reply's body: the text, trimmed. */
-export function composeReply(text: string): string {
+/** A reply's body: the text, trimmed, within Drive's limit or, posted through Docs, the Docs limit. */
+export function composeReply(text: string, throughDocs = false): string {
   let reply = requireText(text, "reply");
-  checkCommentContent(reply, "reply");
+  checkCommentContent(reply, "reply", throughDocs ? MAX_DOCS_COMMENT_BYTES : undefined);
   return reply;
 }
 
@@ -197,10 +197,10 @@ export function composeReply(text: string): string {
  * A resolve's body: `undefined` without text, which sends the resolve with no content, and
  * otherwise the text as {@link composeReply} gives it.
  */
-export function composeResolve(text?: string): string | undefined {
+export function composeResolve(text?: string, throughDocs = false): string | undefined {
   if (text === undefined) return undefined;
   if (!text.trim()) {
     throw new Error("The reply is empty; leave it out to resolve without a reply.");
   }
-  return composeReply(text);
+  return composeReply(text, throughDocs);
 }
