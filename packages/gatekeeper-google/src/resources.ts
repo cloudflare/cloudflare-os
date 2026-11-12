@@ -46,6 +46,7 @@ export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   description: "Read and edit documents you choose.",
   grantable: true,
   creatable: true,
+  creationConfigurator: true,
   groupedWith: DRIVE_CARD,
 };
 
@@ -61,6 +62,7 @@ export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
     "rows, columns, and formatting, with your approval.",
   grantable: true,
   creatable: true,
+  creationConfigurator: true,
   groupedWith: DRIVE_CARD,
 };
 
@@ -74,6 +76,7 @@ export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
     "backgrounds and theme colours.",
   grantable: true,
   creatable: true,
+  creationConfigurator: true,
   groupedWith: DRIVE_CARD,
 };
 
@@ -159,7 +162,10 @@ export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
+/**
+ * A selected Drive folder or shared-drive root, exposed through direct-child navigation. Creating
+ * one (see GatekeeperVendor.createResource()) makes an empty folder where its approver chooses.
+ */
 export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/folders/:folderId",
   title: "Google Drive Folder",
@@ -167,6 +173,8 @@ export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
       "Browse a selected folder or shared drive, search its direct children, and read native " +
       "Google Docs, Sheets and Slides, PDFs as text, and any other file's content as bytes.",
   grantable: true,
+  creatable: true,
+  creationConfigurator: true,
   groupedWith: DRIVE_CARD,
 };
 
@@ -377,10 +385,22 @@ export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
  */
 export const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives";
 
+/**
+ * The grant that lets the gatekeeper put what a creation makes where its approver chose:
+ * `drive.file`, which reaches only files this OAuth client created or the user opened or shared
+ * with it. A new Doc, Sheet or Presentation is made in My Drive and then moved into the chosen
+ * folder; a new folder is made in place, My Drive included.
+ *
+ * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the creation configurator, so
+ * an approver who keeps a new Doc, Sheet or Presentation in My Drive is never asked for it.
+ */
+export const CREATED_FILES_GRANT = "https://drive.google.com/drive/created-files";
+
 /** Grants requested and recorded like resources, but never bindable or shown to the Workshop. */
 const PRIVATE_GRANT_SCOPES: {urlPattern: string, scopes: string[]}[] = [
   { urlPattern: OFFICE_IMPORT_GRANT, scopes: [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE] },
   { urlPattern: SHARED_DRIVES_GRANT, scopes: [DRIVE_READONLY_SCOPE] },
+  { urlPattern: CREATED_FILES_GRANT, scopes: [DRIVE_FILE_SCOPE] },
 ];
 
 /** Every grant's scopes, resources first: what consent asks for and what coverage is checked on. */
@@ -598,11 +618,16 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   chatThread: GOOGLE_CHAT_THREAD_RESOURCE,
 };
 
-/** The resource kinds createResource() can make: Google's native editor files. */
-export type CreatableKind = "doc" | "sheets" | "slides";
-const NATIVE_FILE_PATHS: Record<CreatableKind, string> =
-    { doc: "document", sheets: "spreadsheets", slides: "presentation" };
-const CREATABLE_KINDS = Object.keys(NATIVE_FILE_PATHS) as CreatableKind[];
+/** The resource kinds createResource() can make: Google's native editor files, and Drive folders. */
+export type CreatableKind = "doc" | "sheets" | "slides" | "driveFolder";
+/** Each kind's home page, which also stands for one not yet created. */
+const CREATABLE_HOMES: Record<CreatableKind, string> = {
+  doc: "https://docs.google.com/document/",
+  sheets: "https://docs.google.com/spreadsheets/",
+  slides: "https://docs.google.com/presentation/",
+  driveFolder: "https://drive.google.com/drive/",
+};
+const CREATABLE_KINDS = Object.keys(CREATABLE_HOMES) as CreatableKind[];
 
 /** The kind of the creatable resource type `resourceUrlPattern`, or an agent-readable refusal. */
 export function creatableKind(resourceUrlPattern: string): CreatableKind {
@@ -616,10 +641,11 @@ export function creatableKind(resourceUrlPattern: string): CreatableKind {
   throw new Error(`Google can create only these resource types: ${types.join(", ")}.`);
 }
 
-/** A native file's canonical URL; with no `id`, its product's home page (a file not yet created). */
+/** A native file's or folder's canonical URL; with no `id`, its product's home page (one not yet created). */
 export function nativeFileUrl(kind: CreatableKind, id?: string): string {
-  let base = `https://docs.google.com/${NATIVE_FILE_PATHS[kind]}/`;
-  return id === undefined ? base : `${base}d/${id}/edit`;
+  let home = CREATABLE_HOMES[kind];
+  if (id === undefined) return home;
+  return kind === "driveFolder" ? `${home}folders/${id}` : `${home}d/${id}/edit`;
 }
 
 /**

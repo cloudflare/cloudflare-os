@@ -9,7 +9,7 @@ import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, CreationLocationConfiguratorUI, DriveConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
@@ -140,6 +140,55 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
       expect(calls[0].searchParams.get("orderBy")).toBe("folder,name");
       expect(calls[0].searchParams.get("pageToken")).toBe("page-2");
+    });
+
+    it("lists only folders for a creation's location, and which ones take new files", async () => {
+      const calls = stubDrive({
+        "/files": {
+          files: [
+            { id: "open", name: "Plans", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: true } },
+            { id: "viewer", name: "Archive", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: false } },
+          ],
+        },
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+
+      await expect(creating.listFolders("folder:root", "", null)).resolves.toEqual({
+        nodes: [
+          { id: "folder:open", title: "Plans", kind: "folder", listable: true, addable: true },
+          { id: "folder:viewer", title: "Archive", kind: "folder", listable: true },
+        ],
+      });
+      expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
+    });
+
+    // The creation picker's My Drive tab is Drive's `root` alias, so a pasted folder's path must
+    // start there, or at the Shared drives tab, for the picker to open it where it lives.
+    it("places a pasted folder link for a creation under its tab", async () => {
+      const folder = (id: string, name: string, parents?: string[], driveId?: string) => ({
+        id, name, mimeType: FOLDER, trashed: false, ...parents && { parents }, ...driveId && { driveId },
+        capabilities: { canListChildren: true, canAddChildren: true },
+      });
+      stubDrive({
+        "/files/root": folder("0AMyRoot", "My Drive"),
+        "/files/0AMyRoot": folder("0AMyRoot", "My Drive"),
+        "/files/plans": folder("plans", "Plans", ["0AMyRoot"]),
+        "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
+        "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+      const pasted = async (id: string) =>
+        (await creating.listFolders("folder:root", `https://drive.google.com/drive/folders/${id}`, null)).nodes;
+
+      await expect(pasted("plans")).resolves.toEqual([{
+        id: "folder:plans", title: "Plans", kind: "folder", listable: true, addable: true,
+        path: [{ id: "folder:root", title: "My Drive", listable: true, addable: true }],
+      }]);
+      await expect(pasted("0AMyRoot"))
+        .resolves.toMatchObject([{ id: "folder:root", title: "My Drive", addable: true, path: [] }]);
+      await expect(pasted("specs")).resolves.toMatchObject([{
+        id: "folder:specs", path: [{ id: "shared-drives" }, { id: "folder:0ADrive", title: "Engineering" }],
+      }]);
     });
 
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing

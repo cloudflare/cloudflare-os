@@ -8,7 +8,7 @@ export type { OfficeConversionResult, OfficeFileInspection, OfficeKind };
 export type DriveConfiguratorValues = { target?: string | null; checked?: string | null };
 
 /** An ancestor of a {@link DriveNode}, outermost first below the whole account. */
-export type DriveNodeAncestor = Pick<DriveNode, "id" | "title" | "listable">;
+export type DriveNodeAncestor = Pick<DriveNode, "id" | "title" | "listable" | "addable">;
 
 /** A grouping, shared drive, folder or file the Drive picker shows. */
 export type DriveNode = {
@@ -23,6 +23,8 @@ export type DriveNode = {
   kind: "group" | "sharedDrive" | "folder" | "file";
   /** For a folder: whether this account can list its children, without which it cannot be bound. */
   listable?: boolean;
+  /** True for a folder or shared drive this account can put files in. */
+  addable?: true;
   /** For a file. */
   mimeType?: string;
   modifiedTime?: string;

@@ -30,7 +30,10 @@ import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-confi
 import type {
   DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
 } from "./configurator/drive-configurator-types";
-import { BIGQUERY_HOST, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import type { CreationLocationConfiguratorRpc } from "./configurator/creation-location-configurator-types";
+import {
+  BIGQUERY_HOST, CREATED_FILES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT,
+} from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -523,7 +526,9 @@ function driveFileNode(
     ...(file.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
     ...(detail ? { detail } : {}),
   };
-  if (mimeType === FOLDER_MIME_TYPE) return { id: `folder:${id}`, kind: "folder", listable, ...shown };
+  if (mimeType === FOLDER_MIME_TYPE) {
+    return { id: `folder:${id}`, kind: "folder", listable, ...file.capabilities?.canAddChildren && { addable: true }, ...shown };
+  }
   let size = file.size === undefined ? NaN : Number(file.size);
   return {
     id: `${editorKind(mimeType) ?? "file"}:${id}`, kind: "file", ...(mimeType ? { mimeType } : {}), ...shown,
@@ -566,8 +571,10 @@ async function drivePath(drive: DriveApi, file: DriveFile): Promise<DriveNodeAnc
     ancestors.unshift(top);
   }
   // Judged as `readFolderRoot` judges a folder binding, so the picker offers only folders that connect.
-  let folders = ancestors.map(folder =>
-    ({ id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder) }));
+  let folders = ancestors.map(folder => ({
+    id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder),
+    ...folder.capabilities?.canAddChildren && { addable: true as const },
+  }));
   if (top.driveId === top.id) return [SHARED_DRIVES, ...folders];
   if (top.driveId === undefined && top.id === await myDriveId(drive)) {
     return folders.map((folder, index) => index === 0 ? { ...folder, title: "My Drive" } : folder);
@@ -600,6 +607,77 @@ function linkedDriveNodeId(text: string): string | undefined {
   }
 }
 
+/**
+ * One page of what the Drive picker shows at `parentId` (see DriveConfiguratorRpc.listDriveNodes()),
+ * or, with `foldersOnly`, of only the folders there. Search spans My Drive, "Shared with me" and
+ * every shared drive, wherever the picker is open; a folder's listing spans them too, since its id
+ * does not say which it lives in. A pasted link is answered with the node the picker would list for
+ * what it names.
+ */
+async function listDriveNodes(
+  picker: object, parentId: string, query: string, cursor: string | null, foldersOnly = false,
+): Promise<DriveNodePage> {
+  let linked = linkedDriveNodeId(query);
+  if (linked) {
+    // Only a folder link can name a folder, so no other is read.
+    let node = foldersOnly && !linked.startsWith("folder:") ? null : await driveNode(picker, linked);
+    return { nodes: node ? [node] : [] };
+  }
+  let drive = new DriveApi(googleTokenProvider(picker));
+  let page = {
+    pageSize: DRIVE_PAGE_SIZE, ...(cursor ? { pageToken: cursor } : {}),
+    ...(foldersOnly ? { mimeType: FOLDER_MIME_TYPE } : {}),
+  };
+  return withDriveApiEnabled<DriveNodePage>(DRIVE_BROWSE_DISABLED, async () => {
+    if (query.trim()) {
+      return driveFilePage(drive,
+        await drive.listFiles({ ...page, namePrefix: query, corpus: { kind: "allDrives" } }),
+        file => file.driveId
+          ? "In a shared drive"
+          : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive");
+    }
+    if (parentId === DRIVE_ROOT_ID) {
+      let myDrive = await myDriveId(drive);
+      return {
+        nodes: [
+          { id: `folder:${myDrive}`, title: "My Drive", kind: "folder", listable: true },
+          { ...SHARED_DRIVES, kind: "group" },
+          { ...SHARED_WITH_ME, kind: "group" },
+          { ...RECENT, kind: "group" },
+        ],
+      };
+    }
+    if (parentId === SHARED_DRIVES.id) {
+      // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
+      // for it when the user first opens them.
+      if (!(await grantChecks.get(picker)!(SHARED_DRIVES_GRANT))) {
+        return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
+      }
+      let { drives, nextPageToken } = await drive.listSharedDrives(page);
+      return drivePage(
+        drives.map(({ id, name, canAddChildren }) =>
+          ({ id: `folder:${id}`, title: name, kind: "sharedDrive", ...canAddChildren && { addable: true } })),
+        nextPageToken);
+    }
+    if (parentId === SHARED_WITH_ME.id) {
+      return driveFilePage(drive,
+        await drive.listFiles({ ...page, sharedWithMe: true, orderBy: "folder,name" }));
+    }
+    if (parentId === RECENT.id) {
+      // Files the account created, opened or had shared with it, newest first, as Drive's Recent
+      // shows them. Folders are browsed, so Drive leaves them out before paging, where they could
+      // empty a page; a shortcut to one is dropped once resolved.
+      let recent = await driveFilePage(drive, await drive.listFiles({ ...page, excludeFolders: true }));
+      return { ...recent, nodes: recent.nodes.filter(node => node.kind === "file") };
+    }
+    let folder = parseDriveNodeId(parentId);
+    if (folder?.kind !== "folder") throw new Error("Unknown Drive location.");
+    return driveFilePage(drive, await drive.listFiles({
+      ...page, directParentIds: [folder.fileId], corpus: { kind: "allDrives" }, orderBy: "folder,name",
+    }));
+  });
+}
+
 @validateRpc()
 export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
   /** `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is open. */
@@ -609,66 +687,8 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
     grantChecks.set(this, holds);
   }
 
-  /**
-   * Search spans My Drive, "Shared with me" and every shared drive, wherever the picker is open;
-   * a folder's listing spans them too, since its id does not say which it lives in. A pasted link
-   * is answered with the node the picker would list for what it names.
-   */
   async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
-    let linked = linkedDriveNodeId(query);
-    if (linked) {
-      let node = await driveNode(this, linked);
-      return { nodes: node ? [node] : [] };
-    }
-    let drive = new DriveApi(googleTokenProvider(this));
-    let page = { pageSize: DRIVE_PAGE_SIZE, ...(cursor ? { pageToken: cursor } : {}) };
-    return withDriveApiEnabled<DriveNodePage>(DRIVE_BROWSE_DISABLED, async () => {
-      if (query.trim()) {
-        return driveFilePage(drive,
-          await drive.listFiles({ ...page, namePrefix: query, corpus: { kind: "allDrives" } }),
-          file => file.driveId
-            ? "In a shared drive"
-            : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive");
-      }
-      if (parentId === DRIVE_ROOT_ID) {
-        let myDrive = await myDriveId(drive);
-        return {
-          nodes: [
-            { id: `folder:${myDrive}`, title: "My Drive", kind: "folder", listable: true },
-            { ...SHARED_DRIVES, kind: "group" },
-            { ...SHARED_WITH_ME, kind: "group" },
-            { ...RECENT, kind: "group" },
-          ],
-        };
-      }
-      if (parentId === SHARED_DRIVES.id) {
-        // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
-        // for it when the user first opens them.
-        if (!(await grantChecks.get(this)!(SHARED_DRIVES_GRANT))) {
-          return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
-        }
-        let { drives, nextPageToken } = await drive.listSharedDrives(page);
-        return drivePage(
-          drives.map(({ id, name }) => ({ id: `folder:${id}`, title: name, kind: "sharedDrive" })),
-          nextPageToken);
-      }
-      if (parentId === SHARED_WITH_ME.id) {
-        return driveFilePage(drive,
-          await drive.listFiles({ ...page, sharedWithMe: true, orderBy: "folder,name" }));
-      }
-      if (parentId === RECENT.id) {
-        // Files the account created, opened or had shared with it, newest first, as Drive's Recent
-        // shows them. Folders are browsed, so Drive leaves them out before paging, where they could
-        // empty a page; a shortcut to one is dropped once resolved.
-        let recent = await driveFilePage(drive, await drive.listFiles({ ...page, excludeFolders: true }));
-        return { ...recent, nodes: recent.nodes.filter(node => node.kind === "file") };
-      }
-      let folder = parseDriveNodeId(parentId);
-      if (folder?.kind !== "folder") throw new Error("Unknown Drive location.");
-      return driveFilePage(drive, await drive.listFiles({
-        ...page, directParentIds: [folder.fileId], corpus: { kind: "allDrives" }, orderBy: "folder,name",
-      }));
-    });
+    return listDriveNodes(this, parentId, query, cursor);
   }
 
   /** A Drive file link (`file:`) keeps its id for a pre-fill, and so binds as a Drive file. */
@@ -690,6 +710,39 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
   }
 }
 
+/** The creation picker's My Drive tab: Drive's alias for its root, where a new file lands unmoved. */
+const MY_DRIVE_TAB = "folder:root";
+
+/**
+ * `node` under the creation picker's tabs. `drivePath` gives My Drive's root an empty path, and a
+ * path in My Drive starts at the root's real ID, where the picker's tab is its alias.
+ */
+function underMyDriveTab(node: DriveNode): DriveNode {
+  if (node.path?.length === 0) return { ...node, id: MY_DRIVE_TAB, title: "My Drive" };
+  let [top, ...below] = node.path ?? [];
+  return top && top.id !== SHARED_DRIVES.id ? { ...node, path: [{ ...top, id: MY_DRIVE_TAB }, ...below] } : node;
+}
+
+/** The picker of the folder a new Doc, Sheet, Presentation or folder is created in. */
+@validateRpc()
+export class CreationLocationConfiguratorUI extends RpcTarget implements CreationLocationConfiguratorRpc {
+  /** As for {@link DriveConfiguratorUI}. */
+  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+    grantChecks.set(this, holds);
+  }
+
+  async listFolders(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
+    let page = await listDriveNodes(this, parentId, query, cursor, true);
+    return { ...page, nodes: page.nodes.map(underMyDriveTab) };
+  }
+
+  async hasCreationAccess(): Promise<boolean> {
+    return grantChecks.get(this)!(CREATED_FILES_GRANT);
+  }
+}
+
 function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): OfficeConversion {
   return new OfficeConversion(kind, googleTokenProvider(picker), () => grantChecks.get(picker)!(OFFICE_IMPORT_GRANT));
 }
@@ -698,7 +751,7 @@ function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): Office
  * The node the picker would list for what `id` names, or null when this account cannot see it or it
  * is another kind of node. A Drive file link (`file:`) names any file.
  */
-async function driveNode(picker: DriveConfiguratorUI, id: string): Promise<DriveNode | null> {
+async function driveNode(picker: object, id: string): Promise<DriveNode | null> {
   let named = parseDriveNodeId(id);
   if (!named) return null;
   let drive = new DriveApi(googleTokenProvider(picker));

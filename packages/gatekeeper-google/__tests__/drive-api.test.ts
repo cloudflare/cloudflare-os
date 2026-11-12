@@ -316,7 +316,7 @@ describe("metadata lookup", () => {
     expect(calls[0].url.searchParams.get("supportsAllDrives")).toBe("true");
     expect(calls[0].url.searchParams.get("fields")).toBe(DRIVE_FILE_ITEM_FIELDS);
     expect(DRIVE_FILE_ITEM_FIELDS.split(",")).toContain("trashed");
-    expect(DRIVE_FILE_ITEM_FIELDS).toContain("capabilities(canListChildren,canDownload)");
+    expect(DRIVE_FILE_ITEM_FIELDS).toContain("capabilities(canListChildren,canDownload,canAddChildren)");
     expect(DRIVE_FILE_ITEM_FIELDS).not.toMatch(/createdTime|photoLink|iconLink|thumbnailLink/);
   });
 

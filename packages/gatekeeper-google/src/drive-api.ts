@@ -46,7 +46,8 @@ export type DriveFile = {
   owners?: { displayName?: string; emailAddress?: string }[];
   webViewLink?: string;
   trashed?: boolean;
-  capabilities?: { canListChildren?: boolean; canDownload?: boolean };
+  /** `canAddChildren`: whether the account can put files in this folder. */
+  capabilities?: { canListChildren?: boolean; canDownload?: boolean; canAddChildren?: boolean };
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
 
@@ -76,34 +77,39 @@ const DRIVE_OBSERVATION_FIELDS =
   "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canDownload)";
 
 /**
- * Whether these facts describe a folder a binding may stand on: a live native folder whose
- * children this account can list.
+ * Whether these facts describe a live native folder holding `capability`: one whose children this
+ * account can list is one a binding may stand on, and one it can add children to takes a creation.
  *
- * The one definition of that triple. Both record shapes reach it through the adapters below, so a
- * scope check can never accidentally assert two of the three.
+ * The one definition of that triple. Every record shape reaches it through the adapters below, so a
+ * check can never accidentally assert two of the three.
  */
-function listableFolder(
+function liveFolderWith(
   mimeType: string | undefined, trashed: boolean | undefined,
-  canListChildren: boolean | undefined,
+  capability: boolean | undefined,
 ): boolean {
-  return mimeType === FOLDER_MIME_TYPE && trashed === false && canListChildren === true;
+  return mimeType === FOLDER_MIME_TYPE && trashed === false && capability === true;
 }
 
-/** {@link listableFolder} for the narrow ancestry-proof shape. */
+/** {@link liveFolderWith} listing, for the narrow ancestry-proof shape. */
 export function isListableFolderNode(node: DriveScopeNode): boolean {
-  return listableFolder(node.mimeType, node.trashed, node.canListChildren);
+  return liveFolderWith(node.mimeType, node.trashed, node.canListChildren);
 }
 
-/** {@link listableFolder} for a full file resource. */
+/** {@link liveFolderWith} listing, for a full file resource. */
 export function isListableFolderFile(file: DriveFile): boolean {
-  return listableFolder(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+  return liveFolderWith(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+}
+
+/** {@link liveFolderWith} adding children, for a full file resource. */
+export function isAddableFolderFile(file: DriveFile): boolean {
+  return liveFolderWith(file.mimeType, file.trashed, file.capabilities?.canAddChildren);
 }
 
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
   "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
-  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren,canDownload)",
-  "shortcutDetails(targetId,targetMimeType)",
+  "owners(displayName,emailAddress)", "webViewLink",
+  "capabilities(canListChildren,canDownload,canAddChildren)", "shortcutDetails(targetId,targetMimeType)",
 ].join(",");
 
 /** Drive returns only requested fields, so this mask and {@link DriveFile} travel together. */
@@ -153,7 +159,7 @@ export const SOURCE_MODIFIED_PROPERTY = "gadgetsSourceModified";
 export type DriveCopyLocation = "besideOriginal" | "myDrive";
 
 /** Drive's alias for the connected account's My Drive root folder. */
-const MY_DRIVE_ROOT = "root";
+export const MY_DRIVE_ROOT = "root";
 
 /** Clauses only the gatekeeper's own lookups add, never built from agent or iframe input. */
 type InternalDriveQuery = {
@@ -204,7 +210,7 @@ export type DriveListFilesOptions = DriveFileQuery & {
 export type DriveFileList = { files: DriveFile[]; nextPageToken?: string };
 
 /** A shared drive this account is a member of. Its id is also its root folder's. */
-export type DriveSharedDrive = { id: string; name: string };
+export type DriveSharedDrive = { id: string; name: string; canAddChildren?: boolean };
 
 export type DriveSharedDriveList = { drives: DriveSharedDrive[]; nextPageToken?: string };
 
@@ -369,9 +375,11 @@ function optionalCapabilities(value: unknown): DriveFile["capabilities"] {
   if (!isRecord(value)) throw new Error("Invalid Google Drive file capabilities");
   let canListChildren = optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
   let canDownload = optionalBoolean(value.canDownload, "file capabilities.canDownload");
+  let canAddChildren = optionalBoolean(value.canAddChildren, "file capabilities.canAddChildren");
   return {
     ...(canListChildren === undefined ? {} : { canListChildren }),
     ...(canDownload === undefined ? {} : { canDownload }),
+    ...(canAddChildren === undefined ? {} : { canAddChildren }),
   };
 }
 
@@ -714,12 +722,53 @@ export class DriveApi {
     return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
   }
 
+  /** An ID Drive reserves for a file this account creates, which makes the create safe to resend. */
+  async generateFileId(): Promise<string> {
+    let body = await this.#getUnknown("/files/generateIds", new URLSearchParams({ count: "1", space: "drive" }));
+    let id = isRecord(body) && Array.isArray(body.ids) ? body.ids[0] : undefined;
+    if (typeof id !== "string") throw new Error("Invalid Google Drive generated ID response");
+    return id;
+  }
+
+  /**
+   * Makes an empty folder named `name` in folder `parentId` under `id`, from generateFileId(), and
+   * returns whether this request made it. Drive answers a create under an ID already used with 409
+   * and makes nothing, so a lost response is replayed and a caller may send it again; false means
+   * an earlier request made the folder, which may since have been trashed or deleted.
+   */
+  async createFolder(name: string, parentId: string, id: string): Promise<boolean> {
+    let params = new URLSearchParams({ fields: "id", supportsAllDrives: "true" });
+    let response = await fetchWithAuthRetry(`${DRIVE_API_BASE}/files?${params}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name, mimeType: FOLDER_MIME_TYPE, parents: [parentId] }),
+    }, this.getAccessToken, { idempotent: true });
+    if (response.status !== 409 && !response.ok) throw await driveError(response);
+    await response.body?.cancel();
+    return response.ok;
+  }
+
+  /**
+   * Adds folder `parentId` to file `fileId`'s parents and removes `removeParentIds`. Never replayed
+   * on a 5xx or a network error, so a caller whose reply was lost reads the parents again.
+   */
+  async moveFile(fileId: string, parentId: string, removeParentIds: readonly string[]): Promise<void> {
+    let params = new URLSearchParams({ addParents: parentId, fields: "id", supportsAllDrives: "true" });
+    if (removeParentIds.length > 0) params.set("removeParents", removeParentIds.join(","));
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" },
+      this.getAccessToken);
+    if (!response.ok) throw await driveError(response);
+    await response.body?.cancel();
+  }
+
   /** One page of the shared drives this account is a member of. */
   async listSharedDrives(options: { pageSize?: number; pageToken?: string } = {}):
       Promise<DriveSharedDriveList> {
     let params = new URLSearchParams({
       pageSize: String(options.pageSize ?? 100),
-      fields: "nextPageToken,drives(id,name)",
+      fields: "nextPageToken,drives(id,name,capabilities(canAddChildren))",
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
     let body = await this.#getUnknown("/drives", params);
@@ -727,11 +776,12 @@ export class DriveApi {
     if (!isRecord(body) || !Array.isArray(rawDrives)) {
       throw new Error("Invalid Google Drive shared-drive list response");
     }
-    let drives = rawDrives.map((drive: unknown) => {
+    let drives = rawDrives.map((drive: unknown): DriveSharedDrive => {
       if (!isRecord(drive) || typeof drive.id !== "string" || typeof drive.name !== "string") {
         throw new Error("Invalid Google Drive shared drive");
       }
-      return { id: drive.id, name: drive.name };
+      let { canAddChildren } = optionalCapabilities(drive.capabilities) ?? {};
+      return { id: drive.id, name: drive.name, ...(canAddChildren === undefined ? {} : { canAddChildren }) };
     });
     let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
     return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
