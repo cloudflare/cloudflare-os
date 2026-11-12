@@ -27,8 +27,8 @@ export const WorkspaceNav = ({ workspaces, selectedWorkspaceId, onSelectWorkspac
   const underlay = cn('pointer-events-none absolute inset-x-0 top-0 -z-10 h-0', rail ? 'rounded-xl bg-kumo-contrast/8' : 'rounded-2xl bg-kumo-fill')
 
   return (
-    // The rail is one button wide, with no room for a scrollbar beside it.
-    <nav aria-label="Workspaces" className={cn('flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto', rail && '[scrollbar-width:none]')}>
+    // Scrolled with no scrollbar, expanded or on the rail.
+    <nav aria-label="Workspaces" className="flex min-h-0 flex-1 flex-col gap-0 overflow-y-auto [scrollbar-width:none]">
       <div ref={listRef} className="relative isolate flex shrink-0 flex-col">
         <div ref={underlayRef} aria-hidden="true" className={underlay} />
         <div ref={hoverUnderlayRef} aria-hidden="true" className={underlay} />
