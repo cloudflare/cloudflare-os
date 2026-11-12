@@ -980,7 +980,6 @@ async function post(
     created = await send(host, action, placement);
     log.info("posted a Drive comment", {
       event: "drive.comments.posted", commentId: created, outcome: "posted",
-      ...(placement ? { api: "docs" } : {}),
     });
   } catch (error) {
     let failure = placement ? docsWriteFailure(error) : threads.sendFailure(error);
