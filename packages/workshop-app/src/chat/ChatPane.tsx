@@ -60,6 +60,8 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const items = chat.status === 'ready' ? chat.items : undefined
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const restricted = workspace?.containsRestrictedData === true
+  // Why the last message did not go, whether it was stopped here or by the server.
+  const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
 
   const handlers = useMemo((): ChatItemHandlers => {
@@ -115,7 +117,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     }) ?? []
   }, [items, disclosure, handlers, restricted])
 
-  const sendMessage = (text: string) => {
+  const sendMessage = (text: string, files: File[]) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
@@ -125,7 +127,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     setProblem(undefined)
     setNotice(undefined)
     setReply(undefined)
-    void actions.send(reply ? withQuote(reply.quote, text) : text, model.id)
+    void actions.send(reply ? withQuote(reply.quote, text) : text, model.id, files)
   }
 
   return (
@@ -141,6 +143,26 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         <Composer
           ref={composer}
           onSend={sendMessage}
+          stop={chat.status === 'ready' && chat.agentActive ? {
+            waiting: chat.waiting,
+            onStop: async () => {
+              setProblem(undefined)
+              actions.dismissSendError()
+              try {
+                await actions.stopAgent()
+              } catch (error) {
+                setProblem(`The agent couldn’t be stopped: ${error instanceof Error ? error.message : String(error)}`)
+                throw error
+              }
+            },
+          } : undefined}
+          problem={sendProblem === undefined ? undefined : {
+            message: sendProblem,
+            onDismiss: () => {
+              setProblem(undefined)
+              actions.dismissSendError()
+            },
+          }}
           reply={reply && {
             quote: reply.quote,
             onShow: () => list.current?.scrollToMessage(reply.key),
@@ -164,9 +186,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
               </LiveRows.Row>
             ))}
-            {chat.sendError && <LiveRows.Row key="send-error"><MessageBubble role="error">{chat.sendError}</MessageBubble></LiveRows.Row>}
             {chat.actionError && <LiveRows.Row key="action-error"><MessageBubble role="error">{chat.actionError}</MessageBubble></LiveRows.Row>}
-            {problem && <LiveRows.Row key="problem"><MessageBubble role="error">{problem}</MessageBubble></LiveRows.Row>}
             {notice && <LiveRows.Row key="notice"><p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p></LiveRows.Row>}
           </LiveRows>
           {/* Last, in room that is always kept for it. A reply joins the conversation once it is
@@ -189,7 +209,6 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           {chat.status === 'failed'
             ? <MessageBubble role="error">{chat.message}</MessageBubble>
             : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
-          {problem && <MessageBubble role="error">{problem}</MessageBubble>}
         </MessageList>
       )}
     </ChatLayout>

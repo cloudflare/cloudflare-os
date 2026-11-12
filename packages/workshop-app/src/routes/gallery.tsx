@@ -151,6 +151,8 @@ function Gallery() {
     `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`,
   )
   const [replying, setReplying] = useState(true)
+  const [sendFailed, setSendFailed] = useState(true)
+  const [working, setWorking] = useState(true)
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
@@ -287,6 +289,36 @@ function Gallery() {
               : undefined}
           />
           <div><Button disabled={replying} onClick={() => setReplying(true)}>Reply to a message</Button></div>
+        </div>
+      </Section>
+      <Section title="Composer (the agent working: Stop, with Send beside it for words that steer; stopping puts what was waiting in the draft)">
+        <div className="flex w-full flex-col gap-3">
+          <Composer
+            onSend={previewSend}
+            stop={working ? { waiting: ['Make it shorter'], onStop: async () => setWorking(false) } : undefined}
+          />
+          <div><Button disabled={working} onClick={() => setWorking(true)}>Start working</Button></div>
+        </div>
+      </Section>
+      <Section title="Composer (a message that did not go: why, in a bar over the composer, until it is dismissed or the next send; a long one wraps)">
+        <div className="flex w-full flex-col gap-3">
+          <Composer
+            onSend={(text, files) => {
+              previewSend(text, files)
+              setSendFailed(false)
+            }}
+            problem={sendFailed ? { message: 'Files can be sent once the agent has finished.', onDismiss: () => setSendFailed(false) } : undefined}
+          />
+          <div><Button disabled={sendFailed} onClick={() => setSendFailed(true)}>Fail a send</Button></div>
+          <div className="w-80 max-w-full">
+            <Composer
+              onSend={previewSend}
+              problem={{
+                message: 'The files come to more than 5 MB, the most a message can carry. Remove some of them, or send them over more than one message.',
+                onDismiss: () => {},
+              }}
+            />
+          </div>
         </div>
       </Section>
       <Section title="Attachments (image, PDF, spreadsheet, code, and long filename)">

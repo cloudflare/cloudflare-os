@@ -77,8 +77,10 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     return Promise.resolve(actionsLease)
   })
   const sendChatMessage = vi.fn<Overseer['sendChatMessage']>(async () => {})
+  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.length}`)
   const asked = {
     retryAgent: vi.fn<Overseer['retryAgent']>(async () => {}),
+    stopAgent: vi.fn<Overseer['stopAgent']>(async () => {}),
     approveAction: vi.fn<Overseer['approveAction']>(async () => {}),
     rejectAction: vi.fn<Overseer['rejectAction']>(async () => {}),
     denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
@@ -95,6 +97,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     subscribeToChat,
     subscribeToActions,
     sendChatMessage,
+    uploadBlob,
     ...asked,
     [Symbol.dispose]: dispose,
   }
@@ -105,6 +108,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     subscribeToChat,
     subscribeToActions,
     sendChatMessage,
+    uploadBlob,
     ...asked,
     dispose,
     leaseDispose,
@@ -755,6 +759,25 @@ describe('ChatSession', () => {
 
         expect(steers(session).map(({ text }) => text)).toEqual(['go'])
       })
+
+      it('are what stopping would drop, until the agent reads them', async () => {
+        const { session, queue } = await steering()
+        queue({ text: 'Shorter', author: userAuthor }, { text: 'And in French', author: grace })
+        expect(ready(session).waiting).toEqual(['Shorter', 'And in French'])
+
+        queue({ text: 'And in French', author: grace })
+        expect(ready(session).waiting).toEqual(['And in French'])
+      })
+    })
+
+    it('stops the running agent, and passes on a refusal', async () => {
+      const { fake, session } = await steering()
+
+      await session.stopAgent()
+      expect(fake.stopAgent).toHaveBeenCalledExactlyOnceWith(0)
+
+      fake.stopAgent.mockRejectedValueOnce(new Error('Gone'))
+      await expect(session.stopAgent()).rejects.toThrow('Gone')
     })
 
     it('offers to retry the last error only once the agent has stopped', async () => {
@@ -929,8 +952,64 @@ describe('ChatSession', () => {
 
       await session.send('hello', 'model-1')
 
-      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, 'hello', 'model-1')
+      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, 'hello', 'model-1', undefined, undefined)
+      expect(fake.uploadBlob).not.toHaveBeenCalled()
       expect(ready(session).sendError).toBeUndefined()
+    })
+
+    it('uploads the files, and sends them with the message', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = await started(fake)
+      const files = [
+        new File([Uint8Array.of(1, 2, 3)], 'chart.png', { type: 'image/png' }),
+        new File(['notes'], 'notes.txt', { type: 'text/plain' }),
+        new File([Uint8Array.of(0)], '', { type: '' }),
+      ]
+
+      await session.send('see these', 'model-1', files)
+
+      expect(fake.uploadBlob.mock.calls.map(([content]) => [...content])).toEqual([[1, 2, 3], [...new TextEncoder().encode('notes')], [0]])
+      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(0, 'see these', 'model-1', undefined, [
+        { oid: 'oid-3', mimeType: 'image/png', name: 'chart.png' },
+        { oid: 'oid-5', mimeType: 'text/plain', name: 'notes.txt' },
+        { oid: 'oid-1', mimeType: 'application/octet-stream', name: undefined },
+      ])
+    })
+
+    it('does not send the message when a file cannot be uploaded', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      fake.uploadBlob.mockRejectedValueOnce(new Error('Blob too large'))
+      const session = await started(fake)
+
+      await session.send('see this', 'model-1', [new File(['x'], 'x.txt')])
+
+      expect(fake.sendChatMessage).not.toHaveBeenCalled()
+      expect(ready(session).sendError).toBe('Blob too large')
+    })
+
+    it('refuses files that are more than a message can carry, without uploading them', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const session = await started(fake)
+
+      await session.send('', 'model-1', [new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'huge.bin')])
+      expect(ready(session).sendError).toBe('huge.bin is larger than 4 MB, the most a file can be.')
+
+      await session.send('', 'model-1', Array.from({ length: 6 }, (_, index) => new File(['x'], `${index}.txt`)))
+      expect(ready(session).sendError).toBe('A message can carry up to 5 files.')
+
+      expect(fake.uploadBlob).not.toHaveBeenCalled()
+      expect(fake.sendChatMessage).not.toHaveBeenCalled()
+    })
+
+    it('holds files back while the agent works, which only plain text can steer', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
+      const session = await started(fake)
+
+      await session.send('and this', 'model-1', [new File(['x'], 'x.txt')])
+
+      expect(fake.uploadBlob).not.toHaveBeenCalled()
+      expect(fake.sendChatMessage).not.toHaveBeenCalled()
+      expect(ready(session).sendError).toBe('Files can be sent once the agent has finished.')
     })
 
     it('reports a failed send, and clears the report on the next send', async () => {
@@ -942,6 +1021,17 @@ describe('ChatSession', () => {
       expect(ready(session).sendError).toBe('The agent is still running.')
 
       await session.send('two', 'model-1')
+      expect(ready(session).sendError).toBeUndefined()
+    })
+
+    it('puts the report of a failed send away when it is dismissed', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      fake.sendChatMessage.mockRejectedValueOnce(new Error('The agent is still running.'))
+      const session = await started(fake)
+
+      await session.send('one', 'model-1')
+      session.dismissSendError()
+
       expect(ready(session).sendError).toBeUndefined()
     })
 

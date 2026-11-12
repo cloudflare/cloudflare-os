@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { attachmentKind } from './attachmentKind'
 import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 
@@ -37,7 +38,11 @@ export const MessageAttachment = ({ name, mimeType, content, onOpen }: MessageAt
       onClick={onOpen}
       title={name}
       aria-label={`Open ${name}`}
-      className="relative size-22 shrink-0 overflow-hidden rounded-2xl bg-kumo-base text-left ring-1 ring-kumo-line ring-inset hover:bg-kumo-tint"
+      className={cn(
+        'relative size-22 shrink-0 overflow-hidden rounded-2xl bg-kumo-base text-left ring-1 ring-kumo-line ring-inset',
+        // Laid over what is shown, so a picture darkens on hover as a tile does.
+        "after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:content-[''] after:transition-colors motion-reduce:after:transition-none hover:after:bg-kumo-contrast/8",
+      )}
     >
       {preview ? (
         <img src={preview} alt="" className="size-full object-cover" />

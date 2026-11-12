@@ -5,10 +5,12 @@ import type {
   AiChatMessage,
   AiChatMetadata,
   AiChatSubscriber,
+  ChatAttachmentHandle,
+  ChatAttachmentRef,
   PresenceSubscriber,
   SlashCommandRequest,
 } from '@gadgets/workshop-shared/api'
-import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { MockGadget } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
 import { AGENT, stamp, VIEWER, type MessageSource, type Scenario, type ScriptStep } from './scenario'
@@ -45,10 +47,12 @@ export class MockOverseer {
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
   #files: Record<string, Uint8Array>
+  #blobs = new Map<GitOid, Uint8Array>()
 
   constructor(scenario: Scenario) {
     this.#messages = [...scenario.history]
-    this.#files = scenario.files ?? {}
+    // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
+    this.#files = { ...scenario.files }
     this.#metadata = {
       id: CHAT_ID,
       title: scenario.title,
@@ -101,9 +105,33 @@ export class MockOverseer {
     return lease(() => this.#actionSubscribers.delete(subscriber))
   }
 
-  async sendChatMessage(_chatId: number, message: string | SlashCommandRequest) {
+  /** Kept by a made-up OID, until a message carries it. */
+  async uploadBlob(content: Uint8Array): Promise<GitOid> {
+    const oid = crypto.randomUUID()
+    this.#blobs.set(oid, content)
+    return oid
+  }
+
+  async sendChatMessage(
+    _chatId: number,
+    message: string | SlashCommandRequest,
+    _modelId?: string | null,
+    _capsules?: unknown,
+    handles?: ChatAttachmentHandle[],
+  ) {
+    const attachments = handles?.map((handle): ChatAttachmentRef => {
+      const content = 'oid' in handle ? this.#blobs.get(handle.oid) : undefined
+      if (!('oid' in handle) || !content) throw new Error('Chat attachment not found.')
+      const id = crypto.randomUUID()
+      this.#files[id] = content
+      const image = handle.mimeType.startsWith('image/')
+      return { id, oid: handle.oid, mimeType: handle.mimeType, name: handle.name, size: content.byteLength, content: image ? content : undefined }
+    })
     if (typeof message !== 'string') {
       this.#append({ type: 'slashCommand', request: message, author: VIEWER })
+    } else if (attachments?.length) {
+      if (this.#metadata.activeAgent) throw new Error('The agent is still running.')
+      this.#append({ type: 'message', message, author: VIEWER, attachments })
     } else if (this.#metadata.activeAgent) {
       // A running agent is steered: the message waits in the metadata until the script reads it.
       const queuedSteers = [...(this.#metadata.queuedSteers ?? []), { text: message, author: VIEWER }]

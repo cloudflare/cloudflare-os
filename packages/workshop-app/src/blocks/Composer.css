@@ -14,6 +14,8 @@
    and vertical arc steer the visible field around the buttons in both directions. */
 .composer {
   --composer-line-height: 20px;
+  /* Where the inline message ends: clear of the buttons at the end (30px each, 4px apart). */
+  --composer-end: 44px;
   --composer-sweep: calc(var(--composer-open) * var(--composer-open) * var(--composer-open));
   --composer-lift: calc(32px * var(--composer-open) * (1 - var(--composer-open)));
   height: calc(var(--composer-line-height) + 22px + var(--composer-open) * (var(--composer-field-height) - var(--composer-line-height) + 30px));
@@ -27,10 +29,14 @@
   --composer-open: 1;
 }
 
+.composer[data-two-actions] {
+  --composer-end: 78px;
+}
+
 .composer-editor {
   top: calc(11px + var(--composer-open) * 1px - var(--composer-lift));
   left: calc(42px - 26px * var(--composer-sweep));
-  right: calc(44px - 36px * var(--composer-sweep));
+  right: calc(var(--composer-end) - (var(--composer-end) - 8px) * var(--composer-sweep));
   height: calc(var(--composer-line-height) + var(--composer-open) * (var(--composer-field-height) - var(--composer-line-height)));
 }
 

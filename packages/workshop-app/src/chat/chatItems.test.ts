@@ -164,17 +164,19 @@ describe('toChatFeed', () => {
 
     it('draws consecutive messages from one sender as a run, unless the later one has its own heading', () => {
       const other = { type: 'user', id: 'grace@example.com', name: 'Grace Hopper' } as const
+      const brief = { attachments: [{ id: 'a', mimeType: 'application/pdf', name: 'brief.pdf', size: 10 }] }
       const { items } = feed(
         user('one'),
         user('two'),
         user('three', { author: other }),
-        user('', { attachments: [{ id: 'a', mimeType: 'application/pdf', name: 'brief.pdf', size: 10 }] }),
+        user('', brief),
+        user('with a file', brief),
         agent({ text: 'first' }),
         agent({ toolCalls: [read('a.ts')] }),
         agent({ text: 'second' }),
         user('four'),
       )
-      expect(items.map((item, index) => continuesRun(items[index - 1], item))).toEqual([false, true, false, false, false, true, false])
+      expect(items.map((item, index) => continuesRun(items[index - 1], item))).toEqual([false, true, false, false, true, false, true, false])
     })
 
     it('hides what is only for the model, and agent steps that left nothing to show', () => {

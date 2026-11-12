@@ -160,11 +160,13 @@ export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | Di
 
 /**
  * Whether a row carries on from the one before it: a message from the same sender with nothing of
- * its own (a name, files) above its words. Such messages are drawn as one run.
+ * its own (a name) above its bubbles. Such messages are drawn as one run. Only the viewer's own
+ * messages go unnamed, so only theirs run together.
  */
 export const continuesRun = (before: ChatItem | undefined, item: ChatItem): boolean =>
-  before?.kind === item.kind &&
-  (item.kind === 'assistant' || (item.kind === 'user' && !item.from && item.attachments.length === 0 && item.parts.length > 0))
+  item.kind === 'assistant'
+    ? before?.kind === 'assistant'
+    : item.kind === 'user' && before?.kind === 'user' && !item.from && !before.from
 
 /**
  * A message sent to the running agent that is not among the chat's messages: it waits to be read
