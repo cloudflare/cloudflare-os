@@ -11,6 +11,8 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   const [state, setState] = useState<WorkspacesState>({ status: 'loading' })
   // Bumped by refresh() to run the loading effect again.
   const [version, setVersion] = useState(0)
+  // Stable, for whoever keeps it beyond a render, such as a chat session.
+  const [refresh] = useState(() => () => setVersion((v) => v + 1))
 
   useEffect(() => {
     let cancelled = false
@@ -29,5 +31,5 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [api, version])
 
-  return <WorkspacesContext value={{ state, refresh: () => setVersion((v) => v + 1) }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, refresh }}>{children}</WorkspacesContext>
 }

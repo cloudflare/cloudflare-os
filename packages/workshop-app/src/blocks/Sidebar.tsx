@@ -13,12 +13,14 @@ export type SidebarProps = {
   workspaces: SidebarWorkspace[]
   selectedWorkspaceId?: string
   onSelectWorkspace: (id: string) => void
+  /** The logo was clicked: go to the start of a new chat. */
+  onGoHome?: () => void
   /** Shown in place of the list when there is nothing to list, e.g. "No workspaces yet." */
   notice?: string
   /** Logos of the connected apps, shown in the connect button. */
   connections?: ReactNode
-  /** The library, which opens beside the page, and whether it is showing. */
-  library?: { shown: boolean; onToggle: () => void }
+  /** The library's page, and whether it is the one showing. */
+  library?: { current: boolean; onOpen: () => void }
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
 }
@@ -31,20 +33,21 @@ export const Sidebar = ({
   workspaces,
   selectedWorkspaceId,
   onSelectWorkspace,
+  onGoHome,
   notice,
   connections,
   library,
   collapsed = false,
 }: SidebarProps) => {
-  const home = <Button icon={<LogoIcon />} aria-label="Home" className="[&>svg]:size-[1.5em]" />
+  const home = <Button icon={<LogoIcon />} aria-label="Home" onClick={onGoHome} className="[&>svg]:size-[1.5em]" />
   const workspacesButton = <Button icon={FolderIcon} aria-label="Workspaces" />
   const libraryButton = (
     <Button
       icon={CirclesFourIcon}
       aria-label="Library"
-      aria-pressed={library?.shown}
-      onClick={library?.onToggle}
-      className="aria-pressed:bg-kumo-tint"
+      aria-current={library?.current ? 'page' : undefined}
+      onClick={library?.onOpen}
+      className="aria-[current=page]:bg-kumo-tint"
     />
   )
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" />
@@ -62,7 +65,8 @@ export const Sidebar = ({
 
   if (collapsed) {
     return (
-      <div className="flex min-h-0 flex-1 flex-col items-center p-0.5">
+      // As wide as `AppShell`'s rail: a button, with room around it.
+      <div className="flex min-h-0 flex-1 flex-col items-center px-2 py-2.5">
         <header className="flex flex-col items-center">
           {home}
           <RailDivider />
@@ -83,7 +87,7 @@ export const Sidebar = ({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 p-0.5">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 px-2 py-2.5">
       <header className="flex items-center gap-2">
         <div className="mr-auto flex">{home}</div>
         {workspacesButton}

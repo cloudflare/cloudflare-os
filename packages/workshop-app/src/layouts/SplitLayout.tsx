@@ -11,8 +11,17 @@ export type SplitLayoutProps = {
   children: ReactNode
   /** What is open beside the page, if anything. */
   aside?: ReactNode
+  /**
+   * The aside takes all of the room, and the page none: it is the page. Going there and back, the
+   * aside grows over to it and the page goes, without the aside moving in the document.
+   */
+  asideAlone?: boolean
   /** The aside fills the window, over the page and everything else. */
   asideFullScreen?: boolean
+  /** The aside's share of the room to start with, such as the one it was left at. Kept within its limits once moved. */
+  initialAsideShare?: number
+  /** The divider came to rest elsewhere, to be kept for the next time: the aside's share of the room. */
+  onAsideShareChange?: (share: number) => void
   /**
    * Shows the aside, when none is showing. The page's far edge then has a handle for it, which
    * comes out when the pointer reaches the edge, and for a moment after the aside is put away.
@@ -85,9 +94,16 @@ const useFullScreen = (fullScreen: boolean, reduceMotion: boolean) => {
 }
 
 /** The second card, which stays for as long as closing takes. */
-const AsideCard = ({ share, open, dim, fullScreen, onGone, children }: {
+const AsideCard = ({ share, open, alone, isPage, dim, fullScreen, onGone, children }: {
   share: MotionValue<number>
   open: MotionValue<number>
+  /** How far it has taken all of the room, 0 to 1. */
+  alone: MotionValue<number>
+  /**
+   * It is the page. Arriving or going as the page, it is there or gone at once, as a page is: it
+   * only grows in and out beside one.
+   */
+  isPage: boolean
   dim: MotionValue<number>
   fullScreen: boolean
   /** It has gone, all the way. */
@@ -96,7 +112,7 @@ const AsideCard = ({ share, open, dim, fullScreen, onGone, children }: {
 }) => {
   const [isPresent, safeToRemove] = usePresence()
   const reduceMotion = useReducedMotion() ?? false
-  const grow = useTransform(() => share.get() * open.get())
+  const grow = useTransform(() => open.get() * (share.get() * (1 - alone.get()) + alone.get()))
   // The card is there first, then what is in it: at a few pixels' width that would only be a smear.
   const cardOpacity = useTransform(() => clampSize(open.get() / 0.4, 0, 1) * (1 - CLOSING_DIM * dim.get()))
   const contentOpacity = useTransform(open, [0.4, 1], [0, 1])
@@ -110,18 +126,19 @@ const AsideCard = ({ share, open, dim, fullScreen, onGone, children }: {
     onGone()
     safeToRemove?.()
   })
+  // As it was when it arrived or went, not as it is later.
+  const asPage = useEffectEvent(() => isPage)
+  const [arrivedAsPage] = useState(isPage)
   // From however far open it is: it may have been pulled part of the way out of the edge.
   useEffect(() => {
     const to = isPresent ? 1 : 0
     // Shown again before it had gone, it is not about to close any more.
     if (isPresent) dim.jump(0)
     contentWidth.jump(isPresent ? 'auto' : content.current!.offsetWidth)
-    if (reduceMotion) {
-      open.jump(to)
-      closed()
-      return
-    }
-    const opening = animate(open, to, { ...OPENING_TIMING, onComplete: closed })
+    // At once, but still as an animation: what follows the value is updated on the next frame, and
+    // a value only jumped to would be lost when development runs this twice.
+    const instant = reduceMotion || asPage()
+    const opening = animate(open, to, { ...(instant ? { duration: 0 } : OPENING_TIMING), onComplete: closed })
     return () => opening.stop()
   }, [isPresent, reduceMotion, open, dim, contentWidth])
 
@@ -130,7 +147,7 @@ const AsideCard = ({ share, open, dim, fullScreen, onGone, children }: {
   return (
     // Its place beside the page, which it keeps while it fills the window, to go back to. Faded
     // in, for when it arrives into room that was pulled open for it.
-    <motion.div ref={lift.slot} style={{ flexGrow: grow, opacity: cardOpacity }} className="appears flex min-w-0 basis-0 flex-col">
+    <motion.div ref={lift.slot} style={{ flexGrow: grow, opacity: cardOpacity }} className={cn(!arrivedAsPage && 'appears', 'flex min-w-0 basis-0 flex-col')}>
       <motion.div style={lift.style} className={cn(PANE, 'flex-1')}>
         <motion.div ref={content} style={{ opacity: contentOpacity, width: contentWidth }} className="flex min-h-0 flex-1 flex-col">{children}</motion.div>
       </motion.div>
@@ -149,19 +166,24 @@ const AsideCard = ({ share, open, dim, fullScreen, onGone, children }: {
  * for a moment, to show where it went. Clicking the handle opens the aside, and so does pulling
  * it out.
  */
-export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAside, onCloseAside, edgeInset = 0 }: SplitLayoutProps) => {
+export const SplitLayout = ({
+  children, aside, asideAlone = false, asideFullScreen = false, initialAsideShare, onAsideShareChange, onOpenAside, onCloseAside, edgeInset = 0,
+}: SplitLayoutProps) => {
   const reduceMotion = useReducedMotion() ?? false
   const root = useRef<HTMLDivElement>(null)
   const shown = Boolean(aside)
-  // The aside's share of the room the two cards have between them, how far open it is, and how
-  // far the gap is held open at the edge with the aside away, each 0 to 1. Motion values, so that
-  // neither dragging nor opening renders the page again.
-  const share = useMotionValue(EVEN)
+  // The aside's share of the room the two cards have between them, how far open it is, how far
+  // the gap is held open at the edge with the aside away, and how far the aside has taken all of
+  // the room, each 0 to 1. Motion values, so that neither dragging nor opening renders the page again.
+  const [initialShare] = useState(() => clampSize(initialAsideShare ?? EVEN, 0.1, 0.9))
+  const share = useMotionValue(initialShare)
   const open = useMotionValue(shown ? 1 : 0)
   const peek = useMotionValue(0)
-  const pageGrow = useTransform(() => 1 - share.get() * open.get())
-  // The edge's gap becomes the gap between the cards as the aside opens.
-  const gap = useTransform(() => EDGE_GAP * peek.get() * (1 - open.get()) + GAP * open.get())
+  const alone = useMotionValue(asideAlone ? 1 : 0)
+  const pageGrow = useTransform(() => (1 - share.get() * open.get()) * (1 - alone.get()))
+  const pageOpacity = useTransform(alone, [0, 1], [1, 0])
+  // The edge's gap becomes the gap between the cards as the aside opens, and goes with the page.
+  const gap = useTransform(() => (EDGE_GAP * peek.get() * (1 - open.get()) + GAP * open.get()) * (1 - alone.get()))
   // The handle is in the middle of the gap between the cards. At the edge it is as far from the
   // page as from the end of the room past the layout, which is past the middle of the gap by
   // half that room.
@@ -176,10 +198,10 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
   const dim = useMotionValue(0)
   const closes = useRef(false)
   // Where the divider rests, for assistive technology. Not followed while it is dragged.
-  const [rest, setRest] = useState(EVEN)
+  const [rest, setRest] = useState(initialShare)
   // The drag under way: the aside's width and share when the handle was taken hold of, whether
   // that was at the edge with the aside away, and the furthest the pointer has been from there.
-  const drag = useRef({ width: 0, share: EVEN, opening: false, moved: 0 })
+  const drag = useRef({ width: 0, share: initialShare, opening: false, moved: 0 })
   const openedAt = useRef(0)
   // The share the aside had before it was dragged shut: it goes at the width it was dragged to,
   // and has this again once it has gone, or as soon as it is back.
@@ -190,7 +212,7 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
     reopensAt.current = undefined
   }
 
-  const hinting = useEdgeHint(shown)
+  const hinting = useEdgeHint(shown, asideAlone)
 
   /** The room the two cards have between them, and the aside's limits within it. */
   const room = () => {
@@ -202,8 +224,12 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
     const { width, min, max } = room()
     return clampSize(wanted * width, min, max) / width
   }
-  const settle = (to: number) => {
+  const rested = (to: number) => {
     setRest(to)
+    onAsideShareChange?.(to)
+  }
+  const settle = (to: number) => {
+    rested(to)
     settleSize(share, to, reduceMotion)
   }
   const setCloses = (value: boolean) => {
@@ -254,19 +280,32 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
     reopensAt.current = undefined
   }, [shown, share, reduceMotion])
 
+  // The aside grows over the page, or gives the room back, only when it is there before and after:
+  // arriving or going as the page, it takes the page's place at once, as another page would.
+  const wasShown = useRef(shown)
+  useEffect(() => {
+    const to = asideAlone ? 1 : 0
+    if (reduceMotion || !shown || !wasShown.current) return alone.jump(to)
+    const going = animate(alone, to, OPENING_TIMING)
+    return () => going.stop()
+  }, [asideAlone, alone, reduceMotion])
+  useEffect(() => {
+    wasShown.current = shown
+  }, [shown])
+
   return (
     <div ref={root} className={cn('flex min-w-0 flex-1', SCROLLBARS_AWAY)}>
-      {/* Out of reach under an aside that fills the window. */}
-      <motion.main style={{ flexGrow: pageGrow }} inert={asideFullScreen} className={PANE}>{children}</motion.main>
+      {/* Out of reach under an aside that fills the window, or the room. */}
+      <motion.main style={{ flexGrow: pageGrow, opacity: pageOpacity }} inert={asideFullScreen || asideAlone} className={PANE}>{children}</motion.main>
       <motion.div
         style={{ width: gap }}
-        inert={asideFullScreen}
+        inert={asideFullScreen || asideAlone}
         className="relative z-20 shrink-0"
         onPointerEnter={() => scrollbars.pointerInGap(true)}
         onPointerLeave={() => scrollbars.pointerInGap(false)}
       >
         <motion.div style={{ x: handleShift }} className="absolute inset-y-0 left-1/2 w-0">
-          {(shown || onOpenAside) && (
+          {!asideAlone && (shown || onOpenAside) && (
             <ResizeHandle
               aria-label="Resize panes"
               // The divider's place, as the page's share of the room.
@@ -291,8 +330,13 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
                   return
                 }
                 const to = within(share.get() - direction * STEP)
+                // A step narrower than its narrowest puts it away, to open again as wide as it was.
+                if (direction === 1 && onCloseAside && to >= share.get()) {
+                  reopensAt.current = to
+                  return onCloseAside()
+                }
                 share.jump(to)
-                setRest(to)
+                rested(to)
               }}
               // Not by the second click of two that opened it.
               onReset={() => {
@@ -303,7 +347,7 @@ export const SplitLayout = ({ children, aside, asideFullScreen = false, onOpenAs
         </motion.div>
       </motion.div>
       <AnimatePresence initial={false}>
-        {shown ? <AsideCard key="aside" share={share} open={open} dim={dim} fullScreen={asideFullScreen} onGone={reopened}>{aside}</AsideCard> : null}
+        {shown ? <AsideCard key="aside" share={share} open={open} alone={alone} isPage={asideAlone} dim={dim} fullScreen={asideFullScreen} onGone={reopened}>{aside}</AsideCard> : null}
       </AnimatePresence>
     </div>
   )

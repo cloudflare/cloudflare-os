@@ -1,88 +1,94 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { FileDashedIcon, GitBranchIcon, SidebarSimpleIcon, SmileyMehIcon, WarningCircleIcon } from '@phosphor-icons/react'
-import { attachmentKind } from '@/blocks/attachmentKind'
-import { ATTACHMENT_KIND_ICONS } from '@/blocks/attachmentKindIcons'
+import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
-import { FormatIcon } from '@/components/FormatIcon'
-import type { AsideActions } from './AsideContext'
-import type { AsideItem, AsideTabs } from './asideTabs'
+import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { asideItemIcon } from './asideItemIcon'
+import type { AsideItem } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
 import { useGadgetConnection } from './useGadgetConnection'
 
 export type AsidePaneProps = {
-  /** What is open, if anything. */
-  tabs?: AsideTabs
-  fullScreen: boolean
-  actions: AsideActions
+  /** The one shown. */
+  item: AsideItem
+  /** An address for it, to copy. */
+  link?: string
   /**
-   * Goes to the chat in a workspace that was active last, for an output of it that was filling
-   * the window: the app's mark there leaves full screen for that chat, with the output beside it.
+   * Has it fill the window, or go back. Stable: a gadget's page asks to leave full screen with
+   * Escape, through the connection it was made with.
    */
-  onOpenLatestChat?: (workspaceId: string) => void
-}
+  onFullScreenChange: (on: boolean) => void
+} & (
+  | {
+      /** Beside the page: one of what the chat has to show. */
+      placement: 'beside'
+      /** What the chat has to show, most recent first. */
+      items: AsideItem[]
+      onSelect: (key: string) => void
+      onHide: () => void
+      /** Has it take the page's place, when it can. */
+      onExpand?: () => void
+    }
+  | {
+      /** The page itself. */
+      placement: 'page'
+      fullScreen: boolean
+      /** Back beside the chat it was expanded from, when it was. */
+      onCollapse?: () => void
+    }
+)
 
-const iconFor = (item: AsideItem) => {
-  if (item.kind === 'output') {
-    return item.output.type === 'worktree' ? <GitBranchIcon aria-hidden="true" /> : <FormatIcon name={item.output.format?.icon} />
-  }
-  const Glyph = ATTACHMENT_KIND_ICONS[attachmentKind({ name: item.file.name, type: item.file.mimeType })]
-  return <Glyph aria-hidden="true" />
-}
+const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: item.key, title, icon: asideItemIcon(item) })
 
-// Where the shipped Workshop opens an output, as its own page.
-const linkTo = (item: AsideItem) =>
-  item.kind === 'output' && item.output.type === 'gadget'
-    ? new URL(`/workspace/${encodeURIComponent(item.output.workspaceId)}?w=${item.output.workpieceId}`, window.location.origin).href
-    : undefined
-
-/** What is open beside the page, as the pane that shows it. A gadget runs live in it. */
-export const AsidePane = ({ tabs, fullScreen, actions, onOpenLatestChat }: AsidePaneProps) => {
-  const active = tabs?.items.find(({ key }) => key === tabs.activeKey)
-  const { connection, snapshot } = useGadgetConnection(active?.kind === 'output' ? active.output : undefined, () => actions.setFullScreen(false))
+/**
+ * A file or an output, as the card that shows it: beside the page, or as the page. A gadget runs
+ * live in it, and keeps running from one placement to the other: what is shown is keyed by the item
+ * alone.
+ */
+export const AsidePane = (props: AsidePaneProps) => {
+  const { item, link, onFullScreenChange } = props
+  const fullScreen = props.placement === 'page' && props.fullScreen
+  const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
+  const title = snapshot.title ?? item.title
+  // As the page, it names the tab; beside one, the page does.
+  useDocumentTitle(props.placement === 'page' ? title : undefined)
 
   // Escape is for whatever has focus first, such as a menu that is open.
   useEffect(() => {
     if (!fullScreen) return
     const pressed = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) actions.setFullScreen(false)
+      if (event.key === 'Escape' && !event.defaultPrevented) onFullScreenChange(false)
     }
     window.addEventListener('keydown', pressed)
     return () => window.removeEventListener('keydown', pressed)
-  }, [fullScreen, actions])
+  }, [fullScreen, onFullScreenChange])
 
-  const items: SidePaneItem[] = (tabs?.items ?? []).map((item) => ({ key: item.key, title: item.title, icon: iconFor(item) }))
+  const content = item.kind === 'file' ? (
+    <PaneNotice key={item.key} icon={FileDashedIcon} title={title} description="Previews of files are still to come." />
+  ) : item.output.type === 'worktree' ? (
+    <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
+  ) : (
+    <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
+  )
+  const shared = { active: paneItem(item, title), people: snapshot.people, link, onReload: connection?.reload }
 
-  return (
+  return props.placement === 'beside' ? (
     <SidePane
-      items={items}
-      activeKey={tabs?.activeKey}
-      onSelect={actions.select}
-      onCloseItem={actions.closeTab}
-      onCloseAll={actions.closeAll}
-      onHide={actions.hide}
-      people={snapshot.people}
-      link={active && linkTo(active)}
-      onReload={connection?.reload}
-      fullScreen={fullScreen}
-      onFullScreenChange={actions.setFullScreen}
-      onHome={() => {
-        actions.setFullScreen(false)
-        if (active?.kind === 'output') onOpenLatestChat?.(active.output.workspaceId)
-      }}
+      {...shared}
+      placement="beside"
+      items={props.items.map((candidate) => paneItem(candidate))}
+      onSelect={props.onSelect}
+      onHide={props.onHide}
+      onExpand={props.onExpand}
     >
-      {!active ? (
-        <PaneNotice icon={SidebarSimpleIcon} title="Nothing open" description="Outputs and files you open from a chat show here." />
-      ) : active.kind === 'file' ? (
-        <PaneNotice key={active.key} icon={FileDashedIcon} title={active.title} description="Previews of files are still to come." />
-      ) : active.output.type === 'worktree' ? (
-        <PaneNotice key={active.key} icon={GitBranchIcon} title={active.title} description="Worktrees will open here once there is a code view." />
-      ) : (
-        <GadgetView key={active.key} title={active.title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
-      )}
+      {content}
+    </SidePane>
+  ) : (
+    <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
+      {content}
     </SidePane>
   )
 }

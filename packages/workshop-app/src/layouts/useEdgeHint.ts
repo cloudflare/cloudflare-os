@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 
-// What the panes that are put away at an edge of the window, and had back from it, share
-// (`SplitLayout`'s aside, `AppShell`'s sidebar).
+// What the aside, which is put away at the window's far edge and had back from it, is moved by
+// (`SplitLayout`).
 
 /**
  * The gap held open at the edge for the handle, with the pane away. Wider than the gap between
@@ -20,13 +20,16 @@ export const OPENING_TIMING = { type: 'spring', duration: 0.4, bounce: 0 } as co
 // How long the edge's handle stays out after the pane is put away, counted from when it starts to go.
 const HINT_TIME = 700
 
-/** Whether the edge's handle is out to show where the pane went: for a moment after it is put away. */
-export const useEdgeHint = (shown: boolean) => {
-  const [wasShown, setWasShown] = useState(shown)
+/**
+ * Whether the edge's handle is out to show where the pane went: for a moment after it is put away.
+ * Not after it was left as the page (`alone`): it was never at the edge to have gone there.
+ */
+export const useEdgeHint = (shown: boolean, alone = false) => {
+  const [was, setWas] = useState({ shown, alone })
   const [hinting, setHinting] = useState(false)
-  if (wasShown !== shown) {
-    setWasShown(shown)
-    setHinting(!shown)
+  if (was.shown !== shown || was.alone !== alone) {
+    setWas({ shown, alone })
+    if (was.shown !== shown) setHinting(!shown && !was.alone)
   }
   useEffect(() => {
     if (!hinting) return

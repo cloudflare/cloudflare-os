@@ -21,6 +21,8 @@ export type ChatItemHandlers = {
   onShowQuoted: (reply: UserItem) => void
   onOpenAttachment: (attachment: ChatAttachment) => void
   onOpenOutput: (output: OutputItem) => void
+  /** An output's own page, for its card to link to so that it can be opened in another tab. */
+  outputHref?: (output: OutputItem) => string
   onApprove: (actionId: number) => ActionResult
   onDeny: (actionId: number) => ActionResult
   onAlwaysApprove: (rule: NonNullable<ActionItem['rule']>) => ActionResult
@@ -103,6 +105,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           kind={item.type}
           draft={item.draft}
           format={item.format}
+          href={handlers.outputHref?.(item)}
           onOpen={() => handlers.onOpenOutput(item)}
         />
       )

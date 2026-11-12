@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import { useApi } from '@/rpc/ApiContext'
-import type { AsideOutput } from './asideTabs'
+import type { AsideOutput } from './asideItems'
 import { GadgetConnection, type GadgetSnapshot } from './GadgetConnection'
 
 const NOTHING: GadgetSnapshot = { ui: { status: 'loading' }, people: [] }

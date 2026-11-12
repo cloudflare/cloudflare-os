@@ -1,9 +1,9 @@
 import { defineConfig } from 'vite-plus'
 
 // workshop-app: the folders that talk to the backend. UI layers must not import them.
-const DATA_LAYERS = ['@/rpc/*', '@/chat/*', '@/workspaces/*', '@/aside/*']
+const DATA_LAYERS = ['@/rpc/*', '@/chat/*', '@/workspaces/*', '@/aside/*', '@/library/*']
 const DATA_LAYERS_MESSAGE =
-  'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/, workspaces/ and aside/, and routes connect it.'
+  'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/, workspaces/, aside/ and library/, and routes connect it.'
 
 /**
  * Repo-wide toolchain config. Today this is the lint ruleset, moved here from `.oxlintrc.json` so
@@ -176,7 +176,7 @@ export default defineConfig({
       },
       {
         // The data folders feed the UI through routes; they never import routes themselves.
-        files: ['packages/workshop-app/src/{rpc,chat,workspaces,aside}/**/*.{ts,tsx}'],
+        files: ['packages/workshop-app/src/{rpc,chat,workspaces,aside,library}/**/*.{ts,tsx}'],
         rules: {
           'no-restricted-imports': [
             'error',
