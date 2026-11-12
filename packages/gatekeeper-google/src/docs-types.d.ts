@@ -155,6 +155,42 @@ export type DocTableCellStyle = {
   };
 };
 
+/** Columns of a table and their width, for `setTableColumnWidths()`. */
+export type DocTableColumnWidths = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The first column, counting from 0. Omit it, and `count`, to set every column. */
+  at?: number;
+
+  /** How many columns: 1 by default when `at` is given. */
+  count?: number;
+
+  /**
+   * Each column's width in points, from 5 to 1,000 with at most three decimals, or `null` for
+   * columns that share the width the fixed ones leave of the page.
+   */
+  width: number | null;
+};
+
+/** Rows of a table and their least height, for `setTableRowHeights()`. */
+export type DocTableRowHeights = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The first row, counting from 0. Omit it, and `count`, to set every row. */
+  at?: number;
+
+  /** How many rows: 1 by default when `at` is given. */
+  count?: number;
+
+  /**
+   * Each row's least height in points, from 0 to 1,000 with at most three decimals: a row with
+   * more text than fits grows past it, and one of 0 is as tall as its text.
+   */
+  height: number;
+};
+
 /**
  * Read/write access to one directly bound native Google Doc, and to its comments.
  *
@@ -400,4 +436,17 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * whatever its look.
    */
   setTableCellStyle(cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string): Promise<void>;
+
+  /**
+   * Set the width of columns of a table in tab `tabId`, which `getContent()` shows in the
+   * table's `<colgroup>` line. The other columns keep theirs. Columns without a fixed width share
+   * what the fixed ones leave of the page's width, so a fixed width can make them narrower.
+   */
+  setTableColumnWidths(columns: DocTableColumnWidths, tabId?: string): Promise<void>;
+
+  /**
+   * Set the least height of rows of a table in tab `tabId`, which `getContent()` shows as
+   * `<tr style="height:…">`. Header rows the table pins stay pinned.
+   */
+  setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void>;
 }

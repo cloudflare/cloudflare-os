@@ -73,16 +73,21 @@ export type TableChange =
   | ({ type: "deleteTableRows"; at: number; count: number } & TableRef & HiddenContent)
   | ({ type: "deleteTableColumns"; at: number; count: number } & TableRef & HiddenContent)
   | ({ type: "deleteTable" } & TableRef & HiddenContent)
-  | ({ type: "setTableCellStyle"; style: CellStyleChange } & CellBlock & TableRef);
+  | ({ type: "setTableCellStyle"; style: CellStyleChange } & CellBlock & TableRef)
+  | ({ type: "setTableColumnWidths"; at: number; count: number; width: number | null } & TableRef)
+  | ({ type: "setTableRowHeights"; at: number; count: number; height: number } & TableRef);
 
 type NewTableChange = Extract<TableChange, { type: "insertTable" }>;
 type ExistingTableChange = Exclude<TableChange, NewTableChange>;
 
 /** The changes that set only a table's look, which no table's identity depends on. */
-const LOOK_CHANGE_TYPES: readonly string[] = ["setTableCellStyle"];
+const LOOK_CHANGE_TYPES: readonly string[] =
+  ["setTableCellStyle", "setTableColumnWidths", "setTableRowHeights"];
 
 /** A change that sets only a table's look. */
-export type LookChange = Extract<TableChange, { type: "setTableCellStyle" }>;
+export type LookChange = Extract<
+  TableChange, { type: "setTableCellStyle" | "setTableColumnWidths" | "setTableRowHeights" }
+>;
 
 /** A change that adds or deletes rows or columns. */
 type LineChange = Exclude<ExistingTableChange, LookChange | { type: "deleteTable" }>;
@@ -1329,6 +1334,18 @@ export function checkLookTarget(
 
 function lookTarget(content: EditableMarkdown, table: number, change: LookChange): CheckedLook {
   let op = change.type;
+  if (change.type !== "setTableCellStyle") {
+    let lines = linesOf(content.markdown, content.tables[table], op);
+    let size = sizeOf(lines, op);
+    let ofRows = change.type === "setTableRowHeights";
+    let limit = ofRows ? size.rows : size.columns;
+    if (change.at + change.count > limit) {
+      throw new Error(
+        `${op}: at and count must name ${ofRows ? "rows" : "columns"} of the table, which has ` +
+        `${limit}.`);
+    }
+    return { lines, spans: [] };
+  }
   let checked = checkCellBlock(content, table, change, op);
   let { borders } = change.style;
   if (borders?.innerHorizontal !== undefined || borders?.innerVertical !== undefined) {
@@ -1350,8 +1367,26 @@ function applyLookChange(
 ): EditableMarkdown {
   let { lines, spans } = lookTarget(content, table, change);
   let look = readTableLook(lines, change.type);
-  let steps = cellStyleSteps(change, change.style);
-  return restyleTable(content, table, lookWithCellStyle(look, spans, steps));
+  switch (change.type) {
+    case "setTableCellStyle": {
+      let steps = cellStyleSteps(change, change.style);
+      return restyleTable(content, table, lookWithCellStyle(look, spans, steps));
+    }
+    case "setTableColumnWidths": {
+      let columns = (look.columns ?? lines.rows[0].cells.map(() => null))
+        .map((width, column) => column >= change.at && column < change.at + change.count
+          ? change.width : width);
+      let { columns: _, ...rest } = look;
+      return restyleTable(content, table,
+        columns.some(width => width !== null) ? { ...rest, columns } : rest);
+    }
+    case "setTableRowHeights":
+      return restyleTable(content, table, {
+        ...look,
+        rows: look.rows.map((height, row) =>
+          row >= change.at && row < change.at + change.count ? change.height : height),
+      });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1426,6 +1461,33 @@ export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): G
   let position = targetOf(content, change);
   let table = tab.sourceMap.tables[position];
   let tableStartLocation = { index: table.docStart, tabId };
+  if (change.type === "setTableColumnWidths" || change.type === "setTableRowHeights") {
+    lookTarget(content, position, change);
+    let indices = Array.from({ length: change.count }, (_, index) => change.at + index);
+    addRequest(requests, change.type === "setTableColumnWidths"
+      ? {
+        updateTableColumnProperties: {
+          tableStartLocation, columnIndices: indices,
+          ...(change.width === null
+            ? { tableColumnProperties: { widthType: "EVENLY_DISTRIBUTED" }, fields: "widthType" }
+            : {
+              tableColumnProperties: {
+                widthType: "FIXED_WIDTH", width: { magnitude: change.width, unit: "PT" },
+              },
+              fields: "widthType,width",
+            }),
+        },
+      }
+      : {
+        // Only the height: a pinned header row stays pinned, as probe R6 saw.
+        updateTableRowStyle: {
+          tableStartLocation, rowIndices: indices,
+          tableRowStyle: { minRowHeight: { magnitude: change.height, unit: "PT" } },
+          fields: "minRowHeight",
+        },
+      });
+    return requests;
+  }
   if (isLookChange(change)) {
     lookTarget(content, position, change);
     for (let step of cellStyleSteps(change, change.style)) {

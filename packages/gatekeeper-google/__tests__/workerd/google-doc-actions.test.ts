@@ -66,6 +66,7 @@ function requestTabId(
   if ("updateTableColumnProperties" in request) {
     return request.updateTableColumnProperties.tableStartLocation.tabId;
   }
+  if ("updateTableRowStyle" in request) return request.updateTableRowStyle.tableStartLocation.tabId;
   if ("updateTableCellStyle" in request) {
     return request.updateTableCellStyle.tableRange.tableCellLocation.tableStartLocation.tabId;
   }

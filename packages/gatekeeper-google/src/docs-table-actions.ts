@@ -18,7 +18,8 @@ import type { HiddenContent, LookChange, TableChange, TextReplacement } from "./
 import { EDGES, points, SIDES } from "./docs-table-look";
 import type { CellStyleChange } from "./docs-table-look";
 import type {
-  DocTableBorder, DocTableCells, DocTableCellStyle, DocTableDeletion, DocTableInsertion, NewDocTable,
+  DocTableBorder, DocTableCells, DocTableCellStyle, DocTableColumnWidths, DocTableDeletion,
+  DocTableInsertion, DocTableRowHeights, NewDocTable,
 } from "./docs-types";
 import {
   applyMarkdownEdit, canonicalizeMarkdownReplacement, computeReplaceOperations, lineStart,
@@ -39,7 +40,9 @@ export type TableCall =
   | { method: "insertTableRows" | "insertTableColumns"; lines: DocTableInsertion }
   | { method: "deleteTableRows" | "deleteTableColumns"; lines: DocTableDeletion }
   | { method: "deleteTable"; table: number }
-  | { method: "setTableCellStyle"; cells: DocTableCells & { style: DocTableCellStyle } };
+  | { method: "setTableCellStyle"; cells: DocTableCells & { style: DocTableCellStyle } }
+  | { method: "setTableColumnWidths"; columns: DocTableColumnWidths }
+  | { method: "setTableRowHeights"; rows: DocTableRowHeights };
 
 /** What a table call becomes once checked against the tab. */
 export type PreparedTableChange = {
@@ -158,6 +161,10 @@ const STYLE_FIELDS: Record<keyof DocTableCellStyle, true> =
 const PADDING_FIELDS: Record<keyof NonNullable<DocTableCellStyle["padding"]>, true> =
   { top: true, right: true, bottom: true, left: true };
 const BORDER_FIELDS: Record<keyof DocTableBorder, true> = { width: true, dash: true, color: true };
+const WIDTHS_FIELDS: Record<keyof DocTableColumnWidths, true> =
+  { table: true, at: true, count: true, width: true };
+const HEIGHTS_FIELDS: Record<keyof DocTableRowHeights, true> =
+  { table: true, at: true, count: true, height: true };
 const BORDERS_FIELDS: Record<keyof NonNullable<DocTableCellStyle["borders"]>, true> = {
   top: true, bottom: true, left: true, right: true, innerHorizontal: true, innerVertical: true,
 };
@@ -327,6 +334,20 @@ export function checkTableCall(call: TableCall): void {
       checkWholeNumber(op, "rows", rows, 1);
       checkWholeNumber(op, "columns", columns, 1);
       styleChange(op, style, rows, columns);
+      return;
+    }
+    case "setTableColumnWidths":
+    case "setTableRowHeights": {
+      let lines = call.method === "setTableColumnWidths" ? call.columns : call.rows;
+      checkFields(op, lines, call.method === "setTableColumnWidths" ? WIDTHS_FIELDS : HEIGHTS_FIELDS);
+      checkWholeNumber(op, "table", lines.table, 0);
+      if (lines.at !== undefined) checkWholeNumber(op, "at", lines.at, 0);
+      if (lines.count !== undefined) checkWholeNumber(op, "count", lines.count, 1);
+      if (call.method === "setTableColumnWidths") {
+        if (call.columns.width !== null) lengthOf(op, "width", call.columns.width, 5, 1000);
+      } else {
+        lengthOf(op, "height", call.rows.height, 0, 1000);
+      }
     }
   }
 }
@@ -608,6 +629,20 @@ function existingTableCard(
       title: "Restyle table cells in Google Doc", description: located(description, firstRow),
     };
   }
+  if (change.type === "setTableColumnWidths" || change.type === "setTableRowHeights") {
+    let ofColumns = change.type === "setTableColumnWidths";
+    let what = lineNames(change.at, change.count, ofColumns ? "column" : "row");
+    let value = change.type === "setTableColumnWidths"
+      ? change.width === null ? "share the width the fixed columns leave of the page"
+        : `${change.width}pt wide`
+      : change.height === 0 ? "as tall as their text" : `at least ${change.height}pt tall`;
+    let description = describe(
+      `Make ${what} of a table of tab ${label} ${value}.`);
+    return {
+      title: ofColumns ? "Set table column widths in Google Doc" : "Set table row heights in Google Doc",
+      description: located(description, firstRow),
+    };
+  }
   let { at } = change;
   switch (change.type) {
     case "insertTableRows": {
@@ -694,6 +729,36 @@ function lookChange(
   return change;
 }
 
+/** A length as a look stores it: at most three decimals. */
+function canonical(value: number): number {
+  return Number(value.toFixed(3));
+}
+
+/** The change that sets the widths of columns, or the heights of rows, a call names. */
+function lineLookChange(
+  content: EditableMarkdown,
+  call: Extract<TableCall, { method: "setTableColumnWidths" | "setTableRowHeights" }>,
+  tab: DocTabSnapshot,
+): LookChange {
+  let op = call.method;
+  let lines = call.method === "setTableColumnWidths" ? call.columns : call.rows;
+  let target = tableAt(content, lines.table, op, tab.tabId);
+  let size = tableSize(content.markdown, target, op);
+  let limit = call.method === "setTableColumnWidths" ? size.columns : size.rows;
+  let at = lines.at ?? 0;
+  let count = lines.count ?? (lines.at === undefined ? Math.max(limit - at, 1) : 1);
+  let expected = tableIdentity(htmlOf(content, target));
+  let change: LookChange = call.method === "setTableColumnWidths"
+    ? {
+      type: op as "setTableColumnWidths", at, count, expected,
+      width: call.columns.width === null ? null : canonical(call.columns.width),
+    }
+    : { type: op as "setTableRowHeights", at, count, height: canonical(call.rows.height), expected };
+  checkLookTarget(content, lines.table, change);
+  checkReadsAlone(content, lines.table, op);
+  return change;
+}
+
 /** The change a call to change an existing table becomes, checked in the order a caller meets. */
 function existingTableChange(
   content: EditableMarkdown, call: ExistingTableCall, tab: DocTabSnapshot,
@@ -701,6 +766,9 @@ function existingTableChange(
   switch (call.method) {
     case "setTableCellStyle":
       return lookChange(content, call, tab);
+    case "setTableColumnWidths":
+    case "setTableRowHeights":
+      return lineLookChange(content, call, tab);
     case "insertTableRows":
     case "insertTableColumns":
       return insertionChange(content, call, tab);
@@ -743,7 +811,9 @@ export function prepareTableChange(
   applyTableChange(content, change, tab);
   checkStoredSize(change);
   let table = call.method === "deleteTable" ? call.table
-    : call.method === "setTableCellStyle" ? call.cells.table : call.lines.table;
+    : call.method === "setTableCellStyle" ? call.cells.table
+    : call.method === "setTableColumnWidths" ? call.columns.table
+    : call.method === "setTableRowHeights" ? call.rows.table : call.lines.table;
   let { title, description } = existingTableCard(content, table, change, label);
   return {
     change, title: sanitizeTitle(title), description, actionKind: DOCUMENT_TABLES,

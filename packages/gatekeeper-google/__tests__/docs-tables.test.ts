@@ -131,7 +131,10 @@ const newTable = (cells: string[][], after?: string): TableChange => ({
 function shapeOf(change: TableChange): TableChangeShape {
   switch (change.type) {
     case "insertTable": throw new Error("insertTable names no table");
-    case "setTableCellStyle": throw new Error(`${change.type} changes no rows or columns`);
+    case "setTableCellStyle":
+    case "setTableColumnWidths":
+    case "setTableRowHeights":
+      throw new Error(`${change.type} adds or deletes no rows or columns`);
     case "deleteTable": return { type: change.type };
     case "insertTableRows": return { type: change.type, at: change.at, count: change.cells.length };
     case "insertTableColumns":
@@ -4632,5 +4635,41 @@ describe("setting the look of a table's cells", () => {
     expect(() => gate.admit(TAB, { type: "insertTableRows" })).not.toThrow();
     gate.failed(TAB, { type: "insertTableRows" });
     expect(() => gate.admit(TAB, { type: "setTableCellStyle" })).toThrow();
+  });
+});
+
+describe("setting a table's column widths and row heights", () => {
+  const sized = (): GoogleDocsTab => buildTab([para("Before"), {
+    ...grid(["a", "b", "c"], ["d", "e", "f"]), headerRows: 1, columns: [null, 80, null], heights: [0, 24],
+  }, para("After")]);
+  const widths = (content: EditableMarkdown, at: number, count: number, width: number | null): TableChange =>
+    ({ type: "setTableColumnWidths", at, count, width, ...refOf(content, 0) });
+  const heights = (content: EditableMarkdown, at: number, count: number, height: number): TableChange =>
+    ({ type: "setTableRowHeights", at, count, height, ...refOf(content, 0) });
+
+  it("sets columns fixed or sharing the rest, leaving the others, as Google does", () => {
+    let tab = sized();
+    let fixed = expectSameAsGoogle(tab, widths(read(tab), 0, 1, 93.333));
+    expect(tableAt(read(fixed), 0)).toContain('<colgroup><col style="width:93.333pt"><col style="width:80pt"><col></colgroup>');
+    let even = expectSameAsGoogle(fixed, widths(read(fixed), 0, 2, null));
+    expect(tableAt(read(even), 0)).not.toContain("<colgroup>");
+  });
+
+  it("sets rows' least heights, and keeps a pinned header row pinned", () => {
+    let tab = sized();
+    let applied = expectSameAsGoogle(tab, heights(read(tab), 0, 2, 30));
+    expect(tableAt(read(applied), 0).split('<tr style="height:30pt">').length - 1).toBe(2);
+    expect(pinnedHeaderRows(applied, docTabToMarkdown(applied).sourceMap.tables[0].docStart)).toBe(1);
+    let fitted = expectSameAsGoogle(applied, heights(read(applied), 1, 1, 0));
+    expect(tableAt(read(fitted), 0)).toContain('<tr style="height:30pt">\n    <td><p>a</p></td>');
+    expect(tableAt(read(fitted), 0)).toContain("  <tr>\n    <td><p>d</p></td>");
+  });
+
+  it("refuses columns or rows past the table", () => {
+    let tab = sized();
+    expect(refusal(tab, widths(read(tab), 2, 2, 50)))
+      .toBe("setTableColumnWidths: at and count must name columns of the table, which has 3.");
+    expect(refusal(tab, heights(read(tab), 2, 1, 50)))
+      .toBe("setTableRowHeights: at and count must name rows of the table, which has 2.");
   });
 });

@@ -396,6 +396,14 @@ export type GoogleDocsRequest =
     };
   }
   | {
+    updateTableRowStyle: {
+      tableStartLocation: DocsLocation;
+      rowIndices: number[];
+      tableRowStyle: { minRowHeight: { magnitude: number; unit: "PT" } };
+      fields: string;
+    };
+  }
+  | {
     updateTableColumnProperties: {
       tableStartLocation: DocsLocation;
       columnIndices: number[];

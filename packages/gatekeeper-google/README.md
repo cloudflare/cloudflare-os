@@ -373,11 +373,11 @@ reads it. An Office file already bound as a Doc answers each approved edit with 
 ## Google Docs edits
 
 A `.docx` or other Office document cannot be bound; connecting one makes a native copy (see
-[Office files](#office-files)). A directly bound Doc accepts nine changes, each call queued for
+[Office files](#office-files)). A directly bound Doc accepts eleven changes, each call queued for
 approval as one change: `replaceText()` and `appendText()` edit one tab's Markdown,
 `insertTable()`, `insertTableRows()`, `insertTableColumns()`, `deleteTableRows()`,
-`deleteTableColumns()` and `deleteTable()` change a tab's tables, and `setTableCellStyle()` changes
-a table's look. Changes apply in the order they
+`deleteTableColumns()` and `deleteTable()` change a tab's tables, and `setTableCellStyle()`,
+`setTableColumnWidths()` and `setTableRowHeights()` change a table's look. Changes apply in the order they
 were queued. Calls on one document take effect in the order they are made, whether or not the
 caller awaits each before the next: a write waits for the writes before it, and so does a read that
 shows queued changes (`getContent()`, `getMetadata()`). A Doc opened from a Drive binding has none
@@ -430,8 +430,12 @@ the bottoms of all rows but its last. Google keeps an edge on both cells that sh
 set on the block's outside changes the cell beside it too, and a later write wins. A request
 reaches the whole of every merged cell it reaches any part of and draws a border along the merged
 cell's outside, so the block has to hold every merged cell it takes in whole, and one that holds a
-merged cell cannot set the edges between its rows or columns. A change to a table's look leaves the
-table's identity as it was, so a change queued behind it does not fail when it does.
+merged cell cannot set the edges between its rows or columns. `setTableColumnWidths()` makes
+columns a fixed width, from Google's least of 5pt to 1,000pt, or has them share what the fixed ones
+leave of the page; the other columns keep theirs. `setTableRowHeights()` sets rows' least heights,
+from 0 to 1,000pt, sending only the height so a pinned header row stays pinned. A change to a
+table's look leaves the table's identity as it was, so a change queued behind it does not fail
+when it does.
 
 A replacement that only adds paragraphs directly above or below a table (`<table>` replaced by
 `## Results`, a blank line and `<table>`) changes no table: it is applied as the same text added to

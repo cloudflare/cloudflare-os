@@ -496,6 +496,7 @@ function applyRequest(tab: GoogleDocsTab, request: GoogleDocsRequest, options: M
   if ("updateTableCellStyle" in request) {
     return updateTableCellStyle(tab, request.updateTableCellStyle);
   }
+  if ("updateTableRowStyle" in request) return updateTableRowStyle(tab, request.updateTableRowStyle);
   notModelled(`the request ${Object.keys(request).join(", ")}`);
 }
 
@@ -1220,5 +1221,32 @@ function updateTableCellStyle(
         }
       }
     }
+  }
+}
+
+/**
+ * Set the least height of rows, as probe R6 saw: a pinned row stays pinned, 0 is stored as a
+ * height without a magnitude, and a negative one is refused.
+ */
+function updateTableRowStyle(
+  tab: GoogleDocsTab,
+  { tableStartLocation, rowIndices, tableRowStyle, fields }: Extract<
+    GoogleDocsRequest, { updateTableRowStyle: unknown }
+  >["updateTableRowStyle"],
+): void {
+  requireTab(tab, tableStartLocation);
+  let place = tableAt(tab.body.content, tableStartLocation.index);
+  if (!place) throw new Error(INVALID_TABLE_START);
+  if (fields !== "minRowHeight") notModelled(`fields ${fields}`);
+  let { magnitude } = tableRowStyle.minRowHeight;
+  if (magnitude < 0) throw new Error("The minimum row height cannot be negative.");
+  let rows = place.table.tableRows ?? [];
+  for (let index of rowIndices.length === 0 ? rows.keys() : rowIndices) {
+    let row = rows[index];
+    if (!row) notModelled(`a row index ${index} past the table`);
+    row.tableRowStyle = {
+      ...row.tableRowStyle,
+      minRowHeight: magnitude === 0 ? { unit: "PT" } : { magnitude, unit: "PT" },
+    };
   }
 }

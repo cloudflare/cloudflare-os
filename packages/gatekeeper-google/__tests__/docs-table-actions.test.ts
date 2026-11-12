@@ -11,7 +11,7 @@ import {
 } from "../src/docs-tables";
 import type { TableChange } from "../src/docs-tables";
 import type {
-  DocTableCellStyle, DocTableCells, DocTableDeletion, DocTableInsertion, NewDocTable,
+  DocTableCellStyle, DocTableCells, DocTableColumnWidths, DocTableDeletion, DocTableInsertion, DocTableRowHeights, NewDocTable,
 } from "../src/docs-types";
 import { computeReplaceOperations, docTabToMarkdown } from "../src/markdown-converter";
 import type { DocTabSnapshot, EditableMarkdown } from "../src/markdown-converter";
@@ -1567,5 +1567,41 @@ describe("setTableCellStyle", () => {
       "A border on the block's outer edge also changes the facing edge of the cells beside it. " +
       "It was table 1 of the tab when this change was requested.");
     expect(description.fields?.[0]).toEqual(json("Style", { borders: { bottom: "2pt solid #000000" } }));
+  });
+});
+
+describe("setTableColumnWidths and setTableRowHeights", () => {
+  const widths = (columns: DocTableColumnWidths) => ({ method: "setTableColumnWidths" as const, columns });
+  const heights = (rows: DocTableRowHeights) => ({ method: "setTableRowHeights" as const, rows });
+
+  it("sets every line when at is left out, and one when it is given", () => {
+    let from = read(STATUS());
+    expect(stored(from, widths({ table: 0, width: 120.00004 }))).toMatchObject({ at: 0, count: 2, width: 120 });
+    expect(stored(from, widths({ table: 0, at: 1, width: null }))).toMatchObject({ at: 1, count: 1, width: null });
+    expect(stored(from, heights({ table: 0, at: 1, count: 2, height: 0 }))).toMatchObject({ at: 1, count: 2, height: 0 });
+    expect(prepare(from, heights({ table: 0, height: 30 }))).toMatchObject({
+      actionKind: DOCUMENT_TABLES, autoApprovable: true, title: "Set table row heights in Google Doc",
+    });
+  });
+
+  it("refuses sizes Google refuses or the gatekeeper bounds", () => {
+    expect(argumentRefusal(widths({ table: 0, width: 4.9 })))
+      .toBe("setTableColumnWidths: width must be a number of points from 5 to 1000.");
+    expect(argumentRefusal(heights({ table: 0, height: -1 })))
+      .toBe("setTableRowHeights: height must be a number of points from 0 to 1000.");
+    expect(argumentRefusal(heights({ table: 0, rows: 2, height: 1 } as never)))
+      .toBe("setTableRowHeights: unknown field \"rows\". The fields are table, at, count and height.");
+  });
+
+  it("describes what it sets", () => {
+    let from = read(STATUS());
+    let { title, description } = prepare(from, widths({ table: 0, at: 0, width: 120 }));
+    expect(title).toBe("Set table column widths in Google Doc");
+    expect(description.description).toBe(
+      "Make column 1 of a table of tab \"Main\" (tab-1) 120pt wide. It was table 1 of the tab " +
+      "when this change was requested.");
+    expect(prepare(from, heights({ table: 0, at: 1, count: 2, height: 0 })).description.description).toBe(
+      "Make rows 2 to 3 of a table of tab \"Main\" (tab-1) as tall as their text. It was table 1 " +
+      "of the tab when this change was requested.");
   });
 });
