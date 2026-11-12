@@ -17,6 +17,7 @@ function Workspace() {
       onOpenChat={({ id, title }) =>
         navigate({ to: '/workspace/$workspaceId/$chatId', params: { workspaceId, chatId: id }, state: { chatTitle: title } })
       }
+      onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId } })}
     />
   )
 }

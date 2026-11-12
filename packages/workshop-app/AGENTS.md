@@ -122,6 +122,10 @@ That is how the workspace's crumb (`WorkspaceCrumb`) stays between a workspace a
 growing its title out of the icon or drawing it back in, while going to another workspace swaps
 it. Render a pane's header in the commit that mounts the pane, or what it follows is gone by then.
 
+A workspace's page has a New chat button at the end of its header. It opens an empty chat in
+the workspace (`/workspace/<id>/new`, `NewChatPane`, which the home page shares) that is
+created by its first message; the chat then takes the empty one's place in the history.
+
 ## Beside the page
 
 Files and outputs open in a second card beside the page (`SplitLayout`, which `AppShell` lays the
