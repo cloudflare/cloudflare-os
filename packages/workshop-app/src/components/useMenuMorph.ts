@@ -67,6 +67,23 @@ const springEasing = (overshoot: number) => {
   return `linear(${samples.join(', ')})`
 }
 
+type Box = Pick<DOMRect, 'top' | 'right' | 'bottom' | 'left' | 'width' | 'height'>
+
+/**
+ * Where a menu that keeps its trigger showing morphs out of and back into instead: a point in the
+ * gap between the two, midway across it and in line with the trigger's middle as far as the popup
+ * reaches, so the surface starts right by the trigger but never passes over it.
+ */
+const pointNearest = (trigger: DOMRect, menu: DOMRect): Box => {
+  const place = (triggerStart: number, triggerEnd: number, menuStart: number, menuEnd: number) =>
+    triggerEnd <= menuStart ? (triggerEnd + menuStart) / 2
+      : triggerStart >= menuEnd ? (triggerStart + menuEnd) / 2
+        : Math.min(Math.max((triggerStart + triggerEnd) / 2, menuStart), menuEnd)
+  const left = place(trigger.left, trigger.right, menu.left, menu.right)
+  const top = place(trigger.top, trigger.bottom, menu.top, menu.bottom)
+  return { top, right: left, bottom: top, left, width: 0, height: 0 }
+}
+
 /**
  * Measures the trigger in the popup's coordinates, including collision flips and shifts, so the
  * popup surface can morph out of the trigger's exact box and corner radius.
@@ -76,10 +93,13 @@ export const useMenuMorph = () => {
   const popupRef = useCallback((popup: HTMLDivElement | null) => {
     const trigger = triggerRef.current
     if (!popup || !trigger) return
+    const keepTrigger = popup.hasAttribute('data-keep-trigger')
 
     const update = () => {
-      const button = trigger.getBoundingClientRect()
       const menu = popup.getBoundingClientRect()
+      const triggerBox = trigger.getBoundingClientRect()
+      // What the surface morphs out of: the trigger, or a point beside it when it stays showing.
+      const button = keepTrigger ? pointNearest(triggerBox, menu) : triggerBox
       const insets = {
         top: button.top - menu.top,
         right: menu.right - button.right,
@@ -117,7 +137,8 @@ export const useMenuMorph = () => {
       const ahead = surfaceCentre(geometry, step)
       const behind = surfaceCentre(geometry, -step)
       const speed = Math.hypot(ahead.x - behind.x, ahead.y - behind.y) / (2 * step)
-      if (speed > 1) popup.style.setProperty('--menu-close-easing', springEasing(RECOIL / speed))
+      // Closing to a point, a menu that keeps its trigger has nothing to recoil past.
+      if (speed > 1 && !keepTrigger) popup.style.setProperty('--menu-close-easing', springEasing(RECOIL / speed))
       // Size eases toward this much progress past the trigger, so the most it shrinks along either
       // axis is SQUASH pixels, whatever the menu's size. In place, the leading axis shrinks at twice
       // the rate (its p(2 - p) has a slope of 2 there).
@@ -128,7 +149,7 @@ export const useMenuMorph = () => {
     update()
     // Keep the real button hidden through the exit animation, until Kumo unmounts
     // the popup. Swapping opaque surfaces at identical bounds avoids a crossfade.
-    trigger.setAttribute('data-menu-morphing', '')
+    if (!keepTrigger) trigger.setAttribute('data-menu-morphing', '')
     const resize = new ResizeObserver(update)
     resize.observe(popup)
     resize.observe(trigger)
