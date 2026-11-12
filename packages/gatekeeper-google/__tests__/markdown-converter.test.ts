@@ -799,6 +799,7 @@ describe("Google Docs tables", () => {
       { runs: ["Plain\n"] },
       { table: [[{ paragraphs: [{ runs: ["Cell\n"] }] }]] },
       { runs: ["Red and centered\n"] },
+      { runs: ["plain ", { text: "code", style: { weightedFontFamily: { fontFamily: "Consolas" }, backgroundColor: { color: { rgbColor: { red: 1, green: 1 } } } } }, " plain\n"] },
     ]);
     let blue = { color: { rgbColor: { blue: 1 } } };
     tab.namedStyles = { styles: [
@@ -819,10 +820,21 @@ describe("Google Docs tables", () => {
     paragraphs[2].paragraphStyle.alignment = "CENTER";
     paragraphs[2].elements[0].textRun!.textStyle = { foregroundColor: { color: { rgbColor: { red: 1 } } } };
 
+    let cell = tab.body.content.find(element => element.table)!.table!.tableRows![0].tableCells![0];
+    cell.tableCellStyle = {
+      backgroundColor: { color: { rgbColor: { green: 1 } } },
+      contentAlignment: "MIDDLE",
+      borderTop: { width: { unit: "PT" }, color: {} },
+      borderLeft: { width: { magnitude: 1, unit: "PT" }, color: { color: { rgbColor: {} } } },
+    };
+    cell.content![0].paragraph!.paragraphStyle.alignment = "CENTER";
+
     let { markdown, styles } = docTabToMarkdown(tab);
 
     let lines = markdown.split("\n");
-    expect(styles.paragraphs.map(({ line }) => lines[line])).toEqual(["# Report", "Plain", "Red and centered"]);
+    expect(lines[styles.tables[0].line]).toBe("<table>");
+    expect(styles.paragraphs.map(({ line }) => lines[line]))
+      .toEqual(["# Report", "Plain", "Red and centered", "plain code plain"]);
     expect(styles).toEqual({
       page: { width: 612, marginTop: 72, marginRight: 0, marginLeft: 54 },
       named: {
@@ -836,7 +848,19 @@ describe("Google Docs tables", () => {
         { line: expect.any(Number), style: "TITLE" },
         { line: expect.any(Number), style: "NORMAL_TEXT" },
         { line: expect.any(Number), style: "NORMAL_TEXT", look: { color: "#ff0000", alignment: "center" } },
+        // A stretch drawn differently from the rest of its line, by where it is in the line.
+        { line: expect.any(Number), style: "NORMAL_TEXT", runs: [{ start: 6, end: 10, look: 0 }] },
       ],
+      runLooks: [{ fontFamily: "Consolas", highlight: "#ffff00" }],
+      // The usual 1pt black edge is left out; an edge with no width is said.
+      tables: [{
+        line: expect.any(Number),
+        rows: [[{
+          background: "#00ff00", verticalAlign: "middle",
+          borders: { top: { width: 0, color: "#000000" } },
+          look: { alignment: "center" },
+        }]],
+      }],
     });
   });
 

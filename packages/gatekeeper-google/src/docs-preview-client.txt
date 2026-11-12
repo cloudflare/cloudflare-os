@@ -158,7 +158,7 @@ function parseBlocks(markdown) {
         if (lines[i].trim() === '<table>') depth++;
         if (lines[i].trim() === '</table>' && --depth === 0) break;
       }
-      blocks.push({ type: 'table', level: 0, text: lines.slice(start, i + 1).join('\n') });
+      blocks.push({ type: 'table', level: 0, text: lines.slice(start, i + 1).join('\n'), table: start });
     } else if (STRUCTURES.has(line)) {
       blocks.push({ type: 'structure', level: 0, text: line.slice(1, -1) });
     } else {
@@ -171,6 +171,7 @@ function parseBlocks(markdown) {
         heading: heading?.[1].length,
         text: heading ? heading[2] : content,
         line: i,
+        offset: line.length - (heading ? heading[2] : content).length,
       };
       if (!list) counters.length = 0;
       else counters.length = block.level + 1;
@@ -210,9 +211,11 @@ function closingParen(text, open) {
 // things that are not text.
 function scanInline(text) {
   const pieces = [];
-  const literal = value => {
-    if (pieces.at(-1)?.literal) pieces.at(-1).text += value;
-    else pieces.push({ literal: true, text: value });
+  // A literal piece is a stretch of `text` as written, starting at `at`.
+  const literal = (value, at) => {
+    const last = pieces.at(-1);
+    if (last?.literal && last.at + last.text.length === at) last.text += value;
+    else pieces.push({ literal: true, text: value, at });
   };
   for (let i = 0; i < text.length;) {
     const character = text[i];
@@ -222,7 +225,7 @@ function scanInline(text) {
       pieces.push({ kind: 'chip', text: placeholder[1] });
       i = PLACEHOLDER.lastIndex;
     } else if (character === '\\' && PUNCTUATION.test(text[i + 1] ?? '')) {
-      literal(text[i + 1]);
+      literal(text[i + 1], i + 1);
       i += 2;
     } else if (character === '\u000b') {
       pieces.push({ kind: 'br' });
@@ -234,11 +237,11 @@ function scanInline(text) {
       const close = findUnescaped(text, ']', i + 1);
       const end = close >= 0 && text[close + 1] === '(' ? closingParen(text, close + 1) : -1;
       if (end < 0 || close === i + 1) {
-        literal(character);
+        literal(character, i);
         i++;
       } else {
         const href = text.slice(close + 2, end).replace(/\\([\\()])/g, '$1');
-        pieces.push({ label: text.slice(i + 1, close), href });
+        pieces.push({ label: text.slice(i + 1, close), href, at: i + 1 });
         i = end + 1;
       }
     } else if (character === '*' || text.startsWith('~~', i)) {
@@ -246,12 +249,12 @@ function scanInline(text) {
       while (text[end] === character) end++;
       const size = end - i;
       const raw = text.slice(i, end);
-      if (character === '*') pieces.push({ size, raw });
-      else if (size === 2 || size === 4) for (let n = 0; n < size; n += 2) pieces.push({ strike: true, raw: '~~' });
-      else literal(raw);
+      if (character === '*') pieces.push({ size, raw, at: i });
+      else if (size === 2 || size === 4) for (let n = 0; n < size; n += 2) pieces.push({ strike: true, raw: '~~', at: i + n });
+      else literal(raw, i);
       i = end;
     } else {
-      literal(character);
+      literal(character, i);
       i++;
     }
   }
@@ -265,8 +268,9 @@ const toggle = (state, { strike, size }) => strike ? state ^ STRIKE
   : size === 4 && state & ITALIC ? state ^ BOLD
   : undefined;
 
-// The line as runs of `{ text, style, href }`, plus `{ kind }` for what is not text.
-function inlineRuns(text, href, base = 0, runs = []) {
+// The line as runs of `{ text, style, href, at }`, plus `{ kind }` for what is not text. `at` is
+// where the run's text starts in the line.
+function inlineRuns(text, href, base = 0, runs = [], from = 0) {
   const pieces = scanInline(text);
   const markers = pieces.filter(piece => piece.raw);
   // Bit `state` of closable[n] is set when markers n onward can bring `state` back to plain.
@@ -285,11 +289,11 @@ function inlineRuns(text, href, base = 0, runs = []) {
     if (piece.raw) {
       const next = toggle(state, piece);
       if (next !== undefined && closable[++n] & (1 << next)) state = next;
-      else runs.push({ text: piece.raw, style: base | state, href });
+      else runs.push({ text: piece.raw, style: base | state, href, at: from + piece.at });
     } else if (piece.label !== undefined) {
-      inlineRuns(piece.label, piece.href, base | state, runs);
+      inlineRuns(piece.label, piece.href, base | state, runs, from + piece.at);
     } else {
-      runs.push({ kind: piece.kind, text: piece.text, style: base | state, href });
+      runs.push({ kind: piece.kind, text: piece.text, style: base | state, href, at: from + piece.at });
     }
   }
   return runs;
@@ -297,13 +301,13 @@ function inlineRuns(text, href, base = 0, runs = []) {
 
 // The line a word at a time, which is what a change inside it is told apart by.
 const wordsOf = text => inlineRuns(text).flatMap(run =>
-  run.kind ? [run] : run.text.match(/\s+|\S+/g).map(word => ({ ...run, text: word })));
+  run.kind ? [run] : [...run.text.matchAll(/\s+|\S+/g)].map(word => ({ ...run, text: word[0], at: run.at + word.index })));
 const wordKey = ({ kind, text, style, href }) => `${kind ?? ''}\u0000${style}\u0000${href ?? ''}\u0000${text}`;
 
 function renderInline(words, parent) {
   let into;
   let look;
-  for (const { kind, text, style, href, mark } of words) {
+  for (const { kind, text, style, href, mark, look: paint } of words) {
     if (kind === 'br' || kind === 'hr') {
       parent.append(make(kind));
       look = undefined;
@@ -317,10 +321,11 @@ function renderInline(words, parent) {
     }
     const classes = [kind === 'chip' && 'chip', text === 'Image' && kind && 'slot', style & BOLD && 'b', style & ITALIC && 'i',
       style & STRIKE && 's', href && 'link'].filter(Boolean).join(' ');
-    const next = `${mark ?? ''}\u0000${href ?? ''}\u0000${classes}`;
+    const next = `${mark ?? ''}\u0000${href ?? ''}\u0000${classes}\u0000${paint ?? ''}`;
     if (next !== look || kind) {
       const tag = mark === 'added' ? 'ins' : mark === 'removed' ? 'del' : 'span';
-      into = classes || mark ? parent.appendChild(make(tag, classes)) : parent;
+      into = classes || mark || paint !== undefined ? parent.appendChild(make(tag, classes)) : parent;
+      if (paint !== undefined) paintRun(into, paint, mark);
       if (href) into.title = href;
       look = kind ? undefined : next;
     }
@@ -337,8 +342,9 @@ const TABLE_ATTRIBUTES = new Set(['colspan', 'rowspan', 'start', 'type']);
 const LIST_STYLE = /^list-style-type: [a-z-]+;?$/;
 
 // Rebuild a table from an inert parse, keeping only known tags and attributes. A link becomes
-// the same unfollowed span the Markdown path draws.
-function copyTableNode(node, into) {
+// the same unfollowed span the Markdown path draws. `look` is how getStyles() says the outermost
+// table is drawn, when it says.
+function copyTableNode(node, into, look, depth = 0) {
   if (node.nodeType === Node.TEXT_NODE) {
     for (const [n, text] of node.data.split('[Image]').entries()) {
       if (n) into.append(make('span', 'chip slot', 'Image'));
@@ -353,19 +359,24 @@ function copyTableNode(node, into) {
     copy.title = node.getAttribute('href') ?? '';
   } else if (TABLE_TAGS.has(node.tagName)) {
     copy = into.appendChild(make(node.tagName));
+    if (node.tagName === 'TABLE') depth++;
+    if (look && depth === 1) paintTable(node, copy, look);
     for (const { name, value } of node.attributes) {
       if (TABLE_ATTRIBUTES.has(name)) copy.setAttribute(name, value);
       if (name === 'style' && LIST_STYLE.test(value)) copy.style.listStyleType = value.slice(17).replace(';', '');
     }
   }
-  for (const child of node.childNodes) copyTableNode(child, copy);
+  for (const child of node.childNodes) copyTableNode(child, copy, look, depth);
 }
 
-function renderBlock(block, words = wordsOf(block.text)) {
+function renderBlock(block, words = wordsOf(block.text), look) {
   if (block.type === 'table') {
     const parsed = new DOMParser().parseFromString(block.text, 'text/html');
     const holder = make('div');
-    for (const child of parsed.body.childNodes) copyTableNode(child, holder);
+    // Styles are for the table as written: one row and one cell for each the Markdown has.
+    const rows = [...parsed.querySelectorAll('body > table > tbody > tr')];
+    const fits = look?.rows.length === rows.length && rows.every((row, n) => row.children.length === look.rows[n].length);
+    for (const child of parsed.body.childNodes) copyTableNode(child, holder, fits ? look : undefined);
     return holder;
   }
   if (block.type === 'structure') {
@@ -442,7 +453,8 @@ function wordChanges(saved, current) {
   const count = skip => rows.filter(({ item, mark }) => mark !== skip && item.text?.trim()).length;
   const kept = rows.filter(({ item, mark }) => !mark && item.text?.trim()).length;
   if (kept * 2 < Math.max(count('added'), count('removed'))) return;
-  return rows.map(({ item, mark }) => ({ ...item, mark }));
+  // A word that stays is where it was in the saved line; one that came in is nowhere in it.
+  return rows.map(({ item, mark, was }) => ({ ...item, mark, at: mark === 'added' ? undefined : (was ?? item).at }));
 }
 
 // Where blocks went and others came in their place, show each pair that is one block edited as
@@ -486,7 +498,8 @@ const styleOf = block => block.heading ? `HEADING_${block.heading}` : 'NORMAL_TE
 async function readStyles(savedMarkdown, blocks) {
   let tab = looks.get(tabId);
   if (tab?.savedMarkdown === savedMarkdown) return tab;
-  const { page: sheet, named, paragraphs } = await gadget.getStyles(tabId);
+  const styles = await gadget.getStyles(tabId);
+  const { page: sheet, named, paragraphs, runLooks = [] } = styles;
   const lines = new Map(paragraphs.map(paragraph => [paragraph.line, paragraph]));
   // A paragraph whose style is not what its line reads as would put styles on the wrong blocks.
   const fits = blocks.every(block => {
@@ -494,7 +507,8 @@ async function readStyles(savedMarkdown, blocks) {
     const style = lines.get(block.line)?.style;
     return (style === 'TITLE' ? 'HEADING_1' : style?.startsWith('HEADING_') ? style : 'NORMAL_TEXT') === styleOf(block);
   });
-  tab = { savedMarkdown, sheet, named, lines: fits ? lines : new Map() };
+  tab = { savedMarkdown, sheet, named, runLooks, lines: fits ? lines : new Map(),
+    tables: new Map((styles.tables ?? []).map(table => [table.line, table])) };
   looks.set(tabId, tab);
   return tab;
 }
@@ -503,16 +517,86 @@ const SERIF = /times|georgia|garamond|merriweather|playfair|lora|cambria|baskerv
 const MONO = /mono|courier|consolas|source code|menlo/i;
 const COLOR = /^#[0-9a-f]{6}$/;
 
-// A color the document chose for a white page is kept only where it still reads on this one.
-function legible(color) {
-  if (!COLOR.test(color ?? '')) return false;
+// The document's color as ink on this page. One chosen for a white page that would not read on
+// a dark one keeps its hue and trades its lightness.
+function ink(color) {
+  if (!COLOR.test(color ?? '')) return;
   const [red, green, blue] = [1, 3, 5].map(at => {
     const channel = parseInt(color.slice(at, at + 2), 16) / 255;
     return channel <= .04045 ? channel / 12.92 : ((channel + .055) / 1.055) ** 2.4;
   });
   const light = .2126 * red + .7152 * green + .0722 * blue;
-  // Contrast against this page: #1f1f1f in the dark, white otherwise.
-  return matchMedia('(prefers-color-scheme: dark)').matches ? (light + .05) / .064 >= 3.5 : 1.05 / (light + .05) >= 1.5;
+  if (!matchMedia('(prefers-color-scheme: dark)').matches) return 1.05 / (light + .05) >= 1.5 ? color : undefined;
+  // Contrast against the dark page, #1f1f1f.
+  return (light + .05) / .064 >= 3.5 ? color : `hsl(from ${color} h s clamp(70, calc(100 - l), 89))`;
+}
+
+// Draw the copy of a table, row or cell of the outermost table as the document draws it.
+function paintTable(node, copy, look) {
+  if (node.tagName === 'TABLE' && look.columns) {
+    const total = look.columns.reduce((sum, width) => sum + width, 0);
+    copy.style.tableLayout = 'fixed';
+    copy.style.width = `min(${total}pt, 100%)`;
+    const columns = copy.appendChild(make('colgroup'));
+    for (const width of look.columns) columns.appendChild(make('col')).style.width = `${width / total * 100}%`;
+  }
+  if (node.tagName !== 'TD') return;
+  const row = node.parentNode;
+  const cell = look.rows[[...row.parentNode.children].indexOf(row)]?.[[...row.children].indexOf(node)];
+  if (!cell) return;
+  const set = copy.style;
+  if (cell.verticalAlign) set.verticalAlign = cell.verticalAlign;
+  for (const [side, { width, color }] of Object.entries(cell.borders ?? {})) {
+    if (COLOR.test(color)) set.setProperty(`border-${side}`, width ? `${width}pt solid ${color}` : 'none');
+  }
+  const { fontFamily, fontSize, color, alignment } = cell.look ?? {};
+  if (fontFamily) set.fontFamily = fontStack(fontFamily);
+  if (fontSize) set.fontSize = `${fontSize}pt`;
+  if (alignment) set.textAlign = alignment;
+  if (COLOR.test(cell.background ?? '')) {
+    // A fill was chosen with its text's color, so the cell keeps both as the document has them.
+    set.background = cell.background;
+    set.color = COLOR.test(color ?? '') ? color : '#1f1f1f';
+  } else if (ink(color)) {
+    set.color = ink(color);
+  }
+}
+
+const fontStack = name => {
+  const family = name.replace(/["\\]/g, '');
+  return `"${family}", ${MONO.test(family) ? 'monospace' : SERIF.test(family) ? 'serif' : 'Arial, sans-serif'}`;
+};
+
+// The run looks of the tab being drawn.
+let runLooks = [];
+
+// Draw `element` as a run of the document's text is: its font, size, color and highlight. A
+// marked word keeps the mark's own colors.
+function paintRun(element, index, mark) {
+  const look = runLooks[index];
+  if (!look) return;
+  if (look.fontFamily) element.style.fontFamily = fontStack(look.fontFamily);
+  if (look.fontSize) element.style.fontSize = `${look.fontSize}pt`;
+  if (mark) return;
+  if (COLOR.test(look.highlight ?? '')) {
+    // A highlight was chosen for dark ink, so it brings its own.
+    element.style.background = look.highlight;
+    element.style.color = COLOR.test(look.color ?? '') ? look.color : '#1f1f1f';
+  } else if (ink(look.color)) {
+    element.style.color = ink(look.color);
+  }
+}
+
+// Give each word of a saved paragraph the look of the run it is in.
+function lookUp(words, was, styles) {
+  const runs = styles.lines.get(was?.line)?.runs;
+  if (!runs) return words;
+  return words.map(word => {
+    if (word.at === undefined || word.kind) return word;
+    const at = was.offset + word.at;
+    const run = runs.find(({ start, end }) => start <= at && at < end);
+    return run ? { ...word, look: run.look } : word;
+  });
 }
 
 // Draw `element`, which shows `block`, as the saved paragraph `was` is styled, or as its kind of
@@ -524,16 +608,17 @@ function applyLook(element, block, was, mark, styles) {
   const look = { ...styles.named[style], ...paragraph?.look };
   const text = block.type === 'p' ? element : element.lastChild;
   const set = text.style;
-  if (look.fontFamily) {
-    const family = look.fontFamily.replace(/["\\]/g, '');
-    set.fontFamily = `"${family}", ${MONO.test(family) ? 'monospace' : SERIF.test(family) ? 'serif' : 'Arial, sans-serif'}`;
-  }
+  if (look.fontFamily) set.fontFamily = fontStack(look.fontFamily);
   if (look.fontSize) set.fontSize = `${look.fontSize}pt`;
   if (look.bold !== undefined) set.fontWeight = look.bold ? 700 : 400;
   if (look.italic !== undefined) set.fontStyle = look.italic ? 'italic' : 'normal';
   // The converter writes a subtitle as italic whatever its style says.
   if (style === 'SUBTITLE') for (const run of text.querySelectorAll('.i')) run.classList.remove('i');
-  if (legible(look.color) && mark !== 'added' && mark !== 'removed') set.color = look.color;
+  if (ink(look.color) && mark !== 'added' && mark !== 'removed') set.color = ink(look.color);
+  if (COLOR.test(look.shading ?? '') && !mark) {
+    element.style.background = look.shading;
+    if (!set.color) set.color = '#1f1f1f';
+  }
   if (look.alignment) set.textAlign = look.alignment;
   if (look.lineSpacing) set.lineHeight = look.lineSpacing * 1.2;
   if (look.spaceAbove !== undefined) element.style.paddingTop = `${look.spaceAbove}pt`;
@@ -671,6 +756,7 @@ async function load() {
     // Without its styles the document is still drawn, in this page's own.
     const styles = await readStyles(savedMarkdown, saved).catch(() => undefined);
     if (current !== generation) return;
+    runLooks = styles?.runLooks ?? [];
     const rows = pairEdits(diff(saved, parseBlocks(markdown), blockKey));
     const { width, marginTop, marginRight, marginLeft } = styles?.sheet ?? {};
     if (width) {
@@ -683,7 +769,9 @@ async function load() {
     let marked = false;
     stops = [];
     page.replaceChildren(...rows.map(({ item, mark, words, was }) => {
-      const element = renderBlock(item, words);
+      const text = item.line === undefined || !styles ? words
+        : lookUp(words ?? wordsOf(item.text), was, styles);
+      const element = renderBlock(item, text, styles?.tables.get(was?.table));
       if (styles) applyLook(element, item, was, mark, styles);
       if (mark) {
         const key = `${mark}\u0000${blockKey(item)}`;

@@ -164,6 +164,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
   let writer = new MarkdownWriter();
   let blocks: BlockMapping[] = [];
   let starts: Parameters<typeof docTabStyles>[2] = [];
+  let tables: Parameters<typeof docTabStyles>[3] = [];
   let protectedRanges: MarkdownRange[] = [];
   let previousListId: string | undefined;
   let listNumbers = new Map<string, number[]>();
@@ -180,6 +181,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     if (structure !== undefined) {
       let mdStart = writer.length;
       if (writer.length > 0) writer.append("\n");
+      if (elem.table) tables.push({ mdStart: writer.length, table: elem.table });
       writer.append(`${structure}\n`);
       protectedRanges.push({ mdStart, mdEnd: writer.length });
       previousListId = undefined;
@@ -218,7 +220,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
       }
     }
     let mdStart = writer.length;
-    starts.push({ mdStart, paragraph: para });
+    starts.push({ mdStart, paragraph: para, segments });
 
     // Paragraph prefix (heading markers, list markers, etc.).
     let prefix = getParagraphPrefix(para, listItem, markdownListNumber);
@@ -258,7 +260,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
     images: tabImages(tab, elements),
-    styles: docTabStyles(tab, writer.text, starts),
+    styles: docTabStyles(tab, writer.text, starts, tables),
   };
 }
 

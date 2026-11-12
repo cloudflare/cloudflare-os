@@ -111,7 +111,14 @@ export type StructuralElement = {
 /** A table embedded in a document body or table cell. */
 export type Table = {
   tableRows?: TableRow[];
+  tableStyle?: {
+    /** One per column; a width counts only when `widthType` is `FIXED_WIDTH`. */
+    tableColumnProperties?: { width?: Dimension; widthType?: string }[];
+  };
 }
+
+/** One edge of a table cell. */
+export type TableCellBorder = { color?: Color; width?: Dimension };
 
 /** One row in a Google Docs table. */
 export type TableRow = {
@@ -128,6 +135,13 @@ export type TableCell = {
   tableCellStyle?: {
     rowSpan?: number;
     columnSpan?: number;
+    backgroundColor?: Color;
+    /** `TOP`, `MIDDLE` or `BOTTOM`. */
+    contentAlignment?: string;
+    borderTop?: TableCellBorder;
+    borderRight?: TableCellBorder;
+    borderBottom?: TableCellBorder;
+    borderLeft?: TableCellBorder;
   };
 }
 
@@ -148,6 +162,7 @@ export type ParagraphStyle = {
   alignment?: string;
   /** Percent of single spacing. */
   lineSpacing?: number;
+  shading?: { backgroundColor?: Color };
   spaceAbove?: Dimension;
   spaceBelow?: Dimension;
 }
@@ -207,9 +222,13 @@ export type TextStyle = {
   link?: GoogleDocsLink;
   fontSize?: Dimension;
   weightedFontFamily?: { fontFamily?: string; weight?: number };
-  /** Channels run from 0 to 1, and Google leaves out one that is zero. */
-  foregroundColor?: { color?: { rgbColor?: { red?: number; green?: number; blue?: number } } };
+  foregroundColor?: Color;
+  /** The highlight behind the text. */
+  backgroundColor?: Color;
 }
+
+/** A color, absent when none is set. Channels run from 0 to 1, and Google leaves out a zero. */
+export type Color = { color?: { rgbColor?: { red?: number; green?: number; blue?: number } } };
 
 type GoogleDocsResponse = Pick<
   GoogleDocsDocument, "documentId" | "title" | "revisionId"
