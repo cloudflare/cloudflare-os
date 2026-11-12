@@ -26,6 +26,8 @@ export type ComposerProps = {
   addActions?: Omit<ComposerAddActions, 'onUpload'>
   /** Expand the add menu in place over its button. */
   addMenuInPlace?: boolean
+  /** Put the cursor in the message once it is shown. */
+  autoFocus?: boolean
   ref?: Ref<ComposerHandle>
 }
 
@@ -33,7 +35,7 @@ export type ComposerProps = {
 const MAX_ROWS = 6
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, reply, addActions, addMenuInPlace, ref }: ComposerProps) => {
+export const Composer = ({ onSend, reply, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState('')
   const [expanded, setExpanded] = useState(false)
   const { attachments, addFiles, removeAttachment, clearAttachments } = useComposerAttachments()
@@ -121,6 +123,7 @@ export const Composer = ({ onSend, reply, addActions, addMenuInPlace, ref }: Com
           <div className="composer-editor absolute overflow-clip">
             <InputArea
               ref={inputRef}
+              autoFocus={autoFocus}
               autoResize
               minRows={1}
               maxRows={MAX_ROWS}

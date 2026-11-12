@@ -9,6 +9,8 @@ const EMOTIONS: MascotEmotion[] = ['idle', 'thinking', 'happy', 'sad', 'error', 
 export const MascotPreview = () => {
   const [emotion, setEmotion] = useState<MascotEmotion>('idle')
   const [shown, setShown] = useState(true)
+  const [brand, setBrand] = useState(false)
+  const color = brand ? 'brand' : 'contrast'
 
   return (
     <Section title="Mascot (each emotion at several sizes, coming and going; click the large one, or hold it while sad)">
@@ -21,13 +23,14 @@ export const MascotPreview = () => {
             tabs={EMOTIONS.map((value) => ({ value, label: value }))}
           />
           <Switch label="Shown" checked={shown} onCheckedChange={setShown} />
+          <Switch label="Brand colour" checked={brand} onCheckedChange={setBrand} />
         </div>
         {/* Room below for the rain. */}
         <div className="flex items-end gap-12 rounded-3xl px-12 pt-12 pb-20 ring-1 ring-kumo-line">
-          <Mascot emotion={emotion} shown={shown} interactive className="w-40" />
-          <Mascot emotion={emotion} shown={shown} className="w-16" />
-          <Mascot emotion={emotion} shown={shown} className="w-8" />
-          <Mascot emotion={emotion} shown={shown} className="w-5" />
+          <Mascot emotion={emotion} shown={shown} color={color} interactive className="w-40" />
+          <Mascot emotion={emotion} shown={shown} color={color} className="w-16" />
+          <Mascot emotion={emotion} shown={shown} color={color} className="w-8" />
+          <Mascot emotion={emotion} shown={shown} color={color} className="w-5" />
         </div>
       </div>
     </Section>
