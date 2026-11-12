@@ -6,8 +6,6 @@ import GadgetUI, { type GadgetUiSource } from '../../GadgetUI'
 import { useActionEntries, useActions } from '../../useActions'
 import { useResolveAction } from '../../useResolveAction'
 import type { ConnectionPreview } from './connectionPreview'
-// SPIKE: the gatekeeper would supply this code. See the file's header.
-import DOCS_PREVIEW_CLIENT from './docsPreviewClient.js?raw'
 
 // Long enough to fold a burst of queued edits into one redraw.
 const REFRESH_DEBOUNCE_MS = 300
@@ -30,7 +28,7 @@ export const ConnectionPreviewPane = ({ overseer, preview, restricted }: Connect
   useEffect(() => {
     const client = overseer.getGatekeeperById(gatekeeperId)
     setSource({
-      getUiBundle: async () => ({ jsCode: DOCS_PREVIEW_CLIENT }),
+      getUiBundle: () => client.getPreviewUi(),
       connectToGadget: () => client.openSession(),
     })
     return () => {

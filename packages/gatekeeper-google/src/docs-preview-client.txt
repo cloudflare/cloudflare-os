@@ -1,8 +1,5 @@
-/* global gadget */
-// SPIKE: a hand-written gadget-format client for a Google Doc connection. It runs in the gadget
-// UI frame, where `gadget` is the connection's own session (GoogleDocSession) rather than a
-// gadget server. A real preview would ship with the gatekeeper; this one lives in the Workshop
-// only to prove the frame and the stub work together.
+// The Google Doc preview (GoogleDocGatekeeperImpl.getPreviewUi()): gadget-format client code that
+// runs in the gadget UI frame, where `gadget` is a GoogleDocSession rather than a gadget server.
 //
 // Everything the document says is set as text or built node by node. Nothing from it is parsed
 // as HTML into this document, and links are shown but not followed.

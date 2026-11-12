@@ -12,6 +12,7 @@ import { Toasty } from '@cloudflare/kumo'
 import { RpcStub, RpcTarget } from 'capnweb'
 import type { ActionLogEntry, ActionsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 import { ConnectionPreviewPane } from './ConnectionPreviewPane'
+import DOCS_PREVIEW_CLIENT from '../../../../gatekeeper-google/src/docs-preview-client.txt?raw'
 import '../../styles.css'
 
 const DOC_ID = 7
@@ -82,6 +83,10 @@ class DocConnection extends RpcTarget {
 
   openSession() {
     return new DocSession(this.doc)
+  }
+
+  getPreviewUi() {
+    return { jsCode: DOCS_PREVIEW_CLIENT }
   }
 }
 

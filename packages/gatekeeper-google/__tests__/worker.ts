@@ -295,6 +295,10 @@ export class TestHooks extends DurableObject<Env> {
     return this.#gatekeeper(facetName).describe();
   }
 
+  async previewUi(facetName: string): Promise<string> {
+    return (await this.#gatekeeper(facetName).getPreviewUi()).jsCode;
+  }
+
   async #withReadSession<Session, T>(
     facetName: string, body: (session: Session) => Promise<T>,
   ): Promise<T | { error: string }> {

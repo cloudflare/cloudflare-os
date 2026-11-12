@@ -2,6 +2,7 @@ import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
+import type { UiBundle } from "@gadgets/workshop-shared/api";
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
@@ -126,6 +127,7 @@ import TYPES_CODE from "./types.txt";
 import CHAT_TYPES_CODE from "./chat-types.txt";
 import DOCS_READ_TYPES_CODE from "./docs-read-types.txt";
 import DOCS_TYPES_CODE from "./docs-types.txt";
+import DOCS_PREVIEW_CLIENT from "./docs-preview-client.txt";
 import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
 import DRIVE_READ_TYPES_CODE from "./drive-read-types.txt";
@@ -2252,6 +2254,7 @@ export class GoogleDocGatekeeperImpl
         snippet: `Google Doc: ${title} (not created yet)`,
         suggestedBindingName: "GOOGLE_DOC",
         tsType: "GoogleDocSession",
+        hasPreview: true,
       };
     }
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
@@ -2267,11 +2270,16 @@ export class GoogleDocGatekeeperImpl
       snippet: `Google Doc: ${doc.title}`,
       suggestedBindingName: "GOOGLE_DOC",
       tsType: "GoogleDocSession",
+      hasPreview: true,
     };
   }
 
   async getTypeScriptTypes(): Promise<string> {
     return getGoogleDocTypesCode();
+  }
+
+  async getPreviewUi(): Promise<UiBundle> {
+    return { jsCode: DOCS_PREVIEW_CLIENT };
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
