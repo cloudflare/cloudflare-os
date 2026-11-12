@@ -2809,7 +2809,14 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
   /** The document with every pending action replayed over it. */
   async #simulate(): Promise<GoogleDocSimulation & { snapshot: GoogleDocSnapshot }> {
-    let snapshot = await this.#getSnapshot();
+    // The snapshot and the queue replayed over it must come from one side of a write landing:
+    // the handoff removes the write, and an added tab's handoff points the edits queued for it at
+    // a tab an older snapshot lacks, which would invalidate them.
+    let snapshot, writes;
+    do {
+      writes = this.#simulationCache.writes;
+      snapshot = await this.#getSnapshot();
+    } while (writes !== this.#simulationCache.writes);
     let pending = this.#pendingActions.list();
     let cached = this.#simulationCache.current;
     // An unknown revision cannot be shown to match, so the replay is recomputed.
