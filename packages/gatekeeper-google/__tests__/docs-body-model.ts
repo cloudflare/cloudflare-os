@@ -683,6 +683,24 @@ function repointOverlappedLinks(
   }
 }
 
+const NAMED_FIELDS = ["bold", "italic", "strikethrough"] as const;
+
+/**
+ * The bold, italic and strikethrough the named style of `paragraph` gives its text, resolved over
+ * normal text's; none for a tab built without named styles.
+ */
+function namedTextStyle(
+  tab: GoogleDocsTab, paragraph: Paragraph,
+): Record<(typeof NAMED_FIELDS)[number], boolean> | undefined {
+  let styles = tab.namedStyles?.styles;
+  if (!styles) return undefined;
+  let own = styles.find(style => style.namedStyleType === paragraph.paragraphStyle.namedStyleType);
+  let normal = styles.find(style => style.namedStyleType === "NORMAL_TEXT");
+  let resolve = (field: (typeof NAMED_FIELDS)[number]) =>
+    own?.textStyle?.[field] ?? normal?.textStyle?.[field] ?? false;
+  return { bold: resolve("bold"), italic: resolve("italic"), strikethrough: resolve("strikethrough") };
+}
+
 function updateTextStyle(
   tab: GoogleDocsTab,
   { range, textStyle, fields }: { range: DocsRange; textStyle: TextStyle; fields: string },
@@ -707,12 +725,18 @@ function updateTextStyle(
     if (setsLink) repointOverlappedLinks(paragraph, start, end, style.link);
     splitRunAt(paragraph, start);
     splitRunAt(paragraph, end);
+    let given = namedTextStyle(tab, paragraph);
     for (let element of paragraph.elements) {
       if (element.endIndex <= start || element.startIndex >= end) continue;
       if (!element.textRun) notModelled("a text style over an element that is not text");
       let own: ModelTextStyle = element.textRun.textStyle;
       let hadLink = own.link !== undefined;
       for (let field of named) copyTextField(own, style, field);
+      // Google stores a style the paragraph's named style already gives as inherited, true or
+      // false, as live probes showed.
+      for (let field of NAMED_FIELDS) {
+        if (given && named.has(field) && own[field] === given[field]) delete own[field];
+      }
       if (setsLink && !named.has("underline")) {
         // A link brings its look with it.
         own.underline = true;

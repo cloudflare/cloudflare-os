@@ -53,7 +53,7 @@ import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import {
   assertMarkdownWriteComplexity, canonicalizeMarkdownAppend, canonicalizeMarkdownForWrite,
-  docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
+  docTabToMarkdown, dropInheritedFormatting, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
   REPLAYABLE_TEXT_EDIT_VERSIONS,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
@@ -1775,8 +1775,10 @@ function googleDocSnapshotCurrentAt(snapshot: GoogleDocSnapshot, check: unknown)
 function isGoogleDocSnapshot(value: unknown): value is GoogleDocSnapshot {
   if (!value || typeof value !== "object") return false;
   let {formatVersion, title, tabs, revisionId, fetchedAt} = value as Partial<GoogleDocSnapshot>;
+  // A tab stored before its named styles were read cannot say what a write leaves inherited.
   return formatVersion === MARKDOWN_RENDERING_VERSION && typeof title === "string" &&
-      Array.isArray(tabs) && (revisionId === undefined || typeof revisionId === "string") &&
+      Array.isArray(tabs) && tabs.every(tab => tab?.namedFormatting !== undefined) &&
+      (revisionId === undefined || typeof revisionId === "string") &&
       typeof fetchedAt === "number" && Number.isFinite(fetchedAt);
 }
 
@@ -1971,7 +1973,7 @@ function applyMarkdownReplacement(
   let start = findUniqueMarkdown(content.markdown, action.oldMarkdown, "replaceText", tab.tabId);
   return {
     ...content,
-    ...applyTextReplacement(content, googleDocTextReplacement(action, start), tab.tabId),
+    ...applyTextReplacement(content, googleDocTextReplacement(action, start), tab.tabId, tab),
   };
 }
 
@@ -2030,13 +2032,17 @@ function applyGoogleDocActionToContent(
   switch (action.type) {
     case "replaceText":
       return applyMarkdownReplacement(content, action, tab);
-    case "appendText":
+    case "appendText": {
       requireGoogleDocAppendIndex(content.appendIndex);
-      return {
+      let appended = {
         ...content,
         markdown: appendMarkdownForSimulation(
           content, canonicalizeMarkdownForWrite(action.markdown)),
       };
+      return tab.namedFormatting
+        ? { ...appended, ...dropInheritedFormatting(content, appended, tab.namedFormatting) }
+        : appended;
+    }
     case "insertTable":
     case "insertTableRows":
     case "insertTableColumns":

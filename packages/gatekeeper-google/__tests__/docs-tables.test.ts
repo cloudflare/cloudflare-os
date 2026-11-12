@@ -3704,6 +3704,104 @@ describe("text written in front of a list item that shows no marker", () => {
   });
 });
 
+/** Named styles as a document gives them: Heading 6 italic, Heading 2 made bold, Subtitle plain. */
+const NAMED_STYLES: NonNullable<GoogleDocsTab["namedStyles"]> = {
+  styles: [
+    { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false, italic: false, strikethrough: false } },
+    { namedStyleType: "HEADING_2", textStyle: { bold: true } },
+    { namedStyleType: "HEADING_6", textStyle: { italic: true } },
+    { namedStyleType: "SUBTITLE", textStyle: { italic: false } },
+  ],
+};
+
+/** `blocks` in a tab with `NAMED_STYLES`. */
+function styledTab(blocks: BlockSpec[], namedStyles = NAMED_STYLES): GoogleDocsTab {
+  return { ...buildTab(blocks), namedStyles };
+}
+
+/**
+ * A stored replacement, replayed with the tab its content came from, reads as the document does
+ * once Google has applied it. Returns the replay and the document the model leaves.
+ */
+function expectStyledSameAsGoogle(
+  tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string, inTable?: true,
+): { simulated: EditableMarkdown; applied: GoogleDocsTab } {
+  let before = docTabToMarkdown(tab);
+  let replacement = { ...replacementIn(before.markdown, oldMarkdown, newMarkdown), inTable };
+  let simulated = applyTextReplacement(contentOf(before), replacement, TAB, before);
+  let requests = textReplacementRequests(before, replacement);
+  let applied = tab;
+  for (let options of MODELS) {
+    applied = requests.length > 0 ? applyDocsRequests(tab, requests, options) : tab;
+    expectRendering(simulated, applied);
+  }
+  return { simulated, applied };
+}
+
+describe("formatting a paragraph's named style already gives", () => {
+  const body = () => styledTab([
+    para("Before"), heading("Notes here", 6), heading("Results here", 2), para("After"),
+  ]);
+  const cells = () => styledTab([
+    para("Before"),
+    { table: [[cellOf(heading("Cell notes", 6)), cellOf(heading("Cell results", 2))], ["a\n", "b\n"]] },
+    para("After"),
+  ]);
+
+  it("reads the named styles a tab gives its text", () => {
+    expect(docTabToMarkdown(body()).namedFormatting).toEqual({
+      HEADING_2: { bold: true }, HEADING_6: { italic: true },
+    });
+    expect(docTabToMarkdown(buildTab([para("x")])).namedFormatting).toBeNull();
+  });
+
+  it("drops it from text written into a paragraph outside tables, as Google stores it", () => {
+    for (let [oldMarkdown, newMarkdown] of [
+      ["###### Notes here", "###### Notes *there*"],
+      ["###### Notes here", "###### *Notes* **here**"],
+      ["## Results here", "## **Results** *here*"],
+      ["## Results here", "## Results ~~here~~ **now**"],
+      ["After", "After\n\n###### *New* note"],
+      ["Before", "Before *and* **after**"],
+    ]) {
+      let { simulated } = expectStyledSameAsGoogle(body(), oldMarkdown, newMarkdown);
+      expect(simulated.markdown).not.toContain("*Notes*");
+    }
+    expect(expectStyledSameAsGoogle(body(), "###### Notes here", "###### *Notes* here")
+      .simulated.markdown).toContain("###### Notes here\n");
+    expect(expectStyledSameAsGoogle(body(), "## Results here", "## **Results** *here*")
+      .simulated.markdown).toContain("## Results *here*\n");
+  });
+
+  it("drops it from text written into a cell, and a row change queued behind it applies", () => {
+    for (let [oldMarkdown, newMarkdown] of [
+      ["<h6>Cell notes</h6>", "<h6><em>Cell</em> notes</h6>"],
+      ["<h2>Cell results</h2>", "<h2><strong>Cell</strong> <em>results</em></h2>"],
+      ["<p>a</p>", "<p><strong>a</strong></p>"],
+    ]) {
+      let { simulated, applied } = expectStyledSameAsGoogle(cells(), oldMarkdown, newMarkdown, true);
+      let rows = addRows(simulated, 0, 2, [["x", "y"]]);
+      let fresh = docTabToMarkdown(applied);
+      expect(applyTableChange(contentOf(fresh), rows, fresh).markdown)
+        .toBe(applyTableChange(simulated, rows).markdown);
+    }
+    let { simulated } = expectStyledSameAsGoogle(
+      cells(), "<h6>Cell notes</h6>", "<h6><em>Cell</em> notes</h6>", true);
+    expect(tableAt(simulated, 0)).toContain("<h6>Cell notes</h6>");
+  });
+
+  it("reads a subtitle as italic only where its named style makes it so", () => {
+    let subtitle: ParagraphSpec = { runs: ["Sub\n"], namedStyleType: "SUBTITLE" };
+    expect(docTabToMarkdown(styledTab([subtitle])).markdown).toBe("Sub\n");
+    expect(docTabToMarkdown(styledTab([subtitle], {
+      styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }],
+    })).markdown).toBe("*Sub*\n");
+    expect(docTabToMarkdown(buildTab([subtitle])).markdown).toBe("*Sub*\n");
+    expectStyledSameAsGoogle(styledTab([para("Before"), subtitle]), "Sub", "Subtitle");
+    expectStyledSameAsGoogle(styledTab([para("Before"), subtitle]), "Sub", "*Sub*title");
+  });
+});
+
 describe("the refusals a table causes beside it", () => {
   it("says to retry where a waiting edit removed the paragraph beside the table", () => {
     let titled = () => buildTab([para("Title"), grid(["a"]), para("After")]);

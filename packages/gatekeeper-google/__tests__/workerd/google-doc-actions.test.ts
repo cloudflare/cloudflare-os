@@ -1894,6 +1894,24 @@ describe("Google Doc tables", () => {
     expect(await hooks().storedValueJsonLength(facet, key)).toBeGreaterThan(length ?? 0);
   });
 
+  it("reads the document again over a snapshot stored before named styles were read", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "fresh");
+    docs.install();
+    let facet = "snapshot-without-named-styles";
+    await hooks().applyStorage(facet, [{
+      kind: "put", key: "docSnapshot",
+      value: {
+        formatVersion: MARKDOWN_RENDERING_VERSION, title: "Test document", revisionId: "stale",
+        tabs: [{ ...tabSnapshot(MAIN_TAB, "Main"), namedFormatting: undefined }],
+        fetchedAt: Date.now(),
+      },
+    }]);
+
+    expect(await hooks().readContent(facet)).toBe("fresh\n");
+    expect(docs.documentFetches).toBe(1);
+  });
+
   it("checks the revision after a rejection", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "base");
@@ -1981,7 +1999,8 @@ describe("Google Doc tables", () => {
       {
         kind: "put", key: "docSnapshot",
         value: {
-          formatVersion: MARKDOWN_RENDERING_VERSION, title: "Test document", tabs: [{}],
+          formatVersion: MARKDOWN_RENDERING_VERSION, title: "Test document",
+          tabs: [{ namedFormatting: null }],
           fetchedAt: Date.now(),
         },
       },
@@ -4209,7 +4228,7 @@ function tabSnapshot(tabId: string, title: string) {
   return {
     tabId, title, index: 0, nestingLevel: 0,
     markdown: "shared\n", sourceMap: { blocks: [], protectedRanges: [], tables: [] }, bodyEndIndex: 8,
-    committedWriteIds: [],
+    namedFormatting: null, committedWriteIds: [],
   };
 }
 

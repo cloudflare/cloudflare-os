@@ -642,7 +642,8 @@ export function prepareTextReplacement(
 ): PreparedTextReplacement {
   // The table path is tried first, and decides for every replacement whose change lies inside
   // one table: what it refuses is refused, whatever the paragraph path would make of it.
-  let inTable = replaceTableText(content, matchStart, oldMarkdown, newMarkdown, tab.tabId);
+  let inTable = replaceTableText(
+    content, matchStart, oldMarkdown, newMarkdown, tab.tabId, tab.namedFormatting);
   if (inTable) {
     // With no earlier edit to this tab, approval will build exactly these requests.
     if (content.markdown === tab.markdown) {
@@ -688,7 +689,7 @@ export function prepareTextReplacement(
   // What a read returns is the replay of the replacement as it is stored. That replay takes
   // the replacement as written wherever the content accepts it, also where only the requests
   // had to be built for the change beside the table, and the two can leave a list differently.
-  let replayed = applyTextReplacement(content, replacement, tab.tabId).markdown;
+  let replayed = applyTextReplacement(content, replacement, tab.tabId, tab).markdown;
   return {
     inTable: false, prose, syntax: "markdown",
     shown: {

@@ -6,13 +6,13 @@ import type { GoogleDocsRequest, TextStyle } from "./docs-api";
 import {
   addRequest, applyMarkdownEdit, canonicalizeMarkdownReplacement, canonicalLinkDestination,
   cellInlineHtml, cellLinkDestination, computeReplaceOperations, docsLinkForDestination,
-  escapeHtml, isGoogleDocsStrippedCharacter, isSafeTableLink, lineStart, listLineType,
+  dropInheritedFormatting, escapeHtml, isGoogleDocsStrippedCharacter, isSafeTableLink, lineStart, listLineType,
   MAX_GOOGLE_DOC_REQUESTS, packTableRow, plainTextToDocRequests, StructuredContentError,
   tableRowCells, tableRowIndexes,
 } from "./markdown-converter";
 import type {
-  BlockMapping, CellInlineRun, DocTabSnapshot, EditableMarkdown, EditableTable, MarkdownRange,
-  TableCellEntry, TableMapping,
+  BlockMapping, CellInlineRun, DocTabSnapshot, EditableMarkdown, EditableTable, InheritedFormat,
+  MarkdownRange, NamedFormatting, TableCellEntry, TableMapping,
 } from "./markdown-converter";
 
 /**
@@ -1555,19 +1555,26 @@ const NO_LONGER_IN_TABLE = "replaceText: this change was queued for text in a ta
 /** Replay a stored `replaceText`: in table cells when it was queued as that, else as paragraphs. */
 export function applyTextReplacement(
   content: EditableMarkdown, replacement: TextReplacement & { inTable?: true }, tabId: string,
+  doc?: DocTabSnapshot,
 ): EditableMarkdown {
+  let named = doc?.namedFormatting ?? null;
   if (replacement.inTable) {
-    let result = replaceTableText(
-      content, replacement.matchStart, replacement.oldMarkdown, replacement.newMarkdown, tabId);
+    let result = replaceTableText(content, replacement.matchStart, replacement.oldMarkdown,
+      replacement.newMarkdown, tabId, named);
     if (!result) throw new Error(NO_LONGER_IN_TABLE);
     return result.content;
   }
-  return runParagraphReplacement(content, replacement, edit => {
+  let edited = runParagraphReplacement(content, replacement, edit => {
     let rendered = canonicalizeMarkdownReplacement(edit.oldMarkdown, edit.newMarkdown);
     if (edit.oldMarkdown === rendered) return content;
     return applyMarkdownEdit(
       content, edit.matchStart, edit.matchStart + edit.oldMarkdown.length, rendered);
   });
+  if (!named) return edited;
+  // Where the content reads as the document does, its blocks name each paragraph's style.
+  let blocks = documentOf(content, doc)?.sourceMap.blocks;
+  return dropInheritedFormatting(content, edited, named, blocks && (start =>
+    blocks.find(block => block.mdStart === start)?.namedStyleType));
 }
 
 /** The requests of a stored `replaceText` against the fresh tab. */
@@ -1798,7 +1805,13 @@ function formatPieces(
 }
 
 /** Plan the change of one cell paragraph's text from `oldHtml` to `newHtml`, in tab `tabId`. */
-function planText(oldHtml: string, newHtml: string, tabId: string): TextPlan {
+/**
+ * The plan of one text's change. Where `inherited` names a style the paragraph's named style gives,
+ * text the change styles reads without it once Google has applied the change.
+ */
+function planText(
+  oldHtml: string, newHtml: string, tabId: string, inherited: InheritedFormat = {},
+): TextPlan {
   let before = parseCellInline(oldHtml);
   let after = parseCellInline(newHtml);
   let { prefix, suffix } = commonBounds(before.text, after.text);
@@ -1874,14 +1887,25 @@ function planText(oldHtml: string, newHtml: string, tabId: string): TextPlan {
     linkBeside,
     ...(keptLink === undefined ? {} : { keptLink }),
     segments,
-    html: cellInlineHtml(segments.map(segment => ({
-      text: text.slice(segment.start, segment.end),
-      bold: segment.next.bold,
-      italic: segment.next.italic,
-      strikethrough: segment.next.strikethrough,
-      link: segment.link,
-    }))),
+    html: cellInlineHtml(segments.map(segment => {
+      // A style the change sends reads as the text's own only where the named style differs.
+      let shown = (style: keyof InheritedFormat) => !!segment.next[style] &&
+        !(inherited[style] && (!segment.old || !segment.old[style] !== !segment.next[style]));
+      return {
+        text: text.slice(segment.start, segment.end),
+        bold: shown("bold"),
+        italic: shown("italic"),
+        strikethrough: shown("strikethrough"),
+        link: segment.link,
+      };
+    })),
   };
+}
+
+/** The named style of the cell paragraph whose text follows `piece`, by the tag that opens it. */
+function cellParagraphStyle(piece: string): string {
+  let tag = /<(h[1-6]|p|li)\b[^>]*>[^<]*$/.exec(piece)?.[1];
+  return tag?.startsWith("h") ? `HEADING_${tag[1]}` : "NORMAL_TEXT";
 }
 
 /** A request of a text's plan, with its indexes counted from the start of the text's paragraph. */
@@ -2198,6 +2222,7 @@ type TableTextEdit = {
  */
 function readTableText(
   content: EditableMarkdown, replacement: TextReplacement, tabId: string,
+  named: NamedFormatting | null,
 ): TableTextEdit | undefined {
   let place = classifyReplacement(content, replacement);
   if (place.kind !== "table") return undefined;
@@ -2248,7 +2273,8 @@ function readTableText(
   let count = 0;
   for (let [index, text] of texts.entries()) {
     let old = html.slice(text.start, text.end);
-    let plan = written[index] === old ? undefined : planText(old, written[index], tabId);
+    let plan = written[index] === old ? undefined
+      : planText(old, written[index], tabId, named?.[cellParagraphStyle(pieces[index])]);
     plans.push(plan);
     // A text whose HTML stays as it is needs no request, however it was written.
     let needed = plan && plan.html !== old ? textPlanRequests(plan, tabId) : undefined;
@@ -2270,9 +2296,9 @@ function readTableText(
  */
 export function replaceTableText(
   content: EditableMarkdown, matchStart: number, oldMarkdown: string, newMarkdown: string,
-  tabId: string,
+  tabId: string, named: NamedFormatting | null = null,
 ): { content: EditableMarkdown; shown: { old: string; requested: string; rendered: string } } | undefined {
-  let edit = readTableText(content, { matchStart, oldMarkdown, newMarkdown }, tabId);
+  let edit = readTableText(content, { matchStart, oldMarkdown, newMarkdown }, tabId, named);
   if (!edit) return undefined;
   let { markdown } = content;
   let target = content.tables[edit.table];
@@ -2331,7 +2357,8 @@ export function tableTextRequests(
   tab: DocTabSnapshot, matchStart: number, oldMarkdown: string, newMarkdown: string,
 ): GoogleDocsRequest[] | undefined {
   let { tabId } = tab;
-  let edit = readTableText(tabContent(tab), { matchStart, oldMarkdown, newMarkdown }, tabId);
+  let edit = readTableText(
+    tabContent(tab), { matchStart, oldMarkdown, newMarkdown }, tabId, tab.namedFormatting);
   if (!edit) return undefined;
   let table: TableMapping = tab.sourceMap.tables[edit.table];
   let requests: GoogleDocsRequest[] = [];

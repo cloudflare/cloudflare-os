@@ -397,12 +397,14 @@ where it had one or was typed next to one, also loses the colour and underline G
 and nothing else of its look. A link to a heading that does not exist fails when the change is
 approved, and writes nothing.
 
-One gap is known: bold, italic or strikethrough written into a paragraph whose named style already
-sets it (italic in a Heading 6, bold in a heading the document's owner made bold) is stored as
-inherited, so a read shows the tag until the change applies and not after. In a table, a row,
-column or delete change queued behind it for that table then fails without writing, and takes the
-row, column and delete changes queued after it on the tab with it (below). A `replaceText` that
-writes such formatting into a heading outside tables reads the same way.
+Google stores bold, italic or strikethrough written into a paragraph whose named style already
+gives it as inherited, and a read shows only the formatting text sets itself, so such formatting
+reads without its tag once the change is applied: italic written into a Heading 6, bold into a
+heading the document's owner made bold, in a cell or outside tables. The read of a waiting change
+shows it so too, so that the changes queued behind it find their tables as they will be. A
+paragraph's style is told by how it reads (a heading by its level, anything else as normal text),
+and by the document while nothing waits before the change, which also tells a title and a subtitle
+apart. A subtitle reads as italic only where its named style makes it so.
 
 A replacement that only adds paragraphs directly above or below a table (`<table>` replaced by
 `## Results`, a blank line and `<table>`) changes no table: it is applied as the same text added to

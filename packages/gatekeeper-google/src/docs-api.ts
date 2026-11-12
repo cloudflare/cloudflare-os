@@ -43,7 +43,17 @@ export type GoogleDocsTab = {
   lists: Record<string, DocList>;
   /** Named ranges anchored in this tab. */
   namedRanges: NamedRanges;
+  /**
+   * The tab's named styles, which say what text in a paragraph of each style is unless its own
+   * style says otherwise. Absent only where a test builds a tab without them.
+   */
+  namedStyles?: NamedStyles;
 }
+
+/** A tab's named styles, as `documents.get` returns them. */
+export type NamedStyles = {
+  styles?: { namedStyleType?: string; textStyle?: Pick<TextStyle, "bold" | "italic" | "strikethrough"> }[];
+};
 
 /** Named ranges grouped by name, as `documents.get` returns them. */
 export type NamedRanges = Record<string, {
@@ -277,7 +287,7 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
       seen.add(tabId);
 
       if (!documentTab || typeof documentTab !== "object") throw new Error(INVALID_TAB);
-      let { body, lists, namedRanges } = documentTab as Record<string, unknown>;
+      let { body, lists, namedRanges, namedStyles } = documentTab as Record<string, unknown>;
       // A real body always holds at least a section break, and `bodyEndIndex` arithmetic assumes
       // it: an empty one would place an append at index -1.
       if (!body || typeof body !== "object" || !("content" in body) ||
@@ -296,6 +306,7 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
         body: { content },
         lists: tabCollection<GoogleDocsTab["lists"]>(lists),
         namedRanges: tabCollection<NamedRanges>(namedRanges),
+        ...namedStyles === undefined ? {} : { namedStyles: tabCollection<NamedStyles>(namedStyles) },
       });
 
       if (childTabs === undefined) continue;

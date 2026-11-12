@@ -34,6 +34,36 @@ export type DocTabSnapshot = {
   sourceMap: SourceMap;
   /** The endIndex of the last structural element in this tab's body. */
   bodyEndIndex: number;
+  /** What the tab's named styles give text, or `null` where the tab came without them. */
+  namedFormatting: NamedFormatting | null;
+}
+
+/**
+ * The bold, italic and strikethrough each named style gives the text of its paragraphs, resolved
+ * over normal text's, keyed by `namedStyleType`; a style that gives none is left out. Google
+ * stores a style written to text as inherited where the paragraph's named style already gives it,
+ * and a read shows only what text sets itself.
+ */
+export type NamedFormatting = Record<string, InheritedFormat>;
+
+/** The styles a named style gives text. */
+export type InheritedFormat = { bold?: true; italic?: true; strikethrough?: true };
+
+const INHERITED_FIELDS = ["bold", "italic", "strikethrough"] as const;
+
+function namedFormattingOf(namedStyles: GoogleDocsTab["namedStyles"]): NamedFormatting | null {
+  if (!namedStyles?.styles) return null;
+  let normal = namedStyles.styles.find(style => style.namedStyleType === "NORMAL_TEXT")?.textStyle;
+  let formatting: NamedFormatting = {};
+  for (let { namedStyleType, textStyle } of namedStyles.styles) {
+    if (!namedStyleType) continue;
+    let format: InheritedFormat = {};
+    for (let field of INHERITED_FIELDS) {
+      if ((textStyle?.[field] ?? normal?.[field]) === true) format[field] = true;
+    }
+    if (Object.keys(format).length > 0) formatting[namedStyleType] = format;
+  }
+  return formatting;
 }
 
 export type SourceMap = {
@@ -198,7 +228,9 @@ export const MARKDOWN_RENDERING_VERSION = 7;
 /**
  * Earlier rendering versions whose text edits (a replacement outside tables, an append) still
  * replay under {@link MARKDOWN_RENDERING_VERSION}: they render everything outside tables as it
- * does, and could queue no edit inside one. Decide this list again with every bump.
+ * does, but a subtitle whose named style is not italic, which 6 read as italic (an edit quoting
+ * one no longer finds its text, and says so), and could queue no edit inside one. Decide this
+ * list again with every bump.
  */
 export const REPLAYABLE_TEXT_EDIT_VERSIONS: readonly number[] = [6];
 
@@ -305,10 +337,14 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
 
   let elements = tab.body.content;
   let bodyEndIndex = elements.length > 0 ? elements[elements.length - 1].endIndex : 0;
+  let namedFormatting = namedFormattingOf(tab.namedStyles);
+  // Without its named styles, a subtitle is taken to be italic, as Google's older default is.
+  let subtitleItalic = namedFormatting ? namedFormatting.SUBTITLE?.italic === true : true;
 
   for (let elem of elements) {
     let tableMap = elem.table && tableDocMapping(elem, elem.table);
-    let structure = elem.table ? tableToHtml(elem.table, tab.lists, listNumbers, tableMap)
+    let structure = elem.table
+      ? tableToHtml(elem.table, tab.lists, listNumbers, subtitleItalic, tableMap)
       : elem.tableOfContents ? "[Table of contents]"
       : elem.sectionBreak && elem.startIndex > 0 ? "[Section break]"
       : undefined;
@@ -364,7 +400,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     let prefix = getParagraphPrefix(para, listItem, markdownListNumber);
     if (prefix) writer.syntax(prefix);
 
-    emitParagraphContent(para, writer);
+    emitParagraphContent(para, writer, subtitleItalic);
 
     // Trailing newline. Every Google Docs paragraph ends with \n in the doc
     // character space. In Markdown, we use \n as the line terminator.
@@ -395,6 +431,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     markdown: writer.text,
     sourceMap: { blocks, protectedRanges, tables },
     bodyEndIndex,
+    namedFormatting,
   };
 }
 
@@ -572,6 +609,7 @@ function tableToHtml(
   table: Table,
   lists: GoogleDocsTab["lists"],
   listNumbers: Map<string, number[]>,
+  subtitleItalic: boolean,
   map?: Pick<TableMapping, "rows" | "docRows">,
 ): string {
   let rows = table.tableRows ?? [];
@@ -580,7 +618,7 @@ function tableToHtml(
   for (let [rowIndex, row] of rows.entries()) {
     lines.push("  <tr>");
     let cells = (row.tableCells ?? []).map((cell, column) => tableCellToHtml(
-      cell, lists, listNumbers, !!isMerged && !isMerged(rowIndex, column, cell)));
+      cell, lists, listNumbers, subtitleItalic, !!isMerged && !isMerged(rowIndex, column, cell)));
     for (let cell of cells) lines.push(cell.html);
     lines.push("  </tr>");
     if (map) recordTableRow(map, row, cells, lists);
@@ -711,6 +749,7 @@ function tableCellToHtml(
   cell: TableCell,
   lists: GoogleDocsTab["lists"],
   listNumbers: Map<string, number[]>,
+  subtitleItalic: boolean,
   editable: boolean,
 ): RenderedHtml {
   let style = cell.tableCellStyle;
@@ -725,12 +764,13 @@ function tableCellToHtml(
   let parts: RenderedHtml[] = [];
   for (let index = 0; index < elements.length;) {
     if (items[index]) {
-      let list = tableListToHtml(elements, items, index, listNumbers, editable);
+      let list = tableListToHtml(elements, items, index, listNumbers, subtitleItalic, editable);
       parts.push(list);
       index = list.nextIndex;
       continue;
     }
-    let part = tableCellElementToHtml(elements[index], lists, listNumbers, editable);
+    let part =
+      tableCellElementToHtml(elements[index], lists, listNumbers, subtitleItalic, editable);
     if (part !== undefined) parts.push(part);
     index++;
   }
@@ -786,6 +826,7 @@ function tableListToHtml(
   items: readonly (ParagraphListItem | undefined)[],
   startIndex: number,
   listNumbers: Map<string, number[]>,
+  subtitleItalic: boolean,
   editable: boolean,
   level = 0,
 ): RenderedHtml & { nextIndex: number } {
@@ -804,7 +845,7 @@ function tableListToHtml(
 
     let glyph = item.listType === "bullet" && item.glyphSymbol
       ? `${escapeHtml(item.glyphSymbol)} ` : "";
-    let content = tableParagraphContentToHtml(paragraph);
+    let content = tableParagraphContentToHtml(paragraph, subtitleItalic);
     let headingLevel = paragraphHeadingLevel(paragraph);
     // The glyph shows the bullet and is not the item's text, so the text starts after it.
     html += headingLevel ? `<li><h${headingLevel}>${glyph}` : `<li>${glyph}`;
@@ -821,7 +862,7 @@ function tableListToHtml(
       if (!nested || nested.listId !== first.listId ||
           nested.nestingLevel <= first.nestingLevel) break;
       let child = tableListToHtml(
-        elements, items, index, listNumbers, editable, first.nestingLevel + 1);
+        elements, items, index, listNumbers, subtitleItalic, editable, first.nestingLevel + 1);
       for (let text of shiftTexts(child.texts, html.length)) texts.push(text);
       html += child.html;
       index = child.nextIndex;
@@ -842,15 +883,16 @@ function tableCellElementToHtml(
   element: StructuralElement,
   lists: GoogleDocsTab["lists"],
   listNumbers: Map<string, number[]>,
+  subtitleItalic: boolean,
   editable: boolean,
 ): RenderedHtml | undefined {
   if (element.tableOfContents) return { html: "[Table of contents]", texts: NO_TEXTS };
   if (element.table) {
-    return { html: tableToHtml(element.table, lists, listNumbers), texts: NO_TEXTS };
+    return { html: tableToHtml(element.table, lists, listNumbers, subtitleItalic), texts: NO_TEXTS };
   }
   if (!element.paragraph) return undefined;
   let paragraph = element.paragraph;
-  let content = tableParagraphContentToHtml(paragraph);
+  let content = tableParagraphContentToHtml(paragraph, subtitleItalic);
   if (content === "<hr>") return { html: content, texts: NO_TEXTS };
   let headingLevel = paragraphHeadingLevel(paragraph);
   let tag = headingLevel ? `h${headingLevel}` : "p";
@@ -876,8 +918,8 @@ function isEditableCellParagraph(paragraph: Paragraph): boolean {
  * share one element, so the run boundaries Google keeps for styles this rendering does not show
  * (a colour, a font) leave no trace in it.
  */
-function tableParagraphContentToHtml(paragraph: Paragraph): string {
-  let inheritedItalic = paragraph.paragraphStyle.namedStyleType === "SUBTITLE";
+function tableParagraphContentToHtml(paragraph: Paragraph, subtitleItalic: boolean): string {
+  let inheritedItalic = subtitleItalic && paragraph.paragraphStyle.namedStyleType === "SUBTITLE";
   let lastElement = paragraph.elements.at(-1);
   let content = "";
   let italic = false;
@@ -1128,9 +1170,12 @@ function markdownFormatTransition(
 function sameMarkdownFormat(left: MarkdownFormat, right: MarkdownFormat): boolean {
   return left.open === right.open && left.close === right.close;
 }
-function emitParagraphContent(para: Paragraph, writer: MarkdownWriter): void {
+function emitParagraphContent(
+  para: Paragraph, writer: MarkdownWriter, subtitleItalic: boolean,
+): void {
   let formats: MarkdownFormat[] = [];
-  let isSubtitle = para.paragraphStyle.namedStyleType === "SUBTITLE";
+  // A subtitle's text is italic unless it says otherwise where its style makes it so.
+  let isSubtitle = subtitleItalic && para.paragraphStyle.namedStyleType === "SUBTITLE";
   let lastElement = para.elements.at(-1);
   let images = positionedImageText(para);
   if (images) {
@@ -2575,6 +2620,60 @@ function normalizeChangedListBoundaries(
 }
 
 /** Move the ranges that end after `from` by `offset`; the ones before it stay as they are. */
+/**
+ * `edited`, an edit of `content` replayed as Markdown, as a read shows it once Google has applied
+ * it: without the bold, italic or strikethrough written into a paragraph whose named style gives
+ * it, which Google stores as inherited. Only the lines the edit changed are looked at; a line that
+ * was there before reads no such style, since Google never stores one. A line reads as the style
+ * its heading marker names, or as normal text, unless `styleAt` names the style of the paragraph
+ * that starts there before the edit. A subtitle keeps its italic, which a read shows inherited.
+ */
+export function dropInheritedFormatting(
+  content: EditableMarkdown, edited: EditableMarkdown, named: NamedFormatting,
+  styleAt?: (lineStart: number) => string | undefined,
+): EditableMarkdown {
+  if (Object.keys(named).length === 0 || edited.markdown === content.markdown) return edited;
+  let { prefixLen, suffixLen } = markdownReplacementBounds(content.markdown, edited.markdown);
+  let { markdown } = edited;
+  let { protectedRanges, tables } = edited;
+  let first = lineStart(markdown, prefixLen);
+  let last = markdown.length - suffixLen;
+  // From the last line to the first, so that a rewritten line moves nothing still to be read.
+  let starts: number[] = [];
+  for (let at = first; at <= last && at < markdown.length;) {
+    starts.push(at);
+    let end = markdown.indexOf("\n", at);
+    if (end < 0) break;
+    at = end + 1;
+  }
+  for (let start of starts.toReversed()) {
+    let end = markdown.indexOf("\n", start);
+    if (end < 0) end = markdown.length;
+    let line = markdown.slice(start, end);
+    let marker = /^(?: *(?:- |\d+\. ))?(#{1,6} )?/.exec(line)!;
+    let level = marker[1] ? marker[1].length - 1 : 0;
+    let style = (start <= prefixLen ? styleAt?.(start) : undefined) ??
+      (level > 0 ? `HEADING_${level}` : "NORMAL_TEXT");
+    let format: InheritedFormat = { ...named[style] };
+    if (style === "SUBTITLE") delete format.italic;
+    let block = parseLine(line);
+    if (!block.spans.some(span => INHERITED_FIELDS.some(field => format[field] && span[field]))) {
+      continue;
+    }
+    let spans = block.spans.map(span => {
+      let kept = { ...span };
+      for (let field of INHERITED_FIELDS) if (format[field]) kept[field] = false;
+      return kept;
+    });
+    let rewritten = line.slice(0, marker[0].length) + canonicalInlineMarkdown({ ...block, spans });
+    let offset = rewritten.length - line.length;
+    markdown = markdown.slice(0, start) + rewritten + markdown.slice(end);
+    protectedRanges = shiftRangesAfter(protectedRanges, end, offset);
+    tables = shiftRangesAfter(tables, end, offset);
+  }
+  return { markdown, protectedRanges, tables };
+}
+
 function shiftRangesAfter<T extends MarkdownRange>(ranges: T[], from: number, offset: number): T[] {
   return offset === 0 ? ranges : ranges.map(range => range.mdEnd <= from ? range : {
     ...range,
