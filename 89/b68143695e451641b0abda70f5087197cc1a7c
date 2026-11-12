@@ -1,0 +1,29 @@
+packages/gatekeeper-google/src/chat.ts
+  s_ddaf6f13712eca::t_f282d8186a585a 976
+packages/gatekeeper-google/src/resources.ts
+  s_2b3f2ed31e2828::t_a25e49f7a12400 104-107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "89b68143695e451641b0abda70f5087197cc1a7c",
+  "prompts": {},
+  "sessions": {
+    "s_2b3f2ed31e2828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f9b8f47-71bf-42a2-94d1-feb3e5a6228a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_ddaf6f13712eca": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d82ec4c-ad18-40b5-ae22-78c96ca024d6",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
