@@ -672,7 +672,9 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         break
 
       case 'merge':
-        act(message, 'merge', `${actor(message.author)} accepted changes`)
+        // The viewer's own are accepted on their own as each turn ends (see autoAccept.ts), so
+        // they are not put as something the viewer did.
+        act(message, 'merge', message.author.id === viewerId ? 'Changes applied' : `${message.author.name} applied changes`)
         break
 
       case 'revert':
