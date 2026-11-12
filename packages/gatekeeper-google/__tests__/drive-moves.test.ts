@@ -128,10 +128,6 @@ const unexpected = async (): Promise<never> => {
   throw new Error("Unexpected call");
 };
 
-/**
- * The move set bound over an in-memory journal, with a host whose batch read answers from a tree
- * a test can change and whose move rewrites it.
- */
 /** The Docs API, through which no sharing change or move is sent. */
 const NO_DOCS: DriveWritesHost["docs"] = {
   getDocumentWithSuggestions: async () => { throw new Error("Unexpected call"); },
@@ -141,6 +137,10 @@ const NO_DOCS: DriveWritesHost["docs"] = {
   replyToSuggestion: async () => { throw new Error("Unexpected call"); },
 };
 
+/**
+ * The move set bound over an in-memory journal, with a host whose batch read answers from a tree
+ * a test can change and whose move rewrites it.
+ */
 function harness(scope: DriveBindingScope = ACCOUNT) {
   let nodes = tree();
   let hidden = new Set<string>();

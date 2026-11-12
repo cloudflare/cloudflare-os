@@ -284,7 +284,6 @@ class FakeDrive {
 const SHARING_ACTIONS = defineActions<DriveWritesHost, DriveSharingActions>(
   DRIVE_SHARING_DEFINITIONS, { fence: "none", vendorId: "google" });
 
-/** The sharing set bound over an in-memory journal, with a host and a Drive a test can steer. */
 /** The Docs API, through which no sharing change or move is sent. */
 const NO_DOCS: DriveWritesHost["docs"] = {
   getDocumentWithSuggestions: async () => { throw new Error("Unexpected call"); },
@@ -294,6 +293,7 @@ const NO_DOCS: DriveWritesHost["docs"] = {
   replyToSuggestion: async () => { throw new Error("Unexpected call"); },
 };
 
+/** The sharing set bound over an in-memory journal, with a host and a Drive a test can steer. */
 function harness(permissions: DrivePermissionRecord[] = fixtures()) {
   let drive = new FakeDrive();
   drive.set(FILE, permissions);

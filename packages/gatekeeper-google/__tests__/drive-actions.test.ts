@@ -107,11 +107,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-/**
- * The Drive set bound over an in-memory journal, as an all-of-Drive binding's gatekeeper binds it.
- * Its Drive holds file `F` in folder `A`, beside folder `B`, shared with Bob and Carol, and
- * answers the writes a case sends: a comment, a share, a role change, a removal and a move.
- */
 /** The Docs API, through which no sharing change or move is sent. */
 const NO_DOCS: DriveWritesHost["docs"] = {
   getDocumentWithSuggestions: async () => { throw new Error("Unexpected call"); },
@@ -121,6 +116,11 @@ const NO_DOCS: DriveWritesHost["docs"] = {
   replyToSuggestion: async () => { throw new Error("Unexpected call"); },
 };
 
+/**
+ * The Drive set bound over an in-memory journal, as an all-of-Drive binding's gatekeeper binds it.
+ * Its Drive holds file `F` in folder `A`, beside folder `B`, shared with Bob and Carol, and
+ * answers the writes a case sends: a comment, a share, a role change, a removal and a move.
+ */
 function harness() {
   let nodes: Record<string, DriveScopeNode> = {
     A: folder("A"), B: folder("B"),
