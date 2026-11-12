@@ -457,7 +457,13 @@ row or column the new ones go before, or the last one when they go at the end. T
 table pins keep their count when a row is added beside one: Google would pin the new row as well,
 so the change pins the count again. A row added above a header row therefore becomes a header row,
 and the last of the rows that were pinned stops being one; the approval card does not say so, since
-pinning is not something the Markdown shows. Borders and widths are Google's choice.
+pinning is not something the Markdown shows. Borders and widths are Google's choice. Where a cell
+beside the new rows holds one dropdown, person chip, date chip, rich link or placeholder and no
+text, Google Docs copies it into each new row, as the status tables it offers as building blocks
+need: a dropdown of the same choices set to its first, and the placeholder character for the
+others, also where spaces follow the chip, which are not copied. The new cells in that column take
+no text, and reads and the approval card show the copies. Of two or more person chips, date chips
+or rich links, Google copies nothing, and the new cells take text as any other.
 
 What cannot be applied exactly is refused. Each of the following is refused when the call is made,
 before anything is queued, with the two exceptions named after the list:
@@ -480,9 +486,9 @@ before anything is queued, with the two exceptions named after the list:
 - deleting every row or column of a table, which is done by deleting the table;
 - changing the rows or columns of a table, or deleting it, while another table of the tab reads the
   same, as above;
-- adding a row beside a row in which a cell holds nothing but a dropdown or another smart chip,
-  which Google Docs would copy into the new row; the status tables Google Docs offers as building
-  blocks are such tables. That is not supported yet, and the row is added in Google Docs;
+- adding a row beside a row in which a cell holds chips and no text in a shape not listed below
+  (a chip after a space, a dropdown beside another chip), since what Google Docs copies of them
+  into the new row has not been seen, or giving text for a cell that takes a copied chip;
 - changing the rows or columns of a table that holds suggested changes to its rows, columns or
   cells, or to those of a table inside one of its cells, since deleting a suggested row or column
   would discard the suggestion. The text of such a table's cells can still be replaced, and the

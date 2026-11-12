@@ -138,6 +138,13 @@ export type TableCellEntry = {
    */
   loneChip: boolean;
   /**
+   * What Google Docs is seen copying into a row added beside a cell of chips and no text: a
+   * dropdown of the same choices for a dropdown, the placeholder character (one index each) for
+   * one person chip, date chip, rich link or placeholder, and nothing for several. Absent for
+   * every other cell, and for chips in a shape nobody has seen copied.
+   */
+  copies?: "dropdown" | "placeholder" | "nothing";
+  /**
    * Whether the cell holds an element the rendering shows nothing for: a dropdown, or a smart
    * chip that has no text of its own. A cell that holds nothing else reads as an empty cell.
    */
@@ -145,14 +152,24 @@ export type TableCellEntry = {
 };
 
 // The packing of `EditableTable.rows` and `TableMapping.docRows`, which only the three functions
-// below and the renderer know. A cell's first number in `rows` holds its flags in the low five
+// below and the renderer know. A cell's first number in `rows` holds its flags in the low seven
 // bits and the number of its texts above them.
 const CELL_NUMBERED = 1;
 const CELL_FOOTNOTE = 2;
 const CELL_STYLED = 4;
 const CELL_LONE_CHIP = 8;
 const CELL_UNSHOWN = 16;
-const CELL_TEXT = 32;
+const CELL_COPIES_DROPDOWN = 32;
+const CELL_COPIES_PLACEHOLDER = 64;
+const CELL_TEXT = 128;
+
+/** A cell's `copies`, which its two bits hold: both set for "nothing". */
+function copiesOf(head: number): Pick<TableCellEntry, "copies"> {
+  let dropdown = (head & CELL_COPIES_DROPDOWN) !== 0;
+  let placeholder = (head & CELL_COPIES_PLACEHOLDER) !== 0;
+  return dropdown && placeholder ? { copies: "nothing" } : dropdown ? { copies: "dropdown" }
+    : placeholder ? { copies: "placeholder" } : {};
+}
 
 /** The cells of one row of a table's map. */
 export function tableRowCells(table: EditableTable, row: number): TableCellEntry[] {
@@ -170,6 +187,7 @@ export function tableRowCells(table: EditableTable, row: number): TableCellEntry
       footnote: (head & CELL_FOOTNOTE) !== 0,
       styled: (head & CELL_STYLED) !== 0,
       loneChip: (head & CELL_LONE_CHIP) !== 0,
+      ...copiesOf(head),
       unshown: (head & CELL_UNSHOWN) !== 0,
     });
   }
@@ -186,7 +204,9 @@ export function packTableRow(cells: readonly TableCellEntry[]): number[] {
   for (let cell of cells) {
     packed.push(CELL_TEXT * cell.texts.length + (cell.numbered ? CELL_NUMBERED : 0) +
       (cell.footnote ? CELL_FOOTNOTE : 0) + (cell.styled ? CELL_STYLED : 0) +
-      (cell.loneChip ? CELL_LONE_CHIP : 0) + (cell.unshown ? CELL_UNSHOWN : 0));
+      (cell.loneChip ? CELL_LONE_CHIP : 0) + (cell.unshown ? CELL_UNSHOWN : 0) +
+      (cell.copies === "dropdown" || cell.copies === "nothing" ? CELL_COPIES_DROPDOWN : 0) +
+      (cell.copies === "placeholder" || cell.copies === "nothing" ? CELL_COPIES_PLACEHOLDER : 0));
     for (let [start, end] of cell.texts) packed.push(start, end);
   }
   return packed;
@@ -679,6 +699,7 @@ function recordTableRow(
       // HTML does not say what that style is: a subtitle reads as a `<p>` in italics.
       styled: !first || !!first.bullet || first.paragraphStyle.namedStyleType !== "NORMAL_TEXT",
       loneChip: holdsLoneChip(elements),
+      ...copiedChip(elements),
       unshown: someCellParagraph(elements, lists, holdsUnshownElement),
     });
   });
@@ -730,6 +751,28 @@ function holdsLoneChip(elements: readonly StructuralElement[]): boolean {
   }
   return (chip || text.includes(CHIP_PLACEHOLDER)) &&
     !/\S/.test(text.replaceAll(CHIP_PLACEHOLDER, ""));
+}
+
+/**
+ * What Google Docs copies of a cell's lone chips into a row added beside it, where live probes
+ * have seen it: a dropdown for a dropdown alone; the placeholder for a placeholder alone, or for a
+ * person chip, date chip or rich link, also with spaces after it, which are not copied; nothing
+ * for two or more of those chips.
+ */
+function copiedChip(elements: readonly StructuralElement[]): Pick<TableCellEntry, "copies"> {
+  let parts = elements.length === 1 ? elements[0].paragraph?.elements ?? [] : [];
+  let text = parts.map(part => part.textRun?.content ?? "").join("");
+  let others = parts.filter(part => !part.textRun);
+  if (others.length === 0) return text === `${CHIP_PLACEHOLDER}\n` ? { copies: "placeholder" } : {};
+  let copiedAsPlaceholder = (part: ParagraphElement) =>
+    !!(part.person || part.dateElement || part.richLink);
+  if (others.length > 1) {
+    return text === "\n" && others.every(copiedAsPlaceholder) ? { copies: "nothing" } : {};
+  }
+  let [chip] = others;
+  if (chip.dropdown) return text === "\n" ? { copies: "dropdown" } : {};
+  return copiedAsPlaceholder(chip) && parts[0] === chip && /^ *\n$/.test(text)
+    ? { copies: "placeholder" } : {};
 }
 
 /**

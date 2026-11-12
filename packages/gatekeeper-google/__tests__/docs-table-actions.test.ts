@@ -52,6 +52,9 @@ const texts = (rows: number, columns: number, text = ""): string[][] =>
   Array.from({ length: rows }, () => Array.from({ length: columns }, () => text));
 const footnote = (number: number) => ({ footnote: { id: `f${number}`, number: String(number) } });
 const dropdown = (): CellSpec => cellOf({ runs: [{ dropdown: "Open" }, "\n"] });
+/** A space and a person chip alone in a cell, which nobody has seen Google copy into a new row. */
+const unseenChip = (): CellSpec =>
+  cellOf({ runs: [" ", { person: { name: "Ana", email: "" } }, "\n"] });
 
 function contentOf(snapshot: DocTabSnapshot): EditableMarkdown {
   return {
@@ -148,9 +151,13 @@ const cellCount = (op: string) =>
 const merged = (op: string) =>
   `${op}: this table has merged cells, so its rows and columns cannot be changed.`;
 const loneChip = (row: number) =>
-  `insertTableRows: row ${row} of this table, counting from 0, has a cell that holds a dropdown ` +
-  "or other smart chips and no text, and Google Docs may copy those into a row added beside " +
-  "it. That is not supported: add the row in Google Docs.";
+  `insertTableRows: row ${row} of this table, counting from 0, has a cell that holds smart chips ` +
+  "and no text, which Google Docs copies into a row added beside it in a way that is not " +
+  "supported: add the row in Google Docs.";
+const chipColumn = (column: number, row: number) =>
+  `insertTableRows: column ${column} of this table, counting from 0, holds a dropdown alone in ` +
+  `row ${row}, which Google Docs copies into the new rows, so their cells in that column take ` +
+  "no text. Leave them empty, and change the copies in Google Docs.";
 const columnsFit = (rows: number, count: number) =>
   "insertTableColumns: cells must fit the new columns: one array for each row of the table (at " +
   `most ${rows}), each holding one text for each new column (at most ${count}; count is 1 ` +
@@ -336,10 +343,8 @@ describe("two tables that read the same", () => {
     let mergedPair = read(buildTab([heading("A"), wide, heading("B"), wide, para("End")]));
     expect(refusal(mergedPair, addRows({ table: 0 }))).toBe(merged("insertTableRows"));
 
-    let chips: TableSpec = { table: [["a\n", "b\n"], [dropdown(), "\n"]] };
+    let chips: TableSpec = { table: [["a\n", "b\n"], [unseenChip(), "\n"]] };
     let chipPair = read(buildTab([heading("A"), chips, heading("B"), chips, para("End")]));
-    expect(tableAt(chipPair.content, 0)).toContain(
-      "  <tr>\n    <td><p></p></td>\n    <td><p></p></td>\n  </tr>\n</table>");
     expect(refusal(chipPair, addRows({ table: 0 }))).toBe(loneChip(1));
 
     expect(refusal(from, addRows({ table: 0, at: 9 })))
@@ -709,9 +714,16 @@ describe("document refusals", () => {
 
     let chips = read(buildTab(
       [para("Before"), { table: [["a\n", "b\n"], ["c\n", dropdown()]] }, para("After")]));
-    expect(refusal(chips, addRows({ table: 0, cells: [["x", "y"]] }))).toBe(loneChip(1));
-    expect(refusal(chips, addRows({ table: 0, at: 1 }))).toBe(loneChip(1));
-    expect(prepare(chips, addRows({ table: 0, at: 0 })).change.type).toBe("insertTableRows");
+    expect(refusal(chips, addRows({ table: 0, cells: [["x", "y"]] }))).toBe(chipColumn(1, 1));
+    expect(refusal(chips, addRows({ table: 0, at: 1, cells: [["x"], ["", "y"]] })))
+      .toBe(chipColumn(1, 1));
+    expect(prepare(chips, addRows({ table: 0, cells: [["x", ""]] })).change.type)
+      .toBe("insertTableRows");
+    expect(prepare(chips, addRows({ table: 0, at: 0, cells: [["x", "y"]] })).change.type)
+      .toBe("insertTableRows");
+    let unseen = read(buildTab(
+      [para("Before"), { table: [["a\n", "b\n"], ["c\n", unseenChip()]] }, para("After")]));
+    expect(refusal(unseen, addRows({ table: 0 }))).toBe(loneChip(1));
 
     let suggested = read(buildTab([
       para("Before"),
@@ -886,6 +898,20 @@ describe("cards", () => {
         descriptionIsComplete: true,
       });
     }
+  });
+
+  it("says which chips new rows copy", () => {
+    let status = read(buildTab([para("Before"), { table: [
+      ["Task\n", "Status\n", "Owner\n"],
+      ["Fix login\n", dropdown(), cellOf({ runs: [{ person: { name: "Ana", email: "" } }, "\n"] })],
+    ] }, para("After")]));
+    let { description } = card(addRows({ table: 0, cells: [["Ship docs"]] }), status);
+    expect(description).toBe(
+      "Insert 1 row in a table of tab \"Main\" (tab-1), after its last row. Google Docs copies " +
+      "into it the dropdown or smart chip that stands alone in columns 2, 3 of the row beside " +
+      `it: a dropdown with its first choice, and an empty placeholder for any other chip.${was(1)}`);
+    expect(card(addRows({ table: 0, at: 0 }), status).description).toBe(
+      `Insert 1 row in a table of tab "Main" (tab-1), before its row 1. They are empty.${was(1)}`);
   });
 
   it("describes new columns", () => {

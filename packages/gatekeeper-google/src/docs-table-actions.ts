@@ -17,7 +17,7 @@ import type { HiddenContent, TableChange, TextReplacement } from "./docs-tables"
 import type { DocTableDeletion, DocTableInsertion, NewDocTable } from "./docs-types";
 import {
   applyMarkdownEdit, canonicalizeMarkdownReplacement, computeReplaceOperations, lineStart,
-  MAX_MARKDOWN_BLOCKS, stripUnwritableCharacters,
+  MAX_MARKDOWN_BLOCKS, stripUnwritableCharacters, tableRowCells,
 } from "./markdown-converter";
 import type { DocTabSnapshot, EditableMarkdown, MarkdownRange } from "./markdown-converter";
 
@@ -494,10 +494,18 @@ function existingTableCard(
     case "insertTableRows": {
       let { cells } = change;
       let empty = isEmpty(cells);
+      let copies = tableRowCells(target, at < rows.length ? at : rows.length - 1)
+        .flatMap((cell, column) => cell.copies && cell.copies !== "nothing" ? [column + 1] : []);
+      let them = cells.length === 1 ? "it" : "them";
       let description = describe(
         `Insert ${plural(cells.length, "row")} in a table of tab ${label}, ` +
         (at < rows.length ? `before its row ${at + 1}.` : "after its last row.") +
-        (empty ? " They are empty." : ""));
+        (empty && copies.length === 0 ? " They are empty." : "") +
+        (copies.length === 0 ? ""
+          : ` Google Docs copies into ${them} the dropdown or smart chip that stands alone in ` +
+            `${copies.length === 1 ? "column" : "columns"} ${copies.join(", ")} of the row ` +
+            `beside ${them}: a dropdown with its first choice, and an empty placeholder for ` +
+            "any other chip."));
       if (!empty) description.json("New rows", cells);
       // Below the first row, the first row's field already shows the row above.
       let rowAbove = at >= 2 ? rowsHtml(at - 1, at - 1) : undefined;

@@ -204,16 +204,55 @@ function newCell(text: string): { html: string; entry: TableCellEntry } {
   return { html: `${html}    </td>\n`, entry: { texts, ...PLAIN_CELL } };
 }
 
-/** The block of a new row whose cells hold `texts`, and its row in the map. */
-function newRow(texts: readonly string[]): { html: string; packed: number[] } {
+/**
+ * The block of a new row whose cells hold `texts`, and its row in the map. A cell that `copies`
+ * names holds the chip Google copies into it instead, which reads as nothing and is not editable.
+ */
+function newRow(
+  texts: readonly string[], copies: readonly ("dropdown" | "placeholder" | undefined)[] = [],
+): { html: string; packed: number[] } {
   let html = "  <tr>\n";
   let entries: TableCellEntry[] = [];
-  for (let text of texts) {
-    let cell = newCell(text);
+  for (let [column, text] of texts.entries()) {
+    let copied = copies[column];
+    let cell = copied ? copiedCell(copied) : newCell(text);
     html += cell.html;
     entries.push(cell.entry);
   }
   return { html: `${html}  </tr>\n`, packed: packTableRow(entries) };
+}
+
+/**
+ * The block of a new cell that holds the chip Google copies into it, and its entry in the map. A
+ * dropdown reads as nothing, and the placeholder as itself.
+ */
+function copiedCell(copies: "dropdown" | "placeholder"): { html: string; entry: TableCellEntry } {
+  return {
+    html: `    <td><p>${copies === "placeholder" ? "\uE907" : ""}</p></td>\n`,
+    entry: { texts: [], ...PLAIN_CELL, loneChip: true, copies, unshown: copies === "dropdown" },
+  };
+}
+
+/**
+ * What Google copies into each cell of a row added beside row `reference` of a table, refusing
+ * text given for a cell that takes a chip.
+ */
+function copiedChips(
+  target: EditableTable, reference: number, cells: readonly (readonly string[])[],
+): ("dropdown" | "placeholder" | undefined)[] {
+  // A cell of several chips copies none of them, and its new cells are plain.
+  let copies = tableRowCells(target, reference)
+    .map(cell => cell.copies === "nothing" ? undefined : cell.copies);
+  for (let [column, copied] of copies.entries()) {
+    if (copied && cells.some(row => (row[column] ?? "") !== "")) {
+      throw new Error(
+        `insertTableRows: column ${column} of this table, counting from 0, holds a ` +
+        `${copied === "dropdown" ? "dropdown" : "smart chip"} alone in row ${reference}, which ` +
+        "Google Docs copies into the new rows, so their cells in that column take no text. " +
+        "Leave them empty, and change the copies in Google Docs.");
+    }
+  }
+  return copies;
 }
 
 /** The HTML of a new table and the rows of its map. */
@@ -611,11 +650,11 @@ function checkLineChange(
 
   if (op === "insertTableRows") {
     let reference = at < rows ? at : rows - 1;
-    if (entries[reference].some(cell => cell.loneChip)) {
+    if (entries[reference].some(cell => cell.loneChip && !cell.copies)) {
       throw new Error(
         `insertTableRows: row ${reference} of this table, counting from 0, has a cell that ` +
-        "holds a dropdown or other smart chips and no text, and Google Docs may copy those " +
-        "into a row added beside it. That is not supported: add the row in Google Docs.");
+        "holds smart chips and no text, which Google Docs copies into a row added beside it in " +
+        "a way that is not supported: add the row in Google Docs.");
     }
     if (columns > MAX_NEW_LINE_CELLS) {
       throw new Error(
@@ -799,7 +838,8 @@ function applyLineChange(
   switch (change.type) {
     case "insertTableRows": {
       checkTabTableCells(content, addedTableCells(change), change.type);
-      let added = completeCells(change.cells, count, columns).map(newRow);
+      let copies = copiedChips(target, at < rows ? at : rows - 1, change.cells);
+      let added = completeCells(change.cells, count, columns).map(texts => newRow(texts, copies));
       let start = at < rows ? lines.rows[at].mdStart : lines.rows[rows - 1].mdEnd;
       edits.push({ start, end: start, text: added.map(row => row.html).join("") });
       packed = [
@@ -1171,10 +1211,14 @@ export function tableChangeRequests(tab: DocTabSnapshot, change: TableChange): G
       let indexes = tableRowIndexes(table, reference);
       let start = atEnd ? indexes.docEnd : indexes.docStart;
       let referenceCells = tableRowCells(table, reference);
-      let rowLength = 1 + 2 * columns;
+      // A chip Google copies into a cell takes one index, before the cell's line break.
+      let copies = copiedChips(table, reference, change.cells);
+      let before = (column: number) => copies.slice(0, column).filter(Boolean).length;
+      let rowLength = 1 + 2 * columns + before(columns);
       for (let added = count - 1; added >= 0; added--) {
         for (let column = columns - 1; column >= 0; column--) {
-          fill(change.cells[added]?.[column] ?? "", start + added * rowLength + 2 + 2 * column,
+          fill(change.cells[added]?.[column] ?? "",
+            start + added * rowLength + 2 + 2 * column + before(column),
             !referenceCells[column].styled);
         }
       }

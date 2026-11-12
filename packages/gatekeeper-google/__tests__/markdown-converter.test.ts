@@ -1194,7 +1194,7 @@ describe("Google Docs table map", () => {
     expect(snapshot.markdown.slice(table.mdStart - 2, table.mdEnd + 2)).toBe(`\n\n${html}\n\n`);
     expect([table.docStart, table.docEnd]).toEqual([9, 37]);
     expect([table.docStart, table.docEnd]).toEqual([element.startIndex, element.endIndex]);
-    expect(table.rows).toEqual([[32, 11, 15, 32, 11, 15], [32, 11, 15, 32, 11, 15]]);
+    expect(table.rows).toEqual([[128, 11, 15, 128, 11, 15], [128, 11, 15, 128, 11, 15]]);
     expect(table.docRows).toEqual([[10, 6, 1, 6, 1], [23, 6, 1, 6, 1]]);
     expect("suggested" in table).toBe(false);
     expect("pinnedRows" in table).toBe(false);
@@ -1545,11 +1545,14 @@ describe("Google Docs table map", () => {
       { ...plain, texts: [], loneChip: true },
       { ...plain, texts: [[11, 15]], unshown: true },
       { ...plain, texts: [], loneChip: true, unshown: true },
+      { ...plain, texts: [], loneChip: true, copies: "dropdown", unshown: true },
+      { ...plain, texts: [], loneChip: true, copies: "placeholder" },
+      { ...plain, texts: [], loneChip: true, copies: "nothing" },
     ];
     let row = packTableRow(cells);
 
     expect(row).toEqual(
-      [32, 11, 15, 1, 64, 9, 12, 20, 20, 2, 35, 11, 15, 12, 4, 8, 48, 11, 15, 24]);
+      [128, 11, 15, 1, 256, 9, 12, 20, 20, 2, 131, 11, 15, 12, 4, 8, 144, 11, 15, 24, 56, 72, 104]);
     expect(tableRowCells({ mdStart: 0, mdEnd: 0, rows: [row] }, 0)).toEqual(cells);
   });
 

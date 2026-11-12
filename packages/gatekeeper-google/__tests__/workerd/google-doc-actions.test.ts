@@ -2211,7 +2211,7 @@ describe("Google Doc tables", () => {
     expect(preview).toBe(`[Image] Figure one\n\n${tableOf([[""]])}\n\n\n`);
   });
 
-  it("refuses a row beside a row whose cell holds only a dropdown", async () => {
+  it("copies a dropdown into a row added beside a row whose cell holds only a dropdown", async () => {
     let docs = docsWithBody(buildTab([
       paragraph("Before"),
       { table: [
@@ -2224,14 +2224,22 @@ describe("Google Doc tables", () => {
     // A lone dropdown shows nothing: the cell reads as an empty one.
     expect(await hooks().readContent(facet)).toContain(rowOf("Fix login", ""));
 
-    await expect(edit(facet, "insertTableRows", { table: 0, cells: [["Ship docs", ""]] }))
+    await expect(edit(facet, "insertTableRows", { table: 0, cells: [["Ship docs", "Open"]] }))
       .rejects.toThrow(
-        "insertTableRows: row 1 of this table, counting from 0, has a cell that holds a " +
-        "dropdown or other smart chips and no text, and Google Docs may copy those into a row " +
-        "added beside it. That is not supported: add the row in Google Docs.");
+        "insertTableRows: column 1 of this table, counting from 0, holds a dropdown alone in " +
+        "row 1, which Google Docs copies into the new rows, so their cells in that column take " +
+        "no text. Leave them empty, and change the copies in Google Docs.");
     expect(await hooks().lastObservations).toEqual([GENERIC_READ]);
     expect(await hooks().lastActionDescription).toBe("");
     expect(docs.contentBatches).toBe(0);
+
+    let copied = await editApplies(
+      docs, facet, "insertTableRows", { table: 0, cells: [["Ship docs"], ["Write notes"]] });
+    expect(copied).toContain(
+      `${rowOf("Fix login", "")}\n${rowOf("Ship docs", "")}\n${rowOf("Write notes", "")}`);
+    expect(docs.tables()[0].rows.slice(2).map(row =>
+      row.tableCells![1].content![0].paragraph!.elements.map(element => !!element.dropdown)))
+      .toEqual([[true, false], [true, false]]);
 
     // A row beside the other row copies no chip, and a new column never copies one.
     await editApplies(docs, facet, "insertTableRows", { table: 0, at: 0, cells: [["a", "b"]] });

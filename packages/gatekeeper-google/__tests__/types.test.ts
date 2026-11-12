@@ -160,7 +160,7 @@ const DOC_TABLE_GUIDANCE = [
   "or of the last row when they are added at the end",
   "or of the last column when they are added at the end",
   // The refusals nothing in `getContent()` shows coming.
-  "holds a dropdown or other smart chips and no text",
+  "Rows cannot be added beside a cell of chips and no text",
   "that holds nothing but a positioned image, or after a table whose next paragraph holds one",
   // `cells` goes by the table's rows and never sets how many columns are added.
   "For columns it is 1 unless given",

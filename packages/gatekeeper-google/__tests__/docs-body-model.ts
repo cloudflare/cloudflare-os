@@ -910,20 +910,27 @@ function newCellParagraph(reference: TableCell, options: ModelOptions): Paragrap
 }
 
 /**
- * What Google copies into the cell of a new row from the chip that stands alone in the cell
- * beside it: a dropdown for a dropdown, the placeholder character for a person chip, a date chip
- * or a placeholder. Nothing for a cell the table map does not flag.
+ * What Google copies into the cell of a new row from the chips that stand alone in the cell
+ * beside it, as live probes saw it: a dropdown for a dropdown, set to its first option; the
+ * placeholder character for a placeholder, or for a person chip, a date chip or a rich link, also
+ * with spaces after it, which are not copied; and nothing for two or more of those chips. Nothing
+ * for a cell the table map does not flag.
  */
 function copiedChip(reference: TableCell, loneChip: boolean): ParagraphElement | undefined {
   if (!loneChip) return undefined;
   let elements = reference.content?.[0]?.paragraph?.elements ?? [];
   let text = elements.map(element => element.textRun?.content ?? "").join("");
   let others = elements.filter(element => !element.textRun);
+  let copiedAsPlaceholder = (element: ParagraphElement) =>
+    !!(element.person || element.dateElement || element.richLink);
   if (others.length === 0 && text === `${CHIP_PLACEHOLDER}\n`) return textRun(CHIP_PLACEHOLDER, {});
-  if (others.length === 1 && text === "\n") {
+  if (others.length > 1 && text === "\n" && others.every(copiedAsPlaceholder)) return undefined;
+  if (others.length === 1) {
     let [chip] = others;
-    if (chip.person || chip.dateElement) return textRun(CHIP_PLACEHOLDER, {});
-    if (chip.dropdown) {
+    if (copiedAsPlaceholder(chip) && elements[0] === chip && /^ *\n$/.test(text)) {
+      return textRun(CHIP_PLACEHOLDER, {});
+    }
+    if (chip.dropdown && text === "\n") {
       // The copy is a dropdown of the same definition, set to that definition's first option,
       // which the document does not name.
       let definition = chip.dropdown.dropdownProperties?.dropdownDefinitionId;

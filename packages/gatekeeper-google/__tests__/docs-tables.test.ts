@@ -15,11 +15,9 @@ import type {
 import {
   applyMarkdownEdit, canonicalizeMarkdownAppend, canonicalizeMarkdownForWrite,
   canonicalizeMarkdownReplacement, computeReplaceOperations, docTabToMarkdown,
-  markdownToDocRequests, packTableRow, StructuredContentError, tableRowCells,
+  markdownToDocRequests, StructuredContentError, tableRowCells,
 } from "../src/markdown-converter";
-import type {
-  DocTabSnapshot, EditableMarkdown, EditableTable, TableMapping,
-} from "../src/markdown-converter";
+import type { DocTabSnapshot, EditableMarkdown, EditableTable } from "../src/markdown-converter";
 import { BULLET_LIST, buildTab } from "./doc-fixture";
 import {
   alignmentAt, applyDocsRequests, fontSizeAt, hasLinkLook, indentedParagraphs, LINK_COLOR,
@@ -1683,9 +1681,13 @@ describe("the cells a tab's tables hold", () => {
 });
 
 const LONE_CHIP = (row: number) =>
-  `insertTableRows: row ${row} of this table, counting from 0, has a cell that holds a dropdown ` +
-  "or other smart chips and no text, and Google Docs may copy those into a row added beside " +
-  "it. That is not supported: add the row in Google Docs.";
+  `insertTableRows: row ${row} of this table, counting from 0, has a cell that holds smart chips ` +
+  "and no text, which Google Docs copies into a row added beside it in a way that is not " +
+  "supported: add the row in Google Docs.";
+const CHIP_COLUMN = (column: number, row: number, kind = "dropdown") =>
+  `insertTableRows: column ${column} of this table, counting from 0, holds a ${kind} alone in ` +
+  `row ${row}, which Google Docs copies into the new rows, so their cells in that column take ` +
+  "no text. Leave them empty, and change the copies in Google Docs.";
 
 /** Turn the first element of a cell's paragraph into an inline image. */
 function makeInlineImage(tab: GoogleDocsTab, row: number, column: number): void {
@@ -1708,35 +1710,6 @@ const chipFirst = () => buildTab([
   para("After"),
 ]);
 
-/** A tab's rendering whose map flags no cell as a chip alone, which takes the refusal out. */
-function unflagged(tab: GoogleDocsTab): DocTabSnapshot {
-  let before = docTabToMarkdown(tab);
-  return {
-    ...before,
-    sourceMap: {
-      ...before.sourceMap,
-      tables: before.sourceMap.tables.map((table): TableMapping => ({
-        ...table,
-        rows: table.rows.map((_, row) => packTableRow(
-          tableRowCells(table, row).map(cell => ({ ...cell, loneChip: false })))),
-      })),
-    },
-  };
-}
-
-/**
- * Rows added after the last row of a tab's table with the refusal taken out: as replayed, and
- * as Google applies the requests for them.
- */
-function addedBesideChip(tab: () => GoogleDocsTab, cells: string[][]) {
-  let before = unflagged(tab());
-  let change = addRows(contentOf(before), 0, 2, cells);
-  return {
-    simulated: applyTableChange(contentOf(before), change, before),
-    apply: () => applyDocsRequests(tab(), tableChangeRequests(before, change)),
-  };
-}
-
 /** What a cell's first paragraph holds: its text runs, and `chip` for any other element. */
 const held = (tab: GoogleDocsTab, row: number, column: number): string[] =>
   cellParagraph(tab, row, column).paragraph.elements.map(element =>
@@ -1745,29 +1718,80 @@ const held = (tab: GoogleDocsTab, row: number, column: number): string[] =>
 describe("a chip alone in a cell", () => {
   const CHIPS = chips([{ dropdown: "Not started" }, "\n"]);
 
-  it("refuses a row whose reference row holds a dropdown alone, and adds any other", () => {
+  it("copies a dropdown alone into a row added beside it, which takes no text there", () => {
     let content = read(CHIPS);
-    expect(targetRefusal(CHIPS, addRows(content, 0, 1, [["x", "y"]]))).toBe(LONE_CHIP(1));
-    expect(targetRefusal(CHIPS, addRows(content, 0, 2, [["", ""]]))).toBe(LONE_CHIP(1));
-    expectSameAsGoogle(CHIPS, addRows(content, 0, 0, [["x", "y"]]));
+    for (let change of [
+      addRows(content, 0, 2, [["x", ""]]), addRows(content, 0, 2, [["", ""], ["y"]]),
+      addRows(content, 0, 1, [["x"]]), addRows(content, 0, 0, [["x", "y"]]),
+    ]) {
+      expectSameAsGoogle(CHIPS, change);
+    }
+    let applied = expectSameAsGoogle(CHIPS, addRows(content, 0, 2, [["x", ""]]));
+    expect(held(applied, 2, 0)).toEqual(["x", "\n"]);
+    expect(held(applied, 2, 1)).toEqual(["chip", "\n"]);
+    // A copy is a chip alone in its cell, which a row added beside it copies again.
+    let after = docTabToMarkdown(applied);
+    expect(tableRowCells(after.sourceMap.tables[0], 2)[1])
+      .toMatchObject({ texts: [], loneChip: true, copies: "dropdown", unshown: true });
+    expectSameAsGoogle(applied, addRows(contentOf(after), 0, 3, [["z", ""]]));
+
+    expect(refusal(CHIPS, addRows(content, 0, 2, [["x", "y"]]))).toBe(CHIP_COLUMN(1, 1));
+    expect(refusal(CHIPS, addRows(content, 0, 1, [["", ""], ["", "y"]])))
+      .toBe(CHIP_COLUMN(1, 1));
     // A new column copies no chip.
     expectSameAsGoogle(CHIPS, addColumns(content, 0, 2, [["x"], ["y"]]));
     expectSameAsGoogle(CHIPS, addColumns(content, 0, 1, [["x"], ["y"]]));
   });
 
-  it("refuses every cell of chips and no text, seen copied or not", () => {
+  it("copies a person chip, date chip, rich link or placeholder alone as the placeholder", () => {
+    for (let runs of [[person("Ana"), "\n"], [person(), "\n"], [{ date: "Nov 8, 2026" }, "\n"],
+      ["\uE907\n"], [{ richLink: { title: "Plan", uri: "https://x.example/" } }, "\n"],
+      [person("Ana"), "  \n"]] as Runs[]) {
+      let tab = () => chips(runs);
+      let content = read(tab());
+      let applied = expectSameAsGoogle(tab(), addRows(content, 0, 2, [["x", ""], ["y"]]));
+      expect([2, 3].map(row => held(applied, row, 1))).toEqual([["\uE907", "\n"], ["\uE907", "\n"]]);
+      expect(refusal(tab(), addRows(content, 0, 2, [["x", "y"]])))
+        .toBe(CHIP_COLUMN(1, 1, "smart chip"));
+    }
+  });
+
+  it("fills the cells after a copied chip at their own places", () => {
+    let content = read(chipFirst());
+    for (let change of [
+      addRows(content, 0, 2, [["", "y"]]), addRows(content, 0, 2, [["", ""], ["", "y"], ["", "z"]]),
+      addRows(content, 0, 1, [["", "y"], ["", "z"]]),
+    ]) {
+      expectSameAsGoogle(chipFirst(), change);
+    }
+    let applied = expectSameAsGoogle(chipFirst(), addRows(content, 0, 2, [["", ""], ["", "y"]]));
+    expect(held(applied, 3, 0)).toEqual(["chip", "\n"]);
+    expect(held(applied, 3, 1)).toEqual(["y", "\n"]);
+  });
+
+  it("copies nothing of several chips, so the new cells take text", () => {
+    for (let runs of [[person("Ana"), person("Ben"), "\n"],
+      [person("Ana"), { date: "Nov 8, 2026" }, "\n"]] as Runs[]) {
+      let tab = () => chips(runs);
+      expect(tableRowCells(read(tab()).tables[0], 1)[1])
+        .toMatchObject({ loneChip: true, copies: "nothing" });
+      let applied = expectSameAsGoogle(tab(), addRows(read(tab()), 0, 2, [["x", "y"]]));
+      expect(held(applied, 2, 1)).toEqual(["y", "\n"]);
+    }
+  });
+
+  it("refuses every other cell of chips and no text", () => {
     let alone: Runs[] = [
-      [person("Ana"), "\n"], [{ date: "Nov 8, 2026" }, "\n"],
-      [{ richLink: { title: "Plan", uri: "https://x.example/" } }, "\n"], ["\uE907\n"],
-      [person("Ana"), person("Ben"), "\n"], [person("Ana"), " \n"], [person("Ana"), "\uE907\n"],
+      [" ", person("Ana"), "\n"], [person("Ana"), "\uE907\n"], [{ dropdown: "Open" }, " \n"],
+      [{ dropdown: "Open" }, person("Ana"), "\n"],
     ];
     for (let runs of alone) {
       let tab = chips(runs);
-      expect(targetRefusal(tab, addRows(read(tab), 0, 2, [["x", "y"]]))).toBe(LONE_CHIP(1));
+      expect(targetRefusal(tab, addRows(read(tab), 0, 2, [["x", ""]]))).toBe(LONE_CHIP(1));
     }
     let beside = chips([{ dropdown: "Open" }, { dropdown: "image" }, "\n"]);
     makeInlineImage(beside, 1, 1);
-    expect(targetRefusal(beside, addRows(read(beside), 0, 2, [["x", "y"]]))).toBe(LONE_CHIP(1));
+    expect(targetRefusal(beside, addRows(read(beside), 0, 2, [["x", ""]]))).toBe(LONE_CHIP(1));
   });
 
   it("adds a row beside a chip with text, a chip among paragraphs and an inline image", () => {
@@ -1782,37 +1806,6 @@ describe("a chip alone in a cell", () => {
     let image = chips([{ dropdown: "image" }, "\n"]);
     makeInlineImage(image, 1, 1);
     expectSameAsGoogle(image, addRows(read(image), 0, 2, [["x", "y"]]));
-  });
-
-  describe("without the refusal", () => {
-    it("would write text beside the copied chip, in a cell the replay shows as editable", () => {
-      let { simulated, apply } = addedBesideChip(() => CHIPS, [["x", "y"]]);
-      let applied = apply();
-      expect(held(applied, 2, 0)).toEqual(["x", "\n"]);
-      expect(held(applied, 2, 1)).toEqual(["y", "chip", "\n"]);
-      // A dropdown shows nothing, so the two read alike, and the map is where they differ: the
-      // text of a paragraph that holds a chip cannot be edited.
-      let fresh = docTabToMarkdown(applied);
-      expect(simulated.markdown).toBe(fresh.markdown);
-      expect(tableRowCells(simulated.tables[0], 2)[1].texts).toHaveLength(1);
-      expect(tableRowCells(fresh.sourceMap.tables[0], 2)[1].texts).toEqual([]);
-    });
-
-    it("would send a batch Google refuses, the chip standing before a cell that is filled", () => {
-      // The copy makes its cell one index longer, so the fill of the cell after it names that
-      // cell's own start, where no text can be inserted.
-      expect(addedBesideChip(chipFirst, [["x", "y"]]).apply).toThrow(
-        "The insertion index must be inside the bounds of an existing paragraph.");
-    });
-
-    it("would fill the cell before the one the text is meant for", () => {
-      let { simulated, apply } = addedBesideChip(chipFirst, [["", ""], ["", "y"]]);
-      let applied = apply();
-      expect(tableAt(simulated, 0).endsWith(
-        "    <td><p></p></td>\n    <td><p>y</p></td>\n  </tr>\n</table>")).toBe(true);
-      expect(held(applied, 3, 0)).toEqual(["chip", "y", "\n"]);
-      expect(held(applied, 3, 1)).toEqual(["\n"]);
-    });
   });
 });
 

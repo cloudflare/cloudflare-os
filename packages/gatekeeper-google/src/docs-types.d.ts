@@ -270,9 +270,12 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    *
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
    * The rows of a table with merged cells cannot be changed, nor those of a table that holds
-   * suggested changes to its rows, columns or cells. Rows cannot be added before a row, or
-   * after a last row, in which a cell holds a dropdown or other smart chips and no text (such
-   * a cell reads as empty, or as the chips' text): add those rows in Google Docs.
+   * suggested changes to its rows, columns or cells. Where a cell of the row the new rows go
+   * before (or of the last row, for rows added at the end) holds one dropdown, person chip, date
+   * chip, rich link or placeholder and no text, Google Docs copies it into the new rows: a
+   * dropdown with its first choice, U+E907 for the others. Their cells in that column then take
+   * no text. Rows cannot be added beside a cell of chips and no text in another shape, such as
+   * a chip after a space: add those rows in Google Docs.
    */
   insertTableRows(rows: DocTableInsertion, tabId?: string): Promise<void>;
 
