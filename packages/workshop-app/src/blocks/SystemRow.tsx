@@ -1,8 +1,7 @@
-import { CodeIcon, InfoIcon, PlugIcon, type Icon } from '@phosphor-icons/react'
+import { CodeIcon, InfoIcon, type Icon } from '@phosphor-icons/react'
 import { CodeBlock } from '@/components/CodeBlock'
 
 const ICONS = {
-  plug: PlugIcon,
   code: CodeIcon,
   info: InfoIcon,
 } satisfies Record<string, Icon>
@@ -14,7 +13,7 @@ export type SystemRowProps = {
   detail?: string
 }
 
-/** Something that happened in the chat that nobody said: the gadget was used, a call arrived. */
+/** Something that happened in the chat that nobody said: a call arrived, or a message this app can't show. */
 export const SystemRow = ({ icon, children, detail }: SystemRowProps) => {
   const RowIcon = ICONS[icon]
   return (

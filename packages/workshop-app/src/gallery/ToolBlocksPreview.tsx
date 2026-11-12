@@ -45,6 +45,7 @@ const steps: ToolStepEntry[] = [
     description: 'Read the board’s columns and the issues in each.',
     fields: [{ label: 'Board', kind: 'inline', value: 'PLAT' }],
   },
+  { type: 'call', key: 'gadget', icon: 'plug', label: 'Used the gadget', sections: [] },
   { type: 'call', key: 'failed', icon: 'edit', label: 'Edited src/worker.ts', error: 'The text to replace was not found in src/worker.ts.', sections: [] },
   { type: 'call', key: 'live', icon: 'file', label: 'Writing src/trend.ts…', running: true, sections: [{ label: 'Content', text: 'export const trend = (points: number[]) =>\n  points.map(' }] },
 ]

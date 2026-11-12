@@ -479,10 +479,15 @@ describe('toChatFeed', () => {
       expect(kinds(toChatFeed(messages))).toEqual(['user', 'assistant', 'user', 'assistant', 'user'])
     })
 
-    it('notes a gadget use once per run, and shows a call delivered to the agent', () => {
-      const result = feed(useGadget(), useGadget(), agentCallback('onTicket', '{ key: "PLAT-1" }', 'TICKETS'))
+    it('keeps a gadget use with the agent’s other steps, once per run', () => {
+      const result = feed(user('check the board'), useGadget(), useGadget(), agent({ toolCalls: [read('a.ts')] }), useGadget(), agent({ text: 'Done' }))
+      expect(kinds(result)).toEqual(['user', 'assistant'])
+      expect(only(result, 'assistant')[0].trace.map((step) => (step.type === 'call' ? step.label : step.type))).toEqual(['Used the gadget', 'Read a.ts', 'Used the gadget'])
+    })
+
+    it('shows a call delivered to the agent', () => {
+      const result = feed(agentCallback('onTicket', '{ key: "PLAT-1" }', 'TICKETS'))
       expect(only(result, 'notice')).toMatchObject([
-        { notice: 'gadget', text: 'Used the gadget' },
         { notice: 'callback', text: 'onTicket() with env.TICKETS', detail: '{ key: "PLAT-1" }' },
       ])
     })

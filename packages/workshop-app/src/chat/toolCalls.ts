@@ -3,7 +3,7 @@ import type { AiToolCall } from '@gadgets/workshop-shared/api'
 type ToolName = AiToolCall['toolName']
 
 /** The glyph a tool row is drawn with. */
-export type ToolIcon = 'file' | 'edit' | 'terminal' | 'globe' | 'search' | 'link' | 'plus' | 'branch' | 'list' | 'stop'
+export type ToolIcon = 'file' | 'edit' | 'terminal' | 'globe' | 'search' | 'link' | 'plus' | 'branch' | 'list' | 'stop' | 'plug'
 
 /** A titled block of text in a tool row's detail, such as its code or its output. */
 export type ToolSection = { label: string; text: string }
