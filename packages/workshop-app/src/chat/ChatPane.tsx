@@ -24,6 +24,8 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
+  /** Opens the chat's settings, from its title. */
+  onOpenSettings?: () => void
   /**
    * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
    * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
@@ -39,7 +41,7 @@ export type ChatPaneProps = {
 const LIVE_WORK = 'live:work'
 
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -132,6 +134,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
         <ChatHeader
           workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace }}
           title={title}
+          onOpenSettings={onOpenSettings}
         />
       )}
       composer={(

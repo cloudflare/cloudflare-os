@@ -67,6 +67,7 @@ type Calls =
   | 'denyConnectionRequest'
   | 'enableHook'
   | 'disableHook'
+  | 'setChatTitle'
 
 /**
  * The part of a workspace's Overseer a session uses, and the lease that must be disposed. The
@@ -259,6 +260,29 @@ export class ChatSession {
 
   setHookEnabled = (hookId: number, enabled: boolean) =>
     this.#ask((overseer) => (enabled ? overseer.enableHook(hookId) : overseer.disableHook(hookId)))
+
+  /**
+   * Gives the chat a title of its own. It is shown at once, and put back, with the promise
+   * rejected, when the workspace refuses it.
+   */
+  rename = async (title: string) => {
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) throw new Error('The chat is still loading.')
+    const run = this.#run
+    const before = this.#title
+    this.#title = title
+    this.#publishReady()
+    try {
+      await overseer.setChatTitle(this.chatId, title)
+    } catch (error) {
+      // Unless it has been renamed again since, or the chat was left.
+      if (run === this.#run && this.#title === title) {
+        this.#title = before
+        this.#publishReady()
+      }
+      throw error
+    }
+  }
 
   /**
    * Asks the workspace for something a row offers. What it changes comes back through the

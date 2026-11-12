@@ -1,8 +1,11 @@
 import { useState, type ReactNode } from 'react'
+import { FileTextIcon, ImageIcon, WaveformIcon } from '@phosphor-icons/react'
 import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { HookCard } from '@/blocks/HookCard'
 import { OutputCard } from '@/blocks/OutputCard'
+import { FileListItem } from '@/blocks/FileListItem'
+import { ListGroup } from '@/blocks/ListGroup'
 import { OutputListItem } from '@/blocks/OutputListItem'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
@@ -37,6 +40,18 @@ export const CardBlocksPreview = () => {
         <Column>
           <OutputListItem title="Q3 platform review" subtitle="Document · Engineering Notes · 4 hours ago" icon="fileText" href="#q3-platform-review" onSelect={() => say('open the document')} />
           <OutputListItem title="Jira dashboard with a title long enough that it has to be cut off" subtitle="App · Platform · Shared by Grace Hopper · Oct 27" href="#jira-dashboard" onSelect={() => say('open the app')} />
+        </Column>
+      </Section>
+      <Section title="ListGroup, FileListItem (a chat's files and outputs on its settings page, in a surface for each stretch of time: a busy day on its own, quieter days folded together; a name long enough that it has to be cut off)">
+        <Column>
+          <ListGroup label="Today">
+            <FileListItem title="Q3 platform review" icon={<FileTextIcon aria-hidden="true" />} time="1 hour ago" href="#q3-platform-review" onSelect={() => say('open the document')} />
+            <FileListItem title="my-favourite-image.jpg" icon={<ImageIcon aria-hidden="true" />} time="4 hours ago" onSelect={() => say('open the image')} />
+          </ListGroup>
+          <ListGroup label="Since Monday">
+            <FileListItem title="my-song-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-in-the-row.wav" icon={<WaveformIcon aria-hidden="true" />} time="Tuesday" onSelect={() => say('open the song')} />
+            <FileListItem title="Launch checklist" icon={<FileTextIcon aria-hidden="true" />} time="Monday" onSelect={() => say('open the checklist')} />
+          </ListGroup>
         </Column>
       </Section>
       <Section title="ActionCard (the request opens from every card but the restricted one, which shows it in full: pending, with a standing approval, incomplete, restricted and incomplete, approved, denied)">

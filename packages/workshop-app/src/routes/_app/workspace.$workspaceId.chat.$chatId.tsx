@@ -50,6 +50,7 @@ function WorkspaceChat() {
       chatId={chatId}
       initialTitle={initialTitle}
       onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
+      onOpenSettings={() => navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, state: { fromChat: true } })}
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}
       outputHref={outputHref}
