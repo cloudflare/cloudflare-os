@@ -38,6 +38,7 @@ type BatchRequest = {
     suggestionId?: string;
     post: { content?: string; commentAction?: "RESOLVE" | "REOPEN" };
   };
+  addDocumentTab?: { tabProperties: { title?: string; parentTabId?: string; index?: number } };
 };
 
 /** One post of a comment thread, as Docs returns it. */
@@ -170,6 +171,7 @@ class DocsModel {
   /** How many comment writes to apply and then answer with no response. */
   lostCommentResponses = 0;
   #nextPostId = 1;
+  #nextTabId = 1;
   #revision = 1;
   #nextMarkerId = 1;
   #nextListId = 1;
@@ -371,6 +373,14 @@ class DocsModel {
         body.writeControl.requiredRevisionId !== `revision-${this.#revision}`) {
       return Response.json({ error: { code: 400, message: "revision mismatch" } }, { status: 400 });
     }
+    // Google checks a batch whole before it applies any of it.
+    for (let { addDocumentTab } of body.requests) {
+      let refusal = addDocumentTab && this.#addTabRefusal(addDocumentTab.tabProperties);
+      if (refusal) {
+        return Response.json(
+          { error: { code: 400, status: "INVALID_ARGUMENT", message: refusal } }, { status: 400 });
+      }
+    }
 
     let replies: unknown[] = [];
     let hasContent = false;
@@ -379,6 +389,11 @@ class DocsModel {
         this.markers.delete(request.deleteNamedRange.namedRangeId);
         this.deletedMarkerIds.push(request.deleteNamedRange.namedRangeId);
         replies.push({});
+        continue;
+      }
+      if (request.addDocumentTab) {
+        hasContent = true;
+        replies.push({ addDocumentTab: { tabProperties: this.#addTab(request.addDocumentTab.tabProperties) } });
         continue;
       }
 
@@ -444,6 +459,34 @@ class DocsModel {
       replies,
       writeControl: { requiredRevisionId: `revision-${this.#revision}` },
     });
+  }
+
+  /** Why Google would refuse to add a tab placed so, if it would. */
+  #addTabRefusal({ parentTabId, index }: { parentTabId?: string; index?: number }): string | undefined {
+    if (parentTabId !== undefined && !this.tabs.some(tab => tab.id === parentTabId)) {
+      return `A parent tab with ID "${parentTabId}" does not exist.`;
+    }
+    let children = this.tabs.filter(tab => tab.parentId === parentTabId).length;
+    if (index !== undefined && index > children) {
+      return "Index must be less than or equal to the number of tabs within the specified parent tab.";
+    }
+  }
+
+  /** Adds an empty tab as `addDocumentTab` does, returning its properties as Google replies. */
+  #addTab({ title, parentTabId, index }: { title?: string; parentTabId?: string; index?: number }) {
+    let siblings = this.tabs.filter(tab => tab.parentId === parentTabId);
+    let at = index ?? siblings.length;
+    let tab: ModelTab = {
+      id: `t.added-${this.#nextTabId++}`, title: title || `Tab ${this.tabs.length + 1}`,
+      ...parentTabId === undefined ? {} : { parentId: parentTabId }, text: "", links: [],
+    };
+    // Siblings keep the order of this list, so the tab goes before the one it displaces.
+    if (at < siblings.length) this.tabs.splice(this.tabs.indexOf(siblings[at]), 0, tab);
+    else this.tabs.push(tab);
+    return {
+      tabId: tab.id, title: tab.title, index: at,
+      ...parentTabId === undefined ? {} : { parentTabId },
+    };
   }
 
   /** A comment made in the editor or through Drive, by someone else unless `me`. */
@@ -902,12 +945,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const ADD_DOCUMENT_TAB = { tag: "addDocumentTab", label: "New document tabs" };
+
 describe("Google Doc auto-approval", () => {
   const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
 
-  it("reports document edits and Doc comments as its auto-approvable kinds", async () => {
+  it("reports document edits, new tabs and Doc comments as its auto-approvable kinds", async () => {
     expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([
-      EDIT_DOCUMENT, { tag: "docComments", label: "Google Doc comments" },
+      EDIT_DOCUMENT, ADD_DOCUMENT_TAB, { tag: "docComments", label: "Google Doc comments" },
     ]);
   });
 
@@ -2246,6 +2291,168 @@ describe("Google Doc edits stored before tab support", () => {
   });
 });
 
+/** Queues `addTab(title, options)` on `facet`, returning its provisional ID and action. */
+async function addTab(facet: string, title: string, options?: { parentTabId?: string; index?: number }) {
+  let call = await hooks().callDoc(facet, "addTab", options ? [title, options] : [title]);
+  if (call.error !== undefined) throw new Error(call.error);
+  return { tabId: call.value as string, actionId: call.actionId!, action: call.action! };
+}
+
+describe("adding a Google Doc tab", () => {
+  it("queues an empty tab that edits fill before it is added, and applies them in order", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+
+    let added = await addTab("add-tab", "Notes");
+    expect(added.tabId).toMatch(/^pending-tab-[0-9a-f-]{36}$/);
+    expect(added.action).toMatchObject({
+      title: "Add tab to Google Doc",
+      description: "Add a new, empty tab at the top level, after the tabs already there.",
+      fields: [{ label: "Title", kind: "inline", value: "Notes" }],
+      actionKind: ADD_DOCUMENT_TAB,
+      autoApprovable: true,
+      implementsRevert: false,
+    });
+    expect(await hooks().listTabs("add-tab")).toEqual([
+      { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
+      { id: added.tabId, title: "Notes", index: 1, nestingLevel: 0 },
+    ]);
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("\n");
+    let appendId = await hooks().submitAppend("add-tab", "Hello", added.tabId);
+    // The approval names the tab by its title: its provisional ID names nothing the user can find.
+    expect(await hooks().lastActionDescription)
+      .toBe('Append content to the end of tab "Notes" (new tab).');
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("Hello\n");
+    // The document now has two tabs, so a tab must be named.
+    await expect(Promise.resolve(hooks().readContent("add-tab")))
+      .rejects.toThrow("tabId is required for documents with multiple tabs");
+    expect(await hooks().applyAction("add-tab", appendId))
+      .toMatch(`Approve earlier edit ${added.actionId}`);
+    expect(docs.contentBatches).toBe(0);
+
+    expect(await hooks().applyAction("add-tab", added.actionId)).toBeNull();
+    let made = docs.tabs[1];
+    expect(made).toMatchObject({ title: "Notes", text: "" });
+    expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+    expect(docs.markers.size).toBe(0);
+    expect(await hooks().applyAction("add-tab", appendId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello");
+    expect(docs.markerTabIds).toEqual([MAIN_TAB, made.id]);
+
+    expect((await hooks().listTabs("add-tab")).map(tab => tab.id)).toEqual([MAIN_TAB, made.id]);
+    // The ID the agent was given keeps reaching the tab.
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("Hello\n");
+    let laterId = await hooks().submitAppend("add-tab", "More", added.tabId);
+    expect(await hooks().applyAction("add-tab", laterId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello\nMore");
+  });
+
+  it("places a tab at an index and nests one under a tab still waiting", async () => {
+    let docs = new DocsModel();
+    docs.addTab("tab-2", "Second", undefined as unknown as string);
+    docs.install();
+
+    let first = await addTab("add-tab-place", "First", { index: 0 });
+    expect(first.action.description).toBe(
+      "Add a new, empty tab at the top level, at position 1 of 3.");
+    let child = await addTab("add-tab-place", "Child", { parentTabId: first.tabId });
+    expect(child.action.description).toBe(
+      'Add a new, empty tab under tab "First" (new tab), after the tabs already there.');
+    expect(await hooks().listTabs("add-tab-place")).toEqual([
+      { id: first.tabId, title: "First", index: 0, nestingLevel: 0 },
+      { id: child.tabId, title: "Child", parentTabId: first.tabId, index: 0, nestingLevel: 1 },
+      { id: MAIN_TAB, title: "Main", index: 1, nestingLevel: 0 },
+      { id: "tab-2", title: "Second", index: 2, nestingLevel: 0 },
+    ]);
+
+    expect(await hooks().applyAction("add-tab-place", first.actionId)).toBeNull();
+    expect(await hooks().applyAction("add-tab-place", child.actionId)).toBeNull();
+    let [made, , , madeChild] = docs.tabs;
+    expect(made).toMatchObject({ title: "First" });
+    expect(madeChild).toMatchObject({ title: "Child", parentId: made.id });
+    // The child's marker went in its parent, which by then existed.
+    expect(docs.markerTabIds).toEqual([MAIN_TAB, made.id]);
+    expect(await hooks().listTabs("add-tab-place")).toEqual([
+      { id: made.id, title: "First", index: 0, nestingLevel: 0 },
+      { id: madeChild.id, title: "Child", parentTabId: made.id, index: 0, nestingLevel: 1 },
+      { id: MAIN_TAB, title: "Main", index: 1, nestingLevel: 0 },
+      { id: "tab-2", title: "Second", index: 2, nestingLevel: 0 },
+    ]);
+  });
+
+  it.each([
+    ["an empty title", [""], "addTab: title must not be empty."],
+    ["a title Google would cut", ["x".repeat(51)], "at most 50 characters"],
+    ["an unknown parent", ["X", { parentTabId: "nope" }], 'no tab with ID "nope" exists'],
+    ["an index past the last tab", ["X", { index: 2 }], "from 0 to 1, the number of tabs at the top level"],
+  ] as const)("refuses %s before queuing anything", async (_case, args, message) => {
+    let docs = new DocsModel();
+    docs.install();
+
+    let call = await hooks().callDoc("add-tab-refused", "addTab", [...args]);
+    expect(call.error).toContain(message);
+    expect(call.actionId).toBeUndefined();
+  });
+
+  it("drops the edits queued for a tab whose add is rejected", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-reject", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-reject", "Hello", added.tabId);
+
+    expect(await hooks().rejectAction("add-tab-reject", added.actionId)).toEqual({ restart: true });
+    expect((await hooks().listTabs("add-tab-reject")).map(tab => tab.id)).toEqual([MAIN_TAB]);
+    expect(await hooks().applyAction("add-tab-reject", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.tabs).toHaveLength(1);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("finds the tab an add made when Google's reply was lost", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-lost", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-lost", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-lost", added.actionId)).toMatch(/content response lost/);
+    let made = docs.tabs[1];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    // Read meanwhile, the tab shows once, and the edit queued for it still lands there.
+    expect((await hooks().listTabs("add-tab-lost")).map(tab => tab.id)).toEqual([MAIN_TAB, made.id]);
+    expect(await hooks().readContent("add-tab-lost", added.tabId)).toBe("Hello\n");
+
+    expect(await hooks().applyAction("add-tab-lost", added.actionId)).toBeNull();
+    expect(docs.tabs).toHaveLength(2);
+    expect(docs.contentBatches).toBe(1);
+    expect(await hooks().applyAction("add-tab-lost", appendId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello");
+  });
+
+  it("refuses to guess which tab a lost add made when two match", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-twins", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-twins", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-twins", added.actionId)).toMatch(/content response lost/);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-twins", added.actionId))
+      .toContain("more than one new tab with that title and place");
+    expect(await hooks().applyAction("add-tab-twins", added.actionId))
+      .toContain("Pending Google Doc tab could not be adopted");
+    // With the add invalidated, the edit queued for its tab has no tab to go to.
+    expect(await hooks().applyAction("add-tab-twins", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.contentBatches).toBe(1);
+  });
+});
+
 const DOC_PATTERN = "https://docs.google.com/document/d/:docId/*";
 const CREATED_DOC_URL = "https://docs.google.com/document/d/doc-1/edit";
 
@@ -2305,6 +2512,29 @@ describe("creating a Google Doc", () => {
     expect(await hooks().applyAction("create-doc-late-edit", actionId)).toBeNull();
     expect(docs.text()).toBe("late");
     expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+  });
+
+  it("keeps a tab queued against the blank document, and the edits queued for it", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("create-doc-tab", DOC_PATTERN, "Plan");
+    let added = await addTab("create-doc-tab", "Notes", { parentTabId: "t.0" });
+    let appendId = await hooks().submitAppend("create-doc-tab", "Hello", added.tabId);
+    expect((await hooks().listTabs("create-doc-tab")).map(tab => tab.id))
+      .toEqual(["t.0", added.tabId]);
+
+    expect(await hooks().applyCreation("create-doc-tab")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    await hooks().adoptCreated("create-doc-tab");
+
+    // Nested under "t.0", the tab replays only if its parent was moved onto the created tab.
+    expect(await hooks().listTabs("create-doc-tab")).toEqual([
+      { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
+      { id: added.tabId, title: "Notes", parentTabId: MAIN_TAB, index: 0, nestingLevel: 1 },
+    ]);
+    expect(await hooks().applyAction("create-doc-tab", added.actionId)).toBeNull();
+    expect(await hooks().applyAction("create-doc-tab", appendId)).toBeNull();
+    expect(docs.tabs[1]).toMatchObject({ title: "Notes", parentId: MAIN_TAB });
+    expect(docs.text(docs.tabs[1].id)).toBe("Hello");
   });
 
   it("binds the same document when an approval is retried after a lost success", async () => {

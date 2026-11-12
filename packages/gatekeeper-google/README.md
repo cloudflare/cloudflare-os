@@ -81,7 +81,7 @@ Across all resource types, the gatekeeper can request:
 
 - `openid`, `userinfo.profile`, and `userinfo.email` to identify the connected account.
 - `gmail.modify` for Gmail thread reads, organization, replies, forwards, and sending. This single scope already includes label access and sending.
-- `documents` for direct Google Docs reads, edits, comments, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings. Appending and replacing text in a bound Doc can be auto-approved ("Document edits"), and so can its comment writes ("Google Doc comments"), which go through the Docs API under this scope (see [Google Doc comments](#google-doc-comments)).
+- `documents` for direct Google Docs reads, edits, comments, and creation; `documents.readonly` for native Docs opened from account-wide, folder, or exact-file Drive bindings. Appending and replacing text in a bound Doc can be auto-approved ("Document edits"), and so can adding a tab ("New document tabs") and its comment writes ("Google Doc comments"), which go through the Docs API under this scope (see [Google Doc comments](#google-doc-comments)).
 - `drive.metadata.readonly` so the Drive picker can browse to a Doc, spreadsheet or presentation connected on its own, and so a bound Doc can read whether the connected account may comment on it. Google classifies this as a restricted scope. Docs, Sheets and Slides share the Google Drive connect card with the Drive resources, and the Workshop asks for every type on a card together, so connecting any of them also asks for the other types' scopes, `drive.readonly` among them.
 - `drive.readonly` for account-wide, folder, and exact-file Drive bindings: the Drive picker, discovery, file metadata, folder descendant proofs, native-file scope checks, downloading a PDF to read its text with `readPdf()`, and downloading any other file's bytes with `readFile()`. Google classifies this as a restricted scope too, so every Drive resource here needs restricted-scope verification.
 - `drive.readonly` and `drive.file` for the Office import grant (`https://docs.google.com/import`), which converts an Office file into a Google Docs, Sheets or Slides copy (see [Office files](#office-files)). Only the connect dialog's **Convert** button asks for it, by incremental consent, the first time an account converts a file; using a copy made before reads only metadata and asks for nothing. Once held, it is part of the account's recorded grants, so a reconnect asks for it again. `drive.readonly` lets the gatekeeper see a source file this OAuth client did not create, which `drive.file` alone cannot, and `drive.file` lets it create the copy. The grant is private to the gatekeeper: it is not a resource, so it is never offered on connect, listed, bound, or shown among an account's granted resources, and admins cannot turn it off separately from Docs, Sheets and Slides. Once held, `drive.readonly` lets the account's token read any Drive file, so bindings stay limited by the gatekeeper's code rather than by the token. A verified OAuth app must add both scopes to its consent screen, and `drive.readonly` is a restricted scope.
@@ -292,8 +292,8 @@ stores baseline and Preview secrets separately, so provision the same signing va
 Google Docs, Sheets and Slides, and Google Drive folders, are creatable resource types: an agent can
 ask for a new one with `createExternalResource`, giving a one-line title (trimmed, at most 256
 characters), and its binding works at once, before anything exists at Google. Until the creation is
-approved the gatekeeper simulates an empty file: a Doc reads as one empty tab and queues edits as
-usual, a spreadsheet as
+approved the gatekeeper simulates an empty file: a Doc reads as one empty tab and queues edits and
+new tabs as usual, a spreadsheet as
 one empty `Sheet1` of 1000 × 26 cells, which takes no change until it exists, and a presentation as the one Google creates, a 16:9 deck
 with a title slide, which queues changes as usual. Of the default theme's layouts it offers only
 five (title slide, section header, title and body, title only, and blank); the others become
@@ -386,6 +386,13 @@ revision-only `get`. Queuing an edit costs nothing more. Applying one costs a fu
 edit is materialized against the current revision), the `batchUpdate` carrying the edit and its
 write marker, and a second `batchUpdate` removing the marker; the document is reread after it only
 when more edits are queued behind it, since they must be replayed over the new revision.
+
+Adding a tab costs the same: its `batchUpdate` carries the `addDocumentTab` and the marker, which
+goes in the new tab's parent or the first tab. Until Google names the tab, `addTab()` returns a
+provisional `pending-tab-…` ID that edits can target; approving the add points them at Google's ID,
+and the provisional one keeps resolving for the binding's last 100 added tabs. An add whose reply was
+lost finds its tab on the retry as the one new tab with its title and parent, and fails rather
+than guess when none or several match.
 
 Listing comments costs one `documents.get` that asks only for the comment threads (a field mask:
 about 1 KB on a small Doc against 18 KB for the whole). Queuing a comment or suggestion costs a Drive

@@ -33,6 +33,7 @@ export type DocSuggestEditOptions = {
  *
  * When to use which:
  * - `replaceText()` and `appendText()` change the Doc's text once the user approves them.
+ * - `addTab()` adds a new, empty tab, which the edits above can fill before it is approved.
  * - `suggestEdit()` leaves a suggestion in the Doc, as one made in Suggesting mode, which someone
  *   who can edit the Doc accepts or rejects there; the text does not change until then.
  * - `comment()` is a remark on a passage of the Doc, attached to the text it quotes.
@@ -93,6 +94,15 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * final table or other structural element before appending.
    */
   appendText(markdown: string, tabId?: string): Promise<void>;
+
+  /**
+   * Queue a new, empty tab titled `title` (one line, at most 50 characters): a top-level tab placed
+   * last, unless `parentTabId` nests it under another tab and `index` places it among that tab's
+   * children, counting from 0. Google nests tabs at most three levels deep. Resolves to the new
+   * tab's ID, which `listTabs()`, `getContent()`, `replaceText()`, `appendText()` and `addTab()`
+   * take at once: edits queued for the tab apply after it is added.
+   */
+  addTab(title: string, options?: { parentTabId?: string; index?: number }): Promise<string>;
 
   /**
    * Every comment on the Doc, attached to text or not, with its replies, and this binding's
