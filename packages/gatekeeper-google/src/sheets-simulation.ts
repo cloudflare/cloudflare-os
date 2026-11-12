@@ -650,6 +650,35 @@ export function rangesToFetch(grid: Grid, areas: readonly { sheetId: number; rec
   return pieces;
 }
 
+/**
+ * The pieces a format read of `area` fetches: those `rangesToFetch` gives, and, where every column
+ * of the area or every row is one a queued change inserts, so that none of them holds a cell Google
+ * has, one line of the other kind beside its lines, whose sizes are read with it.
+ */
+export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[] {
+  let pieces = rangesToFetch(grid, [area]);
+  let sheet = sheetOf(grid, area.sheetId);
+  if (pieces.length > 0 || sheet.source === undefined) return pieces;
+  let { rect } = area;
+  let base = (lines: Lines, start: number, end: number) => linesAt(lines, start, end)
+    .flatMap(line => {
+      let index = line === undefined ? undefined : baseIndexOf(line);
+      return index === undefined ? [] : [index];
+    });
+  let rows = base(sheet.rows, rect.startRow, rect.endRow);
+  let columns = base(sheet.columns, rect.startColumn, rect.endColumn);
+  let span = (indexes: number[]) => ({ start: Math.min(...indexes), end: Math.max(...indexes) + 1 });
+  if (rows.length > 0 && columns.length === 0) {
+    let { start, end } = span(rows);
+    return [{ sheetId: sheet.source, rect: { startRow: start, endRow: end, startColumn: 0, endColumn: 1 } }];
+  }
+  if (columns.length > 0 && rows.length === 0) {
+    let { start, end } = span(columns);
+    return [{ sheetId: sheet.source, rect: { startRow: 0, endRow: 1, startColumn: start, endColumn: end } }];
+  }
+  return pieces;
+}
+
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */
 export type BaseCells<T> = (sheetId: number, row: number, column: number) => T | null;
 

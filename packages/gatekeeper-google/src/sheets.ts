@@ -37,7 +37,8 @@ import type {
 } from "./sheets-read-types";
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
-  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedFormats,
+  formatPiecesToFetch, overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork,
+  simulatedFormats,
   simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type Grid, type PlannedChange,
   type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
 } from "./sheets-simulation";
@@ -623,7 +624,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let pieces: SheetArea[];
     try {
       area = resolveArea(grid, parsed);
-      pieces = grid.log.length > 0 ? rangesToFetch(grid, [area]) : [];
+      pieces = grid.log.length > 0 ? formatPiecesToFetch(grid, area) : [];
     } catch (error) {
       // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
       throw new RefusedRead(error as Error);

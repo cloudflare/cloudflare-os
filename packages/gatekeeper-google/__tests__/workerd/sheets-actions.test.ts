@@ -2399,6 +2399,18 @@ describe("Google Sheets layout", () => {
     });
   });
 
+  it("reads the sizes of the lines Google holds beside lines a queued change inserts", async () => {
+    // clanky's case: a read of only inserted columns holds no cell Google has, yet its rows do.
+    laidOut();
+    let sheets = gatekeeper();
+    await sheets.queued([{ op: "insertColumns", sheet: "Sales", at: "B", count: 2 }]);
+    expect(await sheets.formats("Sales!B3:C5")).toMatchObject({
+      rowHeights: [21, 40, 21], columnWidths: [null, null],
+    });
+    await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 1 }]);
+    expect(await sheets.formats("Sales!E1:F1")).toMatchObject({ rowHeights: [null], columnWidths: [150, 100] });
+  });
+
   it("resizes and freezes lines as an auto-approvable edit, shown in reads before it applies", async () => {
     let provider = laidOut();
     let sheets = gatekeeper();
