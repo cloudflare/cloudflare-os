@@ -740,7 +740,9 @@ export default {
     const kind = (Object.keys(EDITORS) as OfficeKind[]).find(kind => EDITORS[kind].path === path);
     if (!kind || d !== "d" || id === undefined || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) return {};
     const target = `${kind}:${id}`;
-    if (!editing(target, acceptedResourceUrlPatterns)) return { target };
+    // Bound as a Drive file on a card without its editable type, so its access is read as a
+    // Drive link's: Read only unless the URL asks for Read and write.
+    if (!editing(target, acceptedResourceUrlPatterns)) return seed(target);
     const checked = await check(ui, target);
     // Anything else stays chosen but unchecked, so its notice says why it cannot be connected.
     return checked === undefined ? {} : checked ? { target, checked } : { target };

@@ -704,6 +704,23 @@ describe("the Drive picker's access choice", () => {
     expect(doc.ui.getWriteAccess).not.toHaveBeenCalled();
   });
 
+  // clanky: an editor's URL on a card that takes only Drive files binds the file as a Drive file,
+  // so it must not keep the dialog's Read and write default when the URL does not ask for it.
+  it("reads an editor's URL on a card that takes only Drive files as a Drive link", async () => {
+    const plain = await open([FILE]);
+    await expect(plain.prefill("https://docs.google.com/document/d/D1/edit"))
+      .resolves.toEqual({ target: "doc:D1", access: null });
+    expect(plain.access()).toMatchObject({ value: "read" });
+    expect(plain.url()).toBe("https://drive.google.com/file/d/D1/view");
+    expect(plain.ui.getWriteAccess).not.toHaveBeenCalled();
+
+    const asked = await open([FILE]);
+    await expect(asked.prefill("https://docs.google.com/spreadsheets/d/S1/edit?access=write"))
+      .resolves.toEqual({ target: "sheets:S1", access: "write" });
+    expect(asked.ui.getWriteAccess).toHaveBeenCalledTimes(1);
+    expect(asked.notices()).toEqual(info(PRESET_PENDING, AS_DRIVE_FILE, WRITE_PROMPT));
+  });
+
   it("says the choice may have to be made again on a card that lacks an editable type", async () => {
     // The Google Drive card of an account without the Sheets type.
     const lacking = await open([ACCOUNT, FOLDER, FILE, DOC, SLIDES]);
