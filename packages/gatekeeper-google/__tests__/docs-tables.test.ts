@@ -3936,6 +3936,59 @@ describe("formatting a paragraph's named style already gives", () => {
     }
   });
 
+  it("keeps the rest of a heading as Google does, literal asterisks and bold on all of it included", () => {
+    // Normal text bold by its style, headings not.
+    let styles = {
+      styles: [
+        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: true } },
+        { namedStyleType: "HEADING_2", textStyle: { bold: false } },
+      ],
+    };
+    let literal = styledTab([para("Before"), heading("Notes **Literal**"), para("After")], styles);
+    let { simulated, applied } = expectStyledSameAsGoogle(literal, "Notes", "End\n\n");
+    expect(simulated.markdown).toContain("End\n\n **Literal**\n");
+    let table = newTable([["a"]], "\n **Literal**\n");
+    let fresh = docTabToMarkdown(applied);
+    expect(applyTableChange(contentOf(fresh), table, fresh).markdown)
+      .toBe(applyTableChange(simulated, table).markdown);
+    // The rest bold throughout loses the bold naming its new style takes, and is given it again.
+    let bold = styledTab([para("Before"), {
+      runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
+    }, para("After")]);
+    expect(expectStyledSameAsGoogle(bold, "Notes ", "End\n\n").simulated.markdown)
+      .toContain("End\n\n**here**\n");
+  });
+
+  it("refuses a break that would leave text normal text cannot read as it does", () => {
+    let refusal = (tab: GoogleDocsTab, oldMarkdown: string, newMarkdown: string) => {
+      let before = docTabToMarkdown(tab);
+      return message(() => applyTextReplacement(
+        contentOf(before), replacementIn(before.markdown, oldMarkdown, newMarkdown), TAB, before));
+    };
+    // The rest of a subtitle, italic by its style.
+    let subtitle = styledTab([para("Before"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], {
+      styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }],
+    });
+    expect(refusal(subtitle, "Notes", "End\n\n")).toBe(
+      "replaceText: a paragraph break written inside a subtitle would make the rest of it a " +
+      "normal paragraph, without the subtitle's look. Write the break at the subtitle's end, " +
+      "or replace the whole subtitle.");
+    // Bold of its own where normal text is bold by its style.
+    let heading = styledTab([para("Before"), {
+      runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
+    }, para("After")], {
+      styles: [
+        { namedStyleType: "NORMAL_TEXT", textStyle: { bold: true } },
+        { namedStyleType: "HEADING_2", textStyle: { bold: false } },
+      ],
+    });
+    expect(refusal(heading, "Notes", "End\n\n")).toBe(
+      "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
+      "normal text, whose named style gives the bold, italic or strikethrough that text has, so " +
+      "it would read without it. Write the break at the paragraph's end, or replace the whole " +
+      "paragraph.");
+  });
+
   it("refuses an edit beside kept text its named style also formats, while an earlier change waits", () => {
     let tab = styledTab([
       para("Other text"),

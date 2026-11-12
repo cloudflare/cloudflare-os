@@ -75,7 +75,7 @@ const TEXT_FIELDS = [
 ] as const;
 type TextField = typeof TEXT_FIELDS[number];
 
-/** What a paragraph's text loses when the paragraph is given a named style. */
+/** The look a paragraph's text loses, where it is the same on every run, to a named style. */
 const LOOK_FIELDS = [
   "bold", "italic", "strikethrough", "underline", "foregroundColor", "fontSize",
 ] as const;
@@ -797,13 +797,18 @@ function updateParagraphStyle(
         notModelled("updateParagraphStyle naming namedStyleType without giving one");
       }
       style.namedStyleType = namedStyleType;
-      // Naming the style resets more than the style: the paragraph's alignment goes, and so
-      // does the look of its text. A link stays.
+      // Naming the style resets more than the style: the paragraph's alignment goes, and so does
+      // each part of its text's look that every run of it has alike, its break's included, as a
+      // look given the whole line. A look on part of the text stays, and so do links (probes
+      // P2, P5, P6: bold and size on the whole line go, italic on one word stays).
       delete style.alignment;
-      for (let { textRun: run } of paragraph.elements) {
-        if (!run) continue;
-        let own: ModelTextStyle = run.textStyle;
-        for (let field of LOOK_FIELDS) delete own[field];
+      let runs = paragraph.elements.flatMap(element =>
+        element.textRun ? [element.textRun.textStyle as ModelTextStyle] : []);
+      for (let field of LOOK_FIELDS) {
+        let first = JSON.stringify(runs[0]?.[field]);
+        if (first !== undefined && runs.every(own => JSON.stringify(own[field]) === first)) {
+          for (let own of runs) delete own[field];
+        }
       }
     }
     for (let field of ["indentStart", "indentFirstLine"] as const) {

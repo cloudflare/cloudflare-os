@@ -716,7 +716,7 @@ const formattedParagraph = () => {
 
 describe("the paragraph requests", () => {
 
-  it("drops a paragraph's alignment and its text's look when a request names the style", () => {
+  it("drops a paragraph's alignment, and the look all its text has alike, when a request names the style", () => {
     for (let namedStyleType of ["NORMAL_TEXT", "HEADING_2"]) {
       let result = applyDocsRequests(formattedParagraph(), [
         styleParagraphs(1, 7, { namedStyleType }, "namedStyleType"),
@@ -725,9 +725,24 @@ describe("the paragraph requests", () => {
 
       expect(modelStyle(paragraph)).toEqual({ namedStyleType });
       expect(alignmentAt(result, 1)).toBeUndefined();
-      expect(fontSizeAt(result, 1)).toBeUndefined();
-      // A link stays.
-      expect(runsOf(paragraph)).toEqual([["He", {}], ["llo", { link: LINK_A }], ["\n", {}]]);
+      // A look on part of the text stays, and so does a link (probes P2, P6).
+      expect(fontSizeAt(result, 1)).toBe(14);
+      expect(runsOf(paragraph)).toEqual([
+        ["He", { bold: true, italic: true, ...sized(14) }],
+        ["llo", { link: LINK_A, underline: true }],
+        ["\n", {}],
+      ]);
+
+      // One every run has, the break's included, goes (probes P5, P6).
+      let whole = buildTab([{
+        runs: [
+          { text: "Hel", style: { bold: true, ...sized(18) } as ModelTextStyle },
+          { text: "lo", style: { bold: true, italic: true, ...sized(18) } as ModelTextStyle },
+          { text: "\n", style: { bold: true, ...sized(18) } as ModelTextStyle },
+        ],
+      }]);
+      let renamed = applyDocsRequests(whole, [styleParagraphs(1, 7, { namedStyleType }, "namedStyleType")]);
+      expect(runsOf(bodyParagraphs(renamed)[0])).toEqual([["Hel", {}], ["lo", { italic: true }], ["\n", {}]]);
     }
   });
 

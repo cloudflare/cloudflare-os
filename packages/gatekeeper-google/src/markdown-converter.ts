@@ -2090,9 +2090,9 @@ type MarkdownWriteOptions = {
    * Make the paragraph that a kept final break splits off a plain one: it takes the list and
    * style of the paragraph written into, which the Markdown does not show on it. `list` says
    * whether that paragraph is a list item, whose bullet and indent then go. `restyle` says
-   * whether its named style is not normal text; naming a style resets the look of its text, so
-   * `runs`, its kept text's bold, italic, strikethrough and links counted from its start, are
-   * then written again.
+   * whether its named style is not normal text; naming a style resets the look its text has on
+   * every run, so `runs`, its kept text's bold, italic, strikethrough and links counted from its
+   * start, are then written again.
    */
   resetTrailingParagraph?: {
     list: boolean; restyle: boolean; runs: { start: number; end: number; textStyle: TextStyle }[];
@@ -2776,6 +2776,15 @@ export function dropInheritedFormatting(
   let rewrite = written?.rewrite;
   if (Object.keys(named).length === 0 || edited.markdown === content.markdown) return edited;
   let unknownStyles = written !== undefined && !rewrite && written.keepsFirst === undefined;
+  // Written again on text a normal paragraph's style formats alike, a style is stored as
+  // inherited, and that text would read without it.
+  if (written?.restated?.some(field => named.NORMAL_TEXT?.[field])) {
+    throw new Error(
+      "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
+      "normal text, whose named style gives the bold, italic or strikethrough that text has, so " +
+      "it would read without it. Write the break at the paragraph's end, or replace the whole " +
+      "paragraph.");
+  }
   let { prefixLen, suffixLen } = markdownReplacementBounds(content.markdown, edited.markdown);
   let { markdown } = edited;
   // The edited Markdown the requests write, where they write only the replaced text: the text
@@ -3223,6 +3232,14 @@ function inlineWrite(
   let split = !ahead && preserveTrailingNewline && !docRange.startsAfterParagraph
     ? sourceMap.blocks.find(block => block.docStart <= end && end < block.docEnd) : undefined;
   let restyle = split !== undefined && split.namedStyleType !== "NORMAL_TEXT";
+  // A subtitle's text reads italic by its style where the style makes it so, and normal text
+  // would not, which the write cannot tell.
+  if (split?.namedStyleType === "SUBTITLE" && end < split.docEnd - 1) {
+    throw new Error(
+      "replaceText: a paragraph break written inside a subtitle would make the rest of it a " +
+      "normal paragraph, without the subtitle's look. Write the break at the subtitle's end, " +
+      "or replace the whole subtitle.");
+  }
   let runs: { start: number; end: number; textStyle: TextStyle }[] = [];
   for (let segment of restyle ? split!.segments : []) {
     if ("syntaxOnly" in segment) continue;
@@ -3347,15 +3364,15 @@ export function rewrittenBlockStyles(
     markdown.slice(trimmedStart, trimmedEnd).includes("\n"));
   if (!rewrite) {
     let { writeOptions } = inlineWrite(sourceMap, markdown, trimmedStart, trimmedEnd, trimmedNew);
-    // A paragraph split off and given another style has its kept text written again.
-    let lineEnd = markdown.indexOf("\n", trimmedEnd);
-    let rewritesRest = writeOptions.resetTrailingParagraph?.restyle === true;
+    let restated = new Set<"bold" | "italic" | "strikethrough">();
+    let trailing = writeOptions.resetTrailingParagraph;
+    for (let run of trailing?.restyle ? trailing.runs : []) {
+      for (let field of INHERITED_FIELDS) if (run.textStyle[field]) restated.add(field);
+    }
     return {
       keepsFirst: writeOptions.preserveLeadingParagraph === true,
-      replaced: {
-        mdStart: trimmedStart,
-        mdEnd: rewritesRest ? lineEnd < 0 ? markdown.length : lineEnd : trimmedEnd,
-      },
+      replaced: { mdStart: trimmedStart, mdEnd: trimmedEnd },
+      ...(restated.size > 0 ? { restated: [...restated] } : {}),
     };
   }
   let { blockRange: { blocks, mdStart }, targets } = rewrite;
@@ -3384,9 +3401,16 @@ export function rewrittenBlockStyles(
 export type WrittenStyles =
   | {
     rewrite: { mdStart: number; styles: string[]; rewritten: boolean[] };
-    keepsFirst?: never; replaced?: never;
+    keepsFirst?: never; replaced?: never; restated?: never;
   }
-  | { keepsFirst?: boolean; replaced: MarkdownRange; rewrite?: never };
+  | {
+    keepsFirst?: boolean; replaced: MarkdownRange; rewrite?: never;
+    /**
+     * The styles written again, after it is made normal text, on the kept text of a paragraph
+     * the edit splits off a list item or heading.
+     */
+    restated?: (typeof INHERITED_FIELDS)[number][];
+  };
 
 /**
  * Rewrite whole source blocks paragraph by paragraph, so each kept paragraph keeps its own list and
