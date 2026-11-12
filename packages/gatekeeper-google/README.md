@@ -683,19 +683,21 @@ with their master and background, but not their elements; each slide reports its
 and a background of its own. The Slides API cannot change which layout an existing slide is made
 from.
 
-A batch is queued as the first of four action kinds that fits it; they share everything but their
-names and whether a user may let them apply without asking. A user may let three apply without
+A batch is queued as the first of five action kinds that fits it; they share everything but their
+names and whether a user may let them apply without asking. A user may let four apply without
 asking: "Slide text edits" (only text edits); "Slide formatting and arrangement" (only formatting
 text, setting no link or font, since Google keeps their whole strings; formatting paragraphs and
 shapes; moving or stacking elements; and setting slides' backgrounds to a colour, `"none"` or
-`null`); and "Slide edits that keep every element, table row and column and download no images"
+`null`); "Slide edits that keep every element, table row and column and download no images"
 (every other batch that deletes no element, table row or column and downloads no image: mixed
 batches, links, fonts, alt text, new shapes and tables, table rows, columns and cell fills, and
-changes to layouts, masters and theme colours, which reach every slide made from them). The
-fourth, "Slide changes that delete elements, table rows or columns, or download images", always
-waits for approval. It holds a batch that deletes an element or a table's rows or columns, or has
+changes to layouts, masters and theme colours, which reach every slide made from them); and
+"Slide changes that delete elements, table rows or columns" (a batch that deletes any of those
+and downloads no image), since the presentation's version history restores what it deletes. The
+fifth, "Slide changes that download images", always waits for approval. It holds a batch that has
 Google download an image from a URL the agent chose (to insert it, replace one, or use it as a
-picture background), since that URL can carry whatever the agent encoded in it.
+picture background), whatever else it does, since that URL can carry whatever the agent encoded
+in it.
 
 `createSlide()` adds a slide made from one of the presentation's layouts, at the start, the end, or
 after a given slide. The gatekeeper mints the slide's ID and one for each placeholder it gets from
@@ -717,8 +719,9 @@ a slide queued after it on one of those layouts is refused. Google names a new s
 only as it creates the slide, so they cannot be edited until it is approved.
 
 Adding, duplicating and moving slides are the "Adding, copying and reordering slides" kind, which a
-user may let apply without asking. Deleting a slide always waits for approval, since it takes the
-slide's content and notes, and can take its master and layouts.
+user may let apply without asking. Deleting a slide is the "Deleting slides" kind, which a user may
+let apply without asking too: it takes the slide's content and notes, and can take its master and
+layouts, and the presentation's version history restores them.
 
 `setSlidesSkipped()` skips slides, leaving them out when presenting, or shows them again. It is
 the "Skipping slides" kind, which a user may let apply without asking: it destroys nothing, and
