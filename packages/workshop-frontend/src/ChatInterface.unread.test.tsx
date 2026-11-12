@@ -66,10 +66,12 @@ it.each([10, 0, undefined])("only offers the useful thread read action (unread c
 
 // The same thread menu handles normal and spawned chats, including saved overrides.
 it.each([
-  {spawned: false, enabled: undefined, expectedEnabled: true},
+  {spawned: false, enabled: undefined, expectedEnabled: false},
   {spawned: true, enabled: undefined, expectedEnabled: false},
   {spawned: true, enabled: true, expectedEnabled: true},
   {spawned: false, enabled: false, expectedEnabled: false},
+  {spawned: false, enabled: true, expectedEnabled: true},
+  {spawned: true, enabled: false, expectedEnabled: false},
 ].flatMap(preference => [0, 2].map(count => ({...preference, count}))))(
     "toggles notifications without disabling read actions (spawned: $spawned, override: $enabled, unread: $count)",
     async ({spawned, enabled, expectedEnabled, count}) => {

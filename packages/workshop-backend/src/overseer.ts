@@ -21,7 +21,7 @@ import {
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
-  type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
+  isChatParticipation, type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
 } from "./storage-schema/overseer-storage";
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
@@ -30,7 +30,7 @@ import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor }
 import type { BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToMutedSpawnedChats,
+  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToParticipationNotifications,
   migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -1285,6 +1285,7 @@ class OverseerImpl implements AgentHooks {
           this.storage.chats.get(chatKey(chatId, counter.latestVisibleMessageSequence));
         let head = meta ? headForMessage(meta, latestMessage) : undefined;
         let latestVisibleSequence = counter?.visibleThroughSequence ?? 0;
+        let participants = new Set(counter?.participantIds?.map(profileId => this.users.idFromName(profileId).toString()));
         let latestMessageAuthorId = head && head.latestSequence >= 0 && latestMessage?.author.type === "user"
           ? latestMessage.author.id : undefined;
         // Read this pending batch once, not all historical candidates once per recipient.
@@ -1301,7 +1302,7 @@ class OverseerImpl implements AgentHooks {
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
             this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, latestMessageAuthorId,
               head: head!, headUpdatedAt: meta.lastActive,
-              notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
+              hasParticipated: participants.has(userId) ? true : undefined,
               notifications: notifications.filter(event => event.userId === userId &&
                 start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
                 .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null));
@@ -1351,6 +1352,11 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
+  hasChatParticipation(chatId: number, userId: string): boolean {
+    return this.storage.nextChatSequences.get(chatId)?.participantIds?.some(profileId =>
+      this.users.idFromName(profileId).toString() === userId) ?? false;
+  }
+
   chatHead(chatId: number): ChatTimelineHead | undefined {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
@@ -1379,7 +1385,7 @@ class OverseerImpl implements AgentHooks {
         readThroughSequence: through, readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
         latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
         head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
-        notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
+        hasParticipated: this.hasChatParticipation(chatId, userId) ? true : undefined,
         notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1,
       }, rewind);
   }
@@ -1391,7 +1397,7 @@ class OverseerImpl implements AgentHooks {
     let tail = this.nextChatSequencePeek(chatId) - 1;
     await this.wrapUserDo(this.users.get(this.users.idFromString(userId))).setChatNotificationsEnabled(
       this.ctx.id.toString(), chatId, enabled, {
-        notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
+        hasParticipated: this.hasChatParticipation(chatId, userId) ? true : undefined,
         notifiedThroughSequence: tail,
       });
   }
@@ -1416,10 +1422,15 @@ class OverseerImpl implements AgentHooks {
       if (old) { message.visibleThroughSequence = old.visibleThroughSequence; return; }
       if (!this.ownerId) return;
       let counter = this.storage.nextChatSequences.get(message.chatId) ?? {chatId: message.chatId, nextSequence: 0};
+      let participantIds = counter.participantIds;
+      if (isChatParticipation(message) && !participantIds?.includes(message.author.id)) {
+        participantIds = [...participantIds ?? [], message.author.id];
+      }
       let visible = counter.visibleThroughSequence ?? 0;
       if (isCountableChatMessage(message)) visible++;
-      if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence) {
-        this.storage.nextChatSequences.put({...counter, visibleThroughSequence: visible,
+      if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence ||
+          participantIds !== counter.participantIds) {
+        this.storage.nextChatSequences.put({...counter, participantIds, visibleThroughSequence: visible,
           latestVisibleMessageSequence: isCountableChatMessage(message) ? message.sequence : counter.latestVisibleMessageSequence,
           trackingStartSequence: counter.trackingStartSequence ?? message.sequence});
       }
@@ -1428,7 +1439,10 @@ class OverseerImpl implements AgentHooks {
     this.storage.chats.subscribe({
       add: message => {
         stamp(message);
-        if (isCountableChatMessage(message)) this.markChatDirty(message.chatId, message.sequence, message.visibleThroughSequence);
+        if (isCountableChatMessage(message) || isChatParticipation(message)) {
+          this.markChatDirty(message.chatId, message.sequence,
+            isCountableChatMessage(message) ? message.visibleThroughSequence : undefined);
+        }
       },
       update: (old, message) => {
         stamp(message, old);
@@ -1662,7 +1676,7 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
-      migrateToMutedSpawnedChats(this);
+      migrateToParticipationNotifications(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -11181,7 +11195,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
         head: this.impl.chatHead(meta.id),
         headUpdatedAt: meta.lastActive,
-        notificationsMutedByDefault: meta.spawnerName !== undefined ? true as const : undefined,
+        hasParticipated: this.impl.hasChatParticipation(meta.id, clientUser.id.toString()) ? true as const : undefined,
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
       void (async () => {

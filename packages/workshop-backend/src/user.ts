@@ -65,8 +65,8 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
  * it twice is harmless. "Sequence" and "visible sequence" are as described on `ChatReadCursor`.
  */
 export type ChatMessageProgress = {
-  /** Source default for spawned chats; an explicit user preference takes precedence. */
-  notificationsMutedByDefault?: true;
+  /** Whether this user has participated; an explicit notification preference takes precedence. */
+  hasParticipated?: true;
   /** The chat's current title and latest-message preview, for the inbox. */
   head: ChatTimelineHead;
   /**
@@ -115,8 +115,8 @@ export type ChatMessageProgress = {
  * described on `ChatReadCursor`.
  */
 export type ChatReadPosition = {
-  /** Source default for spawned chats; an explicit user preference takes precedence. */
-  notificationsMutedByDefault?: true;
+  /** Whether this user has participated; an explicit notification preference takes precedence. */
+  hasParticipated?: true;
   /** The chat's current title and latest-message preview. */
   head: ChatTimelineHead;
   /** Workspace metadata time used to order otherwise identical heads. */
@@ -137,8 +137,8 @@ export type ChatReadPosition = {
 
 /** Captured chat state sent on shared-workspace admission to initialize read and alert horizons. */
 export type ChatAdmissionBaseline = {
-  /** Source default for spawned chats; an explicit user preference takes precedence. */
-  notificationsMutedByDefault?: true;
+  /** Whether this user has participated; an explicit notification preference takes precedence. */
+  hasParticipated?: true;
   /** The chat's ID within the workspace. */
   chatId: number;
   /** Earlier notifications, through this timeline sequence, are already handled. */
@@ -747,7 +747,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         old.unreadCount === cursor.unreadCount &&
         old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
         old.notificationsEnabled === cursor.notificationsEnabled &&
-        old.notificationsMutedByDefault === cursor.notificationsMutedByDefault &&
+        old.hasParticipated === cursor.hasParticipated &&
         old.notifiedEventIds?.join() === cursor.notifiedEventIds?.join() && old.deleted === cursor.deleted &&
         old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
         old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
@@ -757,14 +757,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return true;
   }
 
-  #mergeHead(current: ChatReadCursor, incoming: {head?: ChatTimelineHead; headUpdatedAt?: Date; notificationsMutedByDefault?: true}) {
+  #mergeHead(current: ChatReadCursor, incoming: {head?: ChatTimelineHead; headUpdatedAt?: Date; hasParticipated?: true}) {
     let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
     let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
       (incoming.head.latestSequence === current.head.latestSequence &&
         at !== undefined && (previous === undefined || at > previous)));
     return {...(newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
       {head: current.head, headUpdatedAt: current.headUpdatedAt}),
-      notificationsMutedByDefault: incoming.notificationsMutedByDefault ?? current.notificationsMutedByDefault};
+      hasParticipated: incoming.hasParticipated ?? current.hasParticipated};
   }
 
   #hasWorkspace(workspaceId: string): boolean {
@@ -792,7 +792,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (scope !== "summary") {
       for (let cursor of this.#readCursors.values()) {
         if (this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted &&
-            (scope === "unread" ? cursor.unreadCount > 0 : cursor.workspaceId === scope.workspaceId)) {
+            (scope === "unread" ? cursor.unreadCount > 0 && this.#chatNotificationsEnabled(cursor) : cursor.workspaceId === scope.workspaceId)) {
           chats.push(this.#readState(cursor));
         }
       }
@@ -807,7 +807,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #chatNotificationsEnabled(cursor: ChatReadCursor): boolean {
-    return cursor.notificationsEnabled ?? !cursor.notificationsMutedByDefault;
+    return cursor.notificationsEnabled ?? cursor.hasParticipated === true;
   }
 
   // Consume alerts independently of read history, so unmuting cannot replay them.
@@ -824,14 +824,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /** Store this user's per-chat override using an authorized workspace snapshot, without a callback. */
   async setChatNotificationsEnabled(workspaceId: string, chatId: number, enabled: boolean,
-      baseline: Pick<ChatAdmissionBaseline, "notificationsMutedByDefault" | "notifiedThroughSequence">): Promise<void> {
+      baseline: Pick<ChatAdmissionBaseline, "hasParticipated" | "notifiedThroughSequence">): Promise<void> {
     if (!this.#hasWorkspace(workspaceId)) return;
     let current = this.#cursor(workspaceId, chatId);
     if (current.deleted || current.notificationsEnabled === enabled) return;
     this.ctx.storage.transactionSync(() => {
       // Preference changes leave read accounting and its paired head to ordinary fanout.
       let cursor = {...current, notificationsEnabled: enabled,
-        notificationsMutedByDefault: baseline.notificationsMutedByDefault ?? current.notificationsMutedByDefault};
+        hasParticipated: baseline.hasParticipated ?? current.hasParticipated};
       this.#storeCursor(this.#skipChatNotifications(cursor, baseline.notifiedThroughSequence));
     });
     this.#unreadChanged(workspaceId, chatId);
@@ -931,7 +931,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** Read inbox rows directly from the user's local projection. */
   async getUnreadThreads(): Promise<UnreadThread[]> {
     return [...this.#readCursors.values()]
-      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0)
+      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0 && this.#chatNotificationsEnabled(cursor))
       .map(cursor => ({...this.#readState(cursor),
         chatTitle: cursor.head?.chatTitle ?? `Thread ${cursor.chatId}`,
         latestSequence: cursor.head?.latestSequence ?? -1,
@@ -1003,7 +1003,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         update = subscriber.summaryUpdated(change.summary);
       } else {
         update = subscriber.chatUpdated(change.workspaceId, change.chatId,
-          scope === "unread" && !chat?.unreadMessageCount ? null : chat, change.summary);
+          scope === "unread" && (!chat?.unreadMessageCount || !chat.notificationsEnabled) ? null : chat, change.summary);
       }
       this.ctx.waitUntil(update.catch(() => {
         this.#unreadSubscribers.delete(token);
@@ -1321,7 +1321,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             this.#storeCursor({workspaceId, chatId: baseline.chatId,
               head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
               notificationsEnabled: cursor?.notificationsEnabled,
-              notificationsMutedByDefault: baseline.notificationsMutedByDefault,
+              hasParticipated: baseline.hasParticipated,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
               latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
             changed = true;

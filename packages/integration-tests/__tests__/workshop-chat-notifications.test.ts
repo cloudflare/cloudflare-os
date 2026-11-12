@@ -104,3 +104,48 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
     .toMatchObject({ notificationsEnabled: enabled, unreadMessageCount: 0 });
   expect(model.remainingSteps()).toBe(0);
 });
+
+it("opts into a spawned chat on first human participation and preserves a later explicit mute", async () => {
+  const model = models.script([{text: "Automated result."}, {text: "First human reply."}, {text: "Muted reply."}]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, usernamePrefix: "participation",
+  });
+  using publicApi = connect(harness.url);
+  using api = await logIn(publicApi, session.username);
+  using ws = await api.newWorkspace();
+  const {id: workspaceId} = await ws.getMetadata();
+  const received = new Notifications();
+  using subscriber = stubFor(received);
+  using _subscription = await api.subscribeToNotifications(subscriber);
+  using spawner = await ws.newAgentSpawnerGatekeeper({displayName: "Participation", modelId: SCRIPTED_MODEL_ID, env: {}});
+  using binding = await spawner.openSession() as RpcStub<Spawner>;
+  using callable = await binding.spawnCallable("Automated chat", {
+    types: "interface Probe { run(): void; }", mainType: "Probe",
+  }) as RpcStub<Probe>;
+  const chatId = (await ws.listChats())[0]!.id;
+  await callable.run();
+  await waitForIdleChat(ws, chatId);
+  const initial = (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)!;
+  expect(initial).toMatchObject({notificationsEnabled: false, unreadMessageCount: 1});
+  expect(await api.getUnreadThreads()).toEqual([]);
+
+  await ws.sendChatMessage(chatId, "I want to participate", SCRIPTED_MODEL_ID);
+  await waitForIdleChat(ws, chatId);
+  await waitFor("the first participating completion alert", async () => received.events.length === 1 ? true : null);
+  const followed = (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)!;
+  expect(followed).toMatchObject({notificationsEnabled: true, unreadMessageCount: 3,
+    readThroughSequence: initial.readThroughSequence});
+  expect(await api.getUnreadThreads()).toMatchObject([{chatId, unreadMessageCount: 3}]);
+
+  await ws.setChatNotificationsEnabled(chatId, false);
+  await ws.sendChatMessage(chatId, "Keep this muted", SCRIPTED_MODEL_ID);
+  await waitForIdleChat(ws, chatId);
+  const muted = (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)!;
+  expect(muted).toMatchObject({notificationsEnabled: false, unreadMessageCount: 5,
+    readThroughSequence: initial.readThroughSequence});
+  expect(await api.getUnreadThreads()).toEqual([]);
+  await ws.setChatNotificationsEnabled(chatId, true);
+  expect(await api.getUnreadThreads()).toMatchObject([{chatId, unreadMessageCount: 5,
+    readThroughSequence: initial.readThroughSequence}]);
+  expect(model.remainingSteps()).toBe(0);
+});

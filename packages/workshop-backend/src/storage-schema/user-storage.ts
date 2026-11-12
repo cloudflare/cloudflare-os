@@ -137,8 +137,8 @@ export type ChatReadCursor = {
   chatId: number;
   /** Explicit user preference; absent means use the workspace-provided default. */
   notificationsEnabled?: boolean;
-  /** Spawned chats default to muted; this never overrides an explicit user preference. */
-  notificationsMutedByDefault?: true;
+  /** Whether this user has participated; this never overrides an explicit notification preference. */
+  hasParticipated?: true;
   /** Sequence of the last record the user has read, inclusive; -1 if they haven't read anything. */
   readThroughSequence: number;
   /**

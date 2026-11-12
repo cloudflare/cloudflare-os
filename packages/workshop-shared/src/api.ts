@@ -254,7 +254,10 @@ export type ChatReadState = {
    * to place a "new messages" divider.
    */
   readThroughSequence: number;
-  /** Whether this chat contributes unread badges and alerts for this user. Absent on older servers. */
+  /**
+   * Whether this chat appears in the unread inbox and contributes badges and alerts for this user.
+   * Absent on older servers.
+   */
   notificationsEnabled?: boolean;
 };
 
@@ -281,7 +284,8 @@ export type ChatTimelineHead = {
 };
 
 /**
- * One row of the user's unread inbox: a chat with unread messages, plus what's needed to display it.
+ * One row of the user's unread inbox: a chat with notifications enabled and unread messages,
+ * plus what's needed to display it.
  * Returned by `AuthenticatedApi.getUnreadThreads()`.
  */
 export interface UnreadThread extends ChatReadState, ChatTimelineHead {}
@@ -331,7 +335,7 @@ export type UnreadSummaryUpdate = {
  * updates for. Every scope receives the overall and per-workspace totals. The scope only controls
  * which chat rows are sent:
  * - `"summary"`: no chats, only totals (e.g. for badges).
- * - `"unread"`: every chat that has unread messages (e.g. for the unread inbox).
+ * - `"unread"`: chats with unread messages and notifications enabled (e.g. for the unread inbox).
  * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
  *   list).
  */
@@ -727,8 +731,8 @@ export interface AuthenticatedApi extends RpcTarget {
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
   /**
-   * List the chats with unread messages across all of the user's workspaces, most recently active
-   * first: the unread inbox. Each row includes the chat's title and a preview of its latest message,
+   * List the chats with notifications enabled and unread messages across the user's workspaces,
+   * most recently active first: the unread inbox. Each row includes the chat's title and a preview of its latest message,
    * so the inbox can be shown without opening any workspace. See "Unread tracking" above
    * `ChatReadState`.
    */
@@ -3663,8 +3667,9 @@ export interface Overseer extends RpcTarget {
   markChatUnread(chatId: number, fromSequence?: number): Promise<boolean>;
 
   /**
-   * Enable or mute this chat's unread badges and alerts for the current user. Normal chats default
-   * on; agent-spawned chats default off. Read history and unread dividers are preserved. Changing
+   * Enable or mute this chat's unread inbox entry, badges and alerts for the current user. Sending
+   * a first message or slash command enables notifications by default; an explicit preference
+   * always takes precedence. Read history and unread dividers are preserved. Changing
    * the preference clears queued alerts, so enabling only alerts about future activity.
    * Not available in use-only sessions.
    */

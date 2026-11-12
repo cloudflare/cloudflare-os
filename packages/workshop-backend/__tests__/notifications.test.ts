@@ -315,7 +315,7 @@ describe("UserDurableObject notifications", () => {
       });
       const packet = (sequence: number, id: string) => ({
         head: {chatTitle: NOTIFICATION.chatTitle!, latestSequence: sequence},
-        headUpdatedAt: new Date(), firstMessageSequence: sequence,
+        headUpdatedAt: new Date(), hasParticipated: true as const, firstMessageSequence: sequence,
         firstVisibleSequence: sequence, latestVisibleSequence: sequence,
         notifications: [{id, kind: NOTIFICATION.kind, chatTitle: NOTIFICATION.chatTitle, sequence}],
       });
@@ -467,7 +467,7 @@ describe("UserDurableObject notifications", () => {
       storage.browserNotificationSubscriptions.put({browser: ONE});
       const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
       await user.newWorkspace(workspaceId, "Workspace");
-      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 0,
+      await user.messageArrived(workspaceId, 1, {hasParticipated: true, firstMessageSequence: 0,
         firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
       expect(storage.notificationBadge.get()).toEqual({version: 0, count: null});
     });
@@ -552,7 +552,7 @@ describe("UserDurableObject notifications", () => {
         } else {
           const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
           await user.newWorkspace(workspaceId, "Workspace");
-          await user.messageArrived(workspaceId, 1, {firstMessageSequence: 0,
+          await user.messageArrived(workspaceId, 1, {hasParticipated: true, firstMessageSequence: 0,
             firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
         }
         expect(storage.notificationBadge.get()).toMatchObject({version: 2,
@@ -570,11 +570,11 @@ describe("UserDurableObject notifications", () => {
       storage.phoneNotificationSubscriptions.put({phone: ONE});
       const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
       await user.newWorkspace(workspaceId, "Workspace");
-      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 0,
+      await user.messageArrived(workspaceId, 1, {hasParticipated: true, firstMessageSequence: 0,
         firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
       const deadline = storage.notificationBadge.get().retryAt;
       await vi.advanceTimersByTimeAsync(400);
-      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 1,
+      await user.messageArrived(workspaceId, 1, {hasParticipated: true, firstMessageSequence: 1,
         firstVisibleSequence: 2, latestVisibleSequence: 2, notifications: []});
       expect(storage.notificationBadge.get()).toMatchObject({count: 2, retryAt: deadline});
     });
@@ -588,7 +588,7 @@ describe("UserDurableObject notifications", () => {
       await user.newWorkspace(workspaceId, "Existing workspace");
       const storage = makeUserStorage(ctx.storage);
       for (const [chatId, unreadCount] of [[1, 3], [2, 5]]) storage.chatReadCursors.put({
-        workspaceId, chatId, readThroughSequence: -1, readThroughVisibleSequence: 0,
+        workspaceId, chatId, hasParticipated: true, readThroughSequence: -1, readThroughVisibleSequence: 0,
         latestVisibleSequence: unreadCount, unreadCount, notifiedThroughSequence: -1});
       storage.phoneNotificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
@@ -596,7 +596,7 @@ describe("UserDurableObject notifications", () => {
     await evictDurableObject(stub);
     await runInDurableObject(stub, async (user, ctx) => {
       Object.defineProperty(user, "env", {value: installEnv});
-      await user.messageArrived(workspaceId, 1, {firstMessageSequence: 4,
+      await user.messageArrived(workspaceId, 1, {hasParticipated: true, firstMessageSequence: 4,
         firstVisibleSequence: 4, latestVisibleSequence: 4, notifications: []});
       const storage = makeUserStorage(ctx.storage);
       expect(storage.notificationBadge.get()).toMatchObject({count: 9});
@@ -614,7 +614,7 @@ describe("UserDurableObject notifications", () => {
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Deleted workspace");
       const storage = makeUserStorage(ctx.storage);
-      storage.chatReadCursors.put({workspaceId, chatId: 1, readThroughSequence: -1,
+      storage.chatReadCursors.put({workspaceId, chatId: 1, hasParticipated: true, readThroughSequence: -1,
         readThroughVisibleSequence: 0, latestVisibleSequence: 8, unreadCount: 8, notifiedThroughSequence: 7});
       storage.phoneNotificationSubscriptions.put({phone: ONE});
       storage.notificationBadge.put({version: 1, count: 8});
@@ -646,7 +646,7 @@ describe("UserDurableObject notifications", () => {
     const workspaceId = env.TEST_OVERSEER.idFromName(crypto.randomUUID()).toString();
     await runInDurableObject(stub, async (user, ctx) => {
       await user.newWorkspace(workspaceId, "Existing workspace");
-      makeUserStorage(ctx.storage).chatReadCursors.put({workspaceId, chatId: 1, readThroughSequence: -1,
+      makeUserStorage(ctx.storage).chatReadCursors.put({workspaceId, chatId: 1, hasParticipated: true, readThroughSequence: -1,
         readThroughVisibleSequence: 0, latestVisibleSequence: 8, unreadCount: 8, notifiedThroughSequence: 7});
     });
     await evictDurableObject(stub);
@@ -718,7 +718,7 @@ describe("UserDurableObject notifications", () => {
       await expect(runInDurableObject(stub, async (user, ctx) => {
         Object.defineProperty(user, "env", {value: installEnv});
         await user.newWorkspace(workspaceId, "Workspace");
-        await user.messageArrived(workspaceId, 7, {firstMessageSequence: 0,
+        await user.messageArrived(workspaceId, 7, {hasParticipated: true, firstMessageSequence: 0,
           firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: []});
         const storage = makeUserStorage(ctx.storage);
         storage.phoneNotificationSubscriptions.put({phone: ONE});
@@ -727,7 +727,7 @@ describe("UserDurableObject notifications", () => {
           notifying.resolve(); await releaseAlert.promise;
         })));
         await user.messageArrived(workspaceId, 7, {head: {chatTitle: "Read thread", latestSequence: 1}, headUpdatedAt: new Date(),
-          firstMessageSequence: 1, firstVisibleSequence: 2, latestVisibleSequence: 2,
+          firstMessageSequence: 1, firstVisibleSequence: 2, latestVisibleSequence: 2, hasParticipated: true,
           notifications: [{...NOTIFICATION, sequence: 1}]});
         await notifying.promise;
         if (action === "workspace") await user.markWorkspaceRead(workspaceId);
@@ -840,7 +840,7 @@ describe("UserDurableObject notifications", () => {
       })));
       using publishing = vi.spyOn(user, "publishNotification");
       const position = {head: {chatTitle: "Chat", latestSequence: 1}, headUpdatedAt: new Date(),
-        latestVisibleSequence: 1};
+        latestVisibleSequence: 1, hasParticipated: true as const};
       await user.messageArrived(workspaceId, chatId, {...position,
         firstMessageSequence: 1, firstVisibleSequence: 1,
         notifications: [{id: NOTIFICATION.id, kind: NOTIFICATION.kind, chatTitle: "Chat", sequence: 1}]});

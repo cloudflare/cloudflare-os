@@ -4,16 +4,19 @@ The workspace owns the timeline and message ordering. Each User DO owns its user
 horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
 for inbox, viewport and native bridge behavior.
 
-Chats created by `spawn()` or `spawnCallable()` default to muted badges and alerts,
-including permission alerts. Normal chats default to enabled. Each user can change either kind
-with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO
-stores the override on its private read cursor; source fanout carries the default from persisted
-`spawnerName`, without overriding the user's choice. Muting clears queued alerts and excludes the
-chat from badge rollups, without advancing its read horizon or clearing its unread count. Muted
-chats keep their catch-up divider, ordinary reading receipts and explicit read/unread actions.
-The unread inbox still includes them, with no badge. Changing the preference consumes known
-alert positions, so enabling only alerts about future activity while preserving unread history.
-The upgrade journals existing spawned chats through ordinary durable fanout to apply the default.
+Notifications default to off until each user sends their first message or slash command in a
+chat, whether it was created normally or by an agent. Each user can change this with the thread
+menu's **Mute notifications** / **Unmute notifications** control. The User DO stores the explicit
+override on its private read cursor; participation never overrides that choice. Source fanout
+carries participation from the workspace's persisted per-chat participant IDs, including when a
+batch coalesces a user's message with a later agent response. The upgrade recovers historical
+participants once from the timeline; ordinary writes maintain them alongside the visible counter.
+
+Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,
+without advancing its read horizon or clearing its unread count. Muted chats keep their catch-up
+divider, ordinary reading receipts and explicit read/unread actions. Unmuting restores the inbox
+entry and badges for still-unread activity. Changing the preference consumes known alert positions,
+so enabling only alerts about future activity while preserving unread history.
 
 ```mermaid
 flowchart LR
@@ -43,7 +46,7 @@ the latest preview/time by key without scanning past internal activity. The coun
 the typed-storage write transaction. Raw sequence allocation preserves the visible counter.
 Fanout carries an absolute visible head, so duplicate/older deliveries never increment counts.
 
-There is **no historical backfill**, workspace enumeration or rollout-time recipient RPC. Old
+There is **no unread-history backfill**, workspace enumeration or rollout-time recipient RPC. Old
 records remain unnumbered and are treated as already read. If the first delivered visible message
 is 4, the User DO initializes its read-visible horizon to 3. For a coalesced first batch 4..6,
 the source's durable dirty row retains 4 and the resulting unread count is 3. Metadata-only updates
@@ -60,7 +63,7 @@ Each `chatReadCursors` row contains:
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
 - `notificationsEnabled`: optional explicit per-user override
-- `notificationsMutedByDefault`: source default for spawned chats
+- `hasParticipated`: whether this user has sent a message or slash command in the chat
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
 - `notifiedEventIds`: completed alert UUIDs at that position; absent when admission skips the whole position
 - `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
@@ -87,7 +90,7 @@ head. Bulk actions rely on this invariant; there is no metadata lookup fallback.
 
 Three targeted local queries avoid transferring the full thread state for every consumer:
 
-- `getUnreadThreads()` returns only unread rows, including display metadata, newest first.
+- `getUnreadThreads()` returns unread rows with notifications enabled, including display metadata, newest first.
 - `getWorkspaceUnreadState(workspaceId)` returns tracked thread horizons/counts for that workspace,
   including read rows, to merge into the Workspace DO's ordinary thread list. Missing rows are read.
 - `getUnreadSummary()` returns badge totals and nonzero per-workspace rollups, excluding muted chats
@@ -95,9 +98,9 @@ Three targeted local queries avoid transferring the full thread state for every 
 
 All three use hydrated local rows, write nothing, and query no other DO.
 `subscribeToUnreadState(scope, subscriber)` requires an explicit scope: `"summary"` sends no
-thread rows, `"unread"` sends only unread rows, and `{workspaceId}` sends read/unread statuses only
+thread rows, `"unread"` sends only unread rows with notifications enabled, and `{workspaceId}` sends read/unread statuses only
 for that workspace. Every scope includes global and per-workspace badge rollups. In-scope changes
-send one thread delta (null removes a now-read inbox row); out-of-scope changes send only rollups.
+send one thread delta (null removes a read or muted inbox row); out-of-scope changes send only rollups.
 Each delta carries just the changed workspace's rollup and global totals, not every workspace.
 Bulk replacements and reconnects retain the same scope, never the full historical thread list.
 The web app uses one subscription, switching its scope with the active view. The inbox refreshes

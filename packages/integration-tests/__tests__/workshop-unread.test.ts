@@ -179,6 +179,9 @@ it("synchronizes real timeline cursors across WebSocket sessions without leaking
       ? true : null,
   );
 
+  // Opening is not participation. A reader can still explicitly follow a chat before posting.
+  expect((await builder.getWorkspaceUnreadState(workspaceId))[0].notificationsEnabled).toBe(false);
+  await _builderWorkspace.setChatNotificationsEnabled(chatId, true);
   // No polling/reopening the workspace: ordinary message fanout must drive every user's badges.
   await workspace.sendChatMessage(chatId, "Third persisted item\nNot part of the preview", null);
   await waitFor("the same message reaching both users' live subscriptions", async () =>

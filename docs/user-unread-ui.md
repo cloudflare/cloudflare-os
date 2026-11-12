@@ -10,7 +10,7 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   thread statuses in its editor, and rollup changes that refresh the inbox. Global/sidebar workspace badges
   use rollups, not the user's historical thread rows. Returning, reconnecting or changing views
   replaces the subscription with the same explicit scope; stale callbacks cannot replace new data.
-- Unread threads opens a live, newest-first inbox with a one-line latest-message preview, direct
+- Unread threads opens a live, newest-first inbox of chats with notifications enabled, with a one-line latest-message preview, direct
   thread links, an empty state and Mark all read. Browsing it does not read threads. Previews arrive
   from `getUnreadThreads()` on the User DO, refreshed by live count/title updates. Loading the inbox
   never queries Workspace DOs. Mark all read updates only the User DO's locally replicated horizons.
