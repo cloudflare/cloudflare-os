@@ -9891,7 +9891,11 @@ class OverseerImpl implements AgentHooks {
     }
     if (creations.length > 0) {
       lines.push("\nNew resources (createExternalResource):");
-      for (let r of creations) lines.push(`* ${r.title} — resourceUrlPattern: ${r.urlPattern}\n  ${r.description}`);
+      for (let r of creations) {
+        let takes = r.creationConfigurator && r.creationConfigurationDescription;
+        lines.push(`* ${r.title} — resourceUrlPattern: ${r.urlPattern}` +
+            `${takes ? ` (configuration: ${takes})` : ""}\n  ${r.description}`);
+      }
     }
     return lines.join("\n");
   }
@@ -10004,14 +10008,16 @@ class OverseerImpl implements AgentHooks {
       chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
       : Promise<{gatekeeperId: WorkpieceId}> {
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
-        input.vendorId, input.resourceUrlPattern, input.title);
+        input.vendorId, input.resourceUrlPattern, input.title, input.configuration);
     let id = this.allocateWorkpieceId();
     this.storage.gatekeepers.put({
       id,
       class: minted.class,
       resourceTitle: input.title,
       creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
-                     typeUrlPattern: minted.typeUrlPattern},
+                     typeUrlPattern: minted.typeUrlPattern,
+                     ...(input.configuration !== undefined
+                         ? {configuration: input.configuration} : {})},
     });
     await this.submitAction(id, "create", minted.action, {from: "agent", chatId})
         .catch(error => { this.removeGatekeeper(id); throw error; });

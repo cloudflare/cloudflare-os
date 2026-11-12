@@ -24,6 +24,8 @@ const testState = vi.hoisted(() => ({
   // The mounted configurator's access-request handler, and how many configurators have mounted.
   ensureResources: null as ((patterns: string[]) => Promise<boolean>) | null,
   mounts: 0,
+  // What the mounted configurator was opened on.
+  initialResource: null as { initialResourceUrl?: string; resourceUrlPattern?: string } | null,
 }))
 
 const { openConnectWindow } = vi.hoisted(() => ({
@@ -74,12 +76,18 @@ vi.mock('../ResourceConfiguratorHost', async () => {
     return null
   }
 
-  const ResourceConfiguratorHost = ({ frame, frameKey, loading, error, ...callbacks }: Callbacks & {
+  const ResourceConfiguratorHost = ({ frame, frameKey, loading, error, initialResourceUrl,
+    resourceUrlPattern, ...callbacks }: Callbacks & {
     frame: Frame | null
     frameKey: number | null
     loading: boolean
     error: string | null
+    initialResourceUrl?: string
+    resourceUrlPattern?: string
   }) => {
+    useEffect(() => {
+      if (frame) testState.initialResource = { initialResourceUrl, resourceUrlPattern }
+    }, [frame, initialResourceUrl, resourceUrlPattern])
     if (loading) return null
     if (error) return <p>{error}</p>
     if (!frame) return null
@@ -126,11 +134,12 @@ afterEach(() => {
   testState.subscriber = null
   testState.ensureResources = null
   testState.mounts = 0
+  testState.initialResource = null
   ensureAccountResources.mockReset()
   openConnectWindow.mockReset()
 })
 
-async function renderModal() {
+async function renderModal(configuration?: string) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
     const frame = deferred<object>()
@@ -158,7 +167,8 @@ async function renderModal() {
   }
   const overseer = {
     getGatekeeperById: async () => ({
-      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', typeUrlPattern: PATTERN }),
+      getCreationSpec: async () => ({ type: 'gatekeeper', vendorId: 'google', typeUrlPattern: PATTERN,
+        configuration }),
       [Symbol.dispose]: () => {},
     }),
   } as unknown as RpcStub<Overseer>
@@ -207,6 +217,20 @@ describe('CreationAccountModal', () => {
     await act(async () => approveButton().click())
 
     expect(onChoose).toHaveBeenCalledWith({ accountId: 6, configuration: 'settings from frame-6' })
+  })
+
+  it('opens each account\'s configurator on the configuration the agent suggested', async () => {
+    const suggested = 'https://drive.google.com/drive/folders/team'
+    await renderModal(suggested)
+    await resolveStart(0)
+    expect(testState.initialResource)
+      .toEqual({ initialResourceUrl: suggested, resourceUrlPattern: PATTERN })
+
+    await act(async () => accountButton('home').click())
+    testState.initialResource = null
+    await resolveStart(1)
+    expect(testState.initialResource)
+      .toEqual({ initialResourceUrl: suggested, resourceUrlPattern: PATTERN })
   })
 
   it('enables Approve only once the selected account\'s configurator reports ready', async () => {

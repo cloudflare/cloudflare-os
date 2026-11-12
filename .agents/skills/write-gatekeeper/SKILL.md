@@ -182,6 +182,8 @@ When something already knows the exact resource — most importantly an AI agent
 
   The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards`/`HierarchyPicker` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
 
+  A creation configurator (`startCreationConfigurator`) is pre-filled from the configuration the agent suggested (`createExternalResource`'s `configuration`), paired with the pattern of the type being created. Set `creationConfigurationDescription` on the type to let the agent suggest one, naming what your configurator's `resourceUrl()` returns (Google: "the URL of the Google Drive folder to create it in"); without it the kernel refuses a suggestion. That URL is not one of the type's, so map it with `initialValuesFromResourceUrl`: the automatic mapping would read it as the resource being created. An agent picked it, so tell the approver while the choice is still the agent's.
+
 ### Step 7: STOP — Ask operator whether to proceed to phase 2
 
 The operator may prefer to implement phase 2 later, perhaps in a new context. Stop here and ask the operator whether to proceed.

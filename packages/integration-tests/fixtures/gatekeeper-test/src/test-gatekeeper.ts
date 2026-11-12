@@ -44,6 +44,10 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
   creatable: true,
+  // An approver's configuration is whatever a test approves with: nothing here serves the
+  // configurator frame, which only the Workshop UI asks for.
+  creationConfigurator: true,
+  creationConfigurationDescription: "the URL of the test folder to create it in",
 }];
 
 const TYPES_CODE = `
