@@ -155,7 +155,7 @@ export default defineConfig({
             'error',
             {
               allow: [
-                './docs-read-types', './drive-read-types', './sheets-read-types',
+                './comment-types', './docs-read-types', './drive-read-types', './sheets-read-types',
                 './slides-read-types',
               ],
             },

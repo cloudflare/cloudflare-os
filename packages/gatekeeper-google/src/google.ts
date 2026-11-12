@@ -106,6 +106,7 @@ import BIGQUERY_TYPES_CODE from "./bigquery-types.txt";
 import CALENDAR_TYPES_CODE from "./calendar-types.txt";
 import DRIVE_READ_TYPES_CODE from "./drive-read-types.txt";
 import DRIVE_TYPES_CODE from "./drive-types.txt";
+import COMMENT_TYPES_CODE from "./comment-types.txt";
 import {
   BigQueryConfiguratorUI,
   CalendarConfiguratorUI,
@@ -162,9 +163,13 @@ let googleDocTypesCode: string | undefined;
 let driveReadAgentTypesCode: string | undefined;
 let driveAgentTypesCode: string | undefined;
 
+/**
+ * A directly bound Doc's bundle. It holds the comment declarations, which every Drive bundle holds
+ * too, so the vendor's bundle takes them from here and from no Drive part.
+ */
 function getGoogleDocTypesCode(): string {
   return googleDocTypesCode ??= [
-    DOCS_READ_TYPES_CODE,
+    DOCS_READ_TYPES_CODE, COMMENT_TYPES_CODE,
     stripTypeModulePrefix(DOCS_TYPES_CODE, DOCS_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -180,10 +185,13 @@ function getDriveAgentTypesCode(): string {
   return driveAgentTypesCode ??= stripTypeModulePrefix(DRIVE_TYPES_CODE, DRIVE_TYPES_MODULE_PREFIX);
 }
 
-/** A Drive binding's bundle: the native read types and the Drive reads, with the writes for `write`. */
+/**
+ * A Drive binding's bundle: the native read types, the comment declarations and the Drive reads,
+ * with the writes for `write`.
+ */
 function getGoogleDriveTypesCode(write: boolean): string {
   return [
-    DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE,
+    DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE, COMMENT_TYPES_CODE,
     getDriveReadAgentTypesCode(), ...(write ? [getDriveAgentTypesCode()] : []),
   ].join("\n");
 }

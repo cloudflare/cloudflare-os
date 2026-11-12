@@ -9,6 +9,8 @@ import calendarDeclared from "../src/calendar-types.d.ts?raw";
 import calendarShipped from "../src/calendar-types.txt?raw";
 import chatDeclared from "../src/chat-types.d.ts?raw";
 import chatShipped from "../src/chat-types.txt?raw";
+import commentDeclared from "../src/comment-types.d.ts?raw";
+import commentShipped from "../src/comment-types.txt?raw";
 import docsReadDeclared from "../src/docs-read-types.d.ts?raw";
 import docsReadShipped from "../src/docs-read-types.txt?raw";
 import docsDeclared from "../src/docs-types.d.ts?raw";
@@ -46,6 +48,7 @@ describe("agent-facing TypeScript type modules", () => {
     ["drive-read-types", driveReadShipped, driveReadDeclared],
     ["drive-types", driveShipped, driveDeclared],
     ["chat-types", chatShipped, chatDeclared],
+    ["comment-types", commentShipped, commentDeclared],
   ])("keeps %s.txt identical to its .d.ts", (name, shipped, declared) => {
     expect(shipped, `${name}.txt drifted from ${name}.d.ts; restore the .txt symlink to the .d.ts`)
       .toBe(declared);
@@ -54,7 +57,7 @@ describe("agent-facing TypeScript type modules", () => {
   it.each([
     "types", "docs-read-types", "docs-types", "sheets-read-types", "sheets-types",
     "slides-read-types", "slides-types", "calendar-types", "bigquery-types", "drive-read-types",
-    "drive-types", "chat-types",
+    "drive-types", "chat-types", "comment-types",
   ])("ships %s.txt as a symlink to its authoritative declaration", name => {
     expect(readlinkSync(new URL(`../src/${name}.txt`, import.meta.url))).toBe(`${name}.d.ts`);
   });

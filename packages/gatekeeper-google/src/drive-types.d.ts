@@ -1,6 +1,5 @@
-import type {
-  DriveComment, DriveCommentReply, GoogleDriveFolderReadSession, GoogleDriveReadSession,
-} from "./drive-read-types";
+import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";
+import type { GoogleDriveFolderReadSession, GoogleDriveReadSession } from "./drive-read-types";
 export type * from "./drive-read-types";
 
 /** Options for {@link DriveCommentWrites.comment}. */
@@ -23,26 +22,6 @@ export type DriveSuggestEditOptions = {
   note?: string;
   /** The Doc tab `oldText` is in. Defaults to the first tab. */
   tabId?: string;
-};
-
-/**
- * A suggested edit in a native Google Doc, queued for the user's approval. Once approved it is a
- * suggestion in the Doc, which someone who can edit the Doc accepts or rejects there; it is not a
- * comment, so `listComments()` shows it neither while it is queued nor after.
- */
-export type DocSuggestion = {
-  /** `pending:<n>` while it awaits approval. */
-  id: string;
-  /** The tab `oldText` is in. */
-  tabId: string;
-  /** The text the suggestion replaces, trimmed. */
-  oldText: string;
-  /** What it puts in its place; empty when it deletes `oldText`. */
-  newText: string;
-  /** Posted as a reply on the suggestion once it is made. */
-  note?: string;
-  createdTime: Date;
-  pending: true;
 };
 
 /**

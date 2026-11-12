@@ -93,6 +93,7 @@ function duplicates(names: string[]): string[] {
 function docBundle(): string {
   return [
     source("docs-read-types.txt"),
+    source("comment-types.txt"),
     stripTypeModulePrefix(source("docs-types.txt"), DOCS_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -103,6 +104,7 @@ function driveReadBundle(): string {
     source("docs-read-types.txt"),
     source("sheets-read-types.txt"),
     source("slides-read-types.txt"),
+    source("comment-types.txt"),
     stripTypeModulePrefix(source("drive-read-types.txt"), DRIVE_READ_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -183,6 +185,16 @@ message.addAttachment(file);
 
   it("compiles the exact Google Sheets agent declaration bundle without module dependencies", () => {
     expect(compileAgentTypes(sheetsBundle())).toEqual([]);
+  });
+
+  it.each([
+    ["Doc", docBundle], ["Drive", driveReadBundle], ["Drive read and write", driveWriteBundle],
+    ["vendor", vendorBundle],
+  ] as const)("declares each comment shape once in the flat %s bundle", (_name, bundle) => {
+    const names = topLevelNames(bundle());
+    const shapes = topLevelNames(source("comment-types.txt"));
+    expect(shapes).toEqual(["DriveCommentAuthor", "DriveCommentReply", "DriveComment", "DocSuggestion"]);
+    for (const name of shapes) expect(names.filter(declared => declared === name), name).toHaveLength(1);
   });
 
   it.each([
@@ -328,7 +340,7 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     const readTypes = source("drive-read-types.d.ts");
     expect(readTypes.split("listComments(fileId: string): Promise<Cursor<DriveComment>>;"))
       .toHaveLength(3);
-    const readProse = prose("drive-read-types.d.ts");
+    const readProse = prose("drive-read-types.d.ts") + prose("comment-types.d.ts");
     for (const phrase of [
       "A read-only binding changes nothing.",
       "request one with `?access=write` added to the resource URL, the narrowest that covers the " +
@@ -356,9 +368,9 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
       expect(readProse, phrase).toContain(phrase);
     }
     // A comment's and a reply's times are dates; only a comment carries the text it is attached to.
-    expect(readTypes.split("createdTime: Date;")).toHaveLength(3);
-    expect(readTypes.split("modifiedTime?: Date;")).toHaveLength(3);
-    expect(readTypes.split("quotedText?: string;")).toHaveLength(2);
+    const commentTypes = source("comment-types.d.ts");
+    expect(commentTypes.split("modifiedTime?: Date;")).toHaveLength(3);
+    expect(commentTypes.split("quotedText?: string;")).toHaveLength(2);
     const names = topLevelNames(driveReadBundle());
     for (const name of [
       "DriveBindingAccess", "DriveComment", "DriveCommentReply", "GoogleDriveReadSession",
@@ -367,7 +379,7 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
       expect(names).toContain(name);
     }
     for (const name of [
-      "DriveCommentWrites", "DriveCommentOptions", "DriveSuggestEditOptions", "DocSuggestion",
+      "DriveCommentWrites", "DriveCommentOptions", "DriveSuggestEditOptions",
       "GoogleDriveSession",
       "GoogleDriveFileSession", "GoogleDriveFolderSession",
     ]) {
@@ -425,7 +437,7 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     ]) {
       expect(writeTypes.split(signature), signature).toHaveLength(2);
     }
-    const writeProse = prose("drive-types.d.ts");
+    const writeProse = prose("drive-types.d.ts") + prose("comment-types.d.ts");
     for (const phrase of [
       "Comments are plain text. One that quotes a Google Doc is attached to the quoted text; any " +
         "other is attached to no text in the file.",
@@ -468,7 +480,7 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     expect(writeProse).not.toContain("Read and write access to");
     expect(topLevelNames(stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX)))
       .toEqual([
-        "DriveCommentOptions", "DriveSuggestEditOptions", "DocSuggestion", "DriveCommentWrites",
+        "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites",
         "GoogleDriveSession",
         "GoogleDriveFileSession", "GoogleDriveFolderSession",
       ]);
