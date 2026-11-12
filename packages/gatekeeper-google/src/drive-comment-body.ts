@@ -11,7 +11,7 @@ import type { DocsRange, GoogleDocsDocument, GoogleDocsTab, ParagraphElement } f
 import {
   MAX_DOCS_COMMENT_BYTES, MAX_QUOTE_CHARS, MAX_REPLACEMENT_CHARS, checkCommentContent,
 } from "./drive-api";
-import { paragraphElementText } from "./markdown-converter";
+import { isGoogleDocsStrippedCharacter, paragraphElementText } from "./markdown-converter";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -174,6 +174,14 @@ export function checkSuggestion(oldText: string, newText: string, note?: string)
   if (newText === old) throw new Error("The replacement is the same as the text it replaces.");
   if (/[\n\v\r]/.test(newText)) {
     throw new Error("The replacement must be one paragraph, without line breaks.");
+  }
+  // Refused rather than dropped, so the approval shows exactly what the Doc gets.
+  for (let index = 0; index < newText.length; index++) {
+    let code = newText.charCodeAt(index);
+    if (isGoogleDocsStrippedCharacter(code)) {
+      throw new Error("The replacement contains a character Google Docs drops from inserted " +
+        `text (U+${code.toString(16).toUpperCase().padStart(4, "0")}).`);
+    }
   }
   let characters = [...newText].length;
   if (characters > MAX_REPLACEMENT_CHARS) {

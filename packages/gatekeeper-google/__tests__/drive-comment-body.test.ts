@@ -265,6 +265,14 @@ describe("checkSuggestion", () => {
     }
   });
 
+  it("refuses a replacement with a character Google Docs would drop, and keeps a tab", () => {
+    for (let [newText, code] of [["a\u0000b", "0000"], ["\u001fx", "001F"], ["x", "E000"]]) {
+      expect(() => checkSuggestion("a", newText))
+        .toThrow(`The replacement contains a character Google Docs drops from inserted text (U+${code}).`);
+    }
+    expect(checkSuggestion("a", "b\tc").newText).toBe("b\tc");
+  });
+
   it("caps the new text in characters and the note at the Docs limit", () => {
     expect(checkSuggestion("a", "\u00e9".repeat(MAX_REPLACEMENT_CHARS)).newText).toHaveLength(MAX_REPLACEMENT_CHARS);
     expect(() => checkSuggestion("a", "b".repeat(MAX_REPLACEMENT_CHARS + 1)))

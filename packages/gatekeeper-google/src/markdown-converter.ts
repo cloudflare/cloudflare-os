@@ -1207,8 +1207,8 @@ function inlineSpanStyle(
   }
 }
 
-/** Google strips these code points from inserted text. */
-function isGoogleDocsStrippedCharacter(code: number): boolean {
+/** Whether Google Docs strips UTF-16 code unit `code` from text it inserts. */
+export function isGoogleDocsStrippedCharacter(code: number): boolean {
   return code <= 0x08 || code >= 0x0c && code <= 0x1f ||
     code >= 0xe000 && code <= 0xf8ff;
 }
