@@ -75,7 +75,8 @@ A chat's changes are accepted on their own once its turn ends (`ChatSession`, ru
 viewer is the only one working on them: nobody else is in the workspace, and no other chat has
 changes waiting to the same gadgets. Only code is: a binding the chat proposes is the user's to
 grant, and a blueprint's update or the latest accepted changes brought into the chat were asked
-for to be looked at first. Those stay proposed.
+for to be looked at first. Those stay proposed. The viewer's own accepts are not marked in the
+conversation, as they are what is expected; someone else's are.
 
 A message sent while the agent works ends the conversation, dimmed, until the agent reads it. It
 is the same row before and after, so being read only brings it to full strength. Its key is its
@@ -93,9 +94,10 @@ spacer. A sent reply finds its message by the line, since that is all it carries
 history until it turns up (`ChatSession.findQuoted`). A reply that named its message would need
 neither, which is for the backend to support.
 
-Points in the conversation that nobody said are lines across it (`FeedDivider`): another model
-taking over, what people did to the changes, and a compaction. A compaction asked for with
-`/compact` is announced under the command; one that ran on its own, at the cut.
+Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
+to the changes, and a compaction. A compaction asked for with `/compact` is announced under the
+command; one that ran on its own, at the cut. Another model taking over is not one: each message's
+details say which model wrote it.
 
 Nothing in the conversation jumps. A row that arrives while the chat is open opens to its height
 as the bubble or card in it grows in (`Arrival.css`; the message list marks the row), and a row of
