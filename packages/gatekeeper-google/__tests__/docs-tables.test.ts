@@ -1647,6 +1647,18 @@ describe("the cells a tab's tables hold", () => {
     expect(() => checkTabTableCells(held, 998, "insertTable")).not.toThrow();
   });
 
+  it("counts a list item written as a heading once", () => {
+    // ask-bonk's case: `<li><h2>…</h2></li>` is one paragraph, not two.
+    let headed = buildTab([para("Before"), {
+      table: Array.from({ length: 250 }, () => Array.from({ length: 10 }, () =>
+        cellOf({ runs: ["Step\n"], namedStyleType: "HEADING_2", bullet: { listId: "L1" } }))),
+    }, para("After")], BULLET_LIST);
+    let held = contentOf(docTabToMarkdown(headed));
+    expect(tableAt(held, 0)).toContain("<li><h2>");
+    expect(() => checkTabTableCells(held, 2_500, "insertTable")).not.toThrow();
+    expect(message(() => checkTabTableCells(held, 2_501, "insertTable"))).toBe(tabCells("insertTable", 5_001));
+  });
+
   it("takes an addition that brings the tab's tables to the limit", () => {
     let applied = expectSameAsGoogle(FULL, addRows(content, 1, 1, tenCells()));
     expect(tableTexts(applied, 1).length).toBe(2);

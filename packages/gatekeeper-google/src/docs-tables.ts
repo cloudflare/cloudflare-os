@@ -903,7 +903,8 @@ export function checkTabTableCells(content: EditableMarkdown, added: number, op:
   // replacement can edit included: the whole document has to be read back.
   for (let table of content.tables) {
     let html = content.markdown.slice(table.mdStart, table.mdEnd);
-    let paragraphs = html.match(/<(?:p|h[1-6]|li)>/g)?.length ?? 0;
+    // A list item is one paragraph, the heading it may be written as inside it included.
+    let paragraphs = html.match(/<li>|(?<!<li>)<(?:p|h[1-6])>/g)?.length ?? 0;
     let cells = html.match(/<td[ >]/g)?.length ?? 0;
     held += Math.max(paragraphs, cells);
   }
