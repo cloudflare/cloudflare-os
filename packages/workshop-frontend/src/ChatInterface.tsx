@@ -2593,7 +2593,8 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
-  onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
+  // With no selected chat, report whether any chat in the workspace is running.
+  onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
   // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
   // Auto-approval list reflects it without a reload.
   onAutoApproveChange?: () => void;
@@ -3456,18 +3457,18 @@ function ChatInterface({
   // Names the chat's own model in the composer even when the picker no longer offers it.
   const chatAgent = activeAgent ?? inferChatAgentFromMessages(currentMessages);
 
-  // Notify parent when agent active state changes
+  const isViewActive = selectedChatId === null
+    ? chatList.some(chat => !!chat.activeAgent) : isAgentActive;
   const onAgentActiveChangeRef = useRef(onAgentActiveChange);
   onAgentActiveChangeRef.current = onAgentActiveChange;
-  const previousAgentStateRef = useRef({chatId: selectedChatId, active: isAgentActive});
+  const previousAgentStateRef = useRef<{chatId: number | null; active: boolean} | null>(null);
   useEffect(() => {
-    let previous = previousAgentStateRef.current;
-    if (selectedChatId !== null &&
-        (selectedChatId !== previous.chatId || isAgentActive !== previous.active)) {
-      onAgentActiveChangeRef.current?.(selectedChatId, isAgentActive);
+    const previous = previousAgentStateRef.current;
+    if (!previous || selectedChatId !== previous.chatId || isViewActive !== previous.active) {
+      onAgentActiveChangeRef.current?.(selectedChatId, isViewActive);
     }
-    previousAgentStateRef.current = {chatId: selectedChatId, active: isAgentActive};
-  }, [isAgentActive, selectedChatId]);
+    previousAgentStateRef.current = {chatId: selectedChatId, active: isViewActive};
+  }, [isViewActive, selectedChatId]);
 
   // Loads the page before the oldest message on screen. Held in a ref because the scroll handler is
   // built once, while the loader closes over state that changes each render.
