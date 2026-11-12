@@ -10,9 +10,9 @@ import {
 } from "../src/doc-comments";
 import type { DriveApi } from "../src/drive-api";
 import {
-  commentParent, type CommentAttempt, type CommentHost, type DriveCommentAction,
-  type DriveCommentActions,
+  commentParent, type CommentHost, type DriveCommentAction, type DriveCommentActions,
 } from "../src/drive-comments";
+import type { WriteAttempt } from "../src/drive-writes";
 import { GoogleApiError } from "../src/google-response";
 import { FakeKv } from "./fake-kv";
 
@@ -56,7 +56,7 @@ function docOf(text: string): GoogleDocsDocument {
 function harness() {
   let threads: DocsCommentRecord[] = [thread()];
   let canComment: boolean | undefined = true;
-  let attempts = new Map<number, CommentAttempt>();
+  let attempts = new Map<number, WriteAttempt>();
   let described: ActionDescription | undefined;
   let docs = {
     getCommentThreads: vi.fn<GoogleDocsApi["getCommentThreads"]>(async () => structuredClone(threads)),

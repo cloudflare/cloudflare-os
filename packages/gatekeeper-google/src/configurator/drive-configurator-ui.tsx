@@ -79,9 +79,34 @@ const bindsDrive = (id: string | null | undefined, accepted: readonly string[] |
   return pattern === ACCOUNT_PATTERN || pattern === FOLDER_PATTERN || pattern === FILE_PATTERN;
 };
 
-/** Whether the values choose a read and write connection of a Drive type. */
+/**
+ * Whether this deployment offers read and write Drive connections. Unknown until the gatekeeper
+ * answers, and the access choice is shown only once it has said yes.
+ */
+let offer: { known?: boolean; asking?: true } = {};
+
+/** The pre-fill asked for Read and write where the deployment does not offer it. */
+let presetCapped = false;
+
+/**
+ * Asks the gatekeeper, once, whether the deployment offers read and write. Never rejects: while it
+ * is unanswered the form connects read-only, and it is asked again the next time the form renders.
+ */
+async function askOffer(ui: DriveConfiguratorRpc, rerender?: () => void): Promise<void> {
+  if (offer.known !== undefined || offer.asking) return;
+  offer = { asking: true };
+  try {
+    offer = { known: await ui.offersWriteAccess() };
+  } catch {
+    offer = {};
+    return;
+  }
+  rerender?.();
+}
+
+/** Whether the values choose a read and write connection of a Drive type, where the deployment offers one. */
 const writing = ({ target, access }: DriveConfiguratorValues, accepted: readonly string[] | undefined) =>
-  access === "write" && bindsDrive(target, accepted);
+  offer.known === true && access === "write" && bindsDrive(target, accepted);
 
 /**
  * The editable types the Google Drive card offers that the account has not granted. None for a
@@ -612,22 +637,29 @@ const PRESET_READY = "Read and write access is chosen for this connection. To ch
 const PRESET_PENDING = "Read and write access is chosen for this connection, and needs one more " +
   "step. See Access, below the list.";
 
+const PRESET_CAPPED =
+  "Your organization keeps Google Drive read only, so this connection will be read only.";
+
 /**
  * Says, as the form's first line, a level the resource URL chose and the user has not: the choice
- * itself, and what it still needs of the account, sit below the list.
+ * itself, and what it still needs of the account, sit below the list. Where the deployment does not
+ * offer that level, it says that the connection will be read only.
  */
 function presetNotice(context: Context) {
-  if (!presetWrite || !writing(context.values, context.acceptedResourceUrlPatterns)) return null;
+  const { values, acceptedResourceUrlPatterns: accepted } = context;
+  if (presetCapped && bindsDrive(values.target, accepted)) return <Notice>{PRESET_CAPPED}</Notice>;
+  if (!presetWrite || !writing(values, accepted)) return null;
   return <Notice>{writes.known?.held ? PRESET_READY : PRESET_PENDING}</Notice>;
 }
 
 /**
- * The access choice, for a target that connects as a Drive type. Read and write is the default, so
- * the account is asked whether it allows changes once a Drive target is first chosen with it.
+ * The access choice, for a target that connects as a Drive type, where the deployment offers one.
+ * Read and write is the default, so the account is asked whether it allows changes once a Drive
+ * target is first chosen with it.
  */
 function accessField(context: Context) {
   const { values, acceptedResourceUrlPatterns: accepted, ui, setValues } = context;
-  if (!bindsDrive(values.target, accepted)) return null;
+  if (offer.known !== true || !bindsDrive(values.target, accepted)) return null;
   if (writing(values, accepted) && !writes.known && writes.busy === undefined && !writes.error) {
     void checkWrites(ui, () => setValues({}));
   }
@@ -635,7 +667,7 @@ function accessField(context: Context) {
     <RadioCards
       value={values.access === "write" ? "write" : "read"}
       options={[
-        { value: "write", title: "Read and write", description: "Comments can also be added, replied to and resolved. Each change waits for your approval." },
+        { value: "write", title: "Read and write", description: "Files can also be commented on and shared, and a folder or all-of-Drive connection can move them. Each change waits for your approval." },
         { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
       ]}
       onChange={next => chooseAccess(context, next)}
@@ -721,10 +753,17 @@ export default {
     if (!URL.canParse(resourceUrl)) return {};
     const url = new URL(resourceUrl);
     const { pathname } = url;
-    // Read as `parseDriveUrl` reads it: exactly `write`. The account is asked here, before the
-    // first render, so the dialog opens knowing whether Allow changes is needed.
+    // Read as `parseDriveUrl` reads it: exactly `write`. The deployment and the account are asked
+    // here, before the first render, so the dialog opens knowing whether Read and write is offered
+    // and whether Allow changes is needed.
     const seed = async (target: string) => {
       if (url.searchParams.get("access") !== "write") return { target, access: null };
+      await askOffer(ui);
+      if (offer.known !== true) {
+        // Said only when the gatekeeper has answered no: unanswered, the form simply opens read-only.
+        presetCapped = offer.known === false;
+        return { target, access: null };
+      }
       await checkWrites(ui);
       presetWrite = true;
       return { target, access: "write" };
@@ -765,6 +804,7 @@ export default {
   },
   render(context) {
     const { values: { target = null }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
+    void askOffer(ui, () => setValues({}));
     const pending = access;
     return <Section>
       {presetNotice(context)}

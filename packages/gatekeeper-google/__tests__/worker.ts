@@ -6,13 +6,12 @@ import type {
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { GoogleAccessToken } from "../src/google-api";
-import { COMMENT_ATTEMPT_PREFIX, type CommentAttempt } from "../src/drive-comments";
 import type { DriveBindingScope } from "../src/drive-session";
 import type {
-  Cursor, DocSuggestion, DriveComment, DriveCommentReply, DriveEntry, DriveScope,
-  GoogleDriveFolderSession,
-  GoogleDriveSession,
+  Cursor, DocSuggestion, DriveAccess, DriveComment, DriveCommentReply, DriveEntry, DriveScope,
+  GoogleDriveFolderSession, GoogleDriveSession,
 } from "../src/drive-types";
+import { WRITE_ATTEMPT_PREFIX, type WriteAttempt } from "../src/drive-writes";
 import type { DriveAccessLevel } from "../src/resources";
 import type { DocMetadata, GoogleDocSession, GoogleDocTab } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
@@ -32,10 +31,55 @@ export {
 export default GoogleWorker;
 export { CalendarTestHooks, GoogleCalendarGatekeeperImpl } from "./calendar-hooks";
 
+/** The Drive gatekeeper as a deployment that keeps Google Drive read-only runs it. */
+export class ReadOnlyDriveGatekeeper extends GoogleDriveGatekeeperImpl {
+  constructor(...[ctx, env]: ConstructorParameters<typeof GoogleDriveGatekeeperImpl>) {
+    super(ctx, { ...env, GOOGLE_DRIVE_ACCESS: "read" });
+  }
+}
+
+/** Credentials a test installed on the account, and how many calls still answer the ones before. */
+type InstalledToken = {
+  token: string;
+  /** How many more calls answer `before`. */
+  after: number;
+  /** What the account answered when `token` was installed. */
+  before: string;
+};
+
+const INSTALLED_TOKEN_KEY = "test:token";
+
 export class UserAccount extends DurableObject<Env> {
-  /** Names the account in its token, so a provider fake can tell which account a request was made as. */
+  /**
+   * Names the account in its token, so a provider fake can tell which account a request was made
+   * as, unless {@link setAccessToken} installed another, which then answers once its count has run.
+   */
   async getAccessToken(): Promise<GoogleAccessToken> {
-    return { token: `test-access-token:${this.ctx.id}`, expires: new Date(8640000000000000) };
+    return { token: this.#nextToken(true), expires: new Date(8640000000000000) };
+  }
+
+  /**
+   * Installs other credentials, as a reconnect does: `token` answers once `after` more calls have
+   * been answered with what the account answers now. `undefined` restores the default at once.
+   */
+  async setAccessToken(token: string | undefined, after = 0): Promise<void> {
+    let { kv } = this.ctx.storage;
+    if (token === undefined) {
+      kv.delete(INSTALLED_TOKEN_KEY);
+      return;
+    }
+    let installed: InstalledToken = { token, after, before: this.#nextToken(false) };
+    kv.put(INSTALLED_TOKEN_KEY, installed);
+  }
+
+  /** The token the next call is answered with. `count` says whether this is such a call. */
+  #nextToken(count: boolean): string {
+    let { kv } = this.ctx.storage;
+    let installed = kv.get<InstalledToken>(INSTALLED_TOKEN_KEY);
+    if (!installed) return `test-access-token:${this.ctx.id}`;
+    if (installed.after <= 0) return installed.token;
+    if (count) kv.put(INSTALLED_TOKEN_KEY, { ...installed, after: installed.after - 1 });
+    return installed.before;
   }
 
   /** The grants {@link setGranted} last recorded; none until then. */
@@ -86,13 +130,21 @@ type DocCall = {
   reports: { title: string; subresources?: string[] }[];
 };
 
-/** A Drive binding as a test names it: its scope and, for read and write, its access level. */
-type DriveBinding = { scope: DriveBindingScope; access?: DriveAccessLevel };
+/**
+ * A Drive binding as a test names it: its scope and, for read and write, its access level.
+ * `deployment` is not part of the binding: it says that the deployment the gatekeeper runs on keeps
+ * Google Drive read-only.
+ */
+type DriveBinding = { scope: DriveBindingScope; access?: DriveAccessLevel; deployment?: "read" };
 
 /** What one Drive session call returned or threw, and what it queued and observed. */
 type DriveCall = {
-  /** A write's pending item, every page a comment listing yielded, or the binding's scope. */
-  value?: DriveComment | DriveCommentReply | DriveComment[][] | DriveScope;
+  /**
+   * A write's pending item, every page a comment listing yielded, a file's access or one way of
+   * it, an entry, or the binding's scope. A write that returns nothing leaves it `undefined`.
+   */
+  value?: DriveComment | DriveCommentReply | DriveComment[][] | DriveScope | DriveAccess |
+    DriveAccess[] | DriveEntry;
   error?: string;
   actionId?: number;
   action?: ActionDescription;
@@ -457,10 +509,17 @@ export class TestHooks extends DurableObject<Env> {
     await (this.#slides(facetName) as unknown as TestGoogleSlidesGatekeeper).claimTestAction(actionId);
   }
 
-  #drive(facetName: string, binding: DriveBinding) {
+  #drive(facetName: string, { deployment, ...binding }: DriveBinding) {
     let userObjectId = this.ctx.exports.UserAccount.idFromName("test-user").toString();
+    // `ctx.exports` is typed from the deployed module, which does not export this worker's class.
+    let exports = this.ctx.exports as Cloudflare.Exports & {
+      ReadOnlyDriveGatekeeper: Cloudflare.Exports["GoogleDriveGatekeeperImpl"];
+    };
+    // The setting is the Worker's environment, never a prop a connection could set for itself.
+    let gatekeeper = deployment === "read"
+      ? exports.ReadOnlyDriveGatekeeper : exports.GoogleDriveGatekeeperImpl;
     return this.ctx.facets.get<GoogleDriveGatekeeperImpl>(facetName, () => ({
-      class: this.ctx.exports.GoogleDriveGatekeeperImpl({ props: { userObjectId, ...binding } }),
+      class: gatekeeper({ props: { userObjectId, ...binding } }),
     }));
   }
 
@@ -520,7 +579,17 @@ export class TestHooks extends DurableObject<Env> {
     };
   }
 
-  /** Applies a Drive comment write, returning the error message it failed with, if any. */
+  /**
+   * Installs other credentials on the test user's Google account, as a reconnect does: the account
+   * answers `token` once it has answered `after` more calls with what it answers now, and
+   * `undefined` restores its default at once. A gatekeeper already holding a token keeps it.
+   */
+  async setDriveToken(token: string | undefined, after = 0): Promise<void> {
+    let account = this.ctx.exports.UserAccount.get(this.ctx.exports.UserAccount.idFromName("test-user"));
+    await (account as unknown as UserAccount).setAccessToken(token, after);
+  }
+
+  /** Applies a Drive write, returning the error message it failed with, if any. */
   async applyDrive(facetName: string, binding: DriveBinding, actionId: number)
       : Promise<string | null> {
     try {
@@ -532,11 +601,22 @@ export class TestHooks extends DurableObject<Env> {
     }
   }
 
-  /** Rejects a Drive comment write, returning the error message it was refused with, if any. */
+  /** Rejects a Drive write, returning the error message it was refused with, if any. */
   async rejectDrive(facetName: string, binding: DriveBinding, actionId: number)
       : Promise<string | null> {
     try {
       await this.#drive(facetName, binding).rejectAction(actionId);
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /** Reverts a Drive write, returning the error message it was refused with, if any. */
+  async revertDrive(facetName: string, binding: DriveBinding, actionId: number)
+      : Promise<string | null> {
+    try {
+      await this.#drive(facetName, binding).revertAction(actionId);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -558,27 +638,32 @@ export class TestHooks extends DurableObject<Env> {
     return this.#drive(facetName, binding).getTypeScriptTypes();
   }
 
-  /** Leaves a Drive comment write claimed, as an activation that died while applying it would. */
+  /** Leaves a Drive write claimed, as an activation that died while applying it would. */
   async orphanDriveClaim(facetName: string, binding: DriveBinding, actionId: number)
       : Promise<void> {
     await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
       .claimTestAction(actionId);
   }
 
-  /** Leaves a Drive comment write failed, as a resolution another activation finished would. */
+  /** Leaves a Drive write failed, as a resolution another activation finished would. */
   async failDriveAction(facetName: string, binding: DriveBinding, actionId: number)
       : Promise<void> {
     await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
       .failTestAction(actionId);
   }
 
+  /** The IDs of the writes a Drive binding still holds to be applied: undecided or claimed. */
+  async driveQueued(facetName: string, binding: DriveBinding): Promise<number[]> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testQueued();
+  }
+
   /** The attempt markers a Drive binding holds, by action ID. */
   async driveAttempts(facetName: string, binding: DriveBinding)
-      : Promise<Record<number, CommentAttempt>> {
+      : Promise<Record<number, WriteAttempt>> {
     return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testAttempts();
   }
 
-  /** Moves a Drive comment write's attempt marker `ms` into the past. */
+  /** Moves a Drive write's attempt marker `ms` into the past. */
   async ageDriveAttempt(facetName: string, binding: DriveBinding, actionId: number, ms: number)
       : Promise<void> {
     await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
@@ -699,7 +784,8 @@ type TestGoogleSlidesGatekeeper = GoogleSlidesGatekeeperImpl & { claimTestAction
 type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
   claimTestAction(id: number): void;
   failTestAction(id: number): void;
-  testAttempts(): Record<number, CommentAttempt>;
+  testQueued(): number[];
+  testAttempts(): Record<number, WriteAttempt>;
   ageTestAttempt(id: number, ms: number): void;
 };
 
@@ -718,19 +804,25 @@ type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
   new ActionJournal(storage.kv, { namespace: "drive" }).markFailed(id, "Failed elsewhere.");
 };
 
-(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testAttempts = function(
-): Record<number, CommentAttempt> {
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testQueued = function(
+): number[] {
   let storage = (this as unknown as TestDurableObjectState).ctx.storage;
-  return Object.fromEntries([...storage.kv.list<CommentAttempt>({ prefix: COMMENT_ATTEMPT_PREFIX })]
-    .map(([key, attempt]) => [Number(key.slice(COMMENT_ATTEMPT_PREFIX.length)), attempt]));
+  return new ActionJournal(storage.kv, { namespace: "drive" }).listPending().map(({ id }) => id);
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testAttempts = function(
+): Record<number, WriteAttempt> {
+  let storage = (this as unknown as TestDurableObjectState).ctx.storage;
+  return Object.fromEntries([...storage.kv.list<WriteAttempt>({ prefix: WRITE_ATTEMPT_PREFIX })]
+    .map(([key, attempt]) => [Number(key.slice(WRITE_ATTEMPT_PREFIX.length)), attempt]));
 };
 
 (GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).ageTestAttempt = function(
   id: number, ms: number,
 ): void {
   let kv = (this as unknown as TestDurableObjectState).ctx.storage.kv;
-  let key = `${COMMENT_ATTEMPT_PREFIX}${id}`;
-  let attempt = kv.get<CommentAttempt>(key);
+  let key = `${WRITE_ATTEMPT_PREFIX}${id}`;
+  let attempt = kv.get<WriteAttempt>(key);
   if (!attempt) throw new Error(`No attempt marker for action ${id}`);
   kv.put(key, { ...attempt, at: attempt.at - ms });
 };

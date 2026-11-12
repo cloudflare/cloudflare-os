@@ -17,13 +17,14 @@ export interface Cursor<T> {
 
 /**
  * What a Google Drive binding may do: `"read"` for a read-only binding, which changes nothing, or
- * `"write"` for one connected with read and write access.
+ * `"write"` for one with read and write access. A binding connected with read and write access is
+ * read-only while its deployment keeps Google Drive read-only.
  */
 export type DriveBindingAccess = "read" | "write";
 
 /**
  * The immutable resource scope of a Google Drive binding or positioned folder capability, with the
- * access the binding was connected with.
+ * access the binding has.
  */
 export type DriveScope =
   | { kind: "account"; access: DriveBindingAccess }
@@ -31,6 +32,11 @@ export type DriveScope =
     kind: "folder";
     folderId: string;
     rootFolderId: string;
+    /**
+     * The folder this one was opened from. Absent for the connected folder itself, which nothing
+     * in this binding lies above.
+     */
+    parentFolderId?: string;
     name: string;
     access: DriveBindingAccess;
   }
@@ -74,7 +80,11 @@ export type DriveEntry = {
   size?: number;
   /** Owner metadata. Absent for items in shared drives. */
   owner?: DriveOwner;
-  /** Direct parent ID. Absent when the entry is at a root. */
+  /**
+   * Direct parent ID: the folder the entry is in, which for an entry at the top level of My Drive
+   * is My Drive's own root folder. Absent for a root folder itself, and for an entry in no folder
+   * the connected account can see.
+   */
   parentId?: string;
   /** Shared-drive ID. Absent for entries outside shared drives. */
   driveId?: string;
@@ -196,12 +206,17 @@ export type DriveFileBytes = {
  * Read-only Google Drive access for an account or exact-file binding: metadata discovery, native
  * Google Docs/Sheets/Slides content, PDF text, the bytes of any other file, and comments.
  *
- * A read-only binding changes nothing. Commenting takes a binding with read and write access,
- * which the user chooses when connecting: request one with `?access=write` added to the resource
- * URL, the narrowest that covers the files to comment on:
- * `https://drive.google.com/file/d/<fileId>/view?access=write` for one file,
+ * A read-only binding changes nothing. Commenting on files, seeing or changing who they are shared
+ * with, and moving them take a binding with read and write access, which the user chooses when
+ * connecting: request one with `?access=write` added to the resource URL, the narrowest that covers
+ * the files to change: `https://drive.google.com/file/d/<fileId>/view?access=write` for one file
+ * (which can be commented on and shared, not moved),
  * `https://drive.google.com/drive/folders/<folderId>?access=write` for a folder, or
- * `https://drive.google.com/drive/my-drive?access=write` for all of Drive.
+ * `https://drive.google.com/drive/my-drive?access=write` for all of Drive. A folder binding moves a
+ * file only within that folder, one level per move: into a child folder, or back up to the folder
+ * above. So to move a file, request a folder that holds both where the file is and where it goes,
+ * or all of Drive. Where the deployment keeps Google Drive read-only, no binding has read and write
+ * access, whatever was requested, and a write fails saying so.
  */
 export interface GoogleDriveReadSession {
   /**
@@ -274,8 +289,8 @@ export interface GoogleDriveReadSession {
 
 /**
  * Read-only navigation within the originally selected folder, with its direct children's content
- * and comments. Commenting takes a binding with read and write access, requested as
- * {@link GoogleDriveReadSession} describes.
+ * and comments. Commenting, sharing and moving take a binding with read and write access,
+ * requested as {@link GoogleDriveReadSession} describes.
  */
 export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSession, "getScope"> {
   /** List only the positioned folder's direct children. */

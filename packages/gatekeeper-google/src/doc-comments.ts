@@ -11,11 +11,11 @@
  * binding to the file. Whether the account may comment comes from Drive's metadata.
  */
 
-import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
+import { defineActions } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionKind, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
 import { UNCREATED_FILE_ID } from "./creation";
 import {
-  docsFileInvisible, docsLacksScope, docsWriteFailure, type DocsCommentPost,
+  docsFileInvisible, docsLacksScope, type DocsCommentPost,
   type DocsCommentRecord, type GoogleDocReader, type GoogleDocsApi, type GoogleDocsDocument,
   type GoogleDocsTab,
 } from "./docs-api";
@@ -27,12 +27,12 @@ import {
   checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
 } from "./drive-comment-body";
 import {
-  ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentDefinitions, commentParent, hasPendingResolve,
-  isPendingCommentId, overlayPending, pendingComment, pendingCommentRefusal, pendingReply,
-  pendingSuggestion, REPLY_RESOLVE_PENDING, RESOLVE_PENDING, shownFileName, toDriveComment,
+  ALREADY_RESOLVED, COMMENT_NOT_FOUND, commentDefinitions, commentParent, docsSendFailure,
+  hasPendingResolve, overlayPending, pendingComment, pendingCommentRefusal, pendingReply,
+  pendingSuggestion, REPLY_RESOLVE_PENDING, RESOLVE_PENDING, toDriveComment,
   type CommentHost, type CommentTargetPayload, type CommentThreads, type DriveCommentActions,
-  type DriveCommentQueue,
 } from "./drive-comments";
+import { isPendingId, shownFileName, type DriveWriteQueue } from "./drive-writes";
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";
 import { GoogleApiError } from "./google-response";
 import { driveResourceUrl } from "./resources";
@@ -165,7 +165,7 @@ export function docsThreads(
         "A comment on a bound Google Doc must be attached to text in it.");
     },
     sighted: async fileId => await canComment(drive, fileId) === true,
-    sendFailure: error => error instanceof UnanchoredCommentError ? "absent" : docsWriteFailure(error),
+    sendFailure: error => error instanceof UnanchoredCommentError ? "absent" : docsSendFailure(error),
     refusal: error => {
       if (error instanceof UnanchoredCommentError) return error.message;
       if (docsFileInvisible(error)) {
@@ -180,9 +180,11 @@ export function docsThreads(
 }
 
 /** The declared comment writes of a directly bound Google Doc. */
-export const DOC_COMMENT_ACTIONS = commentDefinitions<CommentHost>(DOC_COMMENTS, {
-  file: "Google Doc", commentTitle: "Comment on a Google Doc", thread: "Google Doc",
-}, host => host);
+export const DOC_COMMENT_ACTIONS = defineActions<CommentHost, DriveCommentActions>(
+  commentDefinitions<CommentHost>(DOC_COMMENTS, {
+    file: "Google Doc", commentTitle: "Comment on a Google Doc", thread: "Google Doc",
+  }, host => host),
+  { fence: "none", vendorId: "google" });
 
 /**
  * The tab of `document` an operation named `operation` acts on: `tabId`, which may be omitted only
@@ -207,7 +209,7 @@ export function docTab(
 }
 
 /** What a bound Doc's session needs to show and queue its comment writes. */
-export type DocCommentQueue = Pick<DriveCommentQueue, "submit" | "undecided">;
+export type DocCommentQueue = Pick<DriveWriteQueue<DriveCommentActions>, "submit" | "undecided">;
 
 /** What the session side of a bound Doc's comments reads, queues and authorizes through. */
 export type DocCommentSessionDeps = {
@@ -216,7 +218,7 @@ export type DocCommentSessionDeps = {
   docs: GoogleDocReader;
   drive: Pick<DriveApi, "getScopeNodes">;
   comments: DocCommentQueue;
-  approvalQueue: ActionSubmitter;
+  approvalQueue: Parameters<DocCommentQueue["submit"]>[0];
   /** Authorizes a read, reporting the Doc as its subresource. */
   authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void>;
   /** Whether `quote` is in tab `tabId` only once its pending edits are replayed. */
@@ -355,7 +357,7 @@ export class DocCommentSession {
    * still awaits approval, or anything that is not a comment ID at all.
    */
   async #requirePostedCommentId(commentId: string): Promise<void> {
-    if (isPendingCommentId(commentId)) {
+    if (isPendingId(commentId)) {
       throw new Error(await this.#deps.comments.undecided(
         async pending => pendingCommentRefusal(commentId, pending)));
     }

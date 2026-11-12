@@ -50,6 +50,7 @@ async function open(accepted?: string[]) {
     hasConversionAccess: vi.fn(async () => false),
     convertFile: vi.fn(async (_kind: string, _fileId: string, _opts?: { reuse?: string }): Promise<unknown> =>
       ({ type: "needsAccess" })),
+    offersWriteAccess: vi.fn(async () => true),
     getWriteAccess: vi.fn(async () => ({ grant: "g", held: false })),
   };
   const ensureResources = vi.fn(async (_patterns: string[]) => true);

@@ -351,7 +351,8 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     for (const name of [
       "DriveCommentWrites", "DriveCommentOptions", "DriveSuggestEditOptions",
       "GoogleDriveSession",
-      "GoogleDriveFileSession", "GoogleDriveFolderSession",
+      "GoogleDriveFileSession", "GoogleDriveFolderSession", "DriveSharing", "DriveAccess",
+      "DriveGrantee", "DriveShareRole", "DriveRole", "DriveShareOptions",
     ]) {
       expect(names).not.toContain(name);
     }
@@ -410,8 +411,9 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     expect(topLevelNames(stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX)))
       .toEqual([
         "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites",
-        "GoogleDriveSession",
-        "GoogleDriveFileSession", "GoogleDriveFolderSession",
+        "DriveShareRole",
+        "DriveRole", "DriveGrantee", "DriveShareOptions", "DriveAccess", "DriveSharing",
+        "GoogleDriveSession", "GoogleDriveFileSession", "GoogleDriveFolderSession",
       ]);
     expect(duplicates(topLevelNames(driveWriteBundle()))).toEqual([]);
     expect(compileAgentTypes(driveWriteBundle() + `
@@ -477,6 +479,111 @@ doc.comment("doc-1", "Why?", { quote: "May" });
 doc.reply("doc-1", "doco.x", "Agreed.");
 // @ts-expect-error A bound Doc's methods take no file ID.
 doc.suggestEdit("doc-1", "May", "June", {});
+`)).toEqual([]);
+  });
+
+  it("declares sharing once, for every read and write Drive session, and moves for two of them", () => {
+    const writeTypes = source("drive-types.d.ts");
+    for (const signature of [
+      "listAccess(fileId: string): Promise<DriveAccess[]>;",
+      "fileId: string, grantee: DriveGrantee, role: DriveShareRole, options?: DriveShareOptions,\n  ): Promise<DriveAccess>;",
+      "fileId: string, access: string | DriveGrantee, role: DriveShareRole,\n  ): Promise<DriveAccess>;",
+      "unshare(fileId: string, access: string | DriveGrantee): Promise<void>;",
+    ]) {
+      expect(writeTypes.split(signature), signature).toHaveLength(2);
+    }
+    // The account and folder sessions each declare a move; the file session declares none.
+    expect(writeTypes.split("move(fileId: string, folderId: string): Promise<void>;"))
+      .toHaveLength(3);
+    // The file says nothing of how changes are queued for the user's approval.
+    for (const word of ["submitAction", "applyAction", "revert", "journal"]) {
+      expect(writeTypes, word).not.toContain(word);
+    }
+    // The compiler is all that holds these seams for typed callers: an unused `@ts-expect-error`
+    // is itself a diagnostic, so a refused call that the types accept fails this.
+    expect(compileAgentTypes(driveWriteBundle() + `
+declare const drive: GoogleDriveSession;
+declare const file: GoogleDriveFileSession;
+declare const folder: GoogleDriveFolderSession;
+async function stories(): Promise<void> {
+  const access: DriveAccess[] = await drive.listAccess("file-1");
+  const others = access.filter(entry => !entry.me && !entry.inherited && !entry.pending);
+  const source: string | undefined = access[0].inheritedFrom;
+  const pending: DriveAccess = await drive.share(
+    "file-1", { type: "user", emailAddress: "bob@example.com" }, "writer", { message: "Here it is." });
+  await file.share("file-1", { type: "group", emailAddress: "team@example.com" }, "commenter", { notify: false });
+  await folder.share("child-1", { type: "domain", domain: "example.com" }, "reader", { discoverable: true });
+  await drive.share("file-1", { type: "anyone" }, "reader");
+  const changed: DriveAccess = await drive.updateAccess("file-1", others[0].id, "reader");
+  await drive.updateAccess("file-1", { type: "user", emailAddress: "bob@example.com" }, "writer");
+  await file.unshare("file-1", others[0].id);
+  await file.unshare("file-1", { type: "group", emailAddress: "team@example.com" });
+  const address: string | undefined = others[0].emailAddress;
+  const shown: string | undefined = others[0].displayName;
+  await drive.share("file-2", { type: "user", emailAddress: address ?? "bob@example.com" }, "reader");
+  const scope: DriveScope = await folder.getScope();
+  if (scope.kind === "folder") {
+    await folder.share(scope.folderId, { type: "anyone" }, "reader");
+    if (scope.parentFolderId !== undefined) await folder.move("child-1", scope.parentFolderId);
+  }
+  await folder.move("child-1", "child-folder");
+  const child: GoogleDriveFolderSession = await folder.openFolder("child-folder");
+  await child.share("grandchild", { type: "anyone" }, "reader");
+  await drive.move("file-1", "folder-9");
+  await drive.move("file-1", "root");
+  const role: DriveRole = access[0].role;
+}
+// @ts-expect-error A single-file binding cannot move its file.
+file.move("file-1", "folder-9");
+// @ts-expect-error Ownership cannot be given.
+drive.share("file-1", { type: "user", emailAddress: "bob@example.com" }, "owner");
+// @ts-expect-error A shared drive's manager role cannot be given.
+drive.updateAccess("file-1", "1", "organizer");
+// @ts-expect-error A grantee is not named by a Drive ID.
+drive.share("file-1", { type: "user", id: "1" }, "reader");
+// @ts-expect-error Access is named by its ID or by a grantee.
+drive.unshare("file-1", 7);
+// @ts-expect-error No expiry.
+drive.share("file-1", { type: "anyone" }, "reader", { expires: "2027-01-01" });
+// @ts-expect-error No ownership transfer.
+drive.share("file-1", { type: "anyone" }, "reader", { transferOwnership: true });
+// @ts-expect-error A move takes one destination and nothing else.
+drive.move("file-1", "folder-9", { driveId: "d" });
+// @ts-expect-error A domain grantee carries no address.
+const mixed: DriveGrantee = { type: "domain", emailAddress: "a@example.com" };
+// @ts-expect-error A grantee's address is spelled emailAddress.
+drive.share("file-1", { type: "user", email: "bob@example.com" }, "reader");
+declare const entry: DriveAccess;
+// @ts-expect-error An entry's address is spelled emailAddress.
+entry.email;
+// @ts-expect-error An entry's name is spelled displayName.
+entry.name;
+// The literal above also lacks its domain, so this one holds the seam on the address alone.
+// @ts-expect-error A domain grantee carries no address, even with its domain.
+const mixedWithDomain: DriveGrantee = { type: "domain", domain: "example.com", emailAddress: "a@example.com" };
+`)).toEqual([]);
+  });
+
+  it("gives a read-only Drive session no sharing and no move, and a folder scope its parent", () => {
+    const readTypes = source("drive-read-types.d.ts");
+    expect(readTypes).not.toMatch(/^\s+(listAccess|share|updateAccess|unshare|move)\(/m);
+    expect(compileAgentTypes(driveReadBundle() + `
+declare const drive: GoogleDriveReadSession;
+declare const folder: GoogleDriveFolderReadSession;
+async function use(): Promise<void> {
+  const scope = await folder.getScope();
+  const parent: string | undefined = scope.kind === "folder" ? scope.parentFolderId : undefined;
+}
+// @ts-expect-error A read-only binding has no sharing.
+drive.listAccess("file-1");
+// @ts-expect-error A read-only binding has no share().
+drive.share("file-1", { type: "anyone" }, "reader");
+// @ts-expect-error A read-only binding has no move().
+drive.move("file-1", "folder-9");
+// @ts-expect-error A read-only folder binding has no unshare().
+folder.unshare("file-1", "1");
+// @ts-expect-error A read-only folder binding has no move().
+folder.move("file-1", "folder-9");
 `)).toEqual([]);
   });
 

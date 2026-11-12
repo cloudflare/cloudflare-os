@@ -1,6 +1,7 @@
 // The Drive configurator in a stand-in for the sandbox runtime: how it shows a file's size, what it
 // shows when a location needs a grant the account lacks (shared drives), what it asks Workshop for,
-// and its access choice, Read only or Read and write.
+// its access choice, Read only or Read and write, and what it shows where the deployment offers
+// no such choice.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -43,24 +44,52 @@ type Spec = {
 };
 
 /**
- * A fresh module, since it keeps the pending grant and what it knows of the account at module level,
- * and its frame, over the types the Workshop accepts (any, when it does not say).
+ * Lets everything that waits on a promise already settled run. It uses no timer, so it does the
+ * same under fake ones.
+ */
+const answered = async () => {
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+};
+
+/**
+ * A fresh module, since it keeps the pending grant and what it knows of the account and of the
+ * deployment at module level, and its frame, over the types the Workshop accepts (any, when it does
+ * not say).
  *
  * The frame draws the form as the runtime does: once when it opens, and again only when the module
  * calls `setValues`, reading readiness from the same values each time. So what a test reads is what
  * is on screen, and a change to the module's own state that no `setValues` follows is not shown.
+ *
+ * `offers` is what the gatekeeper answers when the frame asks whether the deployment offers read and
+ * write: yes, unless a test says otherwise, and an `Error` is a check that fails with it. The frame
+ * is returned as a person meets it once it has loaded, drawn again with that answer. An answer the
+ * test still holds is not waited on: the frame is then returned with it outstanding.
+ *
+ * `openOn` opens the form on a resource URL in the runtime's own order: the pre-fill runs, and is
+ * waited for, before anything is drawn, so it is the pre-fill that asks the deployment. `prefilled`
+ * is what it returned.
  */
-async function open(accepted?: string[]) {
+async function open(
+  accepted?: string[],
+  { offers = true, openOn }: { offers?: boolean | Promise<boolean> | Error; openOn?: string } = {},
+) {
   vi.resetModules();
   const spec = (await import("../src/configurator/drive-configurator-ui")).default as unknown as Spec;
-  let values: Values = { ...spec.initial };
   const ui = {
     listDriveNodes: vi.fn(async (): Promise<DriveNodePage> => ({ nodes: [] })),
     getDriveNode: vi.fn(),
+    offersWriteAccess: vi.fn(async (): Promise<boolean> => {
+      if (offers instanceof Error) throw offers;
+      return offers;
+    }),
     getWriteAccess: vi.fn(async (): Promise<DriveWriteAccess> => ({ grant: WRITES, held: false })),
     // A Docs, Sheets or Slides file is checked when chosen.
     inspectFile: vi.fn(async (): Promise<OfficeFileInspection> => ({ type: "native" })),
   };
+  const prefilled = openOn === undefined ? undefined : await spec.initialValuesFromResourceUrl({
+    resourceUrl: openOn, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui, acceptedResourceUrlPatterns: accepted,
+  });
+  let values: Values = { ...spec.initial, ...prefilled };
   const ensureResources = vi.fn(async (_patterns: string[]): Promise<boolean> => false);
   const setValues = (patch: Values) => {
     values = { ...values, ...patch };
@@ -73,9 +102,10 @@ async function open(accepted?: string[]) {
     ready: spec.isReady({ values, acceptedResourceUrlPatterns: accepted }),
   });
   let drawn = draw();
+  await answered();
   const find = (component: string) => drawn.tree.filter(node => node.component === component);
   return {
-    ui, ensureResources,
+    spec, ui, ensureResources, prefilled,
     list: (parentId: string, query = "") =>
       find("HierarchyPicker")[0].props.loadItems({ parentId, query, cursor: null }),
     load: (id: string) => find("HierarchyPicker")[0].props.loadItem(id),
@@ -91,8 +121,10 @@ async function open(accepted?: string[]) {
     url: () => spec.resourceUrl({ values, acceptedResourceUrlPatterns: accepted }),
     values: () => values,
     /**
-     * Opens the form on `resourceUrl`, as the runtime does before the first render, resolving to what
-     * that seeded. The form is drawn with the seeded values, and not while the pre-fill runs.
+     * Reads `resourceUrl` into the form as the runtime's pre-fill does, resolving to what that seeded.
+     * The form is drawn with the seeded values, and not while the pre-fill runs. It has been drawn
+     * once by then, so the frame has already asked the deployment: `openOn` above is the order in
+     * which the pre-fill asks.
      */
     prefill: async (resourceUrl: string) => {
       const seeded = await spec.initialValuesFromResourceUrl({
@@ -227,7 +259,8 @@ describe("the Drive picker's access choice", () => {
   const OPTIONS = [
     {
       value: "write", title: "Read and write",
-      description: "Comments can also be added, replied to and resolved. Each change waits for your approval.",
+      description: "Files can also be commented on and shared, and a folder or all-of-Drive connection can move them. " +
+        "Each change waits for your approval.",
     },
     { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
   ];
@@ -687,6 +720,17 @@ describe("the Drive picker's access choice", () => {
       .resolves.toEqual({ target: "file:F", access: "write" });
   });
 
+  // The runtime reads a resource URL before it draws anything, so no render has asked the deployment.
+  it("waits for the deployment's answer when the form opens on a read and write URL", async () => {
+    const frame = await open(undefined, { openOn: WRITE_URL });
+    expect(frame.prefilled).toEqual({ target: "folder:F", access: "write" });
+    expect(frame.order()).toEqual([PRESET_PENDING, "HierarchyPicker", "RadioCards", WRITE_PROMPT]);
+    expect(frame.ready()).toBe(false);
+    // The first render finds the answer the pre-fill waited for.
+    expect(frame.ui.offersWriteAccess).toHaveBeenCalledTimes(1);
+    expect(frame.ui.getWriteAccess).toHaveBeenCalledTimes(1);
+  });
+
   it("opens on Read only for any other value, without asking the account", async () => {
     for (const query of ["?access=read", "?access=WRITE", "?access=", "?usp=sharing", ""]) {
       const frame = await open();
@@ -844,5 +888,111 @@ describe("the Drive picker's access choice", () => {
     frame.choose("folder:G");
     expect(frame.order()).toEqual([PRESET_READY, "HierarchyPicker", "RadioCards"]);
     expect(frame.url()).toBe("https://drive.google.com/drive/folders/G?access=write");
+  });
+});
+
+describe("the Drive picker where the deployment keeps Drive read-only", () => {
+  const PRESET_CAPPED =
+    "Your organization keeps Google Drive read only, so this connection will be read only.";
+  const FOLDER_URL = "https://drive.google.com/drive/folders/F";
+
+  it("offers no access choice, mints no parameter and asks the account nothing", async () => {
+    const frame = await open(undefined, { offers: false });
+
+    for (const [target, url] of [
+      ["drive", "https://drive.google.com/drive/my-drive"],
+      ["folder:F", FOLDER_URL],
+      ["file:F", "https://drive.google.com/file/d/F/view"],
+    ]) {
+      frame.choose(target);
+      expect(frame.order(), target).toEqual(["HierarchyPicker"]);
+      expect(frame.ready(), target).toBe(true);
+      expect(frame.url(), target).toBe(url);
+    }
+    expect(frame.ui.getWriteAccess).not.toHaveBeenCalled();
+    expect(frame.ensureResources).not.toHaveBeenCalled();
+
+    // No frame reaches these values there: the level is not minted on the strength of a value alone.
+    const forced = { values: { target: "folder:F", access: "write" } };
+    expect(frame.spec.resourceUrl(forced)).toBe(FOLDER_URL);
+    expect(frame.spec.isReady(forced)).toBe(true);
+  });
+
+  it("shows the choice only once the gatekeeper has said the deployment offers it", async () => {
+    const answer = Promise.withResolvers<boolean>();
+    const frame = await open(undefined, { offers: answer.promise });
+    frame.choose("folder:F");
+    expect(frame.order()).toEqual(["HierarchyPicker"]);
+    expect(frame.url()).toBe(FOLDER_URL);
+
+    answer.resolve(true);
+    await answered();
+    // Read and write is the default once offered, so what it needs of the account follows the choice.
+    expect(frame.order().slice(0, 2)).toEqual(["HierarchyPicker", "RadioCards"]);
+    expect(frame.access()).toMatchObject({ value: "write" });
+    expect(frame.ui.offersWriteAccess).toHaveBeenCalledTimes(1);
+
+    const failure = Promise.withResolvers<boolean>();
+    const failing = await open(undefined, { offers: failure.promise });
+    failing.choose("folder:F");
+    failure.reject(new Error("The gatekeeper is unavailable."));
+    await answered();
+    // Nothing is said of the failure: the form connects read-only, as it would have anyway.
+    expect(failing.order()).toEqual(["HierarchyPicker"]);
+    expect(failing.ready()).toBe(true);
+    expect(failing.ui.offersWriteAccess).toHaveBeenCalledTimes(1);
+
+    // The next render, which a person's next action causes, asks again.
+    failing.ui.offersWriteAccess.mockResolvedValue(true);
+    failing.choose("folder:G");
+    expect(failing.ui.offersWriteAccess).toHaveBeenCalledTimes(2);
+    await answered();
+    expect(failing.order().slice(0, 2)).toEqual(["HierarchyPicker", "RadioCards"]);
+  });
+
+  it("opens read-only, and says why, when a resource URL asks for Read and write", async () => {
+    const frame = await open(undefined, { offers: false });
+    const seeded = await frame.prefill(`${FOLDER_URL}?access=write`);
+    // Read only, set over the dialog's default: the deployment does not offer Read and write.
+    expect(seeded).toEqual({ target: "folder:F", access: null });
+    expect(frame.order()).toEqual([PRESET_CAPPED, "HierarchyPicker"]);
+    expect(frame.ready()).toBe(true);
+    expect(frame.url()).toBe(FOLDER_URL);
+    expect(frame.ui.getWriteAccess).not.toHaveBeenCalled();
+    // There is no choice here that could end the line, so it stays while a Drive type is chosen.
+    frame.choose("drive");
+    expect(frame.order()).toEqual([PRESET_CAPPED, "HierarchyPicker"]);
+
+    const plain = await open(undefined, { offers: false });
+    await plain.prefill(FOLDER_URL);
+    expect(plain.notices()).toEqual([]);
+
+    // Unanswered, the form opens read-only and says nothing: only a no is a reason to give.
+    const answer = Promise.withResolvers<boolean>();
+    const waiting = await open(undefined, { offers: answer.promise });
+    await expect(waiting.prefill(`${FOLDER_URL}?access=write`)).resolves.toEqual({ target: "folder:F", access: null });
+    expect(waiting.order()).toEqual(["HierarchyPicker"]);
+    expect(waiting.ui.getWriteAccess).not.toHaveBeenCalled();
+  });
+
+  // The runtime reads a resource URL before it draws anything, so no render has asked the deployment.
+  it("waits for the deployment's no when the form opens on a read and write URL", async () => {
+    const frame = await open(undefined, { offers: false, openOn: `${FOLDER_URL}?access=write` });
+    expect(frame.prefilled).toEqual({ target: "folder:F", access: null });
+    expect(frame.order()).toEqual([PRESET_CAPPED, "HierarchyPicker"]);
+    expect(frame.ready()).toBe(true);
+    expect(frame.url()).toBe(FOLDER_URL);
+    expect(frame.ui.offersWriteAccess).toHaveBeenCalledTimes(1);
+    expect(frame.ui.getWriteAccess).not.toHaveBeenCalled();
+
+    // A check that fails says nothing: the form opens read-only, and its first render asks once more.
+    const failing = await open(undefined, {
+      offers: new Error("The gatekeeper is unavailable."), openOn: `${FOLDER_URL}?access=write`,
+    });
+    expect(failing.prefilled).toEqual({ target: "folder:F", access: null });
+    expect(failing.order()).toEqual(["HierarchyPicker"]);
+    expect(failing.ready()).toBe(true);
+    expect(failing.ui.offersWriteAccess).toHaveBeenCalledTimes(2);
+    expect(failing.ui.getWriteAccess).not.toHaveBeenCalled();
   });
 });

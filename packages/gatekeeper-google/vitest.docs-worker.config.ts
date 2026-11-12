@@ -46,6 +46,7 @@ export default defineConfig({
           GOOGLE_CALENDAR_GATEKEEPER: { className: "GoogleCalendarGatekeeperImpl", useSQLite: true },
           GOOGLE_DOC_GATEKEEPER: { className: "GoogleDocGatekeeperImpl", useSQLite: true },
           GOOGLE_DRIVE_GATEKEEPER: { className: "GoogleDriveGatekeeperImpl", useSQLite: true },
+          GOOGLE_DRIVE_GATEKEEPER_READ_ONLY: { className: "ReadOnlyDriveGatekeeper", useSQLite: true },
           GOOGLE_SHEETS_GATEKEEPER: { className: "GoogleSheetsGatekeeperImpl", useSQLite: true },
           GOOGLE_SLIDES_GATEKEEPER: { className: "GoogleSlidesGatekeeperImpl", useSQLite: true },
           TEST_HOOKS: { className: "TestHooks", useSQLite: true },
@@ -58,6 +59,7 @@ export default defineConfig({
     testTimeout: 15_000,
     include: [
       "__tests__/workerd/calendar-actions.test.ts",
+      "__tests__/workerd/drive-changes.test.ts",
       "__tests__/workerd/google-doc-actions.test.ts",
       "__tests__/workerd/google-file-creation.test.ts",
       "__tests__/workerd/native-sessions.test.ts",

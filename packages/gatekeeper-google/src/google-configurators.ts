@@ -44,6 +44,8 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const grantChecks = new WeakMap<object, (grant: string) => Promise<boolean>>();
+/** Whether the deployment a Drive picker was opened on offers read and write Drive connections. */
+const writeOffers = new WeakMap<object, boolean>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
 const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, Promise<unknown>>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
@@ -688,11 +690,18 @@ async function listDriveNodes(
 
 @validateRpc()
 export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
-  /** `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is open. */
-  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+  /**
+   * `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is
+   * open. `offersWrite` says whether the deployment lets a Drive connection be read and write.
+   */
+  constructor(
+    getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>,
+    offersWrite: boolean,
+  ) {
     super();
     googleTokenGetters.set(this, getToken);
     grantChecks.set(this, holds);
+    writeOffers.set(this, offersWrite);
   }
 
   async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
@@ -715,6 +724,11 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
 
   async convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
     return officeConversion(this, kind).convertFile(fileId, opts);
+  }
+
+  async offersWriteAccess(): Promise<boolean> {
+    // An instance the map does not hold answers no: unknown is read-only.
+    return writeOffers.get(this) === true;
   }
 
   async getWriteAccess(): Promise<DriveWriteAccess> {
