@@ -223,12 +223,13 @@ describe("the Drive picker's access choice", () => {
   const SHEETS = GOOGLE_SHEETS_RESOURCE.urlPattern;
   const SLIDES = GOOGLE_SLIDES_RESOURCE.urlPattern;
 
+  // Read and write first, and chosen by default.
   const OPTIONS = [
-    { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
     {
       value: "write", title: "Read and write",
       description: "Comments can also be added, replied to and resolved. Each change waits for your approval.",
     },
+    { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
   ];
   const WRITE_PROMPT = "Read and write needs one more permission from Google. Google will ask to " +
     "let this app \"See, edit, create, and delete all your Google Drive files\". It is used only " +
@@ -256,14 +257,14 @@ describe("the Drive picker's access choice", () => {
     vi.useRealTimers();
   });
 
-  it("offers Read only and Read and write for a target that connects as a Drive type", async () => {
+  it("offers Read and write, chosen by default, and Read only for a target that connects as a Drive type", async () => {
     const frame = await open();
     expect(frame.access()).toBeUndefined();
 
     for (const target of ["drive", "folder:F", "file:F"]) {
       frame.choose(target);
       expect(frame.order(), target).toEqual(["HierarchyPicker", "RadioCards"]);
-      expect(frame.access(), target).toEqual({ value: "read", options: OPTIONS, onChange: expect.any(Function) });
+      expect(frame.access(), target).toEqual({ value: "write", options: OPTIONS, onChange: expect.any(Function) });
     }
 
     frame.choose("shared-drives");
@@ -282,29 +283,37 @@ describe("the Drive picker's access choice", () => {
     asFile.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [NATIVE_DOC] });
     await asFile.list("folder:A");
     asFile.choose("doc:D");
-    expect(asFile.url()).toBe("https://drive.google.com/file/d/D/view");
+    expect(asFile.url()).toBe("https://drive.google.com/file/d/D/view?access=write");
     expect(asFile.order().filter(name => name === "RadioCards")).toHaveLength(1);
-    expect(asFile.access()).toMatchObject({ value: "read" });
+    expect(asFile.access()).toMatchObject({ value: "write" });
   });
 
-  it("is ready at once for Read only, minting no parameter and asking for nothing", async () => {
+  it("is ready at once for Read only, minting no parameter and asking Google for nothing", async () => {
     const frame = await open();
 
     frame.choose("folder:F");
+    frame.chooseAccess("read");
 
     expect(frame.ready()).toBe(true);
     expect(frame.url()).toBe("https://drive.google.com/drive/folders/F");
-    expect(frame.ui.getWriteAccess).not.toHaveBeenCalled();
     expect(frame.ensureResources).not.toHaveBeenCalled();
   });
 
-  it("is ready for Read and write as soon as the account is known to allow changes", async () => {
+  it("asks the account nothing before a Drive target is chosen", async () => {
+    const frame = await open();
+    expect(frame.ui.getWriteAccess).not.toHaveBeenCalled();
+    frame.choose("folder:F");
+    expect(frame.ui.getWriteAccess).toHaveBeenCalledTimes(1);
+    // Chosen again, or another Drive target, while the answer is known or awaited: not asked again.
+    frame.choose("file:F");
+    frame.chooseAccess("write");
+    expect(frame.ui.getWriteAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("is ready for Read and write, the default, as soon as the account is known to allow changes", async () => {
     const frame = await open();
     frame.ui.getWriteAccess.mockResolvedValue(held());
     frame.choose("folder:F");
-    expect(frame.ready()).toBe(true);
-
-    frame.chooseAccess("write");
     // Held back until the account has answered.
     expect(frame.ready()).toBe(false);
     await settle();
@@ -682,9 +691,8 @@ describe("the Drive picker's access choice", () => {
     for (const query of ["?access=read", "?access=WRITE", "?access=", "?usp=sharing", ""]) {
       const frame = await open();
       const seeded = await frame.prefill(`https://drive.google.com/drive/folders/F${query}`);
-      expect(seeded, query).toEqual({ target: "folder:F" });
-      // `toEqual` reads a key holding undefined as absent.
-      expect(seeded, query).not.toHaveProperty("access");
+      // A URL that does not ask for Read and write sets Read only over the default.
+      expect(seeded, query).toEqual({ target: "folder:F", access: null });
       expect(frame.access(), query).toMatchObject({ value: "read" });
       expect(frame.ui.getWriteAccess, query).not.toHaveBeenCalled();
     }

@@ -621,16 +621,22 @@ function presetNotice(context: Context) {
   return <Notice>{writes.known?.held ? PRESET_READY : PRESET_PENDING}</Notice>;
 }
 
-/** The access choice, for a target that connects as a Drive type. */
+/**
+ * The access choice, for a target that connects as a Drive type. Read and write is the default, so
+ * the account is asked whether it allows changes once a Drive target is first chosen with it.
+ */
 function accessField(context: Context) {
-  const { values, acceptedResourceUrlPatterns: accepted } = context;
+  const { values, acceptedResourceUrlPatterns: accepted, ui, setValues } = context;
   if (!bindsDrive(values.target, accepted)) return null;
+  if (writing(values, accepted) && !writes.known && writes.busy === undefined && !writes.error) {
+    void checkWrites(ui, () => setValues({}));
+  }
   return <Field label="Access">
     <RadioCards
       value={values.access === "write" ? "write" : "read"}
       options={[
-        { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
         { value: "write", title: "Read and write", description: "Comments can also be added, replied to and resolved. Each change waits for your approval." },
+        { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
       ]}
       onChange={next => chooseAccess(context, next)}
     />
@@ -709,7 +715,8 @@ function officeNotices(context: Context) {
 }
 
 export default {
-  initial: { target: null },
+  // Read and write by default; a resource URL that does not ask for it opens on Read only.
+  initial: { target: null, access: "write" },
   async initialValuesFromResourceUrl({ resourceUrl, ui, acceptedResourceUrlPatterns }) {
     if (!URL.canParse(resourceUrl)) return {};
     const url = new URL(resourceUrl);
@@ -717,7 +724,7 @@ export default {
     // Read as `parseDriveUrl` reads it: exactly `write`. The account is asked here, before the
     // first render, so the dialog opens knowing whether Allow changes is needed.
     const seed = async (target: string) => {
-      if (url.searchParams.get("access") !== "write") return { target };
+      if (url.searchParams.get("access") !== "write") return { target, access: null };
       await checkWrites(ui);
       presetWrite = true;
       return { target, access: "write" };

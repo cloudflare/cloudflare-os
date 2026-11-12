@@ -298,7 +298,8 @@ describe("Drive configurator URLs", () => {
   ] as const)("mints %s, and reads the URL back into the same choice", async ([, target, parsed]) => {
     let url = configurableUrl(driveConfigurator, { target });
     expect(parseResourceUrl(url)).toEqual(parsed);
-    await expect(driveValues(url)).resolves.toEqual({ target });
+    // A URL that does not ask for Read and write reads back as Read only, over the dialog's default.
+    await expect(driveValues(url)).resolves.toEqual({ target, access: null });
   });
 
   it("mints the natural Drive folder URL", () => {
@@ -307,8 +308,8 @@ describe("Drive configurator URLs", () => {
   });
 
   it("reads a pasted sharing link", async () => {
-    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1" });
-    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1" });
+    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1", access: null });
+    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1", access: null });
   });
 
   it("refuses to mint without a choice, or for a grouping, which is not a resource", () => {
@@ -355,7 +356,7 @@ describe("Drive configurator URLs", () => {
     ]) {
       let url = `https://drive.google.com/drive/folders/F1${query}`;
       let parsed = parseResourceUrl(url);
-      expect("access" in await writeValues(url), query).toBe("access" in parsed && parsed.access === "write");
+      expect((await writeValues(url) as { access?: unknown }).access === "write", query).toBe("access" in parsed && parsed.access === "write");
     }
   });
 

@@ -41,7 +41,8 @@ const COPY_DATE = "2026-10-04T00:00:00.000Z";
 async function open(accepted?: string[]) {
   vi.resetModules();
   const spec = (await import("../src/configurator/drive-configurator-ui")).default as unknown as Spec;
-  let values: Values = { ...spec.initial };
+  // These tests are of the Office flow: on Read only, readiness turns on the file alone.
+  let values: Values = { ...spec.initial, access: null };
   const ui = {
     inspectFile: vi.fn(async (_kind: string, _fileId: string): Promise<unknown> => ({ type: "native" })),
     listDriveNodes: vi.fn(async (_parentId: string): Promise<unknown> => ({ nodes: [] })),
