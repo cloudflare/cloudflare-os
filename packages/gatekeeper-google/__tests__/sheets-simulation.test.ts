@@ -878,6 +878,20 @@ describe("Sheets formatted values with a number format queued", () => {
       .toEqual([[5, "text", null, 0.25, 7]]);
   });
 
+  it("reads pending a value queued into a cell whose format a queued merge left to Google", () => {
+    let hidden = { numberFormat: { type: "NUMBER" as const, pattern: ";;;" } };
+    let sheets = [sheet(0, "Sales", { rowCount: 10, columnCount: 4 })];
+    let g = replayed(gridOf({ sheets }), [queued(1, [
+      { op: "formatCells", sheetId: 0, rect: rect(0, 0), format: hidden },
+      { op: "mergeCells", sheetId: 0, rect: rect(0, 0, 1, 2), merge: "ALL" },
+      { op: "unmergeCells", sheetId: 0, rect: rect(0, 0, 1, 2) },
+      { op: "writeCells", sheetId: 0, rect: rect(0, 1), values: [["x"]] },
+    ])]);
+    let area = { sheetId: 0, rect: rect(0, 1), rows: 1, columns: 1 };
+    expect(simulatedRange(g, area, BLANK)).toEqual({ range: "Sales!B1", values: [[null]], pendingCells: ["B1"] });
+    expect(simulatedRange(g, area, BLANK, "raw")).toEqual({ range: "Sales!B1", values: [["x"]] });
+  });
+
   it("reads pending a value queued on an inserted line, which takes the number format before it", () => {
     let hidden = { numberFormat: { type: "NUMBER" as const, pattern: ";;;" } };
     let sheets = [sheet(0, "Sales", { rowCount: 10, columnCount: 4 })];

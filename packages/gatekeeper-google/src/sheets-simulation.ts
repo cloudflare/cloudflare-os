@@ -466,9 +466,19 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
 type Shown = { value: SpreadsheetCellValue; pending: boolean };
 
 /**
+ * Whether Google decides the formatting of the cell keyed `key`: a cell of a row or column a queued
+ * change inserts, which takes the formatting of the line beside it, or one whose formatting a
+ * queued merge left unknown.
+ */
+function formatUnknown(grid: Grid, key: string): boolean {
+  return grid.formats.get(key)?.unknown === true ||
+    key.split(":").slice(1).some(identity => insertedLine(grid, identity));
+}
+
+/**
  * `shown`, the cell keyed `key` as `mode` reads it, made pending when a formatted read would show
  * it in a number format only Google can display: one a queued change sets or resets, or, for a
- * value queued on an inserted row or column, the one it takes from the line before it. That holds
+ * value queued into a cell whose formatting Google decides, the one it takes there. That holds
  * for a cell that reads blank too, since a format such as `;;;` hides what a cell holds; only a
  * cell a queued change empties is known to read blank.
  */
@@ -476,7 +486,7 @@ function displayed(shown: Shown, grid: Grid, key: string, mode: SpreadsheetValue
   if (mode !== "formatted") return shown;
   let input = grid.cells.get(key)?.input;
   let unknown = grid.formats.get(key)?.set.numberFormat !== undefined ||
-    (input !== undefined && key.split(":").slice(1).some(identity => insertedLine(grid, identity)));
+    input !== undefined && formatUnknown(grid, key);
   return !unknown || input === null ? shown : { value: null, pending: true };
 }
 
@@ -845,8 +855,8 @@ export function simulatedFormats(
     let row = rows[r];
     let column = columns[c];
     if (row === undefined || column === undefined) return null;
-    let entry = grid.formats.get(cellKey(sheet.id, row, column));
-    if (insertedLine(grid, row) || insertedLine(grid, column) || entry?.unknown) {
+    let key = cellKey(sheet.id, row, column);
+    if (formatUnknown(grid, key)) {
       pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
       return null;
     }
@@ -854,7 +864,7 @@ export function simulatedFormats(
     let baseColumn = baseIndexOf(column);
     let held = sheet.source === undefined || baseRow === undefined || baseColumn === undefined
       ? null : base(sheet.source, baseRow, baseColumn);
-    return mergeFormat(held, entry);
+    return mergeFormat(held, grid.formats.get(key));
   }));
   let merges = (sheet.merges ?? []).filter(merge => intersection(merge, rect)).toSorted(byPosition);
   let rowLines = linesAt(sheet.rows, rect.startRow, rect.startRow + area.rows);
