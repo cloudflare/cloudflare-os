@@ -1422,6 +1422,24 @@ describe("comments that quote a Doc, and suggested edits, through the Docs API",
     expect(waiting.docs.suggest).toHaveBeenCalledTimes(2);
   });
 
+  // bonk: a look that finds the suggestion and then stops short of its note must keep what it
+  // found, or a later look that no longer finds it (accepted or rejected meanwhile) sends it again.
+  it("keeps a suggestion a look found before its note, so it is never made again", async () => {
+    let run = harness();
+    run.keepSuggestions({ loseFirst: "suggestion" });
+    let id = await run.submit("suggestEdit", edit({ note: "It moved." }));
+    expect(await run.apply(id)).toBe(UNCONFIRMED_SUGGESTION);
+    run.refuse(WRITES_GRANT_MISSING);
+    expect(await run.apply(id)).toBe(GRANT_MISSING);
+    expect(run.attempts.get(id)).toMatchObject({ suggestionId: "suggest.s1" });
+    // Decided in the Doc before the next approval, well after the send's window.
+    run.doc.suggestions.length = 0;
+    run.aged(id);
+    run.refuse(undefined);
+    await run.apply(id);
+    expect(run.docs.suggest).toHaveBeenCalledTimes(1);
+  });
+
   it("ends as of unknown outcome when the account's suggestions from the send can't be told apart", async () => {
     let { doc, docs, journal, submit, apply } = harness();
     docs.suggest.mockRejectedValueOnce(new Error("The operation was aborted due to timeout"));

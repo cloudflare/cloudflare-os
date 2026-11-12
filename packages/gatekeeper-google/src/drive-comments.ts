@@ -935,7 +935,13 @@ async function post(
       log.info("found a Drive comment an earlier send posted", {
         event: "drive.comments.reconciled", commentId: found, outcome: "found",
       });
-      if (action.kind === "suggestEdit") await postNote(host, id, action.payload, found, prior);
+      if (action.kind === "suggestEdit") {
+        // Kept before the note: should the note stop short, a later look might no longer find the
+        // suggestion (accepted or rejected meanwhile) and make it again.
+        let marked: CommentAttempt = { ...prior, suggestionId: found };
+        host.attempts.put(id, marked);
+        await postNote(host, id, action.payload, found, marked);
+      }
       return found;
     }
     if (!conclusive) throw notShownYet(prior, threads.via);
