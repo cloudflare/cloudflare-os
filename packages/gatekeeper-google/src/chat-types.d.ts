@@ -416,7 +416,8 @@ export interface ChatSession extends RpcTarget {
    * looked up in your organization's directory (see {@link searchPeople}). `users/{email}`, or any
    * email address when your account can't search the directory, is instead accepted at your
    * organization's primary domain, and Google Chat checks that the person exists when the
-   * conversation is created. Conversations with people outside your organization cannot be started this way. A
+   * conversation is created; if it then names someone also named another way, or you, nothing is
+   * posted. Conversations with people outside your organization cannot be started this way. A
    * group chat that also holds anyone else, Chat apps and Google Groups included, doesn't count,
    * and if anyone joins it before the message is approved, nothing is posted.
    *

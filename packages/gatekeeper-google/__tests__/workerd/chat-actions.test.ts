@@ -129,6 +129,8 @@ function chatBackend() {
     directory: [] as Array<{id: string; name: string; email: string}>,
     /** Refuse directory searches with this status, as for an account its organization doesn't share the directory with. */
     directoryFailure: 0,
+    /** The `ErrorInfo` reasons a refused directory search gives. */
+    directoryReasons: [] as string[],
     /** The query of every directory search. */
     directorySearches: [] as string[],
     /** External shared contacts, which only a directory search for domain contacts returns. */
@@ -153,10 +155,16 @@ function chatBackend() {
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
+    if (url.hostname === "oauth2.googleapis.com" && url.pathname === "/token") {
+      return json({access_token: "refreshed-token", expires_in: 3600});
+    }
     if (url.hostname === "people.googleapis.com" && url.pathname === "/v1/people:searchDirectoryPeople") {
       state.directorySearches.push(url.searchParams.get("query")!);
       if (state.directoryFailure) {
-        return json({error: {code: state.directoryFailure, status: "PERMISSION_DENIED"}}, state.directoryFailure);
+        return json({error: {
+          code: state.directoryFailure, status: "PERMISSION_DENIED",
+          details: state.directoryReasons.map(reason => ({"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason})),
+        }}, state.directoryFailure);
       }
       const query = url.searchParams.get("query")!.toLowerCase();
       const sources = url.searchParams.getAll("sources");
@@ -1745,7 +1753,27 @@ describe("Starting Google Chat conversations", () => {
     using account = await chat.account();
     using cursor = await account.searchPeople("bo");
     await expect(Promise.resolve(cursor.next()))
-      .rejects.toThrow(/no access to its organization's directory.*http=403/);
+      .rejects.toThrow(/no access to its organization's directory.*http=403.*likely doesn't share/);
+    backend.state.directoryReasons = ["ACCESS_TOKEN_SCOPE_INSUFFICIENT"];
+    using scoped = await account.searchPeople("bo");
+    await expect(Promise.resolve(scoped.next()))
+      .rejects.toThrow(/http=403 ACCESS_TOKEN_SCOPE_INSUFFICIENT.*lacks the directory\.readonly scope/);
+  });
+
+  // Only a refusal about the account's access to the directory means Chat must check addresses itself.
+  it.each([
+    ["a 401 that outlived a token refresh", 401, []],
+    ["a 403 because the People API is disabled", 403, ["SERVICE_DISABLED"]],
+    ["a 403 for a rate limit", 403, ["RATE_LIMIT_EXCEEDED"]],
+  ])("passes through %s rather than falling back to email aliases", async (_case, status, reasons) => {
+    const {backend, chat} = accountChat();
+    Object.assign(backend.state, {directoryFailure: status, directoryReasons: reasons});
+    using account = await chat.account();
+    await expect(Promise.resolve(account.sendDirectMessage([BOB.email], "hi")))
+      .rejects.toThrow(new RegExp(`searchDirectoryPeople failed \\[http=${status}\\]`));
+    using cursor = await account.searchPeople("bo");
+    await expect(Promise.resolve(cursor.next())).rejects.not.toThrow(/no access to its organization's directory/);
+    expect((await chat.readQueue()).submissions).toEqual([]);
   });
 
   it("posts in an existing direct message or group chat as an ordinary send", async () => {
@@ -1913,6 +1941,42 @@ describe("Starting Google Chat conversations", () => {
       [`users/${BOB.email}`, `users/${CAROL.email}`], "hi both")).message;
     await expect(chat.applyAction(1)).rejects.toThrow(/left carol@example\.com out/);
     expect(backend.state.creates).toEqual([]);
+  });
+
+  // Google drops a repeated membership, so a person named twice would leave the approved place to
+  // anyone, such as someone who joins before a setup replayed after a lost response.
+  it.each([
+    ["a group chat", [`users/${BOB.id}`, `users/${BOB.email}`, `users/${CAROL.email}`], false],
+    ["a group chat someone joins before a replayed setup", [
+      `users/${BOB.id}`, `users/${BOB.email}`, `users/${CAROL.email}`,
+    ], true],
+    ["what would be a direct message", [`users/${BOB.id}`, `users/${BOB.email}`], false],
+  ])("posts nothing when an email alias names someone also named by id, for %s", async (_case, people, joins) => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(people, "hi")).message;
+    if (joins) {
+      backend.state.setupFailure = 503;
+      await expect(chat.applyAction(1)).rejects.toThrow();
+      backend.state.setupFailure = 0;
+      backend.state.members.push(joined("400"));
+    }
+    await expect(chat.applyAction(1))
+      .rejects.toThrow(/users\/200 and bob@example\.com turned out to be the same person.*nothing was posted/);
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
+  });
+
+  it("posts nothing when an email alias turns out to be one of your own addresses", async () => {
+    const {backend, chat} = accountChat();
+    // An address of Ada's besides the primary one the account reports.
+    backend.state.directory.push({id: "100", name: "Ada", email: "ada.lovelace@example.com"});
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(
+      ["users/ada.lovelace@example.com", `users/${BOB.email}`], "hi")).message;
+    await expect(chat.applyAction(1)).rejects.toThrow(/ada\.lovelace@example\.com turned out to be you/);
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
   });
 
   it.each([

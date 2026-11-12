@@ -938,13 +938,14 @@ async function queueDirectMessage(
  * or else the one Google's lookup finds, or else a new one.
  */
 async function openConversation(
-  api: ChatApi, store: ChatStore, actionId: number, people: string, { members, requestId }: ChatNewConversation,
+  api: ChatApi, store: ChatStore, actionId: number, self: string, people: string,
+  { members, requestId }: ChatNewConversation,
 ): Promise<string> {
   const ids = members.map(member => member.id);
   const known = store.conversationWith(people);
   if (known !== undefined) {
     // Unless it is gone, or someone has joined or left it since.
-    const unchanged = await hasExactly(api, known, ids).catch((error: unknown) => {
+    const unchanged = await hasExactly(api, known, self, ids).catch((error: unknown) => {
       if (isChatNoAccessError(error)) return false;
       throw error;
     });
@@ -963,25 +964,43 @@ async function openConversation(
   // group as it is now, so posting could reach other people than were approved.
   const present = await api.audienceIn(spaceName);
   const missing: typeof members = [];
+  // An email alias names whoever Chat resolves it to, who may be someone also named by id, or you:
+  // Google drops a repeated membership, so the approved number of places would leave one for anyone.
+  const resolved = new Map<string, typeof members>();
   // One at a time, as Chat allows 15 reads a second per space.
   for (const member of members) {
-    if (await api.idIn(spaceName, member.id, present) === undefined) missing.push(member);
+    const id = await api.idIn(spaceName, member.id, present);
+    if (id === undefined) missing.push(member);
+    else resolved.set(id, [...resolved.get(id) ?? [], member]);
   }
-  if (missing.length === 0 && present.size <= ids.length + 1) return spaceName;
+  const repeated = [...resolved].filter(([id, named]) => id !== self && named.length > 1);
+  if (missing.length === 0 && repeated.length === 0 && !resolved.has(self) &&
+      present.size === resolved.size + 1) {
+    return spaceName;
+  }
   // Replaying its setup would return this same conversation.
   store.settleSetupWith(people);
   throw new Error(`${missing.length > 0
     ? `Google Chat left ${peopleNames(missing)} out of the new conversation, perhaps because they block you`
+    : resolved.has(self)
+    ? `${peopleNames(resolved.get(self)!)} turned out to be you, so the conversation isn't the one approved`
+    : repeated.length > 0
+    ? `${repeated.map(([, named]) => peopleNames(named)).join("; ")} turned out to be the same person, so the ` +
+      "conversation isn't the one approved"
     : "Someone who wasn't approved is already in the new Google Chat conversation"}, so nothing was posted. ` +
     "Reject this message.");
 }
 
 /**
- * Whether exactly the connected user and the people `ids` name, by `users/{user}` id or email alias,
- * are in `spaceName`, with nobody else.
+ * Whether exactly the connected user `self` and the people `ids` name, by `users/{user}` id or email
+ * alias, are in `spaceName`, with nobody else.
  */
-async function hasExactly(api: ChatApi, spaceName: string, ids: readonly string[]): Promise<boolean> {
-  return await api.onlyIn(spaceName, ids) !== null;
+async function hasExactly(
+  api: ChatApi, spaceName: string, self: string, ids: readonly string[],
+): Promise<boolean> {
+  // An alias that resolves to you would leave your own place to someone not named.
+  const found = await api.onlyIn(spaceName, ids);
+  return found !== null && !found.includes(self);
 }
 
 /**
@@ -1792,13 +1811,14 @@ export class GoogleChatGatekeeperImpl
    * send posts only while they are exactly who else is in the conversation.
    */
   async #conversationFor(
-    api: ChatApi, store: ChatStore, actionId: number, action: ChatSendMessageAction, recipients: readonly string[],
+    api: ChatApi, store: ChatStore, actionId: number, self: ChatUser, action: ChatSendMessageAction,
+    recipients: readonly string[],
   ): Promise<{ spaceName: string; posted?: ChatMessageInfo }> {
     const { spaceName, newConversation: conversation } = action;
     if (conversation && pendingSpaceRequestId(spaceName) !== undefined) {
       const people = recipients.toSorted().join(",");
       const created = await this.#settingUp.run(people,
-        () => openConversation(api, store, actionId, people, conversation));
+        () => openConversation(api, store, actionId, self.id, people, conversation));
       store.setConversation(conversation.requestId, people, created);
       // A send that joined another's setup still carries any mark from its own earlier attempt.
       store.clearAttempt(actionId);
@@ -1817,7 +1837,7 @@ export class GoogleChatGatekeeperImpl
       if (posted) return { spaceName, posted };
     }
     // A retry may follow a post that landed, so it leaves the attempt mark as it is.
-    if (!await hasExactly(api, spaceName, recipients)) {
+    if (!await hasExactly(api, spaceName, self.id, recipients)) {
       throw new Error("This Google Chat conversation no longer holds exactly the people this message is for, " +
         `so this attempt posted nothing.${retried ? " An earlier attempt may already have posted it." : ""} ` +
         "Deny this message to clear it.");
@@ -1852,7 +1872,7 @@ export class GoogleChatGatekeeperImpl
         }
         const recipients = action.newConversation?.members.map(member => member.id) ?? action.recipients;
         const { spaceName, posted } = recipients
-          ? await this.#conversationFor(api, store, actionId, action, recipients)
+          ? await this.#conversationFor(api, store, actionId, self, action, recipients)
           : { spaceName: action.spaceName, posted: undefined };
         const needsThread = threadName !== undefined || action.startsThread === true;
         const post = async () => {
