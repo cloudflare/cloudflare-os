@@ -1165,9 +1165,8 @@ function updateTableCellStyle(
   >["updateTableCellStyle"],
 ): void {
   let { tableCellLocation: location, rowSpan, columnSpan } = tableRange;
-  requireTab(tab, location.tableStartLocation);
-  let place = tableAt(tab.body.content, location.tableStartLocation.index);
-  if (!place) throw new Error(INVALID_TABLE_START);
+  // The table's cells, and the merged cell, or the cell, that covers each.
+  let { grid, heads } = rangeTable(tab, tableRange);
   let named = fields.split(",") as (keyof TableCellStyle)[];
   if (named.some(field => !CELL_STYLE_FIELDS.includes(field))) notModelled(`fields ${fields}`);
   for (let field of named) {
@@ -1180,19 +1179,6 @@ function updateTableCellStyle(
         "Table cell borders cannot be transparent. To hide a table cell border, make its width 0.");
     }
   }
-  let rows = place.table.tableRows ?? [];
-  let grid = rows.map(row => row.tableCells ?? []);
-  // The merged cell, or the cell, that covers each cell.
-  let heads = grid.map(row => row.map((): [number, number] => [-1, -1]));
-  grid.forEach((row, r) => row.forEach((cell, c) => {
-    if (heads[r][c][0] >= 0) return;
-    let spans = cell.tableCellStyle;
-    for (let down = r; down < Math.min(r + (spans?.rowSpan ?? 1), grid.length); down++) {
-      for (let across = c; across < Math.min(c + (spans?.columnSpan ?? 1), row.length); across++) {
-        heads[down][across] = [r, c];
-      }
-    }
-  }));
   let reached = new Set<string>();
   for (let r = location.rowIndex; r < location.rowIndex + rowSpan; r++) {
     for (let c = location.columnIndex; c < location.columnIndex + columnSpan; c++) {

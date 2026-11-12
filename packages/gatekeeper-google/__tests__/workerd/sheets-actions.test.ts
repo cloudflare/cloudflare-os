@@ -19,8 +19,10 @@ type BatchRequest = Record<string, any>;
 
 class Invalid extends Error {}
 
-/** A sheet of the fake spreadsheet, and the ranges it protects. */
-/** A sheet, with the size in pixels of each line resized from Google's 21 a row and 100 a column. */
+/**
+ * A sheet of the fake spreadsheet, the ranges it protects, and the size in pixels of each line
+ * resized from Google's 21 a row and 100 a column.
+ */
 type ProviderSheet = SheetMeta & {
   protectedRanges?: ReturnType<typeof protectedRange>[];
   rowHeights?: Record<number, number>;
