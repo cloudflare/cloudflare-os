@@ -31,7 +31,7 @@ import {
   textReplacementRequests, type TableChange,
 } from "./docs-tables";
 import {
-  ADD_DOCUMENT_TABLES, assertTableQueueRoom, checkTableCall, prepareTableChange,
+  assertTableQueueRoom, checkTableCall, DOCUMENT_TABLES, prepareTableChange,
   prepareTextReplacement, type PreparedTableChange, type PreparedTextReplacement, type TableCall,
 } from "./docs-table-actions";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -2423,7 +2423,7 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [EDIT_DOCUMENT_ACTION, ADD_DOCUMENT_TABLES, ...this.#comments.autoApprovableKinds()];
+    return [EDIT_DOCUMENT_ACTION, DOCUMENT_TABLES, ...this.#comments.autoApprovableKinds()];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { GoogleDocsTab } from "../src/docs-api";
 import {
-  ADD_DOCUMENT_TABLES, assertTableQueueRoom, checkTableCall, DELETE_DOCUMENT_TABLES,
+  assertTableQueueRoom, checkTableCall, DOCUMENT_TABLES,
   MAX_QUEUED_TABLE_LENGTH, prepareTableChange, prepareTextReplacement,
 } from "../src/docs-table-actions";
 import type { PreparedTableChange, TableCall } from "../src/docs-table-actions";
@@ -171,29 +171,16 @@ const tallTable = (rows: number) =>
 // ---------------------------------------------------------------------------
 
 describe("kinds and verdicts", () => {
-  it("lets a user auto-approve what adds, under a kind of its own", () => {
-    expect(ADD_DOCUMENT_TABLES)
-      .toEqual({ tag: "add-document-tables", label: "Adding tables, rows and columns" });
+  it("lets a user auto-approve every table change, deletions included, under one kind", () => {
+    expect(DOCUMENT_TABLES).toEqual({ tag: "document-tables", label: "Table changes" });
     let from = read(STATUS());
     for (let call of [
       addTable({ rows: 1, columns: 1 }), addRows({ table: 0 }), addColumns({ table: 0 }),
-    ]) {
-      let prepared = prepare(from, call);
-      expect(prepared.actionKind).toBe(ADD_DOCUMENT_TABLES);
-      expect(prepared.autoApprovable).toBe(true);
-    }
-  });
-
-  it("makes every deletion wait for approval, under another kind", () => {
-    expect(DELETE_DOCUMENT_TABLES)
-      .toEqual({ tag: "delete-document-tables", label: "Deleting tables, rows and columns" });
-    let from = read(STATUS());
-    for (let call of [
       dropRows({ table: 0, at: 1 }), dropColumns({ table: 0, at: 1 }), dropTable(0),
     ]) {
       let prepared = prepare(from, call);
-      expect(prepared.actionKind).toBe(DELETE_DOCUMENT_TABLES);
-      expect(prepared.autoApprovable).toBe(false);
+      expect(prepared.actionKind).toBe(DOCUMENT_TABLES);
+      expect(prepared.autoApprovable).toBe(true);
     }
   });
 });

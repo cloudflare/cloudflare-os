@@ -22,15 +22,11 @@ import {
 import type { DocTabSnapshot, EditableMarkdown, MarkdownRange } from "./markdown-converter";
 
 /**
- * Adding a table, or rows or columns to one: nothing is removed. A kind of its own, apart from
- * "Document edits", so a rule enabled for either covers only what its label says.
+ * Adding or deleting a table, or rows or columns of one. A kind of its own, apart from "Document
+ * edits", so a rule enabled for either covers only what its label says. A deletion may apply
+ * without asking too, since the document's version history undoes it.
  */
-export const ADD_DOCUMENT_TABLES: ActionKind =
-  { tag: "add-document-tables", label: "Adding tables, rows and columns" };
-
-/** Removing a table, or rows or columns of one, with what they hold. Always waits for approval. */
-export const DELETE_DOCUMENT_TABLES: ActionKind =
-  { tag: "delete-document-tables", label: "Deleting tables, rows and columns" };
+export const DOCUMENT_TABLES: ActionKind = { tag: "document-tables", label: "Table changes" };
 
 /** One of the session's table methods, as called. */
 export type TableCall =
@@ -594,7 +590,7 @@ export function prepareTableChange(
     checkStoredSize(change);
     let { title, description } = newTableCard(change, label);
     return {
-      change, title: sanitizeTitle(title), description, actionKind: ADD_DOCUMENT_TABLES,
+      change, title: sanitizeTitle(title), description, actionKind: DOCUMENT_TABLES,
       autoApprovable: true, table,
     };
   }
@@ -606,16 +602,9 @@ export function prepareTableChange(
   checkStoredSize(change);
   let table = call.method === "deleteTable" ? call.table : call.lines.table;
   let { title, description } = existingTableCard(content, table, change, label);
-  if (change.type === "insertTableRows" || change.type === "insertTableColumns") {
-    return {
-      change, title: sanitizeTitle(title), description, actionKind: ADD_DOCUMENT_TABLES,
-      autoApprovable: true,
-    };
-  }
   return {
-    change, title: sanitizeTitle(title), description, actionKind: DELETE_DOCUMENT_TABLES,
-    // Rule 1: deletes content.
-    autoApprovable: false,
+    change, title: sanitizeTitle(title), description, actionKind: DOCUMENT_TABLES,
+    autoApprovable: true,
   };
 }
 

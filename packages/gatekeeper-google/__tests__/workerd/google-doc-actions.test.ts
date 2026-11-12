@@ -1179,13 +1179,11 @@ afterEach(() => {
 describe("Google Doc auto-approval", () => {
   const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
 
-  const ADD_TABLES = { tag: "add-document-tables", label: "Adding tables, rows and columns" };
-  const DELETE_TABLES =
-    { tag: "delete-document-tables", label: "Deleting tables, rows and columns" };
+  const TABLE_CHANGES = { tag: "document-tables", label: "Table changes" };
 
-  it("reports text edits, adding tables and Doc comments as its auto-approvable kinds", async () => {
+  it("reports text edits, table changes and Doc comments as its auto-approvable kinds", async () => {
     expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([
-      EDIT_DOCUMENT, ADD_TABLES, { tag: "docComments", label: "Google Doc comments" },
+      EDIT_DOCUMENT, TABLE_CHANGES, { tag: "docComments", label: "Google Doc comments" },
     ]);
   });
 
@@ -1210,31 +1208,20 @@ describe("Google Doc auto-approval", () => {
       .toEqual({ actionKind: EDIT_DOCUMENT, autoApprovable: true });
   });
 
-  it("lets tables, rows and columns be added without asking", async () => {
+  it("lets tables, rows and columns be added and deleted without asking", async () => {
     docsWithBody(tableBody());
 
     for (let [method, argument] of [
       ["insertTable", { rows: 1, columns: 1 }],
       ["insertTableRows", { table: 0 }],
       ["insertTableColumns", { table: 0 }],
-    ] as const) {
-      await edit("verdict-add", method, argument);
-      expect(await hooks().lastActionVerdict)
-        .toEqual({ actionKind: ADD_TABLES, autoApprovable: true });
-    }
-  });
-
-  it("always asks before deleting rows, columns or a table", async () => {
-    docsWithBody(tableBody());
-
-    for (let [method, argument] of [
       ["deleteTableRows", { table: 0, at: 1 }],
       ["deleteTableColumns", { table: 0, at: 1 }],
       ["deleteTable", 0],
     ] as const) {
-      await edit("verdict-delete", method, argument);
+      await edit("verdict-tables", method, argument);
       expect(await hooks().lastActionVerdict)
-        .toEqual({ actionKind: DELETE_TABLES, autoApprovable: false });
+        .toEqual({ actionKind: TABLE_CHANGES, autoApprovable: true });
     }
   });
 });
