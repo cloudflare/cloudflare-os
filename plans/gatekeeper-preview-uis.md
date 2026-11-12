@@ -147,6 +147,9 @@ is the gatekeeper's business; what every preview keeps to is:
 - It treats everything the resource says as text. Nothing from it is parsed as HTML into the
   frame, and links are drawn but not followable.
 - It carries its own styling for light and dark; the Workshop's tokens do not exist in the frame.
+- It gets images and other media as bytes from the session and draws them as `data:` URLs. The
+  frame's content policy allows no network access, and stays that way: a host the frame could
+  load from is a host it could send the session's data to.
 - It does not apply or discard. Those stay in the Workshop.
 
 Google Docs is the first (`gatekeeper-google/src/docs-preview-client.txt`).

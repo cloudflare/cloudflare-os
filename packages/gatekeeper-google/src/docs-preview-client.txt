@@ -42,6 +42,13 @@ style.textContent = `
   .link.s { text-decoration: underline line-through; }
   .chip { display: inline-block; padding: 0 8px; border-radius: 999px; background: var(--chip);
     color: var(--dim); font-size: 9pt; line-height: 1.7; user-select: none; }
+  .picture { display: inline-flex; align-items: center; justify-content: center; max-width: 100%;
+    padding: 0; border-radius: 4px; vertical-align: bottom; overflow: hidden; }
+  .picture.wait { background: linear-gradient(90deg, var(--chip) 25%, var(--shine) 50%, var(--chip) 75%) 0 0 / 200% 100%;
+    animation: shimmer 1.4s linear infinite; }
+  /* Drawn for a white page, so a transparent image keeps one in the dark. */
+  .picture img { display: block; width: 100%; height: 100%; background: #fff;
+    animation: arrive .25s ease-out; }
   table { border-collapse: collapse; width: 100%; margin: 8px 0; }
   td, th { border: 1px solid var(--line); padding: 5px 7px; height: 1.5em; vertical-align: top; text-align: left; }
   td > *, th > * { margin: 0; padding: 0; }
@@ -298,7 +305,7 @@ function renderInline(words, parent) {
       look = undefined;
       continue;
     }
-    const classes = [kind === 'chip' && 'chip', style & BOLD && 'b', style & ITALIC && 'i',
+    const classes = [kind === 'chip' && 'chip', text === 'Image' && kind && 'slot', style & BOLD && 'b', style & ITALIC && 'i',
       style & STRIKE && 's', href && 'link'].filter(Boolean).join(' ');
     const next = `${mark ?? ''}\u0000${href ?? ''}\u0000${classes}`;
     if (next !== look || kind) {
@@ -323,7 +330,10 @@ const LIST_STYLE = /^list-style-type: [a-z-]+;?$/;
 // the same unfollowed span the Markdown path draws.
 function copyTableNode(node, into) {
   if (node.nodeType === Node.TEXT_NODE) {
-    into.append(node.data);
+    for (const [n, text] of node.data.split('[Image]').entries()) {
+      if (n) into.append(make('span', 'chip slot', 'Image'));
+      into.append(text);
+    }
     return;
   }
   if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -457,6 +467,53 @@ function pairEdits(rows) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Images: each placeholder becomes a box of the image's size, filled once its bytes are read
+
+// Per tab: what listImages() returned, and each image's data: URL as it is read.
+const pictures = new Map();
+
+async function readPicture(image) {
+  const { mimeType, content } = await gadget.readImage(image.id, tabId);
+  const blob = new Blob([await new Response(content).arrayBuffer()], { type: mimeType });
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function showImages(slots, current) {
+  let tab = pictures.get(tabId);
+  if (tab?.list.length !== slots.length) {
+    tab = { list: await gadget.listImages(tabId), urls: new Map() };
+    pictures.set(tabId, tab);
+  }
+  // Text that spells a placeholder would put every image after it in the wrong box.
+  if (tab.list.length !== slots.length) return;
+  for (const [n, image] of tab.list.entries()) {
+    if (current !== generation) return;
+    const slot = slots[n];
+    if (!image.width || !image.height) continue;
+    slot.classList.add('picture');
+    slot.style.width = `${image.width}pt`;
+    slot.style.aspectRatio = `${image.width} / ${image.height}`;
+    if (image.description) slot.title = image.description;
+    if (!image.readable) continue;
+    // One at a time, so no more than one image is in flight.
+    slot.classList.add('wait');
+    if (!tab.urls.has(image.id)) tab.urls.set(image.id, readPicture(image));
+    const url = await tab.urls.get(image.id).catch(() => tab.urls.delete(image.id) && undefined);
+    slot.classList.remove('wait');
+    if (!url) continue;
+    const picture = make('img');
+    picture.src = url;
+    picture.alt = image.description ?? '';
+    slot.replaceChildren(picture);
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
 // Loading and refreshing
 
 let tabs = null;
@@ -575,6 +632,8 @@ async function load() {
     (firstFresh ?? (loaded ? undefined : stops[0]))?.scrollIntoView({ block: 'nearest', behavior: motion() });
     statusLine.textContent = '';
     loaded = true;
+    const slots = [...page.querySelectorAll('.slot')].filter(slot => !slot.closest('.removed'));
+    if (slots.length) void showImages(slots, current).catch(() => {});
   } catch (error) {
     if (current !== generation) return;
     statusLine.textContent = '';

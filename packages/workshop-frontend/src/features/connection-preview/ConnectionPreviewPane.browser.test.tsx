@@ -28,10 +28,13 @@ const SAVED = [
   '  </tr>',
   '</table>',
   'See [the record](https://example.com/record) for more.',
+  '\\[Image\\]',
 ].join('\n')
 const DURABILITY = '- **Durability**: still playing at an All\\-Star level into his 40s.'
 const LONGEVITY = '- **Longevity**: 21 seasons and counting.'
 const DRAFTED = '- **Playoff résumé**: the all\\-time leader in playoff points.'
+
+const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='
 
 type Doc = { saved: string, markdown: string, changes: object[], calls: string[] }
 
@@ -69,6 +72,26 @@ class DocSession extends RpcTarget {
     this.doc.calls.push('getPendingChanges')
     const { saved, markdown, changes } = this.doc
     return { savedMarkdown: saved, markdown, changes }
+  }
+
+  listImages() {
+    this.doc.calls.push('listImages')
+    return [{ id: 'photo', width: 120, height: 80, readable: true }]
+  }
+
+  readImage(id: string) {
+    this.doc.calls.push(`readImage ${id}`)
+    const bytes = Uint8Array.from(atob(PIXEL), character => character.charCodeAt(0))
+    return {
+      mimeType: 'image/png',
+      size: bytes.length,
+      content: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(bytes)
+          controller.close()
+        },
+      }),
+    }
   }
 
   replaceText() {
@@ -145,20 +168,22 @@ it('reads the document through the connection session and redraws when an action
   const { doc, resolved, emit } = renderPane([action(1)])
 
   // One read gives the frame the saved tab, the tab with its pending changes, and the changes.
-  await expect.poll(() => doc.calls).toEqual(['listTabs', 'getPendingChanges'])
+  // The tab's images are listed once and read through the session, a stream each.
+  const opened = ['listTabs', 'getPendingChanges', 'listImages', 'readImage photo']
+  await expect.poll(() => doc.calls).toEqual(opened)
   await expect.element(page.getByText('1 change waiting')).toBeVisible()
 
   // The agent queues another edit: the session now simulates it, and the log says so.
   doc.markdown = `${doc.markdown}\n${DRAFTED}`
   doc.changes = [...doc.changes, { id: 12, type: 'appendText', markdown: DRAFTED }]
   emit(action(2))
-  await expect.poll(() => doc.calls).toEqual(['listTabs', 'getPendingChanges', 'getPendingChanges'])
+  await expect.poll(() => doc.calls).toEqual([...opened, 'getPendingChanges'])
   await expect.element(page.getByText('2 changes waiting')).toBeVisible()
 
   // The preview's own reads come back as observations on this connection, and must not redraw it.
   emit(action(3, { type: 'observation' } as Partial<ActionLogEntry>))
   await new Promise(done => setTimeout(done, 600))
-  expect(doc.calls).toEqual(['listTabs', 'getPendingChanges', 'getPendingChanges'])
+  expect(doc.calls).toEqual([...opened, 'getPendingChanges'])
 
   // Apply is the Workshop's, outside the frame, and takes the oldest change first.
   await page.getByRole('button', { name: 'Apply' }).click()
