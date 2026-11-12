@@ -2085,6 +2085,12 @@ type MarkdownWriteOptions = {
   preserveLeadingParagraph?: boolean;
   /** Keep a fragment's final paragraph break. */
   preserveTrailingNewline?: boolean;
+  /**
+   * Make the paragraph that a kept final break splits off a plain one: it takes the list and
+   * style of the paragraph written into, which the Markdown does not show on it. `list` says
+   * whether that paragraph is a list item, whose bullet and indent then go too.
+   */
+  resetTrailingParagraph?: { list: boolean };
   /** Receives the index of each block needing bullets, for a caller that creates them itself. */
   bulleted?: (index: number) => void;
 };
@@ -2497,6 +2503,13 @@ function blocksToDocRequests(
     }
     return change;
   });
+  if (options.preserveTrailingNewline && options.resetTrailingParagraph) {
+    let { list } = options.resetTrailingParagraph;
+    paragraphChanges.push({
+      startIndex: offset, endIndex: offset + 1, deleteBullets: list,
+      namedStyleType: "NORMAL_TEXT", clearIndent: list,
+    });
+  }
   // Bullets go first: removing them indents each paragraph to keep its nesting visible, and the
   // indent reset below undoes that.
   for (let { startIndex, endIndex } of coalesceRanges(
@@ -3181,10 +3194,20 @@ function inlineWrite(
     markdown, trimmedMatchStart, trimmedMatchEnd, trimmedNew, docRange.startsAfterParagraph);
   let preserveTrailingNewline = /[^\n]\n+$/.test(insertMarkdown);
   // Paragraphs split off the one written into would inherit its list and style. Text that ends in
-  // a break, written at a paragraph's start, holds only paragraphs split off ahead of it.
+  // a break, written at the start of a paragraph's line, before any marker, holds only paragraphs
+  // split off ahead of it. Written after a marker it is inside the item or heading, which its
+  // first paragraph then is.
   let start = docRange.start;
-  let ahead = !docRange.startsAfterParagraph && preserveTrailingNewline
+  let atLineStart = trimmedMatchStart === 0 || markdown[trimmedMatchStart - 1] === "\n";
+  let ahead = !docRange.startsAfterParagraph && preserveTrailingNewline && atLineStart
     ? sourceMap.blocks.find(block => block.docStart === start) : undefined;
+  // Written inside a paragraph, such text splits off the rest of it, which the Markdown shows as
+  // a plain paragraph.
+  let { end } = docRange;
+  let split = !ahead && preserveTrailingNewline && !docRange.startsAfterParagraph
+    ? sourceMap.blocks.find(block => block.docStart <= end && end < block.docEnd) : undefined;
+  let splitStyled = split &&
+    (split.listId !== undefined || split.namedStyleType !== "NORMAL_TEXT");
   return {
     docRange, insertMarkdown,
     writeOptions: {
@@ -3194,6 +3217,7 @@ function inlineWrite(
       preserveLeadingParagraph: !ahead ||
         ahead.listId === undefined && ahead.namedStyleType === "NORMAL_TEXT",
       preserveTrailingNewline,
+      ...(splitStyled ? { resetTrailingParagraph: { list: split!.listId !== undefined } } : {}),
     },
   };
 }

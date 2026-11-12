@@ -3167,4 +3167,25 @@ describe("computeReplaceOperations, written as its replay reads", () => {
       }
     }
   });
+
+  it("keeps a list item's or heading's style on text written after its marker", () => {
+    let targets = [
+      { runs: ["Notes here\n"], bullet: { listId: "L1" } },
+      { runs: ["Notes here\n"], namedStyleType: "HEADING_2" },
+    ];
+    for (let target of targets) {
+      let tab = buildTab([{ runs: ["Before\n"] }, target, { runs: ["After\n"] }], BULLET_LIST);
+      let { markdown } = docTabToMarkdown(tab);
+      for (let [oldMarkdown, newMarkdown] of [
+        ["Notes here", "End\n\n"],
+        ["Notes", "End\n\n"],
+        ["Notes here", "End\n\nNotes here"],
+        ["here", "x\n\nhere"],
+        ["here", "x\n\n"],
+      ]) {
+        let start = markdown.indexOf(oldMarkdown);
+        expectAsReplayed(tab, start, start + oldMarkdown.length, newMarkdown);
+      }
+    }
+  });
 });
