@@ -23,7 +23,7 @@ import {
   Hexagon,
 } from '@phosphor-icons/react'
 import AddModelModal from './AddModelModal'
-import { persistSelectedModel } from './modelSelection'
+import { cacheSelectedModel } from './modelSelection'
 import { logoComponents } from './components/ConnectionLogos'
 import { getVendorIconBackground } from './components/vendorColors'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
@@ -333,7 +333,7 @@ export default function OnboardingWizard({
       }
       // selectedModelId is null when the user chose "No agent" or didn't pick one
       await authenticatedApi.setPreferredModel(selectedModelId)
-      persistSelectedModel(selectedModelId)
+      cacheSelectedModel(selectedModelId)
       // The tools are optional, so one that fails (say, an admin disabled it meanwhile) is
       // reported and doesn't keep the user in onboarding.
       const ambientToProvision = ambientVendors.filter((v) => !switchedOffAmbientIds.has(v.id))
