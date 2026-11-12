@@ -2,9 +2,8 @@ import type { RpcStub } from "capnweb";
 import type { AiChatAuthorInfo, AuthenticatedApi } from "@gadgets/workshop-shared/api";
 import { logRpcFailure } from "./rpcErrors";
 
-// This browser's copy of the user's preferred model and of the models offered to them, which lets
-// a picker start on them without waiting on the server. The server's copy of the preference is the
-// one that follows the user between browsers.
+// This browser's copy of the user's preferred model, which lets a picker start on it without
+// waiting on the server. The server's copy is the one that follows the user between browsers.
 //
 // Browser storage outlives a session, so each name below is stored under the ID of the user it
 // belongs to, and is read only for a user the server has confirmed: with no user, reads find
@@ -13,11 +12,10 @@ const SELECTED = "lastSelectedModel";
 // Set while the choice above has yet to be saved to the server, to a value naming the pick, so
 // that only the save of that very pick clears it.
 const UNSAVED = "lastSelectedModelUnsaved";
-const MODELS = "cachedModels";
-const NAMES = [SELECTED, UNSAVED, MODELS];
+const NAMES = [SELECTED, UNSAVED];
 // What browsers stored, for whoever used them, before any of it was kept per user.
 const LEGACY_SYNCED = "lastSelectedModelSynced";
-const LEGACY_KEYS = [SELECTED, LEGACY_SYNCED, MODELS, "modelSelectionOwner"];
+const LEGACY_KEYS = [SELECTED, LEGACY_SYNCED, "cachedModels"];
 
 function read(name: string, userId: string | undefined): string | null {
   if (userId === undefined) return null;
@@ -51,13 +49,13 @@ function write(name: string, userId: string | undefined, value: string | null): 
   }
 }
 
-// A pick made on this page while its user was yet to be confirmed, as during a reconnect, kept
-// for the sync that confirms them.
-let unclaimedPick: string | undefined;
+// The models this page last saw offered, and to whom. Kept for the page's lifetime only, which is
+// as long as a picker can start on them: a newly loaded page has no confirmed user to read for.
+let cachedModels: { userId: string; models: AiChatAuthorInfo[] } | undefined;
 
 /** Forgets what this browser remembers of anyone's models, as when a user signs out. */
 export function forgetModelSelection(): void {
-  unclaimedPick = undefined;
+  cachedModels = undefined;
   try {
     forgetOthers();
     for (const key of LEGACY_KEYS) localStorage.removeItem(key);
@@ -99,22 +97,16 @@ function inOrder<T>(request: () => Promise<T>): Promise<T> {
 }
 
 /**
- * The models this browser last saw offered to `userId`, or none if it has seen none. A picker
- * starts on these, so that it shows the user's model at once, and replaces them when the server
- * answers.
+ * The models this page last saw offered to `userId`, or none if it has seen none. A picker starts
+ * on these, so that it shows the user's model at once, and replaces them when the server answers.
  */
 export function getCachedModels(userId: string | undefined): AiChatAuthorInfo[] {
-  try {
-    const cached: unknown = JSON.parse(read(MODELS, userId) ?? "[]");
-    return Array.isArray(cached) ? cached : [];
-  } catch {
-    return [];
-  }
+  return cachedModels !== undefined && cachedModels.userId === userId ? cachedModels.models : [];
 }
 
 /** Remembers the models offered to `userId` for getCachedModels(). */
 export function cacheModels(userId: string | undefined, models: AiChatAuthorInfo[]): void {
-  write(MODELS, userId, JSON.stringify(models));
+  if (userId !== undefined) cachedModels = { userId, models };
 }
 
 /** Sentinel used for UI values and localStorage so an explicit null choice can persist. */
@@ -159,11 +151,6 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
     reading.catch(() => {});
     userId = (await identity).id;
     adoptLegacySelection(userId);
-    if (unclaimedPick !== undefined) {
-      // Its save is already on its way, and it counts below as a pick newer than the answer.
-      write(SELECTED, userId, unclaimedPick);
-      unclaimedPick = undefined;
-    }
 
     const local = read(SELECTED, userId);
     const unsaved = read(UNSAVED, userId);
@@ -177,7 +164,7 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
         // A model that no longer resolves is refused; the server's preference, once it has been
         // read, then applies.
         logRpcFailure("Failed to save this browser's model choice:", err);
-        answer = await inOrder(() => api.getPreferredModel());
+        answer = await reading;
         if (read(UNSAVED, userId) === unsaved) write(UNSAVED, userId, null);
       }
     } else {
@@ -201,7 +188,6 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
  */
 export function cacheSelectedModel(userId: string | undefined, modelId: string | null): void {
   selectionRevision++;
-  unclaimedPick = userId === undefined ? toModelSelectValue(modelId) : undefined;
   write(SELECTED, userId, toModelSelectValue(modelId));
   write(UNSAVED, userId, null);
 }

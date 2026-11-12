@@ -27,6 +27,7 @@ const saved = () => new Promise(resolve => setTimeout(resolve))
 
 beforeEach(() => {
   vi.resetAllMocks()
+  forgetModelSelection()
   localStorage.clear()
   getPreferredModel.mockResolvedValue(null)
   whoami.mockResolvedValue({ type: 'user', id: 'alice', name: 'Alice' })
@@ -159,17 +160,6 @@ describe('syncSelectedModel', () => {
     expect(getStoredSelectedModel('alice', MODELS)).toBe('sonnet')
   })
 
-  it('keeps a pick made before the user was confirmed, as during a reconnect', async () => {
-    persistSelectedModel(api, 'alice', 'sonnet')
-    await saved()
-
-    persistSelectedModel(api, undefined, null)
-    await syncSelectedModel(api)
-
-    expect(setPreferredModel).toHaveBeenLastCalledWith(null)
-    expect(getStoredSelectedModel('alice', MODELS)).toBeNull()
-  })
-
   it('keeps a model picked away from and back to while the preference was being fetched', async () => {
     persistSelectedModel(api, 'alice', 'opus')
     await saved()
@@ -250,13 +240,13 @@ describe('a browser shared between users', () => {
   })
 
   it("keeps only the latest user's entries", async () => {
-    cacheModels('alice', MODELS)
     persistSelectedModel(api, 'alice', 'sonnet')
     await saved()
 
-    cacheModels('bob', [OPUS])
+    persistSelectedModel(api, 'bob', 'opus')
+    await saved()
 
-    expect(Object.keys(localStorage)).toEqual(['cachedModels:bob'])
+    expect(Object.keys(localStorage)).toEqual(['lastSelectedModel:bob'])
   })
 
   it('forgets everything on sign-out', async () => {
@@ -267,6 +257,7 @@ describe('a browser shared between users', () => {
     forgetModelSelection()
 
     expect(localStorage.length).toBe(0)
+    expect(getCachedModels('alice')).toEqual([])
   })
 })
 
@@ -294,19 +285,6 @@ describe('getCachedModels', () => {
     expect(getCachedModels('alice')).toEqual(MODELS)
   })
 
-  it('returns none when the cache is unreadable', () => {
-    localStorage.setItem('cachedModels:alice', '{not json')
-
-    expect(getCachedModels('alice')).toEqual([])
-  })
-})
-
-describe('cacheModels', () => {
-  it('leaves a full or blocked storage to the caller as no failure', () => {
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('quota') })
-
-    expect(() => cacheModels('alice', MODELS)).not.toThrow()
-  })
 })
 
 describe('persistSelectedModel', () => {
