@@ -2805,17 +2805,16 @@ export function dropInheritedFormatting(
     };
     // A break written inside a line, with text after it, splits off the rest as normal text.
     // Without the document, the line's style is told only by how it reads, so a split that
-    // would refuse with it, once the changes before it apply, is refused now.
+    // would refuse with it, once the changes before it apply, is refused now. A line with no
+    // heading marker may be a subtitle wherever the document holds one: an edit cannot make
+    // one.
     let rest = old.slice(mdEnd, lastEnd);
     if (unknownStyles && rest !== "" && markdown.slice(writes.mdStart, writes.mdEnd).includes("\n")) {
       let line = parseLine(old.slice(lineStart(old, mdEnd), lastEnd));
-      let italicLine = line.headingLevel === null && line.listType === null &&
-        line.plainText !== "" && line.spans.some(span =>
-          span.italic && span.start === 0 && span.end === line.plainText.length);
       let keptStart = line.plainText.length - parseLine(rest).plainText.length;
       let keepsNormal = line.headingLevel !== null && line.spans.some(span =>
         span.end > keptStart && INHERITED_FIELDS.some(field => span[field] && named.NORMAL_TEXT?.[field]));
-      if (italicLine && named.SUBTITLE?.italic || keepsNormal) {
+      if (line.headingLevel === null && written.subtitles || keepsNormal) {
         throw new Error(
           "replaceText: a paragraph break written here splits off the rest of this paragraph as " +
           "normal text, and with earlier changes waiting on the tab, whether that text can read " +
@@ -3422,7 +3421,7 @@ export function rewrittenBlockStyles(
 export type WrittenStyles =
   | {
     rewrite: { mdStart: number; styles: string[]; rewritten: boolean[] };
-    keepsFirst?: never; replaced?: never; restated?: never;
+    keepsFirst?: never; replaced?: never; restated?: never; subtitles?: never;
   }
   | {
     keepsFirst?: boolean; replaced: MarkdownRange; rewrite?: never;
@@ -3431,6 +3430,8 @@ export type WrittenStyles =
      * the edit splits off a list item or heading.
      */
     restated?: (typeof INHERITED_FIELDS)[number][];
+    /** Where only `replaced` is known: whether the document holds a subtitle. */
+    subtitles?: boolean;
   };
 
 /**

@@ -4007,6 +4007,16 @@ describe("formatting a paragraph's named style already gives", () => {
       styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }],
     });
     expect(message(queuedFirst(subtitle, "Notes", "End\n\n"))).toBe(retry);
+    // Partly italic, or of a style that is not italic: it reads like any paragraph.
+    let partly = styledTab([para("Other text"), {
+      runs: ["Notes ", { text: "here", style: { italic: false } }, "\n"], namedStyleType: "SUBTITLE",
+    }, para("After")], { styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }] });
+    expect(message(queuedFirst(partly, "Notes", "End\n\n"))).toBe(retry);
+    let upright = styledTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]);
+    expect(message(queuedFirst(upright, "Notes", "End\n\n"))).toBe(retry);
+    // In a tab with no subtitle, a normal paragraph is split as it is with nothing waiting.
+    let normal = styledTab([para("Other text"), para("Notes here"), para("After")]);
+    expect(queuedFirst(normal, "Notes", "End\n\n")().markdown).toContain("End\n\n here\n");
     let heading = styledTab([para("Other text"), {
       runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
     }, para("After")], {

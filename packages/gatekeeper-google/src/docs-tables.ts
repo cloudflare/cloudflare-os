@@ -2367,7 +2367,10 @@ export function applyTextReplacement(
   let written = run && (source
     ? rewrittenBlockStyles(source, content.markdown, run.matchStart,
       run.matchStart + run.oldMarkdown.length, run.rendered)
-    : { replaced: replacedRange(content.markdown, run.matchStart, run.oldMarkdown, run.rendered) });
+    : {
+      replaced: replacedRange(content.markdown, run.matchStart, run.oldMarkdown, run.rendered),
+      subtitles: doc?.sourceMap.blocks.some(block => block.namedStyleType === "SUBTITLE") ?? false,
+    });
   return dropInheritedFormatting(content, edited, named, blocks && (start =>
     blocks.find(block => block.mdStart === start)?.namedStyleType), written);
 }
