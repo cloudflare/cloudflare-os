@@ -451,6 +451,11 @@ describe('toChatFeed', () => {
       expect(only(toChatFeed([...messages, ...history([user('more')], 3)]), 'error').map(({ recovery }) => recovery)).toEqual([undefined, undefined])
     })
 
+    it('shows nothing for the error a stopped turn ends with', () => {
+      const result = feed(user('go'), agent({ text: 'Working on it' }), error('User requested to stop agent.'), user('again'), error('Overloaded'))
+      expect(only(result, 'error')).toMatchObject([{ text: 'Overloaded', recovery: 'retry' }])
+    })
+
     it('offers Continue, not Retry, when the credits ran out', () => {
       expect(only(feed(error('Out of credits', { code: 'usage_limit' })), 'error')).toMatchObject([{ usageLimit: true, recovery: 'continue' }])
     })
