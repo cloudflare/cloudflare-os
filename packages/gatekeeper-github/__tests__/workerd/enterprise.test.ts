@@ -1,12 +1,22 @@
 import { env, runInDurableObject, SELF } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type { GatekeeperConnectCallback } from "@gadgets/workshop-shared/gatekeeper";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { Env } from "../../src/github-env";
 import { repoSubresourceId } from "../../src/repo-subresources";
 
 const hooks = () => env.TEST_HOOKS.get(env.TEST_HOOKS.idFromName("enterprise"));
 
-afterEach(() => vi.unstubAllGlobals());
+beforeEach(() => {
+  // Each test file has its own worker environment; the other workerd tests keep GitHub.com.
+  Object.assign(env as Env, { GITHUB_URL: "https://git.example.com", GITHUB_API_URL: "https://api.example.com" });
+});
+
+afterEach(() => {
+  delete (env as Env).GITHUB_URL;
+  delete (env as Env).GITHUB_API_URL;
+  vi.unstubAllGlobals();
+});
 
 it("connects through Enterprise OAuth and reads a repository on the worker-facing origin", async () => {
   const requests: Request[] = [];
