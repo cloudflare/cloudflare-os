@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
+import { parseAsideRef } from './asideItems'
 import { lastShown, rememberShown } from './lastShown'
 
 /** A chat, by where it is. */
@@ -25,7 +26,8 @@ export const useAsideNavigation = () => {
     /** Shows `open` (an `AsideRef`, written out) beside the chat page this is on, the chat if it has been made. */
     show: (open: string, chat?: ChatRef) => {
       const { location } = router.state
-      const showing = typeof location.search.open === 'string'
+      // Read as the URL has it: an output's ref comes back a number.
+      const showing = parseAsideRef(location.search.open) !== undefined
       if (chat) rememberShown(chat.workspaceId, chat.chatId, open)
       writeLayoutPrefs({ asideOpen: true })
       void router.navigate({
