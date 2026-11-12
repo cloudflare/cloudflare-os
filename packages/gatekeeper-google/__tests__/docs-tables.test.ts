@@ -1647,6 +1647,21 @@ describe("the cells a tab's tables hold", () => {
     expect(() => checkTabTableCells(held, 998, "insertTable")).not.toThrow();
   });
 
+  it("counts each cell's own paragraphs, a cell holding only a table at least once", () => {
+    // Devin's cases: two paragraphs in one cell and a table alone in the next; a list that skips
+    // a level, whose placeholder item holds no paragraph.
+    let alone = contentOf(docTabToMarkdown(buildTab([para("Before"), {
+      table: [[cellOf(para("one"), para("two")), cellOf(grid(["in"]))]],
+    }, para("After")])));
+    // 2, then 1 for the cell holding the table and 1 for the table's own cell.
+    expect(message(() => checkTabTableCells(alone, 4_997, "insertTable"))).toBe(tabCells("insertTable", 5_001));
+    let skipped = contentOf(docTabToMarkdown(buildTab([para("Before"), {
+      table: [[cellOf(item("deep", "DEEP", 1))]],
+    }, para("After")], ALL_LISTS)));
+    expect(tableAt(skipped, 0)).toContain('<ul style="list-style-type: none"><li><ul');
+    expect(() => checkTabTableCells(skipped, 4_999, "insertTable")).not.toThrow();
+  });
+
   it("counts a list item written as a heading once", () => {
     // ask-bonk's case: `<li><h2>…</h2></li>` is one paragraph, not two.
     let headed = buildTab([para("Before"), {

@@ -892,6 +892,26 @@ export function addedTableCells(change: TableChange): number {
   return added;
 }
 
+// A cell opens or closes, or one of its paragraphs starts: a list item, the heading it may be
+// written as aside, but not one that only holds the next level of a list that skips a level, and
+// a paragraph or heading outside a list.
+const CELL_PARTS = /<td[ >]|<\/td>|<li>(?!<[uo]l[ >])|(?<!<li>)<(?:p|h[1-6])>/g;
+
+/**
+ * The cells a table's HTML holds, each counting once for each paragraph of its own, and at least
+ * once: those of the tables inside its cells count as their own cells.
+ */
+function tableCellCount(html: string): number {
+  let open: number[] = [];
+  let count = 0;
+  for (let [part] of html.matchAll(CELL_PARTS)) {
+    if (part.startsWith("<td")) open.push(0);
+    else if (part === "</td>") count += Math.max(1, open.pop() ?? 0);
+    else if (open.length > 0) open[open.length - 1]++;
+  }
+  return count;
+}
+
 /**
  * Refuse an addition of `added` cells that would take the tables of the content's tab past the
  * cells they may hold in all.
@@ -902,11 +922,7 @@ export function checkTabTableCells(content: EditableMarkdown, added: number, op:
   // Every paragraph a table's HTML shows counts, those of tables inside its cells and those no
   // replacement can edit included: the whole document has to be read back.
   for (let table of content.tables) {
-    let html = content.markdown.slice(table.mdStart, table.mdEnd);
-    // A list item is one paragraph, the heading it may be written as inside it included.
-    let paragraphs = html.match(/<li>|(?<!<li>)<(?:p|h[1-6])>/g)?.length ?? 0;
-    let cells = html.match(/<td[ >]/g)?.length ?? 0;
-    held += Math.max(paragraphs, cells);
+    held += tableCellCount(content.markdown.slice(table.mdStart, table.mdEnd));
   }
   if (held + added > MAX_TAB_TABLE_CELLS) {
     throw new Error(
