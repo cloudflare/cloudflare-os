@@ -133,7 +133,9 @@ export default function GadgetUI(props: GadgetUIProps) {
 function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
+  const [error, setError] = useState<{ message: string; stub?: RpcStub<GadgetClient> } | null>(null)
+  const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
   const [isInvalidated, setIsInvalidated] = useState(false)
   const [iframeGeneration, setIframeGeneration] = useState(0)
@@ -288,7 +290,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       if (!isCurrent()) return
       loadGenerationRef.current++      // so a late reply can no longer write state
       setLoading(false)
-      setError('Timed out loading this view.')
+      setError({ message: 'Timed out loading this view.' })
     }, UI_BUNDLE_LOAD_TIMEOUT_MS)
 
     const loadUiBundle = async () => {
@@ -309,7 +311,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       } catch (err) {
         if (!isCurrent()) return
         console.error('Failed to load UI bundle:', err)
-        setError('Failed to load UI bundle')
+        setError({ message: 'Failed to load UI bundle' })
       } finally {
         if (isCurrent()) setLoading(false)
         clearTimeout(giveUp)
@@ -344,6 +346,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        const client = gadgetRef.current
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
         const generation = connectionGenerationRef.current
@@ -353,7 +356,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           event.source === iframeRef.current?.contentWindow
         try {
           // Open the RPC connection to the gadget's server side
-          gadgetStub = await gadgetRef.current.connectToGadget(chatId)
+          gadgetStub = await client.connectToGadget(chatId)
           if (!isCurrent()) {
             gadgetStub[Symbol.dispose]?.()
             port.close()
@@ -378,7 +381,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           port.close()
           if (!isCurrent()) return
           console.error('Failed to establish RPC connection:', caught)
-          setError('Failed to connect gadget to server')
+          setError({ message: 'Failed to connect gadget to server', stub: client })
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
@@ -428,7 +431,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     )
   }
 
-  if (error) {
+  if (errorMessage) {
     return (
       <div style={{
         height,
@@ -440,7 +443,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         <Banner
           variant="error"
           title="Error"
-          description={error}
+          description={errorMessage}
           action={
             <Banner.Action
               onClick={() => {

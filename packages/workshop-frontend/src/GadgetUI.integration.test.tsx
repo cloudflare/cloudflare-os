@@ -340,6 +340,30 @@ describe('GadgetUI RPC recovery', () => {
     await vi.waitFor(() => expect(disposed).toHaveBeenCalledOnce())
   })
 
+  it('connects a replacement gadget client after a handshake on a failed one', async () => {
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failed = fakeGadget(
+      'failed',
+      'document.body.textContent = "bundle"',
+      vi.fn(async () => { throw new Error('workspace failed to reopen') }),
+    )
+    await act(async () => {
+      root.render(<GadgetUI gadget={failed.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    dispatchIframeHandshake(container.querySelector('iframe')!, new MessageChannel().port2)
+    await vi.waitFor(() => expect(container.querySelector('iframe')).toBeNull())
+    consoleError.mockRestore()
+
+    const replacement = fakeGadget('replacement', 'unused')
+    await act(async () => {
+      root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
+    })
+    const child = connectIframe(container.querySelector('iframe')!)
+    await expect(child.read()).resolves.toBe('replacement')
+    expect(replacement.getUiBundle).not.toHaveBeenCalled()
+  })
+
   it('ignores a superseded replacement connection', async () => {
     const first = fakeGadget('first', 'document.body.textContent = "first"')
     await act(async () => {
