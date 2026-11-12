@@ -14,6 +14,7 @@ import type {
 } from '@gadgets/workshop-shared/gatekeeper-app'
 import type {
   GatekeeperAppTheme,
+  GatekeeperAppThemeHost,
   GatekeeperAppThemeReceiver,
 } from '@gadgets/workshop-shared/theme'
 import { createRateLimitedCapability } from './rateLimitedCapability'
@@ -50,6 +51,12 @@ type NavigatePath = (path: string, replace: boolean) => Promise<void>
 // Opening throws synchronously if refused; returning transfers receiver ownership to the picker.
 type OpenUserPicker = (receiver: RpcStub<GatekeeperUserSelectionReceiver>) => Promise<void>
 type CancelUserPicker = () => void
+// The Workshop's own handle on a host (see GatekeeperAppHostImpl.controls()), never sent to the app.
+type GatekeeperAppHostControls = {
+  updateTheme(theme: GatekeeperAppTheme): void
+  updatePath(path: string): void
+  dispose(): void
+}
 
 type UserPicker = {
   id: number
@@ -102,7 +109,10 @@ function iframeStyleForOverlay(overlay: OverlayState): CSSProperties {
 // The host capability exposed to the sandboxed app (the gatekeeper's iframe UI) over the MessagePort
 // RPC session. The app uses `ui` to reach the gatekeeper's own capability, which Workshop relays and
 // rate-limits. `setPresenting` stays in Workshop and only grows/restores the iframe's layout.
-class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation {
+//
+// The app can call every public method of an RpcTarget, so anything only the Workshop may call is a
+// `#` method, reached through controls().
+class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation, GatekeeperAppThemeHost {
   readonly #ui: RpcStub<RpcTarget>
   readonly #disposeRateLimiter: () => void
   readonly #present: PresentController
@@ -154,6 +164,15 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     this.#openUserPicker = openUserPicker
     this.#cancelUserPicker = cancelUserPicker
     this.#navigatePath = navigatePath
+  }
+
+  // Static members are unreachable over RPC, so these stay with the Workshop.
+  static controls(host: GatekeeperAppHostImpl): GatekeeperAppHostControls {
+    return {
+      updateTheme: (theme) => host.#updateTheme(theme),
+      updatePath: (path) => host.#updatePath(path),
+      dispose: () => host.#dispose(),
+    }
   }
 
   get ui(): RpcStub<RpcTarget> {
@@ -220,7 +239,7 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
   }
 
   // Push a new theme to a subscribed app; a no-op until (and unless) the app subscribes.
-  updateTheme(theme: GatekeeperAppTheme) {
+  #updateTheme(theme: GatekeeperAppTheme) {
     this.#theme = theme
     const receiver = this.#themeReceiver
     if (!receiver) return
@@ -232,14 +251,15 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
     }
   }
 
-  // The app calls this once to learn its path from the address bar and every later change to it,
-  // including Back/Forward, which moves the URL without remounting the iframe.
-  subscribePath(receiver: RpcStub<GatekeeperAppPathReceiver>): Promise<void> {
+  // The app calls this once to receive its path from the address bar and every later change,
+  // including Back/Forward, which moves the URL without remounting the iframe. The current path goes
+  // through the receiver like every later one, rather than as this call's result: capnweb sends a
+  // result only when the app pulls it, so a change pushed in between would arrive first.
+  subscribePath(receiver: RpcStub<GatekeeperAppPathReceiver>): void {
     this.#pathReceiver?.[Symbol.dispose]?.()
     // The argument stub is disposed when this call returns, so keep our own dup (released in dispose).
-    const retained = receiver.dup()
-    this.#pathReceiver = retained
-    return this.#deliverPath(retained)
+    this.#pathReceiver = receiver.dup()
+    this.#updatePath(this.#path)
   }
 
   // The app is untrusted: the path is validated here, and the caller pins it under the app's prefix,
@@ -251,22 +271,15 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
   }
 
   // Push the committed path to a subscribed app; a no-op until (and unless) the app subscribes.
-  updatePath(path: string) {
-    if (path === this.#path) return
+  #updatePath(path: string) {
     this.#path = path
     const receiver = this.#pathReceiver
-    if (receiver) this.#deliverPath(receiver).catch(() => {})
-  }
+    if (!receiver) return
 
-  #deliverPath(receiver: RpcStub<GatekeeperAppPathReceiver>): Promise<void> {
     try {
-      return Promise.resolve(receiver.setPath(this.#path)).catch((error: unknown) => {
-        this.#dropPathReceiver(receiver)
-        throw error
-      })
-    } catch (error) {
+      Promise.resolve(receiver.setPath(path)).catch(() => this.#dropPathReceiver(receiver))
+    } catch {
       this.#dropPathReceiver(receiver)
-      return Promise.reject(error)
     }
   }
 
@@ -300,7 +313,7 @@ class GatekeeperAppHostImpl extends RpcTarget implements GatekeeperAppNavigation
   }
 
   // Cancel the rate limiter's pending resume timer once this host is no longer in use.
-  dispose() {
+  #dispose() {
     this.#disposeRateLimiter()
     this.#cancelUserPicker()
     this.#themeReceiver?.[Symbol.dispose]?.()
@@ -336,7 +349,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
   const { authenticatedApi } = useAuthenticatedApi()
   const iframeRef = useRef<HTMLIFrameElement>(null)
   const sessionRef = useRef<{ [Symbol.dispose]?(): void } | null>(null)
-  const hostRef = useRef<GatekeeperAppHostImpl | null>(null)
+  const hostRef = useRef<GatekeeperAppHostControls | null>(null)
   const connectedRef = useRef(false)
   const invalidatedRef = useRef(false)
   const [overlay, setOverlay] = useState<OverlayState>(null)
@@ -488,7 +501,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId, path
         pathRef.current,
         navigatePath,
       )
-      hostRef.current = host
+      hostRef.current = GatekeeperAppHostImpl.controls(host)
       sessionRef.current = newMessagePortRpcSession(port, host)
       connectedRef.current = true
     }

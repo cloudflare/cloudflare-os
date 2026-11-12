@@ -11,7 +11,6 @@ import {
   createRouter,
   Outlet,
   RouterProvider,
-  useParams,
   type AnyRouter,
 } from "@tanstack/react-router";
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
@@ -211,8 +210,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
     return { iframe, router };
   }
 
-  // Mount the host the way routes/gatekeepers_.$appId.tsx does: the app route hosts it and reads
-  // the app-local path matched by its `$` child.
+  // Mount the host the way routes/gatekeepers_.$appId.$.tsx does: one splat route hosts it and reads
+  // the app-local path from its own params.
   async function mountRoutedApp(initialPath: string) {
     const frame = {
       iframeHtml: "<!doctype html><title>Context</title>",
@@ -220,18 +219,17 @@ describe("SandboxedGatekeeperApp navigation", () => {
     } as unknown as GatekeeperUiFrame;
     const rootRoute = createRootRoute({ component: Outlet });
     const AppHost = () => {
-      const splat = useParams({ strict: false, select: (params) => params._splat });
-      return <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="context" path={`/${splat ?? ""}`} />;
+      const { _splat } = appRoute.useParams();
+      return <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="context" path={`/${_splat ?? ""}`} />;
     };
     const appRoute = createRoute({
       getParentRoute: () => rootRoute,
-      path: "/gatekeepers/$appId",
+      path: "/gatekeepers/$appId/$",
       component: AppHost,
     });
-    const appPathRoute = createRoute({ getParentRoute: () => appRoute, path: "$" });
     const router = createRouter({
       history: createMemoryHistory({ initialEntries: [initialPath] }),
-      routeTree: rootRoute.addChildren([appRoute.addChildren([appPathRoute])]),
+      routeTree: rootRoute.addChildren([appRoute]),
     });
     const iframe = await render(router);
     return { iframe, router };
@@ -480,8 +478,8 @@ describe("SandboxedGatekeeperApp navigation", () => {
   it("syncs the app-local path with the URL and browser history without remounting", async () => {
     const { iframe, router } = await mountRoutedApp("/gatekeepers/context/collections/c1");
     const receiver = new TestPathReceiver();
+    // The current path arrives through setPath() before subscribePath() resolves.
     await host!.subscribePath(receiver);
-    // The current path arrives before subscribePath() resolves.
     expect(receiver.paths).toEqual(["/collections/c1"]);
     const lastPath = () => receiver.paths.at(-1);
 
@@ -550,5 +548,39 @@ describe("SandboxedGatekeeperApp navigation", () => {
     await act(async () => root!.unmount());
     root = undefined;
     await vi.waitFor(() => expect(second.disposeCount).toBe(1));
+  });
+
+  it("delivers the current path ahead of a change that commits while the app subscribes", async () => {
+    const { router } = await mountRoutedApp("/gatekeepers/context/collections/c1");
+    const receiver = new TestPathReceiver();
+    // Until the app awaits the call, capnweb never pulls its result: this holds the window open
+    // between the host running subscribePath() and the app learning the call's outcome.
+    const subscription = host!.subscribePath(receiver);
+    await vi.waitFor(() => expect(receiver.paths).toEqual(["/collections/c1"]));
+
+    await act(async () => router.history.push("/gatekeepers/context/collections/c2"));
+    await vi.waitFor(() => expect(receiver.paths).toEqual(["/collections/c1", "/collections/c2"]));
+    await subscription;
+    expect(receiver.paths).toEqual(["/collections/c1", "/collections/c2"]);
+  });
+
+  it("keeps the Workshop's own controls out of the frame's reach", async () => {
+    await mountRoutedApp("/gatekeepers/context");
+    const pathReceiver = new TestPathReceiver();
+    await host!.subscribePath(pathReceiver);
+    const theme = await host!.subscribeTheme(new TestThemeReceiver());
+
+    // A stub forwards any name, so the frame can attempt these; the host must refuse them. An RpcPromise
+    // is callable, and expect().rejects calls a function, so wrap it in a real promise first.
+    const frameHost = host as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const refusal = (call: Promise<unknown>) =>
+      expect(Promise.resolve(call)).rejects.toThrow("is not a function");
+    await refusal(frameHost.updatePath!("/collections/forged"));
+    await refusal(frameHost.updateTheme!({ mode: "dark", accentColor: null }));
+    await refusal(frameHost.dispose!());
+
+    await host!.subscribePath(pathReceiver);
+    await expect(host!.subscribeTheme(new TestThemeReceiver())).resolves.toEqual(theme);
+    expect(pathReceiver.paths).toEqual(["/", "/"]);
   });
 });

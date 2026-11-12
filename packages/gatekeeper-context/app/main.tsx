@@ -12,6 +12,7 @@ import type {
 } from '@gadgets/workshop-shared/gatekeeper-app'
 import type {
   GatekeeperAppTheme,
+  GatekeeperAppThemeHost,
   GatekeeperAppThemeReceiver,
 } from '@gadgets/workshop-shared/theme'
 import ContextLibraryPage from './ContextLibraryPage'
@@ -50,12 +51,10 @@ class AppIframe extends RpcTarget implements GatekeeperAppThemeReceiver, Gatekee
   }
 }
 
-interface HostCapability extends GatekeeperAppNavigation {
+interface HostCapability extends GatekeeperAppNavigation, GatekeeperAppThemeHost {
   readonly ui: RpcStub<ContextApi>
   // Grow the iframe to a full-viewport overlay for app-level modals (`true`) or restore it (`false`).
   setPresenting(active: boolean): Promise<PresentAck>
-  // Returns the current theme and calls back on `receiver` whenever it changes.
-  subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>
   // Opens the Workshop's person picker, delivering each pick to `receiver`; see SelectUsers.
   selectUsers(receiver: UserSelectionReceiver): Promise<void>
 }

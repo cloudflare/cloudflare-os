@@ -14,6 +14,15 @@ export interface GatekeeperAppThemeReceiver extends RpcTarget {
   setTheme(theme: GatekeeperAppTheme): void;
 }
 
+/** The Workshop's appearance capability for a sandboxed gatekeeper app. */
+export interface GatekeeperAppThemeHost extends RpcTarget {
+  /**
+   * Registers `receiver` in place of any earlier one and returns the current appearance; each later
+   * change arrives through the receiver's setTheme().
+   */
+  subscribeTheme(receiver: GatekeeperAppThemeReceiver): GatekeeperAppTheme;
+}
+
 interface StylePropertyTarget {
   removeProperty(name: string): unknown;
   setProperty(name: string, value: string): unknown;
