@@ -575,13 +575,15 @@ export interface AgentHooks {
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
    * WorktreeTurnAccess): the overseer registers it for the duration of the execution so the
-   * chat's worktree env bindings can resolve against the running turn.
+   * chat's worktree env bindings can resolve against the running turn. `stopSignal` is the
+   * turn's: when the user stops the turn, the execution's gatekeeper sessions end, though its
+   * code may run on.
    */
   executeCodeMode(chatId: number, code: string,
                    initiator: AiChatAuthorInfo, initiatorModelId: string,
                    bindings: Record<string, ChatBindingEntry>,
                    onOutputText?: (delta: string) => void,
-                   worktreeTurn?: WorktreeTurnAccess): Promise<string>;
+                   worktreeTurn?: WorktreeTurnAccess, stopSignal?: AbortSignal): Promise<string>;
   consumeCapturedActions(chatId: number)
       : {actions: number[], accessedGadget: boolean, awaitDecision: boolean} | undefined;
   emitChatStreamEvent(chatId: number, event: AiChatStreamEvent): void;
@@ -4005,7 +4007,7 @@ async function runAgentPass(
                   toolCallId,
                   delta,
                 }),
-                worktreeTurnAccess);
+                worktreeTurnAccess, abortSignal);
           } finally {
             // The buffer was empty when the execution started (above), so whatever it holds
             // now is the execution's.

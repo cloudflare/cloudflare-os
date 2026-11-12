@@ -5763,7 +5763,8 @@ class OverseerImpl implements AgentHooks {
   // verified against it, so only stubs from the currently-running execution resolve. `replicas`
   // holds the execution's worktree replica state (see worktree-replica.ts). See executeCodeMode.
   #activeExecutions = new Map<number, {executionId: string, initiator: AiChatAuthorInfo,
-                                       worktree?: WorktreeTurnAccess, replicas?: WorktreeReplicas}>();
+                                       worktree?: WorktreeTurnAccess, replicas?: WorktreeReplicas,
+                                       stopped?: boolean}>();
 
   // ObservationAuthorizer.watchSession()'s watchers, released below when an execution ends, a
   // hook is disabled or deleted, or a connection is removed, and by each authorizer when it is.
@@ -5772,6 +5773,13 @@ class OverseerImpl implements AgentHooks {
   // ObserverLedgerHost: whether `executionId` is the executeCode invocation running for `chatId`.
   isLiveExecution(chatId: number, executionId: string): boolean {
     return this.#activeExecutions.get(chatId)?.executionId === executionId;
+  }
+
+  // Whether the user stopped the turn running `executionId`, which ends its gatekeeper sessions
+  // (ObservationAuthorizer.requireLive() and watchSession()) though its code may still run.
+  isStoppedExecution(chatId: number, executionId: string): boolean {
+    let execution = this.#activeExecutions.get(chatId);
+    return execution?.executionId === executionId && execution.stopped === true;
   }
 
   // Maps chat ID to action numbers recently performed by that chat's agent. These are drained into
@@ -9773,7 +9781,7 @@ class OverseerImpl implements AgentHooks {
                         initiator: AiChatAuthorInfo, initiatorModelId: string,
                         bindings: Record<string, ChatBindingEntry>,
                         onOutputText?: (delta: string) => void,
-                        worktreeTurn?: WorktreeTurnAccess)
+                        worktreeTurn?: WorktreeTurnAccess, stopSignal?: AbortSignal)
       : Promise<string> {
     let bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
@@ -9786,6 +9794,17 @@ class OverseerImpl implements AgentHooks {
     let replicas = worktreeTurn && new WorktreeReplicas(this, worktreeTurn,
         () => this.isLiveExecution(chatId, executionId), initiator);
     this.#activeExecutions.set(chatId, {executionId, initiator, worktree: worktreeTurn, replicas});
+
+    // Stop can't interrupt the running code (nothing can abort a running dynamic worker), but it
+    // ends the execution's gatekeeper sessions, so that a gatekeeper watching one can stop what it
+    // started for it, such as a container command.
+    let stop = () => {
+      let execution = this.#activeExecutions.get(chatId);
+      if (execution?.executionId === executionId) execution.stopped = true;
+      this.sessionWatchers.end(`execution:${executionId}`);
+    };
+    if (stopSignal?.aborted) stop();
+    stopSignal?.addEventListener("abort", stop);
 
     if (onOutputText) {
       this.#codeModeOutputSubscribers.set(executionId, onOutputText);
@@ -9885,6 +9904,7 @@ class OverseerImpl implements AgentHooks {
       if (this.#activeExecutions.get(chatId)?.executionId === executionId) {
         this.#activeExecutions.delete(chatId);
       }
+      stopSignal?.removeEventListener("abort", stop);
       this.sessionWatchers.end(`execution:${executionId}`);
       this.#codeModeOutputSubscribers.delete(executionId);
       this.#codeModeResolvers.delete(executionId);
@@ -14554,9 +14574,13 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
     if (this.hookId !== undefined && !this.impl.storage.boundHooks.get(this.hookId)?.enabled) {
       return "Hook has been deleted or disabled.";
     }
-    if (this.executionId !== undefined && this.caller.from === "agent" &&
-        !this.impl.isLiveExecution(this.caller.chatId, this.executionId)) {
-      return "The code execution this session belongs to has ended.";
+    if (this.executionId !== undefined && this.caller.from === "agent") {
+      if (!this.impl.isLiveExecution(this.caller.chatId, this.executionId)) {
+        return "The code execution this session belongs to has ended.";
+      }
+      if (this.impl.isStoppedExecution(this.caller.chatId, this.executionId)) {
+        return "The user stopped the agent turn this session belongs to.";
+      }
     }
     return undefined;
   }

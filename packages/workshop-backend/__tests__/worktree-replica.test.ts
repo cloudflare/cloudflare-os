@@ -939,6 +939,26 @@ describe("gatekeeper session lifetime", () => {
     expect(await releasedSoon(late)).toBe(true);
   }));
 
+  it("ends when the user stops the turn, while the execution's code still runs", () => withCommands(async (impl, id) => {
+    connect(impl);
+    const abort = new AbortController();
+    const watcher = new Watcher();
+    let observed!: unknown[];
+    runCode(impl, id, {
+      command: async (repo, replicator, queue) => {
+        const session = asStub(queue);
+        await session.watchSession(watcher);
+        const before = await releasedSoon(watcher);
+        abort.abort();
+        // The code can't be interrupted; it is still running here, but its session is over.
+        observed = [before, await releasedSoon(watcher), await failure(session.requireLive())];
+        return "ran";
+      },
+    });
+    await turn(impl, [[execute("command")]], abort.signal).catch(() => {});
+    expect(observed).toEqual([false, true, expect.stringContaining("stopped the agent turn")]);
+  }));
+
   it("stops watching when the handle is disposed, or the gatekeeper releases the queue", () => withCommands(async (impl, id) => {
     connect(impl);
     const [unwatched, kept] = [new Watcher(), new Watcher()];

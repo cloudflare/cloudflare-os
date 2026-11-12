@@ -127,13 +127,15 @@ previous submission's result if it checked that out, or else the tree it submitt
 Otherwise one command's snapshot checkout can overwrite files another command is still writing,
 before that one submits. Commands that run in parallel need separate checkouts.
 
-**Stop commands when their session ends.** If the execution ends while a command runs (it
-finished, was cancelled or timed out, or the workspace restarted), the command's edits can no
-longer be submitted. Stop the command and everything it started, rather than let it keep writing
-files; the next command's step 1 restores the files. To learn of it, pass a watcher to
-`queue.watchSession()` before starting the command: the watcher is disposed when the session ends,
-even if the workspace crashes, and disposing the returned handle stops the watch once the command
-is done. `queue.requireLive()` checks the session before a step that's costly to undo, and
+**Stop commands when their session ends.** The session ends above all when the workspace crashes
+or restarts, but also when the execution times out or the user stops the turn. After a crash or
+a timeout, the command's edits can no longer be submitted; after a stop, the user wants the turn
+over, even though the execution's code may still be running. Either way, stop the command and
+everything it started, rather than let it keep writing files; the next command's step 1 restores
+the files.
+To learn of it, pass a watcher to `queue.watchSession()` before starting the command: the watcher
+is disposed when the session ends, and a crash disposes it without the workspace's help. Dispose
+the returned handle to stop the watch once the command is done. `queue.requireLive()` checks the session before a step that's costly to undo, and
 `queue.getExecutionId()` tells whether two sessions come from the same execution, for a container
 that must not serve unrelated executions at once.
 
