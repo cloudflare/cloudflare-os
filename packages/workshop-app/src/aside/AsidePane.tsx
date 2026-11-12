@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
@@ -101,6 +101,37 @@ export const AsidePane = (props: AsidePaneProps) => {
     </SidePane>
   )
 }
+
+export type EmptyAsidePaneProps = {
+  /** More of the chat is being read for what it has. */
+  reading: boolean
+  /** Why the chat could not be read. */
+  problem?: string
+  /** Reads on after a problem. */
+  onRetry?: () => void
+  onHide: () => void
+}
+
+/**
+ * The pane beside a chat with nothing in it yet: opened before anything the chat has was known,
+ * while the rest of the chat is read for it, and then if it has nothing.
+ */
+export const EmptyAsidePane = ({ reading, problem, onRetry, onHide }: EmptyAsidePaneProps) => (
+  <SidePane placement="beside" items={[]} onSelect={() => {}} onHide={onHide}>
+    {problem ? (
+      <PaneNotice
+        icon={WarningCircleIcon}
+        title="Couldn’t read the whole chat"
+        description={problem}
+        action={onRetry && { label: 'Try again', onClick: onRetry }}
+      />
+    ) : reading ? (
+      <PaneNotice title="Looking through the chat…" />
+    ) : (
+      <PaneNotice icon={TrayIcon} title="Nothing here yet" description="Files sent in the chat and what it makes show here." />
+    )}
+  </SidePane>
+)
 
 const GadgetView = ({ title, ui, frame, onReload }: {
   title: string
