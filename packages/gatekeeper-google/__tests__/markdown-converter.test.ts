@@ -944,6 +944,27 @@ describe("Google Docs tables", () => {
     );
   });
 
+  it("leaves out the cells a merged cell covers, which Google still lists", () => {
+    let merged = (text: string, tableCellStyle: { rowSpan?: number; columnSpan?: number }) =>
+      ({ paragraphs: [{ runs: [`${text}\n`] }], tableCellStyle });
+    let tab = buildTab([{ table: [
+      [merged("wide", { columnSpan: 2 }), "", "c"],
+      ["d", "e", merged("tall", { rowSpan: 2 })],
+      ["g", "h", ""],
+    ] }]);
+
+    let { markdown, styles } = docTabToMarkdown(tab);
+
+    let rows = markdown.split("</tr>").slice(0, -1).map(row => row.match(/<td[^>]*>/g));
+    expect(rows).toEqual([
+      ['<td colspan="2">', "<td>"],
+      ["<td>", "<td>", '<td rowspan="2">'],
+      ["<td>", "<td>"],
+    ]);
+    // The styles have a cell for each one written.
+    expect(styles.tables[0].rows.map(row => row.length)).toEqual([2, 3, 2]);
+  });
+
   it("separates multiple paragraphs within a cell", () => {
     let tab = cellTab([{ runs: ["First\n"] }, { runs: ["Second\n"] }]);
 

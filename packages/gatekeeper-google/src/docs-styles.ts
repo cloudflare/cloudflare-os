@@ -64,6 +64,25 @@ function sharedLook(paragraph: Paragraph): DocLook {
   return shared;
 }
 
+/**
+ * The cells of `table` that are drawn, a row at a time. Google lists every grid position, so the
+ * ones a merged cell covers are left out: they hold nothing, and the merged cell spans them.
+ */
+export function drawnTableCells(table: Table): TableCell[][] {
+  let covered = new Set<string>();
+  return (table.tableRows ?? []).map((row, rowIndex) =>
+    (row.tableCells ?? []).filter((cell, columnIndex) => {
+      if (covered.has(`${rowIndex},${columnIndex}`)) return false;
+      let { rowSpan = 1, columnSpan = 1 } = cell.tableCellStyle ?? {};
+      for (let down = 0; down < rowSpan; down++) {
+        for (let across = 0; across < columnSpan; across++) {
+          covered.add(`${rowIndex + down},${columnIndex + across}`);
+        }
+      }
+      return true;
+    }));
+}
+
 const CELL_KEYS = ["fontFamily", "fontSize", "color", "alignment"] as const;
 const SIDES = { top: "borderTop", right: "borderRight", bottom: "borderBottom", left: "borderLeft" } as const;
 
@@ -183,8 +202,7 @@ export function docTabStyles(
       return {
         line: tableLine(mdStart),
         ...widths.length && widths.every(width => width) ? { columns: widths as number[] } : {},
-        rows: (table.tableRows ?? []).map(row =>
-          (row.tableCells ?? []).map(cell => cellLook(cell, named, base))),
+        rows: drawnTableCells(table).map(row => row.map(cell => cellLook(cell, named, base))),
       };
     }),
   };

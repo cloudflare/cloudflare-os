@@ -6,7 +6,7 @@ import type {
   EmbeddedObject, GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table, TableCell,
   TextStyle,
 } from "./docs-api";
-import { docTabStyles } from "./docs-styles";
+import { docTabStyles, drawnTableCells } from "./docs-styles";
 import type { GoogleDocStyles } from "./docs-types";
 
 // ---------------------------------------------------------------------------
@@ -68,7 +68,7 @@ export type MarkdownRange = { mdStart: number; mdEnd: number };
  * produces changes, so callers caching a {@link DocTabSnapshot} discard entries built by older
  * code. It lives here because edits to this file are what invalidate them.
  */
-export const MARKDOWN_RENDERING_VERSION = 8;
+export const MARKDOWN_RENDERING_VERSION = 9;
 
 type ListType = "bullet" | "numbered";
 
@@ -412,11 +412,9 @@ function tableToHtml(
   listNumbers: Map<string, number[]>,
 ): string {
   let lines = ["<table>"];
-  for (let row of table.tableRows ?? []) {
+  for (let row of drawnTableCells(table)) {
     lines.push("  <tr>");
-    for (let cell of row.tableCells ?? []) {
-      lines.push(tableCellToHtml(cell, lists, listNumbers));
-    }
+    for (let cell of row) lines.push(tableCellToHtml(cell, lists, listNumbers));
     lines.push("  </tr>");
   }
   lines.push("</table>");
