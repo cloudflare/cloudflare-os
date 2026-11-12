@@ -73,6 +73,7 @@ import { WorkshopButton, WorkshopIconButton, WorkshopInput } from './components/
 import { useActionEntries, useActions } from './useActions'
 import { ConnectionPreviewPane } from './features/connection-preview/ConnectionPreviewPane'
 import type { ConnectionPreview } from './features/connection-preview/connectionPreview'
+import { useAutoOpenConnectionPreview } from './features/connection-preview/useAutoOpenConnectionPreview'
 import DeleteConfirmationDialog from './components/DeleteConfirmationDialog'
 import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
@@ -566,8 +567,7 @@ export default function GadgetEditor() {
   const activityReturnViewRef = useRef<WorkspaceView | null>(null)
   const [activityView, setActivityView] = useState<ActivityView>('history')
   const [activityClosing, setActivityClosing] = useState(false)
-  // SPIKE: a connection preview borrows the Activity pane's open and close handling, and shows
-  // in its place.
+  // A connection preview shows in the Activity pane's place and shares its open and close handling.
   const [connectionPreview, setConnectionPreview] = useState<ConnectionPreview | null>(null)
   const [shareModalOpen, setShareModalOpen] = useState(false)
   // The gadget the share dialog shares, or null when it invites people to the whole workspace.
@@ -1054,7 +1054,13 @@ export default function GadgetEditor() {
     setConnectionPreview(preview)
   }, [openActivity, activityView])
 
+  const dismissConnectionPreview = useAutoOpenConnectionPreview(overseer?.stub ?? null, preview => {
+    // With one pane, opening the preview would take the chat away from someone typing in it.
+    if (!isSinglePaneLayout()) openConnectionPreview(preview)
+  })
+
   const closeWorkspacePane = useCallback(() => {
+    if (connectionPreview) dismissConnectionPreview(connectionPreview.gatekeeperId)
     if (workspaceView?.mode !== 'activity') {
       setWorkspaceVisibility('closed')
       return
@@ -1066,7 +1072,8 @@ export default function GadgetEditor() {
     setActivityClosing(!returnShowsPane)
     setWorkspaceView(returnView)
     activityReturnViewRef.current = null
-  }, [workspaceView, setWorkspaceVisibility, hasVisibleWorkpieces, simpleMode])
+  }, [workspaceView, setWorkspaceVisibility, hasVisibleWorkpieces, simpleMode, connectionPreview,
+    dismissConnectionPreview])
 
   // Ignore the initial listing, then open apps created by the active chat.
   useEffect(() => {
@@ -2075,7 +2082,6 @@ export default function GadgetEditor() {
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
-                  onPreviewConnection={openConnectionPreview}
                   outputOfWorkpiece={outputOfWorkpiece}
                 />
               </div>
@@ -2221,7 +2227,7 @@ export default function GadgetEditor() {
 
               <WorkshopIconButton
                 aria-label={paneShowsActivity
-                  ? 'Close activity'
+                  ? connectionPreview ? 'Close preview' : 'Close activity'
                   : selectedWorkpieceSummary?.type === 'worktree' ? 'Close worktree pane' : 'Close gadget pane'}
                 title="Close"
                 onClick={closeWorkspacePane}
@@ -2264,7 +2270,6 @@ export default function GadgetEditor() {
                   onViewChange={setActivityView}
                   onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
                   autoApproveReloadTrigger={autoApproveReloadTrigger}
-                  onPreviewConnection={openConnectionPreview}
                 />
               </div>
             )}

@@ -110,7 +110,6 @@ import { ActionFields, entryFields } from "./components/ActionFields";
 import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
-import { connectionPreviewOf, type ConnectionPreview } from "./features/connection-preview/connectionPreview";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
@@ -2614,8 +2613,6 @@ interface ChatInterfaceProps {
   constrainChatWidth?: boolean;
   // Opens a workpiece the transcript offers (a created gadget's app, a created worktree's code).
   onOpenGadget: (workpieceId: WorkpieceId) => void;
-  // Opens a connection's content beside the chat, for an action on a connection that has one.
-  onPreviewConnection?: (preview: ConnectionPreview) => void;
 
   // The output format a workpiece was built as, so a created-app card can name and draw it as the
   // Document (or whatever) it is rather than a generic app.
@@ -2812,7 +2809,6 @@ function ChatInterface({
   onSelectedChatProposedChangesChange,
   constrainChatWidth,
   onOpenGadget,
-  onPreviewConnection,
   outputOfWorkpiece,
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
@@ -5319,18 +5315,8 @@ function ChatInterface({
       ].join(" ")
       : undefined;
 
-    const connectionPreview = onPreviewConnection && connectionPreviewOf(log);
     const actionControls = isPending ? (
       <>
-        {connectionPreview && (
-          <button
-            type="button"
-            onClick={() => onPreviewConnection(connectionPreview)}
-            className="flex h-6 cursor-pointer items-center rounded-md px-2 text-[12px] font-medium tracking-[-0.15px] text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default"
-          >
-            Preview
-          </button>
-        )}
         {autoApproveTarget &&
           !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
           <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>

@@ -8,7 +8,6 @@ import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
 import { AlwaysApproveButton, ResolveButton } from './components/ResolveButton'
 import { WorkshopButton } from './components/WorkshopControls'
-import { connectionPreviewOf, type ConnectionPreview } from './features/connection-preview/connectionPreview'
 import { useActions } from './useActions'
 import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
@@ -40,8 +39,6 @@ interface ActivityProps {
   // Bumped when a rule is enabled from somewhere else (a pending row in chat), so the rule list
   // reflects it without being reopened.
   autoApproveReloadTrigger?: number
-  // SPIKE: opens a pending action's connection beside the chat.
-  onPreviewConnection?: (preview: ConnectionPreview) => void
 }
 
 /** Pending-status copy while the pending set is still being gathered (also in the popover). */
@@ -167,7 +164,6 @@ export default function Activity({
   onViewChange,
   onAutoApproveChange,
   autoApproveReloadTrigger,
-  onPreviewConnection,
 }: ActivityProps) {
   const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<HistoryViewFilter>('all')
@@ -261,7 +257,6 @@ export default function Activity({
                   onToggle={() => toggleExpanded(record.id)}
                   onApprove={() => void resolveAction(record, 'approve')}
                   onReject={() => void resolveAction(record, 'deny')}
-                  onPreview={previewOpener(record, onPreviewConnection)}
                   onAlwaysApprove={
                     autoApproveTarget &&
                     !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
@@ -623,14 +618,6 @@ function AutoApprovalPanel({
   )
 }
 
-const previewOpener = (
-  record: ActionLogEntry,
-  onPreviewConnection: ActivityProps['onPreviewConnection'],
-) => {
-  const preview = onPreviewConnection && connectionPreviewOf(record)
-  return preview ? () => onPreviewConnection(preview) : undefined
-}
-
 const titleClass = 'm-0 truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default'
 
 function ReviewRequest({
@@ -641,7 +628,6 @@ function ReviewRequest({
   onToggle,
   onApprove,
   onReject,
-  onPreview,
   onAlwaysApprove,
 }: {
   record: ActionLogEntry
@@ -653,7 +639,6 @@ function ReviewRequest({
   onToggle: () => void
   onApprove: () => void
   onReject: () => void
-  onPreview?: () => void
   onAlwaysApprove?: () => void
 }) {
   const resourceUrl = safeExternalUrl(record.resourceUrl)
@@ -712,7 +697,6 @@ function ReviewRequest({
           </p>
         </div>
         <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">
-          {onPreview && <WorkshopButton onClick={onPreview}>Preview</WorkshopButton>}
           {onAlwaysApprove && (
             <AlwaysApproveButton onClick={onAlwaysApprove} disabled={processing} />
           )}
