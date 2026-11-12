@@ -478,7 +478,7 @@ export default function GadgetEditor() {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
   const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
@@ -2394,7 +2394,7 @@ export default function GadgetEditor() {
               overseer={overseer.stub}
               publicApi={publicApi}
               authenticatedApi={authenticatedApi}
-              userId={userInfo?.id}
+              userId={isCurrentUserConfirmed ? currentUser?.id : undefined}
               onClose={() => setBlueprintUpdateDialogOpen(false)}
               onProposed={chatId => {
                 setBlueprintUpdateDialogOpen(false)
