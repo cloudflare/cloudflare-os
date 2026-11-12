@@ -238,3 +238,18 @@ it("approvals route to the account whose connection staged the write", async () 
   await expect(actionState(aliceLabel)).resolves.toEqual({ pending: [], value: 21, applyCount: 1 });
   expect((await actionState(bobLabel)).applyCount).toBe(1);
 });
+
+it("hands a client the preview code its connection's gatekeeper supplies", async () => {
+  const [owner] = nextUsernames("previewowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the test account", async () =>
+    (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
+  using ws = await api.newWorkspace();
+  using gatekeeper = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/preview");
+  if (!gatekeeper) throw new Error("Failed to create the test connection");
+
+  expect(await gatekeeper.describe()).toMatchObject({ hasPreview: true });
+  expect(await gatekeeper.getPreviewUi()).toEqual({ jsCode: "document.body.textContent = 'test preview';" });
+});

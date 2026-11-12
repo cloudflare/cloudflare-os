@@ -849,7 +849,12 @@ export class TestGatekeeper
       snippet: `The test resource ${name}.`,
       suggestedBindingName: "TEST_THING",
       tsType: "TestThing",
+      hasPreview: true,
     };
+  }
+
+  async getPreviewUi(): Promise<{ jsCode: string }> {
+    return { jsCode: "document.body.textContent = 'test preview';" };
   }
 
   /** Admits each observer whose verifier reports none of `subresources` denied. */
