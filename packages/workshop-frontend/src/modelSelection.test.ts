@@ -95,6 +95,18 @@ describe('syncSelectedModel', () => {
     expect(getStoredSelectedModel(MODELS)).toBe('sonnet')
   })
 
+  it('saves a pick again when saving it failed, rather than replacing it', async () => {
+    setPreferredModel.mockRejectedValueOnce(new Error('offline'))
+    persistSelectedModel(api, 'sonnet')
+    await vi.waitFor(() => expect(console.error).toHaveBeenCalled())
+    getPreferredModel.mockResolvedValue('opus')
+
+    await syncSelectedModel(api)
+
+    expect(setPreferredModel).toHaveBeenLastCalledWith('sonnet')
+    expect(getStoredSelectedModel(MODELS)).toBe('sonnet')
+  })
+
   it("keeps the browser's choice when the server can't be reached", async () => {
     persistSelectedModel(api, 'sonnet')
     getPreferredModel.mockRejectedValue(new Error('offline'))
@@ -118,5 +130,13 @@ describe('getCachedModels', () => {
     localStorage.setItem('cachedModels', '{not json')
 
     expect(getCachedModels()).toEqual([])
+  })
+})
+
+describe('cacheModels', () => {
+  it('leaves a full or blocked storage to the caller as no failure', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('quota') })
+
+    expect(() => cacheModels(MODELS)).not.toThrow()
   })
 })

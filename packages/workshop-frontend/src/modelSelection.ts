@@ -24,7 +24,11 @@ export function getCachedModels(): AiChatAuthorInfo[] {
 
 /** Remembers the offered models for getCachedModels(). */
 export function cacheModels(models: AiChatAuthorInfo[]): void {
-  localStorage.setItem(CACHED_MODELS_KEY, JSON.stringify(models));
+  try {
+    localStorage.setItem(CACHED_MODELS_KEY, JSON.stringify(models));
+  } catch {
+    // Only an optimisation: a picker then starts empty and waits on the server.
+  }
 }
 
 /** Sentinel used for UI values and localStorage so an explicit null choice can persist. */
@@ -99,6 +103,8 @@ export function persistSelectedModel(
   cacheSelectedModel(modelId);
   api.setPreferredModel(modelId).catch((err: unknown) => {
     logRpcFailure("Failed to save the preferred model:", err);
+    // The next syncSelectedModel() then saves this browser's choice rather than replacing it.
+    localStorage.removeItem(PREFERENCE_SYNCED_KEY);
   });
 }
 
