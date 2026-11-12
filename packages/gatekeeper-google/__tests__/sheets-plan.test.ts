@@ -1114,7 +1114,8 @@ describe("Sheets protected ranges", () => {
       .toThrow('Change 1 (deleteSheet): "It\'s" holds a protected range of "It\'s"');
   });
 
-  // As a spreadsheet another account protected A1:C1 of let it do: probe SH8.
+  // Probe SH8: on a sheet another account protected part of, Google refused resizing the lines
+  // that crossed the protected range, resized the others and froze lines through it.
   it("resizes lines outside such a range and freezes through it, as Google does", () => {
     expect(check([{ op: "resizeRows", sheet: "Sales", at: 2, height: 40 }]))
       .toThrow('Change 1 (resizeRows): row 2 of "Sales" crosses the protected range Sales!A1:B2, which the ' +

@@ -90,7 +90,10 @@ function duplicates(names: string[]): string[] {
 }
 
 /** The names of the table types a directly bound Doc's write session declares. */
-const DOC_TABLE_TYPE_NAMES = ["NewDocTable", "DocTableInsertion", "DocTableDeletion"];
+const DOC_TABLE_TYPE_NAMES = [
+  "NewDocTable", "DocTableInsertion", "DocTableDeletion", "DocTableCells", "DocTableBorder",
+  "DocTableCellStyle", "DocTableColumnWidths", "DocTableRowHeights", "DocTableMerge", "DocTableCell",
+];
 
 /** The table methods of a directly bound Doc, each with its exact signature. */
 const DOC_TABLE_METHODS = [
@@ -106,6 +109,17 @@ const DOC_TABLE_METHODS = [
     "deleteTableColumns(columns: DocTableDeletion, tabId?: string): Promise<void>;",
   ],
   ["deleteTable", "deleteTable(table: number, tabId?: string): Promise<void>;"],
+  [
+    "setTableCellStyle",
+    "setTableCellStyle(\n    cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string,\n  ): Promise<void>;",
+  ],
+  [
+    "setTableColumnWidths",
+    "setTableColumnWidths(columns: DocTableColumnWidths, tabId?: string): Promise<void>;",
+  ],
+  ["setTableRowHeights", "setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void>;"],
+  ["mergeTableCells", "mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void>;"],
+  ["unmergeTableCells", "unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void>;"],
 ] as const;
 
 /** Every table method called as an agent calls it, and the calls the types must refuse. */

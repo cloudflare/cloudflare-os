@@ -880,10 +880,11 @@ renames, so it never needs an ID the spreadsheet has not assigned yet. The gatek
 of each sheet a batch adds. A batch that adds, copies or renames sheets or inserts rows or columns,
 alone or together with values, clears and formatting, is queued as "Spreadsheet edits that keep
 every sheet, row and column", which a user may let apply without asking unless one of its formulas
-calls a function the paragraphs above exclude. A batch that also deletes a sheet, rows or columns is
-queued as "Spreadsheet changes that delete sheets, rows, columns or merged cells' values", which a
-user may also let apply without asking, since the spreadsheet's version history restores what it
-deletes. Each batch is
+calls a function the paragraphs above exclude. A batch that also deletes a sheet, rows or columns, or
+merges cells, is queued as "Spreadsheet changes that delete sheets, rows, columns or merged cells'
+values", which a user may also let apply without asking, since the spreadsheet's version history
+restores what it deletes, unless one of its formulas calls such a function: that batch waits for
+approval as "Spreadsheet changes that run unchecked formulas". Each batch is
 queued as exactly one kind, so letting edits that keep every sheet, row and column apply without
 asking leaves batches of only literal values and clears, or only formatting, to their own kinds.
 Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's

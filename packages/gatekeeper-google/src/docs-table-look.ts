@@ -272,7 +272,7 @@ function overlay(base: CellLook, style: string): CellLook | undefined {
     let name = declaration.slice(0, colon);
     let value = declaration.slice(colon + 1);
     let group = name.replace(/-(?:top|right|bottom|left)$/, "");
-    if (colon < 0 || !VALUES[group]?.test(value)) return undefined;
+    if (colon < 0 || !Object.hasOwn(VALUES, group) || !VALUES[group].test(value)) return undefined;
     if (name === group && group !== "background-color" && group !== "vertical-align") {
       for (let side of SIDES) look[`${group}-${side}` as Longhand] = value;
     } else {

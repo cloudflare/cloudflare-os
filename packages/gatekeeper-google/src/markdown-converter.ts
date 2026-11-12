@@ -2668,7 +2668,6 @@ function normalizeChangedListBoundaries(
   return updated;
 }
 
-/** Move the ranges that end after `from` by `offset`; the ones before it stay as they are. */
 /**
  * `edited`, an edit of `content` replayed as Markdown, as a read shows it once Google has applied
  * it: without the bold, italic or strikethrough written into a paragraph whose named style gives
@@ -2754,6 +2753,7 @@ function headingLevelAt(markdown: string, start: number): number {
   return heading ? heading[1].length : 0;
 }
 
+/** Move the ranges that end after `from` by `offset`; the ones before it stay as they are. */
 function shiftRangesAfter<T extends MarkdownRange>(ranges: T[], from: number, offset: number): T[] {
   return offset === 0 ? ranges : ranges.map(range => range.mdEnd <= from ? range : {
     ...range,

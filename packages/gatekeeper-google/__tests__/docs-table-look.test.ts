@@ -177,6 +177,7 @@ describe("reading a look back", () => {
       "color:red", "background-color:#FFCC00", "padding-top:5pt", "vertical-align:top",
       "border-top:1pt solid #000000", "padding-top:8pt;background-color:#ffcc00",
       "padding-top:8pt;padding-right:8pt;padding-bottom:8pt;padding-left:8pt", "padding-top:8.0001pt",
+      "constructor:x", "toString-top:1pt",
     ]) {
       expect(readLook(attributes(style), covered), style).toBeUndefined();
     }

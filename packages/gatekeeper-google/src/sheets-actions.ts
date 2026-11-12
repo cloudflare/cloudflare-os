@@ -106,9 +106,11 @@ const KEEPING_OPS: ReadonlySet<string> = new Set([
   "insertRows", "insertColumns", "resizeRows", "resizeColumns", "freeze", "unmergeCells",
 ]);
 
-// The changes that make a batch otherwise as safe as `editSpreadsheet` a `deleteSpreadsheetContent`.
-// A merge counts whether or not the cells it clears hold anything, which only a read could say.
-const DELETING_OPS: ReadonlySet<string> = new Set(["deleteSheet", "deleteRows", "deleteColumns", "mergeCells"]);
+// A batch otherwise as safe as `editSpreadsheet` that makes one of these changes is queued as
+// `deleteSpreadsheetContent`. A merge counts whether or not the cells it clears hold anything,
+// which only a read could say.
+const DELETING_OPS: ReadonlySet<string> =
+  new Set(["deleteSheet", "deleteRows", "deleteColumns", "mergeCells"]);
 
 /**
  * The kind a batch is queued as, so approving a kind approves no more than it says. A batch that
