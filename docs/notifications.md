@@ -220,9 +220,10 @@ Successful devices are not retried, and a failed event does not block later queu
 Each attempt has a 15-second
 budget, shortened to the remaining alert lifetime. Expired alerts are logged and discarded;
 their fixed deadlines survive resets and are not extended by repeated source delivery. Later
-alerts remain eligible, while unread counts are unchanged. Only turns a person
-started announce completion; callback turns, such as a schedule, and spawned agents notify only
-when they need the user's permission. A turn resumed by an approval or accepted connection keeps
+alerts remain eligible, while unread counts are unchanged. In normal chats, only turns a person
+started announce completion; callback turns, such as a schedule, notify only when they need the
+user's permission. Spawned chats record both outcomes, with delivery off by default and available
+when the recipient enables that chat's notifications. A turn resumed by an approval or accepted connection keeps
 its original initiator's model, account and notification recipient, as well as whether it was a
 callback turn; the decision does not transfer ownership. Pauses created by older code have no
 retained execution record, so their first decision instead adopts the deciding person's account
@@ -237,6 +238,11 @@ workspace list, or the editor's menu on a phone. The mute lives on that workspac
 user's own User DO (`notificationMute`), so it applies only to them and is deleted with the record.
 While it lasts, the User DO sends the workspace's finished tasks to no tab and no device. Permission
 requests still come through, since a task waiting on the user stays stuck until they answer.
+
+Each chat also has a private **Mute notifications** / **Unmute notifications** choice in its
+thread menu. Chat muting suppresses both completion and permission alerts, clears queued alerts,
+and keeps unread badges at zero. Normal chats default on; agent-spawned chats default off.
+Turning notifications on applies to future activity. See [user-owned unread state](user-unread-state.md).
 
 ## Deployment contract
 

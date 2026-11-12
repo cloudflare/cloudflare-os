@@ -827,6 +827,33 @@ describe("UserDurableObject notifications", () => {
         .toEqual(["permission_requested", "task_completed"]);
   });
 
+  it("does not fall back to push for a queued alert muted and unmuted while its browser offer was pending", async () => {
+    const fetcher = stubService();
+    await inUser(async user => {
+      const {workspaceId, chatId} = NOTIFICATION;
+      await user.newWorkspace(workspaceId, "Workspace");
+      await user.registerNotificationDevice("a".repeat(64));
+      const offered = Promise.withResolvers<void>(), answer = Promise.withResolvers<void>();
+      using _subscription = await user.subscribeToNotifications(new RpcStub(new Subscriber(() => {
+        offered.resolve();
+        return answer.promise;
+      })));
+      using publishing = vi.spyOn(user, "publishNotification");
+      const position = {head: {chatTitle: "Chat", latestSequence: 1}, headUpdatedAt: new Date(),
+        latestVisibleSequence: 1, readThroughSequence: 1, readThroughVisibleSequence: 1, notificationBaseline: 1};
+      await user.messageArrived(workspaceId, chatId, {...position,
+        firstMessageSequence: 1, firstVisibleSequence: 1,
+        notifications: [{id: NOTIFICATION.id, kind: NOTIFICATION.kind, chatTitle: "Chat", sequence: 1}]});
+      await offered.promise;
+      await user.setChatNotificationsEnabled(workspaceId, chatId, false, position);
+      await user.setChatNotificationsEnabled(workspaceId, chatId, true, position);
+      answer.reject(new Error("Browser hidden"));
+      await publishing.mock.results[0].value;
+      expect(bodies(fetcher, "/v1/deliveries")).toEqual([]);
+      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    });
+  });
+
   it("pushes to each device's latest subscription", async () => {
     let fetcher = stubService();
     await inUser(async user => {

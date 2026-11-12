@@ -473,7 +473,7 @@ describe("turn notifications", () => {
     expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
   });
 
-  it("does not tell anyone a spawned agent's turn completed", async () => {
+  it("records spawned completion eligibility so users can opt in", async () => {
     let turn = startTurn([reply], {
       initiator: { type: "gadget", id: "spawner", name: "Spawner" },
       spawned: true,
@@ -481,14 +481,14 @@ describe("turn notifications", () => {
     turn.release();
 
     await turn.session;
-    expect(turn.notifications).toEqual([]);
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
   });
 
-  it("keeps a spawned chat silent when a user starts a later turn", async () => {
+  it("records completion eligibility for a later user turn in a spawned chat", async () => {
     let turn = startTurn([reply], {spawned: true});
     turn.release();
     await turn.session;
-    expect(turn.notifications).toEqual([]);
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
   });
 
   it("sends nothing for a turn that failed", async () => {
@@ -539,6 +539,6 @@ describe("turn notifications", () => {
     turn.release();
 
     await turn.session;
-    expect(turn.notifications).toEqual(spawned ? [] : [notification(turn, kind)]);
+    expect(turn.notifications).toEqual([notification(turn, kind)]);
   });
 });

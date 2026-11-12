@@ -4,12 +4,13 @@ The workspace owns the timeline and message ordering. Each User DO owns its user
 horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
 for inbox, viewport and native bridge behavior.
 
-Chats created by `spawn()` or `spawnCallable()` keep their history but are excluded from unread
-counts, the unread inbox, and all user notifications, including permission alerts. This stays true
-for later callbacks and user-initiated turns in those chats. The workspace identifies them by
-their persisted `spawnerName`. On upgrade, it journals existing spawned chats through the same
-durable fanout as a removed thread, clearing readers' old counts and queued alerts without
-deleting the transcript. Explicit read commands and new collaborator admission cannot enroll them.
+Chats created by `spawn()` or `spawnCallable()` default to muted unread counts and alerts,
+including permission alerts. Normal chats default to enabled. Each user can change either kind
+with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO
+stores the override on its private read cursor; source fanout carries the default from persisted
+`spawnerName`, without overriding the user's choice. Muting clears counts and queued alerts.
+Changing the preference consumes known activity, so enabling only notifies about future activity.
+The upgrade journals existing spawned chats through ordinary durable fanout to apply the default.
 
 ```mermaid
 flowchart LR
@@ -55,6 +56,8 @@ Each `chatReadCursors` row contains:
 - `readThroughVisibleSequence`: corresponding dense visible horizon, initialized immediately before the first delivered visible position
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
+- `notificationsEnabled`: optional explicit per-user override
+- `notificationsMutedByDefault`: source default for spawned chats
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
 - `notifiedEventIds`: completed alert UUIDs at that position; absent when admission skips the whole position
 - `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
@@ -224,7 +227,7 @@ catch-up RPC or background admission lifecycle.
 ## Consumers and verification
 
 Notification policy remains task completion and permission requests, not an alert for every
-visible message. Browser acknowledgement, mute and native fallback are unchanged; see
+visible message. Workspace mutes still suppress completion alerts only; chat mutes suppress all alerts and badges. Browser acknowledgement and native fallback are unchanged; see
 [notifications](notifications.md). Native/push badge consumers are added by the
 [stacked consumer PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 

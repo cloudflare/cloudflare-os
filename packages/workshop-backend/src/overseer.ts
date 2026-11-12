@@ -30,7 +30,7 @@ import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor }
 import type { BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToSilentSpawnedChats,
+  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToMutedSpawnedChats,
   migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -1280,9 +1280,6 @@ class OverseerImpl implements AgentHooks {
           }
         }
         let meta = this.storage.chatMeta.get(chatId);
-        // Spawned chats retain their history but never enter the unread inbox or alert queue.
-        // The removal handoff also clears counts and queued alerts from older deployments.
-        if (meta?.spawnerName !== undefined) meta = undefined;
         let counter = this.storage.nextChatSequences.get(chatId);
         let latestMessage = counter?.latestVisibleMessageSequence === undefined ? undefined :
           this.storage.chats.get(chatKey(chatId, counter.latestVisibleMessageSequence));
@@ -1304,6 +1301,7 @@ class OverseerImpl implements AgentHooks {
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
             this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, latestMessageAuthorId,
               head: head!, headUpdatedAt: meta.lastActive,
+              notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
               notifications: notifications.filter(event => event.userId === userId &&
                 start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
                 .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null));
@@ -1365,7 +1363,7 @@ class OverseerImpl implements AgentHooks {
       rewind: boolean): Promise<boolean> {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
     let meta = this.storage.chatMeta.get(chatId);
-    if (!meta || meta.spawnerName !== undefined) return false;
+    if (!meta) return false;
     let counter = this.storage.nextChatSequences.get(chatId);
     let boundary = sequence ?? counter?.latestVisibleMessageSequence ?? -1;
     if (rewind && boundary < 0) return false;
@@ -1381,8 +1379,25 @@ class OverseerImpl implements AgentHooks {
         readThroughSequence: through, readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
         latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
         head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
+        notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
         notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1,
       }, rewind);
+  }
+
+  async setChatNotificationsEnabled(userId: string, chatId: number, enabled: boolean): Promise<void> {
+    if (!this.ownerId) throw new Error("Workspace has been deleted.");
+    let meta = this.storage.chatMeta.get(chatId);
+    if (!meta) return;
+    let counter = this.storage.nextChatSequences.get(chatId);
+    let tail = this.nextChatSequencePeek(chatId) - 1;
+    await this.wrapUserDo(this.users.get(this.users.idFromString(userId))).setChatNotificationsEnabled(
+      this.ctx.id.toString(), chatId, enabled, {
+        head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
+        notificationsMutedByDefault: meta.spawnerName !== undefined ? true : undefined,
+        latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
+        readThroughSequence: tail, readThroughVisibleSequence: counter?.visibleThroughSequence ?? 0,
+        notificationBaseline: tail,
+      });
   }
 
   // Background reads retain the admission established on open, with the same lazy revocation
@@ -1651,7 +1666,7 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
-      migrateToSilentSpawnedChats(this);
+      migrateToMutedSpawnedChats(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -9706,13 +9721,13 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Normal teardown and recovery of a logged outcome notify the same original caller. Only a
-  // person waits on completion; callbacks notify only when permission is needed. Spawned chats
-  // stay silent even if a person starts a later turn in them.
+  // person waits on normal-chat completion; spawned chats also record callback outcomes so the
+  // recipient can opt in. The User DO applies its private per-chat preference.
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
     let meta = this.storage.chatMeta.get(chatId);
-    if (!meta || meta.spawnerName !== undefined) return;
+    if (!meta) return;
     let awaitingDecision = this.#decisionWait(chatId)?.pending ?? false;
-    if (!awaitingDecision && initiator.type !== "user") return;
+    if (!awaitingDecision && initiator.type !== "user" && meta.spawnerName === undefined) return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
     let sequence = this.nextChatSequencePeek(chatId) - 1;
     let kind = awaitingDecision ? "permissionRequested" as const : "taskCompleted" as const;
@@ -11166,10 +11181,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // Enrollment is best-effort: events racing this first registration are not guaranteed;
       // subsequent arrivals fan out normally once the User DO has recorded the listing.
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()]
-        .filter(meta => meta.spawnerName === undefined).map(meta => ({
+        .map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
         head: this.impl.chatHead(meta.id),
         headUpdatedAt: meta.lastActive,
+        notificationsMutedByDefault: meta.spawnerName !== undefined ? true as const : undefined,
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
       void (async () => {
@@ -12760,6 +12776,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return this.impl.setChatReadHorizon(this.clientUserId, chatId, fromSequence, true);
   }
 
+  async setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void> {
+    await this.impl.setChatNotificationsEnabled(this.clientUserId, chatId, enabled);
+  }
+
   async listChats(): Promise<AiChatMetadata[]> {
     return [...this.impl.storage.chatMeta.list({reverse: true})]
         .map(meta => this.impl.chatMetaForClient(meta));
@@ -13646,6 +13666,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }
   async markChatRead(_chatId: number, _throughSequence?: number): Promise<void> { this.#deny(); }
   async markChatUnread(_chatId: number, _fromSequence?: number): Promise<boolean> { this.#deny(); }
+  async setChatNotificationsEnabled(_chatId: number, _enabled: boolean): Promise<void> { this.#deny(); }
   async listChats(): Promise<AiChatMetadata[]> { this.#deny(); }
   async listModels(): Promise<AiChatAuthorInfo[]> { this.#deny(); }
   async getChatHistory(_chatId: number, _beforeSequence?: number): Promise<AiChatHistoryPage> {

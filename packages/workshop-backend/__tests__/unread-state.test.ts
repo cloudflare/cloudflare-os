@@ -59,6 +59,7 @@ const notificationBaselines = (fixture: Fixture) => withImpl(fixture.workspace, 
   [...impl.storage.chatMeta.list()].map(meta => ({chatId: meta.id,
     head: impl.chatHead(meta.id),
     headUpdatedAt: meta.lastActive,
+    notificationsMutedByDefault: meta.spawnerName !== undefined ? true as const : undefined,
     notifiedThroughSequence: impl.nextChatSequencePeek(meta.id) - 1,
     readThroughVisibleSequence: impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0})));
 const addReader = async (fixture: Fixture) => {
@@ -173,7 +174,7 @@ describe("persisted visible positions", () => {
 });
 
 describe("spawned chat notifications", () => {
-  it("excludes spawned chats from unread badges and alerts, including after eviction", async () => {
+  it("defaults spawned chats to muted badges and alerts, including after eviction", async () => {
     const fixture = await setup();
     const {reader} = await addReader(fixture);
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
@@ -194,10 +195,93 @@ describe("spawned chat notifications", () => {
     for (const user of [fixture.user, reader]) {
       expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
       expect(await user.getUnreadThreads()).toEqual([]);
-      expect(await user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+      expect(await user.getWorkspaceUnreadState(fixture.workspaceId)).toMatchObject([
+        {chatId: 1, unreadMessageCount: 0, notificationsEnabled: false},
+      ]);
     }
     expect(await outbox(fixture)).toEqual([]);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("allows private overrides and only future activity after toggling (spawned: %s)", async spawned => {
+    const fixture = await setup();
+    if (spawned) await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
+    });
+    const {reader} = await addReader(fixture);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
+    await append(fixture, 0, "Existing activity");
+    const setEnabled = (enabled: boolean) => withImpl(fixture.workspace,
+      impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled));
+    await setEnabled(false);
+    await evictDurableObject(fixture.user);
+    await append(fixture, 1, "Muted activity");
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({notificationsEnabled: false, unreadMessageCount: 0});
+    await setEnabled(true);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+    await evictDurableObject(fixture.user);
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 2, "Future activity");
+      impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 1, sequence: 2,
+        userId: fixture.user.id.toString(), kind: "permissionRequested"});
+      await impl.deliverDirtyChats();
+    });
+    await drained(fixture);
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({notificationsEnabled: true, unreadMessageCount: 1});
+    expect((await reader.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({notificationsEnabled: !spawned, unreadMessageCount: spawned ? 0 : 3});
+    // Retrying the same preference must not consume activity that arrived since it was enabled.
+    await setEnabled(true);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(1);
+    await setEnabled(false);
+    await setEnabled(true);
+    await fixture.user.messageArrived(fixture.workspaceId, 1, {...progress(2), notifications: [event(2)]});
+    await drained(fixture);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it("clears a normal chat's queued permission alert when muted and never retries it after unmuting", async () => {
+    const fixture = await setup();
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification")
+      .mockRejectedValue(new Error("Push unavailable"));
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0);
+      impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 1, sequence: 0,
+        userId: fixture.user.id.toString(), kind: "permissionRequested"});
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    expect(await outbox(fixture)).toHaveLength(1);
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    expect(await outbox(fixture)).toEqual([]);
+    await evictDurableObject(fixture.user);
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true));
+    await runDurableObjectAlarm(fixture.user);
+    expect(publish).toHaveBeenCalledOnce();
+  });
+
+  it("preserves explicit opt-in when the upgrade and collaborator admission deliver the spawned default", async () => {
+    const fixture = await setup();
+    const {reader, owner} = await addReader(fixture);
+    await append(fixture, 0);
+    await withImpl(fixture.workspace, async impl => {
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true);
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
+      impl.storage.version.put(7);
+    });
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, impl => impl.deliverDirtyChats());
+    await append(fixture, 1);
+    await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({notificationsEnabled: true, unreadMessageCount: 1});
+    expect((await reader.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({notificationsEnabled: false, unreadMessageCount: 0});
   });
 
   it("retries upgrade cleanup after eviction without hiding ordinary chats", async () => {
@@ -407,7 +491,7 @@ describe("local counts and explicit read boundaries", () => {
         expect.objectContaining({workspaceId: fixture.workspaceId, latestSequence: 0, unreadMessageCount: 1}),
       ]);
       expect(await instance.getWorkspaceUnreadState(other.workspaceId)).toEqual([
-        {workspaceId: other.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 2},
+        {workspaceId: other.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 2, notificationsEnabled: true},
       ]);
       expect(await instance.getWorkspaceUnreadState("not-listed")).toEqual([]);
       expect(await instance.getUnreadSummary()).toEqual({unreadChatCount: 2, unreadMessageCount: 3,
@@ -499,7 +583,7 @@ describe("local counts and explicit read boundaries", () => {
     });
     await vi.waitFor(() => expect(deltas).toHaveLength(2));
     expect(await fixture.user.getUnreadThreads()).toEqual([
-      {workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 1,
+      {workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: -1, unreadMessageCount: 1, notificationsEnabled: true,
         chatTitle: "Renamed", latestSequence: 0, latestMessagePreview: "First line", latestActivityAt: new Date(1_000)},
     ]);
     // A repeated ACK-lost packet doesn't rewrite the row or emit another invalidation.
@@ -537,7 +621,7 @@ describe("local counts and explicit read boundaries", () => {
     });
     await evictDurableObject(reader);
     expect(await reader.getUnreadThreads()).toEqual([
-      expect.objectContaining({chatTitle: "Renamed", readThroughSequence: 0, unreadMessageCount: 1}),
+      expect.objectContaining({chatTitle: "Renamed", readThroughSequence: 0, unreadMessageCount: 1, notificationsEnabled: true}),
     ]);
   });
 
@@ -558,7 +642,7 @@ describe("local counts and explicit read boundaries", () => {
     await reader.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
     await evictDurableObject(reader);
     expect(await reader.getUnreadThreads()).toEqual([
-      expect.objectContaining({chatTitle: "Renamed", latestSequence: 1, readThroughSequence: 0, unreadMessageCount: 1}),
+      expect.objectContaining({chatTitle: "Renamed", latestSequence: 1, readThroughSequence: 0, unreadMessageCount: 1, notificationsEnabled: true}),
     ]);
   });
 
@@ -578,8 +662,8 @@ describe("local counts and explicit read boundaries", () => {
       ])});
     await setRead(fixture, 0);
     expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([
-      {workspaceId: fixture.workspaceId, chatId: 1, unreadMessageCount: 0, readThroughSequence: 0},
-      {workspaceId: fixture.workspaceId, chatId: 2, unreadMessageCount: 1, readThroughSequence: 1},
+      {workspaceId: fixture.workspaceId, chatId: 1, unreadMessageCount: 0, readThroughSequence: 0, notificationsEnabled: true},
+      {workspaceId: fixture.workspaceId, chatId: 2, unreadMessageCount: 1, readThroughSequence: 1, notificationsEnabled: true},
     ]);
     await fixture.user.messageArrived(fixture.workspaceId, 2, null);
     expect((await fixture.user.getUnreadSummary()).workspaces).toEqual([
@@ -1369,7 +1453,7 @@ describe("source authorization and removal", () => {
         await instance.messageArrived(fixture.workspaceId, 1, {...progress(5, 2), firstVisibleSequence: 2});
         release.resolve(); await pending;
         expect(await instance.getWorkspaceUnreadState(fixture.workspaceId))
-          .toEqual([{workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: 1, unreadMessageCount: 1}]);
+          .toEqual([{workspaceId: fixture.workspaceId, chatId: 1, readThroughSequence: 1, unreadMessageCount: 1, notificationsEnabled: true}]);
       });
     } finally { release.resolve(); }
   });

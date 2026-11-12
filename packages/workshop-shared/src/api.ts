@@ -254,6 +254,8 @@ export type ChatReadState = {
    * to place a "new messages" divider.
    */
   readThroughSequence: number;
+  /** Whether this chat contributes unread badges and alerts for this user. Absent on older servers. */
+  notificationsEnabled?: boolean;
 };
 
 /**
@@ -3659,6 +3661,13 @@ export interface Overseer extends RpcTarget {
    * sequence is beyond the end of the chat. Not available in use-only sessions.
    */
   markChatUnread(chatId: number, fromSequence?: number): Promise<boolean>;
+
+  /**
+   * Enable or mute this chat's unread badges and alerts for the current user. Normal chats default
+   * on; agent-spawned chats default off. Changing the preference marks existing activity handled,
+   * so enabling only notifies about future activity. Not available in use-only sessions.
+   */
+  setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void>;
 
   /** List past AI chats, with each one's id and title. */
   listChats(): Promise<AiChatMetadata[]>;

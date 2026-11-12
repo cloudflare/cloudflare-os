@@ -1,4 +1,5 @@
 import { logRpcFailure, rpcFailureDescription } from "./rpcErrors";
+import { ChatNotificationsMenu } from "./features/notifications/ChatNotificationsMenu";
 import { useUnreadState } from "./features/notifications/UnreadStateBridge";
 import { UnreadBadge } from "./features/notifications/UnreadBadge";
 import { ReadTimeline } from "./features/notifications/ReadTimeline";
@@ -5548,8 +5549,10 @@ function ChatInterface({
               <div key={chat.id} className="relative">
                 {(() => {
                   const isRenaming = renamingChatId === chat.id;
-                  const unreadMessageCount = unread?.chats?.find(item =>
-                    item.workspaceId === workspaceId && item.chatId === chat.id)?.unreadMessageCount ?? 0;
+                  const readState = unread?.chats?.find(item =>
+                    item.workspaceId === workspaceId && item.chatId === chat.id);
+                  const unreadMessageCount = readState?.unreadMessageCount ?? 0;
+                  const notificationsEnabled = readState?.notificationsEnabled ?? chat.spawnerName === undefined;
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
@@ -5658,9 +5661,11 @@ function ChatInterface({
                           <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount === 0} onClick={() => {
                             void unread?.markRead(overseer, chat.id).catch(() => {});
                           }}>Mark thread read</DropdownMenu.Item>
-                          <DropdownMenu.Item disabled={!unread?.chats || unreadMessageCount > 0} onClick={() => {
+                          <DropdownMenu.Item disabled={!unread?.chats || !notificationsEnabled || unreadMessageCount > 0} onClick={() => {
                             void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
+                          <ChatNotificationsMenu overseer={overseer} chatId={chat.id}
+                            enabled={notificationsEnabled} disabled={!unread?.chats} />
                           <DropdownMenu.Item
                             icon={<Pencil className="size-3" />}
                             onClick={() => startListRename(chat.id, chat.title)}
