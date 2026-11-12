@@ -2097,10 +2097,11 @@ export function googleDocActionTab(
  * edit to one tab can neither shift nor be shifted by an edit to another. An added tab joins the
  * tab list where Google will put it, and edits queued for it then find it there.
  *
- * An action whose marker `snapshot` already holds committed though its reply never arrived, so
- * the snapshot contains it. Replaying an edit would show its content twice; it stays pending, and
- * applyAction() settles it from the same marker. Such an add is invalidated, as applyAction()
- * refuses it: which tab it made cannot be told (see `googleDocLostAddError`).
+ * An edit whose marker `snapshot` already holds committed though its reply never arrived, so
+ * the snapshot contains it, and replaying it would show its content twice; it stays pending, and
+ * applyAction() settles it from the same marker. An add whose marker the snapshot holds is still
+ * replayed as pending, though the tab it made is in the snapshot too: its reply may yet arrive,
+ * to an approval still running, and only applyAction() can tell it was lost.
  */
 function invalidateUnreplayableGoogleDocActions(
   pendingActions: PendingActionStore<GoogleDocAction>,
@@ -2119,7 +2120,6 @@ function invalidateUnreplayableGoogleDocActions(
     try {
       if (action.type === "addTab") {
         assertGoogleDocActionReplayable(action);
-        if (googleDocActionCommitted(snapshot, action)) throw googleDocLostAddError(action);
         let tab = newGoogleDocTab(action);
         tabs = insertDocTab(tabs, tab, { parentTabId: action.parentTabId, index: action.index });
         contentByTabId.set(tab.tabId, googleDocSimulatedContent(tab));

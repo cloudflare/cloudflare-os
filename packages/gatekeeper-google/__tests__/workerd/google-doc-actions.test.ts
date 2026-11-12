@@ -118,8 +118,9 @@ const OFFICE_REFUSAL =
 /**
  * A batch either carries the edit and its marker, or deletes a marker on its own; or a create; or
  * a read, whose answer is fixed when it arrives, so holding it delivers what was then current.
+ * `applied` holds a content batch after Google has applied it, before it answers.
  */
-type RequestKind = "content" | "cleanup" | "create" | "read";
+type RequestKind = "content" | "cleanup" | "create" | "read" | "applied";
 
 class DocsModel {
   cleanupFailures = 0;
@@ -456,6 +457,7 @@ class DocsModel {
     if (hasContent) this.contentBatches++;
     this.#revision++;
     this.#recordMarkerCount();
+    if (hasContent) await this.#hold("applied");
 
     if (hasContent && this.ambiguousContentResponses > 0) {
       this.ambiguousContentResponses--;
@@ -2426,10 +2428,11 @@ describe("adding a Google Doc tab", () => {
     let made = docs.tabs[1];
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(Date.now() + 60_000);
-    // Read meanwhile, the tab Google made shows, once, and the provisional one is gone.
-    expect((await hooks().listTabs("add-tab-lost")).map(tab => tab.id)).toEqual([MAIN_TAB, made.id]);
-    await expect(Promise.resolve(hooks().readContent("add-tab-lost", added.tabId)))
-      .rejects.toThrow(`no tab with ID "${added.tabId}" exists`);
+    // Read meanwhile, the add still shows as pending, beside the tab Google made: only an approval
+    // can tell its reply was lost, rather than still to come.
+    expect((await hooks().listTabs("add-tab-lost")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, made.id, added.tabId]);
+    expect(await hooks().readContent("add-tab-lost", added.tabId)).toBe("Hello\n");
 
     expect(await hooks().applyAction("add-tab-lost", added.actionId))
       .toContain('Google Docs added the tab "Notes", but its reply was lost');
@@ -2438,6 +2441,27 @@ describe("adding a Google Doc tab", () => {
     expect(docs.tabs).toHaveLength(2);
     expect(docs.contentBatches).toBe(1);
     expect(docs.text(made.id)).toBe("");
+  });
+
+  it("keeps an add, and the edits for its tab, that a read sees landing before its reply", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-in-flight", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-in-flight", "Hello", added.tabId);
+
+    let held = docs.hold("applied");
+    let approval = Promise.resolve(hooks().applyAction("add-tab-in-flight", added.actionId));
+    await held.reached;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    // The marker is in the document while the approval still awaits Google's reply.
+    expect((await hooks().listTabs("add-tab-in-flight")).map(tab => tab.id))
+      .toContain(added.tabId);
+    held.release();
+
+    expect(await approval).toBeNull();
+    expect(await hooks().applyAction("add-tab-in-flight", appendId)).toBeNull();
+    expect(docs.text(docs.tabs[1].id)).toBe("Hello");
   });
 
   it("refuses a lost add whose tab was replaced by a collaborator's with its title", async () => {
