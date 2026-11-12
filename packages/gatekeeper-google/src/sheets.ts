@@ -25,8 +25,8 @@ import {
   type SheetArea,
   type SpreadsheetMetadata, type SpreadsheetReader,
 } from "./sheets-api";
-import type { BaseFormats } from "./sheets-format";
-import { isRangeChange, prepareChanges } from "./sheets-input";
+import type { BaseFormats, BaseSizes } from "./sheets-format";
+import { isLayoutChange, isRangeChange, prepareChanges } from "./sheets-input";
 import { findSheet, parseRange, type EnteredValue, type Rect } from "./sheets-model";
 import {
   checkProtections, guardAfter, guardCells, guardDigest, guardOf, resolveChanges, sheetLabels,
@@ -37,7 +37,8 @@ import type {
 } from "./sheets-read-types";
 import {
   basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
-  overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork, simulatedFormats,
+  formatPiecesToFetch, overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork,
+  simulatedFormats,
   simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type Grid, type PlannedChange,
   type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
 } from "./sheets-simulation";
@@ -344,19 +345,30 @@ function overlaid(
   });
 }
 
-/** Whether any of `pending` might move rows, columns or sheets, as only changes to ranges cannot. */
+/**
+ * Whether any of `pending` might move rows, columns or sheets, as only changes to ranges and to how
+ * lines are sized and frozen cannot.
+ */
 function mayMoveCells(pending: readonly QueuedChange[]): boolean {
-  return pending.some(({ action }) => action.payload.changes.some(change => !isRangeChange(change)));
+  return pending.some(({ action }) =>
+    action.payload.changes.some(change => !isRangeChange(change) && !isLayoutChange(change)));
 }
 
 /**
- * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell of the
- * spreadsheet Google holds.
+ * `read`, Google's formats for `rect` of sheet `sheetId` padded to its size, by cell, and the
+ * sizes of its lines, by line, of the spreadsheet Google holds.
  */
-function formatsOf(read: SpreadsheetFormats, sheetId: number, rect: Rect): BaseFormats {
-  return (sheet, row, column) => sheet === sheetId
-    ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
-    : null;
+function formatsOf(
+  read: SpreadsheetFormats, sheetId: number, rect: Rect,
+): { formats: BaseFormats; sizes: BaseSizes } {
+  return {
+    formats: (sheet, row, column) => sheet === sheetId
+      ? read.formats[row - rect.startRow]?.[column - rect.startColumn] ?? null
+      : null,
+    sizes: (sheet, axis, index) => sheet !== sheetId ? null
+      : axis === "rows" ? read.rowHeights[index - rect.startRow] ?? null
+      : read.columnWidths[index - rect.startColumn] ?? null,
+  };
 }
 
 /** A read refused for what it found, which is reported only once the read is authorized. */
@@ -418,8 +430,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           title: metadata.title,
           ...(metadata.locale ? { locale: metadata.locale } : {}),
           ...(metadata.timeZone ? { timeZone: metadata.timeZone } : {}),
-          sheets: grid.sheets.map(({ id, title, index, rowCount, columnCount, hidden }) =>
-            ({ id, title, index, rowCount, columnCount, ...(hidden ? { hidden } : {}) })),
+          sheets: grid.sheets.map(({ id, title, index, rowCount, columnCount, hidden, frozenRowCount, frozenColumnCount }) => ({
+            id, title, index, rowCount, columnCount, ...(hidden ? { hidden } : {}),
+            ...(frozenRowCount ? { frozenRowCount } : {}), ...(frozenColumnCount ? { frozenColumnCount } : {}),
+          })),
           ...(conflict ? { queuedChangeConflict: conflict } : {}),
         };
       }),
@@ -610,7 +624,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let pieces: SheetArea[];
     try {
       area = resolveArea(grid, parsed);
-      pieces = grid.log.length > 0 ? rangesToFetch(grid, [area]) : [];
+      pieces = grid.log.length > 0 ? formatPiecesToFetch(grid, area) : [];
     } catch (error) {
       // These name the spreadsheet's sheets and sizes, so they wait for the read's authorization.
       throw new RefusedRead(error as Error);
@@ -621,7 +635,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let base = grid.log.length > 0
       ? await this.#api.readFormatAreas(this.#spreadsheetId, pieces)
       : formatsOf(read ?? await this.#api.readFormats(this.#spreadsheetId, range), area.sheetId, parsed.rect);
-    let shown = simulatedFormats(grid, area, base);
+    let shown = simulatedFormats(grid, area, base.formats, base.sizes);
     return conflict ? { ...shown, queuedChangeConflict: conflict } : shown;
   }
 

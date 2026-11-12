@@ -616,10 +616,10 @@ describe("Google Slides changes", () => {
     });
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s2", "s1", "s3"]);
     let remove = await slides.queued("deleteSlide", "s1");
-    // Deleting takes the slide's content and notes, so it always waits for approval.
+    // Deleting takes the slide's content and notes, which the version history restores.
     expect(remove.action).toMatchObject({
       title: "Delete slide 2 (\"Q3 review\")",
-      autoApprovable: false,
+      autoApprovable: true,
       actionKind: { tag: "delete-slides", label: "Deleting slides" },
     });
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s2", "s3"]);
@@ -852,7 +852,9 @@ describe("Google Slides changes", () => {
       { tag: "editSlidesText", label: "Slide text edits" },
       { tag: "formatSlides", label: "Slide formatting and arrangement" },
       { tag: "edit-slides", label: "Slide edits that keep every element, table row and column and download no images" },
+      { tag: "delete-slide-content", label: "Slide changes that delete elements, table rows or columns" },
       { tag: "arrange-slides", label: "Adding, copying and reordering slides" },
+      { tag: "delete-slides", label: "Deleting slides" },
       { tag: "skipSlides", label: "Skipping slides" },
     ]);
   });
@@ -969,8 +971,10 @@ describe("Google Slides design changes", () => {
 
     expect(action).toMatchObject({
       title: "Change slide 2 (\"Revenue\")",
-      autoApprovable: false,
-      actionKind: { tag: "update-slides" },
+      autoApprovable: true,
+      actionKind: {
+        tag: "delete-slide-content", label: "Slide changes that delete elements, table rows or columns",
+      },
       descriptionIsComplete: true,
       fields: [{ label: "Change 1: Text", kind: "text", value: "New" }],
     });
@@ -1030,7 +1034,7 @@ describe("Google Slides design changes", () => {
     expect(provider.text("s2", "t2")).toBe("Sales\n");
   });
 
-  it("lets a batch apply without asking unless it deletes elements, table lines, or downloads an image", async () => {
+  it("lets a batch apply without asking unless it downloads an image, deletions under a kind of their own", async () => {
     new SlidesProvider(deck()).install();
     let slides = gatekeeper();
     let kindOf = async (...changes: object[]) => {
@@ -1053,15 +1057,18 @@ describe("Google Slides design changes", () => {
     expect(await kindOf({ op: "formatTableCells", slideId: "s2", elementId: "tb2", fill: "ACCENT1" }))
       .toBe("edit-slides");
 
-    expect(await kindOf({ op: "deleteElement", slideId: "s2", elementId: "b2" })).toBe("manual update-slides");
-    expect(await kindOf({ op: "deleteTableRows", slideId: "s2", elementId: "tb2", at: 1 })).toBe("manual update-slides");
+    // The presentation's version history restores what a deletion takes.
+    expect(await kindOf({ op: "deleteElement", slideId: "s2", elementId: "b2" })).toBe("delete-slide-content");
+    expect(await kindOf({ op: "deleteTableRows", slideId: "s2", elementId: "tb2", at: 1 })).toBe("delete-slide-content");
     expect(await kindOf({ op: "deleteTableColumns", slideId: "s2", elementId: "tb2", at: 1 }))
-      .toBe("manual update-slides");
+      .toBe("delete-slide-content");
+    expect(await kindOf(BADGE, { op: "deleteElement", slideId: "s1", elementId: "t1" })).toBe("delete-slide-content");
     // Google downloads the image from a URL the agent chose, which can carry what it encodes there.
-    expect(await kindOf({ op: "insertImage", slideId: "s1", url: "https://example.com/chart.png" }))
-      .toBe("manual update-slides");
-    // One deletion or download holds back a batch that would otherwise be an edit.
-    expect(await kindOf(BADGE, { op: "deleteElement", slideId: "s1", elementId: "t1" })).toBe("manual update-slides");
+    let chart = { op: "insertImage", slideId: "s1", url: "https://example.com/chart.png" };
+    expect(await kindOf(chart)).toBe("manual update-slides");
+    // A download holds back a batch that would otherwise be an edit or a deletion.
+    expect(await kindOf(BADGE, chart)).toBe("manual update-slides");
+    expect(await kindOf(chart, { op: "deleteElement", slideId: "s2", elementId: "t2" })).toBe("manual update-slides");
   });
 
   // Neither the created-then-deleted element nor the formatting differs between a batch that

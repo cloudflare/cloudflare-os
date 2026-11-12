@@ -220,6 +220,7 @@ Exceptions, kept `true` by decision although a rule covers them; add one only wi
 - GitHub's force push to a branch that is neither the default nor protected (rule 1): it has its own `forcePush` kind, which a user enables apart from other pushes.
 - X's bookmark, mute and hide (rule 3): one billed write each, and the only X writes its developer policy lets software automate (see `packages/gatekeeper-x/AGENTS.md`).
 - Google Drive's comments and replies that mention an address after `@` or `+` (rule 2): Google emails the mentioned person the text, even one who cannot open the file; the comment itself goes on the bound file, and the gatekeeper looks for no mention, so the one "Drive comments" kind covers them (see `packages/gatekeeper-google/README.md`).
+- Google Docs table deletions, Google Slides slide and content deletions, and Google Sheets sheet, row and column deletions and merges (rule 1): Google's version history undoes them.
 
 Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
 

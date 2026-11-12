@@ -92,7 +92,7 @@ describe("native Google content API safety", () => {
       tabs: [normalizedTab("tab-1", "Main")],
     });
     expect(requestedUrl).toBe(
-      "https://docs.googleapis.com/v1/documents/doc-1?includeTabsContent=true",
+      "https://docs.googleapis.com/v1/documents/doc-1?includeTabsContent=true&prettyPrint=false",
     );
   });
 

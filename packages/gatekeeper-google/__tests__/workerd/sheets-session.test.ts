@@ -227,7 +227,8 @@ describe("Google Sheets spreadsheet session", () => {
     expect(requested()).toEqual([
       ["/v4/spreadsheets/sheet-1",
         "spreadsheetId,properties(title,locale,timeZone)," +
-        "sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)))"],
+        "sheets(properties(sheetId,title,index,hidden," +
+        "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount)))"],
       ["/v4/spreadsheets/sheet-1/values:batchGet", null],
     ]);
     expect(providerFetches[1].searchParams.get("valueRenderOption")).toBe("FORMULA");
@@ -252,7 +253,7 @@ describe("Google Sheets spreadsheet session", () => {
     let metadata = ["/v4/spreadsheets/sheet-1",
       "spreadsheetId,properties(title,locale,timeZone)," +
       "sheets(properties(sheetId,title,index,hidden," +
-      "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount))," +
+      "gridProperties(rowCount,columnCount,frozenRowCount,frozenColumnCount)),merges," +
       "protectedRanges(range,unprotectedRanges,requestingUserCanEdit,warningOnly))"];
     let values = ["/v4/spreadsheets/sheet-1/values:batchGet", null];
     expect(requested().toSorted()).toEqual([metadata, metadata, metadata, values, values, values]);
@@ -473,6 +474,8 @@ describe("Google Sheets format reads", () => {
     expect(await session.readFormats("sales!a19:b21")).toEqual({
       range: "Sales!A19:B20",
       formats: [[{ fontSize: 1800 }, { fontSize: 1801 }], [{ fontSize: 1900 }, { fontSize: 1901 }], [null, null]],
+      rowHeights: [21, 21, null],
+      columnWidths: [100, 100],
     });
     expect(requested()).toEqual([["/v4/spreadsheets/sheet-1", FORMAT_READ_FIELDS]]);
     expect(providerFetches[0].searchParams.getAll("ranges")).toEqual(["sales!a19:b21"]);
@@ -503,6 +506,8 @@ describe("Google Sheets format reads", () => {
     expect(await session.readFormats("'Q3 Plan'!B2:C2")).toEqual({
       range: "'Q3 Plan'!B2:C2",
       formats: [[{ fontSize: 70_101 }, { fontSize: 70_102 }]],
+      rowHeights: [21],
+      columnWidths: [100, 100],
       queuedChangeConflict: "Queued change 2 no longer applies, so it and the changes queued after " +
         "it are not shown: change 1 (writeCells): the spreadsheet has no sheet with ID 9.",
     });
@@ -526,6 +531,8 @@ describe("Google Sheets format reads", () => {
         [{ fontSize: 0, ...set }, { fontSize: 1, ...set }, { fontSize: 2 }],
         [{ fontSize: 100 }, { fontSize: 101 }, { fontSize: 102 }],
       ],
+      rowHeights: [21, 21],
+      columnWidths: [100, 100, 100],
     });
     expect(formatFilterReads).toEqual([]);
     expect(await session.readRange("Sales!A1:B1")).toEqual({
@@ -550,6 +557,9 @@ describe("Google Sheets format reads", () => {
         [null, null],
         [{ fontSize: 70_100 }, { fontSize: 70_101 }],
       ],
+      // Google sizes the inserted row from the row beside it.
+      rowHeights: [21, null, 21],
+      columnWidths: [100, 100],
       pendingCells: ["A2", "B2"],
     });
     // The rows around the inserted one, of the sheet Google holds, which no A1 range names.

@@ -47,14 +47,15 @@ export type CreatedPlaceholder = {
 
 /**
  * The payload of each kind of queued change. A batch is queued as `editText` when it only edits
- * text, `formatSlides` when it only formats or moves, `updateSlides` when it deletes elements,
- * table rows or columns or downloads an image, and `editSlides` otherwise; they differ in nothing
- * but which kinds a user may let apply without asking.
+ * text, `formatSlides` when it only formats or moves, `updateSlides` when it downloads an image,
+ * `deleteSlideContent` when it deletes elements, table rows or columns, and `editSlides`
+ * otherwise; they differ in nothing but which kinds a user may let apply without asking.
  */
 export type SlidesActions = {
   editText: DesignBatch;
   formatSlides: DesignBatch;
   editSlides: DesignBatch;
+  deleteSlideContent: DesignBatch;
   updateSlides: DesignBatch;
   /** `objectIds` maps the source's element IDs to the IDs the gatekeeper minted for the copy's. */
   duplicateSlide: {
@@ -86,7 +87,8 @@ type DesignKind = {
 
 // Every kind an `updateSlides()` batch may be queued as; the type makes a new one join it.
 const DESIGN_KINDS: Record<DesignKind, true> = {
-  editText: true, formatSlides: true, editSlides: true, updateSlides: true,
+  editText: true, formatSlides: true, editSlides: true, deleteSlideContent: true,
+  updateSlides: true,
 };
 
 /** Whether `action` is an `updateSlides()` batch, whichever kind it was queued as. */
@@ -271,6 +273,7 @@ export function applyChange(deck: Deck, action: SlidesAction): Deck {
     case "editText":
     case "formatSlides":
     case "editSlides":
+    case "deleteSlideContent":
     case "updateSlides":
       return designDeck(deck, action.payload.changes).deck;
     case "duplicateSlide": {

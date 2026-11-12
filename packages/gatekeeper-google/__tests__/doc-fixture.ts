@@ -1,5 +1,5 @@
 import type {
-  GoogleDocsTab, ParagraphElement, StructuralElement, TextStyle,
+  GoogleDocsTab, ParagraphElement, StructuralElement, TableCellStyle, TextStyle,
 } from "../src/docs-api";
 
 type ParagraphPart =
@@ -7,6 +7,8 @@ type ParagraphPart =
   | { person: { name?: string; email: string }; style?: TextStyle }
   | { richLink: { title: string; uri: string }; style?: TextStyle }
   | { date: string; style?: TextStyle }
+  /** A dropdown chip showing this value. */
+  | { dropdown: string; style?: TextStyle }
   | { footnote: { id: string; number: string }; style?: TextStyle }
   | { autoText: "PAGE_NUMBER" | "PAGE_COUNT"; style?: TextStyle }
   | { horizontalRule: true };
@@ -17,11 +19,28 @@ type ParagraphSpec = {
   bullet?: { listId: string; nestingLevel?: number };
 };
 
-type TableCellSpec = string | {
-  paragraphs: ParagraphSpec[];
-  tableCellStyle?: { rowSpan?: number; columnSpan?: number };
+type Suggestion = "insertion" | "deletion";
+
+type TableCellContent = {
+  /** The cell's content in order: paragraphs, and tables nested in the cell. */
+  paragraphs: (ParagraphSpec | TableSpec)[];
+  tableCellStyle?: TableCellStyle;
+  /** Marks the cell as a suggested insertion, or as suggested for deletion. */
+  suggested?: Suggestion;
 };
-type TableSpec = { table: TableCellSpec[][] };
+/** A cell's content, or the text of the one paragraph it holds. */
+type TableCellSpec = string | TableCellContent;
+type TableSpec = {
+  table: TableCellSpec[][];
+  /** How many rows, from the first, are pinned as header rows. */
+  headerRows?: number;
+  /** Rows, by index, that are suggested: the row and each of its cells carry the suggestion. */
+  suggestedRows?: Record<number, Suggestion>;
+  /** Each column's fixed width in points, or `null` for one evenly distributed. */
+  columns?: (number | null)[];
+  /** Each row's minimum height in points, as Google stores it: 0 leaves it out. */
+  heights?: number[];
+};
 type StructuralSpec = { structure: "sectionBreak" | "tableOfContents"; length?: number };
 type BlockSpec = ParagraphSpec | TableSpec | StructuralSpec;
 
@@ -40,7 +59,7 @@ export function buildTab(
 
   for (let spec of blocks) {
     if ("table" in spec) {
-      let table = buildTable(index, spec.table);
+      let table = buildTable(index, spec);
       content.push(table);
       index = table.endIndex;
       continue;
@@ -101,6 +120,12 @@ function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElem
         dateElement: { dateElementProperties: { displayText: run.date }, textStyle: run.style ?? {} },
       };
     }
+    if ("dropdown" in run) {
+      return {
+        startIndex: runStart, endIndex: index,
+        dropdown: { dropdownProperties: { displayValue: run.dropdown }, textStyle: run.style ?? {} },
+      };
+    }
     if ("footnote" in run) {
       return {
         startIndex: runStart, endIndex: index,
@@ -130,34 +155,77 @@ function buildParagraph(startIndex: number, spec: ParagraphSpec): StructuralElem
   };
 }
 
-/** Build a Google Docs table element with the provider's nested index layout. */
-function buildTable(startIndex: number, rows: TableCellSpec[][]): StructuralElement {
+/** The suggestion IDs Google marks a suggested table row or cell with. */
+function suggestionIds(suggested: Suggestion | undefined): {
+  suggestedInsertionIds?: string[];
+  suggestedDeletionIds?: string[];
+} {
+  if (suggested === undefined) return {};
+  return suggested === "insertion"
+    ? { suggestedInsertionIds: ["suggest.fixture"] }
+    : { suggestedDeletionIds: ["suggest.fixture"] };
+}
+
+/**
+ * Build a Google Docs table element with the provider's nested index layout. A table nested in a
+ * cell continues the same index space.
+ */
+function buildTable(startIndex: number, spec: TableSpec): StructuralElement {
   let index = startIndex + 1;
-  let tableRows = rows.map(row => {
+  let tableRows = spec.table.map((row, rowIndex) => {
     let rowStart = index++;
+    let suggestedRow = suggestionIds(spec.suggestedRows?.[rowIndex]);
     let tableCells = row.map(cell => {
       let cellStart = index++;
-      let paragraphs = typeof cell === "string" ? [{ runs: [cell] }] : cell.paragraphs;
-      let tableCellStyle = typeof cell === "string" ? undefined : cell.tableCellStyle;
-      let content = paragraphs.map(spec => {
-        let paragraph = buildParagraph(index, spec);
-        index = paragraph.endIndex;
-        return paragraph;
+      let { paragraphs, tableCellStyle, suggested }: TableCellContent =
+        typeof cell === "string" ? { paragraphs: [{ runs: [cell] }] } : cell;
+      let content = paragraphs.map(part => {
+        let element = "table" in part ? buildTable(index, part) : buildParagraph(index, part);
+        index = element.endIndex;
+        return element;
       });
       return {
         startIndex: cellStart,
         endIndex: index,
         content,
         ...(tableCellStyle ? { tableCellStyle } : {}),
+        ...suggestedRow,
+        ...suggestionIds(suggested),
       };
     });
-    return { startIndex: rowStart, endIndex: index, tableCells };
+    let header = rowIndex < (spec.headerRows ?? 0);
+    let height = spec.heights?.[rowIndex] ?? 0;
+    return {
+      startIndex: rowStart,
+      endIndex: index,
+      tableCells,
+      ...(header || height > 0
+        ? {
+          tableRowStyle: {
+            ...(header ? { tableHeader: true } : {}),
+            ...(height > 0 ? { minRowHeight: { magnitude: height, unit: "PT" } } : {}),
+          },
+        }
+        : {}),
+      ...suggestedRow,
+    };
   });
 
   return {
     startIndex,
     endIndex: index + 1,
-    table: { tableRows },
+    table: {
+      tableRows,
+      ...(spec.columns
+        ? {
+          tableStyle: {
+            tableColumnProperties: spec.columns.map(width => width === null
+              ? { widthType: "EVENLY_DISTRIBUTED" }
+              : { widthType: "FIXED_WIDTH", width: { magnitude: width, unit: "PT" } }),
+          },
+        }
+        : {}),
+    },
   };
 }
 

@@ -9,7 +9,7 @@ export type DocCommentOptions = {
    * must occur exactly once in the tab as Google has it saved, not counting edits still waiting for
    * approval: the tab's text as `getContent()` shows it, without Markdown formatting (no `**`, list
    * markers or escapes) and, in a table, without HTML (`&` rather than `&amp;`, no tags). The
-   * comment is attached to it, as one made in the Docs editor is, and it must still occur exactly
+   * comment is attached to it, as one made in Google Docs is, and it must still occur exactly
    * once in the tab when the comment is approved.
    */
   quote: string;
@@ -23,6 +23,196 @@ export type DocSuggestEditOptions = {
   note?: string;
   /** The tab `oldText` is in: an ID returned by `listTabs()`, omitted only when there is one tab. */
   tabId?: string;
+};
+
+/** A table to add with `insertTable()`. */
+export type NewDocTable = {
+  /** How many rows the table has: at least 1. */
+  rows: number;
+
+  /** How many columns it has: 1 to 20. */
+  columns: number;
+
+  /**
+   * `cells[row][column]` is each cell's text. Rows left out at the end, and cells left out at
+   * the end of a row, are empty; an empty cell before a filled one is `""`. The text is plain:
+   * nothing in it is read as Markdown or HTML. `\n` starts a new paragraph in the cell and
+   * `\u000b` breaks a line within one. The cells of one call hold at most 2,000 `\n` in all.
+   */
+  cells?: string[][];
+
+  /**
+   * Where the table goes: Markdown that occurs exactly once in the tab, found as `replaceText()`
+   * finds `oldMarkdown`. The table follows the paragraph, heading, list item or table that the
+   * text ends in (text inside a table names that whole table); line breaks at the end of the
+   * text only help to make it unique. To make it unique, add the text before it or the line
+   * break that ends its paragraph: text added after it names a later paragraph. A line break at
+   * the start of the text stands for the start of a line, the tab's first line included. Omit
+   * `after` to add the table at the end of the tab.
+   */
+  after?: string;
+};
+
+/** Rows or columns to add to a table, for `insertTableRows()` and `insertTableColumns()`. */
+export type DocTableInsertion = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /**
+   * The row or column, counting from 0, that the new ones go before. Omit it, or give the
+   * table's number of rows or columns, to add them after the last.
+   */
+  at?: number;
+
+  /**
+   * How many to add. For rows, when left out, it is as many as `cells` holds, or 1 without
+   * `cells`. For columns it is 1 unless given: `cells` never sets it. `cells` may fill fewer
+   * rows or columns than `count`, which leaves the rest empty, but not more.
+   */
+  count?: number;
+
+  /**
+   * The new cells' text, as in `NewDocTable.cells`: plain, with cells left out at the end
+   * empty and an empty cell before a filled one `""`. For rows, `cells[i][column]` is the text
+   * of the i-th new row's cell in that column. For columns, `cells[row][i]` is the text of the
+   * i-th new column's cell in that row of the table: one array per row of the table, each
+   * holding one text per new column.
+   */
+  cells?: string[][];
+};
+
+/** Rows or columns to delete from a table, for `deleteTableRows()` and `deleteTableColumns()`. */
+export type DocTableDeletion = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The first row or column to delete, counting from 0. */
+  at: number;
+
+  /** How many to delete: 1 by default. */
+  count?: number;
+};
+
+/** A block of cells of a table, for `setTableCellStyle()`. */
+export type DocTableCells = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The block's first row, counting from 0. */
+  row: number;
+
+  /** The block's first column, counting from 0. */
+  column: number;
+
+  /** How many rows the block spans: 1 by default. */
+  rows?: number;
+
+  /** How many columns the block spans: 1 by default. */
+  columns?: number;
+};
+
+/** One edge of a table cell. */
+export type DocTableBorder = {
+  /** Its width in points, from 0 to 24. An edge 0 wide is not drawn, as `getContent()`'s `none`. */
+  width: number;
+
+  /** How it is drawn: `"solid"` unless given. */
+  dash?: "solid" | "dotted" | "dashed";
+
+  /** Its colour as `#rrggbb`: black unless given. */
+  color?: string;
+};
+
+/**
+ * What `setTableCellStyle()` sets, at least one field of it. A field left out stays as it is.
+ * Lengths are in points, with at most three decimals.
+ */
+export type DocTableCellStyle = {
+  /** The cells' shading as `#rrggbb`, or `null` for none. */
+  background?: string | null;
+
+  /** Where the cells' text sits between their top and bottom. */
+  verticalAlign?: "top" | "middle" | "bottom";
+
+  /** Each side's padding, from 0 to 100 points. */
+  padding?: { top?: number; right?: number; bottom?: number; left?: number };
+
+  /** Every edge of every cell of the block, those between its cells included; `null` hides them. */
+  border?: DocTableBorder | null;
+
+  /**
+   * Edges of the block, set after `border`, `null` hiding one: its outer `top`, `bottom`,
+   * `left` and `right`, and those between its rows (`innerHorizontal`, for a block of two rows
+   * or more) and between its columns (`innerVertical`, for two columns or more).
+   */
+  borders?: {
+    top?: DocTableBorder | null;
+    bottom?: DocTableBorder | null;
+    left?: DocTableBorder | null;
+    right?: DocTableBorder | null;
+    innerHorizontal?: DocTableBorder | null;
+    innerVertical?: DocTableBorder | null;
+  };
+};
+
+/** Columns of a table and their width, for `setTableColumnWidths()`. */
+export type DocTableColumnWidths = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The first column, counting from 0. Omit it, and `count`, to set every column. */
+  at?: number;
+
+  /** How many columns: 1 by default when `at` is given. */
+  count?: number;
+
+  /**
+   * Each column's width in points, from 5 to 1,000 with at most three decimals, or `null` for
+   * columns that share the width the fixed ones leave of the page.
+   */
+  width: number | null;
+};
+
+/** Rows of a table and their least height, for `setTableRowHeights()`. */
+export type DocTableRowHeights = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The first row, counting from 0. Omit it, and `count`, to set every row. */
+  at?: number;
+
+  /** How many rows: 1 by default when `at` is given. */
+  count?: number;
+
+  /**
+   * Each row's least height in points, from 0 to 1,000 with at most three decimals: a row with
+   * more text than fits grows past it, and one of 0 is as tall as its text.
+   */
+  height: number;
+};
+
+/** A block of a table's cells to merge into one, for `mergeTableCells()`. */
+export type DocTableMerge = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The block's top-left cell: its row and column, counting from 0. */
+  row: number;
+  column: number;
+
+  /** How many rows and columns the block spans; it holds at least two cells. */
+  rows: number;
+  columns: number;
+};
+
+/** A merged cell to split, for `unmergeTableCells()`: its top-left cell. */
+export type DocTableCell = {
+  /** The table: its position among the tab's tables, counting from 0. */
+  table: number;
+
+  /** The row and column of the merged cell's top-left cell, counting from 0. */
+  row: number;
+  column: number;
 };
 
 /**
@@ -48,12 +238,36 @@ export type DocSuggestEditOptions = {
  * address written after `@` or `+` in the text mentions that person: Google emails them the text,
  * whether or not they can open the Doc. A comment, reply or note holds at most 2048 bytes of UTF-8.
  * A Doc not created yet has no comments, and takes no comment writes until it is.
+ *
+ * `getContent()` shows each table as HTML that starts at a line reading `<table>`, or
+ * `<table style="…">` for a styled table, directly followed by a `  <tr>` or `  <colgroup>`
+ * line; a paragraph whose text merely reads `<table>` is followed by a blank line and is not a
+ * table. The table methods name a table by its position
+ * among the tab's tables, counting from 0 in the order `getContent()` shows them; a table inside
+ * another table's cell is not counted and cannot be changed. Rows and columns count from 0 too:
+ * each `  <tr>` line, indented two spaces, is a row, and each `    <td` line under it, indented
+ * four, a column. The lines of a table inside a cell are indented further and are not counted.
+ * Every edit shows in the next `getContent()` call. Adding or deleting a table renumbers the
+ * tables after it, and adding or deleting rows or columns renumbers those after them.
+ *
+ * Tables, rows and columns can be added only until the tables of one tab hold 5,000 cells
+ * in all, a cell counting once for each paragraph it holds, a table inside a cell included.
+ *
+ * The rows and columns of a table can be changed, and the table deleted, only while no other
+ * table of the tab reads the same as it does: the same HTML, apart from its styles, column
+ * widths and row heights, the number a numbered list starts at and any number in square
+ * brackets, as a footnote's is. While two tables read
+ * the same, such as two empty tables or two with only the same header row,
+ * make them differ first, for example by changing the text of a cell with `replaceText()`
+ * (quote the text above the table so that the match is unique), and then change either one.
+ * The cell can be changed back once the tables differ in another way, as they do when one of
+ * them has gained a row.
  */
 export interface GoogleDocSession extends GoogleDocReadSession {
 
   /**
    * Find `oldMarkdown` in tab `tabId` and replace it with `newMarkdown`.
-   * Both parameters are Markdown text.
+   * Both parameters are Markdown text or, inside a table, the table's HTML (described below).
    *
    * Matching and editing are local to that one tab: pass an ID returned by `listTabs()`, and omit
    * `tabId` only when `listTabs()` returns exactly one tab.
@@ -79,9 +293,32 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * - Plain paragraphs (separated by blank lines)
    * - Line breaks within a paragraph (`\u000b`, as `getContent()` returns them)
    *
-   * Unsupported Markdown features (tables, images, code blocks, etc.) are inserted as plain text.
-   * Existing structural content and paragraphs containing elements such as smart chips are
+   * Unsupported Markdown features (tables, images, code blocks, etc.) are inserted as plain text,
+   * and so is a table written as HTML: add a table with `insertTable()`. Tables of contents,
+   * section breaks and paragraphs containing elements such as images or smart chips are
    * read-only. Narrow the match to plain text in another paragraph.
+   *
+   * Inside a table, both parameters are the HTML that `getContent()` returns there, and a
+   * replacement changes the text of cells: of their paragraphs, headings and list items, in one
+   * cell or in several. Write `&amp;`, `&lt;` and `&gt;` for `&`, `<` and `>`, `<br>` for a line
+   * break within a paragraph, and `<strong>`, `<em>`, `<s>` and `<a href="...">` for bold,
+   * italic, strikethrough and links; Markdown syntax is plain text there. Everything else in the
+   * table must stay as it is, down to the line breaks and indentation `getContent()` writes
+   * between cells. A replacement cannot add or remove paragraphs, list items, cells, rows or
+   * columns (use the table methods for rows and columns), change a table's look (its `style`
+   * attributes and `<colgroup>` line), change a table together with the text around it, or
+   * change a cell that a merged cell covers, a cell that holds another table, a subtitle, or a
+   * paragraph that holds an image, smart chip or other element. Quote the text of cells rather
+   * than their tags: a replacement that quotes a cell's `style` no longer matches once the cell
+   * is restyled. It can add
+   * paragraphs directly above or below a table, with a blank line between them and the table,
+   * unless the paragraph on that side of the table is read-only. That blank line has to stay: to
+   * remove the paragraph next to a table, remove the blank line on the paragraph's other side
+   * with it.
+   *
+   * Each parameter holds at most 2,000 lines. A table has a line for every cell and two more for
+   * every row, so quote only the rows a replacement needs and change a large table in several
+   * calls.
    *
    * A subsequent `getContent(tabId)` call reflects this replacement.
    */
@@ -131,4 +368,129 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * edited after the resolve was queued.
    */
   resolve(commentId: string, text?: string): Promise<DriveCommentReply>;
+
+  /**
+   * Add a table to tab `tabId`: after the text `table.after` names, or at the end of the tab.
+   * The same tab selection rules as `replaceText()` apply. Returns the new table's position
+   * among the tab's tables, to name it in later calls. The table then reads as `getContent()`
+   * lays tables out, each paragraph of a cell's text as a `<p>` element.
+   *
+   * A new table holds at most 1,000 cells that have text, an empty cell counting as half of
+   * one; add further rows with `insertTableRows()`. A new table may read the same as another
+   * table of the tab; give one of the two text of its own before changing the rows or columns
+   * of either, or deleting either.
+   *
+   * Google Docs keeps a paragraph on each side of a table, so an empty paragraph is added with
+   * it: after the new table, or between the two when it follows another table. A table cannot be
+   * added between two items of one list (name the list's last item instead), after a paragraph
+   * that holds nothing but a positioned image, or after a table whose next paragraph holds one.
+   */
+  insertTable(table: NewDocTable, tabId?: string): Promise<number>;
+
+  /**
+   * Add rows to a table in tab `tabId`, with their text when `rows.cells` gives it. To add a
+   * row at the end of a table, leave `rows.at` out. New cells hold plain paragraphs and take
+   * the look of the cells of the row they go before, or of the last row when they are added at
+   * the end: cell shading, alignment, padding, borders, font, size and colour, and the row's
+   * height. They never take their bold, italic, strikethrough, links, list items or headings; a
+   * new cell holds default text where that row's cell in its column starts with a heading or a
+   * list item.
+   *
+   * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
+   * Rows can be added only where the row they copy crosses no merged cell, and not to a table
+   * that holds suggested changes to its rows, columns or cells. Where a cell of the row the new
+   * rows go before (or of the last row, for rows added at the end) holds one dropdown, person
+   * chip, date chip, rich link or placeholder and no text, Google Docs copies it into the new
+   * rows: a dropdown with its first choice, U+E907 for the others. Their cells in that column
+   * then take no text. Rows cannot be added beside a cell of chips and no text in another shape,
+   * such as a chip after a space: add those rows in Google Docs.
+   */
+  insertTableRows(rows: DocTableInsertion, tabId?: string): Promise<void>;
+
+  /**
+   * Add columns to a table in tab `tabId`: one, or `columns.count` of them, with their text
+   * when `columns.cells` gives it. `cells` goes row by row, so `[["Owner"], ["Ana"], ["Ben"]]`
+   * fills one new column of a table of three rows. To add a column at the end of a table, leave
+   * `columns.at` out. New cells hold plain paragraphs and take the look of the cells of the
+   * column they go before, or of the last column when they are added at the end, as for
+   * `insertTableRows()`, and its width.
+   *
+   * Columns can be added until the table has 20, and only to a table of at most 500 rows.
+   * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
+   * Columns can be added only where the column they copy crosses no merged cell, and not to a
+   * table that holds suggested changes to its rows, columns or cells.
+   */
+  insertTableColumns(columns: DocTableInsertion, tabId?: string): Promise<void>;
+
+  /**
+   * Delete rows of a table in tab `tabId`, with everything in them. To delete every row, delete
+   * the table. Rows that cross a merged cell cannot be deleted, nor rows of a table that holds
+   * suggested changes to its rows, columns or cells. Rows that hold a footnote
+   * cannot be deleted, nor can rows that hold items of a numbered list while a numbered list
+   * follows them in the tab.
+   */
+  deleteTableRows(rows: DocTableDeletion, tabId?: string): Promise<void>;
+
+  /**
+   * Delete columns of a table in tab `tabId`, with everything in them. To delete every column,
+   * delete the table. Columns that cross a merged cell cannot be deleted, nor columns of a table
+   * that holds suggested changes to its rows, columns or cells. Columns that hold a
+   * footnote cannot be deleted, nor can columns that hold items of a numbered list while a
+   * numbered list follows them in the tab.
+   */
+  deleteTableColumns(columns: DocTableDeletion, tabId?: string): Promise<void>;
+
+  /**
+   * Delete a table of tab `tabId`, with everything in it, leaving the paragraphs around it.
+   * `table` is its position among the tab's tables, counting from 0. A table cannot be deleted
+   * while it sits between two items of one list or holds a footnote, or while it holds items of
+   * a numbered list and a numbered list follows it in the tab.
+   */
+  deleteTable(table: number, tabId?: string): Promise<void>;
+
+  /**
+   * Set the look of a block of cells of a table in tab `tabId`: their shading, vertical
+   * alignment, padding and borders, which `getContent()` shows as `style` attributes. Google Docs
+   * keeps an edge that two cells share on both of them, so a border on the block's outer edge
+   * also changes the facing edge of the cells beside the block, as reads then show.
+   *
+   * Google Docs styles a merged cell as a whole, so the block must hold all of every merged cell
+   * it takes in any of, and a block that holds one cannot set `innerHorizontal` or
+   * `innerVertical`. Changes queued for the table before and after this one are kept to it
+   * whatever its look.
+   */
+  setTableCellStyle(
+    cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string,
+  ): Promise<void>;
+
+  /**
+   * Set the width of columns of a table in tab `tabId`, which `getContent()` shows in the
+   * table's `<colgroup>` line. The other columns keep theirs. Columns without a fixed width share
+   * what the fixed ones leave of the page's width, so a fixed width can make them narrower.
+   */
+  setTableColumnWidths(columns: DocTableColumnWidths, tabId?: string): Promise<void>;
+
+  /**
+   * Set the least height of rows of a table in tab `tabId`, which `getContent()` shows as
+   * `<tr style="height:…">`. Header rows the table pins stay pinned.
+   */
+  setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void>;
+
+  /**
+   * Merge a block of a table's cells in tab `tabId` into one, which `getContent()` then shows
+   * with `rowspan` and `colspan`, the cells it covers reading as empty cells. Google Docs joins
+   * the paragraphs of every cell into the top-left one, row by row, a cell that is one empty
+   * paragraph adding none, and the merged cell keeps the top-left cell's look; rows keep their
+   * heights. The block may hold merged cells whole, but not part of one. Only its top-left cell
+   * may start with a heading or a list item, and no cell of it may hold a table, a footnote, a
+   * smart chip, or an empty paragraph beside others. Rows and columns that cross a merged cell
+   * cannot be added beside or deleted.
+   */
+  mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void>;
+
+  /**
+   * Split a merged cell of a table in tab `tabId` back into its cells. Its text stays in the
+   * top-left one, and the others come back empty, each with the merged cell's look.
+   */
+  unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void>;
 }

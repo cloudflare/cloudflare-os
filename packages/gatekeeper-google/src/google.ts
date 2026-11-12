@@ -3,6 +3,7 @@ import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan, plainInline } from "@gadgets/gatekeeper-kit/action-description";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
@@ -15,15 +16,26 @@ import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
-  type GoogleDocReadSession, type GoogleDocTab,
+  type DocTableCell, type DocTableCells, type DocTableCellStyle,
+  type DocTableColumnWidths, type DocTableDeletion, type DocTableInsertion, type DocTableMerge,
+  type DocTableRowHeights,
+  type GoogleDocReadSession, type GoogleDocTab, type NewDocTable,
 } from "./docs-types";
 import {
   DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
 } from "./doc-comments";
 import {
   BLANK_DOC_TAB_ID, BlankGoogleDoc, GoogleDocsApi, type GoogleDocReader, type GoogleDocsDocument,
-  type GoogleDocsTab,
+  type GoogleDocsRequest, type GoogleDocsTab,
 } from "./docs-api";
+import {
+  applyTableChange, applyTextReplacement, namesTable, tableChangeRequests, TableReplayGate,
+  textReplacementRequests, type TableChange,
+} from "./docs-tables";
+import {
+  assertTableQueueRoom, checkTableCall, DOCUMENT_TABLES, prepareTableChange,
+  prepareTextReplacement, type PreparedTableChange, type PreparedTextReplacement, type TableCall,
+} from "./docs-table-actions";
 import { GoogleSheetsApi } from "./sheets-api";
 import { GoogleSlidesApi } from "./slides-api";
 import { GoogleApiError } from "./google-response";
@@ -42,9 +54,9 @@ import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
 import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import {
-  applyMarkdownEdit, assertMarkdownWriteComplexity, canonicalizeMarkdownForWrite,
-  canonicalizeMarkdownReplacement,
-  computeReplaceOperations, docTabToMarkdown, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
+  assertMarkdownWriteComplexity, canonicalizeMarkdownAppend, canonicalizeMarkdownForWrite,
+  docTabToMarkdown, dropInheritedFormatting, markdownToDocRequests, MARKDOWN_RENDERING_VERSION,
+  REPLAYABLE_TEXT_EDIT_VERSIONS,
   type DocTabSnapshot, type EditableMarkdown,
 } from "./markdown-converter";
 import {
@@ -1620,6 +1632,12 @@ type GoogleDocReplaceAction = GoogleDocActionBase & {
   type: "replaceText";
   oldMarkdown: string;
   newMarkdown: string;
+  /**
+   * Set when the replacement was queued as a change to the text of table cells, whose card
+   * shows cell HTML. Such a record applies only while its text is still in a table; any other
+   * applies as Markdown outside tables.
+   */
+  inTable?: true;
 }
 
 type GoogleDocAppendAction = GoogleDocActionBase & {
@@ -1627,14 +1645,24 @@ type GoogleDocAppendAction = GoogleDocActionBase & {
   markdown: string;
 }
 
-type GoogleDocAction = GoogleDocReplaceAction | GoogleDocAppendAction;
+/** A change to a tab's tables, stored as the engine replays and applies it. */
+type GoogleDocTableAction = GoogleDocActionBase & TableChange;
+
+type GoogleDocAction = GoogleDocReplaceAction | GoogleDocAppendAction | GoogleDocTableAction;
 
 const DOC_WRITE_RECEIPT_KEY = "docWriteReceipt";
 const DOC_METADATA_REVISION_KEY = "docMetadataRevision";
 /** The last document read, replayed for this long before its revision is rechecked. */
 const DOC_SNAPSHOT_TTL_MS = 10_000;
-/** The last document read. Pending actions overlay it, so it outlives none. */
+/**
+ * The last document read, stored once, as it was built from the document Google returned. A
+ * value read back from storage is written larger than it first was, so a snapshot that came out
+ * of storage is never put again: what moves is its mark, under `DOC_SNAPSHOT_CHECK_KEY`.
+ */
 const DOC_SNAPSHOT_KEY = "docSnapshot";
+const DOC_SNAPSHOT_CHECK_KEY = "docSnapshotCheck";
+/** The context a read's replay gives an edit it invalidates. */
+const REPLAY_CONTEXT = "Pending Google Doc edit could not be replayed against the current document";
 /** Name prefix of the named range that marks one Gadgets write. Permanent: retries match on it. */
 const WRITE_MARKER_PREFIX = "gadgets-write-";
 
@@ -1727,12 +1755,32 @@ function googleDocSnapshot(document: GoogleDocsDocument): GoogleDocSnapshot {
   };
 }
 
+/**
+ * When the stored snapshot was last found to match the document. `fetchedAt` is that
+ * snapshot's own, so a mark left by another snapshot is ignored.
+ */
+type GoogleDocSnapshotCheck = { fetchedAt: number; checkedAt: number };
+
+/** The moment a stored snapshot was last known current: its mark's, or else its own. */
+function googleDocSnapshotCurrentAt(snapshot: GoogleDocSnapshot, check: unknown): number {
+  if (check && typeof check === "object") {
+    let { fetchedAt, checkedAt } = check as Partial<GoogleDocSnapshotCheck>;
+    if (fetchedAt === snapshot.fetchedAt &&
+        typeof checkedAt === "number" && Number.isFinite(checkedAt)) {
+      return checkedAt;
+    }
+  }
+  return snapshot.fetchedAt;
+}
+
 /** Accept a cached snapshot only if it predates nothing this code depends on. */
 function isGoogleDocSnapshot(value: unknown): value is GoogleDocSnapshot {
   if (!value || typeof value !== "object") return false;
   let {formatVersion, title, tabs, revisionId, fetchedAt} = value as Partial<GoogleDocSnapshot>;
+  // A tab stored before its named styles were read cannot say what a write leaves inherited.
   return formatVersion === MARKDOWN_RENDERING_VERSION && typeof title === "string" &&
-      Array.isArray(tabs) && (revisionId === undefined || typeof revisionId === "string") &&
+      Array.isArray(tabs) && tabs.every(tab => tab?.namedFormatting !== undefined) &&
+      (revisionId === undefined || typeof revisionId === "string") &&
       typeof fetchedAt === "number" && Number.isFinite(fetchedAt);
 }
 
@@ -1752,6 +1800,9 @@ async function googleDocRevisionUnchanged(
       await docsApi.getRevisionId(documentId) === cached.revisionId;
 }
 
+/** The session methods that select a tab, as the messages about a tab name them. */
+type GoogleDocTabOperation = "getContent" | "replaceText" | "appendText" | TableCall["method"];
+
 /**
  * The tab an operation names, or a failure telling the agent how to name one.
  *
@@ -1761,7 +1812,7 @@ async function googleDocRevisionUnchanged(
 function resolveGoogleDocTab(
   snapshot: GoogleDocSnapshot,
   tabId: string | undefined,
-  operation: "getContent" | "replaceText" | "appendText",
+  operation: GoogleDocTabOperation,
 ): GoogleDocTabSnapshot {
   if (tabId === undefined) {
     if (snapshot.tabs.length !== 1) {
@@ -1842,6 +1893,7 @@ function googleDocSimulatedContent(tab: GoogleDocTabSnapshot): GoogleDocSimulate
   return {
     markdown: tab.markdown,
     protectedRanges: tab.sourceMap.protectedRanges,
+    tables: tab.sourceMap.tables,
     appendIndex: googleDocAppendIndex(tab),
   };
 }
@@ -1909,18 +1961,21 @@ function findUniqueMarkdown(
   return index;
 }
 
+/** A stored replacement as the engine takes it, found at `matchStart`. */
+function googleDocTextReplacement(action: GoogleDocReplaceAction, matchStart: number) {
+  let { oldMarkdown, newMarkdown, inTable } = action;
+  return { matchStart, oldMarkdown, newMarkdown, ...(inTable ? { inTable } : {}) };
+}
+
 function applyMarkdownReplacement(
   content: GoogleDocSimulatedContent,
   action: GoogleDocReplaceAction,
-  tabId: string,
+  tab: GoogleDocTabSnapshot,
 ): GoogleDocSimulatedContent {
-  let { oldMarkdown } = action;
-  let newMarkdown = canonicalizeMarkdownReplacement(oldMarkdown, action.newMarkdown);
-  let start = findUniqueMarkdown(content.markdown, oldMarkdown, "replaceText", tabId);
-  if (oldMarkdown === newMarkdown) return content;
+  let start = findUniqueMarkdown(content.markdown, action.oldMarkdown, "replaceText", tab.tabId);
   return {
     ...content,
-    ...applyMarkdownEdit(content, start, start + oldMarkdown.length, newMarkdown),
+    ...applyTextReplacement(content, googleDocTextReplacement(action, start), tab.tabId, tab),
   };
 }
 
@@ -1935,41 +1990,73 @@ function isBlankGoogleDocTab({ markdown, protectedRanges }: EditableMarkdown): b
   return (markdown === "" || markdown === "\n") && protectedRanges.length === 0;
 }
 
+/**
+ * The Markdown a tab reads as with `appendedMarkdown` appended. The tab's own text is kept byte
+ * for byte, so its table map and protected ranges go on naming the text they named.
+ */
 function appendMarkdownForSimulation(content: EditableMarkdown, appendedMarkdown: string): string {
-  let terminatedAppend = appendedMarkdown + "\n";
+  if (isBlankGoogleDocTab(content)) return appendedMarkdown + "\n";
+  return canonicalizeMarkdownAppend(content.markdown, appendedMarkdown);
+}
 
-  if (isBlankGoogleDocTab(content)) return terminatedAppend;
-  let { markdown } = content;
-  return canonicalizeMarkdownReplacement(
-    markdown, markdown + (markdown.endsWith("\n") ? "\n" : "\n\n") + terminatedAppend);
+/**
+ * Whether an edit previewed under `markdownVersion` still applies as previewed: one previewed
+ * under the current rendering, or a text edit previewed under an earlier rendering that reads
+ * the same outside tables.
+ */
+function isReplayableGoogleDocAction(action: GoogleDocAction): boolean {
+  let { markdownVersion } = action;
+  if (markdownVersion === MARKDOWN_RENDERING_VERSION) return true;
+  return (action.type === "replaceText" || action.type === "appendText") &&
+    markdownVersion !== undefined && REPLAYABLE_TEXT_EDIT_VERSIONS.includes(markdownVersion);
 }
 
 function assertGoogleDocActionReplayable(action: GoogleDocAction): void {
   if (action.invalidatedReason) throw new Error(action.invalidatedReason);
-  if (action.markdownVersion !== MARKDOWN_RENDERING_VERSION) {
+  if (!isReplayableGoogleDocAction(action)) {
     throw new Error(
       "Pending Google Doc edit was queued under an earlier Markdown format and may no longer " +
       "apply as previewed. Reject it and retry.");
   }
 }
 
+/**
+ * Replay one edit over its tab's simulated content. `tab` is the fresh tab the content came
+ * from: the table engine reads its block map while the content still reads as it does.
+ */
 function applyGoogleDocActionToContent(
   content: GoogleDocSimulatedContent,
   action: GoogleDocAction,
-  tabId: string,
+  tab: GoogleDocTabSnapshot,
 ): GoogleDocSimulatedContent {
   assertGoogleDocActionReplayable(action);
 
   switch (action.type) {
     case "replaceText":
-      return applyMarkdownReplacement(content, action, tabId);
-    case "appendText":
+      return applyMarkdownReplacement(content, action, tab);
+    case "appendText": {
       requireGoogleDocAppendIndex(content.appendIndex);
-      return {
+      let appended = {
         ...content,
         markdown: appendMarkdownForSimulation(
           content, canonicalizeMarkdownForWrite(action.markdown)),
       };
+      return tab.namedFormatting
+        ? { ...appended, ...dropInheritedFormatting(content, appended, tab.namedFormatting) }
+        : appended;
+    }
+    case "insertTable":
+    case "insertTableRows":
+    case "insertTableColumns":
+    case "deleteTableRows":
+    case "deleteTableColumns":
+    case "deleteTable":
+    case "setTableCellStyle":
+    case "setTableColumnWidths":
+    case "setTableRowHeights":
+    case "mergeTableCells":
+    case "unmergeTableCells":
+      return { ...content, ...applyTableChange(content, action, tab) };
     default:
       action satisfies never;
       throw new Error("unknown Google Doc action type");
@@ -2027,11 +2114,71 @@ export function googleDocActionTab(
   return resolveGoogleDocTab(snapshot, action.tabId, action.type);
 }
 
+/** The reason stored with an edit that a replay dropped. */
+function googleDocDroppedReason(context: string, error: unknown): string {
+  return `${context}: ${errorMessage(error)} This edit was dropped from the document. ` +
+    `Reject it and retry if it is still needed.`;
+}
+
+/**
+ * The pending edits a read of `snapshot` replays over it.
+ *
+ * An edit whose marker is already in its tab committed even though its response never arrived,
+ * so the snapshot contains it. Replaying it would show that content twice; the action stays
+ * pending, and applyAction() settles it from the same marker.
+ */
+function replayableGoogleDocActions(
+  snapshot: GoogleDocSnapshot,
+  pending: GoogleDocPendingAction[],
+): GoogleDocPendingAction[] {
+  return pending.filter(({action}) => {
+    let {writeId} = action;
+    return writeId === undefined || !googleDocActionTabs(snapshot.tabs, action.tabId)
+        .some(candidate => candidate.committedWriteIds.includes(writeId));
+  });
+}
+
+/**
+ * The pending edits stored after `actionId`, as storage holds them when this is called.
+ *
+ * A write can be stored while an approval awaits Google, so whoever acts on "the edits behind
+ * this one" lists them where it uses them, with nothing awaited in between.
+ */
+function googleDocActionsBehind(
+  pendingActions: PendingActionStore<GoogleDocAction>,
+  actionId: number,
+): GoogleDocPendingAction[] {
+  return pendingActions.list().filter(({id}) => id > actionId);
+}
+
+/**
+ * Invalidate the edits of `later` that `gate` refuses: those that name a table of a tab whose
+ * tables may have changed from how they found them. The caller prepares the gate.
+ */
+function invalidateTableChangesBehind(
+  pendingActions: PendingActionStore<GoogleDocAction>,
+  gate: TableReplayGate,
+  later: GoogleDocPendingAction[],
+  context: string,
+): void {
+  for (let record of later) {
+    let { tabId, invalidatedReason } = record.action;
+    if (invalidatedReason || tabId === undefined) continue;
+    try {
+      gate.admit(tabId, record.action);
+    } catch (error) {
+      invalidateGoogleDocAction(pendingActions, record, googleDocDroppedReason(context, error));
+    }
+  }
+}
+
 /**
  * Replay the pending queue over `snapshot`, invalidating any edit that no longer applies.
  *
  * Actions are replayed in global approval order, but each one only touches its own tab, so an
- * edit to one tab can neither shift nor be shifted by an edit to another.
+ * edit to one tab can neither shift nor be shifted by an edit to another. Once a change to a
+ * tab's tables fails, the later changes that name a table of that tab by how it read are
+ * invalidated with it: they recorded their tables with the failed change applied.
  */
 function invalidateUnreplayableGoogleDocActions(
   pendingActions: PendingActionStore<GoogleDocAction>,
@@ -2042,22 +2189,21 @@ function invalidateUnreplayableGoogleDocActions(
   let contentByTabId = new Map(
     snapshot.tabs.map(tab => [tab.tabId, googleDocSimulatedContent(tab)]),
   );
+  let gate = new TableReplayGate();
   for (let record of pending) {
     if (record.action.invalidatedReason) continue;
 
     try {
-      let { tabId } = googleDocActionTab(snapshot, record.action);
+      let tab = googleDocActionTab(snapshot, record.action);
+      gate.admit(tab.tabId, record.action);
       contentByTabId.set(
-        tabId,
-        applyGoogleDocActionToContent(contentByTabId.get(tabId)!, record.action, tabId),
+        tab.tabId,
+        applyGoogleDocActionToContent(
+          contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab), record.action, tab),
       );
     } catch (error) {
-      invalidateGoogleDocAction(
-        pendingActions,
-        record,
-        `${context}: ${errorMessage(error)} This edit was dropped from the document. ` +
-        `Reject it and retry if it is still needed.`,
-      );
+      gate.failed(record.action.tabId, record.action);
+      invalidateGoogleDocAction(pendingActions, record, googleDocDroppedReason(context, error));
     }
   }
 
@@ -2068,7 +2214,7 @@ function invalidateUnreplayableGoogleDocActions(
 function materializeGoogleDocAction(
   snapshot: GoogleDocSnapshot,
   action: GoogleDocAction,
-): { tab: GoogleDocTabSnapshot; requests: any[] } {
+): { tab: GoogleDocTabSnapshot; requests: GoogleDocsRequest[] } {
   assertGoogleDocActionReplayable(action);
   let tab = googleDocActionTab(snapshot, action);
 
@@ -2076,24 +2222,32 @@ function materializeGoogleDocAction(
     case "replaceText": {
       let matchStart = findUniqueMarkdown(
           tab.markdown, action.oldMarkdown, "applyAction(replaceText)", tab.tabId);
-      let { requests } = computeReplaceOperations(
-          tab.sourceMap,
-          tab.markdown,
-          matchStart,
-          matchStart + action.oldMarkdown.length,
-          canonicalizeMarkdownReplacement(action.oldMarkdown, action.newMarkdown),
-          tab.tabId);
-      return { tab, requests };
+      return {
+        tab, requests: textReplacementRequests(tab, googleDocTextReplacement(action, matchStart)),
+      };
     }
 
     case "appendText": {
       let appendIndex = requireGoogleDocAppendIndex(googleDocAppendIndex(tab));
-      let requests = isBlankGoogleDocTab(googleDocSimulatedContent(tab))
+      let requests: GoogleDocsRequest[] = isBlankGoogleDocTab(googleDocSimulatedContent(tab))
         ? markdownToDocRequests(action.markdown, appendIndex, tab.tabId, { resetParagraphs: true })
         : markdownToDocRequests("\n" + action.markdown, appendIndex, tab.tabId,
           { resetParagraphs: true, preserveLeadingParagraph: true });
       return { tab, requests };
     }
+
+    case "insertTable":
+    case "insertTableRows":
+    case "insertTableColumns":
+    case "deleteTableRows":
+    case "deleteTableColumns":
+    case "deleteTable":
+    case "setTableCellStyle":
+    case "setTableColumnWidths":
+    case "setTableRowHeights":
+    case "mergeTableCells":
+    case "unmergeTableCells":
+      return { tab, requests: tableChangeRequests(tab, action) };
 
     default:
       action satisfies never;
@@ -2122,7 +2276,8 @@ function adoptBlankDocument(kv: DurableObjectStorage["kv"], tabId: string): void
   kv.delete(CREATED_DOC_TAB_KEY);
 }
 
-// All Google Doc edits (replaceText, appendText, ...) are grouped under a single action kind
+// The text edits (replaceText, in table cells too, and appendText) are grouped under one action
+// kind. Changes to a table's structure have kinds of their own.
 const EDIT_DOCUMENT_ACTION: ActionKind = {
   tag: "editDocument",
   label: "Document edits",
@@ -2133,6 +2288,12 @@ export class GoogleDocGatekeeperImpl
     extends DurableObject<Env, GoogleDocGatekeeperImplProps>
     implements Gatekeeper<GoogleDocSession> {
   #simulationCache: GoogleDocSimulationCacheHolder = { writes: 0 };
+
+  // The one queue for the document's writes, shared by every session: each write runs whole as
+  // its turn, so calls take effect in the order they were made, awaited or not. Applying and
+  // rejecting take no turn, and neither does verifyObserverAccess(): a turn can be waiting on the
+  // Workshop, and the Workshop on any of those.
+  #writes = new SerialTaskQueue();
 
   // Serialize applying and rejecting actions, and creating the document, against each other. Every
   // network await below leaves the Durable Object's input gate open, and one action id can arrive
@@ -2274,7 +2435,7 @@ export class GoogleDocGatekeeperImpl
   }
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return [EDIT_DOCUMENT_ACTION, ...this.#comments.autoApprovableKinds()];
+    return [EDIT_DOCUMENT_ACTION, DOCUMENT_TABLES, ...this.#comments.autoApprovableKinds()];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
@@ -2298,6 +2459,7 @@ export class GoogleDocGatekeeperImpl
         pendingActions,
         this.ctx.storage,
         this.#simulationCache,
+        this.#writes,
         comments);
   }
 
@@ -2399,7 +2561,7 @@ export class GoogleDocGatekeeperImpl
     }
     let [writeMarkerId] = markerIds;
     if (!writeMarkerId) {
-      let materialized: { tab: GoogleDocTabSnapshot; requests: any[] };
+      let materialized: { tab: GoogleDocTabSnapshot; requests: GoogleDocsRequest[] };
       try {
         materialized = materializeGoogleDocAction(snapshot, action);
       } catch (error) {
@@ -2413,6 +2575,13 @@ export class GoogleDocGatekeeperImpl
             pendingActions,
             pending[pendingIndex],
             `Pending Google Doc edit could not be applied: ${errorMessage(error)}`);
+        // This edit was the first one pending, so no replay would ever see it fail: the table
+        // changes recorded behind it are dropped here, among the edits stored by this point.
+        let gate = new TableReplayGate();
+        gate.failed(action.tabId, action);
+        invalidateTableChangesBehind(
+            pendingActions, gate, googleDocActionsBehind(pendingActions, actionId),
+            `Pending Google Doc edit could not be applied after edit ${actionId} failed`);
         this.#simulationCache.current = undefined;
         await this.ctx.storage.put(DOC_SNAPSHOT_KEY, snapshot);
         throw error;
@@ -2450,9 +2619,12 @@ export class GoogleDocGatekeeperImpl
 
     // The handoff dropped the snapshot this edit made stale. Only edits queued behind it need the
     // new revision now, to be replayed over it; otherwise the next read fetches it, and an approval
-    // that nobody reads after costs no full document read.
-    let later = pending.slice(pendingIndex + 1).filter(record => !record.action.invalidatedReason);
-    if (writeMarkerId && later.length === 0) return;
+    // that nobody reads after costs no full document read. The edits behind this one are listed
+    // where they are used: a write can be stored while this approval awaits Google.
+    if (writeMarkerId && !googleDocActionsBehind(pendingActions, actionId)
+        .some(record => !record.action.invalidatedReason)) {
+      return;
+    }
     try {
       let refreshedSnapshot = snapshot;
       if (writeMarkerId) {
@@ -2462,7 +2634,7 @@ export class GoogleDocGatekeeperImpl
       invalidateUnreplayableGoogleDocActions(
           pendingActions,
           refreshedSnapshot,
-          later,
+          googleDocActionsBehind(pendingActions, actionId),
           `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
     } catch (error) {
       logger.warn("failed to refresh Google Doc simulation after applying action", {
@@ -2472,22 +2644,76 @@ export class GoogleDocGatekeeperImpl
     }
   }
 
+  /**
+   * Removes a rejected edit and settles what its rejection means for the edits behind it.
+   *
+   * A rejected edit leaves no record for a later replay to notice, and an edit that names a table
+   * by how the table read recorded that with every earlier edit applied. So while such an edit
+   * of the rejected one's tab is still active, the queue is replayed here, over the snapshot
+   * held and never a newer one (rejecting has to work while Google is unreachable): once with
+   * the rejected edit still queued, which settles whatever that snapshot holds that no replay
+   * has seen, and once without it, which settles the rejection alone. With no snapshot to replay
+   * over, those edits are dropped instead.
+   *
+   * It is one storage transaction: the overseer marks the action rejected only once this
+   * returns, so a failure has to leave the record where the overseer still has it.
+   */
   async #rejectAction(actionId: number): Promise<void | {restart?: boolean}> {
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
-    let pending = pendingActions.list();
-    let index = pending.findIndex(({id}) => id === actionId);
-    if (index === -1) {
-      throw new Error(`Unknown pending Google Doc action: ${actionId}`);
-    }
+    let { kv } = this.ctx.storage;
+    try {
+      return this.ctx.storage.transactionSync(() => {
+        let pending = pendingActions.list();
+        let index = pending.findIndex(({id}) => id === actionId);
+        if (index === -1) {
+          throw new Error(`Unknown pending Google Doc action: ${actionId}`);
+        }
+        let rejected = pending[index].action;
+        let wasActive = !rejected.invalidatedReason;
 
-    let wasActive = !pending[index].action.invalidatedReason;
+        let held = kv.get<unknown>(DOC_SNAPSHOT_KEY);
+        let snapshot = isGoogleDocSnapshot(held) ? held : undefined;
+        // Whether a later change of the rejected one's tab names a table by how the table read.
+        let waiting = wasActive && googleDocActionsBehind(pendingActions, actionId).some(
+          ({action}) => !action.invalidatedReason && action.tabId === rejected.tabId &&
+            namesTable(action));
+        if (waiting && snapshot) {
+          // What the held read brought is settled first, with the rejected change still queued.
+          invalidateUnreplayableGoogleDocActions(
+              pendingActions, snapshot,
+              replayableGoogleDocActions(snapshot, pendingActions.list()), REPLAY_CONTEXT);
+        }
+        pendingActions.remove(actionId);
+        if (waiting) {
+          let context =
+            `Pending Google Doc edits could not be replayed after edit ${actionId} was rejected`;
+          if (snapshot) {
+            invalidateUnreplayableGoogleDocActions(
+                pendingActions, snapshot,
+                replayableGoogleDocActions(snapshot, pendingActions.list()), context);
+          } else {
+            let gate = new TableReplayGate();
+            gate.close(rejected.tabId);
+            invalidateTableChangesBehind(
+                pendingActions, gate, googleDocActionsBehind(pendingActions, actionId), context);
+          }
+        }
+        if (snapshot) {
+          // Kept for the next rejection to replay over, and due for a revision check before a
+          // read uses it. Only the mark is written: the snapshot came out of storage.
+          kv.put<GoogleDocSnapshotCheck>(
+            DOC_SNAPSHOT_CHECK_KEY, { fetchedAt: snapshot.fetchedAt, checkedAt: 0 });
+        } else {
+          kv.delete(DOC_SNAPSHOT_KEY);
+        }
 
-    pendingActions.remove(actionId);
-    this.#simulationCache.current = undefined;
-    await this.ctx.storage.delete(DOC_SNAPSHOT_KEY);
-
-    if (wasActive && index < pending.length - 1) {
-      return {restart: true};
+        if (wasActive && index < pending.length - 1) {
+          return {restart: true};
+        }
+      });
+    } finally {
+      // Dropping the cached replay is safe whether or not the rejection was stored.
+      this.#simulationCache.current = undefined;
     }
   }
 
@@ -2531,6 +2757,12 @@ export class GoogleDocGatekeeperImpl
   }
 }
 
+/** One tab's simulated content, with the snapshot and the fresh tab it was replayed over. */
+type GoogleDocSelectedContent = GoogleDocSimulatedContent & {
+  snapshot: GoogleDocSnapshot,
+  tab: GoogleDocTabSnapshot,
+};
+
 @validateRpc()
 class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #docsApi: GoogleDocReader;
@@ -2540,6 +2772,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #pendingActions: PendingActionStore<GoogleDocAction>;
   #storage: DurableObjectStorage;
   #simulationCache: GoogleDocSimulationCacheHolder;
+  /** The document's write queue, shared with every other session of the gatekeeper. */
+  #writes: SerialTaskQueue;
   /** What every read reports: the document, or nothing for one not created yet. */
   #subresources: string[];
   #comments: DocCommentSession;
@@ -2552,6 +2786,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     pendingActions: PendingActionStore<GoogleDocAction>,
     storage: DurableObjectStorage,
     simulationCache: GoogleDocSimulationCacheHolder,
+    writes: SerialTaskQueue,
     comments: DocCommentQueue,
   ) {
     super();
@@ -2562,6 +2797,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     this.#pendingActions = pendingActions;
     this.#storage = storage;
     this.#simulationCache = simulationCache;
+    this.#writes = writes;
     this.#subresources = documentId === UNCREATED_FILE_ID
       ? []
       : [fileSubresourceId({kind: "document", fileId: documentId})];
@@ -2605,18 +2841,33 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     });
   }
 
+  /**
+   * Resolves once the writes called before this have had their turn, so that a read sent behind
+   * them shows them. Never awaited from inside a turn, which would wait for itself.
+   */
+  #afterWrites(): Promise<void> {
+    return this.#writes.run(() => {});
+  }
+
   async #getSnapshot(): Promise<GoogleDocSnapshot> {
     for (;;) {
       let writes = this.#simulationCache.writes;
       // A snapshot written before tabs existed has no tab list and is simply replaced.
       let cached = await this.#storage.get<unknown>(DOC_SNAPSHOT_KEY);
-      if (isGoogleDocSnapshot(cached) && Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) {
-        return cached;
+      if (isGoogleDocSnapshot(cached)) {
+        let currentAt = googleDocSnapshotCurrentAt(
+          cached, this.#storage.kv.get<unknown>(DOC_SNAPSHOT_CHECK_KEY));
+        if (Date.now() - currentAt < DOC_SNAPSHOT_TTL_MS) return cached;
+        if (await googleDocRevisionUnchanged(this.#docsApi, this.#documentId, cached)) {
+          // What Google answered before a write landed says nothing of the document since.
+          if (writes !== this.#simulationCache.writes) continue;
+          // Only the mark moves: a snapshot read from storage is never stored again.
+          this.#storage.kv.put<GoogleDocSnapshotCheck>(
+            DOC_SNAPSHOT_CHECK_KEY, { fetchedAt: cached.fetchedAt, checkedAt: Date.now() });
+          return cached;
+        }
       }
-      let snapshot = isGoogleDocSnapshot(cached) &&
-          await googleDocRevisionUnchanged(this.#docsApi, this.#documentId, cached)
-        ? { ...cached, fetchedAt: Date.now() }
-        : googleDocSnapshot(await this.#docsApi.getDocument(this.#documentId));
+      let snapshot = googleDocSnapshot(await this.#docsApi.getDocument(this.#documentId));
       // What Google returned before a write landed is stale: the edit is no longer pending to be
       // replayed over it, so it would read as missing, and edits queued after it could not replay.
       if (writes !== this.#simulationCache.writes) continue;
@@ -2633,11 +2884,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
    */
   async #getSimulatedContent(
     tabId: string | undefined,
-    operation: "getContent" | "replaceText" | "appendText",
-  ): Promise<GoogleDocSimulatedContent & {
-    snapshot: GoogleDocSnapshot,
-    tab: GoogleDocTabSnapshot,
-  }> {
+    operation: GoogleDocTabOperation,
+  ): Promise<GoogleDocSelectedContent> {
     let snapshot = await this.#getSnapshot();
     let tab = resolveGoogleDocTab(snapshot, tabId, operation);
     let pending = this.#pendingActions.list();
@@ -2651,20 +2899,11 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       return {snapshot, tab, ...content};
     }
 
-    // An edit whose marker is already in its tab committed even though its response never
-    // arrived, so this snapshot contains it. Replaying it would show that content twice; the
-    // action stays pending, and applyAction() settles it from the same marker.
-    let replayable = pending.filter(({action}) => {
-      let {writeId} = action;
-      return writeId === undefined || !googleDocActionTabs(snapshot.tabs, action.tabId)
-          .some(candidate => candidate.committedWriteIds.includes(writeId));
-    });
-
     let contentByTabId = invalidateUnreplayableGoogleDocActions(
         this.#pendingActions,
         snapshot,
-        replayable,
-        "Pending Google Doc edit could not be replayed against the current document");
+        replayableGoogleDocActions(snapshot, pending),
+        REPLAY_CONTEXT);
     this.#simulationCache.current = {
       baseRevisionId: snapshot.revisionId,
       pendingFingerprint: googleDocPendingFingerprint(this.#pendingActions.list()),
@@ -2684,6 +2923,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
    * `getContent()` already shows them.
    */
   async getMetadata(): Promise<DocMetadata> {
+    await this.#afterWrites();
     let metadata = await this.#docsApi.getDocumentMetadata(this.#documentId);
     let revisedAt = metadata.revisionId === undefined
         ? await this.#modifiedWithoutRevision()
@@ -2766,6 +3006,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   }
 
   async getContent(tabId?: string): Promise<string> {
+    await this.#afterWrites();
     let selected;
     try {
       selected = await this.#getSimulatedContent(tabId, "getContent");
@@ -2791,21 +3032,24 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       return;
     }
     assertGoogleDocActionMarkdownSize(oldMarkdown, newMarkdown);
+    return this.#writes.run(() => this.#replaceText(oldMarkdown, newMarkdown, tabId));
+  }
 
+  /**
+   * A replacement's turn in the write queue. Between the read its checks run against and the
+   * call to submitAction() nothing is awaited, so no approval or rejection lands between them.
+   */
+  async #replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {
     let selected;
-    let renderedNewMarkdown: string;
+    let prepared: PreparedTextReplacement;
     try {
       selected = await this.#getSimulatedContent(tabId, "replaceText");
       let start = findUniqueMarkdown(
         selected.markdown, oldMarkdown, "replaceText", selected.tab.tabId,
       );
-      renderedNewMarkdown = canonicalizeMarkdownReplacement(oldMarkdown, newMarkdown);
-      applyMarkdownEdit(selected, start, start + oldMarkdown.length, renderedNewMarkdown);
-      // With no earlier edit to this tab, approval will build exactly these requests.
-      if (selected.markdown === selected.tab.markdown) {
-        computeReplaceOperations(selected.tab.sourceMap, selected.markdown, start,
-          start + oldMarkdown.length, renderedNewMarkdown, selected.tab.tabId);
-      }
+      // Which path the replacement takes, in a table or outside one, and what its card shows.
+      prepared = prepareTextReplacement(
+        selected, selected.tab, start, oldMarkdown, newMarkdown, googleDocTabLabel(selected.tab));
     } catch (error) {
       // The error says whether that tab, or that text, exists.
       await this.#authorizeRead({
@@ -2825,14 +3069,15 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       writeId: crypto.randomUUID(),
       oldMarkdown,
       newMarkdown,
+      ...(prepared.inTable ? { inTable: true } : {}),
     };
 
-    let description = buildDescription(`Replace text in tab ${googleDocTabLabel(tab)}.`)
-      .verbatim("Old", oldMarkdown, "markdown");
-    if (newMarkdown !== renderedNewMarkdown) {
-      description.verbatim("Requested New", newMarkdown, "markdown");
+    let { shown, syntax } = prepared;
+    let description = buildDescription(prepared.prose).verbatim("Old", shown.old, syntax);
+    if (shown.requested !== shown.rendered) {
+      description.verbatim("Requested New", shown.requested, syntax);
     }
-    description.verbatim("New", renderedNewMarkdown, "markdown");
+    description.verbatim("New", shown.rendered, syntax);
     let actionId = this.#pendingActions.submit(action);
     this.#simulationCache.current = undefined;
 
@@ -2841,7 +3086,7 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
         title: "Edit Google Doc",
         ...description.finish(),
         implementsRevert: false,
-        // Group all document edits under one tag
+        // The text edits share one tag, in a table cell or outside one
         actionKind: EDIT_DOCUMENT_ACTION,
         autoApprovable: true,
       });
@@ -2854,6 +3099,11 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
   async appendText(markdown: string, tabId?: string): Promise<void> {
     assertGoogleDocActionMarkdownSize(markdown);
+    return this.#writes.run(() => this.#appendText(markdown, tabId));
+  }
+
+  /** An append's turn in the write queue, under the rule `#replaceText` keeps. */
+  async #appendText(markdown: string, tabId?: string): Promise<void> {
     let selected;
     try {
       selected = await this.#getSimulatedContent(tabId, "appendText");
@@ -2905,6 +3155,141 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       this.#simulationCache.current = undefined;
       throw error;
     }
+  }
+
+  async insertTable(table: NewDocTable, tabId?: string): Promise<number> {
+    let prepared = await this.#submitTableChange({ method: "insertTable", table }, tabId);
+    // The action layer reports the position of every table it prepares: this holds it to that.
+    if (prepared.table === undefined) throw new Error("insertTable: no position was reported.");
+    return prepared.table;
+  }
+
+  async insertTableRows(rows: DocTableInsertion, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "insertTableRows", lines: rows }, tabId);
+  }
+
+  async insertTableColumns(columns: DocTableInsertion, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "insertTableColumns", lines: columns }, tabId);
+  }
+
+  async deleteTableRows(rows: DocTableDeletion, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "deleteTableRows", lines: rows }, tabId);
+  }
+
+  async deleteTableColumns(columns: DocTableDeletion, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "deleteTableColumns", lines: columns }, tabId);
+  }
+
+  async deleteTable(table: number, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "deleteTable", table }, tabId);
+  }
+
+  async setTableCellStyle(
+    cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string,
+  ): Promise<void> {
+    await this.#submitTableChange({ method: "setTableCellStyle", cells }, tabId);
+  }
+
+  async setTableColumnWidths(columns: DocTableColumnWidths, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "setTableColumnWidths", columns }, tabId);
+  }
+
+  async setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "setTableRowHeights", rows }, tabId);
+  }
+
+  async mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "mergeTableCells", cells }, tabId);
+  }
+
+  async unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void> {
+    await this.#submitTableChange({ method: "unmergeTableCells", cell }, tabId);
+  }
+
+  /**
+   * Check a table call against the tab as it reads with every pending edit, and prepare the
+   * change to queue. A refusal says something about the tab, so it authorizes a read first.
+   *
+   * The read of the tab is the last thing awaited: a caller that stores what this returns
+   * without awaiting anything else stores it against the content it was checked on.
+   */
+  async #checkTableChange(
+    call: TableCall, tabId: string | undefined,
+  ): Promise<{ selected: GoogleDocSelectedContent; prepared: PreparedTableChange }> {
+    try {
+      let selected = await this.#getSimulatedContent(tabId, call.method);
+      let prepared = prepareTableChange(
+        selected, call, selected.tab, googleDocTabLabel(selected.tab));
+      assertTableQueueRoom(
+        this.#pendingActions.list().map(({action}) => action), prepared.change);
+      // With no earlier edit to this tab, approval will build exactly these requests.
+      if (selected.markdown === selected.tab.markdown) {
+        tableChangeRequests(selected.tab, prepared.change);
+      }
+      return { selected, prepared };
+    } catch (error) {
+      // The error says whether that tab, or that table, exists and what it holds.
+      await this.#authorizeRead({
+        title: "Read Google Doc content",
+        description: "Read the content of one tab of the document.",
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Queue one table change: check the call's arguments, then, as the call's turn in the write
+   * queue, check it against the tab, store it and submit it.
+   *
+   * `insertTable()` hands the new table's position back, which is read from the document, so
+   * that read is authorized before anything is stored: the authorization is a round trip, and a
+   * record left stored across one would be orphaned if this object were reset meanwhile. The tab
+   * is then read and checked again, since an approval or a rejection takes no turn and can land
+   * during the wait; the position returned is the one found by the read the store follows.
+   */
+  async #submitTableChange(
+    call: TableCall, tabId: string | undefined,
+  ): Promise<PreparedTableChange> {
+    // Refused on its arguments alone, a call reads nothing, authorizes nothing and takes no turn.
+    checkTableCall(call);
+    return this.#writes.run(async () => {
+      if (call.method === "insertTable") {
+        let { selected: { tab } } = await this.#checkTableChange(call, tabId);
+        await this.#authorizeRead({
+          title: "Read Google Doc content",
+          description:
+            `Read the position of a new table among the tables of tab ${googleDocTabLabel(tab)}.`,
+        });
+      }
+
+      // From this read to submitAction() nothing is awaited but the checks' own return.
+      let { selected, prepared } = await this.#checkTableChange(call, tabId);
+      let action: GoogleDocAction = {
+        ...prepared.change,
+        tabId: selected.tab.tabId,
+        submittedAt: Date.now(),
+        markdownVersion: MARKDOWN_RENDERING_VERSION,
+        baseRevisionId: selected.snapshot.revisionId,
+        writeId: crypto.randomUUID(),
+      };
+      let actionId = this.#pendingActions.submit(action);
+      this.#simulationCache.current = undefined;
+
+      try {
+        await this.#approvalQueue.submitAction(actionId, {
+          title: prepared.title,
+          ...prepared.description,
+          implementsRevert: false,
+          actionKind: prepared.actionKind,
+          autoApprovable: prepared.autoApprovable,
+        });
+      } catch (error) {
+        this.#pendingActions.remove(actionId);
+        this.#simulationCache.current = undefined;
+        throw error;
+      }
+      return prepared;
+    });
   }
 }
 

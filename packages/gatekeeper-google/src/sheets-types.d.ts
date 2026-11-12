@@ -87,6 +87,30 @@ export type SheetChange =
       /** What to set or reset. */
       format: SheetFormatChange;
     }
+  /**
+   * Merge a range's cells into one, or each of its rows or columns into one, as `readFormats()`
+   * lists merges. Each merged cell shows the value of its top-left cell, and Google clears the
+   * others and gives them its formatting, which unmerging does not undo. A merged cell is written
+   * through its top-left cell: a value written into another cell it covers is refused. The range may
+   * hold whole merges, which the new ones replace, but not part of one, nor cross the line between a
+   * sheet's frozen rows or columns and the rest.
+   */
+  | {
+      op: "mergeCells";
+      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
+      range: string;
+      /** `ALL`, the default, merges the whole range; `ROWS` each of its rows; `COLUMNS` each column. */
+      merge?: "ALL" | "ROWS" | "COLUMNS";
+    }
+  /**
+   * Unmerge every merged cell within a range, which keeps its value in its top-left cell. The range
+   * may not hold part of a merged cell.
+   */
+  | {
+      op: "unmergeCells";
+      /** A bounded A1 range that names its sheet, such as `'Sales 2026'!A1:C3`. */
+      range: string;
+    }
   /** Add an empty sheet. */
   | {
       op: "addSheet";
@@ -171,6 +195,44 @@ export type SheetChange =
       at: string;
       /** How many columns, 1 by default. */
       count?: number;
+    }
+  /** Set the height of rows, as `readFormats()` reads it. */
+  | {
+      op: "resizeRows";
+      /** The sheet the rows are on. */
+      sheet: string;
+      /** The 1-based first row resized. */
+      at: number;
+      /** How many rows: 1 to 10,000, 1 by default. */
+      count?: number;
+      /** The height in pixels: a whole number from 1 to 10,000. Google's default is 21. */
+      height: number;
+    }
+  /** Set the width of columns, as `readFormats()` reads it. */
+  | {
+      op: "resizeColumns";
+      /** The sheet the columns are on. */
+      sheet: string;
+      /** The letters of the first column resized, such as `"C"`. */
+      at: string;
+      /** How many columns: 1 to 10,000, 1 by default. */
+      count?: number;
+      /** The width in pixels: a whole number from 1 to 10,000. Google's default is 100. */
+      width: number;
+    }
+  /**
+   * Freeze a sheet's leading rows or columns, so they stay in view as it scrolls, as
+   * `getSpreadsheet()` lists them. A count left out is kept, and 0 unfreezes. A sheet keeps at least
+   * one row and one column unfrozen, and the frozen lines may not end inside a merge.
+   */
+  | {
+      op: "freeze";
+      /** The sheet frozen. */
+      sheet: string;
+      /** How many leading rows to freeze. */
+      rows?: number;
+      /** How many leading columns to freeze. */
+      columns?: number;
     };
 
 /**
@@ -192,11 +254,11 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * columns, in ranges too, are numbered as earlier changes that insert or delete some leave them:
    * to delete rows 3 and 7, delete row 7 first (or delete row 3, then row 6).
    *
-   * The user may let a batch apply without asking unless it deletes a sheet, rows or columns, or
-   * has a formula calling a function other than common built-ins that compute only from the
-   * spreadsheet (arithmetic, logic, statistics, text, dates, lookups and arrays; not `HYPERLINK`,
-   * `LET`, `LAMBDA`, nor any of the spreadsheet's named functions), or naming anything but cells,
-   * called functions, `TRUE` and `FALSE`, such as a named range; such a batch waits for approval.
+   * The user may let a batch apply without asking unless it has a formula calling a function other
+   * than common built-ins that compute only from the spreadsheet (arithmetic, logic, statistics,
+   * text, dates, lookups and arrays; not `HYPERLINK`, `LET`, `LAMBDA`, nor any of the
+   * spreadsheet's named functions), or naming anything but cells, called functions, `TRUE` and
+   * `FALSE`, such as a named range; such a batch waits for approval.
    * Formulas calling `IMPORTRANGE`, which reads another spreadsheet, or `IMPORTDATA`, `IMPORTHTML`,
    * `IMPORTXML`, `IMPORTFEED` or `IMAGE`, which make Google fetch a URL, are refused.
    *
@@ -205,7 +267,8 @@ export interface GoogleSpreadsheetSession extends GoogleSpreadsheetReadSession {
    * cells that are already there. The batch as queued, values included, must also fit in 100 KiB,
    * about 50,000 characters of text in all. Changes writing or formatting outside a sheet's grid,
    * or in a range the connected account may not edit, are refused, queuing nothing, as is any
-   * change to the rows, columns or tab of a sheet holding a range the account may not edit. A batch
+   * change to the rows, columns or tab of a sheet holding a range the account may not edit, but
+   * for resizing rows or columns outside that range and freezing lines. A batch
    * may also be refused while many changes are queued, and a read or a batch while changes to rows,
    * columns or sheets are; approve or reject them first.
    *

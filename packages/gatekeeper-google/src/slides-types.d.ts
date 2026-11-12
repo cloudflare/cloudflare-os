@@ -270,10 +270,9 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
    * takes all 12 at once, so the others are sent as the master has them when the batch is
    * applied. Which layout a slide is made from cannot be changed.
    *
-   * The user may let a batch apply without asking unless it deletes an element or a table's rows
-   * or columns, or adds an image, replaces one, or sets a picture background, which Google
-   * downloads from the URL. Such a batch always waits for approval, so queue changes that need not
-   * apply together as separate batches.
+   * The user may let a batch apply without asking unless it adds an image, replaces one, or sets
+   * a picture background, which Google downloads from the URL. Such a batch always waits for
+   * approval, so queue changes that need not apply together as separate batches.
    *
    * Reads show the changes as if applied, except what only Google can work out: a new element
    * reads with just what the change sets until it is applied, and an image's fitted size, the
@@ -294,7 +293,7 @@ export interface GooglePresentationSession extends GooglePresentationReadSession
   /**
    * Queue deleting a slide. Deleting the last slide of any master but the presentation's first
    * removes that master's layouts from `PresentationInfo.layouts`, as Google deletes them with it.
-   * This always waits for approval.
+   * The user may let this apply without asking.
    */
   deleteSlide(slideId: string): Promise<void>;
 

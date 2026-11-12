@@ -5,11 +5,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
+import { docTabToMarkdown } from "../src/markdown-converter";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
   GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
   stripTypeModulePrefix,
 } from "../src/type-bundle";
+import { buildTab } from "./doc-fixture";
 
 const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), "../src");
 
@@ -86,6 +88,117 @@ function topLevelNames(sourceText: string): string[] {
 function duplicates(names: string[]): string[] {
   return names.filter((name, i) => names.indexOf(name) !== i);
 }
+
+/** The names of the table types a directly bound Doc's write session declares. */
+const DOC_TABLE_TYPE_NAMES = [
+  "NewDocTable", "DocTableInsertion", "DocTableDeletion", "DocTableCells", "DocTableBorder",
+  "DocTableCellStyle", "DocTableColumnWidths", "DocTableRowHeights", "DocTableMerge", "DocTableCell",
+];
+
+/** The table methods of a directly bound Doc, each with its exact signature. */
+const DOC_TABLE_METHODS = [
+  ["insertTable", "insertTable(table: NewDocTable, tabId?: string): Promise<number>;"],
+  ["insertTableRows", "insertTableRows(rows: DocTableInsertion, tabId?: string): Promise<void>;"],
+  [
+    "insertTableColumns",
+    "insertTableColumns(columns: DocTableInsertion, tabId?: string): Promise<void>;",
+  ],
+  ["deleteTableRows", "deleteTableRows(rows: DocTableDeletion, tabId?: string): Promise<void>;"],
+  [
+    "deleteTableColumns",
+    "deleteTableColumns(columns: DocTableDeletion, tabId?: string): Promise<void>;",
+  ],
+  ["deleteTable", "deleteTable(table: number, tabId?: string): Promise<void>;"],
+  [
+    "setTableCellStyle",
+    "setTableCellStyle(\n    cells: DocTableCells & { style: DocTableCellStyle }, tabId?: string,\n  ): Promise<void>;",
+  ],
+  [
+    "setTableColumnWidths",
+    "setTableColumnWidths(columns: DocTableColumnWidths, tabId?: string): Promise<void>;",
+  ],
+  ["setTableRowHeights", "setTableRowHeights(rows: DocTableRowHeights, tabId?: string): Promise<void>;"],
+  ["mergeTableCells", "mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void>;"],
+  ["unmergeTableCells", "unmergeTableCells(cell: DocTableCell, tabId?: string): Promise<void>;"],
+] as const;
+
+/** Every table method called as an agent calls it, and the calls the types must refuse. */
+const DOC_TABLE_USAGE = `
+declare const doc: GoogleDocSession;
+const a: Promise<number> = doc.insertTable(
+  { rows: 2, columns: 2, cells: [["Name", "Status"], ["Ana"]], after: "## Results" }, "t.0");
+const b: Promise<number> = doc.insertTable({ rows: 3, columns: 4 });
+async function big(rows: string[][]) {
+  const table = await doc.insertTable(
+    { rows: 100, columns: 5, cells: rows.slice(0, 100), after: "## Data" });
+  await doc.insertTableRows({ table, cells: rows.slice(100) });
+}
+const c: Promise<void> = doc.insertTableRows({ table: 0, cells: [["Fix login", "Ana", "Open"]] });
+const d: Promise<void> = doc.insertTableRows({ table: 0, at: 1, count: 2 }, "t.0");
+const e: Promise<void> = doc.insertTableColumns({ table: 1, at: 0, cells: [["Owner"], ["Ana"]] });
+const f: Promise<void> = doc.deleteTableRows({ table: 0, at: 2 });
+const g: Promise<void> = doc.deleteTableColumns({ table: 0, at: 2, count: 2 }, "t.0");
+const h: Promise<void> = doc.deleteTable(0, "t.0");
+const reader: GoogleDocReadSession = doc;
+// @ts-expect-error A new table states its size.
+doc.insertTable({ cells: [["a"]] });
+// @ts-expect-error A new table's position is a number.
+const wrong: Promise<void> = doc.insertTable({ rows: 1, columns: 1 });
+// @ts-expect-error A table is named by its position.
+doc.insertTableRows({ at: 0 });
+// @ts-expect-error A deletion names where it starts.
+doc.deleteTableRows({ table: 0 });
+// @ts-expect-error A table is named by its position, not by text.
+doc.deleteTable("Budget");
+// @ts-expect-error The read session has no table methods.
+reader.insertTable({ rows: 1, columns: 1 });
+`;
+
+/**
+ * What an agent needs to name and place a table and no signature carries. Each phrase sits on
+ * one line of the write declaration.
+ */
+const DOC_TABLE_GUIDANCE = [
+  // A paragraph may read like a table; rows of a table inside a cell are not counted.
+  "starts at a line reading `<table>`",
+  "`<table style=\"…\">` for a styled table",
+  "are indented further and are not counted",
+  // Which context keeps `after` in place, and how a tab's first paragraph is named.
+  "names a later paragraph",
+  "the tab's first line included",
+  "an empty cell before a filled one is `\"\"`",
+  // Which tables take a column, and how far the tables of a tab grow.
+  "only to a table of at most 500 rows",
+  "only until the tables of one tab hold 5,000 cells",
+  // A new cell takes its neighbour's look and none of what the HTML shows; which neighbour.
+  "their bold, italic, strikethrough, links, list items or headings",
+  "or of the last row when they are added at",
+  "or of the last column when they are added at the end",
+  // The refusals nothing in `getContent()` shows coming.
+  "Rows cannot be added beside a cell of chips and no text",
+  "that holds nothing but a positioned image, or after a table whose next paragraph holds one",
+  // `cells` goes by the table's rows and never sets how many columns are added.
+  "For columns it is 1 unless given",
+  "`cells` goes row by row",
+  // What `replaceText()` does with table HTML, beside a table and inside one.
+  "so is a table written as HTML",
+  "unless the paragraph on that side of the table is read-only",
+  "or, inside a table, the table's HTML",
+  "Each parameter holds at most 2,000 lines",
+  // Two tables that read the same.
+  "make them differ first",
+  "only while no other",
+];
+
+/** Guidance that every method it applies to repeats, as `[phrase, lines that hold it]`. */
+const DOC_TABLE_REPEATED_GUIDANCE = [
+  // A new table, new rows and new columns.
+  ["at most 1,000 cells that have text", 3],
+  // New rows and new columns.
+  ["New cells hold plain paragraphs", 2],
+  // The two methods that add rows and columns and the two that delete them.
+  ["suggested changes to its rows, columns or cells", 4],
+] as const;
 
 function docBundle(): string {
   return [
@@ -229,6 +342,7 @@ message.addAttachment(file);
     expect(readTypes).toContain("export interface GoogleDocReadSession");
     expect(readTypes).not.toContain("replaceText");
     expect(readTypes).not.toContain("appendText");
+    for (const [name] of DOC_TABLE_METHODS) expect(readTypes).not.toContain(name);
     const writeTypes = source("docs-types.d.ts");
     expect(writeTypes).toContain(
       "export interface GoogleDocSession extends GoogleDocReadSession",
@@ -237,6 +351,95 @@ message.addAttachment(file);
       "replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void>;",
     );
     expect(writeTypes).toContain("appendText(markdown: string, tabId?: string): Promise<void>;");
+    for (const [, signature] of DOC_TABLE_METHODS) expect(writeTypes).toContain(signature);
+  });
+
+  it("types table changes on a directly bound Doc", () => {
+    expect(compileAgentTypes(docBundle() + DOC_TABLE_USAGE)).toEqual([]);
+    // The limits are this connection's own, and the declaration gives no other reason for them.
+    const writeTypes = source("docs-types.d.ts");
+    for (const phrase of ["exempt", "Docs editor", "Google Docs allows"]) {
+      expect(writeTypes).not.toContain(phrase);
+    }
+  });
+
+  it("gives a Doc opened from Drive no table types", () => {
+    for (const bundle of [driveReadBundle(), driveWriteBundle()]) {
+      const driveNames = topLevelNames(bundle);
+      expect(driveNames).toContain("GoogleDocReadSession");
+      expect(driveNames).not.toContain("GoogleDocSession");
+      for (const name of DOC_TABLE_TYPE_NAMES) expect(driveNames).not.toContain(name);
+    }
+  });
+
+  it("declares each Doc table name once in the flat vendor bundle", () => {
+    const names = topLevelNames(vendorBundle());
+    // Slides declares table types of its own in the same flat scope.
+    expect(names).toContain("TableElement");
+    for (const name of DOC_TABLE_TYPE_NAMES) {
+      expect(names.filter(candidate => candidate === name)).toEqual([name]);
+    }
+  });
+
+  it("keeps what an agent needs to name and place a table", () => {
+    const writeLines = source("docs-types.d.ts").split("\n");
+    const linesHolding = (phrase: string) => writeLines.filter(line => line.includes(phrase));
+    for (const phrase of DOC_TABLE_GUIDANCE) expect(linesHolding(phrase), phrase).not.toEqual([]);
+    for (const [phrase, lineCount] of DOC_TABLE_REPEATED_GUIDANCE) {
+      expect(linesHolding(phrase), phrase).toHaveLength(lineCount);
+    }
+    // How a merged cell is recognised, and that a list item's bullet character is not its text.
+    const readTypes = source("docs-read-types.d.ts");
+    expect(readTypes).toContain("A merged cell carries");
+    expect(readTypes).toContain("starts with its bullet character");
+  });
+
+  it("shows a table as the renderer lays it out", () => {
+    // An agent copies line breaks and indentation from the example in the getContent() comment
+    // when a replacement spans cells, so the example is held to what the renderer writes.
+    const commentPrefix = "   * ";
+    const fence = commentPrefix + "```";
+    const lines = source("docs-read-types.d.ts").split("\n");
+    const fences = lines.flatMap((line, index) => line === fence ? [index] : []);
+    expect(fences).toHaveLength(4);
+    const examples = [0, 2].map(at => {
+      const exampleLines = lines.slice(fences[at] + 1, fences[at + 1]);
+      for (const line of exampleLines) expect(line.startsWith(commentPrefix), line).toBe(true);
+      return exampleLines.map(line => line.slice(commentPrefix.length)).join("\n");
+    });
+
+    const grey = { color: { rgbColor: { red: 0.8, green: 0.8, blue: 0.8 } } };
+    const edge = { width: { magnitude: 1, unit: "PT" }, dashStyle: "SOLID", color: grey };
+    const ringed = { borderTop: edge, borderRight: edge, borderBottom: edge, borderLeft: edge };
+    const shade = { color: { rgbColor: { red: 0.953, green: 0.953, blue: 0.953 } } };
+    const rendered = [
+      { table: [
+        ["Name\n", "\n"],
+        [
+          { paragraphs: [{ runs: ["First paragraph\n"] }, { runs: ["Second paragraph\n"] }] },
+          "Total\n",
+        ],
+      ] },
+      {
+        table: [[
+          {
+            paragraphs: [{ runs: ["Name\n"] }],
+            tableCellStyle: { ...ringed, backgroundColor: shade, contentAlignment: "MIDDLE" },
+          },
+          { paragraphs: [{ runs: ["\n"] }], tableCellStyle: ringed },
+        ]],
+        columns: [120, null],
+        heights: [30],
+      },
+    ].map(table => {
+      const { markdown } = docTabToMarkdown(buildTab([
+        { runs: ["Before\n"] }, table, { runs: ["After\n"] },
+      ]));
+      const tableEnd = "</table>";
+      expect(markdown).toContain(tableEnd);
+      return markdown.slice(markdown.indexOf("<table"), markdown.indexOf(tableEnd) + tableEnd.length);
+    });
+    expect(examples).toEqual(rendered);
   });
 
   it("gives a directly bound spreadsheet its own session and Drive only the read session", () => {
@@ -259,7 +462,17 @@ sheet.updateSpreadsheet([
   { op: "insertColumns", sheet: "Sales", at: "C" },
   { op: "deleteColumns", sheet: "Sales", at: "C", count: 2 },
   { op: "deleteSheet", sheet: "Copy" },
+  { op: "resizeRows", sheet: "Sales", at: 1, count: 2, height: 30 },
+  { op: "resizeColumns", sheet: "Sales", at: "C", width: 150 },
+  { op: "freeze", sheet: "Sales", rows: 1, columns: 0 },
+  { op: "mergeCells", range: "Sales!A1:C1" },
+  { op: "mergeCells", range: "Sales!A2:C3", merge: "ROWS" },
+  { op: "unmergeCells", range: "Sales!A1:C3" },
 ]);
+// @ts-expect-error A merge is whole, by row or by column.
+sheet.updateSpreadsheet([{ op: "mergeCells", range: "Sales!A1:C1", merge: "BOTH" }]);
+// @ts-expect-error A column is resized by its width.
+sheet.updateSpreadsheet([{ op: "resizeColumns", sheet: "Sales", at: "C", height: 30 }]);
 // @ts-expect-error Columns are named by their letters.
 sheet.updateSpreadsheet([{ op: "insertColumns", sheet: "Sales", at: 3 }]);
 // @ts-expect-error A sheet is named by its title, not its ID.
