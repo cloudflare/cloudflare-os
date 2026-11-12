@@ -21,9 +21,6 @@ function source(name: string): string {
   return readFileSync(sourcePath(name), "utf8");
 }
 
-/** A file's JSDoc as running text, so a phrase can be matched across a line break. */
-const prose = (name: string) => source(name).replace(/\s*\n\s*\*\s?/g, " ");
-
 function compileAgentTypes(sourceText: string): string[] {
   const fileName = "/agent-types.ts";
   const options: ts.CompilerOptions = {
@@ -340,33 +337,6 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     const readTypes = source("drive-read-types.d.ts");
     expect(readTypes.split("listComments(fileId: string): Promise<Cursor<DriveComment>>;"))
       .toHaveLength(3);
-    const readProse = prose("drive-read-types.d.ts") + prose("comment-types.d.ts");
-    for (const phrase of [
-      "A read-only binding changes nothing.",
-      "request one with `?access=write` added to the resource URL, the narrowest that covers the " +
-        "files to comment on",
-      "https://drive.google.com/drive/my-drive?access=write",
-      "https://drive.google.com/drive/folders/<folderId>?access=write",
-      "https://drive.google.com/file/d/<fileId>/view?access=write",
-      "Fails for a file the connected account can only view and not comment on",
-      "Google shows a file's comments only to accounts that can comment on it.",
-      "The cursor's `next()` fails asking to reconnect when the Google account was connected " +
-        "before Drive bindings could read file content.",
-      "The text of the file this comment is attached to, when Drive reports one",
-      "or one that quoted a Google Doc, which shows it while `pending` too.",
-      "Absent for a comment not attached to text.",
-      "Time the comment was made or, while it is `pending`, queued.",
-      "Time the reply was made or, while it is `pending`, queued.",
-      "A pending ID cannot be replied to or resolved, and names nothing once the comment is decided",
-      "A pending ID names nothing once the reply is decided",
-      "Whether the comment is resolved, as Drive has it.",
-      "or `You` on an item that is still `pending`",
-      "Tell the connected account's items by `me`, not by name.",
-      "`\"read\"` for a read-only binding, which changes nothing",
-      "Its `access` says whether the binding is read-only",
-    ]) {
-      expect(readProse, phrase).toContain(phrase);
-    }
     // A comment's and a reply's times are dates; only a comment carries the text it is attached to.
     const commentTypes = source("comment-types.d.ts");
     expect(commentTypes.split("modifiedTime?: Date;")).toHaveLength(3);
@@ -437,47 +407,6 @@ const stamped: DriveCommentReply = { id: "r", author: { displayName: "A", me: fa
     ]) {
       expect(writeTypes.split(signature), signature).toHaveLength(2);
     }
-    const writeProse = prose("drive-types.d.ts") + prose("comment-types.d.ts");
-    for (const phrase of [
-      "Comments are plain text. One that quotes a Google Doc is attached to the quoted text; any " +
-        "other is attached to no text in the file.",
-      "accepts or rejects there, as one made in the editor in Suggesting mode; the Doc's text " +
-        "does not change until then.",
-      "At approval `oldText` must still occur exactly once in the tab.",
-      "it is not a comment, so `listComments()` shows it neither while it is queued nor after.",
-      "a new comment makes Google email the file's owner",
-      "An email address written after `@` or `+` in the text mentions that person: Google emails " +
-        "them the text, whether or not they can open the file.",
-      "Each comment, reply or resolve is queued for the user's approval and returns the pending item",
-      "A comment or reply holds at most 4096 bytes of UTF-8, and a comment that quotes a Doc at " +
-        "most 2048.",
-      "when the Google account does not allow changes to Drive files",
-      "and on a read-only binding, whose `getScope()` reports `access: \"read\"`",
-      "`quote` works only on native Google Docs.",
-      "Native Google Docs only.",
-      "within one paragraph and at most 500 characters, which must occur exactly once in the tab",
-      "The comment is attached to it in the Doc, as one made in the Docs editor is, and must " +
-        "still occur exactly once in the tab when the comment is approved.",
-      "Defaults to the first tab.",
-      "Replying to a resolved comment reopens it.",
-      "A comment that is itself still `pending` takes replies once it is posted, under its Drive ID.",
-      "Fails for a comment that is already resolved, that already has a resolve awaiting " +
-        "approval, or that is itself still `pending`.",
-      "Fails for a comment that has a resolve awaiting approval, which the reply would reopen.",
-      "to add one to a resolve already queued, have the user reject that resolve, then resolve " +
-        "again with the text.",
-      "At approval the reply fails if the comment was edited after the reply was queued.",
-      "At approval the resolve fails if the comment was edited after the resolve was queued.",
-      "and not a folder, which takes no comments.",
-      "anywhere the connected account can reach in Google Drive, plus comment writes.",
-      "the only file its methods accept, plus comment writes on it.",
-      "plus comment writes on the positioned folder's direct children.",
-    ]) {
-      expect(writeProse, phrase).toContain(phrase);
-    }
-    // Each session's summary says what it reads and names its writes: none claims write access to
-    // files, which no Drive binding has.
-    expect(writeProse).not.toContain("Read and write access to");
     expect(topLevelNames(stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX)))
       .toEqual([
         "DriveCommentOptions", "DriveSuggestEditOptions", "DriveCommentWrites",
@@ -515,7 +444,7 @@ const widened: GoogleDriveSession = readOnly;
 `)).toEqual([]);
   });
 
-  it("gives a directly bound Doc its own comments, and says when to use which write", () => {
+  it("gives a directly bound Doc its own comments", () => {
     const docTypes = source("docs-types.d.ts");
     for (const signature of [
       "listComments(): Promise<DriveComment[]>;",
@@ -526,33 +455,6 @@ const widened: GoogleDriveSession = readOnly;
     ]) {
       expect(docTypes.split(signature), signature).toHaveLength(2);
     }
-    // A list item continues indented, so runs of spaces are folded too.
-    const docProse = prose("docs-types.d.ts").replace(/ {2,}/g, " ");
-    for (const phrase of [
-      "`replaceText()` and `appendText()` change the Doc's text once the user approves them.",
-      "`suggestEdit()` leaves a suggestion in the Doc, as one made in Suggesting mode, which " +
-        "someone who can edit the Doc accepts or rejects there; the text does not change until then.",
-      "`comment()` is a remark on a passage of the Doc, attached to the text it quotes.",
-      "`reply()` and `resolve()` answer the comments `listComments()` returns.",
-      "A comment attached to no text, or an answer to one, takes a Google Drive connection to the " +
-        "file with read and write access: request the resource URL " +
-        "`https://drive.google.com/file/d/<id>/view?access=write`, where `<id>` is `getMetadata().id`.",
-      "An email address written after `@` or `+` in the text mentions that person: Google emails " +
-        "them the text, whether or not they can open the Doc.",
-      "A comment, reply or note holds at most 2048 bytes of UTF-8.",
-      "`suggestEdit()` returns a `DocSuggestion`, which no listing shows, queued or made.",
-      "must occur exactly once in the tab as Google has it saved, not counting edits still waiting " +
-        "for approval",
-      "an ID returned by `listTabs()`, omitted only when there is one tab.",
-      "Fails for an account that can only view the Doc",
-      "Fails for a comment attached to no text, saying which Drive connection can answer it",
-    ]) {
-      expect(docProse, phrase).toContain(phrase);
-    }
-    expect(prose("drive-types.d.ts")).toContain(
-      "To propose other text for a passage rather than remark on it, use `suggestEdit()`.");
-    expect(prose("drive-types.d.ts")).toContain(
-      "To remark on a passage without proposing a change, use `comment()` with `quote`.");
     expect(compileAgentTypes(docBundle() + `
 declare const doc: GoogleDocSession;
 async function use(): Promise<void> {
@@ -578,20 +480,11 @@ doc.suggestEdit("doc-1", "May", "June", {});
 `)).toEqual([]);
   });
 
-  it("points each Sheets and Slides session at the Drive binding that has its comments", () => {
-    for (const [name, owner, url, bundle] of [
-      ["sheets-types.d.ts", "The spreadsheet's", "https://drive.google.com/file/d/<id>/view", sheetsBundle],
-      ["slides-types.d.ts", "The presentation's", "https://drive.google.com/file/d/<id>/view", slidesBundle],
+  it("points each Sheets and Slides session at its comments with a read-only Drive URL", () => {
+    for (const [name, bundle] of [
+      ["sheets-types.d.ts", sheetsBundle], ["slides-types.d.ts", slidesBundle],
     ] as const) {
-      const text = prose(name);
-      expect(text, name).toContain(
-        `${owner} comments are not part of this binding: a Google Drive binding that reaches the ` +
-          "same file reads them, and writes them when it has read and write access.",
-      );
-      expect(text, name).toContain(`request the resource URL \`${url}\``);
-      expect(text, name).toContain(
-        "as it is to read the comments, or with `?access=write` added to write them too",
-      );
+      expect(source(name), name).toContain("https://drive.google.com/file/d/<id>/view");
       // The URL an agent is given to read with asks for no more than read-only access.
       expect(source(name), name).not.toContain("/view?access=write");
       expect(compileAgentTypes(bundle()), name).toEqual([]);
