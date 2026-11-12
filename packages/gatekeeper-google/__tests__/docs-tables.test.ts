@@ -4003,16 +4003,16 @@ describe("formatting a paragraph's named style already gives", () => {
       "as it does cannot be told: this may be a subtitle, or the rest has a style normal " +
       "text's named style gives. Retry once the earlier changes to this tab have been " +
       "approved or rejected.";
-    let subtitle = styledTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], {
+    let subtitle = styledTab([para("Other text"), { runs: ["Prefix Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], {
       styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }],
     });
     expect(message(queuedFirst(subtitle, "Notes", "End\n\n"))).toBe(retry);
     // Partly italic, or of a style that is not italic: it reads like any paragraph.
     let partly = styledTab([para("Other text"), {
-      runs: ["Notes ", { text: "here", style: { italic: false } }, "\n"], namedStyleType: "SUBTITLE",
+      runs: ["Prefix Notes ", { text: "here", style: { italic: false } }, "\n"], namedStyleType: "SUBTITLE",
     }, para("After")], { styles: [{ namedStyleType: "SUBTITLE", textStyle: { italic: true } }] });
     expect(message(queuedFirst(partly, "Notes", "End\n\n"))).toBe(retry);
-    let upright = styledTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]);
+    let upright = styledTab([para("Other text"), { runs: ["Prefix Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]);
     expect(message(queuedFirst(upright, "Notes", "End\n\n"))).toBe(retry);
     // In a tab whose named styles give no formatting, or that came without them.
     let plainStyles = { styles: [{ namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } }] };
@@ -4044,7 +4044,11 @@ describe("formatting a paragraph's named style already gives", () => {
       runs: ["Notes ", { text: "here", style: { bold: true } }, "\n"], namedStyleType: "HEADING_2",
     }, para("After")]);
     expect(queuedFirst(plain, "Notes", "End\n\n")().markdown).toContain("## End\n\n **here**\n");
-    expect(() => queuedFirst(subtitle, "*Notes here*", "*Notes here*\n\nEnd")()).not.toThrow();
+    expect(() => queuedFirst(subtitle, "*Prefix Notes here*", "*Prefix Notes here*\n\nEnd")()).not.toThrow();
+    // A paragraph written ahead of a whole line splits nothing, as the requests take it too.
+    expect(() => queuedFirst(bare, "*Prefix", "New paragraph\n\n*Prefix")()).not.toThrow();
+    expect(() => textReplacementRequests(
+      bareRead, replacementIn(bareRead.markdown, "*Prefix", "New paragraph\n\n*Prefix"))).not.toThrow();
   });
 
   it("refuses an edit beside kept text its named style also formats, while an earlier change waits", () => {

@@ -948,7 +948,7 @@ lists the merges that overlap the range, each whole, and each of its rows' heigh
 in pixels. Queued changes to rows and columns move them as a scratch spreadsheet showed Google moving
 them: lines inserted within a merge or among the frozen lines join it, lines inserted at either of its
 edges do not, and deleted lines shrink it, a merge left one cell vanishing. An inserted line's size
-reads `null`, since Google takes it from the line beside it. `resizeRows` and `resizeColumns` set
+reads `null` unless a queued resize sets it, since Google takes it from the line beside it. `resizeRows` and `resizeColumns` set
 lines' sizes, a whole number of pixels from 1 to 10,000 (Google accepts any number, negative ones
 included), and `freeze` sets how many leading rows or columns a sheet freezes. Both keep every sheet,
 row and column, and are queued as such. A freeze is refused when queued that would leave no row or

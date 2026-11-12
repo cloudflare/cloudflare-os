@@ -3355,7 +3355,8 @@ export const SPLIT_UNTOLD =
 
 /**
  * Whether a replacement writes a paragraph break inside a line of `markdown` that has no heading
- * marker, with text left after it there, which a subtitle refuses (`inlineWrite`).
+ * marker, with text left after it there, which a subtitle refuses (`inlineWrite`). Text that ends
+ * in a break, written from the start of a line, splits nothing: its paragraphs go ahead of it.
  */
 export function splitsUnmarkedLine(
   markdown: string, matchStart: number, oldMarkdown: string, newMarkdown: string,
@@ -3363,8 +3364,9 @@ export function splitsUnmarkedLine(
   let { mdStart, mdEnd } = replacedRange(markdown, matchStart, oldMarkdown, newMarkdown);
   let written = newMarkdown.slice(
     mdStart - matchStart, newMarkdown.length - (matchStart + oldMarkdown.length - mdEnd));
+  let ahead = /[^\n]\n+$/.test(written) && (mdStart === 0 || markdown[mdStart - 1] === "\n");
   let lineEnd = markdown.indexOf("\n", mdEnd);
-  return written.includes("\n") && (lineEnd < 0 ? markdown.length : lineEnd) > mdEnd &&
+  return !ahead && written.includes("\n") && (lineEnd < 0 ? markdown.length : lineEnd) > mdEnd &&
     headingLevelAt(markdown, lineStart(markdown, mdEnd)) === 0;
 }
 
