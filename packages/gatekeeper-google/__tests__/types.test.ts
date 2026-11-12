@@ -540,6 +540,7 @@ const widened: GoogleDriveSession = readOnly;
       "An email address written after `@` or `+` in the text mentions that person: Google emails " +
         "them the text, whether or not they can open the Doc.",
       "A comment, reply or note holds at most 2048 bytes of UTF-8.",
+      "`suggestEdit()` returns a `DocSuggestion`, which no listing shows, queued or made.",
       "must occur exactly once in the tab as Google has it saved, not counting edits still waiting " +
         "for approval",
       "an ID returned by `listTabs()`, omitted only when there is one tab.",

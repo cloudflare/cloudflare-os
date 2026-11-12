@@ -41,12 +41,13 @@ export type DocSuggestEditOptions = {
  *   file with read and write access: request the resource URL
  *   `https://drive.google.com/file/d/<id>/view?access=write`, where `<id>` is `getMetadata().id`.
  *
- * Every comment write is queued for the user's approval and returns the pending item, which
- * `listComments()` shows until it is decided. It needs the connected account to be able to
- * comment on the Doc, and a new comment makes Google email the Doc's owner. An email address
- * written after `@` or `+` in the text mentions that person: Google emails them the text, whether
- * or not they can open the Doc. A comment, reply or note holds at most 2048 bytes of UTF-8. A Doc
- * not created yet has no comments, and takes no comment writes until it is.
+ * Every comment write is queued for the user's approval. A comment, reply or resolve returns the
+ * pending item, which `listComments()` shows until it is decided; `suggestEdit()` returns a
+ * `DocSuggestion`, which no listing shows, queued or made. A write needs the connected account to
+ * be able to comment on the Doc, and a new comment makes Google email the Doc's owner. An email
+ * address written after `@` or `+` in the text mentions that person: Google emails them the text,
+ * whether or not they can open the Doc. A comment, reply or note holds at most 2048 bytes of UTF-8.
+ * A Doc not created yet has no comments, and takes no comment writes until it is.
  */
 export interface GoogleDocSession extends GoogleDocReadSession {
 
