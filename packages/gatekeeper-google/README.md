@@ -391,8 +391,10 @@ Adding a tab costs the same: its `batchUpdate` carries the `addDocumentTab` and 
 goes in the new tab's parent or the first tab. Until Google names the tab, `addTab()` returns a
 provisional `pending-tab-…` ID that edits can target; approving the add points them at Google's ID,
 and the provisional one keeps resolving for the binding's last 100 added tabs. An add whose reply was
-lost finds its tab on the retry as the one new tab with its title and parent, and fails rather
-than guess when none or several match.
+lost finds its tab on the retry, even once a collaborator has deleted the tab holding its marker,
+as the one tab that has appeared in its place, if it bears the add's title; it fails rather than
+guess when several have appeared or the one has another title, and is sent again only when none
+has.
 
 Listing comments costs one `documents.get` that asks only for the comment threads (a field mask:
 about 1 KB on a small Doc against 18 KB for the whole). Queuing a comment or suggestion costs a Drive

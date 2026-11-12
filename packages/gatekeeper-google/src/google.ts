@@ -21,7 +21,7 @@ import {
   DOC_COMMENT_ACTIONS, DocCommentSession, docsThreads, type DocCommentQueue,
 } from "./doc-comments";
 import {
-  BLANK_DOC_TAB_ID, BlankGoogleDoc, blankDocsTab, GoogleDocsApi, type DocsBatchReply,
+  BLANK_DOC_TAB_ID, BlankGoogleDoc, blankDocsTab, docsWriteFailure, GoogleDocsApi, type DocsBatchReply,
   type GoogleDocReader, type GoogleDocsDocument, type GoogleDocsTab,
 } from "./docs-api";
 import { checkDocTabTitle, insertDocTab, type DocTabPlacement } from "./docs-tabs";
@@ -1848,20 +1848,35 @@ function newGoogleDocTab({ provisionalTabId, title }: GoogleDocAddTabAction): Go
 }
 
 /**
- * The tab an add Google applied made, found without its reply: the one tab outside the add's
- * `knownTabIds` with its title and parent. Refused when none or several match, since the edits
- * queued for the tab must not land in a different one.
+ * The tab an add that may have landed made, found without its reply: undefined when no tab has
+ * appeared in its place since `knownTabIds` was recorded. Every tab that has is looked at,
+ * whatever its title, so that a collaborator's tab cannot pass for one renamed since; unless
+ * exactly one has, bearing the add's title, it is refused, since the edits queued for the tab must
+ * not land in another.
  */
-function googleDocAddedTab<T extends DocTabSnapshot>(tabs: T[], action: GoogleDocAddTabAction): T {
-  let known = new Set(action.knownTabIds);
-  let matches = action.knownTabIds === undefined ? [] : tabs.filter(tab => !known.has(tab.tabId) &&
-    tab.title === action.title && tab.parentTabId === action.parentTabId);
-  if (matches.length !== 1) {
-    throw new Error(
-      `Google Docs added the tab "${action.title}", but ${matches.length === 0 ? "no" : "more than one"} ` +
-      "new tab with that title and place is in the document, so which tab it is is unknown.");
+function googleDocAddedTab<T extends DocTabSnapshot>(
+  tabs: T[], action: GoogleDocAddTabAction,
+): T | undefined {
+  if (action.knownTabIds === undefined) {
+    throw new Error(`The tabs the add of "${action.title}" was sent beside are not recorded.`);
   }
-  return matches[0];
+  let known = new Set(action.knownTabIds);
+  let appeared = tabs.filter(tab => !known.has(tab.tabId) && tab.parentTabId === action.parentTabId);
+  if (appeared.length === 0) return undefined;
+  if (appeared.length === 1 && appeared[0].title === action.title) return appeared[0];
+  throw new Error(
+    `Google Docs may have added the tab "${action.title}", but since then ` +
+    (appeared.length === 1 ? `one tab titled "${appeared[0].title}" has` : `${appeared.length} tabs have`) +
+    " appeared in its place, so which tab it is is unknown.");
+}
+
+/** The tab an add whose marker the document holds made, which must still be there. */
+function googleDocCommittedAddTab<T extends DocTabSnapshot>(
+  tabs: T[], action: GoogleDocAddTabAction,
+): T {
+  let tab = googleDocAddedTab(tabs, action);
+  if (!tab) throw new Error(`Google Docs added the tab "${action.title}", but it has since been removed.`);
+  return tab;
 }
 
 /** The ID of the tab an `addDocumentTab` reply names, if it names one. */
@@ -2116,7 +2131,7 @@ function invalidateUnreplayableGoogleDocActions(
       if (action.type === "addTab") {
         assertGoogleDocActionReplayable(action);
         if (googleDocActionCommitted(snapshot, action)) {
-          addedTabIds.set(action.provisionalTabId, googleDocAddedTab(tabs, action).tabId);
+          addedTabIds.set(action.provisionalTabId, googleDocCommittedAddTab(tabs, action).tabId);
           continue;
         }
         let tab = newGoogleDocTab(action);
@@ -2535,11 +2550,17 @@ export class GoogleDocGatekeeperImpl
       throw new Error(`Google Docs returned multiple write markers for action ${actionId}`);
     }
     let [writeMarker] = markers;
-    /** The ID of the tab an add made, which a retry that finds its marker looks for. */
+    /**
+     * The ID of the tab an add made, looked for on a retry that finds its marker, and on one whose
+     * earlier send may have landed though its marker is gone: a top-level add's marker is in
+     * another tab, which a collaborator may have deleted. Sending again would add a second tab.
+     */
     let addedTabId: string | undefined;
-    if (writeMarker && action.type === "addTab") {
+    if (action.type === "addTab" && (writeMarker || action.knownTabIds !== undefined)) {
       try {
-        addedTabId = googleDocAddedTab(snapshot.tabs, action).tabId;
+        addedTabId = writeMarker
+          ? googleDocCommittedAddTab(snapshot.tabs, action).tabId
+          : googleDocAddedTab(snapshot.tabs, action)?.tabId;
       } catch (error) {
         invalidateGoogleDocAction(pendingActions, pending[pendingIndex],
           `Pending Google Doc tab could not be adopted: ${errorMessage(error)} ` +
@@ -2548,7 +2569,7 @@ export class GoogleDocGatekeeperImpl
         throw error;
       }
     }
-    if (!writeMarker) {
+    if (!writeMarker && addedTabId === undefined) {
       let materialized: { tab: GoogleDocTabSnapshot; requests: any[] };
       try {
         materialized = materializeGoogleDocAction(snapshot, action);
@@ -2578,6 +2599,11 @@ export class GoogleDocGatekeeperImpl
           rangeStart: tab.bodyEndIndex - 1,
           tabId: tab.tabId,
         }).catch(async (error: unknown) => {
+          if (action.type === "addTab" && docsWriteFailure(error) !== "unknown") {
+            // Refused whole, so no tab was added, and a retry has nothing to look for.
+            delete action.knownTabIds;
+            pendingActions.put(actionId, action);
+          }
           throw await explainUnopenedFile("doc", error, async () =>
             (await new DriveApi(opts => this.#getAccessToken(opts)).getFile(documentId)).mimeType);
         });
@@ -2607,7 +2633,13 @@ export class GoogleDocGatekeeperImpl
         });
       }
     } else {
-      pendingActions.remove(actionId);
+      this.ctx.storage.transactionSync(() => {
+        // An add whose marker is gone, found by the tab it made: there is nothing to clean up.
+        if (action.type === "addTab" && addedTabId) {
+          adoptGoogleDocTab(this.ctx.storage.kv, action.provisionalTabId, addedTabId);
+        }
+        pendingActions.remove(actionId);
+      });
     }
     this.#simulationCache.current = undefined;
 

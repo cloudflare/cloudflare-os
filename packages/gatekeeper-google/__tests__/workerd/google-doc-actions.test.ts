@@ -2443,13 +2443,71 @@ describe("adding a Google Doc tab", () => {
     docs.externalEdit();
 
     expect(await hooks().applyAction("add-tab-twins", added.actionId))
-      .toContain("more than one new tab with that title and place");
+      .toContain("since then 2 tabs have appeared in its place, so which tab it is is unknown");
     expect(await hooks().applyAction("add-tab-twins", added.actionId))
       .toContain("Pending Google Doc tab could not be adopted");
     // With the add invalidated, the edit queued for its tab has no tab to go to.
     expect(await hooks().applyAction("add-tab-twins", appendId))
       .toContain(`no tab with ID "${added.tabId}" exists`);
     expect(docs.contentBatches).toBe(1);
+  });
+  it("refuses to adopt a collaborator's tab bearing the title of one renamed since", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-renamed", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-renamed", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-renamed", added.actionId))
+      .toMatch(/content response lost/);
+    docs.tabs[1].title = "Renamed";
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-renamed", added.actionId))
+      .toContain("since then 2 tabs have appeared in its place");
+    expect(await hooks().applyAction("add-tab-renamed", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("");
+  });
+
+  it("finds the tab a lost add made after its marker's tab was deleted, rather than add another",
+    async () => {
+      let docs = new DocsModel();
+      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.ambiguousContentResponses = 1;
+      docs.install();
+      let added = await addTab("add-tab-host-gone", "Notes");
+      let appendId = await hooks().submitAppend("add-tab-host-gone", "Hello", added.tabId);
+
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
+        .toMatch(/content response lost/);
+      // The marker went in the first tab, which a collaborator now deletes.
+      expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+      docs.removeTab(MAIN_TAB);
+
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId)).toBeNull();
+      expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+      expect(docs.contentBatches).toBe(1);
+      expect(await hooks().applyAction("add-tab-host-gone", appendId)).toBeNull();
+      expect(docs.text(docs.tabs.find(tab => tab.title === "Notes")!.id)).toBe("Hello");
+    });
+
+  it("sends a refused add again rather than adopt a tab with its title", async () => {
+    let docs = new DocsModel();
+    docs.refusesEdits = true;
+    docs.install();
+    let added = await addTab("add-tab-refused-send", "Notes");
+
+    expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).not.toBeNull();
+    docs.refusesEdits = false;
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).toBeNull();
+    expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes", "Notes"]);
+    expect((await hooks().listTabs("add-tab-refused-send")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, "t.collaborator", docs.tabs[2].id]);
   });
 });
 
