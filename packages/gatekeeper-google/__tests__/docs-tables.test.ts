@@ -1638,7 +1638,7 @@ describe("the cells a tab's tables hold", () => {
   const content = contentOf(full);
 
   it("counts the paragraphs of a table inside a cell, which no replacement edits", () => {
-    // ask-bonk's case: a 200 x 20 table nested in one cell holds 4,000 of the tab's cells.
+    // A 200 x 20 table nested in one cell holds 4,000 of the tab's cells.
     let nested = buildTab([
       para("Before"), { table: [[cellOf(para("outer"), sized(200, 20), para("end"))]] }, para("After"),
     ]);
@@ -1648,14 +1648,13 @@ describe("the cells a tab's tables hold", () => {
   });
 
   it("counts each cell's own paragraphs, a cell holding only a table at least once", () => {
-    // Devin's cases: two paragraphs in one cell and a table alone in the next; a list that skips
-    // a level, whose placeholder item holds no paragraph.
+    // Two paragraphs in one cell, and a table alone in the next.
     let alone = contentOf(docTabToMarkdown(buildTab([para("Before"), {
       table: [[cellOf(para("one"), para("two")), cellOf(grid(["in"]))]],
     }, para("After")])));
     // 2, then 1 for the cell holding the table and 1 for the table's own cell.
     expect(message(() => checkTabTableCells(alone, 4_997, "insertTable"))).toBe(tabCells("insertTable", 5_001));
-    // ask-bonk's case: an empty numbered item and its child are two paragraphs. A list that skips a
+    // An empty numbered item and its child are two paragraphs. A list that skips a
     // level writes the same HTML for its placeholder item, so it counts it too, erring on refusing.
     let numbered = { NN: { listProperties: { nestingLevels: [{ glyphType: "DECIMAL" }, { glyphType: "DECIMAL" }] } } };
     let parent = contentOf(docTabToMarkdown(buildTab([para("Before"), {
@@ -1666,7 +1665,7 @@ describe("the cells a tab's tables hold", () => {
   });
 
   it("counts a list item written as a heading once", () => {
-    // ask-bonk's case: `<li><h2>…</h2></li>` is one paragraph, not two.
+    // `<li><h2>…</h2></li>` is one paragraph, not two.
     let headed = buildTab([para("Before"), {
       table: Array.from({ length: 250 }, () => Array.from({ length: 10 }, () =>
         cellOf({ runs: ["Step\n"], namedStyleType: "HEADING_2", bullet: { listId: "L1" } }))),
@@ -3897,7 +3896,7 @@ describe("formatting a paragraph's named style already gives", () => {
   });
 
   it("reads a paragraph a replacement gives another style by that style, as Google does", () => {
-    // ask-bonk's case: a Heading 6, italic by its style, written as normal text keeps its italic.
+    // A Heading 6, italic by its style, written as normal text keeps its italic.
     let { simulated } = expectStyledSameAsGoogle(body(), "###### Notes here", "*Notes* here");
     expect(simulated.markdown).toContain("\n*Notes* here\n");
     expectStyledSameAsGoogle(body(), "## Results here", "**Results** here");
@@ -3910,7 +3909,7 @@ describe("formatting a paragraph's named style already gives", () => {
   });
 
   it("reads a paragraph written before or after a styled one by the style it is written with", () => {
-    // ask-bonk's case: a bold subtitle, with a bold paragraph written in front of it.
+    // A bold subtitle, with a bold paragraph written in front of it.
     let bold = styledTab([para("Before"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")], {
       styles: [
         { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
@@ -3929,7 +3928,7 @@ describe("formatting a paragraph's named style already gives", () => {
   });
 
   it("refuses formatting a subtitle's style would read otherwise, while an earlier change waits", () => {
-    // ask-bonk's case: with an edit queued elsewhere, the replay cannot see that this is a subtitle.
+    // With an edit queued elsewhere, the replay cannot see that this is a subtitle.
     let styles = {
       styles: [
         { namedStyleType: "NORMAL_TEXT", textStyle: { bold: false } },
@@ -4842,7 +4841,7 @@ describe("merging and splitting cells", () => {
   });
 
   it("reads a merged block's outer edges through a merged cell it holds on that edge", () => {
-    // ask-bonk's case: the block's right edge runs through a merged cell whose right edge is blue.
+    // The block's right edge runs through a merged cell whose right edge is blue.
     let edge = (red: number, blue: number) =>
       ({ width: pt(2), dashStyle: "SOLID", color: { color: { rgbColor: { red, blue } } } });
     let tab = buildTab([para("Before"), { table: [

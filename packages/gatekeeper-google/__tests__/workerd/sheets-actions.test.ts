@@ -2400,7 +2400,7 @@ describe("Google Sheets layout", () => {
   });
 
   it("reads the sizes of the lines Google holds beside lines a queued change inserts", async () => {
-    // clanky's case: a read of only inserted columns holds no cell Google has, yet its rows do.
+    // A read of only inserted columns holds no cell Google has, yet its rows do.
     laidOut();
     let sheets = gatekeeper();
     await sheets.queued([{ op: "insertColumns", sheet: "Sales", at: "B", count: 2 }]);

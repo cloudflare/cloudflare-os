@@ -374,7 +374,7 @@ describe("simulated format reads", () => {
   });
 
   it("reads the sizes beside inserted lines from the runs Google holds, not the span between them", () => {
-    // ask-bonk's case: two deletions leave rows 1-2 and 100,003-100,004 beside an inserted column.
+    // Two deletions leave rows 1-2 and 100,003-100,004 beside an inserted column.
     let base = gridOf({ sheets: [sheet(0, "Sales", { rowCount: 100_004, columnCount: 1 })] });
     let queued = withChanges(base, [
       { op: "deleteRows", sheetId: 0, start: 2, count: 50_000 },

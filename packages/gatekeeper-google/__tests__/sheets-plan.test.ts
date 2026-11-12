@@ -747,7 +747,7 @@ describe("Sheets batches built on queued changes", () => {
   });
 
   it("builds a copy on the formatting, sizes, frozen lines and merges queued for its sheet", () => {
-    // ask-bonk's case: a copy previews these, so rejecting one must not leave the copy to apply.
+    // A copy previews these, so rejecting one must not leave the copy to apply.
     let layout = [
       queued(11, [{ op: "resizeRows", sheetId: 0, start: 0, count: 2, size: 40 }]),
       queued(12, [{ op: "freeze", sheetId: 0, rows: 2 }]),

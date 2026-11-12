@@ -1647,7 +1647,7 @@ describe("mergeTableCells and unmergeTableCells", () => {
 
 describe("a replacement the replay refuses", () => {
   it("is refused when it is called, not queued to fail on the next read", () => {
-    // ask-bonk's case: with an edit waiting, bold written into a bold-styled subtitle.
+    // With an edit waiting, bold written into a bold-styled subtitle.
     let tab = {
       ...buildTab([para("Other text"), { runs: ["Notes here\n"], namedStyleType: "SUBTITLE" }, para("After")]),
       namedStyles: {
