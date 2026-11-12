@@ -1,0 +1,23 @@
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_99c049c8391965::t_4265d069dff9f0 233-262
+packages/workshop-frontend/src/features/approvals/useBulkResolve.test.tsx
+  s_99c049c8391965::t_11ff2d1f2498d4 336-354,357,359-360,365
+packages/workshop-frontend/src/features/approvals/useBulkResolve.ts
+  s_99c049c8391965::t_3552cb63a31ba0 93-104,127,144-147,163,169,186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "e4b6bf0823c181e35eea112048933a33ab09e205",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
