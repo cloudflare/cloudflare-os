@@ -96,11 +96,11 @@ export interface GoogleDocSession extends GoogleDocReadSession {
   appendText(markdown: string, tabId?: string): Promise<void>;
 
   /**
-   * Add a new, empty tab titled `title` (one line, at most 50 characters): a top-level tab placed
-   * last, unless `parentTabId` nests it under another tab and `index` places it among that tab's
-   * children, counting from 0. Google nests tabs at most three levels deep. Resolves to the new
-   * tab's ID, which `listTabs()`, `getContent()`, `replaceText()`, `appendText()` and `addTab()`
-   * take at once.
+   * Add a new, empty tab titled `title` (one line, at most 50 characters): nested under the tab
+   * `parentTabId` names, or top-level without one, and placed at `index` among the tabs beside it,
+   * counting from 0, or last without one. Google nests tabs at most three levels deep. Resolves to
+   * the new tab's ID, which `listTabs()`, `getContent()`, `replaceText()`, `appendText()` and
+   * `addTab()` take at once.
    */
   addTab(title: string, options?: { parentTabId?: string; index?: number }): Promise<string>;
 
