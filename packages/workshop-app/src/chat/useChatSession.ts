@@ -30,8 +30,12 @@ export const useChatSession = (workspaceId: string, chatId: number): { chat: Cha
   return { chat, actions: session }
 }
 
-/** What a chat holds, live, for whoever shows something of it beside the conversation. Loading, for no chat. */
-export const useChatSnapshot = (chat: { workspaceId: string; chatId: number } | undefined): ChatSnapshot => {
+/**
+ * What a chat holds, live, and what can be asked of it, for whoever shows something of it beside
+ * the conversation. Loading, with nothing to ask, for no chat.
+ */
+export const useChatBeside = (chat: { workspaceId: string; chatId: number } | undefined): { chat: ChatSnapshot; actions: ChatActions | undefined } => {
   const session = useHeldSession(chat)
-  return useSyncExternalStore(session?.subscribe ?? noSubscription, session?.getSnapshot ?? loading)
+  const snapshot = useSyncExternalStore(session?.subscribe ?? noSubscription, session?.getSnapshot ?? loading)
+  return { chat: snapshot, actions: session }
 }

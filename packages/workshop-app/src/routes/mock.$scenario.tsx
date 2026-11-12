@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
-import { asideItemFor, chatAsideItems, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
-import { AsidePane } from '@/aside/AsidePane'
+import { asideItemFor, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
+import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
+import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
 import { ChatSettingsPane } from '@/chat/ChatSettingsPane'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
-import { useChatSnapshot } from '@/chat/useChatSession'
 import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import type { Scenario } from '@/chat/mock/scenario'
@@ -97,10 +97,18 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
   /** Over the chat, such as the player's controls. */
   children: ReactNode
 }) => {
-  const chat = useChatSnapshot(CHAT)
-  const items = useMemo(() => chatAsideItems(CHAT.workspaceId, CHAT.chatId, chat), [chat])
   const [open, setOpen] = useState<string>()
   const named = parseAsideRef(open)
+  // Had back before anything the chat has is known: open empty while the chat is read for it.
+  const [askedEmpty, setAskedEmpty] = useState(false)
+  if (askedEmpty && named) setAskedEmpty(false)
+  const openedEmpty = askedEmpty && !named
+  const library = useChatLibrary(CHAT, openedEmpty)
+  const { items } = library
+  const firstFound = openedEmpty ? items[0]?.key : undefined
+  useEffect(() => {
+    if (firstFound !== undefined) setOpen(firstFound)
+  }, [firstFound])
   // The chat's settings, in the chat's place, with nothing beside them.
   const [settings, setSettings] = useState(false)
   // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
@@ -116,7 +124,9 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
     <div className="flex h-full p-2">
       <SplitLayout
         asideAlone={expanded && named !== undefined}
-        aside={named && !settings && (expanded ? (
+        aside={!settings && openedEmpty ? (
+          <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={() => setAskedEmpty(false)} />
+        ) : named && !settings && (expanded ? (
           <AsidePane
             placement="page"
             item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
@@ -135,8 +145,11 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
             onFullScreenChange={handlers.onFullScreenChange}
           />
         ))}
-        onOpenAside={!named && !settings && items.length > 0 ? () => setOpen(items[0].key) : undefined}
-        onCloseAside={() => setOpen(undefined)}
+        onOpenAside={!named && !settings && !openedEmpty ? () => (items.length > 0 ? setOpen(items[0].key) : setAskedEmpty(true)) : undefined}
+        onCloseAside={() => {
+          setOpen(undefined)
+          setAskedEmpty(false)
+        }}
         edgeInset={8}
       >
         <div className="relative flex min-h-0 flex-1 flex-col">
