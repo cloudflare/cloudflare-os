@@ -110,6 +110,7 @@ function driveReadBundle(): string {
 function driveWriteBundle(): string {
   return [
     driveReadBundle(),
+    stripTypeModulePrefix(source("slides-types.txt"), SLIDES_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
   ].join("\n");
 }
@@ -333,7 +334,7 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
 `).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
   });
 
-  it("hands out only read-only native sessions from Drive", () => {
+  it("hands out read-only native sessions from a read-only Drive binding", () => {
     const readTypes = source("drive-read-types.d.ts");
     expect(readTypes).toContain(
       "openGoogleDoc(fileId: string): Promise<GoogleDocReadSession>",
@@ -345,11 +346,30 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
       "openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession>",
     );
     expect(readTypes).toContain("export interface GoogleDriveReadSession");
-    for (const driveTypes of [readTypes, source("drive-types.d.ts")]) {
-      expect(driveTypes).not.toContain("GoogleDocSession>");
-      expect(driveTypes).not.toContain("GoogleSpreadsheetSession>");
-      expect(driveTypes).not.toContain("GooglePresentationSession>");
-    }
+    expect(readTypes).not.toContain("GoogleDocSession>");
+    expect(readTypes).not.toContain("GoogleSpreadsheetSession>");
+    expect(readTypes).not.toContain("GooglePresentationSession>");
+    expect(topLevelNames(driveReadBundle())).not.toContain("GooglePresentationSession");
+  });
+
+  it("hands out editable presentations from every read and write Drive session", () => {
+    const writeTypes = source("drive-types.d.ts");
+    expect(writeTypes.split("openGoogleSlides(fileId: string): Promise<GooglePresentationSession>;"))
+      .toHaveLength(4);
+    expect(writeTypes).not.toContain("GoogleDocSession>");
+    expect(writeTypes).not.toContain("GoogleSpreadsheetSession>");
+    expect(topLevelNames(driveWriteBundle())).toContain("GooglePresentationSession");
+    expect(compileAgentTypes(driveWriteBundle() + `
+      declare const drive: GoogleDriveSession;
+      declare const folder: GoogleDriveFolderSession;
+      declare const file: GoogleDriveFileSession;
+      async function edit() {
+        for (const binding of [drive, folder, file]) {
+          const deck = await binding.openGoogleSlides("deck");
+          await deck.updateSlides([{ op: "editText", slideId: "s", elementId: "e", find: "a", replace: "b" }]);
+        }
+      }
+    `)).toEqual([]);
   });
 
   it("declares comment reads on both read-only Drive sessions, and no write", () => {

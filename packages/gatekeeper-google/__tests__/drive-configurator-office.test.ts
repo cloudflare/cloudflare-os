@@ -635,15 +635,23 @@ describe("the Drive picker on a Drive card account without an editable type's gr
     frame.action()!.onClick();
     await settle();
     expect(frame.notices()).toEqual([{ tone: "error", text: "The pop-up was blocked." }]);
+    // A read and write Drive connection edits a presentation; this one is read only.
     frame.choose("slides:native-2");
     expect(frame.notices()).toEqual([{
       tone: undefined,
-      text: "Connects as a Drive file, whose content can be read but not edited. " +
-        "To edit it as a Google Slides file, allow editing and choose it again.",
+      text: "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
+        "Read and write access. To connect it as a Google Slides file on its own instead, allow " +
+        "editing and choose it again.",
     }]);
 
     frame.action()!.onClick();
     await settle();
+    expect(frame.notices()).toEqual([{
+      tone: undefined,
+      text: "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
+        "Read and write access.",
+    }]);
+    frame.choose("sheets:native-1");
     expect(frame.notices()).toEqual([{
       tone: undefined,
       text: "Editing isn't available here, so this connects as a Drive file, whose content can be read but not edited.",

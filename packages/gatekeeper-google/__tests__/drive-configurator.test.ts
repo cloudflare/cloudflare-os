@@ -259,7 +259,7 @@ describe("the Drive picker's access choice", () => {
   const OPTIONS = [
     {
       value: "write", title: "Read and write",
-      description: "Changes, such as comments, sharing and moves, each wait for your approval.",
+      description: "Changes, such as edits, comments, sharing and moves, each wait for your approval.",
     },
     { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
   ];
@@ -279,6 +279,9 @@ describe("the Drive picker's access choice", () => {
 
   const NATIVE_DOC: DriveNode = {
     id: "doc:D", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document",
+  };
+  const NATIVE_SLIDES: DriveNode = {
+    id: "slides:P", title: "Deck", kind: "file", mimeType: "application/vnd.google-apps.presentation",
   };
 
   beforeEach(() => {
@@ -652,6 +655,23 @@ describe("the Drive picker's access choice", () => {
     expect(frame.url()).toBe("https://docs.google.com/document/d/D/edit");
     expect(frame.access()).toBeUndefined();
     expect(frame.notices()).toEqual([]);
+  });
+
+  it("says a presentation connected as a Drive file can be edited with read and write access", async () => {
+    const frame = await open([FILE]);
+    frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [NATIVE_SLIDES] });
+    await frame.list("folder:A");
+    frame.choose("slides:P");
+    frame.chooseAccess("write");
+    await settle();
+    expect(frame.notices()).toEqual(info(
+      "Connects as a Drive file, whose content can be edited, each change with your approval.",
+      WRITE_PROMPT));
+    frame.chooseAccess("read");
+    await settle();
+    expect(frame.notices()).toEqual(info(
+      "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
+        "Read and write access."));
   });
 
   it("keeps the shared-drives notice last", async () => {

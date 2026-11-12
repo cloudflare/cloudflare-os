@@ -5,6 +5,7 @@ import type { DriveAccess, GoogleDriveFolderSession } from "../../src/drive-type
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE, type DriveAccessLevel,
 } from "../../src/resources";
+import { DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 
 // Sharing changes and moves through the Drive gatekeeper itself: queued by a session, then applied,
 // rejected or reverted by the gatekeeper, against a Drive that answers as Google was seen to.
@@ -725,7 +726,7 @@ describe("access level", () => {
     }
     // Neither sharing nor moves is offered for auto-approval.
     expect(await readWrite.autoApprovable())
-      .toEqual([{ tag: "driveComments", label: "Drive comments" }]);
+      .toEqual([{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS]);
     expect(await readOnly.autoApprovable()).toEqual([]);
   });
 

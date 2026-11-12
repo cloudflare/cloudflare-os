@@ -837,8 +837,9 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       facetName: string, id: string, props: GoogleDriveGatekeeperImplProps, queueId: string,
   ): Promise<GoogleDriveSession> {
     using queueStub = new RpcStub(this.#sharedQueue(queueId));
+    // The class serves every access level; a read and write binding's agent type is this one.
     return await this.#googleFile<GoogleDriveGatekeeperImpl>("GoogleDriveGatekeeperImpl", facetName, id, props)
-      .startSession(queueStub);
+      .startSession(queueStub) as unknown as GoogleDriveSession;
   }
 
   /** Admit an observer as the Overseer does, then let the queue refuse what excludes them. */

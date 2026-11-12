@@ -560,26 +560,46 @@ function convertedText({ kind, copy }: Extract<Flow, { step: "converted" }>): st
 
 const AS_DRIVE_FILE = "Connects as a Drive file, whose content can be read but not edited.";
 
+/** The files a read and write Drive connection edits. */
+const EDITED_AS_DRIVE_FILES: ReadonlySet<OfficeKind> = new Set(["slides"]);
+
+/**
+ * What a file of `editor` connected as a Drive file can have done to its content: edited when the
+ * connection is read and write, which the deployment may not offer.
+ */
+function asDriveFile(editor: OfficeKind, values: DriveConfiguratorValues, accepted: readonly string[] | undefined) {
+  if (!EDITED_AS_DRIVE_FILES.has(editor) || offer.known !== true) return AS_DRIVE_FILE;
+  return writing(values, accepted)
+    ? "Connects as a Drive file, whose content can be edited, each change with your approval."
+    : "Connects as a Drive file, whose content can be read but not edited: editing it takes Read and write access.";
+}
+
 /**
  * Says a Docs, Sheets or Slides file the Workshop takes only as a Drive file connects as a Drive
  * file, and on the Google Drive card offers to ask for the editable types the account lacks.
  */
 function driveFileNotice(context: Context) {
-  const { values: { target }, acceptedResourceUrlPatterns: accepted } = context;
+  const { values, acceptedResourceUrlPatterns: accepted } = context;
+  const { target } = values;
   const editor = editorOf(target ?? "");
   if (!editor || patternOf(target!, accepted) !== FILE_PATTERN) return null;
   const ungranted = ungrantedEditors(accepted);
+  const notice = asDriveFile(editor, values, accepted);
   if (editAccess.unavailable) {
     return <Notice>
-      {"Editing isn't available here, so this connects as a Drive file, whose content can be read but not edited."}
+      {notice === AS_DRIVE_FILE
+        ? "Editing isn't available here, so this connects as a Drive file, whose content can be read but not edited."
+        : notice}
     </Notice>;
   }
-  if (!ungranted.length) return <Notice>{AS_DRIVE_FILE}</Notice>;
+  if (!ungranted.length) return <Notice>{notice}</Notice>;
   const action = { label: "Allow editing", disabled: editAccess.busy, onClick: () => void allowEditing(context, ungranted) };
   return editAccess.error
     ? <Notice tone="error" action={action}>{editAccess.error}</Notice>
     : <Notice action={action}>
-      {`${AS_DRIVE_FILE} To edit it as a Google ${EDITORS[editor].title} file, allow editing and choose it again.`}
+      {notice === AS_DRIVE_FILE
+        ? `${notice} To edit it as a Google ${EDITORS[editor].title} file, allow editing and choose it again.`
+        : `${notice} To connect it as a Google ${EDITORS[editor].title} file on its own instead, allow editing and choose it again.`}
     </Notice>;
 }
 
@@ -667,7 +687,7 @@ function accessField(context: Context) {
     <RadioCards
       value={values.access === "write" ? "write" : "read"}
       options={[
-        { value: "write", title: "Read and write", description: "Changes, such as comments, sharing and moves, each wait for your approval." },
+        { value: "write", title: "Read and write", description: "Changes, such as edits, comments, sharing and moves, each wait for your approval." },
         { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
       ]}
       onChange={next => chooseAccess(context, next)}

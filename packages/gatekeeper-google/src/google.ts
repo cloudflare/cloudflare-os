@@ -33,13 +33,16 @@ import {
   type SimulatedFileProps,
 } from "./creation";
 import {
-  getGoogleSlidesTypesCode, GooglePresentationReadSessionImpl, type GoogleSlidesGatekeeperImplProps,
+  getGoogleSlidesTypesCode, GooglePresentationReadSessionImpl, GooglePresentationSessionImpl,
+  type GoogleSlidesGatekeeperImplProps,
 } from "./slides";
 import {
   getGoogleSheetsTypesCode, GoogleSpreadsheetReadSessionImpl, type GoogleSheetsGatekeeperImplProps,
 } from "./sheets";
 import type { GooglePresentationReadSession } from "./slides-read-types";
+import type { GooglePresentationSession } from "./slides-types";
 import SLIDES_READ_TYPES_CODE from "./slides-read-types.txt";
+import SLIDES_TYPES_CODE from "./slides-types.txt";
 import type { GoogleSpreadsheetReadSession } from "./sheets-read-types";
 import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import {
@@ -55,6 +58,9 @@ import {
 import {
   DRIVE_ACTIONS, type DriveAction, type DriveActions, type DriveQueue,
 } from "./drive-actions";
+import {
+  DriveFileEditors, editorOfMimeType, editorOfTag, type DriveEditorName,
+} from "./drive-editors";
 import {
   checkSuggestion, composeComment, composeReply, composeResolve, locateQuote, requireQuote,
   selectTab,
@@ -75,7 +81,7 @@ import {
   planShare, planUnshare, planUpdate, readPermissions, SHARE_PENDING, toAccessEntries,
 } from "./drive-sharing";
 import {
-  actorFence, driveAccessCap, isPendingId, readOnlyRefusal, shownFileName, writeAttempts,
+  actorFence, driveAccessCap, isPendingId, proveTarget, readOnlyRefusal, shownFileName, writeAttempts,
   writeRefusal, WRITE_CONNECTION_REFUSED, WRITES_GRANT_MISSING, type DriveActor,
   type DriveWriteTargetPayload, type QueuedWrite,
 } from "./drive-writes";
@@ -100,7 +106,8 @@ import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
   DriveFileBytes, DriveFileReadOptions, DriveGrantee, DriveListOptions, DrivePdfText, DriveScope,
   DriveSessionSearchQuery, DriveShareOptions, DriveShareRole,
-  DriveSuggestEditOptions, GoogleDriveFolderSession, GoogleDriveSession,
+  DriveSuggestEditOptions, GoogleDriveFolderReadSession, GoogleDriveFolderSession,
+  GoogleDriveReadSession, GoogleDriveSession,
 } from "./drive-types";
 import { ChatApi, ChatApiError } from "./chat-api";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
@@ -180,7 +187,7 @@ import {
 } from "./oauth";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
-  GMAIL_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
+  GMAIL_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX, stripTypeModulePrefix,
 } from "./type-bundle";
 
 let googleDocTypesCode: string | undefined;
@@ -211,12 +218,15 @@ function getDriveAgentTypesCode(): string {
 
 /**
  * A Drive binding's bundle: the native read types, the comment declarations and the Drive reads,
- * with the writes for `write`.
+ * with, for `write`, the editable native sessions and the Drive writes.
  */
 function getGoogleDriveTypesCode(write: boolean): string {
   return [
     DOCS_READ_TYPES_CODE, SHEETS_READ_TYPES_CODE, SLIDES_READ_TYPES_CODE, COMMENT_TYPES_CODE,
-    getDriveReadAgentTypesCode(), ...(write ? [getDriveAgentTypesCode()] : []),
+    getDriveReadAgentTypesCode(),
+    ...(write
+      ? [stripTypeModulePrefix(SLIDES_TYPES_CODE, SLIDES_TYPES_MODULE_PREFIX), getDriveAgentTypesCode()]
+      : []),
   ].join("\n");
 }
 
@@ -3841,6 +3851,12 @@ const SEND_IN_DOUBT_OTHER_ACCOUNT =
   "Or check the file on Google Drive, then reject this to clear it.";
 
 /**
+ * Where an exact-file binding keeps which editor its file is, if any, as its describe() last read
+ * it: its catalog lists only that editor's kinds, and is answered without asking Google.
+ */
+const BOUND_FILE_EDITOR_KEY = "driveEditors:boundFile";
+
+/**
  * What a Drive binding names: its owner's account, its scope and its access level, or a folder not
  * created yet.
  */
@@ -3854,7 +3870,7 @@ export type GoogleDriveGatekeeperImplProps = {
 @validateRpc()
 export class GoogleDriveGatekeeperImpl
     extends DurableObject<Env, GoogleDriveGatekeeperImplProps>
-    implements Gatekeeper<GoogleDriveSession> {
+    implements Gatekeeper<GoogleDriveSessionImpl | UncreatedDriveFolderSessionImpl> {
   #creating = new Mutex();
   #tokens = new AccessTokenCache(opts => this.#account().getAccessToken(opts));
   #api = new DriveApi(opts => this.#getAccessToken(opts));
@@ -3878,9 +3894,25 @@ export class GoogleDriveGatekeeperImpl
     docs: new GoogleDocsApi(async opts => this.#approvalToken ?? this.#getAccessToken(opts)),
     scope: () => this.#scope, writeRefusal: () => this.#writeRefusal(),
     attempts: this.#attempts,
+    // An edit is not tied to an account, so it is sent under the connection's own token.
+    editors: {
+      slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
+    },
+  };
+  #editApis = {
+    slides: new GoogleSlidesApi(opts => this.#getAccessToken(opts)),
   };
   #actions = DRIVE_ACTIONS.bind(this.#journal, this.#host);
   #reads = new ReadGate();
+  #editors = new DriveFileEditors({
+    journal: this.#journal,
+    submit: (queue, name, payload) =>
+      this.#actions.submit(queue, name as keyof DriveActions, payload as never),
+    apply: id => this.#actions.apply(id),
+    reject: id => this.#actions.reject(id),
+    writeRefusal: () => this.#writeRefusal(),
+    locate: target => proveTarget(this.#host, target),
+  });
 
   #account() {
     return this.ctx.exports.UserAccount.get(
@@ -3975,7 +4007,7 @@ export class GoogleDriveGatekeeperImpl
         url: GOOGLE_DRIVE_RESOURCE.urlPattern,
         title: titled("Google Drive Account"),
         snippet: write
-          ? `Read and write: ${reads}, read and queue comments, change who files are shared with, and move files`
+          ? `Read and write: ${reads}, queue edits to Google Slides presentations, read and queue comments, change who files are shared with, and move files`
           : `Read-only: ${reads}, and read comments`,
         suggestedBindingName: "GOOGLE_DRIVE",
         tsType: write ? "GoogleDriveSession" : "GoogleDriveReadSession",
@@ -3992,18 +4024,20 @@ export class GoogleDriveGatekeeperImpl
         url: `https://drive.google.com/drive/folders/${encodeURIComponent(scope.folderId)}`,
         title: titled(folder.name),
         snippet: write
-          ? `Read and write: ${reads}, read and queue comments on direct children, change who they and the folder are shared with, and move them within Drive folder "${folder.name}"`
+          ? `Read and write: ${reads}, queue edits to Google Slides presentations among direct children, read and queue comments on direct children, change who they and the folder are shared with, and move them within Drive folder "${folder.name}"`
           : `Read-only: ${reads}, and read comments on direct children in Drive folder "${folder.name}"`,
         suggestedBindingName: "GOOGLE_DRIVE_FOLDER",
         tsType: write ? "GoogleDriveFolderSession" : "GoogleDriveFolderReadSession",
       };
     }
     let file = await api.getFile(scope.fileId);
+    let editor: DriveEditorName | null = editorOfMimeType(file.mimeType) ?? null;
+    this.ctx.storage.kv.put(BOUND_FILE_EDITOR_KEY, editor);
     return {
       url: `https://drive.google.com/file/d/${encodeURIComponent(scope.fileId)}/view`,
       title: titled(file.name),
       snippet: write
-        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", read and queue comments on it, and change who it is shared with`
+        ? `Read and write: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, from Drive file "${file.name}", queue edits to it when it is a Google Slides presentation, read and queue comments on it, and change who it is shared with`
         : `Read-only: read metadata and, when native, Google Doc, Sheet or Slides content, with readPdf() a PDF's text, or with readFile() the bytes of any other file, and comments, from Drive file "${file.name}"`,
       suggestedBindingName: "GOOGLE_DRIVE_FILE",
       tsType: write ? "GoogleDriveFileSession" : "GoogleDriveReadSession",
@@ -4014,12 +4048,22 @@ export class GoogleDriveGatekeeperImpl
     return getGoogleDriveTypesCode(this.#writes);
   }
 
-  /** A read-only binding submits nothing, so it lists no kind. */
+  /**
+   * A read-only binding submits nothing, so it lists no kind. An exact-file binding lists the
+   * kinds of its file's editor alone, once describe() has read which that is.
+   */
   async getAutoApprovableActions(): Promise<ActionKind[]> {
-    return this.#writes ? this.#actions.autoApprovableKinds() : [];
+    if (!this.#writes) return [];
+    let kinds = this.#actions.autoApprovableKinds();
+    if (this.#scope.kind !== "file") return kinds;
+    let bound = this.ctx.storage.kv.get<DriveEditorName | null>(BOUND_FILE_EDITOR_KEY);
+    return kinds.filter(({ tag }) => {
+      let editor = editorOfTag(tag);
+      return editor === undefined || editor === bound;
+    });
   }
 
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSession> {
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleDriveSessionImpl | UncreatedDriveFolderSessionImpl> {
     let props = this.ctx.props;
     if (isSimulated(props)) return new UncreatedDriveFolderSessionImpl(props.creation.title, approvalQueue.dup());
     // Only an undecided or claimed write can be applied again, so no other marker is read again.
@@ -4051,6 +4095,8 @@ export class GoogleDriveGatekeeperImpl
       this.#scope,
       approvalQueue.dup(),
       writes,
+      // A read-only binding's native sessions have no write method at all.
+      this.#writes ? this.#editors : undefined,
     );
   }
 
@@ -4069,6 +4115,9 @@ export class GoogleDriveGatekeeperImpl
    * it and looks for what that send made.
    */
   applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
+    // An edit is applied in its file's turn, which a comment's reads need not wait for.
+    let edit = this.#editors.apply(actionId);
+    if (edit) return edit;
     return this.#reads.resolve(async () => {
       // A sharing change or a move was staged under the Google account that queued it. Only a
       // record still to be applied needs the account asked: the kit answers an applied or failed
@@ -4117,7 +4166,9 @@ export class GoogleDriveGatekeeperImpl
    * Withdraws a write, whatever an earlier send of it did: what that send made stays on the file,
    * and nothing applies the action again, so its attempt marker goes with it.
    */
-  rejectAction(actionId: number): Promise<void> {
+  rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
+    let edit = this.#editors.reject(actionId);
+    if (edit) return edit;
     return this.#reads.resolve(async () => {
       await this.#actions.reject(actionId);
       this.#attempts.delete(actionId);
@@ -4334,10 +4385,20 @@ const MOVE_NEEDS_A_FOLDER =
   "Moving takes a folder or all-of-Drive connection: the single-file connection named below " +
   "cannot move a file.";
 
-/** Drive RPC session implementation, exported for workerd contract coverage. */
+/** The Drive session methods that open a native file. */
+type NativeOpener = "openGoogleDoc" | "openGoogleSheet" | "openGoogleSlides";
+
+/**
+ * Drive RPC session implementation, exported for workerd contract coverage. One class serves every
+ * scope and access level. A native opener answers the session the binding's access hands out, a
+ * read session or an editable one that extends it, and a folder opens another such session, so
+ * those are typed as the reads.
+ */
 @validateRpc()
 export class GoogleDriveSessionImpl extends RpcTarget
-    implements GoogleDriveSession, GoogleDriveFolderSession {
+    implements Omit<GoogleDriveSession, NativeOpener>,
+      Omit<GoogleDriveFolderSession, NativeOpener | "openFolder">,
+      Pick<GoogleDriveReadSession, NativeOpener>, Pick<GoogleDriveFolderReadSession, "openFolder"> {
   #core: DriveCore;
   #driveApi: DriveApi;
   #docsApi: GoogleDocsApi;
@@ -4350,6 +4411,8 @@ export class GoogleDriveSessionImpl extends RpcTarget
   #location?: FolderLocation;
   #approvalQueue: RpcStub<ApprovalQueue>;
   #writes: DriveQueue;
+  /** The binding's edits of native files; absent on a read-only binding. */
+  #editors: DriveFileEditors | undefined;
 
   constructor(
     driveApi: DriveApi,
@@ -4360,6 +4423,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
     scope: DriveBindingScope,
     approvalQueue: RpcStub<ApprovalQueue>,
     writes: DriveQueue,
+    editors: DriveFileEditors | undefined,
     location?: FolderLocation,
   ) {
     super();
@@ -4374,6 +4438,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
       : undefined;
     this.#approvalQueue = approvalQueue;
     this.#writes = writes;
+    this.#editors = editors;
     this.#core = this.#coreFor(this.#approvalQueue);
   }
 
@@ -4397,13 +4462,13 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#core.getEntry(fileId);
   }
 
-  async openFolder(folderId: string): Promise<GoogleDriveFolderSession> {
+  async openFolder(folderId: string): Promise<GoogleDriveSessionImpl> {
     if (this.#scope.kind !== "folder") outsideScope();
     return this.#withQueue(async (queue, core) => {
       let location = await (core as DriveFolderSessionCore).openFolder(folderId);
       return new GoogleDriveSessionImpl(
         this.#driveApi, this.#docsApi, this.#sheetsApi, this.#slidesApi, this.#convertPdf,
-        this.#scope, queue, this.#writes, location,
+        this.#scope, queue, this.#writes, this.#editors, location,
       );
     });
   }
@@ -4420,10 +4485,15 @@ export class GoogleDriveSessionImpl extends RpcTarget
         new GoogleSpreadsheetReadSessionImpl(this.#sheetsApi, spreadsheetId, queue, read));
   }
 
-  async openGoogleSlides(fileId: string): Promise<GooglePresentationReadSession> {
+  async openGoogleSlides(
+    fileId: string,
+  ): Promise<GooglePresentationReadSession | GooglePresentationSession> {
+    let editors = this.#editors;
     return this.#openNative(fileId, GOOGLE_SLIDES_MIME_TYPE, "Google Slides presentation",
-      (presentationId, queue, read) =>
-        new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
+      (presentationId, queue, read, target) => editors
+        ? new GooglePresentationSessionImpl(
+          this.#slidesApi, presentationId, queue, read, editors.slides(target, queue))
+        : new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
   }
 
   async readPdf(fileId: string): Promise<DrivePdfText> {
@@ -4913,15 +4983,25 @@ export class GoogleDriveSessionImpl extends RpcTarget
     return this.#withQueue(async (queue, core) => new RpcCursor(await open(core), queue));
   }
 
+  /**
+   * Opens a native file for `build`, handing it the file's ID, a queue of its own, the read every
+   * fetch goes through, and the file as an edit names it.
+   */
   async #openNative<T>(
     fileId: string,
     mimeType: string,
     description: string,
-    build: (id: string, queue: RpcStub<ApprovalQueue>, read: NativeRead) => T,
+    build: (
+      id: string, queue: RpcStub<ApprovalQueue>, read: NativeRead, target: DriveWriteTargetPayload,
+    ) => T,
   ): Promise<T> {
     return this.#withQueue(async (queue, core) => {
-      let id = await core.openNativeFile(fileId, mimeType, description);
-      return build(id, queue, core.nativeRead(id, mimeType));
+      let file = await core.openNative(fileId, mimeType, description);
+      let target: DriveWriteTargetPayload = {
+        fileId: file.id, fileName: shownFileName(file.name),
+        ...(this.#location ? { folderIds: [...this.#location.folderIds] } : {}),
+      };
+      return build(file.id, queue, core.nativeRead(file.id, mimeType), target);
     });
   }
 }
@@ -4985,7 +5065,7 @@ class UncreatedDriveFolderSessionImpl extends RpcTarget
     throw new Error(UNCREATED_FOLDER);
   }
 
-  async openGoogleSlides(_fileId: string): Promise<GooglePresentationReadSession> {
+  async openGoogleSlides(_fileId: string): Promise<GooglePresentationSession> {
     throw new Error(UNCREATED_FOLDER);
   }
 

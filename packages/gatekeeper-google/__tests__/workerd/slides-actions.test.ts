@@ -1,385 +1,18 @@
 import { env } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  RestPageBackgroundFill, RestPageElement, RestPresentation, RestSlide, RestText,
-  RestThemeColorPair,
+  ActionDescription, ActionField, ActionKind,
+} from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  RestPageBackgroundFill, RestPresentation, RestThemeColorPair,
 } from "../../src/slides-api";
 import type { Slide, PresentationInfo, ShapeElement, TableElement } from "../../src/slides-read-types";
 import type { SlideTextEdit } from "../../src/slides-types";
 import { TEXT_STYLE_FIELDS } from "../../src/slides-text";
 import { colorScheme, presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
-
-/** One provider index of a shape's text: a character, or an AutoText. */
-type Unit = string | { auto: string };
-
-type BatchRequest = Record<string, any>;
-
-function unitsOf(body: RestText | undefined): Unit[] {
-  let units = (body?.textElements ?? []).flatMap((element): Unit[] =>
-    element.textRun ? [...(element.textRun.content ?? "")].flatMap(c => c.split(""))
-      : element.autoText ? [{ auto: element.autoText.content ?? "" }] : []);
-  return units.length > 0 ? units : ["\n"];
-}
-
-function textOfUnits(units: Unit[]): RestText {
-  let elements: NonNullable<RestText["textElements"]> = [];
-  let index = 0;
-  for (let unit of units) {
-    let last = elements.at(-1);
-    if (typeof unit === "string" && last?.textRun) {
-      last.textRun.content += unit;
-      last.endIndex = ++index;
-    } else {
-      elements.push(typeof unit === "string"
-        ? { startIndex: index, endIndex: ++index, textRun: { content: unit } }
-        : { startIndex: index, endIndex: ++index, autoText: { type: "SLIDE_NUMBER", content: unit.auto } });
-    }
-  }
-  return { textElements: elements };
-}
-
-function table(objectId: string, rows: string[][]): RestPageElement {
-  return {
-    objectId,
-    table: {
-      rows: rows.length,
-      columns: rows[0].length,
-      tableRows: rows.map((row, rowIndex) => ({
-        tableCells: row.map((cell, columnIndex) => ({
-          location: { rowIndex, columnIndex }, text: text([cell]),
-        })),
-      })),
-    },
-  };
-}
-
-/** A parsed field mask: each field it names, and that field's own mask, or `true` for all of it. */
-type Mask = Map<string, Mask | true>;
-
-function parseMask(fields: string): Mask {
-  let at = 0;
-  let parse = (): Mask => {
-    let mask: Mask = new Map();
-    while (at < fields.length && fields[at] !== ")") {
-      let name = /^[^,()]+/.exec(fields.slice(at))![0];
-      at += name.length;
-      if (fields[at] === "(") {
-        at++;
-        mask.set(name, parse());
-        at++;
-      } else {
-        mask.set(name, true);
-      }
-      if (fields[at] === ",") at++;
-    }
-    return mask;
-  };
-  return parse();
-}
-
-/** `value` with only what `mask` names, as Google answers a request with a `fields` parameter. */
-function masked(value: unknown, mask: Mask | true): unknown {
-  if (mask === true || value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(item => masked(item, mask));
-  return Object.fromEntries(Object.entries(value).flatMap(([key, field]) => {
-    let inner = mask.get(key);
-    return inner === undefined ? [] : [[key, masked(field, inner)]];
-  }));
-}
-
-/** Where Google serves the copy it keeps of a picture background: a bearer URL. */
-const PICTURE_COPY = "https://lh7-rt.googleusercontent.com/slidesz/picture-copy";
-
-/**
- * A background as Google stores it from a request: `RENDERED`, the default, is omitted, and a
- * picture is downloaded once and served from Google's own host.
- */
-function storedFill({ propertyState, ...fill }: RestPageBackgroundFill): RestPageBackgroundFill {
-  if (fill.stretchedPictureFill) {
-    if (!fill.stretchedPictureFill.contentUrl?.startsWith("https://")) throw new Invalid();
-    let size = { width: { magnitude: 13600, unit: "EMU" as const }, height: { magnitude: 7650, unit: "EMU" as const } };
-    return { stretchedPictureFill: { contentUrl: PICTURE_COPY, size } };
-  }
-  return propertyState === "RENDERED" ? fill : { propertyState, ...fill };
-}
-
-const FOLLOWING: Record<string, string> = {
-  TEXT1: "DARK1", BACKGROUND1: "LIGHT1", TEXT2: "LIGHT2", BACKGROUND2: "DARK2",
-};
-
-class Invalid extends Error {}
-
-/**
- * Google Slides as far as these tests need it: presentation and page reads, and an atomic,
- * revision-checked `batchUpdate` of the requests the gatekeeper sends.
- */
-class SlidesProvider {
-  revision = 1;
-  batches: { requests: BatchRequest[]; requiredRevisionId?: string }[] = [];
-  /** Lands once, just before the next batch is checked, as a collaborator's edit would. */
-  beforeNextBatch?: (deck: RestPresentation) => void;
-  /** `lost` commits the next batch and answers 503; `dropped` answers 503 and commits nothing. */
-  nextFailure?: "lost" | "dropped";
-  /** Google reports a revision only to an account that can edit the presentation. */
-  editable = true;
-  /** Every page fetched, by ID. */
-  pageReads: string[] = [];
-  #copies = 0;
-
-  constructor(public deck: RestPresentation) {}
-
-  install(): this {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      let request = new Request(input, init);
-      let url = new URL(request.url);
-      if (url.pathname === "/v1/presentations/deck-1:batchUpdate") {
-        return this.#batch(await request.json());
-      }
-      let fields = url.searchParams.get("fields");
-      let mask = fields === null ? true : parseMask(fields);
-      if (url.pathname === "/v1/presentations/deck-1") {
-        let read = { ...this.deck, ...(this.editable ? { revisionId: `r${this.revision}` } : {}) };
-        return Response.json(masked(read, mask));
-      }
-      let pageId = url.pathname.match(/^\/v1\/presentations\/deck-1\/pages\/([^/]+)$/)?.[1];
-      if (pageId) this.pageReads.push(pageId);
-      let page = [...this.deck.slides!, ...this.deck.layouts ?? []].find(s => s.objectId === pageId);
-      return page ? Response.json(masked(page, mask)) : new Response(null, { status: 404 });
-    }));
-    return this;
-  }
-
-  /** A collaborator's edit, which moves the revision. */
-  edit(change: (deck: RestPresentation) => void): void {
-    change(this.deck);
-    this.revision++;
-  }
-
-  slide(id: string): RestSlide {
-    return this.deck.slides!.find(s => s.objectId === id)!;
-  }
-
-  text(slideId: string, elementId: string): string {
-    let element = this.slide(slideId).pageElements!.find(e => e.objectId === elementId)!;
-    return unitsOf(element.shape?.text).map(u => typeof u === "string" ? u : u.auto).join("");
-  }
-
-  #batch(body: { requests: BatchRequest[]; writeControl?: { requiredRevisionId?: string } }): Response {
-    this.batches.push({ requests: body.requests, requiredRevisionId: body.writeControl?.requiredRevisionId });
-    if (this.beforeNextBatch) {
-      this.edit(this.beforeNextBatch);
-      this.beforeNextBatch = undefined;
-    }
-    if (body.writeControl?.requiredRevisionId !== `r${this.revision}`) {
-      return Response.json({ error: { code: 400, status: "FAILED_PRECONDITION" } }, { status: 400 });
-    }
-    let failure = this.nextFailure;
-    this.nextFailure = undefined;
-    if (failure === "dropped") return new Response(null, { status: 503 });
-    let next = structuredClone(this.deck);
-    try {
-      for (let request of body.requests) this.#apply(next, request);
-    } catch (error) {
-      if (!(error instanceof Invalid)) throw error;
-      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT" } }, { status: 400 });
-    }
-    this.deck = next;
-    this.revision++;
-    return failure === "lost" ? new Response(null, { status: 503 }) : Response.json({ replies: [] });
-  }
-
-  #apply(deck: RestPresentation, request: BatchRequest): void {
-    let slides = deck.slides!;
-    if (request.insertText || request.deleteText) {
-      let { objectId, cellLocation } = request.insertText ?? request.deleteText;
-      let holder = this.#textHolder(deck, objectId, cellLocation);
-      let units = unitsOf(holder.text);
-      if (request.insertText) {
-        let { insertionIndex, text: inserted } = request.insertText;
-        if (insertionIndex < 0 || insertionIndex > units.length - 1) throw new Invalid();
-        units.splice(insertionIndex, 0, ...inserted.split(""));
-      } else {
-        let { type, startIndex, endIndex } = request.deleteText.textRange;
-        if (type !== "FIXED_RANGE" || startIndex < 0 || endIndex <= startIndex ||
-          endIndex > units.length - 1) throw new Invalid();
-        units.splice(startIndex, endIndex - startIndex);
-      }
-      holder.text = textOfUnits(units);
-    } else if (request.updateTextStyle || request.updateParagraphStyle) {
-      // Styles are not modelled here; the request must still address text that exists.
-      let { objectId, cellLocation, textRange, fields } =
-        request.updateTextStyle ?? request.updateParagraphStyle;
-      let length = unitsOf(this.#textHolder(deck, objectId, cellLocation).text).length;
-      let { type, startIndex, endIndex } = textRange;
-      if (type !== "FIXED_RANGE" || !fields || startIndex < 0 || endIndex <= startIndex ||
-        endIndex > length) throw new Invalid();
-    } else if (request.duplicateObject) {
-      let { objectId, objectIds } = request.duplicateObject;
-      let at = slides.findIndex(s => s.objectId === objectId);
-      if (at < 0) throw new Invalid();
-      let existing = new Set(JSON.stringify(deck).match(/"objectId":"[^"]+"/g)!
-        .map(match => match.slice(12, -1)));
-      for (let [key, value] of Object.entries<string>(objectIds)) {
-        if (!existing.has(key) || existing.has(value)) throw new Invalid();
-      }
-      let copy = structuredClone(slides[at]);
-      let rename = (id: string) => objectIds[id] ?? `${id}_copy${++this.#copies}`;
-      copy.objectId = rename(objectId);
-      let walk = (elements: RestPageElement[] | undefined) => elements?.forEach(element => {
-        element.objectId = rename(element.objectId!);
-        walk(element.elementGroup?.children);
-      });
-      walk(copy.pageElements);
-      let notes = copy.slideProperties!.notesPage!;
-      let notesId = notes.notesProperties!.speakerNotesObjectId!;
-      notes.notesProperties!.speakerNotesObjectId = `${copy.objectId}-notes`;
-      for (let element of notes.pageElements ?? []) {
-        element.objectId = element.objectId === notesId ? `${copy.objectId}-notes` : rename(element.objectId!);
-      }
-      slides.splice(at + 1, 0, copy);
-    } else if (request.deleteObject) {
-      let { objectId } = request.deleteObject;
-      let at = slides.findIndex(s => s.objectId === objectId);
-      if (at >= 0) {
-        let [{ slideProperties }] = slides.splice(at, 1);
-        // Google deletes a master, and its layouts, with its last slide, unless it is the first.
-        let master = slideProperties!.masterObjectId;
-        if (deck.masters?.slice(1).some(m => m.objectId === master) &&
-          !slides.some(s => s.slideProperties!.masterObjectId === master)) {
-          deck.masters = deck.masters.filter(m => m.objectId !== master);
-          deck.layouts = deck.layouts!.filter(l => l.layoutProperties!.masterObjectId !== master);
-        }
-      } else {
-        let page = slides.find(s => s.pageElements?.some(e => e.objectId === objectId));
-        if (!page) throw new Invalid();
-        page.pageElements = page.pageElements!.filter(e => e.objectId !== objectId);
-      }
-    } else if (request.createShape) {
-      let { objectId, shapeType, elementProperties: { pageObjectId, size, transform } } = request.createShape;
-      let page = slides.find(s => s.objectId === pageObjectId);
-      if (!page || JSON.stringify(deck).includes(`"objectId":"${objectId}"`)) throw new Invalid();
-      page.pageElements!.push({ objectId, size, transform, shape: { shapeType } });
-    } else if (request.updateShapeProperties) {
-      // Properties are not modelled here; the shape must still exist.
-      let { objectId, fields } = request.updateShapeProperties;
-      let found = slides.some(s => s.pageElements?.some(e => e.objectId === objectId && e.shape));
-      if (!found || !fields) throw new Invalid();
-    } else if (request.updateSlidesPosition) {
-      let { slideObjectIds, insertionIndex } = request.updateSlidesPosition;
-      let order = slides.map(s => s.objectId!);
-      let positions = slideObjectIds.map((id: string) => order.indexOf(id));
-      if (positions.some((p: number, i: number) => p < 0 || (i > 0 && p <= positions[i - 1]))) {
-        throw new Invalid();
-      }
-      let moving = new Set<string>(slideObjectIds);
-      let staying = slides.filter(s => !moving.has(s.objectId!));
-      let at = order.slice(0, insertionIndex).filter(id => !moving.has(id)).length;
-      staying.splice(at, 0, ...slideObjectIds.map((id: string) => slides[order.indexOf(id)]));
-      deck.slides = staying;
-    } else if (request.createSlide) {
-      // Every layout placeholder is copied, as a live probe showed Google does.
-      let { objectId, insertionIndex = slides.length, slideLayoutReference, placeholderIdMappings = [] } =
-        request.createSlide;
-      let layout = deck.layouts!.find(l => l.objectId === slideLayoutReference.layoutId);
-      let placeholders = layout?.pageElements!.filter(e => e.shape?.placeholder) ?? [];
-      let parentOf = (mapped: { type: string; index?: number }) => placeholders.find(e =>
-        e.shape!.placeholder!.type === mapped.type && (e.shape!.placeholder!.index ?? 0) === (mapped.index ?? 0));
-      // Google takes the layout from the master of the slide before, or of the first slide.
-      let beside = slides[Math.max(insertionIndex - 1, 0)];
-      if (!layout || JSON.stringify(deck).includes(`"objectId":"${objectId}"`) || insertionIndex > slides.length ||
-        (beside && beside.slideProperties!.masterObjectId !== layout.layoutProperties!.masterObjectId) ||
-        placeholderIdMappings.some((m: BatchRequest) => !parentOf(m.layoutPlaceholder))) throw new Invalid();
-      slides.splice(insertionIndex, 0, {
-        objectId,
-        pageElements: placeholders.map(({ objectId: parentObjectId, size, transform, shape }) => ({
-          objectId: placeholderIdMappings.find((m: BatchRequest) => parentOf(m.layoutPlaceholder)?.objectId ===
-            parentObjectId)?.objectId ?? `${objectId}_${++this.#copies}`,
-          size, transform,
-          shape: { shapeType: shape!.shapeType, placeholder: { ...shape!.placeholder, parentObjectId } },
-        })),
-        slideProperties: {
-          layoutObjectId: layout.objectId,
-          masterObjectId: layout.layoutProperties!.masterObjectId,
-          notesPage: { notesProperties: { speakerNotesObjectId: `${objectId}-notes` }, pageElements: [] },
-        },
-      });
-    } else if (request.updateSlideProperties) {
-      let { objectId, slideProperties, fields } = request.updateSlideProperties;
-      let page = slides.find(s => s.objectId === objectId);
-      if (!page || fields !== "isSkipped") throw new Invalid();
-      if (slideProperties.isSkipped) page.slideProperties!.isSkipped = true;
-      else delete page.slideProperties!.isSkipped;
-    } else if (request.insertTableRows || request.deleteTableRow) {
-      let { tableObjectId, cellLocation: { rowIndex } } = request.insertTableRows ?? request.deleteTableRow;
-      let grid = slides.flatMap(s => s.pageElements ?? []).find(e => e.objectId === tableObjectId)?.table;
-      if (!grid || rowIndex >= grid.rows!) throw new Invalid();
-      if (request.insertTableRows) {
-        let { insertBelow, number } = request.insertTableRows;
-        let rows = Array.from({ length: number }, () => ({
-          tableCells: Array.from({ length: grid.columns! }, () => ({ text: text([""]) })),
-        }));
-        grid.tableRows!.splice(rowIndex + (insertBelow ? 1 : 0), 0, ...rows);
-        grid.rows! += number;
-      } else {
-        grid.tableRows!.splice(rowIndex, 1);
-        grid.rows! -= 1;
-      }
-      // Google renumbers the cells it moved.
-      grid.tableRows!.forEach((row, r) => row.tableCells!.forEach((cell, c) => {
-        cell.location = { rowIndex: r, columnIndex: c };
-      }));
-    } else if (request.updatePageProperties) {
-      let { objectId, pageProperties, fields } = request.updatePageProperties;
-      let masters = deck.masters ?? [];
-      let page = [...slides, ...deck.layouts ?? [], ...masters].find(p => p.objectId === objectId);
-      if (!page) throw new Invalid();
-      let master = masters.includes(page);
-      let properties = page.pageProperties ??= {};
-      if (fields === "pageBackgroundFill") {
-        let fill: RestPageBackgroundFill | undefined = pageProperties.pageBackgroundFill;
-        // A master has nothing to inherit, so resetting one leaves it with none.
-        properties.pageBackgroundFill = fill ? storedFill(fill)
-          : master ? { propertyState: "NOT_RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 1, blue: 1 } } } }
-          : { propertyState: "INHERIT" };
-      } else if (fields === "colorScheme") {
-        // Google takes all 12 theme colours, on a master alone, and works out the four that follow.
-        let colors: RestThemeColorPair[] | undefined = pageProperties.colorScheme?.colors;
-        if (!master || colors?.length !== 12) throw new Invalid();
-        let following = Object.entries(FOLLOWING).map(([type, follows]) =>
-          ({ type, color: colors.find(color => color.type === follows)?.color }));
-        properties.colorScheme = { colors: [...colors, ...following] };
-      } else {
-        throw new Invalid();
-      }
-    } else {
-      throw new Invalid();
-    }
-  }
-
-  #textHolder(
-    deck: RestPresentation, objectId: string,
-    cell?: { rowIndex: number; columnIndex: number },
-  ): { text?: RestText } {
-    for (let page of deck.slides!) {
-      let element = page.pageElements!.find(e => e.objectId === objectId);
-      if (element && cell) {
-        let found = element.table?.tableRows?.[cell.rowIndex]?.tableCells?.[cell.columnIndex];
-        if (!found) throw new Invalid();
-        return found;
-      }
-      if (element?.shape) return element.shape;
-      let notes = page.slideProperties!.notesPage!;
-      if (notes.notesProperties!.speakerNotesObjectId === objectId) {
-        let existing = notes.pageElements!.find(e => e.objectId === objectId);
-        if (existing) return existing.shape!;
-        let created: RestPageElement = { objectId, shape: { shapeType: "TEXT_BOX" } };
-        notes.pageElements!.push(created);
-        return created.shape!;
-      }
-    }
-    throw new Invalid();
-  }
-}
+import { PICTURE_COPY, SlidesProvider, table } from "../slides-provider";
+import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
+import { DriveFiles, SLIDES_MIME } from "../drive-files";
 
 function hooks() {
   return env.TEST_HOOKS.getByName("hooks");
@@ -391,11 +24,39 @@ function textEdits(edits: SlideTextEdit[]) {
   return edits.map(edit => ({ op: "editText", ...edit }));
 }
 
-/** A Slides gatekeeper over its own storage, and calls through a fresh session each time. */
-function gatekeeper() {
-  let facet = `slides-${++facetCount}`;
-  let call = async (method: string, ...args: unknown[]) =>
-    hooks().callSlides(facet, method as never, args);
+/** How a run reaches the presentation, and what it changes in what the suite asserts. */
+type Run = {
+  name: string;
+  /** Calls through a fresh session each time, over a gatekeeper's own storage. */
+  gatekeeper(): Slides;
+  /** The fields a card shows before the editor's own. */
+  file: ActionField[];
+  /** A kind as the run's binding labels it. */
+  kind(kind: ActionKind): ActionKind;
+  /** What a fresh session observes before its call's own reads. */
+  opened: string[];
+  /** The catalog of a binding to the presentation whose Slides kinds are `kinds`. */
+  catalog(kinds: ActionKind[]): ActionKind[];
+  /** The refusal of a change the account cannot make. */
+  cannotEdit: string;
+  /** Prepares each test: the Drive run serves Drive beside Slides, and grants the account it. */
+  setUp?(): Promise<void>;
+};
+
+type Slides = ReturnType<typeof bound>;
+
+/** The calls a test makes, through `call`, `apply`, `reject` and the rest of what a run supplies. */
+function bound(facet: string, through: {
+  call(method: string, args: unknown[], entered?: () => void): Promise<{
+    value?: unknown; error?: string; actionId?: number; action?: ActionDescription;
+    observations: string[];
+  }>;
+  apply(actionId: number, entered?: () => void): Promise<string | null>;
+  reject(actionId: number): Promise<{ restart?: boolean } | null>;
+  autoApprovable(): Promise<ActionKind[]>;
+  orphan(actionId: number): Promise<void>;
+}) {
+  let call = async (method: string, ...args: unknown[]) => through.call(method, args);
   let queued = async (method: string, ...args: unknown[]) => {
     let outcome = await call(method, ...args);
     if (outcome.error !== undefined) throw new Error(outcome.error);
@@ -412,13 +73,101 @@ function gatekeeper() {
     slides: async (...ids: string[]) => (await call("getSlides", ids)).value as Slide[],
     /** `getSlides`, calling `entered` once the gatekeeper has started it. */
     slidesEntered: async (entered: () => void, ...ids: string[]) =>
-      (await hooks().callSlides(facet, "getSlides", [ids], entered)).value as Slide[],
+      (await through.call("getSlides", [ids], entered)).value as Slide[],
     outline: async () => (await call("getPresentation")).value as PresentationInfo,
-    apply: (actionId: number, entered?: () => void) => hooks().applySlides(facet, actionId, entered),
-    reject: (actionId: number) => hooks().rejectSlides(facet, actionId),
-    autoApprovable: () => hooks().slidesAutoApprovable(facet),
-    orphan: (actionId: number) => hooks().orphanSlidesClaim(facet, actionId),
+    apply: through.apply,
+    reject: through.reject,
+    autoApprovable: through.autoApprovable,
+    orphan: through.orphan,
   };
+}
+
+/** The presentation bound directly. */
+const STANDALONE: Run = {
+  name: "bound directly",
+  gatekeeper() {
+    let facet = `slides-${++facetCount}`;
+    return bound(facet, {
+      call: (method, args, entered) => hooks().callSlides(facet, method as never, args, entered),
+      apply: (actionId, entered) => hooks().applySlides(facet, actionId, entered),
+      reject: actionId => hooks().rejectSlides(facet, actionId),
+      autoApprovable: () => hooks().slidesAutoApprovable(facet),
+      orphan: actionId => hooks().orphanSlidesClaim(facet, actionId),
+    });
+  },
+  file: [],
+  kind: kind => kind,
+  opened: [],
+  catalog: kinds => kinds,
+  cannotEdit: "can view \"Quarterly review\" but not edit it",
+};
+
+/** A read and write Drive binding to the presentation alone. */
+const DRIVE_FILE = { scope: { kind: "file", fileId: "deck-1" }, access: "write" } as const;
+/** The name Drive gives the presentation's file. */
+const FILE_NAME = "Quarterly review.pptx copy";
+
+/** The presentation opened from a read and write Drive binding to its file. */
+const THROUGH_DRIVE: Run = {
+  name: "opened from a read and write Drive binding",
+  gatekeeper() {
+    let facet = `drive-slides-${++facetCount}`;
+    return bound(facet, {
+      call: (method, args, entered) => hooks().callDriveNative(
+        facet, DRIVE_FILE, "openGoogleSlides", "deck-1", method, args, [], entered,
+        ["getSlides", []]),
+      apply: (actionId, entered) => hooks().applyDrive(facet, DRIVE_FILE, actionId, entered),
+      reject: actionId => hooks().rejectDriveEdit(facet, DRIVE_FILE, actionId),
+      // An exact-file binding learns which editor its file has when it describes it.
+      autoApprovable: async () => {
+        await hooks().describeDrive(facet, DRIVE_FILE);
+        return hooks().driveAutoApprovable(facet, DRIVE_FILE);
+      },
+      orphan: actionId => hooks().orphanDriveClaim(facet, DRIVE_FILE, actionId),
+    });
+  },
+  file: [
+    { label: "File", kind: "inline", value: "deck-1" },
+    { label: "File name", kind: "inline", value: FILE_NAME },
+  ],
+  kind: ({ tag, label }) => ({ tag, label: `${label}, in any presentation this connection reaches` }),
+  opened: [
+    "Check current metadata for Drive file deck-1 and open it as a Google Slides presentation.",
+  ],
+  catalog: kinds => [
+    { tag: "driveComments", label: "Drive comments" },
+    ...kinds.map(kind => THROUGH_DRIVE.kind(kind)),
+  ],
+  cannotEdit: "The connected Google account cannot edit that file.",
+  async setUp() {
+    SlidesProvider.companions = [new DriveFiles({
+      "deck-1": {
+        name: FILE_NAME, mimeType: SLIDES_MIME, parents: ["my-root"],
+        // Google lets an account edit what it reports the revision of.
+        canEdit: () => SlidesProvider.installed?.editable ?? true,
+      },
+    })];
+    await hooks().setDriveGrants([GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT]);
+  },
+};
+
+/**
+ * Engine behaviour is the same whichever way the presentation is reached, so these suites run on
+ * both. The stored-layout cases below read and seed the bound presentation's own storage, and run
+ * on it alone.
+ */
+const RUNS = [STANDALONE, THROUGH_DRIVE];
+
+/** A Slides gatekeeper over its own storage, reached as `run` reaches it. */
+function gatekeeper(run: Run = STANDALONE): Slides {
+  return run.gatekeeper();
+}
+
+/** Sets `run` up for each test of the suite that calls this. */
+function useRun(run: Run): void {
+  if (!run.setUp) return;
+  beforeEach(() => run.setUp!());
+  afterEach(() => { SlidesProvider.companions = []; });
 }
 
 function shapeText(slide: Slide, id: string): string {
@@ -503,22 +252,25 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Google Slides changes", () => {
+describe.each(RUNS)("Google Slides changes ($name)", run => {
+  useRun(run);
+
   it("shows a queued edit in reads, then writes only the changed text at the read's revision", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let { actionId, action, observations } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "Revenue: $10M", replace: "Revenue: $12M" },
     ]);
 
-    expect(observations).toHaveLength(1);
+    expect(observations).toHaveLength(run.opened.length + 1);
     expect(action).toMatchObject({
       title: "Change slide 2 (\"Revenue\")",
       autoApprovable: true,
       actionKind: { tag: "editSlidesText" },
       descriptionIsComplete: true,
       fields: [
+        ...run.file,
         { label: "Find", kind: "text", value: "Revenue: $10M" },
         { label: "Replace with", kind: "text", value: "Revenue: $12M" },
       ],
@@ -547,7 +299,7 @@ describe("Google Slides changes", () => {
 
   it("edits table cells and creates absent speaker notes, all in one approval", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "tb2", cell: { row: 1, column: 1 }, replace: "5" },
@@ -567,7 +319,7 @@ describe("Google Slides changes", () => {
 
   it("refuses an edit whose text is not there, or is there twice, without queuing it", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let refusal = async (find: string) => {
       let outcome = await slides.callEdit([{ slideId: "s2", elementId: "b2", find, replace: "x" }]);
       expect(outcome.actionId).toBeUndefined();
@@ -584,7 +336,7 @@ describe("Google Slides changes", () => {
 
   it("lets later changes build on a queued copy, and applies them in order", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let copy = await slides.queued("duplicateSlide", "s2");
     expect(copy.action).toMatchObject({ autoApprovable: true, actionKind: { tag: "arrange-slides" } });
@@ -608,12 +360,12 @@ describe("Google Slides changes", () => {
 
   it("moves and deletes slides as previewed", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let move = await slides.queued("moveSlides", ["s3", "s1"], "s2");
     expect(move.action).toMatchObject({
       autoApprovable: true,
-      actionKind: { tag: "arrange-slides", label: "Adding, copying and reordering slides" },
+      actionKind: run.kind({ tag: "arrange-slides", label: "Adding, copying and reordering slides" }),
     });
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s2", "s1", "s3"]);
     let remove = await slides.queued("deleteSlide", "s1");
@@ -621,7 +373,7 @@ describe("Google Slides changes", () => {
     expect(remove.action).toMatchObject({
       title: "Delete slide 2 (\"Q3 review\")",
       autoApprovable: false,
-      actionKind: { tag: "delete-slides", label: "Deleting slides" },
+      actionKind: run.kind({ tag: "delete-slides", label: "Deleting slides" }),
     });
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s2", "s3"]);
 
@@ -633,7 +385,7 @@ describe("Google Slides changes", () => {
 
   it("reports a queued edit a collaborator's change broke, and fails it without writing", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "$10M", replace: "$12M" },
     ]);
@@ -656,11 +408,12 @@ describe("Google Slides changes", () => {
 
   it("guards a whole-text replacement on the text it replaced", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId, action } = await slides.edit([
       { slideId: "s1", elementId: "t1", replace: "Q4 review" },
     ]);
     expect(action?.fields).toEqual([
+      ...run.file,
       { label: "Current text", kind: "text", value: "Q3 review" },
       { label: "New text", kind: "text", value: "Q4 review" },
     ]);
@@ -675,7 +428,7 @@ describe("Google Slides changes", () => {
 
   it("plans again when the presentation changes between its read and its write", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "Margin: 20%", replace: "Margin: 25%" },
     ]);
@@ -691,7 +444,7 @@ describe("Google Slides changes", () => {
 
   it("resends a write whose response was lost only as first sent, and finds it landed", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "$10M", replace: "$10M ($8M net)" },
     ]);
@@ -708,7 +461,7 @@ describe("Google Slides changes", () => {
 
   it("records an unknown outcome when a lost write cannot be shown to have landed", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "$10M", replace: "$12M" },
     ]);
@@ -726,7 +479,7 @@ describe("Google Slides changes", () => {
   // Text that ends as it began reads the same whether the batch landed or not.
   it("records an unknown outcome for a dropped batch whose edits undo each other", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" },
       { slideId: "s1", elementId: "t1", find: "Q4", replace: "Q3" },
@@ -739,7 +492,7 @@ describe("Google Slides changes", () => {
   it("follows an edited cell through the rows a lost batch then adds and deletes", async () => {
     let outcome = async (...lines: { op: string; at: number }[]) => {
       let provider = new SlidesProvider(deck()).install();
-      let slides = gatekeeper();
+      let slides = gatekeeper(run);
       let { actionId } = await slides.queued("updateSlides", [
         { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 1, column: 0 }, replace: "APAC" },
         ...lines.map(line => ({ ...line, slideId: "s2", elementId: "tb2" })),
@@ -757,7 +510,7 @@ describe("Google Slides changes", () => {
   // The edited cell moves down a row, so the text its old place shows proves nothing.
   it("records an unknown outcome for a dropped batch that edits a cell, then adds a row above it", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 1, column: 0 }, replace: "APAC" },
       { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 1 },
@@ -773,7 +526,7 @@ describe("Google Slides changes", () => {
   // The cell moves down onto one that already reads as the edit leaves it.
   it("records an unknown outcome for a dropped batch whose moved cell lands on text it matches", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "editText", slideId: "s2", elementId: "tb2", cell: { row: 0, column: 0 }, replace: "EMEA" },
       { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 0 },
@@ -785,7 +538,7 @@ describe("Google Slides changes", () => {
 
   it("finds a lost batch landed by the cells of a table it only adds rows to", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 2 },
     ]);
@@ -811,7 +564,7 @@ describe("Google Slides changes", () => {
     },
   ])("records an unknown outcome for a dropped batch when a collaborator $name", async ({ changes, collaborated }) => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", changes);
     dropNextWrite(provider, d => {
       d.slides![1].pageElements![2] = table("tb2", collaborated);
@@ -824,7 +577,7 @@ describe("Google Slides changes", () => {
   // text row by row as the 3 × 2 table the batch plans; only their sizes and spans tell them apart.
   it("records an unknown outcome for a dropped row insertion when a collaborator merges cells instead", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "insertTableRows", slideId: "s2", elementId: "tb2", at: 2 },
     ]);
@@ -843,24 +596,24 @@ describe("Google Slides changes", () => {
 
   it("asks for a restart only when rejecting a change that later ones were built on", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let first = await slides.edit([{ slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }]);
     let second = await slides.queued("deleteSlide", "s3");
 
     expect(await slides.reject(first.actionId!)).toEqual({ restart: true });
     expect(await slides.reject(second.actionId!)).toBeNull();
-    expect(await slides.autoApprovable()).toEqual([
+    expect(await slides.autoApprovable()).toEqual(run.catalog([
       { tag: "editSlidesText", label: "Slide text edits" },
       { tag: "formatSlides", label: "Slide formatting and arrangement" },
       { tag: "edit-slides", label: "Slide edits that keep every element, table row and column and download no images" },
       { tag: "arrange-slides", label: "Adding, copying and reordering slides" },
       { tag: "skipSlides", label: "Skipping slides" },
-    ]);
+    ]));
   });
 
   it("does not show a change twice to a read made while it is being written", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "Revenue", replace: "Revenue (USD)" },
     ]);
@@ -873,7 +626,7 @@ describe("Google Slides changes", () => {
 
   it("lets reads overlap one another", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let fetch = globalThis.fetch;
     let outlines = 0;
     let both = Promise.withResolvers<void>();
@@ -893,7 +646,7 @@ describe("Google Slides changes", () => {
 
   it("applies a change approved while the one before it is being written, after it", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let first = await slides.edit([{ slideId: "s1", elementId: "t1", find: "Q3", replace: "Q4" }]);
     let second = await slides.queued("deleteSlide", "s3");
     let applySecond = duringFirstWrite(entered => slides.apply(second.actionId!, entered));
@@ -907,7 +660,7 @@ describe("Google Slides changes", () => {
 
   it("shows a batch in the outline only if all of it applies, tables included", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     await slides.edit([
       { slideId: "s2", elementId: "t2", find: "Revenue", replace: "Sales" },
       { slideId: "s2", elementId: "tb2", cell: { row: 1, column: 0 }, find: "EMEA", replace: "APAC" },
@@ -925,7 +678,7 @@ describe("Google Slides changes", () => {
 
   it("does not replay a change whose activation died applying it", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.edit([
       { slideId: "s2", elementId: "b2", find: "Revenue", replace: "Revenue (USD)" },
     ]);
@@ -941,17 +694,19 @@ describe("Google Slides changes", () => {
   it("refuses to queue a change the account cannot make, but still reads", async () => {
     let provider = new SlidesProvider(deck()).install();
     provider.editable = false;
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let refused = await slides.call("deleteSlide", "s3");
 
-    expect(refused.error).toContain("can view \"Quarterly review\" but not edit it");
+    expect(refused.error).toContain(run.cannotEdit);
     expect(refused.actionId).toBeUndefined();
     expect((await slides.outline()).slides.map(s => s.id)).toEqual(["s1", "s2", "s3"]);
   });
 });
 
-describe("Google Slides design changes", () => {
+describe.each(RUNS)("Google Slides design changes ($name)", run => {
+  useRun(run);
+
   const BADGE = {
     op: "createShape", slideId: "s2", ref: "badge", shapeType: "ROUND_RECTANGLE",
     bounds: { x: 10, y: 20, width: 100, height: 40 }, text: "New", fill: "ACCENT1",
@@ -959,7 +714,7 @@ describe("Google Slides design changes", () => {
 
   it("queues a batch as one approval, shows it in reads, and writes it as one revision-pinned batch", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let { actionId, action, value } = await slides.queued("updateSlides", [
       BADGE,
@@ -971,9 +726,12 @@ describe("Google Slides design changes", () => {
     expect(action).toMatchObject({
       title: "Change slide 2 (\"Revenue\")",
       autoApprovable: false,
-      actionKind: { tag: "update-slides" },
+      actionKind: run.kind({
+        tag: "update-slides",
+        label: "Slide changes that delete elements, table rows or columns, or download images",
+      }),
       descriptionIsComplete: true,
-      fields: [{ label: "Change 1: Text", kind: "text", value: "New" }],
+      fields: [...run.file, { label: "Change 1: Text", kind: "text", value: "New" }],
     });
     expect(action!.description).toContain(
       "2. On slide 2 (\"Revenue\"), format all of the text of the shape change 1 adds: bold");
@@ -993,17 +751,19 @@ describe("Google Slides design changes", () => {
   it("shows a font name in full, since any string is sent and kept", async () => {
     new SlidesProvider(deck()).install();
     let font = `${"Workspace data ".repeat(5)}*not* [shown] in prose`;
-    let { action } = await gatekeeper().queued("updateSlides", [
+    let { action } = await gatekeeper(run).queued("updateSlides", [
       { op: "formatText", slideId: "s2", elementId: "t2", format: { fontFamily: font } },
     ]);
 
-    expect(action).toMatchObject({ descriptionIsComplete: true, fields: [{ label: "Font", value: font }] });
+    expect(action).toMatchObject({
+      descriptionIsComplete: true, fields: [...run.file, { label: "Font", value: font }],
+    });
     expect(action!.description).toContain("the font below");
   });
 
   it("finds a batch whose response was lost landed by the element it created", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId, value } = await slides.queued("updateSlides", [BADGE]);
     provider.nextFailure = "lost";
 
@@ -1016,7 +776,7 @@ describe("Google Slides design changes", () => {
 
   it("finds a lost batch landed when it deleted an element it created, and its edits", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       BADGE,
       { op: "editText", slideId: "s2", elementId: "badge", replace: "Old" },
@@ -1033,7 +793,7 @@ describe("Google Slides design changes", () => {
 
   it("lets a batch apply without asking unless it deletes elements, table lines, or downloads an image", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let kindOf = async (...changes: object[]) => {
       let { action } = await slides.queued("updateSlides", changes);
       return action!.autoApprovable ? action!.actionKind!.tag : `manual ${action!.actionKind!.tag}`;
@@ -1069,7 +829,7 @@ describe("Google Slides design changes", () => {
   // landed and one that did not, so neither may count as having landed.
   it("records an unknown outcome for a dropped batch that leaves no trace", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       BADGE,
       { op: "deleteElement", slideId: "s2", elementId: "badge" },
@@ -1083,17 +843,19 @@ describe("Google Slides design changes", () => {
 
   it("refuses a ref that is also an element's ID, queuing nothing", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let outcome = await slides.call("updateSlides", [{ ...BADGE, ref: "b2" }]);
     expect(outcome.error).toContain('The ref "b2" is also an element\'s ID');
     expect(outcome.actionId).toBeUndefined();
   });
 });
 
-describe("Google Slides new and skipped slides", () => {
+describe.each(RUNS)("Google Slides new and skipped slides ($name)", run => {
+  useRun(run);
+
   it("adds a slide from a layout, lets later edits fill its placeholders, and creates it as previewed", async () => {
     let provider = new SlidesProvider(layoutDeck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let create = await slides.queued("createSlide", "layout-title-body", "s1");
     let newId = create.value as string;
@@ -1101,11 +863,12 @@ describe("Google Slides new and skipped slides", () => {
     expect(create.action).toMatchObject({
       title: "Add a slide",
       autoApprovable: true,
-      actionKind: { tag: "arrange-slides", label: "Adding, copying and reordering slides" },
+      actionKind: run.kind({ tag: "arrange-slides", label: "Adding, copying and reordering slides" }),
       descriptionIsComplete: true,
       description: 'Adds a slide with the layout "Title and body" after slide 1 ("Q3 review").',
     });
     expect(create.observations).toEqual([
+      ...run.opened,
       'Read the slide order of "Quarterly review" and the placeholders of its layout "Title and ' +
         'body" to queue adding a slide.',
     ]);
@@ -1149,7 +912,7 @@ describe("Google Slides new and skipped slides", () => {
 
   it("adds a slide at the start or the end, and refuses an unknown layout or slide", async () => {
     let provider = new SlidesProvider(layoutDeck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let first = await slides.queued("createSlide", "layout-title", null);
     let last = await slides.queued("createSlide", "layout-title");
@@ -1164,6 +927,7 @@ describe("Google Slides new and skipped slides", () => {
     expect(gone.error).toContain('No layout with ID "layout-gone');
     // An ID that names no layout never reaches the user.
     expect(gone.observations).toEqual([
+      ...run.opened,
       'Read the slide order of "Quarterly review" and the placeholders of a layout to queue adding a slide.',
     ]);
     expect((await slides.call("createSlide", "layout-title", "s9")).error).toContain('No slide with ID "s9"');
@@ -1177,7 +941,7 @@ describe("Google Slides new and skipped slides", () => {
 
   it("fails a new slide without writing once the slide it follows or its layout is gone", async () => {
     let provider = new SlidesProvider(layoutDeck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let afterS3 = await slides.queued("createSlide", "layout-title", "s3");
     provider.edit(d => { d.slides!.pop(); });
 
@@ -1194,7 +958,7 @@ describe("Google Slides new and skipped slides", () => {
 
   it("fails a new slide without writing once its layout loses a placeholder it maps", async () => {
     let provider = new SlidesProvider(layoutDeck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let created = await slides.queued("createSlide", "layout-title-body");
     provider.edit(d => {
       let layout = d.layouts!.find(l => l.objectId === "layout-title-body")!;
@@ -1212,7 +976,7 @@ describe("Google Slides new and skipped slides", () => {
     themed.layouts.push({ objectId: "layout-other", layoutProperties: { displayName: "Other", masterObjectId: "master-2" },
       pageElements: [] });
     let provider = new SlidesProvider(themed).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     expect((await slides.outline()).layouts.map(({ id, master }) => [id, master]))
       .toEqual([["layout-title", "master-1"], ["layout-title-body", "master-1"], ["layout-other", "master-2"]]);
@@ -1231,7 +995,7 @@ describe("Google Slides new and skipped slides", () => {
     themed.layouts.push({ objectId: "layout-other", layoutProperties: { displayName: "Other", masterObjectId: "master-2" },
       pageElements: [] });
     let provider = new SlidesProvider(themed).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let remove = await slides.queued("deleteSlide", "s3");
     expect((await slides.outline()).layouts.map(({ id }) => id)).toEqual(["layout-title", "layout-title-body"]);
@@ -1244,14 +1008,14 @@ describe("Google Slides new and skipped slides", () => {
 
   it("skips and unskips slides as previewed, writing only the slides that change", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let skip = await slides.queued("setSlidesSkipped", ["s3", "s1"], true);
 
     expect(skip.action).toMatchObject({
       title: "Skip 2 slides",
       autoApprovable: true,
-      actionKind: { tag: "skipSlides", label: "Skipping slides" },
+      actionKind: run.kind({ tag: "skipSlides", label: "Skipping slides" }),
       description: 'Skips slide 1 ("Q3 review"), slide 3 ("Thanks"), leaving them out when presenting.',
     });
     expect((await slides.outline()).slides.map(s => s.skipped)).toEqual([true, false, true]);
@@ -1286,14 +1050,16 @@ function background(target: object, value: unknown) {
   return { op: "setBackground", ...target, background: value };
 }
 
-describe("Google Slides backgrounds and theme", () => {
+describe.each(RUNS)("Google Slides backgrounds and theme ($name)", run => {
+  useRun(run);
+
   const PICTURE_URL = "https://example.com/backdrop.png";
   const RED: RestPageBackgroundFill =
     { propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1 } }, alpha: 1 } };
 
   it("formats with a slide's colour, none or inherited background, edits with a theme change, and asks for a picture", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let kindOf = async (...changes: object[]) => {
       let { action } = await slides.queued("updateSlides", changes);
       return action!.autoApprovable ? action!.actionKind!.tag : `manual ${action!.actionKind!.tag}`;
@@ -1318,7 +1084,7 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("queues slide and theme changes as one approval, shows them in reads, and writes them as one batch", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
 
     let { actionId, action } = await slides.queued("updateSlides", [
       { op: "setBackground", slideId: "s2", background: "#ff0000" },
@@ -1331,7 +1097,7 @@ describe("Google Slides backgrounds and theme", () => {
       autoApprovable: false,
       actionKind: { tag: "update-slides" },
       descriptionIsComplete: true,
-      fields: [{ label: "Change 2: Background image URL", kind: "text", value: PICTURE_URL }],
+      fields: [...run.file, { label: "Change 2: Background image URL", kind: "text", value: PICTURE_URL }],
     });
     expect(action!.description).toBe(
       "Makes 3 changes, all or none of which are applied:\n\n" +
@@ -1372,7 +1138,7 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("titles a batch by the pages it changes", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let titleOf = async (...changes: object[]) =>
       (await slides.queued("updateSlides", changes)).action!.title;
     let layoutBackground = { op: "setBackground", layoutId: "layout-title", background: "none" };
@@ -1392,11 +1158,12 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("reads only the outline to queue a theme change, and keeps a colour a collaborator changed meanwhile", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId, observations } = await slides.queued("updateSlides", [
       { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#123456" } },
     ]);
     expect(observations).toEqual([
+      ...run.opened,
       "Read the masters and layouts of \"Quarterly review\" to queue changes to them.",
     ]);
 
@@ -1418,7 +1185,7 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("refuses a change to a layout or master the presentation does not have, queuing nothing", async () => {
     new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let refusal = async (change: object) => {
       let outcome = await slides.call("updateSlides", [change]);
       expect(outcome.actionId).toBeUndefined();
@@ -1436,7 +1203,7 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("reports a queued change to a layout a collaborator deleted, and fails it without writing", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "setBackground", layoutId: "layout-title", background: "#ff0000" },
     ]);
@@ -1458,7 +1225,7 @@ describe("Google Slides backgrounds and theme", () => {
     { name: "theme colours", changes: [{ op: "setThemeColors", masterId: "master-1", colors: { ACCENT6: "#000000" } }] },
   ])("finds a lost batch that only sets $name landed", async ({ changes }) => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", changes);
     provider.nextFailure = "lost";
 
@@ -1477,7 +1244,7 @@ describe("Google Slides backgrounds and theme", () => {
   ])("records an unknown outcome for a dropped picture background set $name, whatever picture the page has after", async ({ first }) => {
     let provider = new SlidesProvider(deck()).install();
     provider.slide("s1").pageProperties = { pageBackgroundFill: RED };
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       ...first,
       { op: "setBackground", slideId: "s1", background: { imageUrl: PICTURE_URL } },
@@ -1495,7 +1262,7 @@ describe("Google Slides backgrounds and theme", () => {
   it("finds a lost reset to the inherited background landed", async () => {
     let provider = new SlidesProvider(deck()).install();
     provider.slide("s2").pageProperties = { pageBackgroundFill: RED };
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "setBackground", slideId: "s2", background: null },
     ]);
@@ -1510,7 +1277,7 @@ describe("Google Slides backgrounds and theme", () => {
   it("records an unknown outcome for a dropped batch setting a background the slide already has", async () => {
     let provider = new SlidesProvider(deck()).install();
     provider.slide("s1").pageProperties = { pageBackgroundFill: RED };
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "setBackground", slideId: "s1", background: "#ff0000" },
     ]);
@@ -1527,7 +1294,7 @@ describe("Google Slides backgrounds and theme", () => {
     { name: "master", target: { masterId: "master-1" }, page: (d: RestPresentation) => d.masters![0] },
   ])("records an unknown outcome for a dropped $name background when a collaborator sets its colour translucent", async ({ target, page }) => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [background(target, "#ff0000")]);
     dropNextWrite(provider, d => {
       let translucent = { ...RED, solidFill: { ...RED.solidFill, alpha: 0.5 } };
@@ -1541,7 +1308,7 @@ describe("Google Slides backgrounds and theme", () => {
   it("records an unknown outcome for a dropped reset on a slide a collaborator then deleted", async () => {
     let provider = new SlidesProvider(deck()).install();
     provider.slide("s2").pageProperties = { pageBackgroundFill: RED };
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "setBackground", slideId: "s2", background: null },
     ]);
@@ -1554,7 +1321,7 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("checks a queued batch's slides before queuing a theme change to the master it also changes", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     await slides.queued("updateSlides", [
       { op: "editText", slideId: "s2", elementId: "b2", find: "$10M", replace: "$12M" },
       { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#123456" } },
@@ -1572,7 +1339,7 @@ describe("Google Slides backgrounds and theme", () => {
 
   it("never reads back the URL Google serves a picture background from", async () => {
     let provider = new SlidesProvider(deck()).install();
-    let slides = gatekeeper();
+    let slides = gatekeeper(run);
     let { actionId } = await slides.queued("updateSlides", [
       { op: "setBackground", slideId: "s1", background: { imageUrl: PICTURE_URL } },
       { op: "setBackground", masterId: "master-1", background: { imageUrl: PICTURE_URL } },
