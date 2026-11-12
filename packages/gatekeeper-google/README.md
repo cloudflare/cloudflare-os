@@ -452,8 +452,10 @@ or an empty top-left cell that is a heading or list item, and a table that holds
 `unmergeTableCells()` splits a merged cell named by its top-left cell: its text stays there, and the
 cells it covered come back empty and editable. Google gives those cells the looks they kept while
 covered, which no read shows, so the change then sets each of them to the merged cell's look, the
-edges between them taking its top edge. Rows and columns of a table with merged cells still cannot
-be added or deleted.
+edges between them taking its top edge. Rows and columns that cross no merged cell can be added and
+deleted in a table that has some, and its merged cells move with their lines. One that crosses a
+merged cell is refused, naming it: Google grows a merged cell that lines are added through, gives
+lines copied from one its spans, and moves or shrinks one whose lines are deleted.
 
 A replacement that only adds paragraphs directly above or below a table (`<table>` replaced by
 `## Results`, a blank line and `<table>`) changes no table: it is applied as the same text added to
@@ -526,8 +528,8 @@ or rich links, Google copies nothing, and the new cells take text as any other.
 What cannot be applied exactly is refused. Each of the following is refused when the call is made,
 before anything is queued, with the two exceptions named after the list:
 
-- changing the rows or columns of a table with a merged cell, since Google's row and column
-  requests do not treat a merged cell as a cell, or the text of a cell a merged cell covers, which
+- adding rows or columns beside, or deleting, lines that cross a merged cell, since Google grows,
+  copies, moves or shrinks the merged cell then, or the text of a cell a merged cell covers, which
   Google writes into the merged cell. The merged cell's own text can be replaced;
 - changing anything in a table inside a cell, or the text of the cell holding it;
 - changing the text of a cell paragraph that holds an image, smart chip, footnote or rule, or that

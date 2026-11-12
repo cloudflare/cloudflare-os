@@ -858,7 +858,7 @@ describe("what the model does not cover", () => {
     }
   });
 
-  it("throws for a row or column request on a table with a merged cell", () => {
+  it("throws for a row or column request on a line that crosses a merged cell", () => {
     let tab = buildTab([
       { runs: ["\n"] },
       {
@@ -870,10 +870,13 @@ describe("what the model does not cover", () => {
       { runs: ["\n"] },
     ]);
 
-    expectNotModelled(tab, insertRow(2, 1, true));
+    expectNotModelled(tab, insertRow(2, 0, true));
     expectNotModelled(tab, insertColumn(2, 0, true));
-    expectNotModelled(tab, deleteRow(2, 1));
+    expectNotModelled(tab, deleteRow(2, 0));
     expectNotModelled(tab, deleteColumn(2, 1));
+    // A row beside the merged cell crosses none.
+    expect(() => applyDocsRequests(tab, [insertRow(2, 1, true)])).not.toThrow();
+    expect(() => applyDocsRequests(tab, [deleteRow(2, 1)])).not.toThrow();
   });
 
   describe("in a cell that a merged cell covers", () => {

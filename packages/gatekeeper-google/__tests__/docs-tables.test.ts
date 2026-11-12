@@ -1343,14 +1343,34 @@ const blank = (rows: number, columns: number): string[][] =>
   Array.from({ length: rows }, () => Array.from({ length: columns }, () => ""));
 
 describe("refusals for what a table is", () => {
-  it("refuses row and column changes on a table with merged cells", () => {
+  it("refuses row and column changes that cross a merged cell", () => {
+    let content = read(MERGED_TABLE());
+    let copies = (op: string, noun: string, line: number) =>
+      `${op}: ${noun} ${line} of this table, counting from 0, which the new ${noun}s copy, ` +
+      "crosses the merged cell at row 0, column 0, which Google Docs would grow or copy into " +
+      `them. ${noun === "row" ? "Rows" : "Columns"} can be added only beside ${noun}s that cross no merged cell.`;
+    let deletes = (op: string, noun: string) =>
+      `${op}: the ${noun}s to delete cross the merged cell at row 0, column 0 (counting from 0). ` +
+      `Split it with unmergeTableCells() first, or delete ${noun}s that cross no merged cell.`;
+    expect(targetRefusal(MERGED_TABLE(), addRows(content, 0, 0, [["", "", ""]])))
+      .toBe(copies("insertTableRows", "row", 0));
+    expect(targetRefusal(MERGED_TABLE(), addColumns(content, 0, 1, [[""], [""], [""]])))
+      .toBe(copies("insertTableColumns", "column", 1));
+    expect(targetRefusal(MERGED_TABLE(), dropRows(content, 0, 0)))
+      .toBe(deletes("deleteTableRows", "row"));
+    expect(targetRefusal(MERGED_TABLE(), dropColumns(content, 0, 1, 2)))
+      .toBe(deletes("deleteTableColumns", "column"));
+  });
+
+  it("changes rows and columns beside a merged cell, which moves with its lines, as Google does", () => {
     let content = read(MERGED_TABLE());
     for (let change of [
-      addRows(content, 0, 3, [["", "", ""]]), addColumns(content, 0, 3, [[""], [""], [""]]),
-      dropRows(content, 0, 2), dropColumns(content, 0, 2),
+      addRows(content, 0, 1, [["x", "y", "z"]]), addRows(content, 0, 3, [["", "", "end"]]),
+      addColumns(content, 0, 2, [["n"], [""], [""]]), addColumns(content, 0, 3, [["m"], [""], [""]]),
+      dropRows(content, 0, 1, 2), dropColumns(content, 0, 2),
     ]) {
-      expect(targetRefusal(MERGED_TABLE(), change)).toBe(
-        `${change.type}: this table has merged cells, so its rows and columns cannot be changed.`);
+      let applied = expectSameAsGoogle(MERGED_TABLE(), change);
+      expect(tableAt(read(applied), 0), change.type).toContain('<td colspan="2"><p>head</p></td>');
     }
   });
 
@@ -1361,9 +1381,10 @@ describe("refusals for what a table is", () => {
     let tab = buildTab([para("Before"), merged, para("Mid"), merged, para("After")]);
     let content = read(tab);
     for (let table of [0, 1]) {
-      let change = dropRows(content, table, 1);
-      expect(message(() => checkTableTarget(content, table, shapeOf(change))))
-        .toBe("deleteTableRows: this table has merged cells, so its rows and columns cannot be changed.");
+      let change = dropRows(content, table, 0);
+      expect(message(() => checkTableTarget(content, table, shapeOf(change)))).toBe(
+        "deleteTableRows: the rows to delete cross the merged cell at row 0, column 0 (counting " +
+        "from 0). Split it with unmergeTableCells() first, or delete rows that cross no merged cell.");
       expect(refusal(tab, change)).toBe(anotherReadsTheSame("deleteTableRows"));
     }
     // It refuses nothing the replay accepts.

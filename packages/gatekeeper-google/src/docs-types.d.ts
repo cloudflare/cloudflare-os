@@ -397,13 +397,13 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * list item.
    *
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
-   * The rows of a table with merged cells cannot be changed, nor those of a table that holds
-   * suggested changes to its rows, columns or cells. Where a cell of the row the new rows go
-   * before (or of the last row, for rows added at the end) holds one dropdown, person chip, date
-   * chip, rich link or placeholder and no text, Google Docs copies it into the new rows: a
-   * dropdown with its first choice, U+E907 for the others. Their cells in that column then take
-   * no text. Rows cannot be added beside a cell of chips and no text in another shape, such as
-   * a chip after a space: add those rows in Google Docs.
+   * Rows can be added only where the row they copy crosses no merged cell, and not to a table
+   * that holds suggested changes to its rows, columns or cells. Where a cell of the row the new
+   * rows go before (or of the last row, for rows added at the end) holds one dropdown, person
+   * chip, date chip, rich link or placeholder and no text, Google Docs copies it into the new
+   * rows: a dropdown with its first choice, U+E907 for the others. Their cells in that column
+   * then take no text. Rows cannot be added beside a cell of chips and no text in another shape,
+   * such as a chip after a space: add those rows in Google Docs.
    */
   insertTableRows(rows: DocTableInsertion, tabId?: string): Promise<void>;
 
@@ -417,15 +417,15 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    *
    * Columns can be added until the table has 20, and only to a table of at most 500 rows.
    * One call adds at most 1,000 cells that have text, an empty cell counting as half of one.
-   * The columns of a table with merged cells cannot be changed, nor those of a table that holds
-   * suggested changes to its rows, columns or cells.
+   * Columns can be added only where the column they copy crosses no merged cell, and not to a
+   * table that holds suggested changes to its rows, columns or cells.
    */
   insertTableColumns(columns: DocTableInsertion, tabId?: string): Promise<void>;
 
   /**
    * Delete rows of a table in tab `tabId`, with everything in them. To delete every row, delete
-   * the table. The rows of a table with merged cells cannot be changed, nor those of a table
-   * that holds suggested changes to its rows, columns or cells. Rows that hold a footnote
+   * the table. Rows that cross a merged cell cannot be deleted, nor rows of a table that holds
+   * suggested changes to its rows, columns or cells. Rows that hold a footnote
    * cannot be deleted, nor can rows that hold items of a numbered list while a numbered list
    * follows them in the tab.
    */
@@ -433,8 +433,8 @@ export interface GoogleDocSession extends GoogleDocReadSession {
 
   /**
    * Delete columns of a table in tab `tabId`, with everything in them. To delete every column,
-   * delete the table. The columns of a table with merged cells cannot be changed, nor those of
-   * a table that holds suggested changes to its rows, columns or cells. Columns that hold a
+   * delete the table. Columns that cross a merged cell cannot be deleted, nor columns of a table
+   * that holds suggested changes to its rows, columns or cells. Columns that hold a
    * footnote cannot be deleted, nor can columns that hold items of a numbered list while a
    * numbered list follows them in the tab.
    */
@@ -483,8 +483,8 @@ export interface GoogleDocSession extends GoogleDocReadSession {
    * paragraph adding none, and the merged cell keeps the top-left cell's look; rows keep their
    * heights. The block may hold merged cells whole, but not part of one. Only its top-left cell
    * may start with a heading or a list item, and no cell of it may hold a table, a footnote, a
-   * smart chip, or an empty paragraph beside others. Rows and columns of a table with merged
-   * cells cannot be added or deleted.
+   * smart chip, or an empty paragraph beside others. Rows and columns that cross a merged cell
+   * cannot be added beside or deleted.
    */
   mergeTableCells(cells: DocTableMerge, tabId?: string): Promise<void>;
 

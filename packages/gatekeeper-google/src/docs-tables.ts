@@ -694,6 +694,42 @@ function checkRemovedCells(
   }
 }
 
+/**
+ * Refuse a change to rows or columns that crosses a merged cell. Google Docs grows a merged cell
+ * that rows or columns are added through, merges the lines it copies from one, and moves or
+ * shrinks one whose lines are deleted (probe M5), which the replay does not follow. Lines that
+ * cross none leave the merged cells where they are.
+ */
+function checkMergesAside(lines: TableLines, shape: LineChangeShape, limit: number): void {
+  let op = shape.type;
+  let ofRows = op === "insertTableRows" || op === "deleteTableRows";
+  let inserts = op === "insertTableRows" || op === "insertTableColumns";
+  let { at, count } = shape;
+  // The lines the change crosses: the one new lines copy, or those it deletes.
+  let first = inserts ? Math.min(at, limit - 1) : at;
+  let last = inserts ? first : at + count - 1;
+  let covered = coveredCells(lines.rows.map(row => row.cells));
+  for (let [r, row] of lines.rows.entries()) {
+    for (let [c, { rowSpan, columnSpan }] of row.cells.entries()) {
+      if (covered[r][c] || rowSpan === 1 && columnSpan === 1) continue;
+      let start = ofRows ? r : c;
+      let end = start + (ofRows ? rowSpan : columnSpan) - 1;
+      if (end < first || start > last) continue;
+      let noun = ofRows ? "row" : "column";
+      throw new Error(inserts
+        ? `${op}: ${noun} ${first} of this table, counting from 0, which the new ${noun}s ` +
+          `copy, crosses the merged cell at row ${r}, column ${c}, which Google Docs would ` +
+          `grow or copy into them. ${capitalized(noun)}s can be added only beside ${noun}s ` +
+          "that cross no merged cell."
+        : `${op}: the ${noun}s to delete cross the merged cell at row ${r}, column ${c} ` +
+          `(counting from 0). Split it with unmergeTableCells() first, or delete ${noun}s ` +
+          "that cross no merged cell.");
+    }
+  }
+}
+
+const capitalized = (word: string): string => word[0].toUpperCase() + word.slice(1);
+
 /** A table that passed the checks of a change to its rows or columns. */
 type CheckedLines = { lines: TableLines; rows: number; columns: number };
 
@@ -711,10 +747,6 @@ function checkLineChange(
   let entries = target.rows.map((_, row) => tableRowCells(target, row));
   if (entries.some(row => row.length !== columns)) throw notLaidOut(op);
 
-  if (lines.rows.some(row => row.cells.some(cell => cell.rowSpan > 1 || cell.columnSpan > 1))) {
-    throw new Error(
-      `${op}: this table has merged cells, so its rows and columns cannot be changed.`);
-  }
   if (target.suggested) {
     throw new Error(
       `${op}: this table holds suggested changes to its rows, columns or cells, so its rows ` +
@@ -747,6 +779,8 @@ function checkLineChange(
         "several calls.");
     }
   }
+
+  checkMergesAside(lines, shape, limit);
 
   if (op === "insertTableRows") {
     let reference = at < rows ? at : rows - 1;

@@ -898,10 +898,6 @@ function namedCell(tab: GoogleDocsTab, location: TableCellLocation, request: str
   let { table } = place;
   let rows = table.tableRows ?? [];
   let cells = cellsOf(table);
-  if (cells.some(({ tableCellStyle: spans }) =>
-    (spans?.rowSpan ?? 1) > 1 || (spans?.columnSpan ?? 1) > 1)) {
-    notModelled(`${request} on a table with a merged cell`);
-  }
   if ([table, ...rows, ...cells].some(part =>
     part.suggestedInsertionIds?.length || part.suggestedDeletionIds?.length)) {
     notModelled(`${request} on a table that holds a suggestion`);
@@ -921,6 +917,19 @@ function namedCell(tab: GoogleDocsTab, location: TableCellLocation, request: str
       `The column index ${columnIndex} should be less than the total number of columns ` +
       `${columns}.`);
   }
+  // Only a request whose lines cross no merged cell is modelled: one that does grows, moves or
+  // copies the merged cell (probe M5). The line a new one copies counts as crossed.
+  let ofRows = request === "insertTableRow" || request === "deleteTableRow";
+  let line = ofRows ? rowIndex : columnIndex;
+  rows.forEach((row, r) => (row.tableCells ?? []).forEach((cell, c) => {
+    let spans = cell.tableCellStyle;
+    let span = ofRows ? spans?.rowSpan ?? 1 : spans?.columnSpan ?? 1;
+    let other = ofRows ? spans?.columnSpan ?? 1 : spans?.rowSpan ?? 1;
+    let start = ofRows ? r : c;
+    if ((span > 1 || other > 1) && line >= start && line < start + span) {
+      notModelled(`${request} on a line that crosses a merged cell`);
+    }
+  }));
   return { place, rows, rowIndex, columnIndex };
 }
 

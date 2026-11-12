@@ -2166,7 +2166,13 @@ describe("Google Doc tables", () => {
     expect(docs.cellText(0, 0, 0)).toBe("🔴 Blocked");
   });
 
-  const MERGED = "this table has merged cells, so its rows and columns cannot be changed.";
+  const COPIES_MERGED = (noun: string, line: number) =>
+    `${noun} ${line} of this table, counting from 0, which the new ${noun}s copy, crosses the ` +
+    "merged cell at row 0, column 0, which Google Docs would grow or copy into them. " +
+    `${noun === "row" ? "Rows" : "Columns"} can be added only beside ${noun}s that cross no merged cell.`;
+  const DELETES_MERGED = (noun: string) =>
+    `the ${noun}s to delete cross the merged cell at row 0, column 0 (counting from 0). Split ` +
+    `it with unmergeTableCells() first, or delete ${noun}s that cross no merged cell.`;
   const BETWEEN_ITEMS = "insertTable: a table cannot be added between two items of a list. " +
     "Name the list's last item instead.";
   const POSITIONED_IMAGE = "insertTable: a table cannot be added beside a paragraph that holds " +
@@ -2175,16 +2181,16 @@ describe("Google Doc tables", () => {
   // Each is refused when it is called, with nothing queued. The last two are seen only in the
   // document, which is asked because nothing is queued before them.
   it.each<[string, () => GoogleDocsTab, [WriteMethod, unknown[], string][]]>([
-    ["refuses row and column changes on a table with merged cells",
+    ["refuses row and column changes that cross a merged cell",
       () => buildTab([paragraph("Before"), { table: [
         [{ paragraphs: [paragraph("Head")], tableCellStyle: { columnSpan: 2 } }, "\n"],
         ["a\n", "b\n"],
       ] }, paragraph("After")]),
       [
-        ["insertTableRows", [{ table: 0 }], `insertTableRows: ${MERGED}`],
-        ["insertTableColumns", [{ table: 0 }], `insertTableColumns: ${MERGED}`],
-        ["deleteTableRows", [{ table: 0, at: 1 }], `deleteTableRows: ${MERGED}`],
-        ["deleteTableColumns", [{ table: 0, at: 1 }], `deleteTableColumns: ${MERGED}`],
+        ["insertTableRows", [{ table: 0, at: 0 }], `insertTableRows: ${COPIES_MERGED("row", 0)}`],
+        ["insertTableColumns", [{ table: 0 }], `insertTableColumns: ${COPIES_MERGED("column", 1)}`],
+        ["deleteTableRows", [{ table: 0, at: 0 }], `deleteTableRows: ${DELETES_MERGED("row")}`],
+        ["deleteTableColumns", [{ table: 0, at: 1 }], `deleteTableColumns: ${DELETES_MERGED("column")}`],
       ]],
     ["refuses a replacement in a cell a merged cell covers",
       () => buildTab([paragraph("Before"), { table: [

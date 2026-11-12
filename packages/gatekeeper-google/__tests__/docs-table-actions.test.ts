@@ -151,8 +151,14 @@ const tabCells = (op: string, held: number) =>
 const cellCount = (op: string) =>
   `${op}: at most 1000 cells that have text can be added at once, an empty cell counting as ` +
   "half of one. Add the rest with further calls.";
-const merged = (op: string) =>
-  `${op}: this table has merged cells, so its rows and columns cannot be changed.`;
+const copiesMerged = (op: string, noun: string, line: number, row = 0, column = 0) =>
+  `${op}: ${noun} ${line} of this table, counting from 0, which the new ${noun}s copy, crosses ` +
+  `the merged cell at row ${row}, column ${column}, which Google Docs would grow or copy into ` +
+  `them. ${noun[0].toUpperCase()}${noun.slice(1)}s can be added only beside ${noun}s that cross no merged cell.`;
+const deletesMerged = (op: string, noun: string, row = 0, column = 0) =>
+  `${op}: the ${noun}s to delete cross the merged cell at row ${row}, column ${column} ` +
+  `(counting from 0). Split it with unmergeTableCells() first, or delete ${noun}s that cross no ` +
+  "merged cell.";
 const loneChip = (row: number) =>
   `insertTableRows: row ${row} of this table, counting from 0, has a cell that holds smart chips ` +
   "and no text, which Google Docs copies into a row added beside it in a way that is not " +
@@ -331,7 +337,8 @@ describe("two tables that read the same", () => {
       table: [[{ paragraphs: [para("head")], tableCellStyle: { columnSpan: 2 } }, "\n"], ["a\n", "b\n"]],
     };
     let mergedPair = read(buildTab([heading("A"), wide, heading("B"), wide, para("End")]));
-    expect(refusal(mergedPair, addRows({ table: 0 }))).toBe(merged("insertTableRows"));
+    expect(refusal(mergedPair, addRows({ table: 0, at: 0 })))
+      .toBe(copiesMerged("insertTableRows", "row", 0));
 
     let chips: TableSpec = { table: [["a\n", "b\n"], [unseenChip(), "\n"]] };
     let chipPair = read(buildTab([heading("A"), chips, heading("B"), chips, para("End")]));
@@ -688,8 +695,9 @@ describe("document refusals", () => {
       },
       para("After"),
     ]));
-    expect(refusal(wide, addRows({ table: 0 }))).toBe(merged("insertTableRows"));
-    expect(refusal(wide, dropColumns({ table: 0, at: 0 }))).toBe(merged("deleteTableColumns"));
+    expect(refusal(wide, addRows({ table: 0, at: 0 }))).toBe(copiesMerged("insertTableRows", "row", 0));
+    expect(refusal(wide, dropColumns({ table: 0, at: 0 })))
+      .toBe(deletesMerged("deleteTableColumns", "column"));
 
     // Before any default is worked out: no `at` is given.
     let ragged = read(buildTab([para("A"), { table: [["a\n", "b\n"], ["c\n"]] }, para("B")]));

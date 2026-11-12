@@ -343,7 +343,8 @@ export function readLook(
 // How rows and columns change a look
 // ---------------------------------------------------------------------------
 
-// Each changes a table without merged cells, as the row and column changes are kept to.
+// Each changes lines that cross no merged cell, as the row and column changes are kept to: a
+// merged cell elsewhere keeps its look and moves with its lines.
 
 /**
  * `look` with `count` rows added before row `at`: each takes the cells' looks and the least
