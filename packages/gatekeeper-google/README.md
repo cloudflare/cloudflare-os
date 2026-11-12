@@ -896,8 +896,9 @@ of its unfrozen ones, delete a sheet of more than 50,000 cells, whose content th
 not cover (delete it in Google Sheets instead), grow a sheet past 18,278 columns or the spreadsheet
 past 10,000,000 cells, or change or copy a sheet holding a protected range the account cannot edit,
 though rows and columns outside that range may be resized and lines frozen through it, as Google
-allows (a scratch spreadsheet another account protected A1:C1 of refused resizing row 1 or column A
-with "You are trying to edit a protected cell or object", and took a freeze). Reads show the
+allows: in a scratch spreadsheet where another account protected A1:C1, resizing row 1 or column A
+was refused with "You are trying to edit a protected cell or object", and a freeze was allowed.
+Reads show the
 queued structure: sheets, rows and columns where the changes put them, cells moved with their rows
 and columns, and formulas rewritten as Google rewrites them, references shifted, grown, shrunk or
 turned into `#REF!`, and sheet titles requoted. A formula's value is shown only while every
