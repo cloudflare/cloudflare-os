@@ -3,8 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Cloudflare OS</title>
+    <script>
+      // The app follows the system's appearance. Kumo's dark tokens and `dark:` styles key off
+      // `data-mode` on the root. Set inline, before anything is drawn, so a dark page never shows
+      // light first, and kept in step as the system changes.
+      {
+        const dark = matchMedia('(prefers-color-scheme: dark)')
+        const apply = () => { document.documentElement.dataset.mode = dark.matches ? 'dark' : 'light' }
+        apply()
+        dark.addEventListener('change', apply)
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

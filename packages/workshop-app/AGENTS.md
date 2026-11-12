@@ -235,7 +235,11 @@ from `workshop-frontend`'s ban on token theming, which predates this rework. Com
 use Kumo semantic tokens (`bg-kumo-canvas`, `bg-kumo-base`, `ring-kumo-line`) and never colour
 literals. Wrap a Kumo component only for what tokens cannot change, such as sizes and hit targets.
 
-- Page backdrop: `kumo-canvas`. Content card: `kumo-base`.
+- Page backdrop: `kumo-canvas`. Content card: `kumo-base`. The composer: `kumo-elevated`.
+- Dark follows the system: `index.html` sets `data-mode` on the root before anything is drawn, and
+  keeps it in step. Each token in `theme.css` is a `light-dark()` pair, and the rules that derive
+  dark from light are written at the top of that file. Keep to them, so that what matches in light
+  matches in dark.
 
 ## Promoting to `@gadgets/ui`
 

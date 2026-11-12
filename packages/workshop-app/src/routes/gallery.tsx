@@ -59,7 +59,7 @@ const AttachmentPreview = () => {
   ])
 
   return (
-    <div className="w-full overflow-hidden rounded-[21px] bg-kumo-canvas ring-1 ring-kumo-line">
+    <div className="w-full overflow-hidden rounded-[21px] bg-kumo-elevated ring-1 ring-kumo-line">
       <ComposerAttachmentTray attachments={attachments} onRemove={(id) => setAttachments((items) => items.filter((item) => item.id !== id))} />
     </div>
   )

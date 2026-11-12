@@ -43,8 +43,10 @@ export type MessageDetails = {
   more?: ReactNode
 }
 
+// The viewer's own messages are the page's opposite in light. In dark that would be a run of near
+// white blocks, so there they are a shade lighter than the assistant's instead.
 const BUBBLE = {
-  user: 'bg-kumo-contrast text-kumo-inverse whitespace-pre-wrap',
+  user: 'bg-kumo-contrast text-kumo-inverse dark:bg-kumo-contrast/14 dark:text-kumo-default whitespace-pre-wrap',
   assistant: 'bg-kumo-fill text-kumo-default',
   error: 'bg-kumo-danger-tint text-kumo-danger',
 } as const
@@ -94,7 +96,7 @@ const ACTIONS =
   'group-hover/message:opacity-100 has-[:focus-visible]:opacity-100'
 
 /**
- * One chat message: the user's on the right in a dark bubble, the assistant's and errors on the left.
+ * One chat message: the user's on the right in a bubble of their own colour, the assistant's and errors on the left.
  * What can be done with a message shows beside it while it is pointed at (see `MessageActions`);
  * its details, when asked for, unfold in an outlined panel beneath it.
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
