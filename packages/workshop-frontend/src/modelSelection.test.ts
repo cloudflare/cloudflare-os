@@ -74,9 +74,10 @@ describe('syncSelectedModel', () => {
 
   it('keeps "No agent" in the browser that chose it', async () => {
     persistSelectedModel(api, null)
-    expect(setPreferredModel).toHaveBeenLastCalledWith(null)
 
     await syncSelectedModel(api)
+
+    expect(setPreferredModel).toHaveBeenLastCalledWith(null)
 
     expect(localStorage.getItem('lastSelectedModel')).toBe(NO_AGENT_OPTION_VALUE)
     expect(getStoredSelectedModel(MODELS)).toBeNull()
@@ -105,6 +106,21 @@ describe('syncSelectedModel', () => {
 
     expect(setPreferredModel).toHaveBeenLastCalledWith('sonnet')
     expect(getStoredSelectedModel(MODELS)).toBe('sonnet')
+  })
+
+  it('keeps a model picked away from and back to while the preference was being fetched', async () => {
+    persistSelectedModel(api, 'opus')
+    let answer!: (preferred: string | null) => void
+    getPreferredModel.mockReturnValue(new Promise(resolve => { answer = resolve }))
+
+    const syncing = syncSelectedModel(api)
+    persistSelectedModel(api, 'sonnet')
+    persistSelectedModel(api, 'opus')
+    await vi.waitFor(() => expect(getPreferredModel).toHaveBeenCalled())
+    answer('sonnet')
+    await syncing
+
+    expect(getStoredSelectedModel(MODELS)).toBe('opus')
   })
 
   it("keeps the browser's choice when the server can't be reached", async () => {
@@ -138,5 +154,23 @@ describe('cacheModels', () => {
     vi.spyOn(Storage.prototype, 'setItem').mockImplementationOnce(() => { throw new Error('quota') })
 
     expect(() => cacheModels(MODELS)).not.toThrow()
+  })
+})
+
+describe('persistSelectedModel', () => {
+  it('saves picks in the order they were made, however long each save takes', async () => {
+    const saved: (string | null)[] = []
+    let finishFirst!: () => void
+    setPreferredModel.mockImplementationOnce(id => new Promise(resolve => {
+      finishFirst = () => { saved.push(id); resolve() }
+    }))
+    setPreferredModel.mockImplementation(async id => { saved.push(id) })
+
+    persistSelectedModel(api, 'sonnet')
+    persistSelectedModel(api, null)
+    await vi.waitFor(() => expect(setPreferredModel).toHaveBeenCalledOnce())
+    finishFirst()
+
+    await vi.waitFor(() => expect(saved).toEqual(['sonnet', null]))
   })
 })

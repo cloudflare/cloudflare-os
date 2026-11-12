@@ -9,6 +9,18 @@ const LAST_SELECTED_MODEL_KEY = "lastSelectedModel";
 const PREFERENCE_SYNCED_KEY = "lastSelectedModelSynced";
 const CACHED_MODELS_KEY = "cachedModels";
 
+// Counts this page's picks, so that an answer to a read started before a pick is known to be stale.
+let selectionRevision = 0;
+
+// Preference requests run one at a time, so that they take effect in the order they were made
+// however long the server takes over each.
+let lastRequest: Promise<unknown> = Promise.resolve();
+function inOrder<T>(request: () => Promise<T>): Promise<T> {
+  const result = lastRequest.then(request, request);
+  lastRequest = result;
+  return result;
+}
+
 /**
  * The models this browser last saw offered, or none if it has seen none. A picker starts on these,
  * so that it shows the user's model at once, and replaces them when the server answers.
@@ -61,12 +73,13 @@ export function getStoredSelectedModel(
  */
 export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise<void> {
   try {
+    const revision = selectionRevision;
     const local = localStorage.getItem(LAST_SELECTED_MODEL_KEY);
     if (local !== null && localStorage.getItem(PREFERENCE_SYNCED_KEY) === null) {
       // This browser's choice predates picks being saved for the user, so it is newer than the
       // server's, which dates from onboarding.
       try {
-        await api.setPreferredModel(fromModelSelectValue(local));
+        await inOrder(() => api.setPreferredModel(fromModelSelectValue(local)));
         localStorage.setItem(PREFERENCE_SYNCED_KEY, "1");
         return;
       } catch (err) {
@@ -75,9 +88,9 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
       }
     }
 
-    const preferred = await api.getPreferredModel();
+    const preferred = await inOrder(() => api.getPreferredModel());
     // A pick made while this was in flight is newer than the answer.
-    if (preferred !== null && localStorage.getItem(LAST_SELECTED_MODEL_KEY) === local) {
+    if (preferred !== null && selectionRevision === revision) {
       localStorage.setItem(LAST_SELECTED_MODEL_KEY, preferred);
     }
     localStorage.setItem(PREFERENCE_SYNCED_KEY, "1");
@@ -88,6 +101,7 @@ export async function syncSelectedModel(api: RpcStub<AuthenticatedApi>): Promise
 
 /** Remembers a model choice in this browser alone, for a caller that saves it to the server itself. */
 export function cacheSelectedModel(modelId: string | null): void {
+  selectionRevision++;
   localStorage.setItem(
     LAST_SELECTED_MODEL_KEY,
     modelId ?? NO_AGENT_OPTION_VALUE,
@@ -101,7 +115,7 @@ export function persistSelectedModel(
   modelId: string | null,
 ): void {
   cacheSelectedModel(modelId);
-  api.setPreferredModel(modelId).catch((err: unknown) => {
+  inOrder(() => api.setPreferredModel(modelId)).catch((err: unknown) => {
     logRpcFailure("Failed to save the preferred model:", err);
     // The next syncSelectedModel() then saves this browser's choice rather than replacing it.
     localStorage.removeItem(PREFERENCE_SYNCED_KEY);
