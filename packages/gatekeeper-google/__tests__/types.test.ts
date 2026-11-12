@@ -562,6 +562,7 @@ async function use(): Promise<void> {
   const reply: DriveCommentReply = await doc.reply(comments[0].id, "Agreed.");
   await doc.resolve(comments[0].id);
   await doc.resolve(comments[0].id, "Fixed.");
+  const id: string = (await doc.getMetadata()).id;
 }
 // @ts-expect-error A comment on a bound Doc quotes the text it is about.
 doc.comment("Why?");

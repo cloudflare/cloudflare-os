@@ -324,6 +324,7 @@ describe("Drive nested native sessions", () => {
     using doc = await docPromise;
 
     expect(await metadataPromise).toEqual({
+      id: "doc-1",
       title: "Quarterly plan",
       lastModified: new Date("2026-08-20T12:00:00Z"),
     });
@@ -401,7 +402,7 @@ describe("Drive nested native sessions", () => {
 
     session[Symbol.dispose]();
     await expect(doc.getMetadata()).resolves.toEqual(expect.objectContaining({
-      title: "Quarterly plan",
+      id: "doc-1", title: "Quarterly plan",
     }));
     expect(resources.queue.observations).toHaveLength(2);
 

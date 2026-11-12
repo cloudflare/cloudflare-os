@@ -2686,12 +2686,14 @@ describe("Google Doc comments", () => {
     docs.setText(MAIN_TAB, TEXT);
     docs.install();
     await hooks().createResource("comment-create", DOC_PATTERN, "Plan");
+    expect((await call("comment-create", "getMetadata")).value).toMatchObject({ id: "", title: "Plan" });
     expect((await call("comment-create", "listComments")).value).toEqual([]);
     expect((await call("comment-create", "comment", "Hm.", { quote: "May" })).error).toBe(
       "This Google Doc is not created yet, so it has no text to comment on. Comment once it is created.");
     expect(docs.fetches).toBe(0);
     expect(await hooks().applyCreation("comment-create")).toEqual({ resourceUrl: CREATED_DOC_URL });
     await hooks().adoptCreated("comment-create");
+    expect((await call("comment-create", "getMetadata")).value).toMatchObject({ id: "doc-1" });
     let queued = await call("comment-create", "comment", "Hm.", { quote: "May" });
     expect(await hooks().applyAction("comment-create", queued.actionId!)).toBeNull();
     expect(docs.threads).toHaveLength(1);

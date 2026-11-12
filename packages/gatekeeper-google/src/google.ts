@@ -2668,6 +2668,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
     let lastModified = pendingActions.reduce(
         (latest, action) => Math.max(latest, action.submittedAt), revisedAt);
     return {
+      // UNCREATED_FILE_ID, empty, until the document is created.
+      id: this.#documentId,
       title: metadata.title,
       lastModified: new Date(lastModified),
     };
@@ -3812,7 +3814,7 @@ class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession
   async getMetadata(): Promise<DocMetadata> {
     return this.#read(async () => {
       let file = await this.#driveApi.getFile(this.#documentId);
-      return { title: file.name, lastModified: driveModifiedTime(file) };
+      return { id: this.#documentId, title: file.name, lastModified: driveModifiedTime(file) };
     }, () => ({
       title: "Read Google Doc metadata",
       description: "Read the current title and modification time of the Drive document.",

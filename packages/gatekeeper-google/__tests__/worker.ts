@@ -14,7 +14,7 @@ import type {
   GoogleDriveSession,
 } from "../src/drive-types";
 import type { DriveAccessLevel } from "../src/resources";
-import type { GoogleDocSession, GoogleDocTab } from "../src/docs-types";
+import type { DocMetadata, GoogleDocSession, GoogleDocTab } from "../src/docs-types";
 import type { MarkerEntry } from "../src/sheets-actions";
 import type { SpreadsheetInfo, SpreadsheetRange } from "../src/sheets-read-types";
 import type { GoogleSpreadsheetSession } from "../src/sheets-types";
@@ -77,7 +77,7 @@ type SheetsCall = {
 
 /** What one bound Google Doc session call returned or threw, and what it queued and observed. */
 type DocCall = {
-  value?: DriveComment | DriveCommentReply | DriveComment[] | DocSuggestion;
+  value?: DriveComment | DriveCommentReply | DriveComment[] | DocSuggestion | DocMetadata;
   error?: string;
   actionId?: number;
   action?: ActionDescription;
