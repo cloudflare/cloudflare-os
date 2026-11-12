@@ -44,7 +44,7 @@ import { driveResourceUrl } from "./resources";
  * Every write of it is auto-approvable: it posts into the bound Doc and deletes nothing. Rule 2 of
  * the opt-out policy covers one case, a text that mentions someone, an address written after `@`
  * or `+`: Google emails that person the text, whether or not they can open the Doc. The verdict is
- * kept `true` there by decision, as a listed exception to the policy, as for Drive comments. No
+ * kept `true` there by the same decision as for Drive comments, the exception the policy lists. No
  * mention is looked for, and the text is sent as it was written.
  */
 export const DOC_COMMENTS: ActionKind = { tag: "docComments", label: "Google Doc comments" };
