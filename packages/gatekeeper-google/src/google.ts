@@ -1609,7 +1609,10 @@ type GoogleDocAddTabAction = GoogleDocActionBase & DocTabPlacement & {
    */
   provisionalTabId: string;
   title: string;
-  /** Every tab ID the document held when the add was sent, which a retry finds the new tab by. */
+  /**
+   * Every tab ID the document held when the add was sent, kept until Google refuses that send: a
+   * retry that finds no marker checks it for any tab that has appeared since.
+   */
   knownTabIds?: string[];
 }
 
@@ -2545,7 +2548,7 @@ export class GoogleDocGatekeeperImpl
         assertGoogleDocAddUnsent(snapshot.tabs, action);
       } catch (error) {
         invalidateGoogleDocAction(pendingActions, pending[pendingIndex],
-          `Pending Google Doc tab could not be adopted: ${errorMessage(error)} ` +
+          `Pending Google Doc tab was not added: ${errorMessage(error)} ` +
           "Edits queued for it must be queued again for a tab listTabs() shows.");
         this.#simulationCache.current = undefined;
         throw error;
