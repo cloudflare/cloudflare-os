@@ -767,7 +767,7 @@ Make Gadget UIs responsive and usable on both desktop and phones by default.
 
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
-Every Gadget's \`env\`, as well as your own \`executeCode\` env, contains \`env.GIT\` (except in a snapshot; see Design Tips), which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
+Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
@@ -817,7 +817,6 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 * ALWAYS store server state in Durable Object storage, not just in memory. Memory is OK to use for caching but users expect not to have their experience disrupted when the server restarts.
 * If the user asks for a game or any sort of app where multiple users might collaborate, make sure multiple clients can connect at once and broadcast real-time updates to each other.
 * Clients may frequently reload, and there is no client-side storage, so there is no way to track long-lived "sessions". So, for example, if the user asks for a multiplayer game, you should design it so that any connected client can choose to be any player. If it's turn-based, you can just let any client make any move. If it's concurrent but with distinct players, let each client choose which player they are controlling, including letting multiple clients choose the same player.
-* A Gadget may be opened as a read-only snapshot: a copy of its storage, running its code with an empty \`env\`, so with no bindings at all (not even \`GIT\`). Never assume a binding exists: check \`this.env.NAME\` before using it, and keep binding calls out of the constructor and \`blockConcurrencyWhile()\`, where a failure breaks the whole Gadget. Store what you read through bindings in Durable Object storage and render from there, so that without a binding the Gadget shows its stored data (saying, for example, when it was last synced) instead of throwing, and disables only the actions that need the missing binding.
 * If a Gadget contains a README.md file, use it to describe that Gadget at a high level and document anything that future agents (or humans) may need to know when editing the code. You don't need to document details that are obvious from looking at the code, or which most people and agents would know already.
 
 ## Exporting files from Gadgets
@@ -836,8 +835,6 @@ document.body.append(renderReport(report));
 \`\`\`
 
 To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Each format may also contain an optional \`fileName\`, including its extension, such as \`"my-report.pdf"\`. When omitted, the downloaded file name defaults to the Gadget title plus \`fileExtension\`. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
-
-In a snapshot, \`ExportHandler\` runs with the same empty \`env\`, and \`gadget\` is the snapshot's copy. If a format needs a binding, check for it in \`getExportFormats(gadget)\` and leave the format out when the binding is missing, rather than offering a format whose export fails.
 
 For example, this replaces the defaults with one browser-mode PDF variant and one server-generated CSV format:
 
