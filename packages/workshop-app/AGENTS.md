@@ -124,7 +124,10 @@ it. Render a pane's header in the commit that mounts the pane, or what it follow
 
 A workspace's page has a New chat button at the end of its header. It opens an empty chat in
 the workspace (`/workspace/<id>/new`, `NewChatPane`, which the home page shares) that is
-created by its first message; the chat then takes the empty one's place in the history.
+created by its first message; the chat then takes the empty one's place in the history. The home
+page (`/`, which the sidebar's logo goes to) starts one in a new workspace: until its first message
+is sent it greets the user over the composer in the middle of the page (`ChatStart`), and is then
+drawn as the conversation it becomes.
 
 ## Beside the page
 

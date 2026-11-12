@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
+import { ChatStart } from '@/blocks/ChatStart'
 import { Composer } from '@/blocks/Composer'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { ChatLayout } from '@/layouts/ChatLayout'
@@ -11,6 +12,8 @@ export type StartedChat = { workspaceId: string; chatId: number }
 
 export type NewChatPaneProps = {
   header?: ReactNode
+  /** Greet with this and the composer in the middle of the page until the first message is sent. */
+  greeting?: string
   /** Starts the conversation with its first message (see `startConversation`). */
   start: (text: string, modelId: string) => Promise<StartedChat>
   /** The conversation exists: open it. */
@@ -18,7 +21,7 @@ export type NewChatPaneProps = {
 }
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
-export const NewChatPane = ({ header, start, onStarted }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const refreshWorkspaces = useRefreshWorkspaces()
   // The message being sent, shown until the conversation opens; or why it could not be sent.
@@ -39,6 +42,9 @@ export const NewChatPane = ({ header, start, onStarted }: NewChatPaneProps) => {
       setPending(undefined)
     }
   }
+
+  // Once something is said, it is shown as the conversation it becomes.
+  if (greeting !== undefined && !pending && !problem) return <ChatStart greeting={greeting} onSend={send} autoFocus />
 
   return (
     <ChatLayout header={header} composer={<Composer onSend={send} />}>

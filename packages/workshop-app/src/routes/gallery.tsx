@@ -6,6 +6,7 @@ import { Composer } from '@/blocks/Composer'
 import type { ComposerSkill } from '@/blocks/ComposerAddMenu'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
+import { ChatStart } from '@/blocks/ChatStart'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -267,6 +268,11 @@ function Gallery() {
           <div className="w-80 max-w-full">
             <Composer onSend={previewSend} />
           </div>
+        </div>
+      </Section>
+      <Section title="ChatStart (the home page, before the first message)">
+        <div className="flex h-96 w-full rounded-3xl bg-kumo-base">
+          <ChatStart greeting="Hello Ada, what should we do today?" onSend={previewSend} />
         </div>
       </Section>
       <Section title="Composer (replying: a line of the message being answered sits above the draft, with any attachments under it; the cross or Escape makes it an ordinary message again)">

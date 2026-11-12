@@ -8,11 +8,17 @@ export const Route = createFileRoute('/_app/')({
   component: Home,
 })
 
+const greet = (name: string) => {
+  const [firstName] = name.trim().split(/\s+/)
+  return `Hello${firstName ? ` ${firstName}` : ''}, what should we do today?`
+}
+
 function Home() {
-  const { api } = useApi()
+  const { api, user } = useApi()
   const navigate = useNavigate()
   return (
     <NewChatPane
+      greeting={greet(user.name)}
       start={(text, modelId) => startConversation(() => api.newWorkspace(), text, modelId)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/$chatId', params: { workspaceId, chatId } })}
     />

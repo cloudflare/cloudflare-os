@@ -10,6 +10,8 @@ export type MascotMotion = {
   /** Grow in, or shrink away. It starts out not shown. */
   setShown: (shown: boolean) => void
   setEmotion: (emotion: MascotEmotion) => void
+  /** How far from its edge a pointer starts to draw it, in multiples of its own size. */
+  setReach: (reach: number) => void
   /** Start squeezing it. Sad, it rains for as long as it is held; otherwise nothing happens. */
   press: () => void
   release: () => void
@@ -17,6 +19,9 @@ export type MascotMotion = {
   tap: () => void
   stop: () => void
 }
+
+/** How far from its edge a pointer starts to draw it, unless set otherwise, in its own sizes. */
+export const DEFAULT_REACH = 0.85
 
 /** How many raindrops can be falling at once; the component draws this many. */
 export const RAINDROPS = 15
@@ -106,6 +111,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   const onMotionChange = () => { reduced = media.matches }
   media.addEventListener('change', onMotionChange)
   const pointer = { x: 0, y: 0, localX: 32, localY: 28, influence: 0, active: false }
+  let reach = DEFAULT_REACH
   const lobes = [
     { x: 37.8, y: 19.8, pull: 5.8, speed: 15, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
     { x: 44.4, y: 33.1, pull: 4.5, speed: 11, dx: 0, dy: 0, wanderX: 0, wanderY: 0, swell: 0 },
@@ -176,7 +182,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     const outsideX = Math.max(bounds.left - x, 0, x - bounds.right)
     const outsideY = Math.max(bounds.top - y, 0, y - bounds.bottom)
     const distance = Math.hypot(outsideX, outsideY)
-    const falloff = Math.max(bounds.width, bounds.height) * 0.85
+    const falloff = Math.max(bounds.width, bounds.height) * reach
     pointer.influence = 1 - smoothstep(distance / falloff)
     pointer.active = true
   }
@@ -694,6 +700,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       wake()
     },
     setEmotion: (next) => { emotion = next },
+    setReach: (next) => { reach = next },
     press: () => {
       if (emotion !== 'sad') return
       held = true
