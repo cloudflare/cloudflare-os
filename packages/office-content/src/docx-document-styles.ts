@@ -6,6 +6,7 @@
 import type { DocxBorder, DocxTabStop } from "./docx-document";
 import { isOn } from "./ooxml";
 import { attribute, childElements, firstChild, type XmlElement } from "./xml";
+import { lookupTable } from "./lookup-table";
 
 /** A decimal attribute value, or undefined when it is absent or not a plain number. */
 export function numeric(value: string | undefined): number | undefined {
@@ -34,12 +35,12 @@ export function layered<T extends object>(...layers: readonly (T | undefined)[])
 // ---- Theme ----
 
 /** The names WordprocessingML uses for a theme's twelve colour slots. */
-const THEME_COLOR_SLOTS: Readonly<Record<string, string>> = {
+const THEME_COLOR_SLOTS: Readonly<Record<string, string>> = lookupTable({
   dark1: "dk1", text1: "dk1", light1: "lt1", background1: "lt1",
   dark2: "dk2", text2: "dk2", light2: "lt2", background2: "lt2",
   accent1: "accent1", accent2: "accent2", accent3: "accent3", accent4: "accent4", accent5: "accent5", accent6: "accent6",
   hyperlink: "hlink", followedHyperlink: "folHlink",
-};
+});
 
 /** theme1.xml: the fonts behind `asciiTheme` and the colours behind `themeColor`. */
 export class Theme {
@@ -148,11 +149,11 @@ export interface RunFormat {
   readonly hidden?: boolean;
 }
 
-const HIGHLIGHT_COLORS: Readonly<Record<string, string>> = {
+const HIGHLIGHT_COLORS: Readonly<Record<string, string>> = lookupTable({
   yellow: "#FFFF00", green: "#00FF00", cyan: "#00FFFF", magenta: "#FF00FF", blue: "#0000FF", red: "#FF0000",
   darkBlue: "#000080", darkCyan: "#008080", darkGreen: "#008000", darkMagenta: "#800080", darkRed: "#800000",
   darkYellow: "#808000", darkGray: "#808080", lightGray: "#C0C0C0", black: "#000000", white: "#FFFFFF", none: "none",
-};
+});
 
 function toggle(properties: XmlElement | undefined, name: string): boolean | undefined {
   const element = firstChild(properties, name);
@@ -193,7 +194,9 @@ export function readRunFormat(properties: XmlElement | undefined, theme: Theme):
     caps: toggle(properties, "w:caps"),
     smallCaps: toggle(properties, "w:smallCaps"),
     letterSpacing: twips(firstChild(properties, "w:spacing"), "w:val"),
-    hidden: toggle(properties, "w:vanish") ?? toggle(properties, "w:webHidden"),
+    // Not `w:webHidden`, which hides text in Word's Web Layout only: every table of contents
+    // marks its page numbers with it, and Print Layout shows them.
+    hidden: toggle(properties, "w:vanish"),
   });
 }
 
@@ -265,9 +268,9 @@ export interface ParagraphFormat {
   readonly outlineLevel?: number;
 }
 
-const ALIGNMENTS: Readonly<Record<string, ParagraphFormat["alignment"]>> = {
+const ALIGNMENTS: Readonly<Record<string, ParagraphFormat["alignment"]>> = lookupTable({
   left: "left", start: "left", center: "center", right: "right", end: "right", both: "justify", distribute: "justify",
-};
+});
 
 /** What Word uses for "auto" paragraph spacing, the kind HTML imports ask for. */
 const AUTO_SPACING = 14;
@@ -768,10 +771,10 @@ export function formatCount(count: number, format: string): string {
 }
 
 /** Glyphs of the Symbol and Wingdings fonts that bullets use, by their code in the font. */
-const SYMBOL_GLYPHS: Readonly<Record<string, Readonly<Record<number, string>>>> = {
+const SYMBOL_GLYPHS = lookupTable<Readonly<Record<number, string>>>({
   symbol: { 0xb7: "•", 0xa8: "♦", 0xde: "⇒", 0xae: "→" },
   wingdings: { 0xa7: "▪", 0xa8: "◻", 0x6e: "■", 0x6f: "□", 0x71: "❑", 0x76: "❖", 0x9f: "•", 0xd8: "➢", 0xfc: "✔", 0xe0: "→" },
-};
+});
 
 /**
  * Text set in a symbol font, as the Unicode characters that look the same. Such fonts put their

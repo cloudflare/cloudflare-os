@@ -29,6 +29,7 @@ import {
 } from "./ooxml";
 import { attribute, childElements, firstChild, firstDescendant, textContent, type XmlElement } from "./xml";
 import { openZip, type ZipArchive } from "./zip";
+import { lookupTable } from "./lookup-table";
 
 /** A page's size and margins, in points. */
 export interface DocxPageSetup {
@@ -217,6 +218,8 @@ const MAX_BLOCKS = 5_000;
 const MAX_MARGIN_BLOCKS = 200;
 const MAX_TABLE_DEPTH = 8;
 const MAX_GRID_SPAN = 64;
+/** The most rows read from one table; a table can hold rows with no cells, which the block limit does not count. */
+const MAX_TABLE_ROWS = 5_000;
 
 /** Reads a Word document into a layout model. Throws `DocumentConversionError`, `ZipError` or `XmlError`. */
 export async function readDocxDocument(bytes: Uint8Array): Promise<DocxDocument> {
@@ -660,7 +663,12 @@ function walkRun(element: XmlElement, walk: InlineWalk, href: string | undefined
     styles.characterStyle(attribute(firstChild(properties, "w:rStyle"), "w:val")),
     readRunFormat(properties, theme),
   );
-  if (format.hidden) return;
+  if (format.hidden) {
+    // A hidden run still opens and closes fields: missing one would leave the rest of the
+    // paragraph read as field code.
+    for (const child of childElements(element, "w:fldChar")) advanceField(walk.fields, attribute(child, "w:fldCharType"));
+    return;
+  }
   const run = runProperties(format, walk.resolved.background);
 
   for (const child of childElements(element)) {
@@ -819,7 +827,7 @@ function walkVml(element: XmlElement, walk: InlineWalk, href: string | undefined
   walk.inlines.push({ kind: "image", ...image, width, height, description: attribute(data, "o:title") || undefined, href });
 }
 
-const POINTS_PER_UNIT: Readonly<Record<string, number>> = { pt: 1, in: 72, cm: 72 / 2.54, mm: 72 / 25.4, px: 0.75 };
+const POINTS_PER_UNIT: Readonly<Record<string, number>> = lookupTable({ pt: 1, in: 72, cm: 72 / 2.54, mm: 72 / 25.4, px: 0.75 });
 
 function vmlLength(style: string, property: string): number | undefined {
   const match = new RegExp(`(?:^|;)\\s*${property}\\s*:\\s*([0-9.]+)(pt|in|cm|mm|px)`).exec(style);
@@ -846,6 +854,8 @@ interface GridCell {
 interface GridRow {
   readonly properties: XmlElement | undefined;
   readonly cells: readonly GridCell[];
+  /** The row's cells by the column each starts at, for finding the cell above or below one. */
+  readonly byColumn: ReadonlyMap<number, GridCell>;
 }
 
 const DEFAULT_LOOK: TableLook = {
@@ -864,6 +874,10 @@ function readTable(table: XmlElement, part: PartContext, depth: number): DocxTab
     const rowProperties = firstChild(row, "w:trPr");
     // A row deleted under tracked changes.
     if (firstChild(rowProperties, "w:del")) continue;
+    if (grid.length >= MAX_TABLE_ROWS) {
+      document.truncated = true;
+      break;
+    }
     let column = gridValue(rowProperties, "w:gridBefore", 0);
     const cells: GridCell[] = [];
     for (const element of unwrapped(row, "w:tc")) {
@@ -876,11 +890,14 @@ function readTable(table: XmlElement, part: PartContext, depth: number): DocxTab
       });
       column += span;
     }
-    grid.push({ properties: rowProperties, cells });
+    grid.push({ properties: rowProperties, cells, byColumn: new Map(cells.map(cell => [cell.column, cell])) });
   }
 
   const columnWidths = childElements(firstChild(table, "w:tblGrid"), "w:gridCol").map(column => Math.max(0, twips(column, "w:w") ?? 0));
-  const columnCount = Math.max(columnWidths.length, ...grid.map(row => row.cells.reduce((end, cell) => Math.max(end, cell.column + cell.span), 0)));
+  let columnCount = columnWidths.length;
+  for (const row of grid) {
+    for (const cell of row.cells) columnCount = Math.max(columnCount, cell.column + cell.span);
+  }
   const shape: TableShape = { rows: grid.length, columns: columnCount, look, format, style };
 
   const rows = grid.map((row, rowIndex): DocxTableRow => {
@@ -889,12 +906,12 @@ function readTable(table: XmlElement, part: PartContext, depth: number): DocxTab
     const leading = row.cells[0]?.column ?? 0;
     if (leading > 0) cells.push(spacerCell(leading));
     for (const cell of row.cells) {
-      const above = grid[rowIndex - 1]?.cells.find(other => other.column === cell.column);
+      const above = grid[rowIndex - 1]?.byColumn.get(cell.column);
       // A cell that continues a merge is part of the cell above; one with nothing above it starts its own.
       if (cell.merge === "continue" && above?.merge) continue;
       let rowSpan = 1;
       if (cell.merge) {
-        while (grid[rowIndex + rowSpan]?.cells.find(other => other.column === cell.column)?.merge === "continue") rowSpan++;
+        while (grid[rowIndex + rowSpan]?.byColumn.get(cell.column)?.merge === "continue") rowSpan++;
       }
       cells.push(readCell(cell, { row: rowIndex, rowSpan }, shape, part, depth));
     }

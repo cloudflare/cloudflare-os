@@ -9,6 +9,7 @@ import {
 import type { SlideBounds, SlideColor, SlideTable, SlideTableCell, SlideTextBody } from "./pptx-slide-model";
 import { readParagraphs, uniformListStyle, type ListStyle, type RunProps, type TextContext } from "./pptx-slide-text";
 import { attribute, childElements, firstChild, textContent, type XmlElement } from "./xml";
+import { lookupTable } from "./lookup-table";
 
 /** What reading a table needs from the presentation around it. */
 export interface TableEnvironment {
@@ -79,7 +80,7 @@ interface Region {
 type Side = "left" | "right" | "top" | "bottom";
 const SIDES: readonly Side[] = ["left", "right", "top", "bottom"];
 const CELL_BORDERS: Readonly<Record<Side, string>> = { left: "a:lnL", right: "a:lnR", top: "a:lnT", bottom: "a:lnB" };
-const ANCHORS: Readonly<Record<string, SlideTextBody["anchor"]>> = { t: "top", ctr: "middle", b: "bottom" };
+const ANCHORS: Readonly<Record<string, SlideTextBody["anchor"]>> = lookupTable({ t: "top", ctr: "middle", b: "bottom" });
 
 /** Reads an `a:tbl` placed at `bounds`. */
 export function readTable(table: XmlElement, bounds: SlideBounds, environment: TableEnvironment): SlideTable {

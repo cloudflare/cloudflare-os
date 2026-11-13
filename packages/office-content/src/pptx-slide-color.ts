@@ -4,6 +4,7 @@
 
 import { attribute, childAt, childElements, firstChild, type XmlElement } from "./xml";
 import type { SlideColor, SlideFill, SlideGradientStop, SlideOutline } from "./pptx-slide-model";
+import { lookupTable } from "./lookup-table";
 
 /** What a theme part contributes to drawing. */
 export interface SlideTheme {
@@ -27,10 +28,10 @@ export interface ColorContext {
 }
 
 /** The Office theme's colors, for a file whose theme is missing or incomplete. */
-const DEFAULT_SCHEME: Readonly<Record<string, string>> = {
+const DEFAULT_SCHEME: Readonly<Record<string, string>> = lookupTable({
   dk1: "000000", lt1: "FFFFFF", dk2: "44546A", lt2: "E7E6E6", accent1: "4472C4", accent2: "ED7D31",
   accent3: "A5A5A5", accent4: "FFC000", accent5: "5B9BD5", accent6: "70AD47", hlink: "0563C1", folHlink: "954F72",
-};
+});
 
 const DEFAULT_FONT = "Calibri";
 
@@ -80,12 +81,12 @@ type Rgb = readonly [number, number, number];
 const COLOR_ELEMENTS = new Set(["a:srgbClr", "a:schemeClr", "a:sysClr", "a:prstClr", "a:scrgbClr", "a:hslClr"]);
 
 /** The preset color names files use in practice; the rest of the 140 fall back to the caller's default. */
-const PRESET_COLORS: Readonly<Record<string, string>> = {
+const PRESET_COLORS: Readonly<Record<string, string>> = lookupTable({
   black: "000000", white: "FFFFFF", red: "FF0000", green: "008000", blue: "0000FF", yellow: "FFFF00",
   gray: "808080", grey: "808080", ltGray: "D3D3D3", dkGray: "A9A9A9", orange: "FFA500", purple: "800080",
   cyan: "00FFFF", magenta: "FF00FF", navy: "000080", teal: "008080", maroon: "800000", olive: "808000",
   silver: "C0C0C0", lime: "00FF00", aqua: "00FFFF", fuchsia: "FF00FF",
-};
+});
 
 /**
  * The color of the first color element among `parent`'s children (as in `a:solidFill`, `a:buClr`,

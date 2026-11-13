@@ -25,6 +25,7 @@ import {
 } from "./pptx-slide-text";
 import { attribute, childAt, childElements, firstChild, firstDescendant, type XmlElement } from "./xml";
 import { ZipError, openZip, type ZipArchive } from "./zip";
+import { lookupTable } from "./lookup-table";
 
 export type * from "./pptx-slide-model";
 
@@ -136,10 +137,10 @@ interface GroupFrame {
 }
 
 /** Image types a browser draws. Office's own vector formats (EMF, WMF) and TIFF are not among them. */
-const IMAGE_TYPES: Readonly<Record<string, string>> = {
+const IMAGE_TYPES: Readonly<Record<string, string>> = lookupTable({
   png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", bmp: "image/bmp", webp: "image/webp",
   svg: "image/svg+xml",
-};
+});
 
 /** The element Office 2016+ adds to a blip to carry the SVG its PNG is a fallback for. */
 const SVG_BLIP = "{http://schemas.microsoft.com/office/drawing/2016/SVG/main}svgBlip";

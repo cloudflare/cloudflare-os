@@ -3,6 +3,8 @@
 // digit placeholders, scaling, literals, colours, simple conditions, currency tags, fractions,
 // scientific notation, dates, times and elapsed time, in English.
 
+import { lookupTable } from "./lookup-table";
+
 /** What a cell shows. */
 export interface FormattedValue {
   readonly text: string;
@@ -52,10 +54,10 @@ interface Section {
   readonly hasText: boolean;
 }
 
-const NAMED_COLORS: Readonly<Record<string, string>> = {
+const NAMED_COLORS: Readonly<Record<string, string>> = lookupTable({
   black: "#000000", blue: "#0000FF", cyan: "#00FFFF", green: "#00FF00",
   magenta: "#FF00FF", red: "#FF0000", white: "#FFFFFF", yellow: "#FFFF00",
-};
+});
 
 /**
  * The legacy 64-colour palette `indexed` colours and `[ColorN]` format tags refer to (ECMA-376

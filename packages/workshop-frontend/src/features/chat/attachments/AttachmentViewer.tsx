@@ -123,9 +123,10 @@ export const AttachmentViewer = ({
 
   const download = () => {
     onRetry();
-    loadContent(attachment.id).then(
-      (bytes) => saveAttachment(bytes, attachment.name, attachment.mimeType),
-      (error: unknown) => {
+    loadContent(attachment.id)
+      .then((bytes) => saveAttachment(bytes, attachment.name, attachment.mimeType))
+      // A failed save as well as a failed fetch.
+      .catch((error: unknown) => {
         console.error("Failed to download chat attachment:", error);
         toasts.add({
           title: error instanceof Error && error.message
@@ -133,8 +134,7 @@ export const AttachmentViewer = ({
             : "Failed to download attachment",
           variant: "error",
         });
-      },
-    );
+      });
   };
 
   const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(attachment.mimeType, attachment.name)];

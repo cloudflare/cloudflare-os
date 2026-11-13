@@ -106,6 +106,23 @@ describe("readDocxDocument", () => {
     expect(blocks[6]!.marker!.run.font).not.toBe("Symbol");
   });
 
+  it("keeps text hidden only in Word's Web Layout, such as a table of contents' page numbers", async () => {
+    const document = await readDocxDocument(await buildLayoutDocx({
+      body: paragraph(run("Chapter one") + run("12", "<w:webHidden/>") + run("secret", "<w:vanish/>")),
+    }));
+
+    expect(paragraphs(document.body).map(text)).toEqual(["Chapter one12"]);
+  });
+
+  it("reads a table of many empty rows without failing, up to its row limit", async () => {
+    const document = await readDocxDocument(await buildLayoutDocx({ body: `<w:tbl>${"<w:tr/>".repeat(200_000)}</w:tbl>` }));
+
+    const [table] = document.body;
+    expect(table).toMatchObject({ kind: "table" });
+    expect(table!.kind === "table" && table.rows.length).toBe(5_000);
+    expect(document.truncated).toBe(true);
+  });
+
   it("ignores list levels Word does not have, which would otherwise size a list's counters", async () => {
     const numbered = (ilvl: number) => paragraph(run("x"), `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="1"/></w:numPr>`);
     const started = Date.now();

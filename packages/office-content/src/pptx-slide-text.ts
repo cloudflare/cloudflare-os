@@ -7,6 +7,7 @@ import { isOn } from "./ooxml";
 import { BLACK, resolveColor, resolveFont, schemeColor, type ColorContext } from "./pptx-slide-color";
 import type { SlideBullet, SlideColor, SlideParagraph, SlideRun, SlideTextBody } from "./pptx-slide-model";
 import { attribute, childAt, childElements, firstChild, textContent, type XmlElement } from "./xml";
+import { lookupTable } from "./lookup-table";
 
 /** What reading text needs beyond colors. */
 export interface TextContext extends ColorContext {
@@ -105,9 +106,9 @@ function readSpacing(parent: XmlElement | undefined): Spacing | undefined {
   return points === undefined ? undefined : { points: points / 100 };
 }
 
-const ALIGNMENTS: Readonly<Record<string, SlideParagraph["align"]>> = {
+const ALIGNMENTS: Readonly<Record<string, SlideParagraph["align"]>> = lookupTable({
   l: "left", ctr: "center", r: "right", just: "justify", dist: "justify",
-};
+});
 
 /** Drops the properties a source did not state, so overlaying it leaves the lower layer's. */
 function stated<T extends object>(props: T): T {
@@ -188,7 +189,7 @@ function mergeLevel(base: LevelProps, over: LevelProps | undefined): LevelProps 
   return over ? { ...base, ...over, run: { ...base.run, ...over.run } } : base;
 }
 
-const ANCHORS: Readonly<Record<string, SlideTextBody["anchor"]>> = { t: "top", ctr: "middle", b: "bottom" };
+const ANCHORS: Readonly<Record<string, SlideTextBody["anchor"]>> = lookupTable({ t: "top", ctr: "middle", b: "bottom" });
 
 /** A text body's frame without its paragraphs. */
 export type TextFrame = Omit<SlideTextBody, "paragraphs">;

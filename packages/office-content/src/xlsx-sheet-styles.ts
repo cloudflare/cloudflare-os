@@ -7,6 +7,7 @@ import { attribute, childElements, firstChild, type XmlElement } from "./xml";
 import { builtInFormatCode, INDEXED_COLORS, parseNumberFormat, type NumberFormat } from "./xlsx-sheet-format";
 import { isTrue } from "./xlsx-sheet-strings";
 import type { ZipArchive } from "./zip";
+import { lookupTable } from "./lookup-table";
 
 /** A cell's font. */
 export interface SheetFont {
@@ -181,11 +182,11 @@ function readFont(font: XmlElement, palette: Palette, base: SheetFont): SheetFon
 }
 
 /** How much of a pattern's area its foreground colour covers. */
-const PATTERN_DENSITY: Readonly<Record<string, number>> = {
+const PATTERN_DENSITY: Readonly<Record<string, number>> = lookupTable({
   darkGray: 0.75, mediumGray: 0.5, lightGray: 0.25, gray125: 0.125, gray0625: 0.0625,
   darkHorizontal: 0.5, darkVertical: 0.5, darkDown: 0.5, darkUp: 0.5, darkGrid: 0.75, darkTrellis: 0.75,
   lightHorizontal: 0.25, lightVertical: 0.25, lightDown: 0.25, lightUp: 0.25, lightGrid: 0.4, lightTrellis: 0.5,
-};
+});
 
 function channelAt(color: string, at: number): number {
   return parseInt(color.slice(at, at + 2), 16);
@@ -317,10 +318,10 @@ export async function readStyles(zip: ZipArchive, relationships: Relationships):
 }
 
 /** The width of a digit as a share of the font size, for the faces workbooks most often use. */
-const DIGIT_WIDTH_EM: Readonly<Record<string, number>> = {
+const DIGIT_WIDTH_EM: Readonly<Record<string, number>> = lookupTable({
   calibri: 0.507, "aptos narrow": 0.5, aptos: 0.56, arial: 0.556, helvetica: 0.556, "times new roman": 0.5,
   "courier new": 0.6, verdana: 0.636, tahoma: 0.546, cambria: 0.55, "segoe ui": 0.539, "liberation sans": 0.556,
-};
+});
 
 /**
  * The pixel width of the widest digit in the workbook's default font at 96 DPI, which is the

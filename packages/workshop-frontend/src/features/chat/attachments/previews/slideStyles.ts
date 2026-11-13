@@ -80,7 +80,7 @@ const fontFace = (name: string): FontFace => {
 /** The CSS font stack for an Office typeface name. */
 export const fontStack = (name: string): string =>
   // The name is the file's; anything that could end the quoted family is dropped.
-  `"${name.replace(/[";{}<>\n\r]/g, "")}", ${fontFace(name).fallbacks}`;
+  `"${name.replace(/["\\;{}<>\p{Cc}]/gu, "")}", ${fontFace(name).fallbacks}`;
 
 /**
  * PowerPoint's single line spacing as a multiple of the font size. It is the same for every font,
