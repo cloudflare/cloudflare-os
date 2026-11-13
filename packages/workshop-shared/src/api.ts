@@ -1883,6 +1883,14 @@ export type AdminWorkspaceMethod = typeof ADMIN_WORKSPACE_METHODS[number];
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
  * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord, and
+ * requestWorkspaceWrite(), denyWorkspaceWrite() and approveWorkspaceWrite() as AdminWriteRecords.
+ * The rest change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
+ * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats,
+ * getWorkspaceWrite, listAdminPasskeys), the passkey challenges (beginAdminPasskeyEnrolment,
+ * beginAdminPasskeyRemoval, beginWorkspaceWriteApproval), the gateway tests, and checkForUpdates.
+ * A call that is not recorded can still leave a record that is not its own: getWorkspaceWrite()
+ * and beginWorkspaceWriteApproval(), like every write-request method, first end the requests that
+ * have run out, each recorded "expired" (see AdminWriteRecord).
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -2808,6 +2816,11 @@ export interface AdminApi {
   // and removeAdminPasskey(), so that a passkey can still be seen, and removed by its own admin,
   // while it can approve nothing. Each also refuses a caller who is no longer a deployment admin
   // (`notAdmin`).
+  // Any admin session may request a write, an agent's or the CLI's included. A request is run
+  // only once the server has verified an assertion by one of the approving admin's enrolled
+  // passkeys over that request's challenge, the deployment's origin and its relying party, with
+  // user verification. Enrolling a passkey needs only an admin's session, an admin removes only
+  // their own, and every enrolment and removal is recorded.
 
   /**
    *
@@ -2827,6 +2840,29 @@ export interface AdminApi {
   /** Deny a pending write request, recorded ("denied") before it is. Refused `requestNotFound`,
    * and `requestNotPending` once it is approved, denied or expired. */
   denyWorkspaceWrite(requestId: string): Promise<void>;
+
+  /**
+   * Start approving a pending write request: the challenge the caller's passkey must sign. Refused
+   * `passkeyRequired` while the caller has enrolled none, `requestNotFound`, `requestNotPending`
+   * and `originUnset`.
+   */
+  beginWorkspaceWriteApproval(requestId: string): Promise<AdminPasskeyChallenge>;
+
+  /**
+   * Approve a pending write request with the caller's passkey, and run it. The assertion must
+   * answer the challenge beginWorkspaceWriteApproval() last gave this caller for this request, on
+   * the deployment's origin and relying party, with user verification, by one of the caller's own
+   * passkeys. Anything else is refused `passkeyRefused`, leaving the request pending and the
+   * challenge spent; an attempt on a request that is no longer pending, such as an approval sent
+   * a second time, is refused `requestNotPending`. Either refusal is recorded ("refused", with
+   * the check that failed); an id that names no request is refused `requestNotFound`, which has
+   * no request to be recorded against. The workspace then records the write ("approved") in the
+   * deployment-wide log, enters it in its action log, which its owner and "build" collaborators
+   * read, and only then runs it; what came of it is recorded too ("applied" or "failed"). Returns
+   * the request as it stands: "applied", or "failed" with the workspace's error.
+   */
+  approveWorkspaceWrite(requestId: string, assertion: AdminPasskeyAssertion)
+      : Promise<AdminWriteRequest>;
 
   /** Every passkey enrolled on the deployment, by admin and then by enrolment time, those of
    * accounts that are no longer deployment admins included: they stay stored, and approve
