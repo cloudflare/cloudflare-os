@@ -131,8 +131,8 @@ export interface BulkInputs {
  *
  * Discarding needs no such wait: it goes newest first, so by the time the oldest gate is
  * withdrawn — the withdrawal that would release the drain — there is nothing left for the drain
- * to apply. Withdrawing carries no ordering of its own, and going oldest first here let the
- * drain apply the very requests the user asked to discard.
+ * to apply. Withdrawing carries no ordering of its own, and oldest first would let the drain
+ * apply the very requests the user asked to discard.
  *
  * Everything in `inputs` is read live rather than captured, because all of it can change under a
  * run that takes a provider call per request:

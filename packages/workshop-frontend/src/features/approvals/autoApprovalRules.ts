@@ -45,9 +45,9 @@ export function isAutoApproved(entry: Candidate, rules: AutoApprovalRules): bool
  *
  * Enabling a rule only applies a request the gatekeeper already marked auto-approvable: anything
  * else stays a manual gate with the rule on, so the button would grant a standing permission and
- * leave the request sitting there. Offered only when no rule covers it yet — the chat surface
- * used to infer that from the request still being pending, which is wrong, since the drain stops
- * at the first manual gate and leaves covered requests queued behind it.
+ * leave the request sitting there. Offered only when no rule covers it yet, read from the rule
+ * list itself: a request still being pending says nothing about that, since the drain stops at
+ * the first manual gate and leaves covered requests queued behind it.
  */
 export function canOfferAlwaysApprove(entry: Candidate, rules: AutoApprovalRules): boolean {
   const kind = entry.description.actionKind

@@ -166,8 +166,8 @@ describe('PendingChangesTray', () => {
     })
     await openGroup()
 
-    // The old chat surface inferred "still pending" meant "no rule", which is wrong: the drain
-    // stops at the first manual gate and leaves covered requests queued behind it.
+    // Still pending does not mean no rule: the drain stops at the first manual gate and leaves
+    // covered requests queued behind it.
     expect(button('Always approve')).toBeUndefined()
     expect(document.body.textContent).toContain('Standing rule enabled')
   })

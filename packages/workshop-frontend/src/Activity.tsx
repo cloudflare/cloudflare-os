@@ -484,9 +484,9 @@ function AutoApprovalPanel({
   // second time for no new answer.
   //
   // Counted rather than flagged, because several completions can land in one React batch. A
-  // flag swallowed the whole advance, so a change made on another surface alongside this
-  // panel's own was never read: the rule it granted stayed invisible here, and so could not be
-  // revoked from this list, until something else happened to refresh it.
+  // flag would swallow the whole advance, so a change made on another surface alongside this
+  // panel's own would go unread: the rule it granted would stay invisible here, and so could not
+  // be revoked from this list, until something else happened to refresh it.
   const changedHere = useRef(0)
   useEffect(() => {
     const advance = trigger - previousReloadTrigger.current

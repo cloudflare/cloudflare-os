@@ -128,10 +128,10 @@ describe('Activity auto-approval rules', () => {
     await panel.toggleWith(endElsewhere)
 
     // An interleaved completion, not a coalesced one: `act()` flushes each separately, so the
-    // two land in different renders and the old boolean flag would pass this too. The coalesced
-    // case -- both in one React batch, the trigger advancing by two against a single local
-    // completion -- is what the counter is for, and is reachable in a browser under automatic
-    // batching but not under jsdom. This pins the interleaving; that case is uncovered.
+    // two land in different renders and a boolean flag in place of the counter would pass this
+    // too. The coalesced case -- both in one React batch, the trigger advancing by two against a
+    // single local completion -- is what the counter is for, and is reachable in a browser under
+    // automatic batching but not under jsdom. This pins the interleaving; that case is uncovered.
     expect(panel.ruleReads).toBe(atMount + 2)
   })
 })

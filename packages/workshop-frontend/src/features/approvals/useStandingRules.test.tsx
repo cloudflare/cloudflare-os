@@ -3,16 +3,10 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { Overseer, PreApprovableAction } from '@gadgets/workshop-shared/api'
+import type { Overseer } from '@gadgets/workshop-shared/api'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import type { RpcStub } from 'capnweb'
-
-vi.mock('@cloudflare/kumo', async (importOriginal) => ({
-  ...await importOriginal() as typeof import('@cloudflare/kumo'),
-  useKumoToastManager: () => ({ add: () => {} }),
-}))
-
-const { useAutoApproval } = await import('./useAutoApproval')
+import { useStandingRules } from './useStandingRules'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -40,18 +34,12 @@ function deferred<T>(): Deferred<T> {
 }
 
 /**
- * Mounts the hook over an overseer whose two reads are parked, so a test can land them out of
+ * Mounts the hook over an overseer whose rule reads are parked, so a test can land them out of
  * order — which is the whole question `refresh` answers for its caller.
  */
 async function mount() {
-  const catalogReads: Array<Deferred<PreApprovableAction[]>> = []
   const ruleReads: Array<Deferred<Rule[]>> = []
   const overseer = {
-    listPreApprovableActions: () => {
-      const next = deferred<PreApprovableAction[]>()
-      catalogReads.push(next)
-      return next.promise
-    },
     listAutoApprovedActionKinds: () => {
       const next = deferred<Rule[]>()
       ruleReads.push(next)
@@ -59,9 +47,10 @@ async function mount() {
     },
   } as unknown as RpcStub<Overseer>
 
-  let hook: ReturnType<typeof useAutoApproval> | undefined
+  let hook: ReturnType<typeof useStandingRules> | undefined
   const Probe = () => {
-    hook = useAutoApproval(overseer)
+    // No tray, so no vendor catalog: only the rule reads this test parks.
+    hook = useStandingRules(overseer, false)
     return null
   }
   const container = document.createElement('div')
@@ -71,28 +60,22 @@ async function mount() {
 
   return {
     get current() { return hook! },
-    /** Lands the nth read pair, oldest first, with the rules it found. */
+    /** Lands the nth rule read, oldest first, with the rules it found. */
     async land(index: number, rules: Rule[]) {
-      await act(async () => {
-        catalogReads[index].resolve([])
-        ruleReads[index].resolve(rules)
-      })
+      await act(async () => { ruleReads[index].resolve(rules) })
     },
-    /** Fails the nth read pair's rule read, as a dropped connection would. */
+    /** Fails the nth rule read, as a dropped connection would. */
     async fail(index: number) {
-      await act(async () => {
-        catalogReads[index].resolve([])
-        ruleReads[index].reject(new Error('The connection dropped.'))
-      })
+      await act(async () => { ruleReads[index].reject(new Error('The connection dropped.')) })
     },
   }
 }
 
-describe('useAutoApproval', () => {
+describe('useStandingRules', () => {
   it('reports a read that landed, so the caller can retire its optimistic overlay', async () => {
-    // The chat surface shows "Always approve" as taken the moment it is clicked, and drops that
-    // overlay once a read of the real list has replaced it. What `refresh` resolves to is the
-    // only thing standing between the two.
+    // The chat shows "Always approve" as taken the moment it is clicked, and drops that overlay
+    // once a read of the real list has replaced it. What `refresh` resolves to is the only thing
+    // standing between the two.
     const harness = await mount()
     await harness.land(0, [])
 
@@ -100,9 +83,7 @@ describe('useAutoApproval', () => {
     await harness.land(1, [{ gatekeeperId: 1, actionKind: APPEND }])
 
     await expect(refresh).resolves.toBe(true)
-    expect(harness.current.entries).toEqual([
-      { gatekeeperId: 1, resourceTitle: '', actionKind: APPEND, enabled: true, orphaned: true },
-    ])
+    expect([...harness.current.enabledRuleKeys]).toEqual(['1:append'])
   })
 
   it('does not report a read another refresh overtook', async () => {
@@ -119,11 +100,11 @@ describe('useAutoApproval', () => {
     await expect(newer).resolves.toBe(true)
     await expect(older).resolves.toBe(false)
     // The newer read won: the rule the older one carried is nowhere.
-    expect(harness.current.entries).toEqual([])
+    expect([...harness.current.enabledRuleKeys]).toEqual([])
   })
 
   it('does not report a read that failed', async () => {
-    // A failed read empties the lists, so every rule would read as off. Retiring the overlay
+    // A failed read empties the list, so every rule would read as off. Retiring the overlay
     // against that offers "Always approve" again for a rule the user has just enabled.
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const harness = await mount()

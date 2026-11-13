@@ -27,20 +27,14 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
   const [pending, setPending] = useState<Set<string>>(new Set())
   const refreshGeneration = useRef(0)
 
-  /**
-   * Re-reads the catalog and the rule list. Resolves to whether this read is the one that landed:
-   * a refresh overtaken by a later one, or one whose reads rejected, returns false, having put no
-   * authoritative list in place. A caller holding an optimistic overlay knows from that not to
-   * retire it — against an empty list, a rule the user has just enabled would read as off.
-   */
-  const refresh = useCallback(async (): Promise<boolean> => {
+  const refresh = useCallback(async () => {
     const generation = ++refreshGeneration.current
     if (!overseer) {
       setCatalog([])
       setRules([])
       setLoadError(false)
       setIsLoading(false)
-      return true
+      return
     }
 
     const [catalogResult, rulesResult] = await Promise.allSettled([
@@ -48,7 +42,7 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
       overseer.listAutoApprovedActionKinds(),
     ])
 
-    if (generation !== refreshGeneration.current) return false
+    if (generation !== refreshGeneration.current) return
 
     let failed = false
     if (catalogResult.status === 'fulfilled') {
@@ -69,7 +63,6 @@ export function useAutoApproval(overseer: RpcStub<Overseer> | null) {
 
     setLoadError(failed)
     setIsLoading(false)
-    return !failed
   }, [overseer])
 
   useEffect(() => {

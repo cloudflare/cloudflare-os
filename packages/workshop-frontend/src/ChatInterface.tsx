@@ -4712,9 +4712,9 @@ function ChatInterface({
     [trayGroups],
   );
 
-  // The real rule list, not an inference. The chat surface used to assume an auto-approvable
-  // request still pending meant no rule covered it; the drain stops at the first manual gate and
-  // never skips ahead, so a covered request can sit behind an uncovered one indefinitely.
+  // The real rule list, not an inference from a request still being pending: the drain stops at
+  // the first manual gate and never skips ahead, so a covered request can sit behind an uncovered
+  // one indefinitely.
   const {
     enabledRuleKeys,
     vendorIdByGatekeeper,
