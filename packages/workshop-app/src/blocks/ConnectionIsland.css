@@ -1,22 +1,22 @@
-/* The island opens the way the menus do (DropdownMenu.css), out of the top edge of the window,
-   by two clocks that ConnectionIsland springs from 0 to 1 and eases back: --island-drop, which
-   moves it down, and --island-open, which spreads it across and brings in its contents. As for a
-   menu opened in place, the two axes take different curves, so that it is stretched like a drop
-   rather than scaled: it falls out of the edge as a bead, landing a few pixels past its place and
-   springing back (stretching taller as it does), then spreads into the pill (across lags), the
-   sides going a few pixels past theirs while the bottom squashes up by half as much. Each spring
-   is measured to its travel in ConnectionIsland. Closing draws in across first, then rises.
-   --island-from-x, -top and -bottom are where the bead starts, inset from the island's own box. */
+/* The island opens the way a menu that keeps its trigger does (DropdownMenu.css), out of a point
+   rather than a button: one clock, --island-open, which ConnectionIsland animates from 0 to 1 and
+   back, moves its four edges along a curve out of that point, and the contents with them. The
+   formulas are the menu's for one that opens below what it comes out of; keep the two in step.
+   --island-from-x, -top and -bottom place the point, inset from the island's own box. */
 .connection-island {
   --island-size: var(--island-open, 1);
+  --island-ahead: max(0, var(--island-open, 1));
   --island-closed: calc(1 - var(--island-size));
-  --island-down: var(--island-drop, 1);
-  --island-across: calc(var(--island-size) * var(--island-size));
-  --island-squash: calc(max(0, var(--island-across) - 1) * var(--island-from-x, 0px) / 2);
-  --island-top: calc(var(--island-from-top, 0px) * (1 - var(--island-down)));
-  --island-bottom: calc(var(--island-from-bottom, 0px) * (1 - var(--island-down)) + var(--island-squash));
-  /* It starts in the middle, so both sides move alike. */
-  --island-side: calc(var(--island-from-x, 0px) * (1 - var(--island-across)));
+  --island-shift: calc(1 - var(--island-open, 1));
+  /* One quadratic curve: the surface leads sideways along the top of the window, then comes down. */
+  --island-bend: calc(var(--island-open, 1) * (1 - var(--island-ahead)));
+  --island-span-y: calc(var(--island-from-top, 0px) + var(--island-from-bottom, 0px));
+  --island-offset-y: calc(var(--island-shift) * (var(--island-from-top, 0px) - var(--island-from-bottom, 0px)) / 2 + var(--island-from-top, 0px) * var(--island-bend));
+  /* Arriving, it carries on down past its place by --island-sink pixels, and springs back up. */
+  --island-top: calc(var(--island-closed) * var(--island-span-y) / 2 + var(--island-offset-y) + var(--island-sink, 0) * 1px);
+  --island-bottom: calc(var(--island-closed) * var(--island-span-y) / 2 - var(--island-offset-y) - var(--island-sink, 0) * 1px);
+  /* The point is in the middle, so both sides move alike. */
+  --island-side: calc(var(--island-closed) * var(--island-from-x, 0px));
   /* Its corners keep their full radius at every size, rounding it off completely while small. */
   --island-radius: 22px;
 }
@@ -32,8 +32,7 @@
   opacity: clamp(0, var(--island-size), 1);
 }
 
-/* Pinned to the surface's top left, where the mascot is, so the mascot rides the curve out: down
-   first, then out to its end. */
+/* Pinned to the surface's top left, where the mascot is, so the mascot rides the curve out. */
 .connection-island-content {
   --island-clip-right: calc(2 * var(--island-side));
   --island-clip-bottom: calc(var(--island-top) + var(--island-bottom));
