@@ -3,6 +3,14 @@
 
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Outlet,
+  RouterProvider,
+} from '@tanstack/react-router'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import { ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@gadgets/workshop-shared/api'
@@ -221,6 +229,10 @@ const detail = (details: HTMLElement, term: string) =>
 // Each change in a record's details, as its name and its two sides.
 const changesIn = (details: HTMLElement) => [...details.querySelectorAll('li')].map((li) => li.textContent)
 
+// What a record's details say under `term`, or null when they have no such entry.
+const detail = (details: HTMLElement, term: string) =>
+  [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent ?? null
+
 // What listAdminAudit() is asked for when the panel loads a page.
 const pageQuery = (query: Parameters<AdminApi['listAdminAudit']>[0] = {}) =>
   ({ admin: undefined, method: undefined, cursor: undefined, limit: 50, ...query })
@@ -254,6 +266,38 @@ describe('AdminAuditPanel', () => {
     })
     await show(settings)
     return { ...admin, onSettingsChanged, onFilterChange, show }
+  }
+
+  // Renders the panel as a router's page, beside a stub of the approval page: the link in a
+  // "requested" write record's details needs a router. Its settings and filter stay as given.
+  const renderRouted = async (admin = fakeAdmin()) => {
+    // The router restores the scroll position once it has loaded, which jsdom does not implement.
+    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
+    const rootRoute = createRootRoute({ component: () => <Outlet /> })
+    const panelRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: '/',
+      component: () => (
+        <AdminAuditPanel
+          admin={admin as unknown as RpcStub<AdminApi>}
+          settings={settingsWith()}
+          onSettingsChanged={async () => {}}
+          filter={{}}
+          onFilterChange={() => {}}
+        />
+      ),
+    })
+    const approvalRoute = createRoute({
+      getParentRoute: () => rootRoute, path: '/admin/approve/$requestId', component: () => null,
+    })
+    const router = createRouter({
+      routeTree: rootRoute.addChildren([panelRoute, approvalRoute]),
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    await act(async () => {
+      await router.load()
+      root.render(<RouterProvider router={router} />)
+    })
   }
 
   const hasButton = (name: string) =>
@@ -357,6 +401,17 @@ describe('AdminAuditPanel', () => {
       for (const title of ['Admin actions, last 7 days', 'Most active admins']) {
         expect(card(title).textContent).not.toMatch(/content read/i)
       }
+    })
+
+    it('counts the week’s approved writes, one as a singular', async () => {
+      const admin = fakeAdmin()
+      admin.getAdminAuditStats.mockResolvedValueOnce(testStats({ writes: 1 }))
+      admin.getAdminAuditStats.mockResolvedValue(testStats({ writes: 1234 }))
+      await render(settingsWith(), admin)
+
+      expect(card('Admin actions, last 7 days').textContent).toMatch(/1 approved write(?!s)/)
+      await click(button('Refresh'))
+      expect(card('Admin actions, last 7 days').textContent).toContain('1,234 approved writes')
     })
 
     it('says when the window holds no activity', async () => {
@@ -796,12 +851,118 @@ describe('AdminAuditPanel', () => {
       expect(detail(await expand(1), 'Access')).toBe('constructor · refused: ADMIN_CONTENT_WITHHELD')
     })
 
+    it('shows a write request: its kind and step, its workspace’s owner, and in its details the workspace, reason, arguments, request and a link to its approval page', async () => {
       const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([writeRecord({ event: 'requested', admin: 'admin' })]))
+      await renderRouted(admin)
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
+        formatFullTimestamp(WRITE_AT), 'admin', 'stopAgent', 'Workspace writeRequested', 'owner@example.test',
       ])
       const details = await expand()
+      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titled')
+      expect(detail(details, 'Reason')).toBe('Ticket 42: agent stuck')
+      expect(detail(details, 'Arguments')).toBe('chatId: 3')
+      expect(detail(details, 'Request')).toBe('request-1Open approval page')
+      expect(details.querySelector('a')?.getAttribute('href')).toBe('/admin/approve/request-1')
+      // The requester is the record's own admin, so is not named twice.
+      expect(detail(details, 'Requested by')).toBeNull()
+      expect(detail(details, 'Via')).toBe('API')
+    })
+
+    it('shows a refused approval: who tried, the check that failed, and the passkey the answer named if it was their own', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord({ event: 'refused', admin: 'third-admin', refusal: 'credential' }),
+        writeRecord({ event: 'refused', admin: 'third-admin', refusal: 'signature', passkey: 'credential-1' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      const cells = [...logRows()[0].querySelectorAll('td')]
+      expect(cells.slice(2).map((cell) => cell.textContent))
+        .toEqual(['third-admin', 'stopAgent', 'Workspace writeRefused', 'owner@example.test'])
+      expect(cells[4].querySelector('[title]')?.getAttribute('title')).toBe('Not a passkey this admin enrolled')
+      const unnamed = await expand()
+      expect(detail(unnamed, 'Refusal')).toBe('Not a passkey this admin enrolled')
+      expect(detail(unnamed, 'Requested by')).toBe('admin')
+      expect(detail(unnamed, 'Passkey')).toBeNull()
+      expect(unnamed.querySelector('a')).toBeNull()
+      const named = await expand(1)
+      expect(detail(named, 'Refusal')).toBe('The signature did not verify')
+      expect(detail(named, 'Passkey')).toBe('credential-1')
+    })
+
+    it('shows an approval sent again as a refusal above the write it repeats', async () => {
+      const replayedAt = new Date(WRITE_AT.getTime() + 60_000)
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord({ event: 'refused', at: replayedAt, refusal: 'challenge', passkey: 'credential-1' }),
+        writeRecord({ event: 'applied', passkey: 'credential-1' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      expect(logRows().map((row) => [
+        row.querySelector('time')?.getAttribute('dateTime'), row.querySelectorAll('td')[4].textContent,
+      ])).toEqual([
+        [replayedAt.toISOString(), 'Workspace writeRefused'],
+        [WRITE_AT.toISOString(), 'Workspace writeApplied'],
+      ])
+      const replay = await expand()
+      expect(detail(replay, 'Request')).toBe('request-1')
+      expect(detail(replay, 'Refusal')).toContain('the request no longer pending')
+      expect(detail(await expand(1), 'Request')).toBe('request-1')
+    })
+
+    it('shows an approved write: its passkey, and who requested it when another admin approved it', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord({ passkey: 'credential-1' }),
+        writeRecord({ admin: 'admin', passkey: 'credential-2' }),
+      ]))
+      await render(settingsWith(), admin)
+
+      expect(logRows().map((row) => row.querySelectorAll('td')[4].textContent))
+        .toEqual(['Workspace writeApproved', 'Workspace writeApproved'])
+      const byAnother = await expand()
+      expect(detail(byAnother, 'Passkey')).toBe('credential-1')
+      expect(detail(byAnother, 'Requested by')).toBe('admin')
+      expect(detail(byAnother, 'Refusal')).toBeNull()
+      expect(byAnother.querySelector('a')).toBeNull()
+      const byRequester = await expand(1)
+      expect(detail(byRequester, 'Passkey')).toBe('credential-2')
+      expect(detail(byRequester, 'Requested by')).toBeNull()
+    })
+
+    it('shows what an applied write reported, and why a failed or an expired one ended, when the record says', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord({ event: 'applied', passkey: 'credential-1', outcome: '2 actions rejected, 0 remain pending' }),
+        writeRecord({ event: 'applied', passkey: 'credential-1' }),
+        writeRecord({ event: 'failed', passkey: 'credential-1', error: 'The workspace has another owner' }),
+        writeRecord({ event: 'expired', admin: 'admin', error: 'The requester is no longer an admin' }),
+        writeRecord({ event: 'expired', admin: 'admin' }),
+        writeRecord({ event: 'denied', method: 'restartWorkspace', args: {} }),
+      ]))
+      await render(settingsWith(), admin)
+
+      expect(logRows().map((row) => row.querySelectorAll('td')[4].textContent)).toEqual([
+        'Workspace writeApplied', 'Workspace writeApplied', 'Workspace writeFailed',
+        'Workspace writeExpired', 'Workspace writeExpired', 'Workspace writeDenied',
+      ])
+      const applied = await expand(0)
+      expect(detail(applied, 'Outcome')).toBe('2 actions rejected, 0 remain pending')
+      expect(detail(applied, 'Passkey')).toBe('credential-1')
+      expect(detail(await expand(1), 'Outcome')).toBeNull()
+      const failed = await expand(2)
+      expect(detail(failed, 'Error')).toBe('The workspace has another owner')
+      expect(detail(failed, 'Passkey')).toBe('credential-1')
+      expect(detail(await expand(3), 'Error')).toBe('The requester is no longer an admin')
+      expect(detail(await expand(4), 'Error')).toBeNull()
+      const denied = await expand(5)
+      expect(detail(denied, 'Arguments')).toBeNull()
+      expect(detail(denied, 'Passkey')).toBeNull()
+      expect(denied.querySelector('a')).toBeNull()
     })
 
     it('filters by kind, which the log asks the server for as it is', async () => {
@@ -844,6 +1005,19 @@ describe('AdminAuditPanel', () => {
       expect([...card('Activity log').querySelectorAll('thead th')].map((head) => head.firstChild?.textContent))
         .toEqual(['Expand', 'Time', 'Admin', 'Action', 'Kind', 'Target user'])
       expect(document.body.textContent).not.toMatch(/sensitivity|workspace metadata|content read/i)
+    })
+
+    it('filters by a write action picked in the Action filter', async () => {
+      const { listAdminAudit, onFilterChange } = await render()
+      const [, field] = card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')
+
+      await type(field, 'rejectPending')
+      const options = [...document.body.querySelectorAll('[role="option"]')]
+      expect(options.map((option) => option.textContent)).toEqual(['rejectPendingActions'])
+      await act(async () => { options[0].dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+
+      expect(onFilterChange).toHaveBeenLastCalledWith({ method: 'rejectPendingActions' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ method: 'rejectPendingActions' }))
     })
 
     it('filters by a workspace chosen in a record’s details, named in a chip that removes it', async () => {
@@ -899,6 +1073,29 @@ describe('AdminAuditPanel', () => {
         owner.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
       })
       expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'grace' })
+    })
+
+    it('filters by the owner and the workspace a write record names, offering and titling them from write records alone', async () => {
+      const admin = fakeAdmin()
+      admin.listAdminAudit.mockResolvedValue(testPage([
+        writeRecord({ workspaceOwner: 'grace' }), writeRecord({ event: 'applied', workspaceOwner: 'linus' }),
+      ]))
+      const { listAdminAudit, onFilterChange } = await render(settingsWith(), admin)
+
+      await click(within(logRows()[1], 'Show only calls into workspaces linus owns'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus' }))
+      const target = [...card('Activity log').querySelectorAll<HTMLInputElement>('input[role="combobox"]')]
+        .find((input) => input.placeholder.startsWith('Any user'))!
+      await type(target, '')
+      await act(async () => { target.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })) })
+      expect([...document.body.querySelectorAll('[role="option"]')].map((option) => option.textContent))
+        .toEqual(expect.arrayContaining(['grace', 'linus']))
+
+      await click(within(await expand(), 'Show only calls into Quarterly report'))
+      expect(onFilterChange).toHaveBeenLastCalledWith({ owner: 'linus', workspace: 'ws-titled' })
+      expect(listAdminAudit).toHaveBeenLastCalledWith(pageQuery({ owner: 'linus', workspace: 'ws-titled' }))
+      expect(button('Show every workspace, not only Quarterly report').textContent).toBe('Workspace: Quarterly report')
     })
 
     it('loads the counts and the page again on Refresh, keeping the page shown until then', async () => {

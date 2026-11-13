@@ -1,17 +1,20 @@
 import { useId, useState, type ReactNode } from 'react'
 import { Badge, Button, Table } from '@cloudflare/kumo'
 import { CaretRight } from '@phosphor-icons/react'
+import { Link } from '@tanstack/react-router'
 import type {
   AdminAccessRecord,
   AdminAuditRecord,
   AdminSettingChange,
   AdminVia,
+  AdminWriteRecord,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import { accessLevelName, refusalName } from './accessNames'
 import type { AuditFilter } from './auditFilter'
 import { AuditValue } from './AuditValue'
 import { KindBadge } from './KindBadge'
+import { PASSKEY_REFUSAL_NAMES, WRITE_EVENT_NAMES, WRITE_EVENT_VARIANTS } from './writeNames'
 
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
 export const AUDIT_LOG_COLUMNS = 6
@@ -92,46 +95,101 @@ const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
   </div>
 )
 
+// The workspace a record names: its title, which filters the log by that workspace, and its id.
+const WorkspaceDetail = ({ record, onFilterBy }: {
+  record: AdminAccessRecord | AdminWriteRecord
+  onFilterBy: (filter: AuditFilter) => void
+}) => (
+  <Detail term="Workspace">
+    <Button
+      variant="ghost"
+      size="sm"
+      className="-ml-2 h-auto max-w-full text-sm"
+      aria-label={`Show only calls into ${record.workspaceTitle || record.workspaceId}`}
+      onClick={() => onFilterBy({ workspace: record.workspaceId })}
+    >
+      <span className="truncate">{record.workspaceTitle || 'Untitled'}</span>
+    </Button>
+    <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
+  </Detail>
+)
+
+// A record's arguments by name, left out when it has none.
+const ArgumentsDetail = ({ args }: { args: AdminAccessRecord['args'] }) => {
+  const entries = Object.entries(args)
+  if (entries.length === 0) return null
+  return (
+    <Detail term="Arguments">
+      <span className="font-mono text-xs">
+        {entries.map(([name, value]) => `${name}: ${String(value)}`).join(' · ')}
+      </span>
+    </Detail>
+  )
+}
+
 const AccessDetails = ({ record, onFilterBy }: {
   record: AdminAccessRecord
   onFilterBy: (filter: AuditFilter) => void
-}) => {
-  const args = Object.entries(record.args)
-  return (
-    <dl className="space-y-2">
-      <Detail term="Workspace">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="-ml-2 h-auto max-w-full text-sm"
-          aria-label={`Show only calls into ${record.workspaceTitle || record.workspaceId}`}
-          onClick={() => onFilterBy({ workspace: record.workspaceId })}
+}) => (
+  <dl className="space-y-2">
+    <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+    <Detail term="Reason">{record.reason}</Detail>
+    <Detail term="Access">
+      {accessLevelName(record.access)}
+      {record.refused && <> · refused: {refusalName(record.refused)}</>}
+    </Detail>
+    <ArgumentsDetail args={record.args} />
+    <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+  </dl>
+)
+
+// One step of a write request. The approval page is linked from the "requested" step alone, the
+// one every request has; the page says so when the request is no longer pending.
+const WriteDetails = ({ record, onFilterBy }: {
+  record: AdminWriteRecord
+  onFilterBy: (filter: AuditFilter) => void
+}) => (
+  <dl className="space-y-2">
+    <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+    <Detail term="Request">
+      <span className="block font-mono text-xs break-all">{record.requestId}</span>
+      {record.event === 'requested' && (
+        <Link
+          to="/admin/approve/$requestId"
+          params={{ requestId: record.requestId }}
+          className="text-kumo-brand hover:underline"
         >
-          <span className="truncate">{record.workspaceTitle || 'Untitled'}</span>
-        </Button>
-        <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
-      </Detail>
-      <Detail term="Reason">{record.reason}</Detail>
-      <Detail term="Access">
-        {accessLevelName(record.access)}
-        {record.refused && <> · refused: {refusalName(record.refused)}</>}
-      </Detail>
-      {args.length > 0 && (
-        <Detail term="Arguments">
-          <span className="font-mono text-xs">
-            {args.map(([name, value]) => `${name}: ${String(value)}`).join(' · ')}
-          </span>
-        </Detail>
+          Open approval page
+        </Link>
       )}
-      <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
-    </dl>
-  )
-}
+    </Detail>
+    <Detail term="Reason">{record.reason}</Detail>
+    <ArgumentsDetail args={record.args} />
+    {record.requestedBy !== record.admin && <Detail term="Requested by">{record.requestedBy}</Detail>}
+    {record.refusal && <Detail term="Refusal">{PASSKEY_REFUSAL_NAMES[record.refusal]}</Detail>}
+    {/* The credential id, which keys the passkey's enrolment record: an addAdminPasskey action. */}
+    {record.passkey && (
+      <Detail term="Passkey"><span className="font-mono text-xs break-all">{record.passkey}</span></Detail>
+    )}
+    {record.outcome && <Detail term="Outcome">{record.outcome}</Detail>}
+    {record.error && <Detail term="Error">{record.error}</Detail>}
+    <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+  </dl>
+)
 
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, kind, target user),
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
  * changes, an access record's workspace, reason, level and arguments, or a write record's
+ * workspace, request, reason and arguments, with what its step adds: who requested it, the check a
+ * refused approval failed, the passkey behind it, its outcome or its error. A write record's step
+ * is a badge beside its kind, where an access record's refusal is. An access or a write
+ * record's target user is its workspace's owner, the user the call or the write reached. The
+ * admin's name and the target user, and in an access or a write record's details its workspace,
+ * filter the log by `onFilterBy`. Names are never cut: an action too long for the space left is,
+ * whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a table's even rows: Kumo
+ * counts the details row below each one, hidden or not, so every summary row is an odd row to it
+ * and would never be striped.
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
@@ -180,6 +238,11 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
             {record.kind === 'workspace' && record.refused && (
               <span title={refusalName(record.refused)}><Badge variant="warning">Refused</Badge></span>
             )}
+            {record.kind === 'write' && (
+              <span title={record.refusal && PASSKEY_REFUSAL_NAMES[record.refusal]}>
+                <Badge variant={WRITE_EVENT_VARIANTS[record.event]}>{WRITE_EVENT_NAMES[record.event]}</Badge>
+              </span>
+            )}
           </span>
         </Table.Cell>
         <Table.Cell>
@@ -207,6 +270,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
           {expanded && (record.kind === 'workspace'
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
             : record.kind === 'write'
+              ? <WriteDetails record={record} onFilterBy={onFilterBy} />
               : (
                 <div className="space-y-4">
                   <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
