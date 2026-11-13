@@ -54,7 +54,9 @@ type Range = {
  *
  * A range that starts before where the pass has got to, as the image of a page that an update to
  * the file defined again does, has a new pass opened for it: {@link MAX_BACKWARD_OPENS} times for
- * one reader, after which such a range is refused as a failed transcription.
+ * one reader, after which such a range is refused as a failed transcription. So has the range
+ * of a page that is asked for again, as one whose call the model's service refused is, and that
+ * pass is not counted among those.
  *
  * A pass breaks when a read of it fails or it ends before the range does, and stalls when a read
  * of it is outstanding for `stallMs` with no chunk. Only an outstanding read is timed: a range is
@@ -76,6 +78,8 @@ export function forwardRangeReader(
   let current: Range | undefined;
   /** How many passes were opened for a range that starts before where the pass had got to. */
   let backward = 0;
+  /** The highest page a range was asked for: a range of a page up to it is one asked for again. */
+  let asked = 0;
   let released = false;
 
   /** Lets the pass go. */
@@ -162,9 +166,12 @@ export function forwardRangeReader(
       if (current) giveUp();
       if (pass && offset < pass.at) {
         drop();
-        if (backward === MAX_BACKWARD_OPENS) throw new Error(source.transcriptionFailed);
-        backward++;
+        if (page > asked) {
+          if (backward === MAX_BACKWARD_OPENS) throw new Error(source.transcriptionFailed);
+          backward++;
+        }
       }
+      asked = Math.max(asked, page);
       let range: Range = { page, at: offset, end: offset + length, again: false, over: false, moved };
       current = range;
       await onPass(range, async () => undefined);

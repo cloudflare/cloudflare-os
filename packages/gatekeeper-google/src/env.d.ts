@@ -9,5 +9,9 @@ declare namespace Cloudflare {
     // pages of a PDF that have no text. Not in the config: unset, which is the default, they are
     // read.
     PDF_OCR?: string;
+    // How many calls to the vision model readPdf() may have in flight for one text: a whole
+    // number of at least 1. Not in the config: unset, which is the default, the number in the
+    // code (`READ_AHEAD.calls`).
+    PDF_OCR_CALLS?: string;
   }
 }

@@ -10,7 +10,7 @@ import {
 } from "../src/drive-pdf";
 import { REFUSED_PAUSE } from "../src/pdf-bands";
 import { forwardRangeReader, type PdfOpener } from "../src/pdf-forward-reader";
-import { READ_AHEAD } from "../src/pdf-read-ahead";
+import { pixelsHeld, READ_AHEAD } from "../src/pdf-read-ahead";
 import type { AiFetcher } from "../src/workers-ai-markdown";
 import { imagePdf, scanPage, type BuiltPdf } from "./pdf-fixture";
 import {
@@ -35,6 +35,8 @@ const PROVIDER_ERROR = "Invalid PDF: Invalid PDF structure.";
 const CONVERSION_FAILED = "Google Drive's file could not be converted from PDF.";
 
 const OPTIONS = { conversionOptions: { pdf: { metadata: false, images: { convert: false } } } };
+/** What reading ahead is held to, before any test sets a number of it. */
+const AHEAD = { ...READ_AHEAD };
 
 /**
  * A response that opens a conversion and then produces lines of text without end, counting the
@@ -71,8 +73,9 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => {});
   // The pause before a refused call is made again is off.
   Object.assign(REFUSED_PAUSE, { ms: [0, 0, 0, 0, 0], jitter: 0 });
-  // A text's calls are held to four at once, the number these tests were written to.
-  READ_AHEAD.calls = 4;
+  // A text's calls are held to four at once, the number these tests were written to, and
+  // whatever else a test set is put back.
+  Object.assign(READ_AHEAD, AHEAD, { calls: 4 });
 });
 
 afterEach(() => {
@@ -484,6 +487,76 @@ function ranges(pdf: BuiltPdf) {
 }
 
 /**
+ * A range reader over `pdf` that hands a range out only as it is read, and notes in `events`
+ * each page whose range was asked of it, was read to its end, or was cancelled before that.
+ */
+function tracedRanges(pdf: BuiltPdf) {
+  let events: string[] = [];
+  let readRange: PdfRangeReader = async ({ page, offset, length }) => {
+    events.push(`asked ${page}`);
+    let at = offset;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (at < offset + length) return controller.enqueue(pdf.bytes.slice(at, at = Math.min(at + 100, offset + length)));
+        events.push(`ended ${page}`);
+        controller.close();
+      },
+      cancel() { events.push(`cancelled ${page}`); },
+    }, { highWaterMark: 0 });
+  };
+  return { events, readRange };
+}
+
+/**
+ * A binding that converts every PDF to nothing, and answers the stored image of page `n` of a
+ * scan whose pages are `scanPage(n)` with what `answer` gives for it: text in pieces, or a
+ * response, now or later. `calls` are the pages asked of it, in the order their images arrived.
+ */
+function pageAi(
+  answer: (page: number, signal: AbortSignal) => string[] | Response | Promise<Response> = page => [`page ${page}`],
+) {
+  let calls: number[] = [];
+  let { ai } = fakeAi(request => {
+    if (request.url.includes("markdown")) return streamedResponse(markdownJson(SCANNED_PDF), 64);
+    let page = sentImage(request).bytes.byteLength - 700;
+    calls.push(page);
+    let given = answer(page, request.init.signal!);
+    // The fake binding awaits what it is given, so an answer may come later.
+    return (Array.isArray(given) ? eventResponse(tokenEvents(given)) : given) as Response;
+  });
+  return { ai, calls };
+}
+
+/** A page's request that is never answered: it ends when its signal gives it up, which `givenUp` notes. */
+function unansweredPage(givenUp: number[]) {
+  return (page: number, signal: AbortSignal) => new Promise<Response>((_, reject) => {
+    signal.addEventListener("abort", () => {
+      givenUp.push(page);
+      reject(signal.reason);
+    });
+  });
+}
+
+/** A model's answer that gives the first of `pieces`, and the rest of them once `rest` settles. */
+function heldAnswer(pieces: string[], rest: Promise<void>): Response {
+  let events = tokenEvents(pieces).split(/(?<=\n\n)/);
+  let sent = 0;
+  return new Response(new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (sent === events.length) return controller.close();
+      // The opening event and the first piece's have been sent.
+      if (sent === 2) await rest;
+      controller.enqueue(new TextEncoder().encode(events[sent++]));
+    },
+  }, { highWaterMark: 0 }));
+}
+
+/** The service's refusal of a call for want of room: by its status, or by its code under another. */
+function refusedCall(status = 429, code?: number): Response {
+  return new Response(JSON.stringify(code === undefined ? {} : { errors: [{ code, message: "secret" }] }), { status });
+}
+
+/**
  * Reads a text on until all that has been read of it, `text` included, ends with `end`, and
  * returns that. A text that ends first fails the test here: a read of an ended text answers at
  * once, so waiting for `end` alone would spin without ever letting the test time out.
@@ -495,6 +568,15 @@ async function readThrough(
   while (!text.endsWith(end)) {
     let piece = await reader.read();
     if (piece.done) throw new Error(`The text ended before ${JSON.stringify(end)}, as ${JSON.stringify(text)}.`);
+    text += decoder.decode(piece.value, { stream: true });
+  }
+  return text;
+}
+
+/** Reads a text on to its end, and returns all that has been read of it, `text` included. */
+async function readOn(reader: ReadableStreamDefaultReader<Uint8Array>, text = ""): Promise<string> {
+  let decoder = new TextDecoder();
+  for (let piece = await reader.read(); !piece.done; piece = await reader.read()) {
     text += decoder.decode(piece.value, { stream: true });
   }
   return text;
@@ -751,7 +833,9 @@ describe("pdfToText transcribing a scanned PDF", () => {
     expect(pdf.state.cancelled).toBe(true);
   });
 
-  it("reads a page from the file only once the text has been read up to it", async () => {
+  it("reads a page from the file only once the text has been read up to it, where none may be begun ahead", async () => {
+    // One page may be begun and not yet read to its end: the one being read.
+    READ_AHEAD.storedPages = 1;
     let { ai, images } = ocrAi();
     let { asked, readRange } = ranges(SCAN);
     let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange);
@@ -831,6 +915,8 @@ describe("pdfToText transcribing a scanned PDF", () => {
   });
 
   it("begins no further page when cancelled as a page's answer ends", async () => {
+    // No page is begun ahead, so that the second would be begun only as the first ends.
+    READ_AHEAD.storedPages = 1;
     // The first page's answer, whole, in a response that takes a while to let go.
     let letGo!: () => void;
     let cancelling = false;
@@ -864,6 +950,8 @@ describe("pdfToText transcribing a scanned PDF", () => {
   });
 
   it("stops the page in progress when cancelled", async () => {
+    // No page is begun ahead, so that the page in progress is the only one asked for.
+    READ_AHEAD.storedPages = 1;
     let response = { cancelled: false };
     let endless = new Response(new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -893,9 +981,9 @@ describe("pdfToText transcribing a scanned PDF", () => {
     let reader = result.text.getReader();
     let read = reader.read();
     await settled();
-    // The image arrives, and the text is cancelled before the read that waited for it goes on.
+    // The image arrives, and the text is cancelled before the read that waited for it goes on:
+    // at once, since that read now goes on to the model without the text's reader in between.
     range.resolve(image.stream);
-    await Promise.resolve();
     await reader.cancel();
     await read.catch(() => undefined);
     await settled();
@@ -932,6 +1020,8 @@ describe("pdfToText transcribing a scanned PDF", () => {
 
   it("ends a page the model stops answering partway, after a minute, and says only which", async () => {
     vi.useFakeTimers();
+    // No page is begun ahead, so that the page that stopped is the only one asked for.
+    READ_AHEAD.storedPages = 1;
     let response = { cancelled: false, pulls: 0 };
     // One piece of the answer, then nothing more.
     let stalled = new Response(new ReadableStream<Uint8Array>({
@@ -1144,6 +1234,314 @@ describe("pdfToText transcribing a scanned PDF", () => {
     let result = await pdfToText(ai, undefined, byteStream(pdf.bytes).stream, ranges(pdf).readRange);
     expect(await read(result)).toBe(
       "### Page 1\nrow | row\n\n[The transcription of this page was cut off.]\n\n### Page 2\nnext");
+  });
+});
+
+/** A six-page scan, each page one JPEG: more pages than are begun ahead of a reader. */
+const LONG_SCAN = imagePdf([1, 2, 3, 4, 5, 6].map(seed => scanPage(seed)));
+/** What {@link pageAi} reads, unless told, on the six pages of {@link LONG_SCAN}. */
+const LONG_TRANSCRIBED = [1, 2, 3, 4, 5, 6].map(page => `### Page ${page}\npage ${page}`).join("\n\n");
+
+/** The pages whose answers have ended, in the order they did. */
+function endedPages(): unknown[] {
+  return linesOf("info", "google.drive.pdf.page_transcribed").map(({ page }) => page);
+}
+
+/** Moves the faked clock on, a millisecond at a time, until `met`: for a second of it at most. */
+async function tickedUntil(met: () => boolean): Promise<void> {
+  for (let waited = 0; !met(); waited++) {
+    if (waited === 1000) throw new Error("What was waited for did not come.");
+    await vi.advanceTimersByTimeAsync(1);
+  }
+}
+
+describe("pdfToText reading a scan's stored page images ahead of its reader", () => {
+  it("has the model read the pages after the one being read while that one's answer comes, asking for each range once the one before it was read to its end", async () => {
+    let rest = deferred<void>();
+    let { ai, calls } = pageAi(page => page === 1 ? heldAnswer(PAGES[0]!, rest.promise) : PAGES[page - 1]!);
+    let { events, readRange } = tracedRanges(SCAN);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange);
+    // Nothing is asked of the file or of the model until the text is read.
+    await settled();
+    expect([events, calls]).toEqual([[], []]);
+
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "Harbour Ledger");
+    expect(text).toBe("### Page 1\nHarbour Ledger");
+    // With half of the first page's answer given, the two pages after it have been read.
+    await vi.waitFor(() => expect(endedPages()).toEqual([2, 3]));
+    expect(calls).toEqual([1, 2, 3]);
+    expect(events).toEqual(["asked 1", "ended 1", "asked 2", "ended 2", "asked 3", "ended 3"]);
+
+    // The text is what it is when each page is read in its turn.
+    rest.resolve();
+    expect(await readOn(reader, text)).toBe(TRANSCRIBED);
+    expect(endedPages()).toEqual([2, 3, 1]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("begins no more pages than may be begun and not yet read to their end, the one being read among them", async () => {
+    READ_AHEAD.storedPages = 2;
+    let first = deferred<void>();
+    let { ai, calls } = pageAi(async page => {
+      if (page === 1) await first.promise;
+      return eventResponse(tokenEvents([`page ${page}`]));
+    });
+    let { asked, readRange } = ranges(LONG_SCAN);
+    let result = await pdfToText(ai, undefined, byteStream(LONG_SCAN.bytes).stream, readRange);
+    let reader = result.text.getReader();
+    let heading = reader.read();
+    await vi.waitFor(() => expect(calls).toEqual([1, 2]));
+    await settled();
+    expect(asked.map(({ page }) => page)).toEqual([1, 2]);
+
+    // The third is begun once the first has been read to its end, and the fourth once the second has.
+    first.resolve();
+    let text = await readThrough(reader, "### Page 2\n", new TextDecoder().decode((await heading).value));
+    await settled();
+    expect(asked.map(({ page }) => page)).toEqual([1, 2, 3]);
+    text = await readThrough(reader, "### Page 3\n", text);
+    await settled();
+    expect(asked.map(({ page }) => page)).toEqual([1, 2, 3, 4]);
+    expect(await readOn(reader, text)).toBe(LONG_TRANSCRIBED);
+    expect(asked.map(({ page }) => page)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("makes each page's call in a slot of the text's, held until the page's answer has ended", async () => {
+    READ_AHEAD.calls = 1;
+    let rest = deferred<void>();
+    let { ai, calls } = pageAi(page => page === 1 ? heldAnswer(PAGES[0]!, rest.promise) : PAGES[page - 1]!);
+    let { asked, readRange } = ranges(SCAN);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange);
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "Harbour Ledger");
+    await settled();
+    // One call at a time: the second page's range is not asked for while the first's answer comes.
+    expect([calls, asked.map(({ page }) => page)]).toEqual([[1], [1]]);
+
+    // Once it has ended, the other two are read, one after the other, with no more of the text read.
+    rest.resolve();
+    await vi.waitFor(() => expect(endedPages()).toEqual([1, 2, 3]));
+    expect(await readOn(reader, text)).toBe(TRANSCRIBED);
+  });
+
+  it.each([
+    ["with HTTP 429", () => refusedCall()],
+    ["with its code for a model that has no room, under another status", () => refusedCall(500, 3040)],
+  ])("asks again, by a second read of its range, for a page whose call the service refused %s", async (_label, refusal) => {
+    let refusals = 0;
+    let { ai, calls } = pageAi(page => page === 2 && refusals++ === 0 ? refusal() : PAGES[page - 1]!);
+    let { asked, readRange } = ranges(SCAN);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange);
+
+    expect(await read(result)).toBe(TRANSCRIBED);
+    // The third page's range was asked for once the second's image had been read, which was
+    // before the second's call was refused.
+    expect(asked.map(({ page }) => page)).toEqual([1, 2, 3, 2]);
+    expect(calls).toEqual([1, 2, 3, 2]);
+    expect(endedPages().toSorted()).toEqual([1, 2, 3]);
+    // The page's line says how often its call was refused, and no other page's does.
+    expect(linesOf("info", "google.drive.pdf.page_transcribed").map(({ page, refused }) => [page, refused]).toSorted())
+      .toEqual([[1, undefined], [2, 1], [3, undefined]]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(everythingLogged()).not.toContain("secret");
+  });
+
+  it("fails a page the service refused once more than there are pauses, and gives up the page after it", async () => {
+    Object.assign(REFUSED_PAUSE, { ms: [0, 0] });
+    // Each refusal halves the calls there may be at once: enough of them that the page's call
+    // is not kept waiting for the one after it, which is never answered.
+    READ_AHEAD.calls = 8;
+    let givenUp: number[] = [];
+    let { ai, calls } = pageAi((page, signal) =>
+      page === 1 ? PAGES[0]! : page === 2 ? refusedCall() : unansweredPage(givenUp)(page, signal));
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+
+    expect(await readToFailure(result)).toEqual({
+      text: "### Page 1\nHarbour Ledger Review", error: new Error(TRANSCRIPTION_FAILED),
+    });
+    expect(calls).toEqual([1, 2, 3, 2, 2]);
+    expect(givenUp).toEqual([3]);
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({
+      event: "google.drive.pdf.transcription_failed", page: 2, imageEncoding: "jpeg", httpStatus: 429,
+    })]]);
+  });
+
+  it("gives the page before one that failed, gives up at once the calls of the pages after it, and fails the text when it is read up to there", async () => {
+    let failing = deferred<void>();
+    let givenUp: number[] = [];
+    let { ai, calls } = pageAi(async (page, signal) => {
+      if (page === 1) return eventResponse(tokenEvents(PAGES[0]!));
+      if (page > 2) return unansweredPage(givenUp)(page, signal);
+      await failing.promise;
+      return new Response(JSON.stringify({ internalCode: 8006, message: "secret" }), { status: 400 });
+    });
+    let { asked, readRange } = ranges(LONG_SCAN);
+    let result = await pdfToText(ai, undefined, byteStream(LONG_SCAN.bytes).stream, readRange);
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "Harbour Ledger Review");
+    await vi.waitFor(() => expect(calls).toEqual([1, 2, 3, 4]));
+
+    // The second page fails with the text read as far as the first's: the two begun after it
+    // are given up then, and nothing is said of the failure until the text is read up to it.
+    failing.resolve();
+    await vi.waitFor(() => expect(givenUp).toEqual([3, 4]));
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    await expect(readOn(reader, text)).rejects.toThrow(new Error(TRANSCRIPTION_FAILED));
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({
+      event: "google.drive.pdf.transcription_failed", page: 2, httpStatus: 400, providerCode: 8006,
+    })]]);
+    // No page is begun after one that failed.
+    await settled();
+    expect(asked.map(({ page }) => page)).toEqual([1, 2, 3, 4]);
+    expect(everythingLogged()).not.toContain("secret");
+  });
+
+  it("leaves nothing behind when read to its end, cancelled, failed or left idle with pages read ahead", async () => {
+    vi.useFakeTimers();
+    /**
+     * The long scan's text read as far as the end of its first page's, with four pages begun:
+     * the second answered by `second`, the third and fourth never.
+     */
+    let begin = async (second: () => Response | Promise<Response>) => {
+      let givenUp: number[] = [];
+      let { ai, calls } = pageAi((page, signal) =>
+        page === 1 ? PAGES[0]! : page === 2 ? second() : unansweredPage(givenUp)(page, signal));
+      let { events, readRange } = tracedRanges(LONG_SCAN);
+      let result = await pdfToText(ai, undefined, byteStream(LONG_SCAN.bytes).stream, readRange);
+      let reader = result.text.getReader();
+      let text = await pumped(readThrough(reader, "Harbour Ledger Review"));
+      await tickedUntil(() => calls.length === 4);
+      return { reader, text, givenUp, calls, events };
+    };
+    /** Each of the four pages begun had its range asked for and read to its end, and no other was. */
+    let fourRanges = [1, 2, 3, 4].flatMap(page => [`asked ${page}`, `ended ${page}`]);
+
+    // Read to its end.
+    let ended = tracedRanges(LONG_SCAN);
+    let result = await pdfToText(pageAi().ai, undefined, byteStream(LONG_SCAN.bytes).stream, ended.readRange);
+    expect(await pumped(read(result))).toBe(LONG_TRANSCRIBED);
+    expect(ended.events).toEqual([1, 2, 3, 4, 5, 6].flatMap(page => [`asked ${page}`, `ended ${page}`]));
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Cancelled, with the calls of three pages unanswered.
+    let cancelled = await begin(() => new Promise<Response>(() => {}));
+    await cancelled.reader.cancel();
+    await vi.advanceTimersByTimeAsync(20);
+    expect([cancelled.givenUp, cancelled.calls, cancelled.events]).toEqual([[3, 4], [1, 2, 3, 4], fourRanges]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Failed at the second page.
+    let failing = deferred<Response>();
+    let failed = await begin(() => failing.promise);
+    failing.resolve(new Response("{}", { status: 400 }));
+    await tickedUntil(() => failed.givenUp.length === 2);
+    await expect(pumped(readOn(failed.reader, failed.text))).rejects.toThrow(new Error(TRANSCRIPTION_FAILED));
+    expect([failed.givenUp, failed.calls, failed.events]).toEqual([[3, 4], [1, 2, 3, 4], fourRanges]);
+    expect(vi.getTimerCount()).toBe(0);
+
+    // Left idle, while the second page's answer keeps coming: what is read ahead of a text
+    // that nobody reads does not keep it.
+    let answer = { cancelled: false, pieces: 0 };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let idle = await begin(() => new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise(resolve => { timer = setTimeout(resolve, 10_000); });
+        answer.pieces++;
+        controller.enqueue(new TextEncoder().encode(tokenEvents(["more "]).split("data: [DONE]")[0]));
+      },
+      cancel() {
+        answer.cancelled = true;
+        clearTimeout(timer);
+      },
+    }, { highWaterMark: 0 })));
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+    await expect(idle.reader.read()).rejects.toThrow(IDLE);
+    expect(answer.pieces).toBeGreaterThanOrEqual(5);
+    expect([answer.cancelled, idle.givenUp, idle.calls, idle.events]).toEqual([true, [3, 4], [1, 2, 3, 4], fourRanges]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives up a refused page that waits to be asked for again when the text is cancelled, leaving no timer", async () => {
+    vi.useFakeTimers();
+    Object.assign(REFUSED_PAUSE, { ms: [30_000] });
+    let { ai, calls } = pageAi(page => page === 1 ? refusedCall() : PAGES[page - 1]!);
+    let { asked, readRange } = ranges(SCAN);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange);
+    let reader = result.text.getReader();
+    let first = reader.read();
+    await tickedUntil(() => endedPages().length === 2);
+    // The two pages after it have been read, and it waits out its pause: that, and the text's idle minute.
+    expect([endedPages(), calls, vi.getTimerCount()]).toEqual([[2, 3], [1, 2, 3], 2]);
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(calls).toEqual([1, 2, 3]);
+
+    await reader.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(await first).toEqual({ done: true, value: undefined });
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+    expect([calls, asked.map(({ page }) => page)]).toEqual([[1, 2, 3], [1, 2, 3]]);
+  });
+
+  /**
+   * A model's answer without end that is always ready: 4,096 characters at every read of it.
+   * Read without bound it would never give way to a timer, so past a thousand reads it breaks off.
+   */
+  function endlessAnswer() {
+    let state = { cancelled: false, pulls: 0 };
+    let piece = new TextEncoder().encode(tokenEvents(["m".repeat(4096)]).split("data: [DONE]")[0]);
+    let response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (++state.pulls > 1000) return controller.error(new Error("read without bound"));
+        controller.enqueue(piece);
+      },
+      cancel() { state.cancelled = true; },
+    }, { highWaterMark: 0 }));
+    return { response, state };
+  }
+
+  it("reads no more of the answer being given than may be held, until its reader takes some, and ends it at the idle minute", async () => {
+    vi.useFakeTimers();
+    let { response, state } = endlessAnswer();
+    let scan = imagePdf([scanPage(1)]);
+    let result = await pdfToText(ocrAi([response]).ai, undefined, byteStream(scan.bytes).stream, ranges(scan).readRange);
+    let reader = result.text.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("### Page 1\n");
+    await vi.advanceTimersByTimeAsync(20);
+    // 256 KiB of characters are held, in 64 pieces, and no more of the answer is read.
+    expect(state.pulls).toBe(64);
+
+    // As much more is read as the reader takes.
+    for (let taken = 0; taken < 10; taken++) expect((await reader.read()).value).toHaveLength(4096);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(state.pulls).toBe(74);
+
+    // Left unread, it ends at the minute as any text does.
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+    await expect(reader.read()).rejects.toThrow(IDLE);
+    expect([state.cancelled, state.pulls, vi.getTimerCount()]).toEqual([true, 74, 0]);
+  });
+
+  it("reads no more of the answer of a page ahead than may be held, until its reader gets to it, and gives it up when cancelled", async () => {
+    let rest = deferred<void>();
+    let { response, state } = endlessAnswer();
+    let { ai } = pageAi(page => page === 1 ? heldAnswer(PAGES[0]!, rest.promise) : page === 2 ? response : PAGES[2]!);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "Harbour Ledger");
+    await settled();
+    expect(state.pulls).toBe(64);
+
+    // The reader gets to the page, and takes three pieces of what is held for it.
+    rest.resolve();
+    text = await readThrough(reader, "### Page 2\n", text);
+    for (let taken = 0; taken < 3; taken++) expect((await reader.read()).value).toHaveLength(4096);
+    await settled();
+    expect(state.pulls).toBe(67);
+
+    await reader.cancel();
+    await settled();
+    expect([state.cancelled, state.pulls]).toEqual([true, 67]);
   });
 });
 
@@ -1565,6 +1963,22 @@ describe("a PDF the renderer does not open", () => {
     expect(linesOf("info", "google.drive.pdf.page_transcribed")).toHaveLength(3);
   });
 
+  it("reads the stored page images ahead of the reader, as it does those of a PDF that is not rendered", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11])], ["room"]);
+    let rest = deferred<void>();
+    let { ai, calls } = pageAi(page => page === 1 ? heldAnswer(PAGES[0]!, rest.promise) : PAGES[page - 1]!);
+    let { result, asked } = await rendering(SCAN, renderer, ai);
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "Harbour Ledger");
+
+    // With half of the first page's answer given, the two pages after it are before the model.
+    await vi.waitFor(() => expect(calls).toEqual([1, 2, 3]));
+    expect(asked.map(({ page }) => page)).toEqual([undefined, 1, 2, 3]);
+    rest.resolve();
+    expect(await readOn(reader, text)).toBe(TRANSCRIBED);
+    expect(state.events).toEqual(["open"]);
+  });
+
   it.each<[string, Opening, string, string]>([
     ["has no room", "room", "room", RENDERER_BUSY],
     ["cannot be reached", LOST, "call", RENDERER_BUSY],
@@ -1645,7 +2059,8 @@ describe("a PDF the renderer does not open", () => {
 });
 
 describe("a rendered PDF's pages", () => {
-  it("renders a page only once the text has been read up to it, and gives each whole in one read", async () => {
+  it("renders a page only once the text has been read up to it, where none may be begun ahead, and gives each whole in one read", async () => {
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11, 12]), drawn([21, 22])]);
     let { ai, bands } = bandAi();
     let { result } = await rendering(FAX_SCAN, renderer, ai);
@@ -1762,7 +2177,8 @@ describe("a rendered PDF's pages", () => {
     let { result } = await rendering(FAX_SCAN, renderer, ai);
     expect(await readToFailure(result)).toEqual({ text: "### Page 1\nband 11", error: new Error(TRANSCRIPTION_FAILED) });
     expect(given.every(signal => signal.aborted)).toBe(true);
-    expect(state.events).toEqual(["open", "render 1", "render 2", "disposed"]);
+    // The third page was drawn ahead, and its band's call is among those given up.
+    expect(state.events).toEqual(["open", "render 1", "render 2", "render 3", "disposed"]);
     expect(linesOf("warn", "google.drive.pdf.transcription_failed")).toEqual([expect.objectContaining({
       page: 2, httpStatus: 400, providerCode: 8006,
     })]);
@@ -1788,6 +2204,115 @@ describe("a rendered PDF's pages", () => {
     expect(band).not.toHaveProperty("askedAgain");
     expect(linesOf("info", "google.drive.pdf.band_transcribed")).toHaveLength(1);
     expect(everythingLogged()).not.toContain("Harbour");
+  });
+});
+
+describe("a rendered PDF's pages, read ahead of its reader", () => {
+  it("draws the pages after the one being read, and has them read, while that one is before the model, and gives each in its place", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31])]);
+    /** What the bands of the first and second pages wait for before they are answered. */
+    let waits: Record<number, ReturnType<typeof deferred<void>>> = { 11: deferred(), 21: deferred() };
+    let answered: number[] = [];
+    let { ai, bands } = bandAi(async ({ shade }) => {
+      await waits[shade]?.promise;
+      answered.push(shade);
+      return eventResponse(tokenEvents([`band ${shade}`]));
+    });
+    let { result, asked } = await rendering(FAX_SCAN, renderer, ai);
+    let text = readOn(result.text.getReader());
+
+    // With nothing given yet, every page is drawn and before the model, and the last is read.
+    await vi.waitFor(() => expect(bands.map(({ shade }) => shade).toSorted()).toEqual([11, 21, 31]));
+    expect(state.events).toEqual(["open", "render 1", "render 2", "render 3", "disposed"]);
+    await vi.waitFor(() => expect(linesOf("info", "google.drive.pdf.band_transcribed")).toMatchObject([{ page: 3 }]));
+    waits[21]!.resolve();
+    await vi.waitFor(() => expect(linesOf("info", "google.drive.pdf.band_transcribed")).toMatchObject([{ page: 3 }, { page: 2 }]));
+    waits[11]!.resolve();
+
+    expect(await text).toBe("### Page 1\nband 11\n\n### Page 2\nband 21\n\n### Page 3\nband 31");
+    expect(answered).toEqual([31, 21, 11]);
+    expect(asked).toEqual([whole(FAX_SCAN)]);
+    expect(pixelsHeld()).toBe(0);
+  });
+
+  it("begins no more pages than may be begun and not yet given, the one being read among them", async () => {
+    READ_AHEAD.pages = 2;
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31]), drawn([41])]);
+    let { result } = await rendering(FAX_SCAN, renderer);
+    let reader = result.text.getReader();
+    await reader.read();
+    await settled();
+    expect(state.events).toEqual(["open", "render 1", "render 2"]);
+
+    // The third is begun once the second is asked for, and the last with the third.
+    await reader.read();
+    await settled();
+    expect(state.events).toEqual(["open", "render 1", "render 2", "render 3"]);
+    expect(await readOn(reader)).toBe("\n\n### Page 3\nband 31\n\n### Page 4\nband 41");
+  });
+
+  it("draws the page its reader waits for whatever pixels are held, and a page ahead of it only once there is room", async () => {
+    // Room in the isolate for a page being drawn beside the one band of a page that was.
+    READ_AHEAD.isolateBytes = RENDER_LIMITS.pagePixels + BAND_WIDTH * BAND_ROWS;
+    let other = fakeRenderer([drawn([11]), drawn([21])]);
+    let answer = deferred<void>();
+    let held = bandAi(async ({ shade }) => {
+      await answer.promise;
+      return eventResponse(tokenEvents([`band ${shade}`]));
+    });
+    // Another text has both its pages drawn, and their bands before the model.
+    let first = readOn((await rendering(FAX_SCAN, other.renderer, held.ai)).result.text.getReader());
+    await vi.waitFor(() => expect(held.bands).toHaveLength(2));
+    expect(pixelsHeld()).toBe(2 * BAND_WIDTH * BAND_ROWS);
+
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21])]);
+    let { result } = await rendering(FAX_SCAN, renderer);
+    let reader = result.text.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("### Page 1\nband 11");
+    await settled();
+    expect(state.events).toEqual(["open", "render 1"]);
+    expect(pixelsHeld()).toBe(2 * BAND_WIDTH * BAND_ROWS);
+
+    // The other text's bands end, and their pixels are let go: the second page is drawn unasked.
+    answer.resolve();
+    expect(await first).toBe("### Page 1\nband 11\n\n### Page 2\nband 21");
+    await vi.waitFor(() => expect(state.events).toEqual(["open", "render 1", "render 2", "disposed"]));
+    expect(await readOn(reader)).toBe("\n\n### Page 2\nband 21");
+    expect(pixelsHeld()).toBe(0);
+  });
+
+  it("gives the pages before one whose band cannot be read, gives up at once the calls of the page after it, and fails the text when it is read up to there", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31]), drawn([41])]);
+    let first = deferred<void>(), last = deferred<void>();
+    let { ai } = bandAi(async band => {
+      // The last page's band is never answered: it ends when its page is given up.
+      if (band.shade === 41) {
+        last.resolve();
+        return unanswered(state.events)(band);
+      }
+      // The third page's fails once the last page's is before the model.
+      if (band.shade === 31) {
+        await last.promise;
+        return new Response(JSON.stringify({ internalCode: 8006, message: "secret" }), { status: 400 });
+      }
+      if (band.shade === 11) await first.promise;
+      return eventResponse(tokenEvents([`band ${band.shade}`]));
+    });
+    let { result } = await rendering(FAX_SCAN, renderer, ai);
+    let text = readToFailure(result);
+
+    // The fourth page is given up as the third fails, with the first still before the model.
+    await vi.waitFor(() => expect(state.events).toContain("band given up"));
+    expect(linesOf("warn", "google.drive.pdf.transcription_failed")).toEqual([]);
+    first.resolve();
+    expect(await text).toEqual({
+      text: "### Page 1\nband 11\n\n### Page 2\nband 21", error: new Error(TRANSCRIPTION_FAILED),
+    });
+    expect(linesOf("warn", "google.drive.pdf.transcription_failed")).toEqual([expect.objectContaining({
+      page: 3, httpStatus: 400, providerCode: 8006,
+    })]);
+    await settled();
+    expect([state.documents.map(({ disposed }) => disposed), pixelsHeld()]).toEqual([[1], 0]);
   });
 });
 
@@ -1908,6 +2433,9 @@ describe("a rendered PDF's idle minute", () => {
   });
 
   it("leaves no timer behind when read to its end, cancelled, failed or read from the stored page images", async () => {
+    // With no page begun ahead, the one timer between two pages is the idle minute's: a page
+    // read ahead has timers of its own while its bands are made into images.
+    READ_AHEAD.pages = 1;
     let ended = await rendering(FAX_SCAN, fakeRenderer([drawn([11]), drawn([21])]).renderer);
     expect(await pumped(read(ended.result))).toBe("### Page 1\nband 11\n\n### Page 2\nband 21");
     expect(vi.getTimerCount()).toBe(0);
@@ -1952,7 +2480,54 @@ describe("a rendered PDF's idle minute", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("leaves nothing behind when read to its end or cancelled with pages read ahead", async () => {
+    let pages = [drawn([11]), drawn([21]), drawn([31])];
+    /** How often each document was let go, the pixels held, and the timers left. */
+    let left = (state: ReturnType<typeof fakeRenderer>["state"]) =>
+      [state.documents.map(({ disposed }) => disposed), pixelsHeld(), vi.getTimerCount()];
+
+    let ended = fakeRenderer(pages);
+    expect(await pumped(read((await rendering(FAX_SCAN, ended.renderer)).result)))
+      .toBe("### Page 1\nband 11\n\n### Page 2\nband 21\n\n### Page 3\nband 31");
+    expect(left(ended.state)).toEqual([[1], 0, 0]);
+
+    // Cancelled with the bands of the two later pages before the model.
+    let { renderer, state } = fakeRenderer(pages);
+    let { ai, bands } = bandAi(band => band.shade === 11 ? ["band 11"] : unanswered(state.events)(band));
+    let reader = (await rendering(FAX_SCAN, renderer, ai)).result.text.getReader();
+    await pumped(reader.read());
+    while (bands.length < 3) await vi.advanceTimersByTimeAsync(1);
+    expect(pixelsHeld()).toBeGreaterThan(0);
+    await reader.cancel();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(state.events.filter(event => event === "band given up")).toHaveLength(2);
+    expect(left(state)).toEqual([[1], 0, 0]);
+  });
+
+  it("ends a text left unread for a minute though pages read ahead of it moved meanwhile, and gives those up", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31])]);
+    // The second page's band is answered half a minute on, and the third's never.
+    let { ai } = bandAi(async band => {
+      if (band.shade === 31) return unanswered(state.events)(band);
+      if (band.shade === 21) await wait();
+      return eventResponse(tokenEvents([`band ${band.shade}`]));
+    });
+    let reader = (await rendering(FAX_SCAN, renderer, ai)).result.text.getReader();
+    await pumped(reader.read());
+
+    // What is read ahead meanwhile, the second page here, is not the text being read.
+    await vi.advanceTimersByTimeAsync(WAIT_MS + 20);
+    expect(linesOf("info", "google.drive.pdf.band_transcribed").map(({ page }) => page)).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - WAIT_MS - 20);
+    await expect(reader.read()).rejects.toThrow(IDLE);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(state.events.filter(event => event === "band given up")).toHaveLength(1);
+    expect([state.documents.map(({ disposed }) => disposed), pixelsHeld(), vi.getTimerCount()]).toEqual([[1], 0, 0]);
+  });
+
   it("ends a text left unread between two pages for a minute, letting its document go", async () => {
+    // No page is begun ahead, so that the last is not drawn, and its document let go, first.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11]), drawn([21])]);
     let { result } = await rendering(FAX_SCAN, renderer);
     let reader = result.text.getReader();
@@ -1997,6 +2572,8 @@ function stalledDownload(bytes: Uint8Array) {
 
 describe("a rendered PDF's text, however it ends", () => {
   it("lets the document go once its last page has answered, before that page is read, and not again", async () => {
+    // No page is begun ahead, so that the last has not answered when the first is read.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11]), drawn([21])]);
     let disposedBy: Record<number, number> = {};
     let { ai } = bandAi(({ shade }) => {
@@ -2020,6 +2597,8 @@ describe("a rendered PDF's text, however it ends", () => {
   });
 
   it("lets the document go when cancelled between two pages", async () => {
+    // No page is begun ahead, so that the last is not drawn, and its document let go, first.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11]), drawn([21])]);
     let { result } = await rendering(FAX_SCAN, renderer);
     let reader = result.text.getReader();
@@ -2030,6 +2609,8 @@ describe("a rendered PDF's text, however it ends", () => {
   });
 
   it("gives up the band calls in flight when cancelled, and lets the document go once they have ended", async () => {
+    // No page is begun ahead, so that the last is not drawn, and its document let go, first.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11, 12, 13, 14, 15]), drawn([21])]);
     let { ai, bands } = bandAi(unanswered(state.events));
     let { result } = await rendering(FAX_SCAN, renderer, ai);
@@ -2286,21 +2867,20 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     }
   });
 
-  it("reads a first, a middle and a last page without text from their images, each once the text is read up to it", async () => {
+  it("reads a first, a middle and a last page without text from their images, ahead of the text being read up to them", async () => {
     let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31, 32]), TEXT_PAGE, drawn([51])]);
     let { result, asked, bands, images } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
     expect(result).toEqual({ text: expect.any(ReadableStream), hasText: true, transcribed: false, rereads: true });
     let reader = result.text.getReader();
 
-    // A heading is given as soon as it is known for one, before anything is rendered.
+    // A heading is given as soon as it is known for one, and the pages without text are read
+    // ahead of it: the file is read, and each of them drawn, with only the first heading given.
     expect(await readThrough(reader, "\n")).toBe("### Page 1\n");
     await settled();
-    expect(asked).toEqual([]);
-    expect(state.events).toEqual([]);
+    expect(asked).toEqual([whole(SCAN)]);
+    expect(state.events).toEqual(["open", "render 1", "render 3", "render 5", "disposed"]);
     let text = await readThrough(reader, "### Page 3\n", "### Page 1\n");
     expect(text).toBe(`### Page 1\n${fromImage("band 11")}### Page 2\n${SHEET_A}\n\n\n### Page 3\n`);
-    await settled();
-    expect(state.events).toEqual(["open", "render 1"]);
 
     text += await new Response(new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -2322,6 +2902,112 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     expect(linesOf("info", "google.drive.pdf.page_rendered").map(({ page }) => page)).toEqual([1, 3, 5]);
     expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
     for (let word of ["Harbour", "Marrowfen", "band 11", "no text of its own"]) expect(everythingLogged()).not.toContain(word);
+  });
+
+  it("has every page without text read at once, and gives each in its place when a later one is answered first", async () => {
+    let { renderer } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    /** What the bands of the first and third pages wait for before they are answered. */
+    let waits: Record<number, ReturnType<typeof deferred<void>>> = { 11: deferred(), 31: deferred() };
+    let answered: number[] = [];
+    let { result, bands } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, async ({ shade }) => {
+      await waits[shade]?.promise;
+      answered.push(shade);
+      return eventResponse(tokenEvents([`band ${shade}`]));
+    });
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "\n");
+    let read = () => linesOf("info", "google.drive.pdf.band_transcribed").map(({ page }) => page);
+
+    // With one heading read, each of the three pages is before the model, and the last is read.
+    await vi.waitFor(() => expect(bands.map(({ shade }) => shade).toSorted()).toEqual([11, 31, 51]));
+    await vi.waitFor(() => expect(read()).toEqual([5]));
+    waits[31]!.resolve();
+    await vi.waitFor(() => expect(read()).toEqual([5, 3]));
+    waits[11]!.resolve();
+
+    expect(await readOn(reader, text)).toBe(sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51")));
+    expect(answered).toEqual([51, 31, 11]);
+    expect(pixelsHeld()).toBe(0);
+  });
+
+  it("begins no more pages without text than may be held ahead of the reader", async () => {
+    READ_AHEAD.pages = 2;
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "\n");
+    await settled();
+    expect(state.events).toEqual(["open", "render 1", "render 3"]);
+
+    // The last is begun once the first has been given.
+    text = await readThrough(reader, fromImage("band 11"), text);
+    await settled();
+    expect(state.events).toEqual(["open", "render 1", "render 3", "render 5", "disposed"]);
+    expect(await readOn(reader, text)).toBe(sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51")));
+  });
+
+  it("reads the conversion ahead of its reader only as far as the text it may hold, and on as that is read", async () => {
+    READ_AHEAD.ownTextChars = 1000;
+    let { renderer, state } = fakeRenderer([TEXT_PAGE]);
+    let conversion = endlessResponse();
+    let { result, asked } = await mixed(conversion.response, renderer);
+    let reader = result.text.getReader();
+    let decoder = new TextDecoder();
+    /** The text as far as the response has given it: its heading, then a line for each chunk after. */
+    let given = () => "### Page 1\n" +
+      Array.from({ length: conversion.state.pulls - 2 }, (_, i) => `line ${i + 3}\n`).join("");
+    /** How much of the text is held: what the response gave and the reader has not been given. */
+    let held = (text: string) => given().length - text.length;
+
+    let text = decoder.decode((await reader.read()).value);
+    await settled();
+    // It holds as much as it may, and a chunk or two that were on their way.
+    expect(held(text)).toBeGreaterThanOrEqual(1000);
+    expect(held(text)).toBeLessThan(1064);
+    let { pulls } = conversion.state;
+    await settled();
+    expect(conversion.state.pulls).toBe(pulls);
+
+    for (let i = 0; i < 50; i++) text += decoder.decode((await reader.read()).value);
+    await settled();
+    expect(conversion.state.pulls).toBeGreaterThan(pulls);
+    expect(held(text)).toBeGreaterThanOrEqual(1000);
+    expect(held(text)).toBeLessThan(1064);
+    expect(given().startsWith(text)).toBe(true);
+
+    await reader.cancel();
+    expect(conversion.state.cancelled).toBe(true);
+    // Nothing of the file is read again, or opened, for pages that all have text.
+    expect([asked, state.events]).toEqual([[], []]);
+  });
+
+  it.each([
+    ["had been read", false],
+    ["was being read", true],
+  ])("leaves a later page that %s as the conversion gave it, when a page before it could not be read", async (_label, inFlight) => {
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let failing = deferred<void>();
+    let { result, bands } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, async band => {
+      if (band.shade === 51 && inFlight) return unanswered(state.events)(band);
+      if (band.shade !== 31) return eventResponse(tokenEvents([`band ${band.shade}`]));
+      await failing.promise;
+      return new Response(JSON.stringify({ internalCode: 8006, message: "secret" }), { status: 400 });
+    });
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "\n");
+
+    // With one heading read, the last page has been read, or is before the model.
+    await vi.waitFor(() => expect(inFlight ? bands.map(({ shade }) => shade)
+      : linesOf("info", "google.drive.pdf.band_transcribed").map(({ page }) => page)).toContain(inFlight ? 51 : 5));
+    failing.resolve();
+    // Its call is given up when the third page fails, which is before the reader has got there.
+    if (inFlight) await vi.waitFor(() => expect(state.events).toContain("band given up"));
+
+    expect(await readOn(reader, text)).toBe(sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`));
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({
+      event: "google.drive.pdf.transcription_failed", page: 3, httpStatus: 400, providerCode: 8006,
+    })]]);
+    expect([state.documents[0]!.disposed, pixelsHeld()]).toEqual([1, 0]);
   });
 
   it("gives a page read from its image as the line that says so, its text, what is to be said of it, and an empty line", async () => {
@@ -2410,19 +3096,21 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
       [], sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`),
       ["open", "render 1", "render 3", "disposed", "open", "render 3", "disposed"],
       { event: "google.drive.pdf.render_failed", reason: "call", page: 3 }],
+    // The last page is drawn while the third is read, before its band has failed.
     ["the model cannot read a band", [drawn([11]), TEXT_PAGE, drawn([31, 32]), TEXT_PAGE, drawn([51])],
-      [], sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`), ["open", "render 1", "render 3", "disposed"],
+      [], sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`), ["open", "render 1", "render 3", "render 5", "disposed"],
       { event: "google.drive.pdf.transcription_failed", page: 3, httpStatus: 400, providerCode: 8006 }],
-  ])("keeps the document's own text when %s: that page gets a line, and no page after it is rendered", async (_label, pages, openings, text, events, line) => {
+  ])("keeps the document's own text when %s: that page gets a line, and no page after it is read", async (_label, pages, openings, text, events, line) => {
     let { renderer, state } = fakeRenderer(pages, openings);
     let { result, bands } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, ({ shade }) => shade === 32
       ? new Response(JSON.stringify({ internalCode: 8006, message: "secret" }), { status: 400 }) : [`band ${shade}`]);
 
     expect(await readToFailure(result)).toEqual({ text, error: undefined });
     expect(state.events).toEqual(events);
-    // Each document that was opened is let go once, and no band of a later page is sent.
+    // Each document that was opened is let go once, and no band of a later page is sent,
+    // unless the page was drawn before the failure showed.
     expect(state.documents.every(({ disposed }) => disposed === 1)).toBe(true);
-    expect(bands.every(({ shade }) => shade < 50)).toBe(true);
+    expect(bands.every(({ shade }) => shade < 50 || events.includes("render 5"))).toBe(true);
     expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining(line)]]);
     expect(everythingLogged()).not.toContain("secret");
   });
@@ -2465,6 +3153,8 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
   });
 
   it("lets the document go as soon as no further page is rendered", async () => {
+    // One page is read ahead, so that the last is not drawn, and its document let go, first.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
     let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, () => new Response("{}", { status: 400 }));
     let reader = result.text.getReader();
@@ -2475,6 +3165,8 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
   });
 
   it("fails the text with what its own read of the file failed with, and lets the conversion go", async () => {
+    // One page is read ahead, so that the conversion has not been read to its end by then.
+    READ_AHEAD.pages = 1;
     let broke = new Error("The download broke off.");
     let { renderer, state } = fakeRenderer([drawn([11])], [async pdf => {
       await new Response(pdf).arrayBuffer().catch(() => undefined);
@@ -2643,6 +3335,8 @@ describe("a PDF with text whose pages without any are read, however its text end
   });
 
   it("ends a text left unread after a page was read from its image, naming no page, and lets the document go", async () => {
+    // One page is read ahead, so that the last is not drawn, and its document let go, first.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
     let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
     let reader = result.text.getReader();
@@ -2651,7 +3345,8 @@ describe("a PDF with text whose pages without any are read, however its text end
 
     await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
     await expect(reader.read()).rejects.toThrow(IDLE);
-    expect(state.events).toEqual(["open", "render 1", "disposed"]);
+    // The third page was read ahead meanwhile, which is not the text being read.
+    expect(state.events).toEqual(["open", "render 1", "render 3", "disposed"]);
     expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toEqual([expect.not.objectContaining({ page: expect.anything() })]);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -2727,6 +3422,8 @@ describe("a PDF with text whose pages without any are read, however its text end
   });
 
   it("gives up the band calls in flight when cancelled, then lets the document go, and the conversion at once", async () => {
+    // One page is read ahead, so that neither the last page nor the conversion has ended by then.
+    READ_AHEAD.pages = 1;
     let { renderer, state } = fakeRenderer([drawn([11, 12, 13, 14, 15]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
     let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
     let { result, bands } = await mixed(conversion.response, renderer, unanswered(state.events));
@@ -2816,6 +3513,64 @@ describe("a PDF with text whose pages without any are read, however its text end
     expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
   });
 
+  it("leaves nothing behind when read to its end, cancelled, failed or left idle with pages read ahead", async () => {
+    let pages = [drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])];
+    let all = sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51"));
+    /** Moves the clock on until `met`. */
+    let until = async (met: () => boolean) => {
+      while (!met()) await vi.advanceTimersByTimeAsync(1);
+    };
+    /** A model that answers the first page's band, and never those of the pages after it. */
+    let firstOnly = (events: string[]) => (band: SentBand) => band.shade === 11 ? ["band 11"] : unanswered(events)(band);
+    /** How often each document was let go, the pixels held, and the timers left. */
+    let left = (state: ReturnType<typeof fakeRenderer>["state"]) =>
+      [state.documents.map(({ disposed }) => disposed), pixelsHeld(), vi.getTimerCount()];
+
+    // Read to its end: every page was drawn, and the document let go, with one heading read.
+    let ended = fakeRenderer(pages);
+    let reader = (await mixed(IMAGE_FIRST_MIDDLE_LAST, ended.renderer)).result.text.getReader();
+    let text = await pumped(readThrough(reader, "\n"));
+    await until(() => ended.state.events.length === 5);
+    expect(await pumped(readOn(reader, text))).toBe(all);
+    expect(left(ended.state)).toEqual([[1], 0, 0]);
+
+    // Cancelled, and left idle, with the bands of the two later pages before the model.
+    for (let end of ["cancelled", "idle"]) {
+      let { renderer, state } = fakeRenderer(pages);
+      let { result, bands } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, firstOnly(state.events));
+      reader = result.text.getReader();
+      await pumped(readThrough(reader, fromImage("band 11")));
+      await until(() => bands.length === 3);
+      expect(pixelsHeld()).toBeGreaterThan(0);
+      if (end === "cancelled") {
+        await reader.cancel();
+      } else {
+        // What is read ahead does not keep a text that nobody reads.
+        await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+        await expect(reader.read()).rejects.toThrow(IDLE);
+      }
+      await vi.advanceTimersByTimeAsync(20);
+      expect(state.events.filter(event => event === "band given up"), end).toHaveLength(2);
+      expect(left(state), end).toEqual([[1], 0, 0]);
+    }
+
+    // Failed: the third page's document is lost and the file has changed, which shows while
+    // the first page is still before the model, and fails the text when it has been read up to there.
+    let answer = deferred<void>();
+    let failed = fakeRenderer([drawn([11]), TEXT_PAGE, refusedAs("released"), TEXT_PAGE, drawn([51])], [undefined, "size-mismatch"]);
+    let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, failed.renderer, async () => {
+      await answer.promise;
+      return eventResponse(tokenEvents(["band 11"]));
+    });
+    reader = result.text.getReader();
+    await pumped(readThrough(reader, "\n"));
+    await until(() => failed.state.events.length === 5);
+    expect(failed.state.events).toEqual(["open", "render 1", "render 3", "disposed", "open"]);
+    answer.resolve();
+    await expect(pumped(readOn(reader))).rejects.toEqual(new Error(FILE_CHANGED));
+    expect(left(failed.state)).toEqual([[1], 0, 0]);
+  });
+
   it("leaves no timer behind when read to its end or failed", async () => {
     let ended = await mixed(IMAGE_FIRST_MIDDLE_LAST, fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]).renderer);
     expect(await pumped(read(ended.result))).toBe(sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51")));
@@ -2868,6 +3623,21 @@ describe("pdfConverter", () => {
     expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: false });
     expect(await read(result)).toBe(sheets().slice("### Page 1\n\n\n\n\n".length));
     expect([asked, images(), state.events]).toEqual([[], [], []]);
+  });
+
+  it.each<[string | undefined, number]>([
+    ["2", 2], [" 3 ", 3], ["64", 6], [undefined, 4], ["", 4], ["0", 4], ["-2", 4], ["2.5", 4], ["1e1", 4], ["two", 4],
+  ])("has as many calls in flight for one text as PDF_OCR_CALLS %j names, or as many as it has otherwise", async (value, calls) => {
+    // Six bands over two pages, none of them answered.
+    let { renderer, state } = fakeRenderer([drawn([11, 12, 13]), drawn([21, 22, 23])]);
+    let { ai, bands } = bandAi(unanswered(state.events));
+    let result = await pdfConverter({ AI: ai, PDF_RENDERER: renderer, ...(value === undefined ? {} : { PDF_OCR_CALLS: value }) })!(
+      byteStream(FAX_SCAN.bytes, [65_536]).stream, ranges(FAX_SCAN).readRange);
+    let reader = result.text.getReader();
+    void reader.read();
+    await settled();
+    expect(bands).toHaveLength(calls);
+    await reader.cancel();
   });
 
   it("renders with the Worker's renderer when it has one", async () => {
@@ -3078,6 +3848,38 @@ describe("pdfToText reading a file that is only read from its start", () => {
     expect(opens).toEqual([{ purpose: { page: 1, again: false }, cancelled: false }]);
     release();
     expect(opens[0]!.cancelled).toBe(true);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("opens the file once more for a page whose call the service refused, the pass having gone on to the page after it", async () => {
+    let refusals = 0;
+    let { ai, calls } = pageAi(page => page === 2 && refusals++ === 0 ? refusedCall() : PAGES[page - 1]!);
+    let { open, opens } = forwardOnly(SCAN, at => SCAN.bytes.slice(at, at + 100));
+    let { readRange, release } = forwardRangeReader(open, GMAIL_PDF);
+
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes, [333]).stream, readRange, undefined, GMAIL_PDF);
+    expect(await read(result)).toBe(TRANSCRIBED);
+    expect(calls).toEqual([1, 2, 3, 2]);
+    expect(opens).toEqual([
+      { purpose: { page: 1, again: false }, cancelled: true }, { purpose: { page: 2, again: false }, cancelled: false },
+    ]);
+    release();
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("counts no pass opened for a refused page among those a page image defined again may have", async () => {
+    // Each page is read to its end before the next is begun, so that each is asked for again
+    // from a pass that stands at its end: six passes more, where four would be all there are.
+    READ_AHEAD.storedPages = 1;
+    let refused = new Set<number>();
+    let { ai } = pageAi(page => refused.has(page) ? [`page ${page}`] : (refused.add(page), refusedCall()));
+    let { open, opens } = forwardOnly(LONG_SCAN, at => LONG_SCAN.bytes.slice(at, at + 100));
+    let { readRange } = forwardRangeReader(open, GMAIL_PDF);
+
+    let result = await pdfToText(
+      ai, undefined, byteStream(LONG_SCAN.bytes).stream, readRange, undefined, GMAIL_PDF);
+    expect(await read(result)).toBe(LONG_TRANSCRIBED);
+    expect(opens.map(({ purpose }) => purpose.page)).toEqual([1, 1, 2, 3, 4, 5, 6]);
     expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
   });
 

@@ -1,6 +1,6 @@
 // A Drive PDF's text, from Workers AI's markdown conversion, streamed in both directions: neither
 // the PDF nor its text is ever held whole. A scanned PDF has no text to convert, so its pages are
-// transcribed by a vision model instead, one at a time, as the text is read. A scan small enough
+// transcribed by a vision model instead, ahead of the reader once it reads. A scan small enough
 // is read again, whole, into the PDF renderer, which draws each page and cuts it into bands for
 // the model to read; a larger one has its page images sent as they are stored. A PDF that has
 // text keeps it, and the pages of it that have none are rendered and read the same way, each
@@ -17,16 +17,14 @@ import { FILE_CHANGED } from "./drive-file-read";
 import { PDF_MIME_TYPE } from "./drive-session";
 import type { DrivePdfText } from "./drive-types";
 import { obsContext, type GoogleObservabilityFields } from "./observability";
-import { readBands, type BandCall } from "./pdf-bands";
+import { readBands, REFUSED_PAUSE, refusedCall, refusedPause, type BandCall } from "./pdf-bands";
 import { MAX_PAGE_IMAGES, PdfImageScan, type PdfImages, type PdfPageImage } from "./pdf-images";
 import { ImageDataError, pngFromDeflated, pngFromSamples } from "./pdf-png";
-import { callSlots, READ_AHEAD } from "./pdf-read-ahead";
+import { callSlots, pixelRoom, READ_AHEAD, type CallSlots, type PixelHold } from "./pdf-read-ahead";
 import {
   convertToMarkdown, MarkdownConversionError, type AiFetcher, type MarkdownConversion,
 } from "./workers-ai-markdown";
-import {
-  transcribeImage, TranscriptionError, type ImageSource, type Transcription,
-} from "./workers-ai-vision";
+import { transcribeImage, TranscriptionError, type Transcription } from "./workers-ai-vision";
 
 /** What is logged of a PDF whose pages are rendered, beside the gatekeeper's own fields. */
 type RenderLogFields = {
@@ -46,7 +44,7 @@ type RenderLogFields = {
   asks: number;
   /** Why a band was asked for again, as a word. */
   askedAgain: string;
-  /** How many times the service refused a band's call for rate or capacity. */
+  /** How many times the service refused a band's call, or a stored page's, for rate or capacity. */
   refused: number;
   /** Whether a rendered page has no ink. */
   blank: boolean;
@@ -137,13 +135,19 @@ export type PdfEnv = {
   PDF_RENDERER?: unknown;
   /** `false` (trimmed, in any case) to have no page read by a vision model; anything else, or unset, reads them. */
   PDF_OCR?: string;
+  /**
+   * How many model calls one text may have in flight: a decimal integer of at least 1 (trimmed);
+   * anything else, or unset, is `READ_AHEAD.calls`.
+   */
+  PDF_OCR_CALLS?: string;
 };
 
 /**
  * The converter a Worker with this environment reads PDFs with ({@link pdfToText}), or `undefined`
  * when it has no `AI` binding to convert with. Under `PDF_OCR=false` it never reads a file again,
  * whatever it is given to do so with: no vision model is called, so a PDF without text comes back
- * with none, and one with text as that text alone. `source` is where the PDFs are read from.
+ * with none, and one with text as that text alone. `PDF_OCR_CALLS` is how many model calls one
+ * text may have in flight. `source` is where the PDFs are read from.
  */
 export function pdfConverter(env: PdfEnv, source: PdfSource = DRIVE_PDF): PdfConverter | undefined {
   // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can
@@ -151,8 +155,10 @@ export function pdfConverter(env: PdfEnv, source: PdfSource = DRIVE_PDF): PdfCon
   let ai = env.AI as AiFetcher | undefined;
   let renderer = env.PDF_RENDERER as PdfRendering | undefined;
   let transcribes = env.PDF_OCR?.trim().toLowerCase() !== "false";
+  let named = env.PDF_OCR_CALLS?.trim() ?? "";
+  let calls = /^\d+$/.test(named) && Number(named) >= 1 ? Number(named) : undefined;
   return ai && ((pdf, readRange) =>
-    pdfToText(ai, env.CF_AI_GATEWAY, pdf, transcribes ? readRange : undefined, renderer, source));
+    pdfToText(ai, env.CF_AI_GATEWAY, pdf, transcribes ? readRange : undefined, renderer, source, calls));
 }
 
 /**
@@ -268,8 +274,11 @@ export class TranscriptionRefusal extends Error {}
 
 /** One page of a transcription, or one piece of a PDF's own text, as a {@link PageSource} gives it. */
 type SourcedPage =
-  /** The page's image as the file stores it: the model's answer to it is the page's text. */
-  | { image: ImageSource }
+  /**
+   * The model's answer to the page's image as the file stores it, begun already: the page's
+   * text, in pieces, and whether it ends early. `next` throws what the page failed with.
+   */
+  | { answer: Pick<Transcription, "truncated" | "next"> }
   /** All that comes under the heading of a page that has been read already. */
   | { text: string }
   /** A piece of a text that has its page headings in it: given as it is. */
@@ -324,16 +333,20 @@ type PageSource = {
  * file again. For any other PDF with text no model is called and nothing is read again.
  *
  * `source` is where the PDF is read from: its failures are given in that source's words, and its
- * log lines go under that source's names.
+ * log lines go under that source's names. `calls` is how many model calls the text may have in
+ * flight, whichever way its pages are read.
  */
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
   readRange?: PdfRangeReader, renderer?: PdfRendering, source: PdfSource = DRIVE_PDF,
+  calls = READ_AHEAD.calls,
 ): Promise<PdfRead> {
   let scan = readRange && new PdfImageScan();
   /** Whether the scan was shown the PDF to its end. */
   let scanned = false;
   if (scan) pdf = watched(pdf, chunk => scan.feed(chunk), () => { scanned = true; });
+  /** The text's limiter of model calls, whichever way its pages are read. */
+  let slots = callSlots(calls);
   let options = {
     ...(gatewayId ? { gateway: { id: gatewayId } } : {}),
     conversionOptions: { pdf: { metadata: false, images: { convert: false } } },
@@ -385,7 +398,8 @@ export async function pdfToText(
     let pages: PageSource;
     if (renderer && rendered) {
       pages = renderedPages(
-        renderedPdf(ai, gatewayId, found, readRange!, renderer, source), found, readRange!, stored, source);
+        renderedPdf(ai, gatewayId, found, readRange!, renderer, source, slots), found,
+        stored ? storedPages(ai, gatewayId, found, readRange!, slots, source) : undefined, source);
       log(source).info("transcribing a scanned Drive PDF", {
         event: "google.drive.pdf.transcribing", pdfBytes: found.bytes, route: "rendered",
       });
@@ -396,13 +410,13 @@ export async function pdfToText(
           ? `done only for a PDF of up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`
           : "not available on this deployment"));
       }
-      pages = storedPages(found, readRange!);
+      pages = storedPages(ai, gatewayId, found, readRange!, slots, source);
       log(source).info("transcribing a scanned Drive PDF", {
         event: "google.drive.pdf.transcribing", pdfBytes: found.bytes, ocrPages: found.images.length,
         route: "stored",
       });
     }
-    return { text: transcription(ai, gatewayId, pages, source), hasText, transcribed: true, rereads: true };
+    return { text: transcription(pages, source), hasText, transcribed: true, rereads: true };
   }
 
   // Pages are read into the text only when the scan saw the whole file, and so knows its
@@ -414,8 +428,9 @@ export async function pdfToText(
   if (found && found.bytes <= RENDER_LIMITS.fileBytes && start.passedEmpty &&
       first!.startsWith(`### Page ${start.passed + 1}\n`)) {
     let pages = mixedPages(
-      conversion, start.passed, first!, renderedPdf(ai, gatewayId, found, readRange!, renderer!, source), source);
-    return { text: transcription(ai, gatewayId, pages, source), hasText, transcribed: false, rereads: true };
+      conversion, start.passed, first!,
+      renderedPdf(ai, gatewayId, found, readRange!, renderer!, source, slots), source);
+    return { text: transcription(pages, source), hasText, transcribed: false, rereads: true };
   }
 
   let encoder = new TextEncoder();
@@ -529,34 +544,220 @@ function refusal(
     `The PDF has no text of its own, and ${why}, so it cannot be transcribed.`);
 }
 
+/** A stored page image the model is reading, or has read, ahead of the reader. */
+type StoredPage = {
+  /** Gives the page up: aborted with the text's signal, and when a page before it fails. */
+  abort: AbortController;
+  /** Whether the model has answered the page's call. */
+  answered: boolean;
+  /** The pieces of the answer that the reader is yet to be given, and the characters in them. */
+  pieces: string[];
+  held: number;
+  /** Whether the answer has ended, and whether the model was stopped at its output limit. */
+  ended: boolean;
+  truncated: boolean;
+  /** What the page failed with. */
+  failure?: { error: unknown };
+};
+
 /**
- * The page images the scan found, as the file stores them, numbered in the order it stores them.
- * A page's image is read from the file through `readRange` when the text has been read up to
- * it: a JPEG is sent as it stands, and deflated rows wrapped as a PNG without being inflated.
- * Nothing is held between pages, and each piece of an image that arrives counts as the text
- * moving, as does each piece `readRange` says it passed over on its way to one.
+ * The page images the scan found, as the file stores them, numbered in the order it stores them,
+ * each read by the vision model: a JPEG is sent as it stands, and deflated rows wrapped as a PNG
+ * without being inflated.
+ *
+ * Nothing is done until the first page is asked for. From then on up to {@link READ_AHEAD}'s
+ * `storedPages` pages are begun and not yet read to their end by the reader, the one it is
+ * reading among them. A page is begun by asking its image of the file through `readRange`, a
+ * content read of its own, and streaming it into the page's call, which is made in a slot of
+ * `slots`. Ranges are asked one at a time, in the pages' order: the next only once the image
+ * before it has been read from its range to the end, or its call is over, since a file that is
+ * read in one forward pass gives up a range that is unfinished when the next is asked for. The
+ * answers then arrive side by side. A page is given once its call has answered, and the pieces
+ * of its answer are held, as they arrive, until the reader takes them: with {@link READ_AHEAD}'s
+ * `answerChars` characters of it held, no more of an answer is read until the reader has taken
+ * some.
+ *
+ * A call the service refused for rate or capacity (see {@link readBands}) is made again:
+ * `slots` is told, and after the pause its refusal has in {@link REFUSED_PAUSE} the page's
+ * range is asked for again, which is one more read of the file, and then the model. Refused
+ * once more than there are pauses, the page fails; any other failure fails it at once.
+ *
+ * A page that failed is given as what it failed with when the reader gets to it, after the
+ * pages before it: no page after it is begun, and each one that was is given up at once.
+ * Aborting the signal `next` is given gives every page up: its range, its call and its answer.
+ *
+ * A piece of an image that arrives, one `readRange` says it passed over on its way to an image,
+ * and a piece of an answer each count as the text moving, but only while the reader waits for a
+ * page: what is read ahead does not keep a text that nobody reads.
  */
-function storedPages({ images, bytes: fileSize }: PdfImages, readRange: PdfRangeReader): PageSource {
+function storedPages(
+  ai: AiFetcher, gatewayId: string | undefined, { images, bytes: fileSize }: PdfImages,
+  readRange: PdfRangeReader, slots: CallSlots, source: PdfSource,
+): PageSource {
+  /** The pages begun and not yet given to the reader. */
+  let begun = new Map<number, StoredPage>();
+  /** The page to begin next, from 0, and whether a page has failed, after which none is begun. */
+  let ahead = 0;
+  let failed = false;
+  /** The range asked for last, settled once its image was read to the end or its call was over. */
+  let ranged: Promise<void> = Promise.resolve();
+  /** What the reader is to be told has moved, while it waits for a page. */
+  let reader: (() => void) | undefined;
+  let touch = () => reader?.();
+  /**
+   * The reader, while it waits for a page's call to answer or for more of an answer, and each
+   * page's call, while it waits for the reader to take some of an answer that is held.
+   */
+  let waiters: (() => void)[] = [];
+  let wait = () => new Promise<void>(resolve => waiters.push(resolve));
+  let wake = () => {
+    for (let go of waiters.splice(0)) go();
+  };
+  let fields = (index: number) => images[index] ? { page: index + 1, imageEncoding: images[index].encoding } : {};
+
+  /**
+   * Asks for page `index`'s image and has the model read it, to the end of its answer, waiting
+   * for the reader whenever as much of the answer is held as may be. `refusals` is how many
+   * times the service refused the page's call before this one, and `passed` is called once the
+   * image has been read from its range to the end.
+   */
+  let call = async (index: number, page: StoredPage, refusals: number, passed: () => void) => {
+    let image = images[index]!;
+    let { signal } = page.abort;
+    signal.throwIfAborted();
+    let { offset, length } = image;
+    let range = await readRange({ page: index + 1, offset, length, fileSize }, touch);
+    if (signal.aborted) await range.cancel().catch(() => undefined);
+    signal.throwIfAborted();
+    // The image is sent as it arrives, and nothing of the text moves until the model answers:
+    // each piece that arrives is what shows that a large image is on its way and not stalled.
+    let data = watched(range, touch, passed);
+    let answer = await transcribeImage(ai, gatewayId, image.png
+      ? { mimeType: "image/png", body: pngFromDeflated(data, image, image.png, MAX_IMAGE_BYTES) }
+      : { mimeType: "image/jpeg", body: data }, signal);
+    // An answer being read is not ended by the signal its request was made with, nor is the
+    // wait for its reader.
+    let stop = () => {
+      void answer.cancel(signal.reason).catch(() => undefined);
+      wake();
+    };
+    signal.addEventListener("abort", stop, { once: true });
+    if (signal.aborted) stop();
+    try {
+      page.answered = true;
+      wake();
+      for (let piece = await answer.next(); piece !== undefined; piece = await answer.next()) {
+        touch();
+        page.pieces.push(piece);
+        page.held += piece.length;
+        wake();
+        while (page.held >= READ_AHEAD.answerChars && !signal.aborted) await wait();
+      }
+    } finally {
+      signal.removeEventListener("abort", stop);
+    }
+    page.truncated = answer.truncated;
+    page.ended = true;
+    log(source).info("transcribed a Drive PDF page", {
+      event: "google.drive.pdf.page_transcribed", imageBytes: answer.sentBytes, ...fields(index),
+      ...(refusals > 0 ? { refused: refusals } : {}),
+    });
+  };
+  /**
+   * Reads page `index`: its range is asked for in its turn and its call made in a slot, and both
+   * again, after a pause, each time the service refuses the call. When the page fails, those
+   * begun after it are given up before the turn passes to the next of them.
+   */
+  let read = async (index: number, page: StoredPage) => {
+    let { signal } = page.abort;
+    let own = slots.of(index);
+    for (let refusals = 0;; refusals++) {
+      /** Ends this range's turn: its image was read to the end, or its call is over. */
+      let passed: (() => void) | undefined;
+      try {
+        await own.run(signal, async () => {
+          let before = ranged;
+          ranged = new Promise<void>(resolve => { passed = resolve; });
+          await before;
+          await call(index, page, refusals, passed!);
+        });
+        own.answered();
+        return;
+      } catch (error) {
+        // What a page that was given up ends with is not a failure of its own.
+        if (signal.aborted) throw error;
+        let refused = refusedCall(error);
+        if (refused) {
+          own.refused();
+          // A refusal is the service answering: a page being refused is not a text that sits idle.
+          touch();
+        }
+        if (!refused || refusals === REFUSED_PAUSE.ms.length) {
+          failed = true;
+          for (let [later, other] of begun) {
+            if (later <= index) continue;
+            other.abort.abort();
+            begun.delete(later);
+          }
+          throw error;
+        }
+      } finally {
+        passed?.();
+      }
+      await refusedPause(refusals, signal);
+    }
+  };
+  /** Begins page `index`, which the text's `signal` gives up, and a page before it that fails. */
+  let begin = (index: number, signal: AbortSignal) => {
+    let abort = new AbortController();
+    let ended = () => abort.abort(signal.reason);
+    signal.addEventListener("abort", ended, { once: true });
+    if (signal.aborted) ended();
+    let page: StoredPage = { abort, answered: false, pieces: [], held: 0, ended: false, truncated: false };
+    begun.set(index, page);
+    void read(index, page).catch((error: unknown) => { page.failure = { error }; }).finally(() => {
+      signal.removeEventListener("abort", ended);
+      wake();
+    });
+  };
+
   return {
     async next(index, signal, moved) {
-      let image = images[index];
-      if (!image) return undefined;
-      let { offset, length } = image;
-      let read = await readRange({ page: index + 1, offset, length, fileSize }, moved);
-      if (signal.aborted) {
-        await read.cancel().catch(() => undefined);
-        throw new Error("cancelled");
+      if (!images[index]) return undefined;
+      // The pages before this one have been read to their end: as many as may be are begun.
+      let last = failed ? 0 : Math.min(images.length, index + READ_AHEAD.storedPages);
+      while (ahead < last) begin(ahead++, signal);
+      let page = begun.get(index)!;
+      begun.delete(index);
+      // What is read ahead moves the text only while its reader waits.
+      reader = moved;
+      try {
+        while (!page.answered) {
+          if (page.failure) throw page.failure.error;
+          await wait();
+        }
+      } finally {
+        reader = undefined;
       }
-      // The image is sent as it arrives, and nothing of the text moves until the model answers:
-      // each piece that arrives is what shows that a large image is on its way and not stalled.
-      let data = watched(read, moved, () => undefined);
       return {
-        image: image.png
-          ? { mimeType: "image/png", body: pngFromDeflated(data, image, image.png, MAX_IMAGE_BYTES) }
-          : { mimeType: "image/jpeg", body: data },
+        answer: {
+          get truncated() { return page.truncated; },
+          async next() {
+            while (page.pieces.length === 0) {
+              if (page.failure) throw page.failure.error;
+              if (page.ended) return undefined;
+              await wait();
+            }
+            let piece = page.pieces.shift()!;
+            page.held -= piece.length;
+            // An answer held as far as it may be is read on.
+            wake();
+            return piece;
+          },
+        },
       };
     },
-    fields: index => images[index] ? { page: index + 1, imageEncoding: images[index].encoding } : {},
+    fields,
     release: () => undefined,
   };
 }
@@ -570,16 +771,22 @@ type Unrendered = {
   reason: RenderRefusalReason | "call"; error?: unknown; page?: number; heapBytes?: number; work?: number;
 };
 
+/**
+ * What came of a page asked for ahead of its reader: what the model read on it; that it has no
+ * ink; that it alone could not be drawn; why the PDF was not opened, or is rendered no further;
+ * or what reading its bands failed with.
+ */
+type PageOutcome =
+  | { text: string; cutOff: boolean; reduced: boolean }
+  | { blank: true; images: number; surveyed: boolean }
+  | { undrawn: true }
+  | { unrendered: Unrendered }
+  | { failed: unknown };
+
 /** The PDF the scan found, as the renderer holds it for one text: see {@link renderedPdf}. */
 type RenderedPdf = {
   /** How many pages the PDF has, once it has been opened. */
   readonly pages: number | undefined;
-  /**
-   * Reads the file whole and has the renderer open it, or returns why it did not. What the read
-   * of the file failed with is thrown, a file of another size as a changed one, and so is an
-   * end by `signal`.
-   */
-  open(signal: AbortSignal, moved: () => void): Promise<Unrendered | undefined>;
   /**
    * Page `index`, from 0, of the open PDF: as it was drawn, as the refusal of that page alone,
    * or as why the PDF is rendered no further, after which it is no longer open.
@@ -591,19 +798,32 @@ type RenderedPdf = {
   read(
     page: RenderedPage, index: number, signal: AbortSignal, moved: () => void,
   ): Promise<{ text: string; cutOff: boolean }>;
-  /** Returns `work`, noted as what is being done with the PDF, for {@link release} to wait for. */
-  during<T>(work: Promise<T>): Promise<T>;
-  /** Lets the PDF go in the renderer, once what {@link during} last noted has ended. */
+  /**
+   * Says that page `index`, from 0, is wanted, ahead of the text being read up to it. Pages are
+   * asked for in ascending order, each once, and no more of them than are to be held: the PDF
+   * is opened for the first. `signal` is the text's, and `moved` is called whenever something
+   * of the page's moves.
+   */
+  ahead(index: number, signal: AbortSignal, moved: () => void): void;
+  /**
+   * What came of page `index`, which was asked for with {@link ahead}, once that is known:
+   * `undefined` for a page the PDF does not have. What a read of the file failed with is
+   * thrown, a file of another size as a changed one, and so is an end by the text's signal.
+   * Pages are taken in the order they were asked for, each once, and none after one that
+   * failed.
+   */
+  take(index: number): Promise<PageOutcome | undefined>;
+  /** Lets the PDF go in the renderer, once every page asked for with {@link ahead} has ended. */
   release(): void;
 };
 
 /**
  * The PDF the scan found as `renderer` holds it, for the one text that reads pages of it: each
  * page it is asked for is drawn in grey and cut into bands, and each band that has ink is read
- * by the vision model ({@link readBands}), a few at a time. Pages are the page tree's, in its
- * order.
+ * by the vision model ({@link readBands}), each call in a slot of `slots`, the text's limiter of
+ * model calls. Pages are the page tree's, in its order.
  *
- * Nothing is done until it is opened. Then the whole file is read through `readRange`, a content
+ * Nothing is done until a page is asked for. Then the whole file is read through `readRange`, a content
  * read of its own, and streamed to the renderer, which keeps it: the document it answers with is
  * a hold on the file in the renderer's isolate, and nothing of the file stays here. A failure of
  * that read is thrown as it is, whatever the renderer made of the stream breaking off, and a
@@ -616,13 +836,22 @@ type RenderedPdf = {
  *
  * Each document is let go exactly once: when its last page has answered, when it is lost or
  * refuses the PDF as a whole, or when the PDF is released, after whatever was in flight has
- * ended. Aborting the signal a call was given gives up the band calls in flight, and ends an
+ * ended. Aborting the signal a page was asked for with gives up the band calls in flight, and ends an
  * `open` in flight by erroring the stream handed to it, which the call has locked; a page being
  * rendered is left to finish.
+ *
+ * Pages asked for ahead of the reader are drawn one at a time, in the order they are asked for,
+ * each once the text's {@link pixelRoom} has room for a page's pixels, or the reader waits for
+ * it. A page that is drawn has its bands read at once, while the next is drawn; its pixels are
+ * let go when its bands have been read, have failed or are given up, and what is kept until it
+ * is taken is what came of it. When a page fails (the PDF is not opened or is rendered no
+ * further, a read of the file fails, or a band cannot be read), no page after it is begun, and
+ * each one that was is given up at once: its calls are aborted, and what came of it is never
+ * taken. The pages before it go on.
  */
 function renderedPdf(
   ai: AiFetcher, gatewayId: string | undefined, found: PdfImages, readRange: PdfRangeReader,
-  renderer: PdfRendering, source: PdfSource,
+  renderer: PdfRendering, source: PdfSource, slots: CallSlots,
 ): RenderedPdf {
   /** The PDF open in the renderer, while it is, and how many pages it has once it was opened. */
   let document: PdfDocument | undefined;
@@ -632,8 +861,16 @@ function renderedPdf(
   /** What is being done with the PDF, or was last, settled either way. */
   let turn: Promise<void> = Promise.resolve();
   let options = { bands: BANDS, denseLines: DENSE_LINES };
-  /** The text's limiter of model calls. */
-  let slots = callSlots(READ_AHEAD.calls);
+  /** The text's budget of drawn pixels, for the pages asked for ahead. */
+  let room = pixelRoom();
+  /** The pages asked for ahead and not yet taken: what comes of each, and what gives it up. */
+  let asked = new Map<number, { outcome: Promise<PageOutcome | undefined>; abort: AbortController }>();
+  /** The draw of the page last asked for ahead, settled either way. */
+  let draws: Promise<void> = Promise.resolve();
+  /** The first page asked for ahead that failed. */
+  let failedAt = Infinity;
+  /** The page asked for ahead that the reader is waiting for, while it is. */
+  let waited: number | undefined;
   let dispose = () => {
     document?.[Symbol.dispose]();
     document = undefined;
@@ -726,9 +963,18 @@ function renderedPdf(
     return unopened;
   };
 
-  return {
+  /** Notes that page `index` failed: each page after it that was begun is given up at once. */
+  let failed = (index: number) => {
+    failedAt = Math.min(failedAt, index);
+    for (let [later, page] of asked) {
+      if (later <= index) continue;
+      page.abort.abort();
+      asked.delete(later);
+    }
+  };
+
+  let pdf: RenderedPdf = {
     get pages() { return count; },
-    open: (signal, moved) => open(signal, moved),
     async render(index, signal, moved) {
       let page = index + 1;
       for (;;) {
@@ -776,12 +1022,61 @@ function renderedPdf(
         event: "google.drive.pdf.band_transcribed", page: index + 1, ...event,
       });
     }, slots.of(index)),
-    during(work) {
-      turn = work.then(() => undefined, () => undefined);
-      return work;
+    ahead(index, signal, moved) {
+      if (index > failedAt) return;
+      /** Gives the page up: aborted with the text's signal, and when a page before it fails. */
+      let abort = new AbortController();
+      let ended = () => abort.abort(signal.reason);
+      signal.addEventListener("abort", ended, { once: true });
+      if (signal.aborted) ended();
+      let fail = () => failed(index);
+      let hold: PixelHold | undefined;
+      let drawn = draws.then(async () => {
+        abort.signal.throwIfAborted();
+        hold = await room.reserve(RENDER_LIMITS.pagePixels, abort.signal, () => waited === index);
+        if (count === undefined) {
+          let unopened = await open(abort.signal, moved);
+          if (unopened) return { unrendered: unopened };
+        }
+        if (index >= count!) return undefined;
+        let page = await pdf.render(index, abort.signal, moved);
+        return "reason" in page ? { unrendered: page } : page;
+      });
+      // A page that failed is noted before the next is begun.
+      draws = drawn.then(page => { if (page && "unrendered" in page) fail(); }, fail);
+      let outcome = drawn.then(async (page): Promise<PageOutcome | undefined> => {
+        if (!page || "unrendered" in page) return page;
+        if ("refused" in page) return { undrawn: true };
+        if (page.blank) return { blank: true, images: page.images, surveyed: page.surveyed };
+        // From here on the page's pixels are those of its bands.
+        hold!.resize(page.bands.reduce((bytes, band) => bytes + (band.pixels?.byteLength ?? 0), 0));
+        try {
+          let { text, cutOff } = await pdf.read(page, index, abort.signal, moved);
+          return { text, cutOff, reduced: page.reduced };
+        } catch (error) {
+          fail();
+          return { failed: error };
+        }
+      }).finally(() => {
+        hold?.release();
+        signal.removeEventListener("abort", ended);
+      });
+      asked.set(index, { outcome, abort });
+      turn = Promise.allSettled([turn, outcome]).then(() => undefined);
+    },
+    async take(index) {
+      waited = index;
+      room.recheck();
+      try {
+        return await asked.get(index)!.outcome;
+      } finally {
+        waited = undefined;
+        asked.delete(index);
+      }
     },
     release: () => void turn.then(dispose),
   };
+  return pdf;
 }
 
 /** Logs why a PDF's pages are not rendered, or not rendered any further, by the reason word. */
@@ -798,8 +1093,14 @@ function renderFailed(unrendered: Unrendered, source: PdfSource): void {
  * so; a blank page with no image is its heading alone; a page drawn at a lower resolution, or
  * whose text ends early, has a line to follow it.
  *
- * When the renderer has no room, cannot be reached or cannot open the file, and `stored` says
- * the page images can be sent as they are stored, they are what the text is read from instead
+ * Nothing is done until the first page is asked for. From then on every page from the reader's
+ * on is asked of `pdf` ahead of the reader ({@link RenderedPdf.ahead}), so that it is drawn and
+ * read while the pages before it are: up to {@link READ_AHEAD}'s `pages` are begun and not yet
+ * given, the reader's among them. A page that fails, and the text with it, does so when the
+ * reader gets to it, after the pages before it.
+ *
+ * When the renderer has no room, cannot be reached or cannot open the file, and `stored` is
+ * given, the page images as they are stored, they are what the text is read from instead
  * ({@link storedPages}). That is settled before any page is given, since stored pages are
  * numbered in the file's order: a text never changes from one to the other partway. Without it
  * the text fails: in words when the renderer finds the file encrypted, had no room or could not
@@ -807,10 +1108,15 @@ function renderFailed(unrendered: Unrendered, source: PdfSource): void {
  * further partway.
  */
 function renderedPages(
-  pdf: RenderedPdf, found: PdfImages, readRange: PdfRangeReader, stored: boolean, source: PdfSource,
+  pdf: RenderedPdf, found: PdfImages, stored: PageSource | undefined, source: PdfSource,
 ): PageSource {
   /** The stored page images, once they are what the text is read from. */
   let fallback: PageSource | undefined;
+  /** The page to ask of `pdf` next, from 0. */
+  let ahead = 0;
+  /** What the reader is to be told has moved, while it waits for a page. */
+  let reader: (() => void) | undefined;
+  let touch = () => reader?.();
   /** What the text fails with when the PDF is not rendered, logged by the reason word. */
   let failed = (unrendered: Unrendered, first: boolean): Error => {
     let { reason } = unrendered;
@@ -819,36 +1125,44 @@ function renderedPages(
     let busy = reason === "room" || (first && reason === "call");
     return new Error(busy ? RENDERER_BUSY : source.transcriptionFailed);
   };
-  let read = async (
-    index: number, signal: AbortSignal, moved: () => void,
-  ): Promise<SourcedPage | undefined> => {
-    if (fallback) return fallback.next(index, signal, moved);
-    if (pdf.pages === undefined) {
-      let unopened = await pdf.open(signal, moved);
-      if (unopened && stored && unopened.reason !== "encrypted") {
-        log(source).warn("a Drive PDF is transcribed as stored, for want of the renderer", {
-          event: "google.drive.pdf.renderer_fallback", route: "stored", ...unopened,
-        });
-        fallback = storedPages(found, readRange);
-        return fallback.next(index, signal, moved);
-      }
-      if (unopened) throw failed(unopened, true);
-    }
-    if (index === pdf.pages) return undefined;
-    let page = await pdf.render(index, signal, moved);
-    if ("reason" in page) throw failed(page, false);
-    // What is of this page alone is said in its place, and the pages after it are still read.
-    if ("refused" in page) return { text: UNDRAWN_PAGE };
-    // A page without ink has nothing for a model to read; one that holds an image, or may
-    // hold one that was not counted, may be a blank side of a sheet, or an image that could
-    // not be decoded, and says so.
-    if (page.blank) return { text: page.images > 0 || !page.surveyed ? BLANK_PAGE : "" };
-    let { text, cutOff } = await pdf.read(page, index, signal, moved);
-    return { text: `${text}${cutOff ? CUT_OFF : ""}${page.reduced ? REDUCED_PAGE : ""}` };
-  };
 
   return {
-    next: (index, signal, moved) => pdf.during(read(index, signal, moved)),
+    async next(index, signal, moved) {
+      if (fallback) return fallback.next(index, signal, moved);
+      // How many pages there are is known once the first has been taken.
+      let last = Math.min(pdf.pages ?? Infinity, index + READ_AHEAD.pages);
+      while (ahead < last) pdf.ahead(ahead++, signal, touch);
+      if (index === pdf.pages) return undefined;
+      let page: PageOutcome | undefined;
+      // What is drawn and read ahead moves the text only while its reader waits.
+      reader = moved;
+      try {
+        page = await pdf.take(index);
+      } finally {
+        reader = undefined;
+      }
+      if (!page) return undefined;
+      if ("unrendered" in page) {
+        // A PDF that has no page count was not opened, which only its first page finds.
+        let first = pdf.pages === undefined;
+        if (first && stored && page.unrendered.reason !== "encrypted") {
+          log(source).warn("a Drive PDF is transcribed as stored, for want of the renderer", {
+            event: "google.drive.pdf.renderer_fallback", route: "stored", ...page.unrendered,
+          });
+          fallback = stored;
+          return fallback.next(index, signal, moved);
+        }
+        throw failed(page.unrendered, first);
+      }
+      if ("failed" in page) throw page.failed;
+      // What is of this page alone is said in its place, and the pages after it are still read.
+      if ("undrawn" in page) return { text: UNDRAWN_PAGE };
+      // A page without ink has nothing for a model to read; one that holds an image, or may
+      // hold one that was not counted, may be a blank side of a sheet, or an image that could
+      // not be decoded, and says so.
+      if ("blank" in page) return { text: page.images > 0 || !page.surveyed ? BLANK_PAGE : "" };
+      return { text: `${page.text}${page.cutOff ? CUT_OFF : ""}${page.reduced ? REDUCED_PAGE : ""}` };
+    },
     fields: index => fallback ? fallback.fields(index)
       : pdf.pages !== undefined && index < pdf.pages ? { page: index + 1 } : {},
     release: pdf.release,
@@ -944,20 +1258,25 @@ class PageSections {
  * {@link PageSections}, it is passed on as it is, so that a PDF none of whose pages is read from
  * its image has the conversion's text to the byte.
  *
- * A page whose section holds nothing but line breaks, and that `pdf` has, is rendered once the
- * text has been read up to it; `pdf` is opened for the first such page, so a PDF whose pages
- * all have text is never read again. When the page is not blank, the vision model reads it,
- * and what it reads takes the place of the line breaks: under {@link READ_FROM_IMAGE} and an
- * empty line, followed by the lines that say it was cut off or drawn at a lower resolution,
- * and by an empty line. A page that is blank, could not be drawn within the renderer's limits,
- * or reads as nothing is left as the conversion gave it.
+ * From its first read on, the text is read ahead of its reader and held in pieces, while it
+ * holds under {@link READ_AHEAD}'s `ownTextChars` characters of the document's own and fewer
+ * than its `pages` pages without text are asked for and not yet given. A page whose section
+ * holds nothing but line breaks is asked of `pdf` as it is found ({@link RenderedPdf.ahead}), so
+ * that it is drawn and read while the text before it is; `pdf` is opened for the first such
+ * page, so a PDF whose pages all have text is never read again. When the page is one `pdf` has
+ * and is not blank, the vision model reads it, and what it reads takes the place of the line
+ * breaks: under {@link READ_FROM_IMAGE} and an empty line, followed by the lines that say it
+ * was cut off or drawn at a lower resolution, and by an empty line. A page that is blank, could
+ * not be drawn within the renderer's limits, or reads as nothing is left as the conversion gave
+ * it.
  *
  * The document's own text is worth more than the pages missing from it, so what keeps a page
  * from being read does not fail the text: a PDF the renderer does not open, or renders no
  * further, and a page the model fails on, are logged by their reason, that page gets
- * {@link UNREAD_PAGES} in place of its text, and no page after it is rendered. The text does
- * fail with what a read of the file failed with, a changed file included, since it is then the
- * text of another version; and with a failure of the conversion's, in our words.
+ * {@link UNREAD_PAGES} in place of its text, and no page after it is read: what came of one
+ * that was begun is not used. The text does fail with what a read of the file failed with, a
+ * changed file included, since it is then the text of another version; and with a failure of
+ * the conversion's, in our words: each once the reader has been given all that came before it.
  */
 function mixedPages(
   conversion: MarkdownConversion, passed: number, first: string | undefined, pdf: RenderedPdf,
@@ -967,6 +1286,25 @@ function mixedPages(
   /** What was read of the text and is yet to be given, and whether that was the end of it. */
   let pieces: (string | EmptyPage)[] = [];
   let ended = false;
+  /** How many characters of the document's own text are among `pieces`. */
+  let held = 0;
+  /** The pages without text that were found and are yet to be asked of `pdf`, from 0. */
+  let found: number[] = [];
+  /** How many pages were asked of `pdf` and are not yet given. */
+  let begun = 0;
+  /** What reading on in the text failed with, for the reader to be given when it gets there. */
+  let failure: { error: unknown } | undefined;
+  /** The reading ahead, from the reader's first read on. */
+  let looking: Promise<void> | undefined;
+  /** What the reader is to be told has moved, while it waits for something. */
+  let reader: (() => void) | undefined;
+  let touch = () => reader?.();
+  /** Those waiting on each other: the reader for a piece, the reading ahead for room. */
+  let waiters: (() => void)[] = [];
+  let wait = () => new Promise<void>(resolve => waiters.push(resolve));
+  let wake = () => {
+    for (let go of waiters.splice(0)) go();
+  };
   /** How many of the pages before the text's first have been given their headings again. */
   let led = 0;
   /** The page being read from its image, while one is. */
@@ -976,12 +1314,25 @@ function mixedPages(
   /** Gives up on the pages without text, at one that is given a line to say so. */
   let giveUp = (): string => {
     gaveUp = true;
+    found = [];
+    begun = 0;
     pdf.release();
     return `${UNREAD_PAGES}\n\n`;
   };
 
-  /** Reads on in the text, as far as the next piece of it, or to its end. */
-  let more = async (signal: AbortSignal, moved: () => void) => {
+  /** Asks `pdf` for the pages found, as many as may be begun and not yet given. */
+  let hand = (signal: AbortSignal) => {
+    while (begun < READ_AHEAD.pages && found.length > 0) {
+      pdf.ahead(found.shift()!, signal, touch);
+      begun++;
+    }
+  };
+
+  /**
+   * Reads on in the text, as far as the next piece of it, or to its end, and asks `pdf` for the
+   * pages without text found in it.
+   */
+  let more = async (signal: AbortSignal) => {
     let data: string | undefined;
     if (led < passed) {
       data = `### Page ${++led}\n${NO_TEXT}`;
@@ -995,57 +1346,82 @@ function mixedPages(
         // Ending the text ends a read in progress as if the response had broken off.
         throw signal.aborted ? error : reported(error, source);
       }
-      moved();
+      touch();
     }
+    // A response that had arrived whole ends, when the text does, as if it had ended of
+    // itself: no page is begun for a text that has ended.
+    signal.throwIfAborted();
     ended = data === undefined;
-    pieces = data === undefined ? sections.end() : sections.feed(data);
+    for (let piece of data === undefined ? sections.end() : sections.feed(data)) {
+      pieces.push(piece);
+      if (typeof piece === "string") held += piece.length;
+      else if (!gaveUp) found.push(piece.page - 1);
+    }
+    hand(signal);
+  };
+
+  /** Reads the text ahead of its reader, to its end, waiting whenever no more of it may be held. */
+  let look = async (signal: AbortSignal) => {
+    try {
+      // eslint-disable-next-line no-unmodified-loop-condition -- more() sets this.
+      while (!ended) {
+        while (held >= READ_AHEAD.ownTextChars || begun >= READ_AHEAD.pages) {
+          await wait();
+          signal.throwIfAborted();
+        }
+        await more(signal);
+        wake();
+      }
+    } catch (error) {
+      failure = { error };
+      wake();
+    }
   };
 
   /** What takes the place of an empty page's line breaks, or `undefined` to leave them. */
-  let read = async (
-    index: number, signal: AbortSignal, moved: () => void,
-  ): Promise<string | undefined> => {
-    if (pdf.pages === undefined) {
-      let unopened = await pdf.open(signal, moved);
-      if (unopened) {
-        renderFailed(unopened, source);
-        return giveUp();
-      }
-    }
-    if (index >= pdf.pages!) return undefined;
-    let drawn = await pdf.render(index, signal, moved);
-    if ("reason" in drawn) {
-      renderFailed(drawn, source);
-      return giveUp();
+  let read = async (index: number, signal: AbortSignal): Promise<string | undefined> => {
+    let came: PageOutcome | undefined;
+    try {
+      came = await pdf.take(index);
+    } finally {
+      begun--;
     }
     // A page with ink is read whatever it draws: a scan, an image written into its content, or
     // writing drawn as shapes. One that is blank, or could not be drawn, has nothing to show.
-    if ("refused" in drawn || drawn.blank) return undefined;
-    let text: string, cutOff: boolean;
-    try {
-      ({ text, cutOff } = await pdf.read(drawn, index, signal, moved));
-    } catch (error) {
-      if (signal.aborted || !transcriptionFailed(error, { page: index + 1 }, source)) throw error;
+    if (!came || "undrawn" in came || "blank" in came) return undefined;
+    if ("unrendered" in came) {
+      renderFailed(came.unrendered, source);
       return giveUp();
     }
-    if (text === "") return undefined;
-    return `${READ_FROM_IMAGE}\n\n${text}${cutOff ? CUT_OFF : ""}${drawn.reduced ? REDUCED_PAGE : ""}\n\n`;
+    if ("failed" in came) {
+      if (signal.aborted || !transcriptionFailed(came.failed, { page: index + 1 }, source)) throw came.failed;
+      return giveUp();
+    }
+    if (came.text === "") return undefined;
+    return `${READ_FROM_IMAGE}\n\n${came.text}${came.cutOff ? CUT_OFF : ""}${came.reduced ? REDUCED_PAGE : ""}\n\n`;
   };
 
-  let next = async (signal: AbortSignal, moved: () => void): Promise<SourcedPage | undefined> => {
+  let next = async (signal: AbortSignal): Promise<SourcedPage | undefined> => {
+    looking ??= look(signal);
     for (;;) {
       while (pieces.length === 0) {
+        if (failure) throw failure.error;
         if (ended) return undefined;
-        await more(signal, moved);
-        // A response that had arrived whole ends, when the text does, as if it had ended of
-        // itself: no page is begun for a text that has ended.
+        await wait();
         signal.throwIfAborted();
       }
       let piece = pieces.shift()!;
-      if (typeof piece === "string") return { own: piece };
+      if (typeof piece === "string") {
+        held -= piece.length;
+        wake();
+        return { own: piece };
+      }
       page = piece.page;
-      let text = gaveUp ? undefined : await read(page - 1, signal, moved);
+      let text = gaveUp ? undefined : await read(page - 1, signal);
       page = undefined;
+      // What was given makes room for the text to be read on, and for a page more.
+      hand(signal);
+      wake();
       text ??= "\n".repeat(piece.breaks);
       // A pull that is given nothing is not called again, so go on until there is text.
       if (text !== "") return { own: text };
@@ -1053,11 +1429,20 @@ function mixedPages(
   };
 
   return {
-    next: (_index, signal, moved) => pdf.during(next(signal, moved)),
+    async next(_index, signal, moved) {
+      // What is read ahead moves the text only while its reader waits.
+      reader = moved;
+      try {
+        return await next(signal);
+      } finally {
+        reader = undefined;
+      }
+    },
     fields: () => page === undefined ? {} : { page },
     release() {
       void conversion.cancel().catch(() => undefined);
       pdf.release();
+      wake();
     },
   };
 }
@@ -1078,15 +1463,14 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
 /**
  * The transcription of a scanned PDF's `pages`, as UTF-8 Markdown under the "### Page N" headings
  * a conversion gives, numbered as `pages` orders them. Nothing is done until it is read, and
- * then one page at a time. A page whose image is sent as stored is encoded into a vision model's
- * request as it arrives from the file, and the model's text is passed on as it is produced, so
- * neither the image nor the page's text is held whole. A page that `pages` has read already is
- * given whole, in one read. Either way the next page is not asked for until this one has been
- * read to its end. Cancelling it stops the page in progress, giving up its request when the
- * model has not answered yet, and reads no more. So does {@link TRANSCRIPTION_IDLE_MS} with
- * nothing moving, counted from now, which errors the text: a cancel sent over RPC is not
- * delivered while a read is waiting on the model, so a model that stalls would otherwise hold
- * the page's request, and whatever the text's reads rely on, for good.
+ * `pages` is then asked for one page at a time, each once the page before it has been read to
+ * its end: what `pages` does ahead of that is its own. A page whose image is sent as stored
+ * comes as the model's answer to it, begun already, and the answer's text is passed on in the
+ * pieces it arrived in. A page that `pages` has read already is given whole, in one read.
+ * Cancelling it gives up what `pages` has in flight, and reads no more. So does
+ * {@link TRANSCRIPTION_IDLE_MS} with nothing moving, counted from now, which errors the text: a
+ * cancel sent over RPC is not delivered while a read is waiting on the model, so a model that
+ * stalls would otherwise hold its request, and whatever the text's reads rely on, for good.
  *
  * The text of a PDF that has text of its own is read the same way, and ends the same ways.
  * `pages` then gives it in pieces, its page headings in them, and each is passed on as it is.
@@ -1098,18 +1482,14 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  * the file says of it; anything else `pages` fails with, such as a failure of a read of the
  * file, is passed on as it is.
  */
-function transcription(
-  ai: AiFetcher, gatewayId: string | undefined, pages: PageSource, source: PdfSource,
-): ReadableStream<Uint8Array> {
+function transcription(pages: PageSource, source: PdfSource): ReadableStream<Uint8Array> {
   let encoder = new TextEncoder();
   /**
-   * The page being transcribed, from 0, and its transcription once the model has answered, when
-   * it is one whose image is sent as stored.
+   * The page being transcribed, from 0, and the model's answer to it while that is being given,
+   * when it is one whose image is sent as stored.
    */
   let index = 0;
-  let current: Transcription | undefined;
-  /** Gives up the request for the page in progress. */
-  let request = new AbortController();
+  let current: Pick<Transcription, "truncated" | "next"> | undefined;
   /** Gives up what `pages` has in flight. */
   let over = new AbortController();
   /** Whether the text was cancelled or sat idle, either of which stops the page in progress. */
@@ -1124,11 +1504,9 @@ function transcription(
     over.abort(reason);
     pages.release();
   };
-  let end = async (reason?: unknown) => {
+  let end = (reason?: unknown) => {
     ended = true;
     letGo(reason);
-    request.abort(reason);
-    await current?.cancel(reason);
   };
   return new ReadableStream<Uint8Array>({
     start(controller) {
@@ -1140,7 +1518,7 @@ function transcription(
           return;
         }
         controller.error(new Error(TRANSCRIPTION_IDLE));
-        void end().catch(() => undefined);
+        end();
         // No page is in progress once the last has been transcribed and only its end is unread.
         log(source).warn("a Drive PDF's transcription sat idle", {
           event: "google.drive.pdf.transcription_idle", ...pages.fields(index),
@@ -1159,9 +1537,8 @@ function transcription(
         for (;;) {
           if (!current) {
             let page = await pages.next(index, over.signal, touch);
-            // Ended as the page was made ready: nothing more is given or asked for, and an image
-            // it came with is let go unread.
-            if (ended) return page && "image" in page ? await page.image.body.cancel().catch(() => undefined) : undefined;
+            // Ended as the page was made ready: nothing more is given or asked for.
+            if (ended) return;
             if (!page) {
               letGo();
               return controller.close();
@@ -1175,20 +1552,13 @@ function transcription(
               index++;
               return give(heading + page.text);
             }
-            request = new AbortController();
-            let begun = await transcribeImage(ai, gatewayId, page.image, request.signal);
-            if (ended) return await begun.cancel();
-            current = begun;
+            current = page.answer;
             return give(heading);
           }
           let piece = await current.next();
           // Ended while the page's answer was being let go: no further page is begun.
           if (ended) return;
           if (piece !== undefined) return give(piece);
-          log(source).info("transcribed a Drive PDF page", {
-            event: "google.drive.pdf.page_transcribed", imageBytes: current.sentBytes,
-            ...pages.fields(index),
-          });
           let cutOff = current.truncated;
           current = undefined;
           index++;
