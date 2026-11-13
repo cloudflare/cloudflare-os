@@ -3,8 +3,8 @@ import { useObjectUrl } from "../useObjectUrl";
 import { borderStyle, pt } from "./documentStyles";
 
 /**
- * A picture from the document at the size the document gives it. Its bytes are shown through an
- * object URL, so nothing the file names is ever fetched.
+ * A picture from the document at the size the document gives it. It is drawn from its own bytes
+ * (an SVG from a data URL, anything else from an object URL), so nothing the file names is ever fetched.
  */
 export const DocumentImage = ({ image }: { image: DocxImage }) => {
   const url = useObjectUrl(image.bytes, image.contentType);

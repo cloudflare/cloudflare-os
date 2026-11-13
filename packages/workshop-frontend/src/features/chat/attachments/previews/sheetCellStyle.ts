@@ -40,6 +40,11 @@ export const textDecoration = (font: SheetFont, link: boolean): string | undefin
 
 let measurer: CanvasRenderingContext2D | null | undefined;
 const widths = new Map<string, number>();
+/**
+ * Longer text is measured each time rather than remembered: its key would copy the text once per
+ * font it is drawn in, and the cache outlives the sheet.
+ */
+const MAX_CACHED_TEXT = 256;
 
 /**
  * How wide `text` is in `font`, in pixels, to tell whether it fits its cell. Measured on a canvas
@@ -50,6 +55,10 @@ export const textWidth = (text: string, font: SheetFont): number => {
   measurer ??= document.createElement("canvas").getContext("2d");
   if (!measurer) return 0;
   const css = `${font.italic ? "italic " : ""}${font.bold ? "700" : "400"} ${fontPixels(font)}px ${fontStack(font.name)}`;
+  if (text.length > MAX_CACHED_TEXT) {
+    measurer.font = css;
+    return measurer.measureText(text).width;
+  }
   const key = `${css}\n${text}`;
   let width = widths.get(key);
   if (width === undefined) {

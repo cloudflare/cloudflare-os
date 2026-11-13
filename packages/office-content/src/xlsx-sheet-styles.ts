@@ -156,9 +156,9 @@ function resolveColor(element: XmlElement | undefined, palette: Palette): string
 
 const FALLBACK_FONT: SheetFont = { name: "Calibri", size: 11, bold: false, italic: false, underline: "none", strike: false };
 
-/** ST_OnOff on a font property: `<b/>` is on unless its `val` says otherwise. */
 const MAX_FONT_NAME = 64;
 
+/** ST_OnOff on a font property: `<b/>` is on unless its `val` says otherwise. */
 function fontFlag(font: XmlElement, name: string): boolean {
   const element = firstChild(font, name);
   if (!element) return false;
