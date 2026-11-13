@@ -30,10 +30,11 @@ const barClass =
  * Everything the workspace is waiting on, docked above the composer and grouped by the resource
  * each request touches.
  *
- * Nothing here has been applied: a gatekeeper that simulates its effects leaves `awaitDecision`
- * unset, so the agent kept working while these queued up. The tray exists to make that queue
- * visible and resolvable as a batch, rather than as a row per request scattered through the
- * transcript.
+ * Nothing here has been applied. Most of it never stopped the agent either: a gatekeeper that
+ * simulates its effects leaves `awaitDecision` unset, so the agent kept working while these
+ * queued up. A request that did suspend its turn is here too, beside its callout in the
+ * transcript. The tray exists to make that queue visible and resolvable as a batch, rather than
+ * as a row per request scattered through the transcript.
  *
  * Workspace-scoped, not chat-scoped. A hook firing, a scheduled task, or another conversation
  * queues requests that wait on a decision just as much, and they have no chat surface at all;

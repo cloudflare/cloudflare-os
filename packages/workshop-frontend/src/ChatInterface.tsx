@@ -7031,7 +7031,7 @@ function ChatInterface({
                         <>
                           {workspaceTray}
                           {codeDraft && currentChatMetadata &&
-                            renderCodeDraftBar(currentChatMetadata, trayGroups.length === 0)}
+                            renderCodeDraftBar(currentChatMetadata, !workspaceTray)}
                         </>
                       );
                     })()}
