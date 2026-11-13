@@ -44,6 +44,17 @@ class TestAuthorizer extends RpcTarget implements ObservationAuthorizer {
   async getGitCache(): Promise<GitCache> {
     throw new Error("Git cache is not used in this test.");
   }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 /**

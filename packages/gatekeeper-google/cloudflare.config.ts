@@ -3,6 +3,10 @@ import {
   type DurableObjectMigration,
 } from "@gadgets/scripts/worker-config";
 
+/**
+ * No `vars`: `GOOGLE_DRIVE_ACCESS` (`write`, the default, or `read`) has an in-code default. A
+ * deployment sets it to `read` to keep every Google Drive connection read-only.
+ */
 export default defineGadgetsWorker({
   name: "gatekeeper-google",
   entrypoint: ".wrangler/validate/src/google.ts",

@@ -8,7 +8,7 @@ import {
   FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, openFakeOverseer, putAction,
 } from "./fixtures.js";
 
-vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
+vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined, skipRpcValidation: () => () => undefined }));
 
 // Hand-rolled ActionsSubscriber stub. `events` interleaves entry ids with "ready", so tests can
 // assert both content and ordering of the delivered stream.

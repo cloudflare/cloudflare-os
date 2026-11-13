@@ -1410,6 +1410,9 @@ importers:
       '@gadgets/error-reporting':
         specifier: workspace:*
         version: link:../error-reporting
+      '@gadgets/gatekeeper-kit':
+        specifier: workspace:*
+        version: link:../gatekeeper-kit
       '@gadgets/observability':
         specifier: workspace:*
         version: link:../observability
@@ -1462,6 +1465,9 @@ importers:
       fast-check:
         specifier: 'catalog:'
         version: 4.10.2
+      miniflare:
+        specifier: 'catalog:'
+        version: 5.20261023.1-beta(@types/node@26.1.0)
       typescript:
         specifier: 'catalog:'
         version: 7.0.2

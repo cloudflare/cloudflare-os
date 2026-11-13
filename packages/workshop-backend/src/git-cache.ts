@@ -194,6 +194,18 @@ export interface GitPullDelegate {
  */
 export class UnreadableContentError extends Error {}
 
+/** A regular file's tree entry, given as is: its mode and its blob's oid. */
+export interface FileEntry {
+  mode: "100644" | "100755";
+  oid: GitOid;
+}
+
+/**
+ * Thrown when changes to a tree would make a path both a file and a directory, or would write or
+ * delete a file where the tree has something else.
+ */
+export class TreeShapeError extends Error {}
+
 // =======================================================================================
 // Tree entry kinds (the agent-facing vocabulary for the five git modes)
 
@@ -500,6 +512,19 @@ export class WorkspaceGitCache {
   }
 
   /**
+   * `writeChangedTree` over a tree rather than a commit's, where a change may also be a file's
+   * whole entry (`FileEntry`), written with the mode it gives. The trees along the changed paths
+   * fault in if missing, and throws TreeShapeError where the changes don't fit the tree's shape.
+   */
+  async writeChangedTreeOf(
+      baseTree: GitOid, changes: ReadonlyMap<string, FileContent | FileEntry | null>)
+      : Promise<GitOid> {
+    if (changes.size === 0) return baseTree;
+    return await this.#rebuildTree({ oid: baseTree }, buildChangeNode(changes), "")
+        ?? EMPTY_TREE_OID;
+  }
+
+  /**
    * The commit half of `writeChangedFilesAsCommit`: writes a commit for an existing tree oid.
    * Every commit the workspace authors is written by `encodeGitCommit()`, here or in
    * blueprint-release.ts, which throws on a name or email that a signature cannot hold rather
@@ -521,11 +546,13 @@ export class WorkspaceGitCache {
   // Rebuilds one tree level for the writers above: base entries are copied through untouched
   // (mode + oid verbatim) except where the change node names them. Returns the new tree oid, or
   // undefined when the resulting tree is empty (the entry is then pruned).
-  async #rebuildTree(base: { oid: GitOid, referencedBy: GitOid } | undefined, node: ChangeNode,
+  async #rebuildTree(base: { oid: GitOid, referencedBy?: GitOid } | undefined, node: ChangeNode,
                      prefix: string): Promise<GitOid | undefined> {
     let entries = new Map<string, GitTreeEntry>();
     if (base !== undefined) {
-      let tree = await this.ensureObject(base.oid, { type: "tree", referencedBy: base.referencedBy });
+      let tree = await this.ensureObject(base.oid, {
+        type: "tree", ...(base.referencedBy !== undefined && { referencedBy: base.referencedBy }),
+      });
       for (let entry of parseGitTree(tree.payload, base.oid)) entries.set(entry.name, entry);
     }
     for (let [name, child] of node) {
@@ -537,7 +564,7 @@ export class WorkspaceGitCache {
       }
       if (child instanceof Map) {
         if (existing !== undefined && existing.mode !== "40000") {
-          throw new Error(`conflicting file paths at: ${path}`);
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
         }
         let sub = await this.#rebuildTree(
             existing && { oid: existing.oid, referencedBy: base!.oid }, child, `${path}/`);
@@ -547,11 +574,17 @@ export class WorkspaceGitCache {
           entries.set(name, { mode: "40000", name, oid: sub });
         }
       } else if (child === null) {
-        if (existing?.mode === "40000") throw new Error(`cannot delete ${path}: it is a directory`);
+        if (existing?.mode === "40000") {
+          throw new TreeShapeError(`cannot delete ${path}: it is a directory`);
+        }
         entries.delete(name);  // deleting an absent file is a no-op
       } else {
         if (existing !== undefined && existing.mode !== "100644" && existing.mode !== "100755") {
-          throw new Error(`cannot write ${path}: not a regular file`);
+          throw new TreeShapeError(`cannot write ${path}: not a regular file`);
+        }
+        if (typeof child === "object" && "mode" in child) {
+          entries.set(name, { mode: child.mode, name, oid: child.oid });
+          continue;
         }
         let oid = this.#writeFileBlob(child);
         // A changed file keeps its base entry's mode; only new files default to 100644.
@@ -765,18 +798,27 @@ export class WorkspaceGitCache {
    * one throws, but in production it nearly doubled a vscode-size mount's CPU.
    *
    * A delta's base comes from the held objects, else from the store: whole if inline, or by
-   * range from a chunked blob (which includes one this pack streamed in earlier).
+   * range from a chunked blob (which includes one this pack streamed in earlier). If
+   * `selfContained`, the base must be an object of this pack, so that a pack can't borrow the
+   * content of objects its sender has no access to.
+   *
+   * A null `gatekeeperId` stores the objects attributed to no remote, as `importObjects` does
+   * (for a replica's submission, see worktree-replica.ts).
    */
-  async consumePackFromGatekeeper(gatekeeperId: WorkpieceId, pack: ReadableStream<Uint8Array>)
+  async consumePackFromGatekeeper(gatekeeperId: WorkpieceId | null,
+                                  pack: ReadableStream<Uint8Array>, selfContained = false)
       : Promise<GitOid[]> {
     let held = new Map<GitOid, PackableObject>();
     let stored: GitOid[] = [];
+    let inPack = new Set<GitOid>();
+    let usable = (oid: GitOid) => !selfContained || inPack.has(oid);
     let objects = decodePackStream(pack, {
       resolveBase: oid => {
+        if (!usable(oid)) return undefined;
         let object = held.get(oid) ?? this.#readLocalShallow(oid);
         return object?.payload === undefined ? undefined : object;
       },
-      resolveLargeBase: oid => this.openLocalBlob(oid),
+      resolveLargeBase: oid => usable(oid) ? this.openLocalBlob(oid) : undefined,
       openBlobSink: size => {
         if (size <= CHUNK_MAX_SIZE) return undefined;
         let writer = new BlobWriter(this.storage.gitObjects, size);
@@ -792,6 +834,7 @@ export class WorkspaceGitCache {
       },
     });
     for await (let { oid, ...object } of objects) {
+      inPack.add(oid);
       if (object.stored) {
         stored.push(oid);
       } else if (object.type === "blob") {
@@ -958,6 +1001,28 @@ export class WorkspaceGitCache {
     }
     // A chunked blob is assembled only once it is known to be what was asked for.
     return this.#wholeObject(oid, local);
+  }
+
+  /**
+   * `ensureObject`, but for packing with `buildPackStream()`: a blob over MAX_BUFFERED_BLOB_SIZE
+   * comes back as its pieces, streamed from storage, and is never assembled.
+   */
+  async packEntry(oid: GitOid, expected: { type: GitObjectType, referencedBy?: GitOid })
+      : Promise<PackEntrySource> {
+    if (expected.type === "blob") {
+      let reader = this.openLocalBlob(oid);
+      if (reader === undefined) {
+        await this.ensureGitObjects([oid], this.#exactObjectHints("blob", expected.referencedBy));
+        reader = this.openLocalBlob(oid);
+      }
+      if (reader !== undefined) {
+        let opened = reader;
+        return opened.size > MAX_BUFFERED_BLOB_SIZE
+            ? { type: "blob", size: opened.size, pieces: () => opened.pieces() }
+            : { type: "blob", payload: opened.read(0, opened.size) };
+      }
+    }
+    return await this.ensureObject(oid, expected);
   }
 
   // The pull-hint defaults for an exact-object fault: depth-1 (never deepen history), tree:0
@@ -1699,17 +1764,7 @@ export class WorkspaceGitCache {
 
     const marks = this.#recordsMarkedFor(actionId), cache = this;
     async function* objects(): AsyncGenerator<PackEntrySource> {
-      for (const mark of marks) {
-        // A large blob streams into the pack from its reader; it is never assembled.
-        const reader = mark.type === "blob" ? cache.openLocalBlob(mark.oid) : undefined;
-        if (reader !== undefined && reader.size > MAX_BUFFERED_BLOB_SIZE) {
-          yield { type: "blob", size: reader.size, pieces: () => reader.pieces() };
-        } else if (reader !== undefined) {
-          yield { type: "blob", payload: reader.read(0, reader.size) };
-        } else {
-          yield await cache.ensureObject(mark.oid, {type: mark.type});
-        }
-      }
+      for (const mark of marks) yield await cache.packEntry(mark.oid, { type: mark.type });
     }
     return buildPackStream(marks.length, objects());
   }
@@ -1786,7 +1841,13 @@ export class WorkspaceGitCache {
   // its referents as pull routing (see `#extendToReferents`). An object already present,
   // measured, and proven for this gatekeeper is left as it is: a pull sends no `have`s, so a
   // retried one, or one for another commit of a mounted repository, carries mostly such objects.
-  #storeVerifiedObject(gatekeeperId: WorkpieceId, oid: GitOid, object: StorableObject): void {
+  // With no gatekeeper, nothing is recorded.
+  #storeVerifiedObject(gatekeeperId: WorkpieceId | null, oid: GitOid, object: StorableObject)
+      : void {
+    if (gatekeeperId === null) {
+      if (!this.hasLocalObject(oid)) this.#putObject(oid, object);
+      return;
+    }
     let { meta } = this.#metaFor(gatekeeperId, oid, object.type, "measured");
     if (meta.size !== undefined && meta.onRemote.includes(gatekeeperId) &&
         this.hasLocalObject(oid)) {
@@ -1946,13 +2007,14 @@ function splitTreePath(path: string): string[] {
   return segments;
 }
 
-// A parsed-but-unwritten change set: new file contents (or null = delete) at the leaves,
-// touched subtrees within.
-type ChangeNode = Map<string, ChangeNode | FileContent | null>;
+// A parsed-but-unwritten change set: new file contents or entries (or null = delete) at the
+// leaves, touched subtrees within.
+type ChangeNode = Map<string, ChangeNode | FileContent | FileEntry | null>;
 
 // Converts a flat `path -> content | null` change map into nested nodes, validating path shape:
 // a path can't be both a file and a directory.
-function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): ChangeNode {
+function buildChangeNode(changes: ReadonlyMap<string, FileContent | FileEntry | null>)
+    : ChangeNode {
   let root: ChangeNode = new Map();
   for (let [path, content] of changes) {
     let segments = splitTreePath(path);
@@ -1960,14 +2022,16 @@ function buildChangeNode(changes: ReadonlyMap<string, FileContent | null>): Chan
     for (let [i, segment] of segments.entries()) {
       let existing = node.get(segment);
       if (i === segments.length - 1) {
-        if (existing !== undefined) throw new Error(`conflicting file paths at: ${path}`);
+        if (existing !== undefined) {
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
+        }
         node.set(segment, content);
       } else {
         if (existing === undefined) {
           existing = new Map();
           node.set(segment, existing);
         } else if (!(existing instanceof Map)) {
-          throw new Error(`conflicting file paths at: ${path}`);
+          throw new TreeShapeError(`conflicting file paths at: ${path}`);
         }
         node = existing;
       }

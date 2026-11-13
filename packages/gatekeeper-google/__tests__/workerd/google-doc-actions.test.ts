@@ -4,6 +4,7 @@ import { googleDocActionTab } from "../../src/google";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { officeFileError } from "../../src/office-conversion";
 import type { GoogleDocsTab } from "../../src/docs-api";
+import type { GoogleDocSession } from "../../src/docs-types";
 import { buildTab } from "../doc-fixture";
 
 /** Every write coordinate names the tab it applies to; tab bodies index independently. */
@@ -11,7 +12,7 @@ type DocCoordinate = { tabId?: string };
 
 type BatchRequest = {
   createNamedRange?: { name: string; range: DocCoordinate };
-  deleteNamedRange?: { namedRangeId: string };
+  deleteNamedRange?: { namedRangeId: string; tabsCriteria?: { tabIds: string[] } };
   insertText?: { location: DocCoordinate & { index: number }; text: string };
   deleteContentRange?: { range: DocCoordinate & { startIndex: number; endIndex: number } };
   updateParagraphStyle?: {
@@ -31,6 +32,32 @@ type BatchRequest = {
     textStyle?: { link?: { url: string } };
     fields?: string;
   };
+  insertComment?: { content: string; range: DocCoordinate & { startIndex: number; endIndex: number } };
+  addCommentReply?: {
+    commentId?: string;
+    suggestionId?: string;
+    post: { content?: string; commentAction?: "RESOLVE" | "REOPEN" };
+  };
+  addDocumentTab?: { tabProperties: { title?: string; parentTabId?: string; index?: number } };
+};
+
+/** One post of a comment thread, as Docs returns it. */
+type ModelPost = {
+  postId: string;
+  content: string;
+  author: { displayName: string; me: boolean };
+  createTime: string;
+  commentAction?: "RESOLVE" | "REOPEN";
+};
+
+/** One comment thread, as Docs returns it: `anchorId` only when it is attached to text. */
+type ModelThread = {
+  commentId: string;
+  anchorId?: string;
+  plainTextQuote?: string;
+  status: "OPEN" | "RESOLVED";
+  headPost: ModelPost;
+  replies: ModelPost[];
 };
 
 type ModelListItem = { id: string; preset: string };
@@ -91,12 +118,15 @@ const OFFICE_REFUSAL =
 /**
  * A batch either carries the edit and its marker, or deletes a marker on its own; or a create; or
  * a read, whose answer is fixed when it arrives, so holding it delivers what was then current.
+ * `applied` holds a content batch after Google has applied it, before it answers.
  */
-type RequestKind = "content" | "cleanup" | "create" | "read";
+type RequestKind = "content" | "cleanup" | "create" | "read" | "applied";
 
 class DocsModel {
   cleanupFailures = 0;
   ambiguousContentResponses = 0;
+  /** How many content batches to fail before Google applies them, as a dropped connection can. */
+  unsentContentRequests = 0;
   contentBatches = 0;
   maxMarkerCount = 0;
   /** Google withholds `revisionId` from a caller without edit access. */
@@ -132,6 +162,19 @@ class DocsModel {
   readonly markerTabIds: string[] = [];
   /** Every tab in preorder; the first is the one a single-tab document has. */
   readonly tabs: ModelTab[] = [{ id: MAIN_TAB, title: "Main", text: "", links: [] }];
+  /** The Doc's comment threads, in the order Docs lists them. */
+  readonly threads: ModelThread[] = [];
+  /** Suggestions made in Suggesting mode, with the notes posted on them. */
+  readonly suggestions: { suggestionId: string; summaryText: string; notes: string[] }[] = [];
+  /** Whether Drive says the account may comment; a viewer is also refused the threads read. */
+  canComment = true;
+  /** Comment threads reads, and comment writes (comments, replies, suggestions, notes). */
+  threadReads = 0;
+  commentWrites = 0;
+  /** How many comment writes to apply and then answer with no response. */
+  lostCommentResponses = 0;
+  #nextPostId = 1;
+  #nextTabId = 1;
   #revision = 1;
   #nextMarkerId = 1;
   #nextListId = 1;
@@ -248,6 +291,10 @@ class DocsModel {
   async fetch(input: string | URL | Request, init?: RequestInit): Promise<Response> {
     let url = new URL(input instanceof Request ? input.url : input.toString());
     this.fetches++;
+    if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/batch/")) {
+      this.driveFetches++;
+      return this.#scopeNodes();
+    }
     if (url.hostname === "www.googleapis.com") {
       this.driveFetches++;
       if (this.driveFailure === "malformed") {
@@ -279,6 +326,10 @@ class DocsModel {
       }
       return Response.json({ documentId: "doc-1" });
     }
+    if (!url.pathname.endsWith(":batchUpdate") &&
+        url.searchParams.get("commentsViewMode") === "COMMENTS_VIEW_MODE_INCLUDED") {
+      return this.#threadsRead(url);
+    }
     if (!url.pathname.endsWith(":batchUpdate")) {
       let fields = url.searchParams.get("fields");
       if (fields === null) {
@@ -295,8 +346,12 @@ class DocsModel {
 
     let body = JSON.parse(String(init?.body)) as {
       requests: BatchRequest[];
-      writeControl?: { requiredRevisionId?: string };
+      writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
     };
+    let first = body.requests[0];
+    if (first?.insertComment || first?.addCommentReply || body.writeControl?.writeMode === "SUGGEST") {
+      return this.#commentWrite(body);
+    }
     let isDelete = body.requests.length === 1 && !!body.requests[0].deleteNamedRange;
     await this.#hold(isDelete ? "cleanup" : "content");
     if (!isDelete && this.refusesEdits) {
@@ -304,13 +359,34 @@ class DocsModel {
         error: { code: 400, status: "FAILED_PRECONDITION", message: OFFICE_REFUSAL },
       }, { status: 400 });
     }
+    if (!isDelete && this.unsentContentRequests > 0) {
+      this.unsentContentRequests--;
+      throw new Error("connection dropped before the request reached Google");
+    }
     if (isDelete && this.cleanupFailures > 0) {
       this.cleanupFailures--;
       throw new Error("cleanup failed");
     }
+    // Once there are several tabs, Google finds a named range only in the tabs a deletion names.
+    let deletion = isDelete ? body.requests[0].deleteNamedRange! : undefined;
+    let markerTab = deletion && this.markers.get(deletion.namedRangeId)?.tabId;
+    if (deletion && markerTab && this.tabs.length > 1 &&
+        !deletion.tabsCriteria?.tabIds.includes(markerTab)) {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        message: `Invalid requests[0].deleteNamedRange: No named range with ID: ${deletion.namedRangeId}` } },
+        { status: 400 });
+    }
     if (body.writeControl?.requiredRevisionId &&
         body.writeControl.requiredRevisionId !== `revision-${this.#revision}`) {
       return Response.json({ error: { code: 400, message: "revision mismatch" } }, { status: 400 });
+    }
+    // Google checks a batch whole before it applies any of it.
+    for (let { addDocumentTab } of body.requests) {
+      let refusal = addDocumentTab && this.#addTabRefusal(addDocumentTab.tabProperties);
+      if (refusal) {
+        return Response.json(
+          { error: { code: 400, status: "INVALID_ARGUMENT", message: refusal } }, { status: 400 });
+      }
     }
 
     let replies: unknown[] = [];
@@ -320,6 +396,11 @@ class DocsModel {
         this.markers.delete(request.deleteNamedRange.namedRangeId);
         this.deletedMarkerIds.push(request.deleteNamedRange.namedRangeId);
         replies.push({});
+        continue;
+      }
+      if (request.addDocumentTab) {
+        hasContent = true;
+        replies.push({ addDocumentTab: { tabProperties: this.#addTab(request.addDocumentTab.tabProperties) } });
         continue;
       }
 
@@ -376,6 +457,7 @@ class DocsModel {
     if (hasContent) this.contentBatches++;
     this.#revision++;
     this.#recordMarkerCount();
+    if (hasContent) await this.#hold("applied");
 
     if (hasContent && this.ambiguousContentResponses > 0) {
       this.ambiguousContentResponses--;
@@ -383,6 +465,166 @@ class DocsModel {
     }
     return Response.json({
       replies,
+      writeControl: { requiredRevisionId: `revision-${this.#revision}` },
+    });
+  }
+
+  /** Why Google would refuse to add a tab placed so, if it would. */
+  #addTabRefusal({ parentTabId, index }: { parentTabId?: string; index?: number }): string | undefined {
+    if (parentTabId !== undefined && !this.tabs.some(tab => tab.id === parentTabId)) {
+      return `A parent tab with ID "${parentTabId}" does not exist.`;
+    }
+    let children = this.tabs.filter(tab => tab.parentId === parentTabId).length;
+    if (index !== undefined && index > children) {
+      return "Index must be less than or equal to the number of tabs within the specified parent tab.";
+    }
+  }
+
+  /** Adds an empty tab as `addDocumentTab` does, returning its properties as Google replies. */
+  #addTab({ title, parentTabId, index }: { title?: string; parentTabId?: string; index?: number }) {
+    let siblings = this.tabs.filter(tab => tab.parentId === parentTabId);
+    let at = index ?? siblings.length;
+    let tab: ModelTab = {
+      id: `t.added-${this.#nextTabId++}`, title: title || `Tab ${this.tabs.length + 1}`,
+      ...parentTabId === undefined ? {} : { parentId: parentTabId }, text: "", links: [],
+    };
+    // Siblings keep the order of this list, so the tab goes before the one it displaces.
+    if (at < siblings.length) this.tabs.splice(this.tabs.indexOf(siblings[at]), 0, tab);
+    else this.tabs.push(tab);
+    return {
+      tabId: tab.id, title: tab.title, index: at,
+      ...parentTabId === undefined ? {} : { parentTabId },
+    };
+  }
+
+  /** A comment made in the editor or through Drive, by someone else unless `me`. */
+  addThread(content: string, { quote, resolved = false, me = false, author = "Ada Lovelace" }: {
+    quote?: string; resolved?: boolean; me?: boolean; author?: string;
+  } = {}): ModelThread {
+    let id = `doco.t${this.#nextPostId++}`;
+    let thread: ModelThread = {
+      commentId: id,
+      ...quote === undefined ? {} : { anchorId: `kix.${id}`, plainTextQuote: quote },
+      status: resolved ? "RESOLVED" : "OPEN",
+      headPost: this.#post(content, me, id, author),
+      replies: [],
+    };
+    this.threads.push(thread);
+    return thread;
+  }
+
+  thread(commentId: string): ModelThread {
+    let thread = this.threads.find(candidate => candidate.commentId === commentId);
+    if (!thread) throw new Error(`No comment ${commentId}`);
+    return thread;
+  }
+
+  #post(content: string, me: boolean, postId?: string, author = "Me"): ModelPost {
+    return {
+      postId: postId ?? `doco.p${this.#nextPostId++}`, content: content.trim(),
+      author: { displayName: me ? "Me" : author, me }, createTime: new Date().toISOString(),
+    };
+  }
+
+  /** Drive's batch answer for the Doc's scope node: whether the account may comment on it. */
+  #scopeNodes(): Response {
+    let boundary = "batch_boundary";
+    let body = {
+      id: "doc-1", mimeType: "application/vnd.google-apps.document", trashed: false,
+      capabilities: { canComment: this.canComment },
+    };
+    let text = [
+      `--${boundary}`, "Content-Type: application/http", "Content-ID: <response-item-0>", "",
+      "HTTP/1.1 200 OK", "Content-Type: application/json", "", JSON.stringify(body), "",
+      `--${boundary}--`, "",
+    ].join("\r\n");
+    return new Response(text, { headers: { "Content-Type": `multipart/mixed; boundary=${boundary}` } });
+  }
+
+  /** `documents.get` with comments included, as Google answers it. */
+  #threadsRead(url: URL): Response {
+    if (url.searchParams.get("suggestionsViewMode") !== "SUGGESTIONS_INLINE") {
+      return Response.json({ error: { code: 400, status: "INVALID_ARGUMENT",
+        message: "Comments may only be explicitly included if inline suggestions are also explicitly requested." } },
+        { status: 400 });
+    }
+    if (!this.canComment) {
+      return Response.json({ error: { code: 403, status: "PERMISSION_DENIED",
+        message: "You do not have permission to access the document suggestions." } }, { status: 403 });
+    }
+    let fields = url.searchParams.get("fields");
+    if (fields?.startsWith("documentId,comments(")) {
+      this.threadReads++;
+      return Response.json({ documentId: "doc-1", ...this.threads.length ? { comments: this.threads } : {} });
+    }
+    this.documentFetches++;
+    return Response.json({
+      ...this.#document(),
+      ...this.threads.length ? { comments: this.threads } : {},
+      suggestions: this.suggestions.map(({ suggestionId, summaryText, notes }) => ({
+        suggestionId, summaryText,
+        headPost: { content: "", author: { me: true }, createTime: new Date().toISOString() },
+        replies: notes.map(content => ({ content, author: { me: true }, createTime: new Date().toISOString() })),
+      })),
+    });
+  }
+
+  /** A batch of comment writes, or one suggestion, as Docs applies it. */
+  #commentWrite(body: {
+    requests: BatchRequest[]; writeControl?: { requiredRevisionId?: string; writeMode?: "SUGGEST" };
+  }): Response {
+    let refuse = (code: number, status: string, message: string) =>
+      Response.json({ error: { code, status, message } }, { status: code });
+    if (body.writeControl?.requiredRevisionId &&
+        body.writeControl.requiredRevisionId !== `revision-${this.#revision}`) {
+      return refuse(400, "INVALID_ARGUMENT", "The required revision ID does not match the latest revision.");
+    }
+    let replies: unknown[] = [];
+    let suggestionResponses: unknown[] = [];
+    if (body.writeControl?.writeMode === "SUGGEST") {
+      let [{ deleteContentRange }, insert] = body.requests;
+      let { startIndex, endIndex, tabId } = deleteContentRange!.range;
+      let old = this.#tab(tabId!).text.slice(startIndex - 1, endIndex - 1);
+      let id = `suggest.s${this.suggestions.length + 1}`;
+      this.suggestions.push({
+        suggestionId: id, notes: [],
+        summaryText: insert?.insertText ? `Replace: “${old}” with “${insert.insertText.text}”` : `Delete: “${old}”`,
+      });
+      suggestionResponses.push({ createdSuggestionIds: [id] });
+    }
+    for (let request of body.requests) {
+      if (request.insertComment) {
+        let { content, range } = request.insertComment;
+        let quote = this.#tab(range.tabId!).text.slice(range.startIndex - 1, range.endIndex - 1);
+        let thread = this.addThread(content, { quote, me: true });
+        replies.push({ insertComment: { commentThread: { commentId: thread.commentId } } });
+      } else if (request.addCommentReply?.suggestionId) {
+        let suggestion = this.suggestions.find(
+          candidate => candidate.suggestionId === request.addCommentReply!.suggestionId);
+        if (!suggestion) return refuse(404, "NOT_FOUND", "No such suggestion.");
+        suggestion.notes.push(request.addCommentReply.post.content ?? "");
+        replies.push({});
+      } else if (request.addCommentReply) {
+        let { commentId, post } = request.addCommentReply;
+        let thread = this.threads.find(candidate => candidate.commentId === commentId);
+        if (!thread) return refuse(404, "NOT_FOUND", `Comment with ID ${commentId} does not exist.`);
+        if (!thread.anchorId) return refuse(400, "INVALID_ARGUMENT", "An error occurred while saving comments.");
+        let made = this.#post(post.content ?? "", true);
+        let action = post.commentAction ?? (thread.status === "RESOLVED" ? "REOPEN" : undefined);
+        if (action) made.commentAction = action;
+        thread.status = action === "RESOLVE" ? "RESOLVED" : "OPEN";
+        thread.replies.push(made);
+        replies.push({ addCommentReply: { post: made } });
+      }
+    }
+    this.commentWrites++;
+    this.#revision++;
+    if (this.lostCommentResponses > 0) {
+      this.lostCommentResponses--;
+      throw new Error("comment response lost");
+    }
+    return Response.json({
+      documentId: "doc-1", replies, suggestionResponses, commentUpdateState: "ALL_SAVED",
       writeControl: { requiredRevisionId: `revision-${this.#revision}` },
     });
   }
@@ -711,11 +953,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const ADD_DOCUMENT_TAB = { tag: "addDocumentTab", label: "New document tabs" };
+
 describe("Google Doc auto-approval", () => {
   const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
 
-  it("reports document edits as the one auto-approvable kind", async () => {
-    expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([EDIT_DOCUMENT]);
+  it("reports document edits, new tabs and Doc comments as its auto-approvable kinds", async () => {
+    expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([
+      EDIT_DOCUMENT, ADD_DOCUMENT_TAB, { tag: "docComments", label: "Google Doc comments" },
+    ]);
   });
 
   it("lets appending and replacing text be auto-approved as document edits", async () => {
@@ -1847,6 +2093,20 @@ describe("Google Doc tab isolation", () => {
     expect(docs.text("details")).toBe("shared");
   });
 
+  it("removes each marker from its tab, so the next edit applies too", async () => {
+    let docs = nestedDocs();
+    let first = await hooks().submitAppend("tabs-cleanup", "one", "metrics");
+    let second = await hooks().submitAppend("tabs-cleanup", "two", MAIN_TAB);
+
+    expect(await hooks().applyAction("tabs-cleanup", first)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(await hooks().applyAction("tabs-cleanup", second)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(docs.deletedMarkerIds).toHaveLength(2);
+    expect(docs.text("metrics")).toBe("shared\none");
+    expect(docs.text(MAIN_TAB)).toBe("shared\ntwo");
+  });
+
   it("replaces identical text in the selected tab only", async () => {
     let docs = nestedDocs();
     let actionId = await hooks().submitReplace("tabs-replace", "shared", "changed", "metrics");
@@ -2039,6 +2299,388 @@ describe("Google Doc edits stored before tab support", () => {
   });
 });
 
+/** Queues `addTab(title, options)` on `facet`, returning its provisional ID and action. */
+async function addTab(facet: string, title: string, options?: { parentTabId?: string; index?: number }) {
+  let call = await hooks().callDoc(facet, "addTab", options ? [title, options] : [title]);
+  if (call.error !== undefined) throw new Error(call.error);
+  return { tabId: call.value as string, actionId: call.actionId!, action: call.action! };
+}
+
+describe("adding a Google Doc tab", () => {
+  it("queues an empty tab that edits fill before it is added, and applies them in order", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+
+    let added = await addTab("add-tab", "Notes");
+    expect(added.tabId).toMatch(/^pending-tab-[0-9a-f-]{36}$/);
+    expect(added.action).toMatchObject({
+      title: "Add tab to Google Doc",
+      description: "Add a new, empty tab at the top level, after the tabs already there.",
+      fields: [{ label: "Title", kind: "inline", value: "Notes" }],
+      actionKind: ADD_DOCUMENT_TAB,
+      autoApprovable: true,
+      implementsRevert: false,
+    });
+    expect(await hooks().listTabs("add-tab")).toEqual([
+      { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
+      { id: added.tabId, title: "Notes", index: 1, nestingLevel: 0 },
+    ]);
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("\n");
+    let appendId = await hooks().submitAppend("add-tab", "Hello", added.tabId);
+    // The approval names the tab by its title: its provisional ID names nothing the user can find.
+    expect(await hooks().lastActionDescription)
+      .toBe('Append content to the end of tab "Notes" (new tab).');
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("Hello\n");
+    // The document now has two tabs, so a tab must be named.
+    await expect(Promise.resolve(hooks().readContent("add-tab")))
+      .rejects.toThrow("tabId is required for documents with multiple tabs");
+    expect(await hooks().applyAction("add-tab", appendId))
+      .toMatch(`Approve earlier edit ${added.actionId}`);
+    expect(docs.contentBatches).toBe(0);
+
+    expect(await hooks().applyAction("add-tab", added.actionId)).toBeNull();
+    let made = docs.tabs[1];
+    expect(made).toMatchObject({ title: "Notes", text: "" });
+    expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+    expect(docs.markers.size).toBe(0);
+    expect(await hooks().applyAction("add-tab", appendId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello");
+    expect(docs.markerTabIds).toEqual([MAIN_TAB, made.id]);
+
+    expect((await hooks().listTabs("add-tab")).map(tab => tab.id)).toEqual([MAIN_TAB, made.id]);
+    // The ID the agent was given keeps reaching the tab.
+    expect(await hooks().readContent("add-tab", added.tabId)).toBe("Hello\n");
+    let laterId = await hooks().submitAppend("add-tab", "More", added.tabId);
+    expect(await hooks().applyAction("add-tab", laterId)).toBeNull();
+    expect(docs.text(made.id)).toBe("Hello\nMore");
+  });
+
+  it("finds a new tab by the ID the simulation lists when its add applied after the replay", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-alias-gap", "Notes");
+    expect((await hooks().listTabs("add-tab-alias-gap")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, added.tabId]);
+    // The state a handoff leaves between a replay and the read that uses it: Google's ID recorded
+    // for the provisional one, while the replay still lists the tab under the provisional one.
+    await hooks().applyStorage("add-tab-alias-gap", [
+      { kind: "put", key: "docAddedTabs", value: { [added.tabId]: "t.google" } },
+    ]);
+
+    expect(await hooks().readContent("add-tab-alias-gap", added.tabId)).toBe("\n");
+    let child = await addTab("add-tab-alias-gap", "Child", { parentTabId: added.tabId });
+    expect(child.action.description).toBe(
+      'Add a new, empty tab under tab "Notes" (new tab), after the tabs already there.');
+  });
+
+  it("reads a new tab's queued edits while the replay lists it beside the tab Google made", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-alias-both", "Notes");
+    await hooks().submitAppend("add-tab-alias-both", "Hello", added.tabId);
+    // The add has landed, its reply not yet in: the replay lists Google's tab and the provisional
+    // one carrying the queued edit. Then the handoff records Google's ID before the read looks.
+    docs.addTab("t.google", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    expect((await hooks().listTabs("add-tab-alias-both")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, "t.google", added.tabId]);
+    await hooks().applyStorage("add-tab-alias-both", [
+      { kind: "put", key: "docAddedTabs", value: { [added.tabId]: "t.google" } },
+    ]);
+
+    expect(await hooks().readContent("add-tab-alias-both", added.tabId)).toBe("Hello\n");
+  });
+
+  it("places a tab at an index and nests one under a tab still waiting", async () => {
+    let docs = new DocsModel();
+    docs.addTab("tab-2", "Second", undefined as unknown as string);
+    docs.install();
+
+    let first = await addTab("add-tab-place", "First", { index: 0 });
+    expect(first.action.description).toBe(
+      "Add a new, empty tab at the top level, at position 1 of 3.");
+    let child = await addTab("add-tab-place", "Child", { parentTabId: first.tabId });
+    expect(child.action.description).toBe(
+      'Add a new, empty tab under tab "First" (new tab), after the tabs already there.');
+    expect(await hooks().listTabs("add-tab-place")).toEqual([
+      { id: first.tabId, title: "First", index: 0, nestingLevel: 0 },
+      { id: child.tabId, title: "Child", parentTabId: first.tabId, index: 0, nestingLevel: 1 },
+      { id: MAIN_TAB, title: "Main", index: 1, nestingLevel: 0 },
+      { id: "tab-2", title: "Second", index: 2, nestingLevel: 0 },
+    ]);
+
+    expect(await hooks().applyAction("add-tab-place", first.actionId)).toBeNull();
+    expect(await hooks().applyAction("add-tab-place", child.actionId)).toBeNull();
+    let [made, , , madeChild] = docs.tabs;
+    expect(made).toMatchObject({ title: "First" });
+    expect(madeChild).toMatchObject({ title: "Child", parentId: made.id });
+    // The child's marker went in its parent, which by then existed.
+    expect(docs.markerTabIds).toEqual([MAIN_TAB, made.id]);
+    expect(await hooks().listTabs("add-tab-place")).toEqual([
+      { id: made.id, title: "First", index: 0, nestingLevel: 0 },
+      { id: madeChild.id, title: "Child", parentTabId: made.id, index: 0, nestingLevel: 1 },
+      { id: MAIN_TAB, title: "Main", index: 1, nestingLevel: 0 },
+      { id: "tab-2", title: "Second", index: 2, nestingLevel: 0 },
+    ]);
+  });
+
+  it.each([
+    ["an empty title", [""], "addTab: title must not be empty."],
+    ["a title Google would cut", ["x".repeat(51)], "at most 50 characters"],
+    ["an unknown parent", ["X", { parentTabId: "nope" }], 'no tab with ID "nope" exists'],
+    ["an index past the last tab", ["X", { index: 2 }], "from 0 to 1, the number of tabs at the top level"],
+  ] as const)("refuses %s before queuing anything", async (_case, args, message) => {
+    let docs = new DocsModel();
+    docs.install();
+
+    let call = await hooks().callDoc("add-tab-refused", "addTab", [...args]);
+    expect(call.error).toContain(message);
+    expect(call.actionId).toBeUndefined();
+  });
+
+  it("drops the edits queued for a tab whose add is rejected", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-reject", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-reject", "Hello", added.tabId);
+
+    expect(await hooks().rejectAction("add-tab-reject", added.actionId)).toEqual({ restart: true });
+    expect((await hooks().listTabs("add-tab-reject")).map(tab => tab.id)).toEqual([MAIN_TAB]);
+    expect(await hooks().applyAction("add-tab-reject", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.tabs).toHaveLength(1);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("refuses an add whose reply was lost, leaving the tab it made in the document", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-lost", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-lost", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-lost", added.actionId)).toMatch(/content response lost/);
+    let made = docs.tabs[1];
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    // Read meanwhile, the add still shows as pending, beside the tab Google made: only an approval
+    // can tell its reply was lost, rather than still to come.
+    expect((await hooks().listTabs("add-tab-lost")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, made.id, added.tabId]);
+    expect(await hooks().readContent("add-tab-lost", added.tabId)).toBe("Hello\n");
+
+    expect(await hooks().applyAction("add-tab-lost", added.actionId))
+      .toContain('Google Docs added the tab "Notes", but its reply was lost');
+    expect(await hooks().applyAction("add-tab-lost", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.tabs).toHaveLength(2);
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.text(made.id)).toBe("");
+  });
+
+  it("keeps an add, and the edits for its tab, that a read sees landing before its reply", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    let added = await addTab("add-tab-in-flight", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-in-flight", "Hello", added.tabId);
+
+    let held = docs.hold("applied");
+    let approval = Promise.resolve(hooks().applyAction("add-tab-in-flight", added.actionId));
+    await held.reached;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(Date.now() + 60_000);
+    // The marker is in the document while the approval still awaits Google's reply.
+    expect((await hooks().listTabs("add-tab-in-flight")).map(tab => tab.id))
+      .toContain(added.tabId);
+    held.release();
+
+    expect(await approval).toBeNull();
+    expect(await hooks().applyAction("add-tab-in-flight", appendId)).toBeNull();
+    expect(docs.text(docs.tabs[1].id)).toBe("Hello");
+  });
+
+  it("refuses a lost add whose tab was replaced by a collaborator's with its title", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-replaced", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-replaced", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-replaced", added.actionId))
+      .toMatch(/content response lost/);
+    // The marker stays in the first tab while the tab the add made is replaced.
+    docs.removeTab(docs.tabs[1].id);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    expect(docs.markers.size).toBe(1);
+
+    expect(await hooks().applyAction("add-tab-replaced", added.actionId))
+      .toContain("its reply was lost, and nothing else tells which tab it is");
+    expect(await hooks().applyAction("add-tab-replaced", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("Theirs");
+  });
+
+  it("refuses to adopt a collaborator's tab bearing the title of one renamed since", async () => {
+    let docs = new DocsModel();
+    docs.ambiguousContentResponses = 1;
+    docs.install();
+    let added = await addTab("add-tab-renamed", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-renamed", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-renamed", added.actionId))
+      .toMatch(/content response lost/);
+    docs.tabs[1].title = "Renamed";
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-renamed", added.actionId))
+      .toContain("its reply was lost, and nothing else tells which tab it is");
+    expect(await hooks().applyAction("add-tab-renamed", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("");
+  });
+
+  it("refuses a lost add whose marker's tab was deleted, rather than guess or add another",
+    async () => {
+      let docs = new DocsModel();
+      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.ambiguousContentResponses = 1;
+      docs.install();
+      let added = await addTab("add-tab-host-gone", "Notes");
+      let appendId = await hooks().submitAppend("add-tab-host-gone", "Hello", added.tabId);
+
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
+        .toMatch(/content response lost/);
+      // The marker went in the first tab, which a collaborator now deletes.
+      expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+      docs.removeTab(MAIN_TAB);
+
+      expect(await hooks().applyAction("add-tab-host-gone", added.actionId))
+        .toContain("no marker of it is left, and a tab has appeared in the document since");
+      expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+      expect(docs.contentBatches).toBe(1);
+      expect(await hooks().applyAction("add-tab-host-gone", appendId))
+        .toContain(`no tab with ID "${added.tabId}" exists`);
+      expect(docs.text(docs.tabs.find(tab => tab.title === "Notes")!.id)).toBe("");
+    });
+
+  it("refuses a lost add whose tab was moved under another parent, rather than add another",
+    async () => {
+      let docs = new DocsModel();
+      docs.addTab("tab-2", "Second", undefined as unknown as string);
+      docs.ambiguousContentResponses = 1;
+      docs.install();
+      let added = await addTab("add-tab-moved", "Notes");
+
+      expect(await hooks().applyAction("add-tab-moved", added.actionId))
+        .toMatch(/content response lost/);
+      // A collaborator moves the new tab under "Second", then deletes the tab holding the marker.
+      docs.tabs.find(tab => tab.title === "Notes")!.parentId = "tab-2";
+      docs.removeTab(MAIN_TAB);
+
+      expect(await hooks().applyAction("add-tab-moved", added.actionId))
+        .toContain("no marker of it is left, and a tab has appeared in the document since");
+      expect(docs.tabs.filter(tab => tab.title === "Notes")).toHaveLength(1);
+      expect(docs.contentBatches).toBe(1);
+    });
+
+  it("refuses to adopt a collaborator's tab after a send that never reached Google", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.setText(MAIN_TAB, "Intro");
+    docs.install();
+    let added = await addTab("add-tab-unsent", "Notes");
+    let appendId = await hooks().submitAppend("add-tab-unsent", "Hello", added.tabId);
+
+    expect(await hooks().applyAction("add-tab-unsent", added.actionId))
+      .toMatch(/connection dropped/);
+    expect(docs.tabs).toHaveLength(1);
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string, "Theirs");
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-unsent", added.actionId))
+      .toContain("whether it was added is unknown");
+    expect(await hooks().applyAction("add-tab-unsent", appendId))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    expect(docs.text("t.collaborator")).toBe("Theirs");
+    expect(docs.tabs).toHaveLength(2);
+  });
+
+  it("sends an add again after a send that never reached Google, when no tab appeared", async () => {
+    let docs = new DocsModel();
+    docs.unsentContentRequests = 1;
+    docs.install();
+    let added = await addTab("add-tab-resend", "Notes");
+
+    expect(await hooks().applyAction("add-tab-resend", added.actionId))
+      .toMatch(/connection dropped/);
+    expect(await hooks().applyAction("add-tab-resend", added.actionId)).toBeNull();
+    expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes"]);
+  });
+
+  // Denying always withdraws (#857): no refusal on this path may leave an action that cannot be
+  // denied, or hold back the edits queued behind it for other tabs.
+  it.each([
+    ["an ambiguous adoption", (docs: DocsModel): (() => void) | undefined => {
+      docs.ambiguousContentResponses = 1;
+      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    }],
+    ["a send with no known outcome and no marker left", (docs: DocsModel): (() => void) | undefined => {
+      docs.unsentContentRequests = 1;
+      return () => docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    }],
+    ["a lost reply that is denied instead of retried", (docs: DocsModel): (() => void) | undefined => {
+      docs.ambiguousContentResponses = 1;
+      return undefined;
+    }],
+  ] as const)("withdraws an add, and the edits for its tab, on deny after %s", async (_case, arrange) => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Intro");
+    let interfere = arrange(docs);
+    docs.install();
+    let facet = `add-tab-deny-${_case.replace(/\W+/g, "-")}`;
+    let added = await addTab(facet, "Notes");
+    let appendToNew = await hooks().submitAppend(facet, "Hello", added.tabId);
+    let appendToMain = await hooks().submitAppend(facet, "Still applies", MAIN_TAB);
+
+    expect(await hooks().applyAction(facet, added.actionId)).not.toBeNull();
+    if (interfere) {
+      interfere();
+      docs.externalEdit();
+      expect(await hooks().applyAction(facet, added.actionId)).not.toBeNull();
+    }
+
+    await expect(Promise.resolve(hooks().rejectAction(facet, added.actionId))).resolves.not.toThrow();
+    expect(await hooks().applyAction(facet, appendToNew))
+      .toContain(`no tab with ID "${added.tabId}" exists`);
+    await expect(Promise.resolve(hooks().rejectAction(facet, appendToNew))).resolves.not.toThrow();
+    expect(await hooks().applyAction(facet, appendToMain)).toBeNull();
+    expect(docs.text(MAIN_TAB)).toContain("Still applies");
+    // Nothing is left pending to block a later approval.
+    expect(await hooks().applyAction(facet, added.actionId)).toMatch(/Unknown pending/);
+  });
+
+  it("sends a refused add again rather than adopt a tab with its title", async () => {
+    let docs = new DocsModel();
+    docs.refusesEdits = true;
+    docs.install();
+    let added = await addTab("add-tab-refused-send", "Notes");
+
+    expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).not.toBeNull();
+    docs.refusesEdits = false;
+    docs.addTab("t.collaborator", "Notes", undefined as unknown as string);
+    docs.externalEdit();
+
+    expect(await hooks().applyAction("add-tab-refused-send", added.actionId)).toBeNull();
+    expect(docs.tabs.map(tab => tab.title)).toEqual(["Main", "Notes", "Notes"]);
+    expect((await hooks().listTabs("add-tab-refused-send")).map(tab => tab.id))
+      .toEqual([MAIN_TAB, "t.collaborator", docs.tabs[2].id]);
+  });
+});
+
 const DOC_PATTERN = "https://docs.google.com/document/d/:docId/*";
 const CREATED_DOC_URL = "https://docs.google.com/document/d/doc-1/edit";
 
@@ -2098,6 +2740,29 @@ describe("creating a Google Doc", () => {
     expect(await hooks().applyAction("create-doc-late-edit", actionId)).toBeNull();
     expect(docs.text()).toBe("late");
     expect(docs.markerTabIds).toEqual([MAIN_TAB]);
+  });
+
+  it("keeps a tab queued against the blank document, and the edits queued for it", async () => {
+    let docs = new DocsModel();
+    docs.install();
+    await hooks().createResource("create-doc-tab", DOC_PATTERN, "Plan");
+    let added = await addTab("create-doc-tab", "Notes", { parentTabId: "t.0" });
+    let appendId = await hooks().submitAppend("create-doc-tab", "Hello", added.tabId);
+    expect((await hooks().listTabs("create-doc-tab")).map(tab => tab.id))
+      .toEqual(["t.0", added.tabId]);
+
+    expect(await hooks().applyCreation("create-doc-tab")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    await hooks().adoptCreated("create-doc-tab");
+
+    // Nested under "t.0", the tab replays only if its parent was moved onto the created tab.
+    expect(await hooks().listTabs("create-doc-tab")).toEqual([
+      { id: MAIN_TAB, title: "Main", index: 0, nestingLevel: 0 },
+      { id: added.tabId, title: "Notes", parentTabId: MAIN_TAB, index: 0, nestingLevel: 1 },
+    ]);
+    expect(await hooks().applyAction("create-doc-tab", added.actionId)).toBeNull();
+    expect(await hooks().applyAction("create-doc-tab", appendId)).toBeNull();
+    expect(docs.tabs[1]).toMatchObject({ title: "Notes", parentId: MAIN_TAB });
+    expect(docs.text(docs.tabs[1].id)).toBe("Hello");
   });
 
   it("binds the same document when an approval is retried after a lost success", async () => {
@@ -2269,5 +2934,249 @@ describe("a Google Doc that is an Office file", () => {
 
     expect(await hooks().applyAction("office-edit-native", actionId))
       .toBe("Google Docs batch update document failed [http=400]");
+  });
+});
+
+describe("Google Doc comments", () => {
+  const DOC_COMMENTS = { tag: "docComments", label: "Google Doc comments" };
+  const TEXT = "The launch is in May. Costs are final.";
+  const call = (facet: string, method: string, ...args: unknown[]) =>
+    hooks().callDoc(facet, method as keyof GoogleDocSession, args);
+
+  function model(text = TEXT): DocsModel {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, text);
+    docs.install();
+    return docs;
+  }
+
+  it("queues a comment on quoted text, lists it pending, and posts it attached there", async () => {
+    let docs = model();
+    let queued = await call("comment-flow", "comment", "Should this be June?",
+      { quote: "The launch is in May." });
+    expect(queued.error).toBeUndefined();
+    expect(queued.value).toMatchObject({
+      id: `pending:${queued.actionId}`, text: "Should this be June?",
+      quotedText: "The launch is in May.", resolved: false, replies: [], pending: true,
+    });
+    expect(queued.action).toMatchObject({
+      title: "Comment on a Google Doc", actionKind: DOC_COMMENTS, autoApprovable: true,
+    });
+    expect(queued.action!.fields).toEqual([
+      { label: "Comment", kind: "text", value: "Should this be June?" },
+      { label: "Quoted text", kind: "text", value: "The launch is in May." },
+      { label: "File", kind: "inline", value: "doc-1" },
+      { label: "File name", kind: "inline", value: "Test document" },
+      { label: "Tab", kind: "inline", value: MAIN_TAB },
+    ]);
+    expect(queued.reports).toEqual([
+      { title: "Read Google Doc content", subresources: ["docs/document/doc-1"] },
+    ]);
+
+    let listed = await call("comment-flow", "listComments");
+    expect(listed.value).toEqual([expect.objectContaining({ id: `pending:${queued.actionId}` })]);
+    expect(listed.reports).toEqual([
+      { title: "List Google Doc comments", subresources: ["docs/document/doc-1"] },
+    ]);
+
+    expect(await hooks().applyAction("comment-flow", queued.actionId!)).toBeNull();
+    expect(docs.threads).toEqual([expect.objectContaining({
+      anchorId: expect.any(String), plainTextQuote: "The launch is in May.",
+      headPost: expect.objectContaining({ content: "Should this be June?" }),
+    })]);
+    expect((await call("comment-flow", "listComments")).value).toEqual([expect.objectContaining({
+      id: docs.threads[0].commentId, text: "Should this be June?",
+      quotedText: "The launch is in May.", author: { displayName: "Me", me: true },
+    })]);
+    // Approving it again posts nothing more.
+    expect(await hooks().applyAction("comment-flow", queued.actionId!)).toBeNull();
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  it("replies to, resolves and reopens someone else's comment, each from queue to apply", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Is this date right?", { quote: "May" });
+
+    let reply = await call("comment-answers", "reply", theirs.commentId, "Yes, it is.");
+    expect(reply.value).toMatchObject({ id: `pending:${reply.actionId}`, text: "Yes, it is.", pending: true });
+    expect(reply.action).toMatchObject({ title: "Reply to a Google Doc comment", actionKind: DOC_COMMENTS });
+    expect(reply.action!.description).toContain("Reply to a comment on Google Doc `doc-1`");
+    expect(reply.action!.fields).toEqual(expect.arrayContaining([
+      { label: "Comment author", kind: "inline", value: "Ada Lovelace" },
+      { label: "Comment text", kind: "text", value: "Is this date right?" },
+    ]));
+    let listed = (await call("comment-answers", "listComments")).value as { replies: unknown[] }[];
+    expect(listed[0].replies).toEqual([expect.objectContaining({ id: `pending:${reply.actionId}` })]);
+    expect(await hooks().applyAction("comment-answers", reply.actionId!)).toBeNull();
+    expect(theirs.replies.map(post => post.content)).toEqual(["Yes, it is."]);
+
+    let resolve = await call("comment-answers", "resolve", theirs.commentId, "Done.");
+    expect(resolve.action).toMatchObject({ title: "Resolve a Google Doc comment" });
+    expect(await hooks().applyAction("comment-answers", resolve.actionId!)).toBeNull();
+    expect(theirs.status).toBe("RESOLVED");
+    expect(theirs.replies.at(-1)).toMatchObject({ content: "Done.", commentAction: "RESOLVE" });
+    expect((await call("comment-answers", "resolve", theirs.commentId)).error)
+      .toBe("That comment is already resolved.");
+
+    // A reply to a resolved comment reopens it, and its card says so.
+    let reopen = await call("comment-answers", "reply", theirs.commentId, "One more thing.");
+    expect(reopen.value).toMatchObject({ action: "reopen" });
+    expect(reopen.action!.description).toContain("This reopens the resolved comment.");
+    expect(await hooks().applyAction("comment-answers", reopen.actionId!)).toBeNull();
+    expect(theirs.status).toBe("OPEN");
+    expect(theirs.replies.at(-1)).toMatchObject({ content: "One more thing.", commentAction: "REOPEN" });
+  });
+
+  it("suggests an edit with a note, as one suggestion with the note on its thread", async () => {
+    let docs = model();
+    let queued = await call("comment-suggest", "suggestEdit", "May", "June", { note: "It moved." });
+    expect(queued.value).toMatchObject({
+      id: `pending:${queued.actionId}`, tabId: MAIN_TAB, oldText: "May", newText: "June",
+      note: "It moved.", pending: true,
+    });
+    expect(queued.action).toMatchObject({ title: "Suggest an edit in a Google Doc", actionKind: DOC_COMMENTS });
+    expect(await hooks().applyAction("comment-suggest", queued.actionId!)).toBeNull();
+    expect(docs.suggestions).toEqual([
+      { suggestionId: "suggest.s1", summaryText: "Replace: “May” with “June”", notes: ["It moved."] },
+    ]);
+    expect(docs.text()).toBe(TEXT);
+  });
+
+  it("refuses an answer to a comment attached to no text, naming the Drive connection last", async () => {
+    let docs = model();
+    let drive = docs.addThread("Whole-file remark");
+    let refusal = "That comment is attached to no text in the Doc (it was made in Google Drive, " +
+      "or on the whole file), and Google Docs takes replies only to comments attached to text. " +
+      "A Google Drive connection to the file with read and write access can answer it. Request " +
+      "one with this resource URL: https://drive.google.com/file/d/doc-1/view?access=write";
+    expect((await call("comment-unanchored", "reply", drive.commentId, "Noted.")).error).toBe(refusal);
+    expect((await call("comment-unanchored", "resolve", drive.commentId)).error).toBe(refusal);
+    // It is still listed, with no quote.
+    let listed = (await call("comment-unanchored", "listComments")).value as { quotedText?: string }[];
+    expect(listed).toEqual([expect.objectContaining({ id: drive.commentId, text: "Whole-file remark" })]);
+    expect(listed[0]).not.toHaveProperty("quotedText");
+    expect(docs.commentWrites).toBe(0);
+  });
+
+  it("holds a reply and a resolve's words to the Docs limit of 2048 bytes", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Date?", { quote: "May" });
+    let refusal = "The reply is 2050 bytes of UTF-8; Google Docs allows at most 2048.";
+    expect((await call("comment-limit", "reply", theirs.commentId, "é".repeat(1025))).error).toBe(refusal);
+    expect((await call("comment-limit", "resolve", theirs.commentId, "é".repeat(1025))).error).toBe(refusal);
+    expect((await call("comment-limit", "reply", theirs.commentId, "é".repeat(1024))).error).toBeUndefined();
+  });
+
+  it("refuses a viewer every comment read and write, in its own words", async () => {
+    let docs = model();
+    docs.canComment = false;
+    let viewOnly = "The connected account can only view this Google Doc, and Google shows a " +
+      "Doc's comments only to accounts that can comment on it, so they can be neither read nor " +
+      "written here.";
+    expect((await call("comment-viewer", "listComments")).error).toBe(viewOnly);
+    expect((await call("comment-viewer", "comment", "Hm.", { quote: "May" })).error).toBe(viewOnly);
+    expect((await call("comment-viewer", "suggestEdit", "May", "June")).error).toBe(viewOnly);
+    expect(docs.commentWrites).toBe(0);
+  });
+
+  it("matches a quote against the saved Doc, refusing text only a pending edit has", async () => {
+    let docs = model();
+    let edit = await hooks().submitReplace("comment-pending-quote", "May", "June");
+    let result = await call("comment-pending-quote", "comment", "Sure?", { quote: "June" });
+    expect(result.error).toBe("That text is only in an edit waiting for approval, and a comment " +
+      "or suggestion is placed on the Doc as Google has saved it. Quote text the Doc has now, or " +
+      "try again once the edit is approved.");
+    expect(result.actionId).toBeUndefined();
+    expect(await hooks().applyAction("comment-pending-quote", edit)).toBeNull();
+    expect((await call("comment-pending-quote", "comment", "Sure?", { quote: "June" })).error)
+      .toBeUndefined();
+    expect(docs.text()).toContain("June");
+  });
+
+  it("requires a tab for a quote in a Doc with several tabs, as the binding's edits do", async () => {
+    let docs = model();
+    docs.addTab("tab-2", "Notes", MAIN_TAB, "May notes");
+    expect((await call("comment-tabs", "comment", "Hm.", { quote: "May notes" })).error).toBe(
+      "comment: tabId is required for documents with multiple tabs. Call listTabs() to choose a tab.");
+    expect((await call("comment-tabs", "suggestEdit", "May", "June")).error).toBe(
+      "suggestEdit: tabId is required for documents with multiple tabs. Call listTabs() to choose a tab.");
+    let queued = await call("comment-tabs", "comment", "Hm.", { quote: "May notes", tabId: "tab-2" });
+    expect(queued.value).toMatchObject({ quotedText: "May notes" });
+  });
+
+  it("routes interleaved edit and comment IDs, unique and rising, while edits keep their order", async () => {
+    let docs = model();
+    let first = await hooks().submitAppend("comment-ids", "One.");
+    let comment = (await call("comment-ids", "comment", "Hm.", { quote: "Costs are final." })).actionId!;
+    let second = await hooks().submitAppend("comment-ids", "Two.");
+    let reply = docs.addThread("Date?", { quote: "May" });
+    let answer = (await call("comment-ids", "reply", reply.commentId, "Yes.")).actionId!;
+    expect([first, comment, second, answer]).toEqual([1, 2, 3, 4]);
+
+    // An edit still waits for the edit before it; a comment waits for nothing.
+    expect(await hooks().applyAction("comment-ids", second)).toMatch(/must be approved in order/);
+    expect(await hooks().applyAction("comment-ids", answer)).toBeNull();
+    expect(await hooks().applyAction("comment-ids", first)).toBeNull();
+    expect(await hooks().applyAction("comment-ids", second)).toBeNull();
+    expect(docs.text()).toBe(`${TEXT}\nOne.\nTwo.`);
+    // Rejecting a comment restarts nothing; an unknown ID is refused as before.
+    expect(await hooks().rejectAction("comment-ids", comment)).toBeUndefined();
+    expect(docs.threads.map(thread => thread.headPost.content)).toEqual(["Date?"]);
+    expect(await hooks().applyAction("comment-ids", 99)).toBe("Unknown pending Google Doc action: 99");
+  });
+
+  it("finds a reply whose answer was lost, and does not send it again", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Date?", { quote: "May" });
+    let id = (await call("comment-lost", "reply", theirs.commentId, "Yes.")).actionId!;
+    docs.lostCommentResponses = 1;
+    expect(await hooks().applyAction("comment-lost", id)).toMatch(/did not confirm whether this was posted/);
+    expect(await hooks().applyAction("comment-lost", id)).toBeNull();
+    expect(theirs.replies.map(post => post.content)).toEqual(["Yes."]);
+    expect(docs.commentWrites).toBe(1);
+  });
+
+  it("clears a comment write on deny from every state", async () => {
+    let docs = model();
+    let theirs = docs.addThread("Date?", { quote: "May" });
+    // Undecided.
+    let undecided = (await call("comment-deny", "comment", "Hm.", { quote: "May" })).actionId!;
+    expect(await hooks().rejectAction("comment-deny", undecided)).toBeUndefined();
+    // Failed for good: the comment it answers was edited after it was queued.
+    let stale = (await call("comment-deny", "reply", theirs.commentId, "Yes.")).actionId!;
+    theirs.headPost.content = "Date? (edited)";
+    expect(await hooks().applyAction("comment-deny", stale)).toBe(
+      "That comment was edited after this was queued. Queue it again to answer the comment as it is now.");
+    expect(await hooks().rejectAction("comment-deny", stale)).toBeUndefined();
+    // Left with an unknown outcome: its answer was lost and its thread then deleted.
+    theirs.headPost.content = "Date?";
+    let unknown = (await call("comment-deny", "reply", theirs.commentId, "Yes.")).actionId!;
+    docs.lostCommentResponses = 1;
+    expect(await hooks().applyAction("comment-deny", unknown)).toMatch(/did not confirm/);
+    docs.threads.splice(0);
+    expect(await hooks().applyAction("comment-deny", unknown)).toMatch(/can't be checked/);
+    expect(await hooks().rejectAction("comment-deny", unknown)).toBeUndefined();
+    expect((await call("comment-deny", "listComments")).value).toEqual([]);
+    for (let id of [undecided, stale, unknown]) {
+      expect(await hooks().applyAction("comment-deny", id)).toBe(`Unknown pending Google Doc action: ${id}`);
+    }
+  });
+
+  it("lists no comments and takes none on a Doc not created yet, and both once it is", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, TEXT);
+    docs.install();
+    await hooks().createResource("comment-create", DOC_PATTERN, "Plan");
+    expect((await call("comment-create", "getMetadata")).value).toMatchObject({ id: "", title: "Plan" });
+    expect((await call("comment-create", "listComments")).value).toEqual([]);
+    expect((await call("comment-create", "comment", "Hm.", { quote: "May" })).error).toBe(
+      "This Google Doc is not created yet, so it has no text to comment on. Comment once it is created.");
+    expect(docs.fetches).toBe(0);
+    expect(await hooks().applyCreation("comment-create")).toEqual({ resourceUrl: CREATED_DOC_URL });
+    await hooks().adoptCreated("comment-create");
+    expect((await call("comment-create", "getMetadata")).value).toMatchObject({ id: "doc-1" });
+    let queued = await call("comment-create", "comment", "Hm.", { quote: "May" });
+    expect(await hooks().applyAction("comment-create", queued.actionId!)).toBeNull();
+    expect(docs.threads).toHaveLength(1);
   });
 });
