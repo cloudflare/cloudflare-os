@@ -43,7 +43,7 @@ type RenderLogFields = {
   bands: number;
   /** How many times the model was asked for a band. */
   asks: number;
-  /** Why a band was asked for a second time, as a word. */
+  /** Why a band was asked for again, as a word. */
   askedAgain: string;
   /** Whether a rendered page has no ink. */
   blank: boolean;

@@ -1705,6 +1705,27 @@ describe("a rendered PDF's pages", () => {
     expect(bands.filter(({ shade }) => shade === 12)).toHaveLength(2);
   });
 
+  it("sends each half of a band that is cut in two as a PNG of that half's own rows", async () => {
+    // One band of 90 rows, written on in every row but row 40, where it is cut.
+    let rows = 90, cut = 40;
+    let pixels = new Uint8Array(BAND_WIDTH * rows).fill(255);
+    for (let row = 0; row < rows; row++) if (row !== cut) pixels[row * BAND_WIDTH + 1] = row;
+    let page = { ...drawn([]), height: rows, blank: false, bands: [{ top: 0, rows, ink: 100, pixels }] };
+    let { renderer } = fakeRenderer([page]);
+    // The band's first answer is stopped at the output limit; its halves' answers end whole.
+    let { ai, bands } = bandAi(({ height }) => height === rows
+      ? eventResponse(tokenEvents(["as far as the limit"], "length")) : [height === cut ? "top" : "bottom"]);
+    let { result } = await rendering(imagePdf([scanPage(1, { filter: "/CCITTFaxDecode" })]), renderer, ai);
+    expect(await read(result)).toBe("### Page 1\ntop\nbottom");
+    expect(bands.map(({ width, height, grey8 }) => ({ width, height, grey8 }))).toEqual([
+      { width: BAND_WIDTH, height: rows, grey8: true }, { width: BAND_WIDTH, height: cut, grey8: true },
+      { width: BAND_WIDTH, height: rows - cut, grey8: true },
+    ]);
+    expect(bands[1]!.rows).toEqual(pixels.slice(0, cut * BAND_WIDTH));
+    expect(bands[2]!.rows).toEqual(pixels.slice(cut * BAND_WIDTH));
+    expect(linesOf("info", "google.drive.pdf.band_transcribed")).toMatchObject([{ band: 1, asks: 3, askedAgain: "truncated" }]);
+  });
+
   it("gives a page whose bands all read as nothing its heading alone", async () => {
     let { renderer } = fakeRenderer([drawn([11, 12]), drawn([21])]);
     let { ai } = bandAi(({ shade }) => shade === 21 ? ["last"] : []);

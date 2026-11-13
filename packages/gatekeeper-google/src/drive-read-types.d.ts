@@ -306,8 +306,8 @@ export interface GoogleDriveReadSession {
    * strips, or turned, and so is writing that is drawn as shapes and not kept as text.
    * Each page is drawn in grey, at 150 dpi or fewer for a large one, and cut across where the
    * least is written into up to four bands. Each band with anything on it is one model call,
-   * and a second when the first failed or its answer was cut off, kept repeating itself or is
-   * short for what the band holds. The bands' texts follow one another under the page's
+   * and up to two more when that call failed or its answer was cut off, kept repeating itself
+   * or is short for what the band holds. The bands' texts follow one another under the page's
    * heading, so a table or a paragraph that a cut falls in comes back in two parts. Pages are
    * numbered as the document orders them.
    *
