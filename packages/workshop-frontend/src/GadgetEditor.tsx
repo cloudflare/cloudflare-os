@@ -42,6 +42,7 @@ import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
+import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
 import WorkpiecePicker, {
@@ -669,7 +670,9 @@ export default function GadgetEditor() {
 
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
-  const [autoApproveReloadTrigger, setAutoApproveReloadTrigger] = useState(0)
+  // Shared by the chat and the Activity rule list, which can each change a rule the other is
+  // reading -- and, while one is in flight, nothing here knows what the kernel's drain is doing.
+  const autoApproval = useAutoApprovalChannel()
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
@@ -2058,7 +2061,8 @@ export default function GadgetEditor() {
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
+                  autoApproval={autoApproval}
+                  onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
@@ -2225,8 +2229,7 @@ export default function GadgetEditor() {
                   restricted={metadata?.containsRestrictedData === true}
                   view={activityView}
                   onViewChange={setActivityView}
-                  onAutoApproveChange={() => setAutoApproveReloadTrigger(t => t + 1)}
-                  autoApproveReloadTrigger={autoApproveReloadTrigger}
+                  autoApproval={autoApproval}
                 />
               </div>
             )}

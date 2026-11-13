@@ -12,9 +12,10 @@ import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 export function useAlwaysApproveTag(
     overseer: RpcStub<Overseer>,
     setProcessingActions: Dispatch<SetStateAction<Set<number>>>,
-    // Invoked after a rule is successfully enabled, so other views (e.g. the Connections rule list)
-    // can refresh without waiting to be re-opened.
-    onEnabled?: () => void) {
+    // Marks a rule change in flight for the whole workspace view, and on settling tells the other
+    // surfaces to re-read. The window matters on its own: the kernel starts a drain the moment it
+    // accepts the rule, so until this ends no surface's rule list says what the kernel is doing.
+    beginChange?: () => () => void) {
   const toasts = useKumoToastManager()
   const [enabledTags, setEnabledTags] = useState<Set<string>>(new Set())
 
@@ -24,27 +25,34 @@ export function useAlwaysApproveTag(
       async (actionId: number, gatekeeperId: number,
              actionKind: ActionKind): Promise<boolean> => {
     setProcessingActions(prev => new Set(prev).add(actionId))
+    const endChange = beginChange?.()
     try {
       await overseer.setAutoApprovedActionKind(gatekeeperId, actionKind)
       setEnabledTags(prev => new Set(prev).add(`${gatekeeperId}:${actionKind.tag}`))
-      onEnabled?.()
       return true
     } catch (err) {
       console.error('Failed to enable auto-approval:', err)
       toasts.add({ title: 'Failed to enable auto-approval', variant: 'error' })
       return false
     } finally {
+      endChange?.()
       setProcessingActions(prev => {
         const next = new Set(prev)
         next.delete(actionId)
         return next
       })
     }
-  }, [overseer, setProcessingActions, toasts, onEnabled])
+  }, [overseer, setProcessingActions, toasts, beginChange])
 
   const isTagAutoApproved = useCallback(
       (gatekeeperId: number, tag: string) => enabledTags.has(`${gatekeeperId}:${tag}`),
       [enabledTags])
 
-  return { alwaysApproveTag, isTagAutoApproved }
+  // Drops the overlay once the caller has re-read the real rule list, which now says everything
+  // this one did. Keeping it would outrank that list for the life of the component, so a rule
+  // turned off elsewhere would go on reading as enabled.
+  const forgetOptimisticTags = useCallback(() => setEnabledTags(previous =>
+      previous.size === 0 ? previous : new Set()), [])
+
+  return { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags }
 }
