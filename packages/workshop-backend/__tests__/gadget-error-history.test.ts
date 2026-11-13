@@ -1,9 +1,9 @@
 // The Overseer as the one writer of its workspace's gadget error log: the exceptions the runtime
 // reports for a gadget's Worker and the errors of the calls to a gadget that failed are kept in
 // the workspace's log object and listed back (OverseerImpl.deliverGadgetExceptions(),
-// #recordGadgetException() and readGadgetErrors()), console calls are kept at no level, live
-// subscribers get what they get without the log, and deleting the workspace deletes the log
-// object before the workspace's own storage.
+// #recordGadgetException(), recordHookException() and readGadgetErrors()), console calls are kept
+// at no level, live subscribers get what they get without the log, and deleting the workspace
+// deletes the log object before the workspace's own storage.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding) keeping entries in the real
 // log object it reaches through ctx.exports, read back through the TEST_WORKSPACE_ERROR_LOG
@@ -97,6 +97,14 @@ import { DurableObject, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:
 class Callback extends RpcTarget {
   fail() {
     throw new Error("cb boom");
+  }
+
+  denied() {
+    throw new Error("denied: Bearer abcdefghijklmnop1234567890");
+  }
+
+  ok() {
+    return 1;
   }
 }
 
@@ -1219,6 +1227,225 @@ describe("what the Workshop does not stand in the path of", () => {
     expect(await ws.impl.readGadgetErrors()).toStrictEqual({ entries: [] });
     // Live delivery has the same gaps.
     expect(events).toStrictEqual([]);
+  }), GADGET_TEST_MS);
+});
+
+// The connection the hooks of the block below belong to.
+const HOOK_GATEKEEPER_ID = 50;
+
+// An enabled hook of a vendor's connection whose stored callback is `callback`, as bindHook() and
+// enableHook() leave one: the record a firing's startHook() reads. `gadgetId` is the gadget the
+// hook is listed under; a hook that names none is listed under the workspace's default gadget.
+// The pool has no admin-config binding, so that one read of startHook() is answered here.
+function addHook(ws: Workspace, id: number, callback: unknown, gadgetId?: number): number {
+  ws.impl.storage.gatekeepers.put({
+    id: HOOK_GATEKEEPER_ID,
+    resourceTitle: "Connection",
+    class: {} as any,
+    creationSpec: {
+      type: "gatekeeper", vendorId: "testvendor", resourceUrl: "https://example.com/hooks",
+      typeUrlPattern: "https://*",
+    },
+  });
+  ws.impl.storage.boundHooks.put({
+    id, actionId: 999, gatekeeperId: HOOK_GATEKEEPER_ID,
+    ...(gadgetId !== undefined && { gadgetId }),
+    vendorId: "testvendor", controller: {}, callback,
+    description: { title: "Hook", description: "Delivers events" }, enabled: true,
+  });
+  let host = ws.instance as unknown as { env: { BLUEPRINTS: { get(): Promise<null> } } };
+  host.env = { ...host.env, BLUEPRINTS: { get: async () => null } };
+  return id;
+}
+
+// What a firing is handed to call: the wrapper over the hook's stored callback.
+async function fire(ws: Workspace, hookId: number): Promise<any> {
+  return (await ws.instance.startHook(hookId)).callback;
+}
+
+// A hook whose stored callback is a callable agent's, the agent of chat `chatId`: an agent's `self`
+// and spawnCallable() mint a persistent stub (AgentSelfLoopback), which an agent can store with a
+// hook as a gadget stores its own. Every method of that stub is a Proxy trap that delivers the
+// call to the chat, and the pool's RPC emulation finds only the methods on a class's prototype,
+// so a call through the stub itself cannot be made here: the record is read back with a callback
+// that delivers the way the stub does.
+function addAgentHook(ws: Workspace, id: number, chatId: number, gadgetId?: number): number {
+  return addReadBackHook(ws, id, new Proxy({}, {
+    get: (_target, method) => (...args: unknown[]) =>
+        ws.impl.deliverAgentCallback(chatId, String(method), args, OWNER_USER_ID, null),
+  }), gadgetId);
+}
+
+// A hook whose record is read back with `callback` as its stored callback, for a callback the
+// pool's storage cannot hold.
+function addReadBackHook(ws: Workspace, id: number, callback: unknown, gadgetId?: number): number {
+  addHook(ws, id, {}, gadgetId);
+  let hooks = ws.impl.storage.boundHooks;
+  let get = hooks.get.bind(hooks);
+  hooks.get = (hookId: number) => {
+    let record = get(hookId);
+    return record && hookId === id ? { ...record, callback } : record;
+  };
+  return id;
+}
+
+// A hook's firing is the one caller of a stored callback whose call passes the Overseer: the
+// callback it is handed wraps the stored one (makeHookFiringCallback()), so the error of a call
+// that fails is kept there, as a failed call to the gadget the hook is listed under.
+describe("a hook's firing", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps a throw of the stored callback as the gadget's server entry, and nothing for a call " +
+      "that returns", () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    let events = await subscribe(ws);
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    using minted = await gadget.mint();
+    let callback = await fire(ws, addHook(ws, 5, minted, GADGET_ID));
+
+    expect(await rejection(callback.fail())).toContain("cb boom");
+    expect(await callback.ok()).toBe(1);
+
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+    await noLaterTrace();
+    let entries = await kept(ws);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      source: "server", gadgetId: GADGET_ID, chatId: null,
+      text: "Error: cb boom\n    at fail()",
+    });
+    expect(entries[0]).not.toHaveProperty("userId");
+    // A firing's error is kept and not told to console subscribers.
+    expect(events).toStrictEqual([]);
+  }), GADGET_TEST_MS);
+
+  it("keeps it redacted", () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    using minted = await gadget.mint();
+    let callback = await fire(ws, addHook(ws, 5, minted, GADGET_ID));
+
+    // The firing still gets the error whole.
+    expect(await rejection(callback.denied())).toContain("Bearer abcdefghijklmnop1234567890");
+
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+    expect(texts({ entries: await kept(ws) }))
+        .toStrictEqual(["Error: denied: Bearer [redacted]\n    at denied()"]);
+  }), GADGET_TEST_MS);
+
+  it("keeps the throw of a callback that is itself a function with no method line",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    // bindHook() allows the bound callback to be a function, which a firing calls directly: the
+    // call names no method, so the kept text is the error alone.
+    let callback = await fire(ws, addReadBackHook(ws, 5, async () => {
+      throw new Error("fn boom");
+    }, GADGET_ID));
+
+    expect(await rejection(callback({}))).toContain("fn boom");
+
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+    expect(await kept(ws)).toStrictEqual([{
+      time: expect.any(Date), source: "server", gadgetId: GADGET_ID, chatId: null,
+      text: "Error: fn boom",
+    }]);
+  }), GADGET_TEST_MS);
+
+  it("holds the gadget to its minute with the calls made on its facet",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    using minted = await gadget.mint();
+    let callback = await fire(ws, addHook(ws, 5, minted, GADGET_ID));
+
+    // Both are calls to the gadget that failed, so one limit counts them.
+    for (let i = 0; i < 20; i++) await rejection(gadget.fail());
+    for (let i = 0; i < 20; i++) await rejection(callback.fail());
+
+    await vi.waitFor(async () => {
+      expect(await failEntries(ws)).toHaveLength(GADGET_ERRORS_PER_MINUTE);
+      expect(await dropMarkers(ws)).toHaveLength(1);
+    }, KEPT_SOON);
+    // Oldest first: the facet's twenty, then the first ten of the firings'.
+    expect(texts({ entries: (await failEntries(ws)).toReversed() })).toStrictEqual([
+      ...Array.from({ length: 20 }, () => "Error: boom\n    at fail()"),
+      ...Array.from({ length: 10 }, () => "Error: cb boom\n    at fail()"),
+    ]);
+    expect(texts({ entries: await dropMarkers(ws) })).toStrictEqual(["1 error dropped"]);
+  }), GADGET_TEST_MS);
+
+  it("keeps the failure of an agent's callback under the gadget its hook is listed under",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws);
+    await addGadget(ws, OTHER_GADGET_ID);
+    let chatId = 404;
+    let text = `Error: No such chatId: ${chatId}\n    at onSchedule()`;
+    ws.impl.defaultGadgetId = OTHER_GADGET_ID;
+
+    // The stored callback is a callable agent's, whose chat does not exist: the call is refused
+    // by the Workshop's delivery to that chat, and no code of any gadget runs. The Overseer
+    // cannot tell an agent's callback from a gadget's, so the failure is kept as the error of
+    // the gadget the hook's record names, which is not the workspace's default one here.
+    let named = await fire(ws, addAgentHook(ws, 5, chatId, GADGET_ID));
+    expect(await rejection(named.onSchedule({}))).toContain(`No such chatId: ${chatId}`);
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+    expect(await kept(ws)).toStrictEqual([
+      { time: expect.any(Date), source: "server", gadgetId: GADGET_ID, chatId: null, text },
+    ]);
+
+    // A hook that names no gadget is listed under the workspace's default one.
+    let unnamed = await fire(ws, addAgentHook(ws, 6, chatId));
+    expect(await rejection(unnamed.onSchedule({}))).toContain(`No such chatId: ${chatId}`);
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(2), KEPT_SOON);
+    expect(await kept(ws, { gadgetId: OTHER_GADGET_ID })).toStrictEqual([
+      { time: expect.any(Date), source: "server", gadgetId: OTHER_GADGET_ID, chatId: null, text },
+    ]);
+  }), GADGET_TEST_MS);
+
+  it("keeps a firing under the chat whose draft the gadget runs",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    let commit = await addGadget(ws);
+    await addDraft(ws, 2, commit);
+    // A callback minted through the facet of the chat's draft carries that chat, so a firing's
+    // call on it runs the draft.
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID, 2);
+    using minted = await gadget.mint();
+    let callback = await fire(ws, addHook(ws, 5, minted, GADGET_ID));
+
+    expect(await rejection(callback.fail())).toContain("cb boom");
+    await vi.waitFor(async () => expect(await failEntries(ws)).toHaveLength(1), KEPT_SOON);
+    expect((await failEntries(ws))[0].chatId).toBe(2);
+
+    expect(await ws.impl.mergeChanges(2, { profile: USER }, "user-do-id"))
+        .toEqual({ outcome: "merged" });
+    // The stored stub still names the chat, which proposes nothing any more: the call runs the
+    // mainline.
+    expect(await rejection(callback.fail())).toContain("cb boom");
+    await vi.waitFor(async () => expect(await failEntries(ws)).toHaveLength(2), KEPT_SOON);
+    expect((await failEntries(ws)).map(entry => entry.chatId)).toStrictEqual([null, 2]);
+  }), GADGET_TEST_MS);
+
+  it("keeps nothing for a hook that names no gadget in a workspace with no default gadget",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    ws.impl.workspaceErrorLogs = unreachableLogs();
+    let callback = await fire(ws, addAgentHook(ws, 5, 404));
+
+    expect(await rejection(callback.onSchedule({}))).toContain("No such chatId: 404");
+
+    // Whatever is kept is handed over, and its log object named, before the firing gets the
+    // error: there is no gadget to keep this one for.
+    expect(ws.impl.workspaceErrorLogs.getByName).not.toHaveBeenCalled();
+    expect(errorLogId(ws)).toBeUndefined();
   }), GADGET_TEST_MS);
 });
 

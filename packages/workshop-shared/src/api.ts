@@ -3979,15 +3979,20 @@ export interface Overseer extends RpcTarget {
    * gadget's worker outside the result of any call: a rejected `ctx.waitUntil()` promise, a
    * throw in a timer callback. Or the error of a call to the gadget that failed, when the call
    * was made through the Workshop: on a stub from connectToGadget(), through a binding to the
-   * gadget (another gadget's or an agent's), or by the gadget's ExportHandler on the gadget it
-   * is handed. A call on an object that one of those calls returned is not one of them, and is
-   * not kept (see below). The error is kept whoever raised it, so it can be the Workshop's own
-   * and not the gadget's, such as that of a call to a method the gadget does not have, or of a
-   * call in flight when the gadget was restarted to run other code, which starts "Gadget
-   * restarted" ("Gadget restarted to test proposed changes.", "Gadget restarted due to code
-   * update."). A throw of the gadget's constructor is both things: it fails the call and the
-   * runtime reports it, so a call that starts such a gadget keeps two entries. A later call on
-   * the same stub fails the same way with no constructor run, and keeps one.
+   * gadget (another gadget's or an agent's), by the gadget's ExportHandler on the gadget it is
+   * handed, or by a hook's firing on the callback stored with the hook, a scheduled task's
+   * included. A firing's error is kept for the gadget that listHooks() names for the hook, under
+   * the chat whose version of that gadget was running, whether the callback is that gadget's or
+   * an agent's: the Workshop cannot tell which, so the failure of an agent's callback (its chat
+   * was deleted, say) reads as the error of a gadget whose code did not run. A call on an object
+   * that one of those calls returned is not one of them, and is not kept (see below). The error
+   * is kept whoever raised it, so it can be the Workshop's own and not the gadget's, such as
+   * that of a call to a method the gadget does not have, or of a call in flight when the gadget
+   * was restarted to run other code, which starts "Gadget restarted" ("Gadget restarted to test
+   * proposed changes.", "Gadget restarted due to code update."). A throw of the gadget's
+   * constructor is both things: it fails the call and the runtime reports it, so a call that
+   * starts such a gadget keeps two entries. A later call on the same stub fails the same way
+   * with no constructor run, and keeps one.
    *
    * Not kept: a promise rejection that nothing in the gadget's worker handles, which the runtime
    * reports nowhere; what the gadget's ExportHandler itself throws from getExportFormats() or
@@ -3995,8 +4000,10 @@ export interface Overseer extends RpcTarget {
    * that does not pass the Workshop: one made on an object that a method of the gadget returned
    * (a session or a handle, whose methods its holder then calls; likewise a stream that fails
    * after it was returned), on an object that the gadget passed as an argument of a call it made
-   * (a subscriber or a callback handed to a binding), or on a stored callback (a stub from the
-   * gadget's `ctx.restore()`). The caller of such a call still gets the error.
+   * (a subscriber or a callback handed to a binding), on a stored callback (a stub from the
+   * gadget's `ctx.restore()`) by anything but a hook's firing, such as an agent that was handed
+   * the stub, or on a capability that a callback returned. The caller of such a call still gets
+   * the error.
    *
    * A "client" entry is an uncaught error that a session reported for a gadget's UI (see
    * reportGadgetErrors()).
@@ -5861,10 +5868,11 @@ export type GadgetErrorEntry = {
    * What was thrown, as text. For an exception the runtime reported for the gadget's worker, its
    * name and message, with its stack where the runtime gives one. For a call to the gadget that
    * failed, the error as text ("Error: message") and, on a line of its own, the method that was
-   * called ("    at method()"). When what the call threw was neither an Error nor a string, only
-   * its kind is kept: "[object Object]" for a thrown object, whose members are not read. For a
-   * "client" entry, what the browser reported: a label and the error's stack or message. For a
-   * marker, "1 error dropped" or "<n> errors dropped".
+   * called ("    at method()"), which a hook's function-valued callback does not have. When what
+   * the call threw was neither an Error nor a string, only its kind is kept: "[object Object]"
+   * for a thrown object, whose members are not read. For a "client" entry, what the browser
+   * reported: a label and the error's stack or message. For a marker, "1 error dropped" or
+   * "<n> errors dropped".
    *
    * It is kept with token-shaped strings (bearer and basic credentials, `sk-` keys, JSON Web
    * Tokens, PEM private keys, the password in a URL, and the values of URL parameters and JSON

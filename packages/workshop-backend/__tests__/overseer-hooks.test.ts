@@ -20,6 +20,9 @@ function makeOverseer(
       // The quarantine gate (see the dedicated pending-restart tests); no connection is blocked
       // in these fixtures.
       assertGatekeeperUsable: () => {},
+      // What a firing hands the error of a failed call to its stored callback (see
+      // recorded()).
+      recordHookException: vi.fn(),
       sessionWatchers: new SessionWatchers(),
       storage: {
         boundHooks: { get: () => hook && ({ ...hook, gatekeeperId: 1 }) },
@@ -37,6 +40,11 @@ function makeOverseer(
     },
   });
   return overseer;
+}
+
+// What the fake impl was handed to keep: the calls of OverseerImpl.recordHookException().
+function recorded(overseer: OverseerDurableObject) {
+  return (overseer as any).impl.recordHookException as ReturnType<typeof vi.fn>;
 }
 
 describe("OverseerDurableObject.startHook", () => {
@@ -184,6 +192,101 @@ describe("OverseerDurableObject.startHook", () => {
 
     expect(() => approvalQueue.authorizeObservation({ title: "t", description: "d" }))
         .toThrow(/deleted or disabled/);
+  });
+
+  // A firing is the one caller of a hook's stored callback whose call passes the Overseer, so the
+  // error of a call that fails is handed to the workspace's gadget error log there, and the
+  // firing still gets it.
+  it("hands the error of a failed call to the workspace's error log, with the method that was " +
+      "called", async () => {
+    let boom = new Error("boom");
+    let hook = {
+      enabled: true, vendorId: "email",
+      callback: { deliver: vi.fn(async (_payload: string) => { throw boom; }) },
+    };
+    let overseer = makeOverseer(async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG), hook);
+    let { callback } = await overseer.startHook(1);
+
+    await expectRejection((callback as any).deliver("evt"), /^Error: boom$/);
+    expect(hook.callback.deliver).toHaveBeenCalledWith("evt");
+    expect(recorded(overseer).mock.calls)
+        .toStrictEqual([[{ ...hook, gatekeeperId: 1 }, "deliver", boom]]);
+    expect(recorded(overseer).mock.calls[0][2]).toBe(boom);
+  });
+
+  it("does the same for a function-valued callback, with no method", async () => {
+    let boom = new Error("boom");
+    let hook = {
+      enabled: true, vendorId: "email",
+      callback: vi.fn(async (_payload: string) => { throw boom; }),
+    };
+    let overseer = makeOverseer(async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG), hook);
+    let { callback } = await overseer.startHook(1);
+
+    await expectRejection((callback as any)("evt"), /^Error: boom$/);
+    expect(recorded(overseer).mock.calls)
+        .toStrictEqual([[{ ...hook, gatekeeperId: 1 }, undefined, boom]]);
+    expect(recorded(overseer).mock.calls[0][2]).toBe(boom);
+  });
+
+  // A stored callback is a stub, whose call can throw before it returns a promise (arguments
+  // that cannot be serialised), and a method it does not have is a throw of the same kind here.
+  it("keeps a synchronous throw of the call too", async () => {
+    let boom = new Error("sync boom");
+    let hook = {
+      enabled: true, vendorId: "email",
+      callback: { deliver: (_payload: string): never => { throw boom; } },
+    };
+    let overseer = makeOverseer(async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG), hook);
+    let { callback } = await overseer.startHook(1);
+
+    await expectRejection((callback as any).deliver("evt"), /^Error: sync boom$/);
+    expect(recorded(overseer)).toHaveBeenCalledTimes(1);
+    expect(recorded(overseer).mock.calls[0].slice(1)).toStrictEqual(["deliver", boom]);
+
+    await expectRejection((callback as any).missing("evt"), /TypeError/);
+    expect(recorded(overseer)).toHaveBeenCalledTimes(2);
+    expect(recorded(overseer).mock.calls[1][1]).toBe("missing");
+    expect(recorded(overseer).mock.calls[1][2]).toBeInstanceOf(TypeError);
+
+    // A callback that is itself a function is called directly, and its throw is caught alike.
+    let fnBoom = new Error("sync fn boom");
+    let fnHook = {
+      enabled: true, vendorId: "email",
+      callback: (_payload: string): never => { throw fnBoom; },
+    };
+    let fnOverseer = makeOverseer(async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG), fnHook);
+    let { callback: fnCallback } = await fnOverseer.startHook(1);
+
+    await expectRejection((fnCallback as any)("evt"), /^Error: sync fn boom$/);
+    expect(recorded(fnOverseer).mock.calls)
+        .toStrictEqual([[{ ...fnHook, gatekeeperId: 1 }, undefined, fnBoom]]);
+    expect(recorded(fnOverseer).mock.calls[0][2]).toBe(fnBoom);
+  });
+
+  it("keeps nothing for a call that succeeds", async () => {
+    let overseer = makeOverseer(
+        async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG),
+        { enabled: true, vendorId: "email", callback: { deliver: async () => "delivered" } });
+    let { callback } = await overseer.startHook(1);
+
+    await expect((callback as any).deliver("evt")).resolves.toBe("delivered");
+    expect(recorded(overseer)).not.toHaveBeenCalled();
+  });
+
+  // A refusal is the Workshop declining to call, not a call that failed.
+  it("keeps nothing for a firing refused because the hook was disabled", async () => {
+    let deliver = vi.fn(async () => { throw new Error("boom"); });
+    let hook = { enabled: true, vendorId: "email", callback: Object.assign(deliver, { deliver }) };
+    let overseer = makeOverseer(async () => serializeAdminConfig(DEFAULT_ADMIN_CONFIG), hook);
+    let { callback } = await overseer.startHook(1);
+
+    hook.enabled = false;
+
+    await expectRejection((callback as any).deliver("evt"), /deleted or disabled/);
+    await expectRejection((callback as any)("evt"), /deleted or disabled/);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(recorded(overseer)).not.toHaveBeenCalled();
   });
 
   it("re-checks the record after the admin-config read", async () => {
