@@ -1,0 +1,21 @@
+packages/workshop-frontend/src/Activity.autoApproval.test.tsx
+  s_99c049c8391965::t_c082eaeb5be8e1 35,52
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_99c049c8391965::t_c60f7aa6ce8344 5661-5662
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "79d88f44fa8a8a5a9ff0c09e19564e11bf8b2a12",
+  "prompts": {},
+  "sessions": {
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
