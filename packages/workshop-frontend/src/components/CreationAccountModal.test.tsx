@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
-  ConnectedAccountsSubscriber, ConnectFlowStart, CreationApproval, Overseer,
+  ConnectedAccountsFilter, ConnectedAccountsSubscriber, ConnectFlowStart, CreationApproval, Overseer,
 } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
@@ -118,6 +118,8 @@ let starts: Start[] = []
 
 const ensureAccountResources =
   vi.fn<(accountId: number, patterns: string[]) => Promise<ConnectFlowStart | null>>()
+const connectAccount = vi.fn<(vendorId: string, patterns?: string[]) => Promise<ConnectFlowStart>>()
+const provisionAmbientAccount = vi.fn<(vendorId: string) => Promise<void>>()
 
 let root: Root | undefined
 let container: HTMLDivElement | undefined
@@ -136,10 +138,14 @@ afterEach(() => {
   testState.mounts = 0
   testState.initialResource = null
   ensureAccountResources.mockReset()
+  connectAccount.mockReset()
+  provisionAmbientAccount.mockReset()
   openConnectWindow.mockReset()
 })
 
-async function renderModal(configuration?: string) {
+async function renderModal(configuration?: string, {
+  autoProvisionsAccount = false, forcedAccount = false,
+} = {}) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
     const frame = deferred<object>()
@@ -149,21 +155,25 @@ async function renderModal(configuration?: string) {
   testState.authenticatedApi = {
     listGatekeeperVendors: async () => [{
       id: 'google',
-      description: { displayName: 'Google' },
+      description: { displayName: 'Google', autoProvisionsAccount },
       supportedResources: [{ urlPattern: PATTERN, connectable: false, creatable: true,
-        creationConfigurator: true }],
+        creationConfigurator: !autoProvisionsAccount }],
     }],
-    subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
+    subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber, filter?: ConnectedAccountsFilter) => {
       testState.subscriber = subscriber
-      subscriber.add(5, { uniqueName: 'work' } as AccountDescription, {} as VendorDescription, [],
-          true, 'google')
-      subscriber.add(6, { uniqueName: 'home' } as AccountDescription, {} as VendorDescription, [],
-          true, 'google')
+      if (!autoProvisionsAccount || (forcedAccount && filter?.includeForcedAutoProvisionedAccounts)) {
+        subscriber.add(5, { uniqueName: 'work' } as AccountDescription, {} as VendorDescription, [],
+            true, 'google')
+        subscriber.add(6, { uniqueName: 'home' } as AccountDescription, {} as VendorDescription, [],
+            true, 'google')
+      }
       subscriber.ready()
       return Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} })
     },
     startCreationConfigurator,
     ensureAccountResources,
+    connectAccount,
+    provisionAmbientAccount,
   }
   const overseer = {
     getGatekeeperById: async () => ({
@@ -205,6 +215,68 @@ const accountButton = (name: string) => button(b => b.textContent?.startsWith(na
 const reportReady = () => act(() => testState.reportReady!(true))
 
 describe('CreationAccountModal', () => {
+  it('provisions an account without OAuth and lets the user approve the creation', async () => {
+    const { onChoose } = await renderModal(undefined, { autoProvisionsAccount: true })
+    expect(approveButton().disabled).toBe(true)
+    provisionAmbientAccount.mockImplementation(async () => {
+      await testState.subscriber!.add(9, { uniqueName: 'new account' } as AccountDescription,
+        {} as VendorDescription, [], true, 'google')
+    })
+
+    await act(async () => accountButton('Connect Google').click())
+
+    expect(provisionAmbientAccount).toHaveBeenCalledExactlyOnceWith('google')
+    expect(connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+    expect(approveButton().disabled).toBe(false)
+    expect(onChoose).not.toHaveBeenCalled()
+    await act(async () => approveButton().click())
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith({ accountId: 9 })
+  })
+
+  it('reports provisioning errors and lets the user retry without starting OAuth', async () => {
+    await renderModal(undefined, { autoProvisionsAccount: true })
+    provisionAmbientAccount.mockRejectedValueOnce(new Error('Service is disabled.'))
+    const connect = accountButton('Connect Google')
+
+    await act(async () => connect.click())
+
+    expect(testState.toasts).toEqual([
+      { title: 'Service is disabled.', variant: 'error' },
+    ])
+    expect(approveButton().disabled).toBe(true)
+    expect(connect.disabled).toBe(false)
+    await act(async () => connect.click())
+    expect(provisionAmbientAccount).toHaveBeenCalledTimes(2)
+    expect(connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+  })
+
+  it('still opens the account connection flow for an OAuth vendor', async () => {
+    const flow = { url: 'https://example.com/connect', nonce: 'test-nonce' }
+    connectAccount.mockResolvedValue(flow)
+    await renderModal()
+
+    await act(async () => accountButton('Use another Google account').click())
+
+    expect(connectAccount).toHaveBeenCalledExactlyOnceWith('google', undefined)
+    expect(openConnectWindow).toHaveBeenCalledExactlyOnceWith(flow, testState.authenticatedApi)
+    expect(provisionAmbientAccount).not.toHaveBeenCalled()
+  })
+
+  it('lets the user approve with an account already provisioned by the deployment', async () => {
+    const { onChoose } = await renderModal(undefined,
+      { autoProvisionsAccount: true, forcedAccount: true })
+
+    expect(approveButton().disabled).toBe(false)
+    await act(async () => approveButton().click())
+
+    expect(onChoose).toHaveBeenCalledExactlyOnceWith({ accountId: 5 })
+    expect(provisionAmbientAccount).not.toHaveBeenCalled()
+    expect(connectAccount).not.toHaveBeenCalled()
+    expect(openConnectWindow).not.toHaveBeenCalled()
+  })
+
   it('approves with the configuration from the selected account\'s configurator', async () => {
     const { startCreationConfigurator, onChoose } = await renderModal()
     expect(startCreationConfigurator).toHaveBeenLastCalledWith(5, PATTERN)
