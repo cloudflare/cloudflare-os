@@ -41,6 +41,13 @@ async function pngRows(png: Uint8Array): Promise<{ width: number; rows: Uint8Arr
   return { width, rows };
 }
 
+/**
+ * How long a wait on the renderer may take. The first PDF opened in a run makes the PDFium
+ * instance ready, and on a busy machine that alone takes longer than the second a wait is given
+ * unless it says otherwise.
+ */
+const RENDERER_WAIT = { timeout: 10_000 };
+
 /** Whether `a` and `b` hold the same bytes. */
 function same(a: Uint8Array, b: Uint8Array): boolean {
   return a.byteLength === b.byteLength && a.every((byte, i) => byte === b[i]);
@@ -58,10 +65,10 @@ async function firstPageBands(): Promise<{ width: number; bands: RenderedBand[] 
     const answer = await RENDERER.open(byteStream(SCAN.bytes).stream, SCAN.bytes.byteLength);
     if ("refused" in answer) throw new Error(`The PDF was refused (${answer.refused}).`);
     return answer;
-  });
+  }, RENDERER_WAIT);
   const page = await opened.document.renderPage(0, { bands: 4 });
   opened.document[Symbol.dispose]();
-  await vi.waitFor(() => expect(released()).toBe(before + 1));
+  await vi.waitFor(() => expect(released()).toBe(before + 1), RENDERER_WAIT);
   if ("refused" in page) throw new Error(`The page was refused (${page.refused}).`);
   return { width: page.width, bands: page.bands };
 }
@@ -139,7 +146,7 @@ describe("pdfToText with the renderer Worker behind its binding", () => {
     // Every band that has pixels was sent, once for each page, as the rows the renderer gave.
     expect(sent.toSorted()).toEqual([...inked, ...inked].toSorted());
     // The document was let go across the binding, once.
-    await vi.waitFor(() => expect(released()).toBe(before + 1));
+    await vi.waitFor(() => expect(released()).toBe(before + 1), RENDERER_WAIT);
     expect(logs.warn).toEqual([]);
   });
 
@@ -156,7 +163,7 @@ describe("pdfToText with the renderer Worker behind its binding", () => {
     expect(released()).toBe(before);
 
     await reader.cancel();
-    await vi.waitFor(() => expect(released()).toBe(before + 1));
+    await vi.waitFor(() => expect(released()).toBe(before + 1), RENDERER_WAIT);
     // The second page was never rendered or sent.
     expect(sent).toHaveLength(page.bands.filter(band => band.pixels).length);
     expect(asked).toHaveLength(1);
@@ -184,7 +191,7 @@ describe("pdfToText with the renderer Worker behind its binding", () => {
     expect(logs.info.filter(({ event }) => event === "pdf-renderer.page_rendered")).toHaveLength(2);
     expect(sent.toSorted()).toEqual(inked);
     // The document was let go across the binding, once.
-    await vi.waitFor(() => expect(released()).toBe(before + 1));
+    await vi.waitFor(() => expect(released()).toBe(before + 1), RENDERER_WAIT);
     expect(logs.warn).toEqual([]);
   });
 

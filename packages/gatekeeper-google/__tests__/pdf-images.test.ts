@@ -649,6 +649,9 @@ describe("PdfImageScan", () => {
       ), sizes);
       expect(update(foreground(""))).toMatchObject({ masksRedefined: true });
       expect(update(foreground("/SMask 7 0 R"))).toMatchObject({ masksRedefined: true });
+      // Defined again as no image at all.
+      expect(update("6 0 obj\nnull\nendobj\n")).toMatchObject({ masksRedefined: true });
+      expect(update("6 0 obj\n<< /Length 4 >>\nstream\ntext\nendstream\nendobj\n")).toMatchObject({ masksRedefined: true });
       expect(update(imageObject(5, "y"))).not.toHaveProperty("masksRedefined");
     }
     // One mask that two images name, and that one image names twice, is one mask.
