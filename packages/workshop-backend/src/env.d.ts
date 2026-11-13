@@ -20,13 +20,14 @@ declare global {
       // any other value is a deployment. A local instance lifts the limit on what `cf-os api` may do
       // (see the /api route in server.ts).
       WORKSHOP_ENVIRONMENT?: "development" | "test";
-      // The bounds on admin access to workspaces (see admin-access.ts, and docs/admin-access.md,
-      // which also says where each kind of deployment sets them). Admins choose an access level
-      // and an audit retention within them in the admin panel. They are environment variables so
-      // that a compromised admin session cannot widen them.
+      // The bounds on admin access to workspaces and to users' accounts (see admin-access.ts, and
+      // docs/admin-access.md, which also says where each kind of deployment sets them). Admins
+      // choose an access level and an audit retention within them in the admin panel. They are
+      // environment variables so that a compromised admin session cannot widen them.
       //
-      // The most an admin may let AdminApi.inspectWorkspace() show: "off" or "metadata".
-      // "metadata" when unset or blank, and "off" for any value that is not a level.
+      // The most an admin may let AdminApi.inspectWorkspace() and AdminApi.inspectUser() show:
+      // "off" or "metadata". "metadata" when unset or blank, and "off" for any value that is not
+      // a level.
       ADMIN_WORKSPACE_ACCESS_MAX?: string;
       // The fewest days the admin audit log keeps a record, whatever admins choose: a positive
       // whole number. 90 when unset, blank or invalid.
