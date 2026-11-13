@@ -1,6 +1,7 @@
 // Exercises the push-authorization wiring in the Overseer itself -- submitAction's ancestry
 // verification + marking walk, applyPendingAction's action-scoped GitCache stub and mark
-// conversion, and removeGatekeeper's queued-push cleanup -- over real SQLite DO storage. The
+// conversion, removeGatekeeper's queued-push cleanup, and rejectAction's handling of a queued
+// push whose connection is still there or already removed -- over real SQLite DO storage. The
 // WorkspaceGitCache semantics themselves are covered by git-cache.test.ts on mock storage; this
 // file covers the overseer-side chokepoints those semantics hang off of.
 //
@@ -10,7 +11,7 @@
 // impl.getGatekeeperFacet on the instance, since a real Gatekeeper DO class cannot be minted
 // from a test.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -84,6 +85,13 @@ function pushDescription(heads: string[]): ActionDescription {
     pushedCommits: heads,
     autoApprovable: false,
   };
+}
+
+// Queues one push on the gatekeeper and returns its pending record.
+async function queuePush(impl: any): Promise<any> {
+  let { head } = await seedPushableHistory(impl);
+  await impl.submitAction(GATEKEEPER, 1, pushDescription([head]), { from: "user" });
+  return Array.from(impl.storage.actions.list()).find((a: any) => a.type === "action");
 }
 
 function marksOf(impl: any, actionId: number): string[] {
@@ -178,6 +186,52 @@ describe("push authorization through the Overseer chokepoints", () => {
       expect(marksOf(impl, record.id)).toStrictEqual([]);
       expect(impl.storage.gitObjectMetadata.get(head)?.pendingPush ?? []).toStrictEqual([]);
       // Proof-grade provenance is kept: the base commit's onRemote row survives removal.
+    });
+  });
+
+  it("rejects a queued action after its gatekeeper is removed", async () => {
+    await inOverseer("reject-gatekeeper-removed", async impl => {
+      let record = await queuePush(impl);
+      impl.removeGatekeeper(GATEKEEPER);
+      // A removed connection's facet cannot be restored, so the rejection must not ask for it.
+      impl.getGatekeeperFacet = () => { throw new Error("No facet for a removed connection."); };
+
+      // Nothing queued on a removed connection can apply: there is no queue to drain.
+      await expect(impl.rejectAction(record.id, async () => USER)).resolves.toBeUndefined();
+
+      let stored = impl.storage.actions.get(record.id)!;
+      expect(stored.state).toBe("rejected");
+      expect(stored.resolvedBy).toStrictEqual(USER);
+      expect(stored.appliedAt).toBeInstanceOf(Date);
+      expect(Array.from(impl.storage.actions.byHistoryFilter.get("pending"))).toStrictEqual([]);
+
+      await expect(impl.rejectAction(record.id, async () => USER))
+          .rejects.toThrow("Action is not pending");
+    });
+  });
+
+  it("tells the gatekeeper when the connection still exists", async () => {
+    await inOverseer("reject-gatekeeper-present", async impl => {
+      let record = await queuePush(impl);
+      let facet = { rejectAction: vi.fn() };
+      impl.getGatekeeperFacet = () => facet;
+
+      await expect(impl.rejectAction(record.id, async () => USER)).resolves.toBe(GATEKEEPER);
+
+      expect(facet.rejectAction).toHaveBeenCalledExactlyOnceWith(record.action);
+      expect(impl.storage.actions.get(record.id)!.state).toBe("rejected");
+      expect(marksOf(impl, record.id)).toStrictEqual([]);
+    });
+  });
+
+  it("leaves the action pending when the rejecter cannot be resolved", async () => {
+    await inOverseer("reject-unresolved-rejecter", async impl => {
+      let record = await queuePush(impl);
+      impl.removeGatekeeper(GATEKEEPER);
+
+      await expect(impl.rejectAction(record.id, async () => { throw new Error("No profile."); }))
+          .rejects.toThrow("No profile.");
+      expect(impl.storage.actions.get(record.id)!.state).toBe("pending");
     });
   });
 

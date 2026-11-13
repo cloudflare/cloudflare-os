@@ -5633,7 +5633,8 @@ class OverseerImpl implements AgentHooks {
   // Rejects one pending action (see Overseer.rejectAction()). `resolver` reads the profile of
   // whoever rejects it, and is called only once the action is known to be one that can be
   // rejected. Resolves the connection whose auto-approvals the caller may now drain, or undefined
-  // for a creation, whose connection is removed.
+  // when there is none: for a creation, whose connection is removed, and for an action whose
+  // connection had already been removed, which is rejected with no gatekeeper to notify.
   async rejectAction(id: number, resolver: () => Promise<AiChatAuthorInfo>)
       : Promise<WorkpieceId | undefined> {
     let action = this.storage.actions.get(id);
@@ -5673,14 +5674,17 @@ class OverseerImpl implements AgentHooks {
       return undefined;
     }
 
-    let gatekeeper = await this.getGatekeeperFacet(action.gatekeeperId);
+    // A removed connection has no gatekeeper left to tell: removeGatekeeper() deleted its facet,
+    // and with it whatever the gatekeeper held for this action.
+    let removed = this.storage.gatekeepers.get(action.gatekeeperId) === undefined;
+    let gatekeeper = removed ? undefined : await this.getGatekeeperFacet(action.gatekeeperId);
 
     // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await resolver();
 
     using _decision = this.claimDecision(id);
-    await gatekeeper.rejectAction(action.action);
+    await gatekeeper?.rejectAction(action.action);
 
     action.state = "rejected";
     action.appliedAt = new Date();
@@ -5695,7 +5699,7 @@ class OverseerImpl implements AgentHooks {
     if (action.caller.from === "agent") {
       this.resumeAgentAfterDecision(action.caller.chatId, action.id);
     }
-    return action.gatekeeperId;
+    return removed ? undefined : action.gatekeeperId;
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -6681,7 +6685,7 @@ class OverseerImpl implements AgentHooks {
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
     // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
-    // connection could never be approved or rejected (both dereference the facet).
+    // connection could never be approved: nothing is left to apply it.
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
     if (!gatekeeper) {
       throw new Error(
