@@ -6,6 +6,7 @@
 import type { DocxBorder, DocxTabStop } from "./docx-document";
 import { isOn } from "./ooxml";
 import { attribute, childElements, firstChild, type XmlElement } from "./xml";
+import { fontName } from "./font-name";
 import { lookupTable } from "./lookup-table";
 
 /** A decimal attribute value, or undefined when it is absent or not a plain number. */
@@ -56,8 +57,8 @@ export class Theme {
       if (hex) this.#colors.set(slot.name.replace(/^a:/, ""), hex);
     }
     const fonts = firstChild(elements, "a:fontScheme");
-    this.#majorFont = attribute(firstChild(firstChild(fonts, "a:majorFont"), "a:latin"), "typeface") || undefined;
-    this.#minorFont = attribute(firstChild(firstChild(fonts, "a:minorFont"), "a:latin"), "typeface") || undefined;
+    this.#majorFont = fontName(attribute(firstChild(firstChild(fonts, "a:majorFont"), "a:latin"), "typeface")) || undefined;
+    this.#minorFont = fontName(attribute(firstChild(firstChild(fonts, "a:minorFont"), "a:latin"), "typeface")) || undefined;
   }
 
   /** The Latin font for a theme font name such as `majorHAnsi` or `minorAscii`. */
@@ -180,7 +181,7 @@ export function readRunFormat(properties: XmlElement | undefined, theme: Theme):
   const highlight = attribute(firstChild(properties, "w:highlight"), "w:val");
   return layered<RunFormat>({
     font: theme.font(attribute(fonts, "w:asciiTheme") ?? attribute(fonts, "w:hAnsiTheme"))
-      ?? attribute(fonts, "w:ascii") ?? attribute(fonts, "w:hAnsi"),
+      ?? fontName(attribute(fonts, "w:ascii") ?? attribute(fonts, "w:hAnsi")),
     size: size === undefined ? undefined : size / 2,
     bold: toggle(properties, "w:b"),
     italic: toggle(properties, "w:i"),

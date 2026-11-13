@@ -2,6 +2,7 @@
 // scheme, a master's color map, and the transforms (tint, shade, lumMod, ...) a color element may
 // carry. Colors come out as plain sRGB so a renderer needs no theme.
 
+import { fontName } from "./font-name";
 import { attribute, childAt, childElements, firstChild, type XmlElement } from "./xml";
 import type { SlideColor, SlideFill, SlideGradientStop, SlideOutline } from "./pptx-slide-model";
 import { lookupTable } from "./lookup-table";
@@ -55,8 +56,8 @@ export function readTheme(root: XmlElement | undefined): SlideTheme {
   const format = firstChild(elements, "a:fmtScheme");
   return {
     colors,
-    majorFont: attribute(childAt(fonts, "a:majorFont", "a:latin"), "typeface") || DEFAULT_FONT,
-    minorFont: attribute(childAt(fonts, "a:minorFont", "a:latin"), "typeface") || DEFAULT_FONT,
+    majorFont: fontName(attribute(childAt(fonts, "a:majorFont", "a:latin"), "typeface")) || DEFAULT_FONT,
+    minorFont: fontName(attribute(childAt(fonts, "a:minorFont", "a:latin"), "typeface")) || DEFAULT_FONT,
     fillStyles: childElements(firstChild(format, "a:fillStyleLst")),
     lineStyles: childElements(firstChild(format, "a:lnStyleLst")),
     backgroundFillStyles: childElements(firstChild(format, "a:bgFillStyleLst")),
@@ -73,7 +74,7 @@ export function resolveFont(typeface: string | undefined, theme: SlideTheme): st
   if (!typeface) return theme.minorFont;
   if (typeface.startsWith("+mj")) return theme.majorFont;
   if (typeface.startsWith("+mn")) return theme.minorFont;
-  return typeface;
+  return fontName(typeface);
 }
 
 type Rgb = readonly [number, number, number];

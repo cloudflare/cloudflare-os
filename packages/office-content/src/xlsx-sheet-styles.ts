@@ -2,6 +2,7 @@
 // their colours worked out from the theme, the legacy palette and tints, and the number format
 // each style formats its values with.
 
+import { fontName } from "./font-name";
 import { findRelationship, readPart, type Relationships } from "./ooxml";
 import { attribute, childElements, firstChild, type XmlElement } from "./xml";
 import { builtInFormatCode, INDEXED_COLORS, parseNumberFormat, type NumberFormat } from "./xlsx-sheet-format";
@@ -156,8 +157,6 @@ function resolveColor(element: XmlElement | undefined, palette: Palette): string
 
 const FALLBACK_FONT: SheetFont = { name: "Calibri", size: 11, bold: false, italic: false, underline: "none", strike: false };
 
-const MAX_FONT_NAME = 64;
-
 /** ST_OnOff on a font property: `<b/>` is on unless its `val` says otherwise. */
 function fontFlag(font: XmlElement, name: string): boolean {
   const element = firstChild(font, name);
@@ -173,9 +172,8 @@ function readFont(font: XmlElement, palette: Palette, base: SheetFont): SheetFon
   const color = resolveColor(firstChild(font, "s:color"), palette);
   return {
     // A font that names no typeface or size takes the default font's, as Excel does.
-    // Excel's own font names are at most 31 characters. Every distinct style repeats its font's
-    // name in the key it is shared by, so a longer one would be copied once per style.
-    name: attribute(firstChild(font, "s:name"), "val")?.slice(0, MAX_FONT_NAME) || base.name,
+    // Every distinct style repeats its font's name in the key it is shared by.
+    name: fontName(attribute(firstChild(font, "s:name"), "val")) || base.name,
     size: size >= 1 && size <= 409 ? size : base.size,
     bold: fontFlag(font, "s:b"),
     italic: fontFlag(font, "s:i"),

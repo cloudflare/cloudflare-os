@@ -18,7 +18,7 @@ const CORNER_LIMITS = { maxRows: 40, maxColumns: 20 };
 /** The top-left corner of a workbook's first sheet, drawn card-sized; null when it has no cells. */
 export const sheetThumbnail = async (bytes: Uint8Array, signal: AbortSignal): Promise<ReactNode> => {
   assertOpenXml(bytes);
-  const { sheets, styles } = await readOffice("workbook", bytes, CORNER_LIMITS, signal);
+  const { sheets, styles } = await readOffice("workbook", bytes, CORNER_LIMITS, { signal });
   const [sheet] = sheets;
   if (!sheet || sheet.rowCount === 0) return null;
   return (

@@ -9,7 +9,7 @@ import { ThumbnailStage } from "./ThumbnailStage";
 export const slideThumbnail = async (bytes: Uint8Array, signal: AbortSignal): Promise<ReactNode> => {
   assertOpenXml(bytes);
   // Only the slide a card shows: the viewer reads the whole deck once it is opened.
-  const deck = await readOffice("slides", bytes, { maxSlides: 1 }, signal);
+  const deck = await readOffice("slides", bytes, { maxSlides: 1 }, { signal });
   const [slide] = deck.slides;
   if (!slide) return null;
   return (

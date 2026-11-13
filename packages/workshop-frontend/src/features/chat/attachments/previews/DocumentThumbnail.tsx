@@ -15,7 +15,7 @@ const THUMBNAIL_MARGIN = 28;
 export const documentThumbnail = async (bytes: Uint8Array, signal: AbortSignal): Promise<ReactNode> => {
   assertOpenXml(bytes);
   // Only the start of the document: the viewer reads all of it once it is opened.
-  const document = await readOffice("document", bytes, { maxBlocks: THUMBNAIL_BLOCKS }, signal);
+  const document = await readOffice("document", bytes, { maxBlocks: THUMBNAIL_BLOCKS }, { signal });
   const firstBreak = document.body.findIndex((block) => block.kind === "pageBreak");
   const blocks = document.body.slice(0, Math.min(THUMBNAIL_BLOCKS, firstBreak < 0 ? Infinity : firstBreak));
   if (blocks.length === 0 && document.header.length === 0) return null;

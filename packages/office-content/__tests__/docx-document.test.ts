@@ -216,6 +216,14 @@ describe("readDocxDocument", () => {
     expect(document.body.map(block => block.kind)).toEqual(["paragraph", "pageBreak", "paragraph"]);
   });
 
+  it("keeps no more of a font's name than Office would, however long the file makes it", async () => {
+    const long = "F".repeat(100_000);
+    const document = await readDocxDocument(await buildLayoutDocx({
+      body: paragraph(run("x", `<w:rFonts w:ascii="${long}"/>`)),
+    }));
+    expect(firstRun(paragraphs(document.body)[0]!).font).toHaveLength(64);
+  });
+
   it("keeps no more tab stops for a paragraph than Word allows", async () => {
     const tabs = Array.from({ length: 1_000 }, (_, index) => `<w:tab w:val="left" w:pos="${(index + 1) * 20}"/>`).join("");
     const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x"), `<w:tabs>${tabs}</w:tabs>`) }));

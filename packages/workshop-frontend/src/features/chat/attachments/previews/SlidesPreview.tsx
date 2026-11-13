@@ -19,7 +19,7 @@ const UNSUPPORTED_NAMES: Record<SlideUnsupportedKind, string> = {
 /** A deck's slides, refusing a password-protected file. */
 export const readDeck = async (bytes: Uint8Array): Promise<SlideDeck> => {
   assertOpenXml(bytes);
-  return readOffice("slides", bytes, {});
+  return readOffice("slides", bytes, {}, { ahead: true });
 };
 
 const listFormat = new Intl.ListFormat("en", { type: "conjunction" });

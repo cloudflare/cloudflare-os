@@ -2,6 +2,7 @@ import type { OfficeRead, OfficeReadOptions, OfficeReadRequest, OfficeReadRespon
 
 interface Job {
   readonly request: OfficeReadRequest;
+  readonly ahead: boolean;
   readonly resolve: (result: unknown) => void;
   readonly reject: (error: unknown) => void;
 }
@@ -57,15 +58,20 @@ const pump = () => {
 
 const aborted = (signal: AbortSignal | undefined) => signal?.reason ?? new DOMException("Aborted", "AbortError");
 
-/**
- * Reads an Office file in a worker, so that however long a file takes, the page stays responsive.
- * Aborting `signal` drops the read if it is still waiting, or stops the worker if it has started.
- */
+/** How a read is queued. */
+export interface OfficeReadHow {
+  /** Aborting it drops the read if it is still waiting, or stops the worker if it has started. */
+  readonly signal?: AbortSignal;
+  /** Read before the reads waiting that are not: a file someone opened, ahead of cards' thumbnails. */
+  readonly ahead?: boolean;
+}
+
+/** Reads an Office file in a worker, so that however long a file takes, the page stays responsive. */
 export const readOffice = <R extends OfficeRead>(
   read: R,
   bytes: Uint8Array,
   options: OfficeReadOptions<R>,
-  signal?: AbortSignal,
+  { signal, ahead = false }: OfficeReadHow = {},
 ): Promise<OfficeReadResult<R>> => new Promise((resolve, reject) => {
   if (signal?.aborted) {
     reject(aborted(signal));
@@ -73,6 +79,7 @@ export const readOffice = <R extends OfficeRead>(
   }
   const job: Job = {
     request: { id: nextId++, read, bytes, options },
+    ahead,
     resolve: (result) => resolve(result as OfficeReadResult<R>),
     reject,
   };
@@ -85,6 +92,7 @@ export const readOffice = <R extends OfficeRead>(
       stopWorker(aborted(signal));
     }
   }, { once: true });
-  queue.push(job);
+  const behind = ahead ? queue.findIndex((waiting) => !waiting.ahead) : -1;
+  queue.splice(behind < 0 ? queue.length : behind, 0, job);
   pump();
 });

@@ -22,15 +22,28 @@ it("drops a read still waiting its turn when it is aborted", async () => {
   const bytes = await docx("First");
   const abort = new AbortController();
   const first = readOffice("document", bytes, {});
-  const second = readOffice("document", bytes, {}, abort.signal);
+  const second = readOffice("document", bytes, {}, { signal: abort.signal });
   abort.abort();
   await expect(second).rejects.toMatchObject({ name: "AbortError" });
   expect(firstText(await first)).toBe("First");
 });
 
+it("reads a file someone opened before the thumbnails waiting", async () => {
+  const [card, other, opened] = await Promise.all([docx("Card"), docx("Other"), docx("Opened")]);
+  const order: string[] = [];
+  const track = (name: string, read: Promise<unknown>) => read.then(() => order.push(name));
+  await Promise.all([
+    track("card", readOffice("document", card, {})),
+    track("other", readOffice("document", other, {})),
+    track("opened", readOffice("document", opened, {}, { ahead: true })),
+  ]);
+  // The first card was already being read; the opened file goes before the card still waiting.
+  expect(order).toEqual(["card", "opened", "other"]);
+});
+
 it("stops the worker for a read aborted while running, and reads the next file in a new one", async () => {
   const abort = new AbortController();
-  const running = readOffice("document", await docx("Gone"), {}, abort.signal);
+  const running = readOffice("document", await docx("Gone"), {}, { signal: abort.signal });
   abort.abort();
   await expect(running).rejects.toMatchObject({ name: "AbortError" });
   expect(firstText(await readOffice("document", await docx("Next"), {}))).toBe("Next");
