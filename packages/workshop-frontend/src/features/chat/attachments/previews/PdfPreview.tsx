@@ -17,6 +17,11 @@ const DEFAULT_ASPECT = 11 / 8.5;
  * A page can claim any shape, and one a hundred thousand times taller than wide is not a page.
  */
 const MAX_ASPECT = 40;
+/**
+ * The most pages shown. A page is drawn only near the viewport, but each still has its
+ * placeholder and observer, and a few kilobytes of PDF can claim a million pages.
+ */
+const MAX_PAGES = 500;
 
 /**
  * One page: a placeholder of the right shape until it nears the viewport, then the page drawn at
@@ -163,10 +168,16 @@ export const PdfPreview = ({ bytes }: AttachmentPreviewProps) => {
       : failure;
   }
 
+  const pageCount = doc ? Math.min(doc.numPages, MAX_PAGES) : 0;
   return (
-    <div className="min-h-full px-4 py-4">
-      <div ref={containerRef} className="flex flex-col items-center gap-3">
-        {doc ? Array.from({ length: doc.numPages }, (_, index) => (
+    <div className="min-h-full">
+      {doc && doc.numPages > MAX_PAGES && (
+        <div className="sticky top-0 z-10 border-b border-kumo-line bg-kumo-elevated px-4 py-2 text-center text-[12px] leading-4 text-kumo-subtle">
+          Only the first {MAX_PAGES} pages are shown. Download the file to see everything.
+        </div>
+      )}
+      <div ref={containerRef} className="flex flex-col items-center gap-3 px-4 py-4">
+        {doc ? Array.from({ length: pageCount }, (_, index) => (
           <PdfPage key={index} doc={doc} pageNumber={index + 1} width={width} />
         )) : (
           <div className="grid h-40 place-items-center" role="status" aria-label="Loading preview">

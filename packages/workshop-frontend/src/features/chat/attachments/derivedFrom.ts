@@ -12,6 +12,13 @@ export const derivedFrom = <T>(
   let derived = cache.get(bytes);
   if (!derived) cache.set(bytes, derived = new Map());
   let result = derived.get(derive) as Promise<T> | undefined;
-  if (!result) derived.set(derive, result = derive(bytes));
+  if (!result) {
+    const made = derive(bytes);
+    derived.set(derive, result = made);
+    // A read stopped because another file was opened is read again when this one is reopened.
+    made.catch((error: unknown) => {
+      if (error instanceof DOMException && error.name === "AbortError" && derived.get(derive) === made) derived.delete(derive);
+    });
+  }
   return result;
 };

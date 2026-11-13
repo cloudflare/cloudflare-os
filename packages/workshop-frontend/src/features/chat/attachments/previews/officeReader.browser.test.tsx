@@ -38,6 +38,13 @@ it("reads a file someone opened in a worker of its own, which a stopped card rea
   expect(firstText(await viewerRead)).toBe("Opened");
 });
 
+it("stops an opened file's read when another file is opened", async () => {
+  const first = readOffice("document", await docx("First"), {}, { lane: "viewer" });
+  const second = readOffice("document", await docx("Second"), {}, { lane: "viewer" });
+  await expect(first).rejects.toMatchObject({ name: "AbortError" });
+  expect(firstText(await second)).toBe("Second");
+});
+
 it("stops the worker for a read aborted while running, and reads the next file in a new one", async () => {
   const abort = new AbortController();
   const running = readOffice("document", await docx("Gone"), {}, { signal: abort.signal });

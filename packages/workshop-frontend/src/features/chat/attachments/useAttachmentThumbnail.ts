@@ -53,7 +53,7 @@ const makeThumbnail = async (
     case "pdf": {
       // pdf.js is large; it loads only once a PDF is on screen.
       const { pdfThumbnail } = await import("./previews/pdfThumbnail");
-      const { image, landscape } = await pdfThumbnail(bytes, THUMBNAIL_WIDTH);
+      const { image, landscape } = await pdfThumbnail(bytes, THUMBNAIL_WIDTH, signal);
       return { type: "image", url: URL.createObjectURL(image), whole: landscape };
     }
     case "image":

@@ -281,6 +281,19 @@ describe("readDocxDocument", () => {
     expect(cellAt(1, 0).margins).toEqual({ top: 0, right: 5, bottom: 0, left: 5 });
   });
 
+  it("gives a last cell spanning several columns the last column's format", async () => {
+    const cell = (label: string, properties = "") => `<w:tc><w:tcPr>${properties}</w:tcPr>${paragraph(run(label))}</w:tc>`;
+    const document = await readDocxDocument(await buildLayoutDocx({
+      styles: '<w:style w:type="table" w:styleId="Last"><w:name w:val="Last"/><w:tblStylePr w:type="lastCol"><w:rPr><w:b/></w:rPr></w:tblStylePr></w:style>',
+      body:
+        '<w:tbl><w:tblPr><w:tblStyle w:val="Last"/><w:tblLook w:firstRow="0" w:lastRow="0" w:firstColumn="0" w:lastColumn="1" w:noHBand="1" w:noVBand="1"/></w:tblPr>' +
+        '<w:tblGrid><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/><w:gridCol w:w="1000"/></w:tblGrid>' +
+        `<w:tr>${cell("a")}${cell("wide", '<w:gridSpan w:val="2"/>')}</w:tr></w:tbl>`,
+    }));
+    const [row] = (document.body[0] as DocxTable).rows;
+    expect(row!.cells.map(tableCell => firstRun(paragraphs(tableCell.blocks)[0]!).bold)).toEqual([false, true]);
+  });
+
   it("merges cells across rows and columns", async () => {
     const cell = (label: string, properties = "") => `<w:tc><w:tcPr>${properties}</w:tcPr>${paragraph(run(label))}</w:tc>`;
     const document = await readDocxDocument(await buildLayoutDocx({

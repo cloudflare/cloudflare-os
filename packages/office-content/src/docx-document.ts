@@ -1004,12 +1004,13 @@ type RegionKind = "table" | "row" | "column" | "cell";
  * first and last row, first and last column, then the corners. Bands are counted past a first row
  * or column that has its own format.
  */
-function conditionalRegions(row: number, column: number, shape: TableShape): { type: string; kind: RegionKind }[] {
+function conditionalRegions(row: number, column: number, span: number, shape: TableShape): { type: string; kind: RegionKind }[] {
   const { look, format } = shape;
   const firstRow = look.firstRow && row === 0;
   const lastRow = look.lastRow && row === shape.rows - 1;
   const firstColumn = look.firstColumn && column === 0;
-  const lastColumn = look.lastColumn && column === shape.columns - 1;
+  // A last cell spanning several columns is in the last column too.
+  const lastColumn = look.lastColumn && column + span >= shape.columns;
   const regions: { type: string; kind: RegionKind }[] = [];
   if (look.bandedColumns && !firstColumn && !lastColumn) {
     const band = Math.floor((column - (look.firstColumn ? 1 : 0)) / Math.max(1, format.columnBandSize ?? 1));
@@ -1064,7 +1065,7 @@ function readCell(cell: GridCell, at: { row: number; rowSpan: number }, shape: T
     left: cell.column === 0,
     right: cell.column + cell.span >= shape.columns,
   };
-  const regions = conditionalRegions(at.row, cell.column, shape)
+  const regions = conditionalRegions(at.row, cell.column, cell.span, shape)
     .flatMap(({ type, kind }): { region: TableStyleRegion; kind: RegionKind }[] => {
       const region = style.conditional.get(type);
       return region ? [{ region, kind }] : [];
