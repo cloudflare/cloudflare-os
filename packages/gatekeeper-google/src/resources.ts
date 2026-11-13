@@ -481,8 +481,8 @@ export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): b
  * second consent. A read and write binding's scope and access level stay enforced in code.
  */
 export function withDriveWrites(resourceUrlPatterns: readonly string[]): string[] {
-  return hasDriveResourceGrant(resourceUrlPatterns) && !resourceUrlPatterns.includes(DRIVE_WRITES_GRANT)
-    ? [...resourceUrlPatterns, DRIVE_WRITES_GRANT]
+  return hasDriveResourceGrant(resourceUrlPatterns)
+    ? [...new Set([...resourceUrlPatterns, DRIVE_WRITES_GRANT])]
     : [...resourceUrlPatterns];
 }
 
