@@ -142,6 +142,10 @@ describe("parseNumberFormat", () => {
     // Seconds round, hours and minutes do not.
     ["hh:mm", 0.999988, "23:59"],
     ["hh:mm:ss", 0.9999999, "00:00:00"],
+    // The day only moves on with the clock: a format showing no time keeps the serial's own day.
+    ["yyyy-mm-dd hh:mm:ss", 45000.999996, "2023-03-16 00:00:00"],
+    ["m/d/yyyy", 45000.999996, "3/15/2023"],
+    ["dddd", 45000.999996, "Wednesday"],
     // The 1900 date system and its 29 February that never was.
     ["yyyy-mm-dd", 1, "1900-01-01"],
     ["yyyy-mm-dd", 59, "1900-02-28"],

@@ -603,14 +603,19 @@ function pad(value: number, width: number): string {
   return String(value).padStart(width, "0");
 }
 
+const TIME_PARTS: ReadonlySet<DatePart> = new Set(["h", "hh", "min", "minmin", "s", "ss", "ampm", "ap", "[h]", "[m]", "[s]"]);
+
 function renderDate(section: Section, serial: number, date1904: boolean): string {
   // Excel has no dates before its epoch and fills the cell with hashes instead.
   if (serial < 0 || serial >= 2_958_466) return "########";
   const subsecond = section.tokens.find(token => token.kind === "subsecond");
   const precision = 10 ** (subsecond?.kind === "subsecond" ? Math.min(subsecond.digits, 3) : 0);
-  // Seconds round to what the format shows; hours and minutes then only ever truncate.
+  // Seconds round to what the format shows; hours and minutes then only ever truncate. A format
+  // that shows no time keeps the day the serial is in, however late in it.
+  const showsTime = section.tokens.some(token => token.kind === "subsecond" || (token.kind === "date" && TIME_PARTS.has(token.part)));
   let days = Math.floor(serial);
   let ticks = Math.round((serial - days) * DAY_SECONDS * precision);
+  if (ticks >= DAY_SECONDS * precision && !showsTime) ticks = DAY_SECONDS * precision - 1;
   if (ticks >= DAY_SECONDS * precision) {
     days++;
     ticks -= DAY_SECONDS * precision;

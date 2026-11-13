@@ -32,6 +32,13 @@ export type * from "./pptx-slide-model";
 /** The most slides `readPptxSlides` returns; a longer presentation is reported as truncated. */
 export const MAX_SLIDES = 200;
 
+/**
+ * The most shapes, paragraphs and runs the slides before a slide may hold between them for that
+ * slide to be read; the rest are reported as truncated. Every slide builds its master's and
+ * layout's shapes again, so without this a small file could ask for millions of them.
+ */
+export const MAX_DECK_CONTENT = 200_000;
+
 const EMU_PER_POINT = 12700;
 /** 10 by 7.5 inches, the size of a presentation that states none. */
 const DEFAULT_SIZE = { width: 720, height: 540 };
@@ -61,7 +68,7 @@ export async function readPptxSlides(bytes: Uint8Array): Promise<SlideDeck> {
     const relationship = relationships.get(attribute(slideId, "r:id") ?? "");
     if (!relationship || relationship.external || relationship.type !== "slide" || !zip.has(relationship.target)) continue;
     if (seen.has(relationship.target)) continue;
-    if (slides.length >= MAX_SLIDES) {
+    if (slides.length >= MAX_SLIDES || reader.content >= MAX_DECK_CONTENT) {
       truncated = true;
       break;
     }
@@ -83,6 +90,15 @@ export async function readPptxSlides(bytes: Uint8Array): Promise<SlideDeck> {
     truncated,
     unsupported: [...reader.unsupported],
   };
+}
+
+/** What a shape counts towards `MAX_DECK_CONTENT`: itself, its cells, and its paragraphs and their runs. */
+function contentOf(shape: SlideShape): number {
+  const text = (body: SlideTextBody | undefined) =>
+    body ? body.paragraphs.reduce((sum, paragraph) => sum + 1 + paragraph.runs.length, 0) : 0;
+  if (shape.kind === "shape") return 1 + text(shape.text);
+  if (shape.kind !== "table") return 1;
+  return shape.rows.reduce((sum, row) => sum + row.cells.reduce((cells, cell) => cells + 1 + text(cell.text), 0), 1);
 }
 
 function emu(value: string | undefined): number | undefined {
@@ -151,6 +167,8 @@ const DEFAULT_CORNER = 16667;
 
 class DeckReader {
   readonly unsupported = new Set<SlideUnsupportedKind>();
+  /** How many shapes, paragraphs and runs the slides read so far hold. */
+  content = 0;
   readonly #layouts = new Map<string, Promise<LayoutPart>>();
   readonly #masters = new Map<string, Promise<MasterPart>>();
 
@@ -318,6 +336,7 @@ class DeckReader {
       }
       if (shape) {
         if (shape.kind === "unsupported") this.unsupported.add(shape.what);
+        this.content += contentOf(shape);
         out.push(shape);
       }
     }

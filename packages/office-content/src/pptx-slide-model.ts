@@ -201,7 +201,7 @@ export interface SlideDeck {
   readonly width: number;
   readonly height: number;
   readonly slides: readonly Slide[];
-  /** True when the presentation has more slides than the reader returns. */
+  /** True when the presentation has more slides, or more on them, than the reader returns. */
   readonly truncated: boolean;
   /** The kinds of uninterpreted content the returned slides hold. */
   readonly unsupported: readonly SlideUnsupportedKind[];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SLIDES, readPptxSlides, type SlideDeck, type SlideDrawnShape, type SlideShape } from "../src/pptx-slides";
+import { MAX_DECK_CONTENT, MAX_SLIDES, readPptxSlides, type SlideDeck, type SlideDrawnShape, type SlideShape } from "../src/pptx-slides";
 import { buildDeck, drawnShape, slideParagraph, transform, type DeckFixture } from "./test-fixtures";
 
 async function deckOf(fixture: DeckFixture): Promise<SlideDeck> {
@@ -36,6 +36,15 @@ describe("readPptxSlides", () => {
   it("caps the slides it returns and says so", async () => {
     const deck = await deckOf({ slides: Array.from({ length: MAX_SLIDES + 1 }, () => ({ shapes: "" })) });
     expect(deck.slides).toHaveLength(MAX_SLIDES);
+    expect(deck.truncated).toBe(true);
+  });
+
+  it("stops reading slides once the ones before hold more than a deck may, however small the file", async () => {
+    const shape = drawnShape({ properties: transform(0, 0, INCH, INCH), body: slideParagraph("x") });
+    const perSlide = 1_000;
+    const deck = await deckOf({ masterShapes: shape.repeat(perSlide), slides: Array.from({ length: 100 }, () => ({ shapes: "" })) });
+    // Each shape counts with its paragraph and its run.
+    expect(deck.slides).toHaveLength(Math.ceil(MAX_DECK_CONTENT / (perSlide * 3)));
     expect(deck.truncated).toBe(true);
   });
 
