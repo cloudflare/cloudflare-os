@@ -21,7 +21,7 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     containsRestrictedData: scenario.restricted,
   }
   const implemented: Record<string | symbol, unknown> = {
-    openWorkspace: () => overseer,
+    openWorkspace: () => overseer.open(),
     listModels: async () => [AGENT],
     listWorkspaces: async () => [workspace],
     // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.

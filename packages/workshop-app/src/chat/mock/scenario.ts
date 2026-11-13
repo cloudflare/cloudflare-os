@@ -237,6 +237,8 @@ type StepEffect =
   | { message: MessageSource }
   | { metadata: Partial<Omit<AiChatMetadata, 'id'>> }
   | { agentActive: boolean }
+  /** The workspace restarts, as for a deploy, and is back after this many milliseconds. */
+  | { restart: number }
 
 /**
  * One thing the fake server does. It follows the previous step after `delay` milliseconds, or

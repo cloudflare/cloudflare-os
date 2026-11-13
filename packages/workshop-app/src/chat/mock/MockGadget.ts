@@ -4,6 +4,12 @@ import type { UiBundle } from '@gadgets/workshop-shared/api'
 // What a gadget's UI takes to load, so that loading can be seen.
 const LOAD_TIME = 500
 
+/** What a handle's calls fail with once the workspace has restarted under it. */
+export const RESTARTED = new Error('The workspace restarted.')
+
+/** One `openWorkspace`, which the workspace restarting breaks, as it does an RPC stub. */
+export type Handle = { broken: boolean; onBroken: Set<(error: unknown) => void> }
+
 type Task = { text: string; done: boolean }
 
 /** The gadget's server side, which its page calls over the connection it asks for. */
@@ -59,11 +65,14 @@ const render = (doc) => {
 render(await gadget.getDocument())
 `
 
-/** A gadget in the fake workspace, whatever its id: a review's to-do list. */
+/**
+ * A gadget in the fake workspace, whatever its id: a review's to-do list. `backUp` waits for a
+ * workspace that is restarting to be back.
+ */
 export class MockGadget {
   #document: { title: string; tasks: Task[] }
 
-  constructor(title: string) {
+  constructor(title: string, private readonly backUp: () => Promise<void>) {
     this.#document = {
       title,
       tasks: [
@@ -76,15 +85,26 @@ export class MockGadget {
     }
   }
 
-  async getUiBundle(): Promise<UiBundle | null> {
-    await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
-    return { jsCode: UI_CODE }
+  /** The gadget, through the workspace's `handle`, which breaks with it. */
+  open(handle: Handle) {
+    const reachable = async () => {
+      await this.backUp()
+      if (handle.broken) throw RESTARTED
+    }
+    return {
+      getUiBundle: async (): Promise<UiBundle | null> => {
+        await reachable()
+        await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
+        return { jsCode: UI_CODE }
+      },
+      connectToGadget: async () => {
+        await reachable()
+        const server = new MockGadgetServer(this.#document)
+        return Object.assign(server, { onRpcBroken: (callback: (error: unknown) => void) => void handle.onBroken.add(callback) })
+      },
+      onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(RESTARTED) : void handle.onBroken.add(callback)),
+      // Nothing to release: the fake workspace keeps its gadgets.
+      [Symbol.dispose]: () => {},
+    }
   }
-
-  async connectToGadget() {
-    return new MockGadgetServer(this.#document)
-  }
-
-  /** Nothing to release: the fake workspace keeps its gadgets. */
-  [Symbol.dispose]() {}
 }

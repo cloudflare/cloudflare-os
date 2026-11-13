@@ -27,6 +27,7 @@ import {
   when,
   type MessageSource,
   type Scenario,
+  type ScriptStep,
 } from './scenario'
 
 const DOCUMENT: BlueprintOutput = { id: 'document', noun: 'Document', plural: 'Documents', icon: 'fileText' }
@@ -428,6 +429,43 @@ const sendRefused: Scenario = {
   script: when('onSend', turn(say(agent({ text: 'Got it, and the file too. The slowdown was the cache warming after the deploy at 09:30.' })))),
 }
 
+/** Has the first of `steps` wait `delay` milliseconds. */
+const after = (delay: number, [first, ...rest]: ScriptStep[]): ScriptStep[] => {
+  if (!first) return []
+  const { on: _on, ...effect } = first
+  return [{ ...effect, delay } as ScriptStep, ...rest]
+}
+
+const hiring = 'I’ll add a hiring section after the highlights: two backend engineers in Q4, and a platform lead early next year. It is in the document now.'
+
+const workspaceRestart: Scenario = {
+  id: 'workspace-restart',
+  title: 'Q3 review doc',
+  description:
+    'The workspace restarts while the agent is writing, as for a deploy, and is back a few seconds later. ' +
+    'The conversation stays as it is, then is read again and carries on; what was being written starts over, ' +
+    'as the server writes it again. Open the document beside the chat first to see it reload quietly, and ' +
+    'type a draft to see it kept.',
+  history: history([
+    user('Write up the Q3 platform review as a doc.'),
+    agent({ toolCalls: [createDoc] }),
+    changes({ author: AGENT, createdGadgets: [{ gadgetId: 41, title: 'Q3 platform review', bindingName: 'REVIEW' }] }),
+    agent({ text: 'The review is drafted, with the highlights first.' }),
+    changes(),
+    merge(),
+    user('Add a section on hiring.'),
+  ]),
+  script: [
+    ...turn(
+      { message: agent({ toolCalls: [call('readFile', { workpiece: 'REVIEW', filename: 'content.md' })] }), delay: 2500 },
+      streamText(hiring.slice(0, 60)),
+      { restart: 3000, delay: 300 },
+      // Once the workspace is back, the reply is written again from the start.
+      after(3500, say(agent({ text: hiring }))),
+    ),
+  ],
+}
+
 const steerSlash: Scenario = {
   id: 'steer-slash',
   title: 'Release notes',
@@ -512,6 +550,7 @@ export const SCENARIOS: Scenario[] = [
   output,
   errors,
   sendRefused,
+  workspaceRestart,
   steerSlash,
   longHistory,
 ]

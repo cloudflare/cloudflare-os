@@ -94,7 +94,10 @@ export type ChatOverseer = Pick<Overseer, Calls> & {
     subscriber: Parameters<RpcStub<Overseer>['subscribeToActions']>[0],
     startAfter?: Date,
   ): ReturnType<Overseer['subscribeToActions']>
-} & Disposable
+} & Disposable & {
+  /** Calls `callback` once the workspace can no longer be reached through this, such as when it restarted. */
+  onRpcBroken(callback: (error: unknown) => void): void
+}
 
 const sameSteer = (a: PendingSteer, b: PendingSteer) => a.text === b.text && a.from === b.from
 
@@ -146,6 +149,9 @@ const QUOTE_SEARCH_PAGES = 20
 /** How many earlier pages are fetched to see everything a chat's changes would accept. */
 const EPOCH_SEARCH_PAGES = 20
 
+// After the workspace was lost, it is connected to again at once, then after these, doubling.
+const RETRY_DELAY = { first: 1000, most: 10_000 }
+
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
@@ -163,6 +169,10 @@ export class ChatSession {
   #leases: Promise<Disposable>[] = []
   // Bumped by every start() and stop(), so work from an earlier run can tell it is stale.
   #run = 0
+  #started = false
+  // Between attempts to connect again after the workspace was lost: how long the next waits.
+  #retryDelay = 0
+  #retry: ReturnType<typeof setTimeout> | undefined
 
   // Events that arrive while the initial load is still running are held until the history is in,
   // so they are applied on top of it rather than replaced by it.
@@ -224,6 +234,7 @@ export class ChatSession {
 
   start() {
     const run = ++this.#run
+    this.#started = true
     this.#reset()
     this.#publish(LOADING)
     void this.#load(run, false)
@@ -231,6 +242,9 @@ export class ChatSession {
 
   stop() {
     this.#run++
+    this.#started = false
+    this.#retryDelay = 0
+    clearTimeout(this.#retry)
     this.#reset()
     this.#release()
   }
@@ -241,8 +255,15 @@ export class ChatSession {
    * place, so a reader keeps their place. Nothing, for a session that is not started.
    */
   reconnect() {
-    if (!this.#overseer) return
+    if (!this.#started) return
+    this.#retryDelay = 0
+    this.#reconnect(0)
+  }
+
+  /** Reconnects after `delay` milliseconds. */
+  #reconnect(delay: number) {
     const run = ++this.#run
+    clearTimeout(this.#retry)
     this.#release()
     const refreshing = this.#snapshot.status === 'ready'
     if (refreshing) {
@@ -254,7 +275,23 @@ export class ChatSession {
       this.#reset()
       this.#publish(LOADING)
     }
-    void this.#load(run, refreshing)
+    if (delay === 0) return void this.#load(run, refreshing)
+    this.#retry = setTimeout(() => {
+      if (run === this.#run) void this.#load(run, refreshing)
+    }, delay)
+  }
+
+  /**
+   * Run `run` lost the workspace, such as when it restarted, or a call to it failed. A
+   * conversation that is shown is connected to again, again and again with growing waits, and
+   * stays as it is until it has been read again; one that is not says why it could not be.
+   */
+  #lost(run: number, error: unknown) {
+    if (run !== this.#run) return
+    if (this.#snapshot.status !== 'ready') return this.#fail(messageOf(error))
+    const delay = this.#retryDelay
+    this.#retryDelay = Math.min(delay ? delay * 2 : RETRY_DELAY.first, RETRY_DELAY.most)
+    this.#reconnect(delay)
   }
 
   #release() {
@@ -559,19 +596,17 @@ export class ChatSession {
         overseer.subscribeToActions(new ActionUpdates((record) => this.#live(run, () => this.#applyAction(record)))),
       ]
       this.#leases = leases
-      for (const lease of leases) {
-        lease.catch((error) => {
-          if (run === this.#run) this.#fail(messageOf(error))
-        })
-      }
+      for (const lease of leases) lease.catch((error) => this.#lost(run, error))
+      // Without this, a workspace that restarted would leave the conversation silently still.
+      // It can be called at once, for a workspace that cannot be reached.
+      overseer.onRpcBroken((error) => this.#lost(run, error))
+      if (run !== this.#run) return
 
       // The messages are shown as soon as they arrive; the title and agent state follow from the
       // list, as the workspace has no call for one chat's metadata.
       overseer.listChats().then(
         (chats) => this.#live(run, () => this.#applyListedChat(run, chats.find(({ id }) => id === this.chatId))),
-        (error) => {
-          if (run === this.#run) this.#fail(messageOf(error))
-        },
+        (error) => this.#lost(run, error),
       )
       const history = await overseer.getChatHistory(this.chatId, undefined, HISTORY_PAGE_SIZE)
       if (run !== this.#run) return
@@ -595,10 +630,11 @@ export class ChatSession {
       this.#nextBeforeSequence = nextBeforeSequence
       this.#rebuildFeed()
       this.#loaded = true
+      this.#retryDelay = 0
       for (const apply of this.#early.splice(0)) apply()
       this.#publishReady()
     } catch (error) {
-      if (run === this.#run) this.#fail(messageOf(error))
+      this.#lost(run, error)
     }
   }
 

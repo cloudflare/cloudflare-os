@@ -49,9 +49,10 @@ describe('scenarios', () => {
     const { ready, seen } = await watch(played, ({ rows }) => of(rows(), 'notice').map(({ notice }) => notice))
 
     expect(seen).not.toContain('unknown')
-    expect(ready()).toMatchObject({ activity: undefined, work: [], agentActive: false, actionError: undefined })
+    // A workspace that restarted is read again once it is back, a few seconds on.
+    await vi.waitFor(() => expect(ready()).toMatchObject({ activity: undefined, work: [], agentActive: false, actionError: undefined }), { timeout: 5000 })
     expect(of(ready().items, 'user').filter(({ unread }) => unread)).toEqual([])
-  })
+  }, 10_000)
 
   it('plain: the reply is thought about, then written, and joins the conversation only when done', async () => {
     const { ready, seen } = await watch(scenario('plain'), (chat) => [`${chat.ready().activity}: ${chat.making().join()}; ${chat.ready().items.length} rows`])
@@ -177,6 +178,29 @@ describe('scenarios', () => {
     expect(ready().sendError).toBeUndefined()
     await playThrough(overseer)
     expect(rows().map(({ kind }) => kind).slice(before)).toEqual(['user', 'assistant'])
+  })
+
+  it('workspace-restart: the conversation stays as it is while the workspace is down, then is read again and carries on', async () => {
+    vi.useFakeTimers()
+    const played = scenario('workspace-restart')
+    const { overseer, ready } = await open(played)
+    const restart = played.script.findIndex((step) => 'restart' in step)
+    while (overseer.player.getSnapshot().position < restart) overseer.player.step()
+    const before = ready()
+    expect(before.activity).toBe('Writing…')
+
+    overseer.player.step()
+    await vi.advanceTimersByTimeAsync(2900)
+    expect(ready()).toBe(before)
+
+    await vi.advanceTimersByTimeAsync(200)
+    // Read again: what was being written is gone, to be written again from the start.
+    expect(ready().items).toEqual(before.items)
+    expect(ready()).toMatchObject({ activity: 'Thinking…', agentActive: true })
+
+    await playThrough(overseer)
+    expect(ready()).toMatchObject({ activity: undefined, agentActive: false })
+    expect(ready().items.at(-1)).toMatchObject({ kind: 'assistant', text: expect.stringContaining('hiring section') })
   })
 
   it('steer-slash: a steer waits unread and is the same row once read; the compaction is marked', async () => {
