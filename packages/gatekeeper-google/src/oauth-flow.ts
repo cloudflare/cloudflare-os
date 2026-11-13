@@ -1,4 +1,6 @@
-import { resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns } from "./resources";
+import {
+  resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns, withDriveWrites,
+} from "./resources";
 
 const FLOW_KEY = "oauthFlow";
 const NONCE_LIFETIME_MS = 10 * 60 * 1000;
@@ -52,7 +54,7 @@ export function prepareOAuthFlow(kv: SynchronousKv, initiationNonce: string,
     expiresAt: now + NONCE_LIFETIME_MS,
     stage: "initiation",
     mode,
-    requestedResources: [...requestedResources],
+    requestedResources: withDriveWrites(requestedResources),
   });
 }
 

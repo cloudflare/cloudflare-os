@@ -11,6 +11,7 @@ import { FakeKv } from "./fake-kv";
 
 const TEN_MINUTES = 10 * 60 * 1000;
 const OAUTH_REDIRECT_URI = "https://gatekeeper-google.example.workers.dev/oauth";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 
 /**
  * A reconnect begun for `requested`: the scopes its consent asks Google for, with the grants of
@@ -84,31 +85,42 @@ describe("stored OAuth flow", () => {
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
+      DRIVE_SCOPE,
     ]);
+  });
+
+  it("asks for the Drive writes grant with any Google Drive resource, once", () => {
+    const FOLDER = GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern;
+    for (let requested of [[FOLDER], [FOLDER, DRIVE_WRITES_GRANT], [DRIVE_WRITES_GRANT, FOLDER]]) {
+      let { kv, scopes } = begun(requested);
+      expect(scopes, String(requested)).toContain(DRIVE_SCOPE);
+      let recorded = claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources;
+      expect(recorded?.filter(pattern => pattern === DRIVE_WRITES_GRANT), String(requested)).toHaveLength(1);
+      expect(recorded, String(requested)).toContain(FOLDER);
+    }
+
+    // A Doc on its own, BigQuery, and a sign-in that asks for no resource: no Drive writes.
+    for (let requested of [[GOOGLE_DOC_RESOURCE.urlPattern], [BIGQUERY_RESOURCE.urlPattern], []]) {
+      let { kv, scopes } = begun(requested);
+      expect(scopes, String(requested)).not.toContain(DRIVE_SCOPE);
+      expect(claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources, String(requested)).toEqual(requested);
+    }
   });
 
   it("leaves a withheld grant's scopes out of what a consent asks for, and keeps the grant in the attempt", () => {
     const FOLDER = GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern;
-    const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
-    let folderAlone = begun([FOLDER]).scopes;
-    expect(folderAlone).toEqual([
+    let { kv, scopes } = begun([FOLDER], [DRIVE_WRITES_GRANT]);
+    expect(scopes).toEqual([
       ...IDENTITY_SCOPES,
       "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]);
-
-    let { kv, scopes } = begun([FOLDER, DRIVE_WRITES_GRANT], [DRIVE_WRITES_GRANT]);
-    expect(scopes).toEqual(folderAlone);
     expect(scopes).not.toContain(DRIVE_SCOPE);
     // The grant is still what completing the consent records.
     expect(claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources)
       .toEqual([FOLDER, DRIVE_WRITES_GRANT]);
-
-    expect(begun([FOLDER, DRIVE_WRITES_GRANT]).scopes).toContain(DRIVE_SCOPE);
-    // A grant the attempt never requested is not there to leave out.
-    expect(begun([FOLDER], [DRIVE_WRITES_GRANT]).scopes).toEqual(folderAlone);
   });
 
   it("binds the OAuth redirect URI to the claimed attempt", () => {
