@@ -1,9 +1,12 @@
 import type { RpcStub } from "capnweb";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import {
-  ADMIN_ACCESS_ERROR_CODES, getAdminAccessErrorCode,
-  type AdminApi, type AdminAuditRecord, type AdminWorkspaceView, type AuthenticatedApi,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, getAdminAccessErrorCode,
+  getAdminWriteErrorCode,
+  type AdminApi, type AdminAuditRecord, type AdminPasskeyChallenge, type AdminWorkspaceView,
+  type AuthenticatedApi,
 } from "@gadgets/workshop-shared/api";
+import { softwareAuthenticator } from "../../workshop-backend/__tests__/software-authenticator.js";
 import { ADMIN_USERNAME, startHarness, type Harness } from "../src/harness.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import { connect, logIn, nextUsernames, signUp, waitFor } from "../src/rpc-client.js";
@@ -93,6 +96,51 @@ it("lets an admin inspect another user's workspace", async () => {
   expect(description).not.toHaveProperty("access");
 });
 
+/**
+ * Expects `api` to refuse every write-request and passkey method as a deployment without
+ * ADMIN_WORKSPACE_WRITES "on" does, recording nothing. Listing and removal still answer, so that
+ * a passkey enrolled while writes were on can be seen and removed; here none ever was.
+ */
+async function expectWritesOff(api: RpcStub<AdminApi>): Promise<void> {
+  expect((await api.getSettings()).adminWorkspaceWrites).toBe(false);
+
+  // Answers that are well formed, to a challenge no server issued.
+  const authenticator = await softwareAuthenticator({ origin: "http://workshop.test" });
+  const unissued: AdminPasskeyChallenge = {
+    challenge: "AAAA", rpId: "workshop.test", credentialIds: [], expiresAt: new Date(0),
+  };
+  const registration = await authenticator.register(unissued);
+  const assertion = await authenticator.assert(unissued);
+  const noRequest = crypto.randomUUID();
+
+  const before = (await api.listAdminAudit({ limit: 1 })).records;
+  const refused: [string, () => PromiseLike<unknown>][] = [
+    ["requestWorkspaceWrite",
+      () => api.requestWorkspaceWrite(workspaceId, "restartWorkspace", {}, REASON)],
+    ["getWorkspaceWrite", () => api.getWorkspaceWrite(noRequest)],
+    ["denyWorkspaceWrite", () => api.denyWorkspaceWrite(noRequest)],
+    ["beginWorkspaceWriteApproval", () => api.beginWorkspaceWriteApproval(noRequest)],
+    ["approveWorkspaceWrite", () => api.approveWorkspaceWrite(noRequest, assertion)],
+    ["beginAdminPasskeyEnrolment", () => api.beginAdminPasskeyEnrolment()],
+    ["addAdminPasskey", () => api.addAdminPasskey("Laptop", registration)],
+  ];
+  for (const [method, call] of refused) {
+    const code = await call().then(() => null, getAdminWriteErrorCode);
+    expect(code, method).toBe(ADMIN_WRITE_ERROR_CODES.writesOff);
+  }
+
+  expect(await api.listAdminPasskeys()).toEqual([]);
+  // No passkey was ever enrolled here, so no ceremony is checked: the id names none.
+  await expect(api.beginAdminPasskeyRemoval("nope")).rejects.toThrow("You have no such passkey.");
+  await expect(api.removeAdminPasskey("nope", assertion))
+      .rejects.toThrow("You have no such passkey.");
+  expect((await api.listAdminAudit({ limit: 1 })).records).toEqual(before);
+}
+
+it("refuses writes to workspaces while ADMIN_WORKSPACE_WRITES is unset", async () => {
+  await expectWritesOff(admin);
+});
+
 it("applies a redeploy's tighter bounds and demotion", async () => {
   await harness.redeployWorkshop(config => {
     config.vars = {
@@ -101,6 +149,8 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
       ADMIN_AUDIT_RETENTION_MIN_DAYS: "120",
       // Not a level, so the cap must fail closed to "off".
       ADMIN_WORKSPACE_ACCESS_MAX: "full",
+      // Not "on", so writes must fail closed to off.
+      ADMIN_WORKSPACE_WRITES: "true",
     };
   });
 
@@ -148,4 +198,6 @@ it("applies a redeploy's tighter bounds and demotion", async () => {
   const demotedRecords = (await fresh.listAdminAudit({ admin: DEMOTED_USERNAME })).records;
   expect(demotedRecords.map(record => record.kind === "workspace" && record.method))
       .toEqual(["describe", "inspectWorkspace"]);
+
+  await expectWritesOff(fresh);
 });
