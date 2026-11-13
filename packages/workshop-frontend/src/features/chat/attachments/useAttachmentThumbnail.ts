@@ -67,8 +67,9 @@ export const hasThumbnail = (format: PreviewFormat | undefined): format is Previ
 
 /**
  * A thumbnail for the card `ref` is attached to, made once the card nears the viewport: a long
- * chat's files are not all fetched to draw cards nobody scrolls to. Null until it is ready, and
- * for a file with none or one that could not be read, where the card shows the file's kind.
+ * chat's files are not all fetched to draw cards nobody scrolls to. `thumbnail` is null until it
+ * is ready, and for a file with none or one that could not be read, where the card shows the
+ * file's kind; `loading` tells the two apart while one is still to come.
  */
 export const useAttachmentThumbnail = <E extends Element>(
   format: PreviewFormat | undefined,
@@ -76,6 +77,7 @@ export const useAttachmentThumbnail = <E extends Element>(
 ) => {
   const ref = useRef<E>(null);
   const [thumbnail, setThumbnail] = useState<AttachmentThumbnail | null>(null);
+  const [settled, setSettled] = useState(false);
   const loadRef = useRef(load);
   loadRef.current = load;
 
@@ -97,10 +99,11 @@ export const useAttachmentThumbnail = <E extends Element>(
             if (url) URL.revokeObjectURL(url);
           } else {
             setThumbnail(made);
+            setSettled(true);
           }
         })
-        // The card keeps its icon; opening the file reports what is wrong with it.
-        .catch(() => {});
+        // The card shows its icon; opening the file reports what is wrong with it.
+        .catch(() => { if (!cancelled) setSettled(true); });
     }, { rootMargin: "200px" });
     observer.observe(element);
     return () => {
@@ -111,5 +114,5 @@ export const useAttachmentThumbnail = <E extends Element>(
     };
   }, [format]);
 
-  return { ref, thumbnail };
+  return { ref, thumbnail, loading: hasThumbnail(format) && !settled };
 };

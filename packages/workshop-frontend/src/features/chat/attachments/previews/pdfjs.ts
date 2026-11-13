@@ -40,4 +40,7 @@ export const openPdf = (bytes: Uint8Array): PDFDocumentLoadingTask => getDocumen
   standardFontDataUrl: `${PDFJS_ASSETS}standard_fonts/`,
   wasmUrl: `${PDFJS_ASSETS}wasm/`,
   iccUrl: `${PDFJS_ASSETS}iccs/`,
+  // An image is decoded at the size the file declares before it is scaled to the canvas, so a few
+  // hundred bytes could claim a picture of gigabytes. One past this is left off its page.
+  maxImageSize: MAX_CANVAS_PIXELS,
 });

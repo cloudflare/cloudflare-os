@@ -1,3 +1,4 @@
+import { SkeletonLine } from "@cloudflare/kumo";
 import type { AttachmentKind } from "./attachmentKind";
 import { ATTACHMENT_KIND_ICONS } from "./attachmentKindIcons";
 import type { AttachmentThumbnail } from "./useAttachmentThumbnail";
@@ -7,14 +8,19 @@ const NAME_CLASS =
 
 /**
  * What a card shows for a file that is not itself a picture: a glimpse of its content when there
- * is a thumbnail, and its kind's icon above its name when there is not.
+ * is a thumbnail, the shimmer an uploading card has while one is being made, and its kind's icon
+ * above its name when there is none.
  */
-export const AttachmentCardFace = ({ name, kind, thumbnail }: {
+export const AttachmentCardFace = ({ name, kind, thumbnail, loading }: {
   name: string;
   kind: AttachmentKind;
   thumbnail: AttachmentThumbnail | null;
+  loading: boolean;
 }) => {
   const KindIcon = ATTACHMENT_KIND_ICONS[kind];
+  if (!thumbnail && loading) {
+    return <SkeletonLine minWidth={100} maxWidth={100} className="h-full w-full" />;
+  }
   if (!thumbnail) {
     return (
       <span className="flex h-full flex-col justify-between p-2.5 sm:p-3">

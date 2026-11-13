@@ -79,16 +79,18 @@ describe("ComposerAttachmentTray", () => {
     expect(onRemove).not.toHaveBeenCalled();
   });
 
-  it("shows an image as a preview and any other file as an icon card with its name", () => {
+  it("shows an image as a preview, a file with no thumbnail as an icon card with its name, and shimmers one still to come", () => {
     const view = render([
       attachment({ id: "img", name: "photo.png", mimeType: "image/png", previewUrl: "blob:photo" }),
+      attachment({ id: "zip", name: "bundle.zip", mimeType: "application/zip" }),
       attachment({ id: "doc", name: "report.pdf" }),
     ]);
 
     const image = view.querySelector("img")!;
     expect(image.getAttribute("src")).toBe("blob:photo");
     expect(view.querySelectorAll("img")).toHaveLength(1);
-    expect(view.textContent).toContain("report.pdf");
+    expect(view.textContent).toContain("bundle.zip");
+    expect(view.textContent).not.toContain("report.pdf");
     expect(view.textContent).not.toContain("photo.png");
   });
 

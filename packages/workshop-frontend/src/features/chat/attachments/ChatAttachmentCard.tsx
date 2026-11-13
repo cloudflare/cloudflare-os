@@ -43,7 +43,7 @@ export const ChatAttachmentCard = ({
     kind === "image" ? attachment.content : undefined, attachment.mimeType);
   const [imageFailed, setImageFailed] = useState(false);
   const showsImage = imageUrl !== null && !imageFailed;
-  const { ref, thumbnail } = useAttachmentThumbnail<HTMLDivElement>(
+  const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
     previewFormat(attachment.mimeType, attachment.name), loadContent);
 
   return (
@@ -56,13 +56,14 @@ export const ChatAttachmentCard = ({
           <img
             src={imageUrl}
             alt=""
+            loading="lazy"
             onError={() => setImageFailed(true)}
             className={prominent
               ? "block max-h-[220px] min-h-[90px] w-auto min-w-[90px] max-w-full object-cover sm:max-w-[320px]"
               : "block h-full w-full object-cover"}
           />
         ) : (
-          <AttachmentCardFace name={name} kind={kind} thumbnail={thumbnail} />
+          <AttachmentCardFace name={name} kind={kind} thumbnail={thumbnail} loading={loading} />
         )}
         <span aria-hidden="true" className={OUTLINE_CLASS} />
         <button type="button" onClick={onOpen} aria-label={`Preview ${name}`} className={OPEN_BUTTON_CLASS} />

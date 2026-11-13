@@ -52,10 +52,11 @@ afterEach(async () => {
 
 const mount = async (
   attachments: ChatAttachmentRef[],
-  files: Record<string, Uint8Array | Error>,
+  files: Record<string, Uint8Array | Error | Promise<Uint8Array>>,
 ) => {
   const loadContent = vi.fn<(attachment: ChatAttachmentRef) => Promise<Uint8Array>>(async (attachment) => {
     const file = files[attachment.id];
+    if (file instanceof Promise) return file;
     if (!file || file instanceof Error) throw file ?? new Error("missing");
     return file;
   });
@@ -130,6 +131,16 @@ it("shows a glimpse of a file's content on its card", async () => {
   await expect.poll(() => card("budget.xlsx").textContent).toContain("North");
   // The PDF's first page, drawn to a picture.
   await expect.poll(() => card("report.pdf").querySelector("img")?.naturalWidth).toBeGreaterThan(0);
+});
+
+it("shimmers a card while its thumbnail is made, and shows the file's name if none can be", async () => {
+  const { promise, reject } = Promise.withResolvers<Uint8Array>();
+  const loadContent = await mount([ref("plan.docx", "application/octet-stream")], { "plan.docx": promise });
+  const card = () => page.getByRole("button", { name: "Preview plan.docx" }).element().parentElement!;
+  await expect.poll(() => loadContent.mock.calls.length).toBe(1);
+  expect(card().textContent).not.toContain("plan.docx");
+  await act(async () => reject(new Error("offline")));
+  await expect.poll(() => card().textContent).toContain("plan.docx");
 });
 
 it("steps through a message's attachments with the arrow keys and closes on Escape", async () => {

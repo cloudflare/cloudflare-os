@@ -43,7 +43,7 @@ export const ComposerAttachmentCard = ({
   const failed = attachment.uploadState === "error";
   const uploading = attachment.uploadState === "uploading";
   // An image is its own thumbnail (`previewUrl`).
-  const { ref, thumbnail } = useAttachmentThumbnail<HTMLDivElement>(
+  const { ref, thumbnail, loading } = useAttachmentThumbnail<HTMLDivElement>(
     attachment.previewUrl ? undefined : previewFormat(attachment.mimeType, attachment.name),
     loadContent,
   );
@@ -71,7 +71,7 @@ export const ComposerAttachmentCard = ({
             </span>
           </div>
         ) : (
-          <AttachmentCardFace name={name} kind={kind} thumbnail={thumbnail} />
+          <AttachmentCardFace name={name} kind={kind} thumbnail={thumbnail} loading={loading} />
         )}
         <span aria-hidden="true" className={OUTLINE_CLASS} />
         {/* The file is on this device, so it can be opened whether or not its upload worked. */}
