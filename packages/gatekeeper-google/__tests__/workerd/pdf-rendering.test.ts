@@ -18,6 +18,8 @@ const RENDERER = env.PDF_RENDERER as unknown as PdfRendering;
 const SCAN = imagePdf([faxMarks(), faxMarks()]);
 /** What Workers AI's conversion answers for a PDF with no text of its own. */
 const SCANNED_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\n\n\n\n\n### Page 2\n\n\n";
+/** What it answers for a PDF whose first page has text and whose second has none. */
+const MIXED_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\nCover sheet of the ledger\n\n\n\n### Page 2\n\n\n";
 
 /** The rows a grey PNG holds, inflated, without their filter bytes. */
 async function pngRows(png: Uint8Array): Promise<{ width: number; rows: Uint8Array }> {
@@ -159,6 +161,31 @@ describe("pdfToText with the renderer Worker behind its binding", () => {
     expect(sent).toHaveLength(page.bands.filter(band => band.pixels).length);
     expect(asked).toHaveLength(1);
     expect(logs.info.filter(({ event }) => event === "pdf-renderer.page_rendered")).toHaveLength(2);
+  });
+
+  it("reads the page without text of a PDF that has text from its image, into the PDF's own text", async () => {
+    const page = await firstPageBands();
+    const before = released();
+    const { ai, sent } = bandModel(page, MIXED_MARKDOWN);
+    const { asked, readRange } = ranges();
+
+    const result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange, RENDERER);
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: true });
+    expect(asked).toEqual([]);
+    const inked = page.bands.flatMap((band, i) => band.pixels ? [i + 1] : []);
+    expect(await new Response(result.text).text()).toBe(
+      "### Page 1\nCover sheet of the ledger\n\n\n\n### Page 2\n" +
+      "[This page has no text of its own: what follows was read from its image by a vision model, which can misread.]" +
+      `\n\n${inked.map(place => `band ${place}`).join("\n")}\n\n`);
+
+    // The file was read whole once, only its second page was rendered, and each of that page's
+    // bands sent as the rows the renderer gave.
+    expect(asked).toEqual([{ offset: 0, length: SCAN.bytes.byteLength }]);
+    expect(logs.info.filter(({ event }) => event === "pdf-renderer.page_rendered")).toHaveLength(2);
+    expect(sent.toSorted()).toEqual(inked);
+    // The document was let go across the binding, once.
+    await vi.waitFor(() => expect(released()).toBe(before + 1));
+    expect(logs.warn).toEqual([]);
   });
 
   it("fails the text as a changed file when the file read again is not the size it was", async () => {

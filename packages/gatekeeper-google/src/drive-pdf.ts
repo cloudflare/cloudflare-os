@@ -3,6 +3,8 @@
 // pages are transcribed by a vision model instead, one at a time, as the text is read. A scan
 // small enough is read again, whole, into the PDF renderer, which draws each page and cuts it
 // into bands for the model to read; a larger one has its page images sent as they are stored.
+// A PDF that has text and images both keeps its text, and when asked the pages of it that have
+// none are rendered and read the same way, each under a line that says so.
 
 import type { Logger } from "@gadgets/observability/logger";
 import {
@@ -89,7 +91,8 @@ export type PdfRead = DrivePdfText & { rereads: boolean };
  * Converts one PDF, read from a stream, to its text. It may resolve before reading `pdf` to its end,
  * so a caller that checks the file after converting it must see the end itself. With `readRange`,
  * a PDF that has no text has its pages transcribed, read through it: the whole file when its
- * pages are rendered, or a page image at a time.
+ * pages are rendered, or a page image at a time. One that has text may have its pages without
+ * any rendered and read the same way.
  */
 export type PdfConverter = (
   pdf: ReadableStream<Uint8Array>, readRange?: PdfRangeReader,
@@ -128,6 +131,18 @@ const REDUCED_PAGE =
   "\n\n[This page was read from a drawing at half the usual resolution, which is what its size allowed, so its text may be less exact.]";
 /** What ends the text of a PDF the renderer has no room for, or that could not reach it. */
 const RENDERER_BUSY = "The PDF's pages cannot be rendered to be read just now; read the PDF again in a minute.";
+/** What heads the text read from the image of a page without text, in a PDF that has text. */
+const READ_FROM_IMAGE =
+  "[This page has no text of its own: what follows was read from its image by a vision model, which can misread.]";
+/** What stands for the first page without text that could not be read, in a PDF that has text. */
+const UNREAD_PAGES = "[Pages of this PDF that have no text of their own could not be read just now.]";
+/**
+ * The line breaks on end that come before every page heading of a conversion but the first: two
+ * that end the page before, and two between pages.
+ */
+const HEADING_BREAKS = 4;
+/** What a conversion puts under the heading of a page without text that another page follows. */
+const NO_TEXT = "\n\n\n\n";
 /**
  * The largest image sent to be transcribed: a page image as it is stored, and the PNG made of one
  * or of a rendered band. Workers AI refuses a request body somewhere between a 12 MiB and a 16 MiB
@@ -162,23 +177,29 @@ const BAND_STEP_BYTES = 64 * 1024;
  */
 export class TranscriptionRefusal extends Error {}
 
-/** One page of a transcription, as a {@link PageSource} gives it. */
+/** One page of a transcription, or one piece of a PDF's own text, as a {@link PageSource} gives it. */
 type SourcedPage =
   /** The page's image as the file stores it: the model's answer to it is the page's text. */
   | { image: ImageSource }
   /** All that comes under the heading of a page that has been read already. */
-  | { text: string };
+  | { text: string }
+  /** A piece of a text that has its page headings in it: given as it is. */
+  | { own: string };
 
-/** Where a text's pages come from: the file's page images as stored, or the renderer. */
+/**
+ * Where a text's pages come from: the file's page images as stored, the renderer, or the PDF's
+ * own text with the pages that have none read by the renderer.
+ */
 type PageSource = {
   /**
-   * The page that comes `index`th, from 0, or `undefined` when there is no more. Asked for in order, each only once the text has been read up to it.
+   * What comes `index`th, from 0: a page, or a piece of a PDF's own text. `undefined` when
+   * there is no more. Asked for in order, each only once the text has been read up to it.
    * `signal` is aborted when the text ends first, after which nothing this gives is used, and
    * `moved` is to be called whenever what is waited for moves, so that a page that takes long
    * is not taken for a text that sits idle.
    */
   next(index: number, signal: AbortSignal, moved: () => void): Promise<SourcedPage | undefined>;
-  /** What a log line says of the page that comes `index`th: nothing when it is not known to be one. */
+  /** What a log line says of what comes `index`th: nothing when it is not known to be a page. */
   fields(index: number): { page?: number; imageEncoding?: string };
   /**
    * Lets go of what the source holds, once what it has in flight has ended. Called when the text
@@ -207,8 +228,11 @@ type PageSource = {
  * whose images are all pieces of pages or masks has no page image to send. An encrypted PDF is
  * refused either way.
  *
- * A PDF with any text of its own is returned as that text: no model is called and nothing is
- * read again.
+ * A PDF with text of its own is returned as that text. With `readRange` and `renderer`, one of
+ * up to `fileBytes` that also holds an image of any kind has its pages without text rendered
+ * and read as the text is: see {@link mixedPages}. Its text then keeps the heading of every
+ * page from the first, is still the document's own (`transcribed` is false), and reads the file
+ * again. For any other PDF with text no model is called and nothing is read again.
  */
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
@@ -286,6 +310,19 @@ export async function pdfToText(
       });
     }
     return { text: transcription(ai, gatewayId, pages), hasText, transcribed: true, rereads: true };
+  }
+
+  // Pages are read into the text only when the scan saw the whole file, and so knows what
+  // images it holds, and the text begins under the heading that follows those passed, each of
+  // them a page without text's: what came before it is then such pages, from the first, which
+  // are given back as a conversion gives them.
+  let found = renderer && scanned ? scan?.end() : undefined;
+  if (found && found.images.length + found.pieces + found.pageMasks > 0 &&
+      found.bytes <= RENDER_LIMITS.fileBytes && start.passedEmpty &&
+      first!.startsWith(`### Page ${start.passed + 1}\n`)) {
+    let pages = mixedPages(
+      conversion, start.passed, first!, renderedPdf(ai, gatewayId, found, readRange!, renderer!));
+    return { text: transcription(ai, gatewayId, pages), hasText, transcribed: false, rereads: true };
   }
 
   let encoder = new TextEncoder();
@@ -723,6 +760,214 @@ function renderedPages(
   };
 }
 
+/**
+ * A page of a PDF's own text that has none: its number, from 1, and how many line breaks came
+ * after its heading's line, which are all its section held.
+ */
+type EmptyPage = { page: number; breaks: number };
+
+/**
+ * Reads a conversion's text, from its first page heading on, for the pages that have no text.
+ * What it is fed comes back as it was, in pieces, but for the line breaks that are all a page's
+ * section holds: those are counted, not kept, and stand among the pieces as an
+ * {@link EmptyPage}, in whose place the page's text is put when its image is read, or the line
+ * breaks given back.
+ *
+ * A line is a page's heading only when it reads "### Page N" with N one more than the page
+ * before, from 1, and comes first of all or after {@link HEADING_BREAKS} line breaks on end.
+ * The conversion passes a line of the document's own that reads so as it is, but it follows a
+ * line of the page's text or the page's heading directly, where no heading does. A heading is
+ * given as soon as its line has ended, and only a line that may yet be the next heading is held.
+ */
+class PageSections {
+  /** The last page whose heading was read. */
+  #page = 0;
+  /** Line breaks on end before the line being read: as many as a heading follows, to begin with. */
+  #breaks = HEADING_BREAKS;
+  /** The line being read, from its start, while it may yet be the next page's heading. */
+  #line: string | undefined;
+  /** Line breaks counted since a page's heading, while its section has held nothing else. */
+  #empty: number | undefined;
+
+  /** Reads the next piece of the text. */
+  feed(data: string): (string | EmptyPage)[] {
+    let pieces: (string | EmptyPage)[] = [];
+    let own = "";
+    /** Takes `text` for the document's own, after the line breaks counted before it. */
+    let take = (text: string) => {
+      own += "\n".repeat(this.#empty ?? 0) + text;
+      this.#empty = undefined;
+      this.#line = undefined;
+      this.#breaks = 0;
+    };
+    for (let at = 0; at < data.length;) {
+      let end = data.indexOf("\n", at);
+      let part = data.slice(at, end < 0 ? data.length : end);
+      at = end < 0 ? data.length : end + 1;
+      let heading = `### Page ${this.#page + 1}`;
+      if (part !== "") {
+        let line = (this.#line ?? "") + part;
+        let held = this.#line !== undefined || this.#breaks >= HEADING_BREAKS;
+        if (held && heading.startsWith(line)) this.#line = line;
+        else take(line);
+      }
+      if (end < 0) break;
+      if (this.#line === heading) {
+        if (this.#empty !== undefined) {
+          if (own !== "") pieces.push(own);
+          pieces.push({ page: this.#page, breaks: this.#empty });
+          own = "";
+        }
+        own += `${heading}\n`;
+        this.#page++;
+        this.#empty = 0;
+        this.#line = undefined;
+        this.#breaks = 1;
+        continue;
+      }
+      if (this.#line !== undefined) take(this.#line);
+      if (this.#empty === undefined) own += "\n";
+      else this.#empty++;
+      this.#breaks++;
+    }
+    if (own !== "") pieces.push(own);
+    return pieces;
+  }
+
+  /** Reads the end of the text: a line it ends in is text, and a last page may have none. */
+  end(): (string | EmptyPage)[] {
+    if (this.#line !== undefined) return ["\n".repeat(this.#empty ?? 0) + this.#line];
+    return this.#empty === undefined ? [] : [{ page: this.#page, breaks: this.#empty }];
+  }
+}
+
+/**
+ * The text of a PDF that has text of its own, with the pages of it that have none read from
+ * their images. It is the conversion's text from its first page heading on: `passed` pages
+ * without text, whose headings the search for the text went past and are given again as the
+ * conversion gives them, then `first`, then what `conversion` goes on to give. Read through
+ * {@link PageSections}, it is passed on as it is, so that a PDF none of whose pages is read from
+ * its image has the conversion's text to the byte.
+ *
+ * A page whose section holds nothing but line breaks, and that `pdf` has, is rendered once the
+ * text has been read up to it; `pdf` is opened for the first such page. When the page draws an
+ * image and is not blank, the vision model reads it, and what it reads takes the place of the
+ * line breaks: under {@link READ_FROM_IMAGE} and an empty line, followed by the lines that say
+ * it was cut off or drawn at a lower resolution, and by an empty line. A page that draws no
+ * image, is blank, could not be drawn within the renderer's limits, or reads as nothing is
+ * left as the conversion gave it.
+ *
+ * The document's own text is worth more than the pages missing from it, so what keeps a page
+ * from being read does not fail the text: a PDF the renderer does not open, or renders no
+ * further, and a page the model fails on, are logged by their reason, that page gets
+ * {@link UNREAD_PAGES} in place of its text, and no page after it is rendered. The text does
+ * fail with what a read of the file failed with, a changed file included, since it is then the
+ * text of another version; and with a failure of the conversion's, in our words.
+ */
+function mixedPages(
+  conversion: MarkdownConversion, passed: number, first: string | undefined, pdf: RenderedPdf,
+): PageSource {
+  let sections = new PageSections();
+  /** What was read of the text and is yet to be given, and whether that was the end of it. */
+  let pieces: (string | EmptyPage)[] = [];
+  let ended = false;
+  /** How many of the pages before the text's first have been given their headings again. */
+  let led = 0;
+  /** The page being read from its image, while one is. */
+  let page: number | undefined;
+  /** Whether no further page is rendered. */
+  let gaveUp = false;
+  /** Gives up on the pages without text, at one that is given a line to say so. */
+  let giveUp = (): string => {
+    gaveUp = true;
+    pdf.release();
+    return `${UNREAD_PAGES}\n\n`;
+  };
+
+  /** Reads on in the text, as far as the next piece of it, or to its end. */
+  let more = async (signal: AbortSignal, moved: () => void) => {
+    let data: string | undefined;
+    if (led < passed) {
+      data = `### Page ${++led}\n${NO_TEXT}`;
+    } else if (first !== undefined) {
+      data = first;
+      first = undefined;
+    } else {
+      try {
+        data = await conversion.next();
+      } catch (error) {
+        // Ending the text ends a read in progress as if the response had broken off.
+        throw signal.aborted ? error : reported(error);
+      }
+      moved();
+    }
+    ended = data === undefined;
+    pieces = data === undefined ? sections.end() : sections.feed(data);
+  };
+
+  /** What takes the place of an empty page's line breaks, or `undefined` to leave them. */
+  let read = async (
+    index: number, signal: AbortSignal, moved: () => void,
+  ): Promise<string | undefined> => {
+    if (pdf.pages === undefined) {
+      let unopened = await pdf.open(signal, moved);
+      if (unopened) {
+        renderFailed(unopened);
+        return giveUp();
+      }
+    }
+    if (index >= pdf.pages!) return undefined;
+    let drawn = await pdf.render(index, signal, moved);
+    if ("reason" in drawn) {
+      renderFailed(drawn);
+      return giveUp();
+    }
+    // Only a page that draws an image and has ink is taken for one a model can read: a page
+    // without an image is a drawing. A page whose objects were not all looked at may draw an
+    // image that was not counted, so it is read. One that could not be drawn has nothing to
+    // show for itself either.
+    if ("refused" in drawn || drawn.blank || (drawn.images === 0 && drawn.surveyed)) return undefined;
+    let text: string, cutOff: boolean;
+    try {
+      ({ text, cutOff } = await pdf.read(drawn, index, signal, moved));
+    } catch (error) {
+      if (signal.aborted || !transcriptionFailed(error, { page: index + 1 })) throw error;
+      return giveUp();
+    }
+    if (text === "") return undefined;
+    return `${READ_FROM_IMAGE}\n\n${text}${cutOff ? CUT_OFF : ""}${drawn.reduced ? REDUCED_PAGE : ""}\n\n`;
+  };
+
+  let next = async (signal: AbortSignal, moved: () => void): Promise<SourcedPage | undefined> => {
+    for (;;) {
+      while (pieces.length === 0) {
+        if (ended) return undefined;
+        await more(signal, moved);
+        // A response that had arrived whole ends, when the text does, as if it had ended of
+        // itself: no page is begun for a text that has ended.
+        signal.throwIfAborted();
+      }
+      let piece = pieces.shift()!;
+      if (typeof piece === "string") return { own: piece };
+      page = piece.page;
+      let text = gaveUp ? undefined : await read(page - 1, signal, moved);
+      page = undefined;
+      text ??= "\n".repeat(piece.breaks);
+      // A pull that is given nothing is not called again, so go on until there is text.
+      if (text !== "") return { own: text };
+    }
+  };
+
+  return {
+    next: (_index, signal, moved) => pdf.during(next(signal, moved)),
+    fields: () => page === undefined ? {} : { page },
+    release() {
+      void conversion.cancel().catch(() => undefined);
+      pdf.release();
+    },
+  };
+}
+
 /** `bytes` as a stream that hands them over {@link BAND_STEP_BYTES} at a time, as they are read. */
 function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
   let at = 0;
@@ -748,6 +993,9 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  * nothing moving, counted from now, which errors the text: a cancel sent over RPC is not
  * delivered while a read is waiting on the model, so a model that stalls would otherwise hold
  * the page's request, and whatever the text's reads rely on, for good.
+ *
+ * The text of a PDF that has text of its own is read the same way, and ends the same ways.
+ * `pages` then gives it in pieces, its page headings in them, and each is passed on as it is.
  *
  * However the text ends, what `pages` has in flight is given up and what it holds let go.
  *
@@ -823,6 +1071,10 @@ function transcription(
             if (!page) {
               letGo();
               return controller.close();
+            }
+            if ("own" in page) {
+              index++;
+              return give(page.own);
             }
             let heading = `${index > 0 ? "\n\n" : ""}### Page ${index + 1}\n`;
             if ("text" in page) {
@@ -917,7 +1169,8 @@ function reported(error: unknown): unknown {
  * Finds where a conversion's text begins: past the preamble at the very start, blank lines, and
  * "### Page N" headings of the pages before the first with text. It holds only the line being read
  * (from its first character that is not whitespace, at most {@link MAX_HEADING_CHARS} of it), the
- * last heading seen, and what remains of the piece in which the text begins.
+ * last heading seen, what it counts of those before it and of the line breaks since it, and what
+ * remains of the piece in which the text begins.
  */
 class TextStart {
   /**
@@ -925,8 +1178,18 @@ class TextStart {
    * once found.
    */
   text: string | undefined;
+  /** How many headings came before the last one seen. */
+  passed = 0;
+  /**
+   * Whether the line breaks from each of those headings to the one after it were a page without
+   * text's: the heading's own, then {@link NO_TEXT}. A line of a page's own that reads as a
+   * heading follows that page's heading, or a line of its text, directly.
+   */
+  passedEmpty = true;
   /** Characters of the preamble matched so far, or -1 once it has been passed or ruled out. */
   #preamble = 0;
+  /** Line breaks read since the last heading. */
+  #breaks = 0;
   #line = "";
   /** Whether the line being read began with whitespace, which a heading never does. */
   #indented = false;
@@ -971,6 +1234,7 @@ class TextStart {
         } else {
           this.#line = "";
           this.#indented = false;
+          this.#breaks++;
         }
       } else if (this.#line === "" && /\s/.test(ch)) {
         this.#indented = true;
@@ -985,7 +1249,12 @@ class TextStart {
   #lineIsText(): boolean {
     if (this.#line === "") return false;
     if (this.#indented || !PAGE_HEADING.test(this.#line)) return true;
+    if (this.#heading !== undefined) {
+      this.passed++;
+      this.passedEmpty &&= this.#breaks === 1 + NO_TEXT.length;
+    }
     this.#heading = this.#line;
+    this.#breaks = 0;
     return false;
   }
 

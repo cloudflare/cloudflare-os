@@ -970,6 +970,32 @@ describe("Drive PDF reads", () => {
     await vi.waitFor(() => expect(queue.released).toBe(true));
   });
 
+  it("reads a page without text into a PDF's own text from its image, once the text is read, holding a queue until it ends", async () => {
+    providerDownload = range => rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN);
+    const converter = renderingConverter(undefined, MIXED_MARKDOWN);
+    const { queue, session } = directSession(converter.convert);
+
+    const result = await session.readPdf("pdf-1", { ocr: true });
+    session[Symbol.dispose]();
+    expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
+    expect(result).toMatchObject({ hasText: true, transcribed: false });
+    // The file is not read again, and the queue is kept, until the text is read.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(providerRanges).toEqual([null]);
+    expect(queue.released).toBe(false);
+
+    const transcript = await new Response(result.text).text();
+    const bands = converter.images().length;
+    expect(bands).toBeGreaterThan(1);
+    expect(transcript).toBe(
+      "### Page 1\n" +
+      "[This page has no text of its own: what follows was read from its image by a vision model, which can misread.]" +
+      `\n\n${Array.from({ length: bands }, () => MODEL_TEXT).join("\n")}\n\n### Page 2\nAppendix of the ledger\n\n`);
+    expect(providerRanges).toEqual([null, FAX_RANGE]);
+    expect(queue.observations.map(o => o.description).at(-1)).toBe(WHOLE_READ);
+    await vi.waitFor(() => expect(queue.released).toBe(true));
+  });
+
   it("holds no queue for a PDF with text that holds no image, and reads nothing of it again", async () => {
     const converter = renderingConverter(undefined, MIXED_MARKDOWN);
     const { queue, session } = directSession(converter.convert);

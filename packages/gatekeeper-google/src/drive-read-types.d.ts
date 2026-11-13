@@ -156,11 +156,11 @@ export type DriveSessionSearchQuery =
 /** How `readPdf()` reads a PDF. */
 export type DrivePdfReadOptions = {
   /**
-   * Transcribe a scanned or image-only PDF, which has no text of its own, by having a vision
-   * model read its pages. Off by default, since the model's calls are billed: up to four for a
-   * page that is drawn, more when a part of it is asked for again, and one for a page read as
-   * the file stores it (see `readPdf()`). A PDF with any text of its own is returned as that
-   * text whether or not this is set.
+   * Have a vision model read the pages that have no text of their own: every page of a scanned
+   * or image-only PDF, and the pages without text of a PDF that has text on others. Off by
+   * default, since the model's calls are billed: up to four for a page that is drawn, more when
+   * a part of it is asked for again, and one for a page read as the file stores it (see
+   * `readPdf()`). The text of the pages that have any is returned whether or not this is set.
    */
   ocr?: boolean;
 };
@@ -169,19 +169,21 @@ export type DrivePdfReadOptions = {
 export type DrivePdfText = {
   /**
    * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
-   * headings, and pages before the first with text left out. Read it with
+   * headings, and pages before the first with text left out, unless pages without text are read
+   * into it with `ocr: true` (see `readPdf()`). Read it with
    * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
    * `hasText` is false and `transcribed` is too. A failure partway through errors the stream.
    *
-   * When `transcribed`, the pages are read only as you read the text, a page at a time, so stop
-   * reading, and cancel, to stop paying for pages you do not need. Read it straight away and
-   * without long pauses: a transcription with nothing moving for a minute, because it was left
-   * unread or the model stopped answering, is ended with an error. It also errors when the file
-   * has changed since `readPdf()` read it, as its pages are read from Drive again while the text
-   * is; when the model fails on a page; and when the pages have to be drawn and cannot be: at
-   * all, as for a file that does not open or has more than 2,000 pages, or just now. A text that
-   * errors did not give the whole PDF, whatever its error says: read the PDF again, a minute
-   * later when it had given nothing.
+   * With `ocr: true`, a text whose pages the model reads (a scan's, or that of a PDF with text
+   * that holds an image) has them read only as you read it, a page at a time, so stop reading,
+   * and cancel, to stop paying for pages you do not need. Read any `ocr: true` text straight
+   * away and without long pauses: such a text with nothing moving for a minute, because it was
+   * left unread or the model stopped answering, is ended with an error. It also errors when the
+   * file has changed since `readPdf()` read it, as its pages are read from Drive again while the
+   * text is; when the model fails on a page of a scanned PDF; and when a scanned PDF's pages
+   * have to be drawn and cannot be: at all, as for a file that does not open or has more than
+   * 2,000 pages, or just now. A text that errors did not give the whole PDF, whatever its error
+   * says: read the PDF again, a minute later when it had given nothing.
    *
    * Each line quoted here is a note on its page, not the document's text. A page the model
    * read may end with "[The transcription of this page was cut off.]" or "[This page was read
@@ -189,7 +191,11 @@ export type DrivePdfText = {
    * be less exact.]". A page of a scanned PDF may have for its text "[This page could not be
    * drawn within the memory and work a page is allowed, so it was not read.]" or "[This page
    * came out blank: it has nothing on it, or its image could not be read.]"; a page with nothing
-   * on it has its heading alone.
+   * on it has its heading alone. In a PDF with text of its own, what the model read of a page
+   * comes under "[This page has no text of its own: what follows was read from its image by a
+   * vision model, which can misread.]", and "[Pages of this PDF that have no text of their own
+   * could not be read just now.]" stands for the first page that could not be read: neither it
+   * nor the pages without text after it were, and the rest of the text is whole.
    */
   text: ReadableStream<Uint8Array>;
   /** False for a scanned or image-only PDF, which has no text layer. */
@@ -198,7 +204,8 @@ export type DrivePdfText = {
    * True when `text` is a vision model's reading of the page images of a PDF with no text of its
    * own, which `readPdf()` gives only with `ocr: true`. It is not the document's own text: the
    * model can misread, most often small print and the codes, numbers and names in it, so check
-   * anything that matters against the file.
+   * anything that matters against the file. False for a PDF that has text, also when the model
+   * read the pages of it that have none: the text says which.
    */
   transcribed: boolean;
 };
@@ -327,7 +334,15 @@ export interface GoogleDriveReadSession {
    * images that are all too small to be pages, or masks; and when an edit to the file replaced
    * an image that had a mask.
    *
-   * Where pages cannot be drawn at all, every scan is read as a larger one is.
+   * A PDF that has text is returned as that text. With `{ ocr: true }`, one of up to 16 MiB
+   * that holds an image also has each page without text drawn as `text` is read up to it, and
+   * a page that shows an image read by the model as a scan's page is, into the text under its
+   * heading (see `DrivePdfText.text`). `hasText` is still true and `transcribed` false, the
+   * text keeps every page's heading from the first, and a page that cannot be read does not
+   * fail it.
+   *
+   * Where pages cannot be drawn at all, every scan is read as a larger one is, and a PDF that
+   * has text is returned as that text alone.
    */
   readPdf(fileId: string, options?: DrivePdfReadOptions): Promise<DrivePdfText>;
 
