@@ -525,8 +525,9 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
   "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
   // The signing secret of the PagerDuty webhook a tunnel delivers to; unset, hooks are refused.
   "gatekeeper-pagerduty": ["PAGERDUTY_WEBHOOK_SECRET"],
-  // The most Google Drive connections may do; unset, read and write.
-  "gatekeeper-google": ["GOOGLE_DRIVE_ACCESS"],
+  // The most Google Drive connections may do (unset, read and write), and whether a vision model
+  // reads the pages of a PDF that have no text (unset, it does).
+  "gatekeeper-google": ["GOOGLE_DRIVE_ACCESS", "PDF_OCR"],
   // The Entra tenant (or allowlist of tenant IDs) to accept, which must be set or the gatekeeper
   // refuses to start, the most agents may do in SharePoint, Outlook and Calendar (unset: write, send
   // and schedule), and whether SharePoint asks for every site or only those granted to the app

@@ -5,7 +5,8 @@ import {
   type RenderRefusalReason, type RenderRefused,
 } from "@gadgets/pdf-renderer/api";
 import {
-  pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange, type PdfRangeReader,
+  pdfConverter, pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
+  type PdfRangeReader,
 } from "../src/drive-pdf";
 import type { AiFetcher } from "../src/workers-ai-markdown";
 import { imagePdf, type BuiltPdf, type PdfImage } from "./pdf-fixture";
@@ -597,7 +598,7 @@ describe("pdfToText transcribing a scanned PDF", () => {
     expect(images()).toEqual([]);
   });
 
-  it("transcribes nothing unless asked to", async () => {
+  it("transcribes nothing when given nothing to read the file again with", async () => {
     let { ai, images } = ocrAi();
     let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream);
     expect(result).toMatchObject({ hasText: false, transcribed: false });
@@ -2187,11 +2188,9 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     ["lines of its own that read as page headings", HEADING_IN_TEXT, [2]],
     ["a line of its own that reads as the next page's heading, last on a page and first on one", GAPS_IN_TEXT, [3]],
   ])("gives the conversion's text to the byte when no page is read from its image, in a PDF with %s", async (_label, markdown, empty) => {
-    // Every way a page is left as it was: blank, drawing no image, not drawn, read as nothing,
-    // and said to be blank whatever its bands hold.
-    let left = [
-      drawn([null]), drawn([11], { images: 0 }), refusedAs("memory", true), drawn([12]), drawn([13], { blank: true }),
-    ];
+    // Every way a page is left as it was: blank, not drawn, read as nothing, and said to be
+    // blank whatever its bands hold.
+    let left = [drawn([null]), refusedAs("memory", true), drawn([12]), drawn([13], { blank: true })];
     let { renderer, state } = fakeRenderer(Array.from({ length: 5 }, (_, i) => left[i % left.length]!));
     let { result, asked, bands } = await mixed(markdown, renderer, () => []);
 
@@ -2200,17 +2199,44 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     // Only the pages without text were rendered, from the file read whole once.
     expect(state.documents.map(document => document.asked.map(({ index }) => index + 1))).toEqual([empty]);
     expect(asked).toEqual([whole(SCAN)]);
-    // A page that draws no image, or is blank, is not shown to the model, whatever its bands hold.
+    // A page that is blank is not shown to the model, whatever its bands hold.
     expect(bands.every(({ shade }) => shade === 12)).toBe(true);
     expect(state.documents[0]!.disposed).toBe(1);
   });
 
-  it("reads a page that may draw an image that was not counted: one whose objects were not all looked at", async () => {
-    let { renderer } = fakeRenderer([TEXT_PAGE, drawn([11], { images: 0, surveyed: false }), TEXT_PAGE]);
+  it.each([
+    ["draws no image: an image written into its content, or writing drawn as shapes", { images: 0 }],
+    ["may draw an image that was not counted, its objects not having all been looked at", { images: 0, surveyed: false }],
+  ])("reads a page with ink that %s", async (_label, page) => {
+    let { renderer } = fakeRenderer([TEXT_PAGE, drawn([11], page), TEXT_PAGE]);
     let { result, bands } = await mixed(HEADING_IN_TEXT, renderer);
     expect(await read(result)).toBe(
       ownText(HEADING_IN_TEXT).replace("### Page 2\n\n\n\n\n", `### Page 2\n${fromImage("band 11")}`));
     expect(bands.map(({ shade }) => shade)).toEqual([11]);
+  });
+
+  it("reads the pages without text of a PDF in which the scan found no image of any kind", async () => {
+    // What a page shows may be no object of the file for the scan to count, so the scan's
+    // count does not decide whether its pages without text are drawn.
+    let pdf = imagePdf([]);
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, drawn([11]), TEXT_PAGE]);
+    let { result, asked, bands } = await mixed(HEADING_IN_TEXT, renderer, undefined, pdf);
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: true });
+    expect(await read(result)).toBe(
+      ownText(HEADING_IN_TEXT).replace("### Page 2\n\n\n\n\n", `### Page 2\n${fromImage("band 11")}`));
+    expect(asked).toEqual([whole(pdf)]);
+    expect(bands.map(({ shade }) => shade)).toEqual([11]);
+    expect(state.events).toEqual(["open", "render 2", "disposed"]);
+  });
+
+  it("reads nothing again, and opens nothing, for a PDF whose pages all have text", async () => {
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, TEXT_PAGE]);
+    let markdown = `${PREAMBLE}### Page 1\n${SHEET_A}\n\n\n### Page 2\n${SHEET_B}\n\n`;
+    let { result, asked, images } = await mixed(markdown, renderer);
+    // It is still a text that may read the file again: nothing says so until it has been read.
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: true });
+    expect(await read(result)).toBe(ownText(markdown));
+    expect([asked, images(), state.events]).toEqual([[], [], []]);
   });
 
   it("finds the pages without text wherever the response is split", async () => {
@@ -2499,7 +2525,7 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     expect(state.opens).toEqual([{ bytes: pdf.bytes, size: pdf.bytes.byteLength }]);
   });
 
-  it("leaves a PDF with text as it is without a renderer, an image of any kind, or a size that is rendered", async () => {
+  it("leaves a PDF with text as it is without a renderer or a size that is rendered", async () => {
     vi.useFakeTimers();
     let { renderer, state } = fakeRenderer([drawn([11])]);
     // The text without the page before its first with text, as it is given unless pages are read into it.
@@ -2516,7 +2542,6 @@ describe("pdfToText reading a PDF that has text, and pages without any", () => {
     };
 
     await unchanged(SCAN);
-    await unchanged(imagePdf([]), renderer);
     let limit = RENDER_LIMITS.fileBytes;
     RENDER_LIMITS.fileBytes = SCAN.bytes.byteLength - 1;
     try {
@@ -2776,5 +2801,58 @@ describe("a PDF with text whose pages without any are read, however its text end
     let failed = await mixed(IMAGE_FIRST_MIDDLE_LAST, fakeRenderer([drawn([11])], ["size-mismatch"]).renderer);
     expect((await pumped(readToFailure(failed.result))).error).toEqual(new Error(FILE_CHANGED));
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("pdfConverter", () => {
+  it("has nothing to convert with in a Worker without the AI binding", () => {
+    expect(pdfConverter({})).toBeUndefined();
+    expect(pdfConverter({ PDF_OCR: "true" })).toBeUndefined();
+  });
+
+  it.each([[undefined], [""], ["true"], ["off"], ["0"]])("transcribes a scan, through the gateway named, with PDF_OCR %j", async value => {
+    let { ai, sent, images } = ocrAi();
+    let { asked, readRange } = ranges(SCAN);
+    let convert = pdfConverter({ AI: ai, CF_AI_GATEWAY: "team-gateway", ...(value === undefined ? {} : { PDF_OCR: value }) })!;
+
+    let result = await convert(byteStream(SCAN.bytes).stream, readRange);
+    expect(result).toMatchObject({ hasText: false, transcribed: true, rereads: true });
+    expect(await read(result)).toBe(TRANSCRIBED);
+    expect(asked).toHaveLength(3);
+    expect(images()).toHaveLength(3);
+    expect(sent.every(({ json }) => (json.options as { gateway?: { id: string } }).gateway?.id === "team-gateway")).toBe(true);
+  });
+
+  it.each([["false"], [" False "], ["FALSE"]])("reads nothing again and calls no model with PDF_OCR %j: a scan comes back empty", async value => {
+    let { ai, images } = ocrAi();
+    let { asked, readRange } = ranges(SCAN);
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let convert = pdfConverter({ AI: ai, PDF_RENDERER: renderer, PDF_OCR: value })!;
+
+    let result = await convert(byteStream(SCAN.bytes).stream, readRange);
+    expect(result).toEqual({ text: expect.any(ReadableStream), hasText: false, transcribed: false, rereads: false });
+    expect(await read(result)).toBe("");
+    expect([asked, images(), state.events]).toEqual([[], [], []]);
+  });
+
+  it("returns a PDF with text as that text alone with PDF_OCR false, its pages without text unread", async () => {
+    let { ai, images } = bandAi(undefined, IMAGE_FIRST_MIDDLE_LAST);
+    let { asked, readRange } = ranges(SCAN);
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let convert = pdfConverter({ AI: ai, PDF_RENDERER: renderer, PDF_OCR: "false" })!;
+
+    let result = await convert(byteStream(SCAN.bytes).stream, readRange);
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: false });
+    expect(await read(result)).toBe(sheets().slice("### Page 1\n\n\n\n\n".length));
+    expect([asked, images(), state.events]).toEqual([[], [], []]);
+  });
+
+  it("renders with the Worker's renderer when it has one", async () => {
+    let { ai } = bandAi();
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let result = await pdfConverter({ AI: ai, PDF_RENDERER: renderer })!(
+      byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+    expect(await read(result)).toBe("### Page 1\nband 11");
+    expect(state.events).toEqual(["open", "render 1", "disposed"]);
   });
 });

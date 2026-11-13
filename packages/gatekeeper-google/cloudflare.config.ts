@@ -5,7 +5,8 @@ import {
 
 /**
  * No `vars`: `GOOGLE_DRIVE_ACCESS` (`write`, the default, or `read`) has an in-code default. A
- * deployment sets it to `read` to keep every Google Drive connection read-only.
+ * deployment sets it to `read` to keep every Google Drive connection read-only. So has `PDF_OCR`,
+ * which a deployment sets to `false` to have no PDF page read by a vision model.
  */
 export default defineGadgetsWorker({
   name: "gatekeeper-google",

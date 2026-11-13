@@ -79,7 +79,7 @@ describe("a scanned PDF read through a Drive binding", () => {
     const binding = await driveBinding();
     using session = await binding.session();
 
-    const result = await session.readPdf("pdf-1", {ocr: true});
+    const result = await session.readPdf("pdf-1");
     expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
     expect(result).toMatchObject({hasText: false, transcribed: true});
     const text = await new Response(result.text).text();
