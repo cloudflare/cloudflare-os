@@ -2,9 +2,6 @@ import type { RpcStub } from 'capnweb'
 import { SERVICE_SALT, type PublicApi } from '@gadgets/workshop-shared/api'
 import { storeToken } from './token'
 
-/** Opt-in, development only: set `VITE_DEV_AUTO_LOGIN=true` (e.g. in `.env.local`). */
-export const devAutoLoginEnabled = import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
-
 // Same derivation as the sign-in forms (see `PublicApi.login`). Imported on demand so the WASM
 // never reaches a production bundle.
 const hashPassword = async (username: string, password: string) => {
@@ -25,6 +22,9 @@ const hashPassword = async (username: string, password: string) => {
 }
 
 /**
+ * Opt-in, development only: `RpcGate` imports this only with `VITE_DEV_AUTO_LOGIN=true` (e.g. in
+ * `.env.local`) under the dev server.
+ *
  * Signs in as the dev account, creating it on a fresh backend. Returns the stored token, or null
  * when the backend refuses password sign-in.
  */

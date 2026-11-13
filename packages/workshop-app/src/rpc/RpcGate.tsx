@@ -8,7 +8,6 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { ApiContext, type ApiSession } from './ApiContext'
 import type { Connection } from './Connection'
-import { devAutoLogin, devAutoLoginEnabled } from './devAutoLogin'
 import { clearToken, readToken } from './token'
 
 type Session =
@@ -46,7 +45,11 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
 
     const signIn = async () => {
       try {
-        const token = readToken() ?? (devAutoLoginEnabled ? await devAutoLogin(publicApi) : null)
+        // Written out where it is used, so that a build, where it is `false`, drops the import and
+        // everything behind it, the dev account's password included.
+        const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
+          ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
+          : null)
         if (!token) return finish({ phase: 'signedOut' })
         // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
         api = publicApi.authenticate(token)

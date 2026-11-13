@@ -7,6 +7,14 @@ Follow `../../AGENTS.md` and the `frontend-conventions` skill in addition to thi
 Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old frontend uses 3000).
 `src/routeTree.gen.ts` is generated and committed, like the old app's; do not edit it.
 
+The gallery (`/gallery`) and the scripted chats (`/mock/*`) are for development only, and a build
+leaves them out: `vite.config.ts` has the router plugin skip their route files for the tree a build
+uses, which it generates outside `src/` so the committed one stays whole. Nothing they import is
+bundled, so keep anything only they need (fakes, previews) out of what ships. The dev auto-login is
+likewise behind an inline `import.meta.env.DEV` check around its dynamic import. After touching
+either, build (`pnpm --filter @gadgets/workshop-app exec vite build`) and grep `dist/` for
+`devpassword`, `MockOverseer` and `gallery`: none should be there.
+
 ## Layers
 
 ```text
