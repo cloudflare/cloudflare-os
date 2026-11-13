@@ -146,9 +146,10 @@ export type AdminConfig = {
   updateMinimumAgeHours: number;
   /** How many hours a dismissed update notice stays hidden in the browser that dismissed it. */
   updateNoticeSnoozeHours: number;
-  /** How much of a workspace admins chose to let inspectWorkspace() show. ADMIN_WORKSPACE_ACCESS_MAX
-   * holds it in wherever it is enforced (adminAccessPolicy() in admin-access.ts), so a compromised
-   * admin session can never raise access past what the deployment allows. */
+  /** How much of a workspace or of a user's account admins chose to let inspectWorkspace() and
+   * inspectUser() show. ADMIN_WORKSPACE_ACCESS_MAX holds it in wherever it is enforced
+   * (adminAccessPolicy() in admin-access.ts), so a compromised admin session can never raise
+   * access past what the deployment allows. */
   adminWorkspaceAccess: AdminWorkspaceAccess;
   /** How many days admins chose to keep admin audit records. Held at or above
    * ADMIN_AUDIT_RETENTION_MIN_DAYS wherever it is enforced. */

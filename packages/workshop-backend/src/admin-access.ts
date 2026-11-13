@@ -1,5 +1,5 @@
-// Deployment admin status, the bounds on admin access to workspaces, and the text an audit record
-// keeps.
+// Deployment admin status, the bounds on admin access to workspaces and to users' accounts, and
+// the text an audit record keeps.
 //
 // This is the one place the admin access bounds are decided, and the one place audit text is
 // bounded (admin status is isDeploymentAdmin() in auth/config.ts). The bounds come from the environment, beside ADMINS, so that a compromised
@@ -51,7 +51,8 @@ export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAcce
   if (!reportedInvalidAccessMax.has(raw)) {
     reportedInvalidAccessMax.add(raw);
     logger.error(
-        "ADMIN_WORKSPACE_ACCESS_MAX is not off or metadata, so admin access to workspaces is off",
+        "ADMIN_WORKSPACE_ACCESS_MAX is not off or metadata, so admin access to workspaces and " +
+            "users is off",
         { event: "admin.access.config.invalid" });
   }
   return "off";
@@ -117,8 +118,8 @@ export function adminAccessPolicy(
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
 
-/** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()), fixed for
- * the view's life. */
+/** What an admin view is minted with (see OverseerDurableObject.openForAdmin() and
+ * UserDurableObject.openForAdmin()), fixed for the view's life. */
 export type AdminViewTerms = {
   /** Recorded on every record the view makes (see AdminVia). */
   via: AdminVia;
@@ -226,7 +227,8 @@ export function cutAdminAuditText(text: string, maxLength: number): string {
 // alike, share one.
 const OWNER_DIGEST_LENGTH = 20;
 
-/** A workspace owner's id as an audit record keeps it (see AdminAccessRecord.workspaceOwner): whole
+/** The id of the user an admin view's record is about, as the record keeps it: a workspace's owner
+ * (AdminAccessRecord.workspaceOwner) or an account's user (AdminUserAccessRecord.userId). Whole
  * while at most MAX_ADMIN_AUDIT_ARG_LENGTH characters, else its start, "…#" and a digest of the
  * whole id, MAX_ADMIN_AUDIT_ARG_LENGTH characters in all. An id is an identity, so unlike
  * cutAdminAuditText() this keeps two long ids sharing a start apart. Applied to its own result it
