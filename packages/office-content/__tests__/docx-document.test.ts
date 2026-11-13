@@ -170,6 +170,26 @@ describe("readDocxDocument", () => {
     expect(block!.inlines.at(-1)).toMatchObject({ kind: "text", text: "after" });
   });
 
+  it("numbers a restarted list on its own, and resumes the list it interrupted", async () => {
+    const item = (numId: number) => paragraph(run("x"), `<w:numPr><w:ilvl w:val="0"/><w:numId w:val="${numId}"/></w:numPr>`);
+    const document = await readDocxDocument(await buildLayoutDocx({
+      numbering:
+        '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>' +
+        '<w:num w:numId="2"><w:abstractNumId w:val="0"/><w:lvlOverride w:ilvl="0"><w:startOverride w:val="1"/></w:lvlOverride></w:num>',
+      body: item(1) + item(1) + item(2) + item(1),
+    }));
+    expect(paragraphs(document.body).map(block => block.marker?.text)).toEqual(["1.", "2.", "1.", "3."]);
+  });
+
+  it("does not make a heading of a paragraph whose own outline level says it is body text", async () => {
+    const document = await readDocxDocument(await buildLayoutDocx({
+      styles: '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr></w:style>',
+      body: paragraph(run("Title"), '<w:pStyle w:val="Heading1"/>') + paragraph(run("Body"), '<w:pStyle w:val="Heading1"/><w:outlineLvl w:val="9"/>'),
+    }));
+    expect(paragraphs(document.body).map(block => block.headingLevel)).toEqual([1, undefined]);
+  });
+
   it("keeps no more tab stops for a paragraph than Word allows", async () => {
     const tabs = Array.from({ length: 1_000 }, (_, index) => `<w:tab w:val="left" w:pos="${(index + 1) * 20}"/>`).join("");
     const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x"), `<w:tabs>${tabs}</w:tabs>`) }));

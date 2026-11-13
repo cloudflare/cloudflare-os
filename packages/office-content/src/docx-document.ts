@@ -20,7 +20,7 @@
 
 import {
   Numbering, StyleSheet, Theme, layered, layeredParagraph, layeredTable, numeric, readCellFormat, readParagraphFormat,
-  readRunFormat, readTableFormat, symbolText, twips,
+  readRunFormat, readTableFormat, twips,
   type BorderEdges, type BorderFormat, type CellFormat, type CellMargins, type ParagraphFormat, type RunFormat,
   type TableFormat, type TableLook, type TableStyle, type TableStyleRegion,
 } from "./docx-document-styles";
@@ -30,6 +30,7 @@ import {
 import { attribute, childElements, firstChild, firstDescendant, textContent, type XmlElement } from "./xml";
 import { openZip, type ZipArchive } from "./zip";
 import { lookupTable } from "./lookup-table";
+import { symbolText } from "./symbol-text";
 
 /** A page's size and margins, in points. */
 export interface DocxPageSetup {
@@ -490,7 +491,8 @@ function resolveParagraph(properties: XmlElement | undefined, part: PartContext,
     styleId,
     format,
     runBase: layered(styles.defaults.run, cell?.run, style.run),
-    headingLevel: outline !== undefined && outline >= 0 && outline <= 8 ? outline + 1 : style.headingLevel,
+    // Outline level 9 is body text: a paragraph that says so is not a heading, whatever its style.
+    headingLevel: outline === undefined ? style.headingLevel : outline >= 0 && outline <= 8 ? outline + 1 : undefined,
     numbering: listed ? { numId, level } : undefined,
     background: format.shading !== undefined && format.shading !== "none" ? format.shading : cell?.background,
   };

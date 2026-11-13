@@ -6,6 +6,7 @@ import {
 import { AttachmentPreviewError, type AttachmentPreviewProps } from "../attachmentPreviewers";
 import styles from "./PdfPreview.module.css";
 import { canvasDensity, openPdf } from "./pdfjs";
+import { scrollRoot } from "./scrollRoot";
 
 /** Pages are drawn no wider than this, however wide the viewer. */
 const MAX_PAGE_WIDTH = 900;
@@ -30,13 +31,15 @@ const PdfPage = ({ doc, pageNumber, width }: {
   const hostRef = useRef<HTMLDivElement>(null);
   const [near, setNear] = useState(false);
   const [aspect, setAspect] = useState(DEFAULT_ASPECT);
+  /** Whether pdf.js holds this page, whose decoded images stay until it is told to let go. */
+  const loadedRef = useRef(false);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const observer = new IntersectionObserver((entries) => {
       setNear(entries[entries.length - 1]!.isIntersecting);
-    }, { rootMargin: "200% 0px" });
+    }, { root: scrollRoot(host), rootMargin: "200% 0px" });
     observer.observe(host);
     return () => observer.disconnect();
   }, []);
@@ -46,6 +49,10 @@ const PdfPage = ({ doc, pageNumber, width }: {
     if (!host || width <= 0) return;
     if (!near) {
       host.replaceChildren();
+      if (loadedRef.current) {
+        loadedRef.current = false;
+        void doc.getPage(pageNumber).then((page) => page.cleanup());
+      }
       return;
     }
     let cancelled = false;
@@ -54,6 +61,7 @@ const PdfPage = ({ doc, pageNumber, width }: {
 
     const draw = async () => {
       const page = await doc.getPage(pageNumber);
+      loadedRef.current = true;
       if (cancelled) return;
       const natural = page.getViewport({ scale: 1 });
       setAspect(Math.min(MAX_ASPECT, natural.height / natural.width));

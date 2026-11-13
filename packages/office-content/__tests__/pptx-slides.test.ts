@@ -165,6 +165,16 @@ describe("readPptxSlides", () => {
       expect(second).toMatchObject({ text: "Own", size: 12, bold: true });
     });
 
+    it("draws a Symbol or Wingdings bullet as the Unicode glyph it looks like, in the text's font", async () => {
+      const bulleted = (character: string, font: string) =>
+        `<a:p><a:pPr><a:buFont typeface="${font}"/><a:buChar char="${character}"/></a:pPr><a:r><a:rPr lang="en-US"/><a:t>x</a:t></a:r></a:p>`;
+      const [shape] = await shapesOf({
+        slides: [{ shapes: drawnShape({ properties: transform(0, 0, INCH, INCH), body: bulleted("\uf0b7", "Symbol") + bulleted("§", "Wingdings") + bulleted("–", "Arial") }) }],
+      });
+      expect(drawn(shape).text!.paragraphs.map(paragraph => [paragraph.bullet?.text, paragraph.bullet?.font === "Arial"]))
+        .toEqual([["•", false], ["▪", false], ["–", true]]);
+    });
+
     it("gives body paragraphs their level's bullet, indent and spacing", async () => {
       const [body] = await shapesOf({
         masterShapes: drawnShape({ placeholder: '<p:ph type="body" idx="1"/>', properties: transform(INCH, 2 * INCH, 8 * INCH, 4 * INCH), body: "" }),

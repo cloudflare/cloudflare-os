@@ -15,7 +15,8 @@ export const useObjectUrl = (bytes: Uint8Array | undefined, mimeType: string): s
       return;
     }
     const blob = new Blob([bytes as BlobPart], { type: mimeType || "application/octet-stream" });
-    if (mimeType.toLowerCase() === SVG) {
+    // Compared without parameters: `image/svg+xml; charset=utf-8` is an SVG too.
+    if (mimeType.split(";")[0]!.trim().toLowerCase() === SVG) {
       setUrl(null);
       const reader = new FileReader();
       reader.addEventListener("load", () => setUrl(typeof reader.result === "string" ? reader.result : null));

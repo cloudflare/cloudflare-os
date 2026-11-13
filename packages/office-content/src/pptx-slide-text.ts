@@ -8,6 +8,7 @@ import { BLACK, resolveColor, resolveFont, schemeColor, type ColorContext } from
 import type { SlideBullet, SlideColor, SlideParagraph, SlideRun, SlideTextBody } from "./pptx-slide-model";
 import { attribute, childAt, childElements, firstChild, textContent, type XmlElement } from "./xml";
 import { lookupTable } from "./lookup-table";
+import { symbolText } from "./symbol-text";
 
 /** What reading text needs beyond colors. */
 export interface TextContext extends ColorContext {
@@ -276,9 +277,13 @@ export function readParagraphs(body: XmlElement, styles: readonly ListStyle[], c
         text = props.bullet.character;
       }
       const size = props.bulletSize;
+      const bulletFont = props.bulletFont ? resolveFont(props.bulletFont, context.theme) : first.font;
+      // A Symbol or Wingdings bullet becomes the Unicode glyph it looks like, in the text's own
+      // font: the symbol font is seldom installed outside Windows and Office.
+      const symbol = props.bullet.kind === "character" ? symbolText(text, bulletFont) : undefined;
       bullet = {
-        text,
-        font: props.bulletFont ? resolveFont(props.bulletFont, context.theme) : first.font,
+        text: symbol ?? text,
+        font: symbol === undefined ? bulletFont : first.font,
         size: !size ? first.size : "percent" in size ? first.size * size.percent : size.points,
         color: props.bulletColor ?? first.color,
       };

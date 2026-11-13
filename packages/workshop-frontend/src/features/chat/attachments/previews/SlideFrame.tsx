@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Slide } from "@gadgets/office-content/pptx-slides";
 import { SlideImage } from "./SlideImage";
 import { SlideShapeView } from "./SlideShapeView";
+import { scrollRoot } from "./scrollRoot";
 import { fillBackground } from "./slideStyles";
 
 /**
@@ -25,7 +26,7 @@ export const SlideFrame = ({ slide, slideWidth, slideHeight, width }: {
         setNear(true);
         observer.disconnect();
       }
-    }, { rootMargin: "100% 0px" });
+    }, { root: scrollRoot(host), rootMargin: "100% 0px" });
     observer.observe(host);
     return () => observer.disconnect();
   }, []);
