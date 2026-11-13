@@ -5,11 +5,11 @@
 // Not imported by production code.
 
 import { expect } from "vitest";
-import { parsePart } from "../../src/content/ooxml";
+import { parsePart } from "@gadgets/office-content/ooxml";
 import { relKind } from "../../src/content/pptx-deck";
 import { OpcPackage } from "../../src/content/pptx-package";
-import { attribute, childAt, childElements, descendants, type XmlElement } from "../../src/content/xml";
-import { openZip } from "../../src/content/zip";
+import { attribute, childAt, childElements, descendants, type XmlElement } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 
 export interface ValidatedDeck {
   readonly pkg: OpcPackage;

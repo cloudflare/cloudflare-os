@@ -4,9 +4,9 @@
 // approved without knowing what goes with it. The body is read a block at a time through the
 // parser, so a hostile part costs no more than reading it does.
 
-import { findMainPart, isOn, readPart, readPartText, readRelationships, streamPart } from "./ooxml";
-import { attribute, descendants, textContent, type XmlElement } from "./xml";
-import { openZip } from "./zip";
+import { findMainPart, isOn, readPart, readPartText, readRelationships, streamPart } from "@gadgets/office-content/ooxml";
+import { attribute, descendants, textContent, type XmlElement } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 
 /** Phrases for what a Markdown rewrite of the document would drop, most significant first. */
 export async function docxFeatures(bytes: Uint8Array): Promise<string[]> {

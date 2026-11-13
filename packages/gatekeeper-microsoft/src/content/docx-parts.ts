@@ -2,8 +2,8 @@
 // palette and Aptos fonts the styles refer to), settings, the font table, and the core and
 // extended document properties. Each is the minimal form Word itself accepts without repair.
 
-import { escapeText } from "./ooxml";
-import { isoSeconds, XML_DECLARATION } from "./ooxml";
+import { escapeText } from "@gadgets/office-content/ooxml";
+import { isoSeconds, XML_DECLARATION } from "@gadgets/office-content/ooxml";
 
 const A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main";
 

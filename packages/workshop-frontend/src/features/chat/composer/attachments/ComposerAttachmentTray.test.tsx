@@ -9,6 +9,13 @@ import type { ComposerAttachment } from "./useComposerAttachments";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// jsdom has no IntersectionObserver, which a card waits on before reading a file for its thumbnail
+// (ComposerAttachmentTray.browser.test.tsx covers thumbnails). This one never reports a card as seen.
+vi.stubGlobal("IntersectionObserver", class {
+  observe() {}
+  disconnect() {}
+});
+
 const attachment = (overrides: Partial<ComposerAttachment>): ComposerAttachment => ({
   id: "a",
   blob: new Blob([]),
@@ -65,23 +72,25 @@ describe("ComposerAttachmentTray", () => {
     const onRemove = vi.fn<(id: string) => void>();
     const view = render([attachment({})], { disabled: true, onRemove });
 
-    const button = view.querySelector<HTMLButtonElement>("button")!;
+    const button = view.querySelector<HTMLButtonElement>('button[aria-label="Remove report.pdf"]')!;
     act(() => button.click());
 
     expect(button.disabled).toBe(true);
     expect(onRemove).not.toHaveBeenCalled();
   });
 
-  it("shows an image as a preview and any other file as an icon card with its name", () => {
+  it("shows an image as a preview, a file with no thumbnail as an icon card with its name, and shimmers one still to come", () => {
     const view = render([
       attachment({ id: "img", name: "photo.png", mimeType: "image/png", previewUrl: "blob:photo" }),
+      attachment({ id: "zip", name: "bundle.zip", mimeType: "application/zip" }),
       attachment({ id: "doc", name: "report.pdf" }),
     ]);
 
     const image = view.querySelector("img")!;
     expect(image.getAttribute("src")).toBe("blob:photo");
     expect(view.querySelectorAll("img")).toHaveLength(1);
-    expect(view.textContent).toContain("report.pdf");
+    expect(view.textContent).toContain("bundle.zip");
+    expect(view.textContent).not.toContain("report.pdf");
     expect(view.textContent).not.toContain("photo.png");
   });
 

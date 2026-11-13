@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { convertToText } from "../src/content/index";
+import { convertToText } from "@gadgets/office-content";
 import { writeZip } from "../src/content/zip-write";
 import { checkTemplate, encodeContent, featuresLost, presentationStructure } from "../src/office-write";
 

@@ -10,10 +10,10 @@
 // it. Functions that reach outside the workbook, run code, or read the opener's environment are
 // refused, as are links to other workbooks and DDE.
 
-import { INVALID_XML_CHAR, escapeAttribute, isoSeconds, XML_DECLARATION } from "./ooxml";
-import { cutText } from "./text";
-import { childElements, firstChild, attribute, parseXml, type XmlElement } from "./xml";
-import { openZip, type ZipArchive } from "./zip";
+import { INVALID_XML_CHAR, escapeAttribute, isoSeconds, XML_DECLARATION } from "@gadgets/office-content/ooxml";
+import { cutText } from "@gadgets/office-content/text";
+import { childElements, firstChild, attribute, parseXml, type XmlElement } from "@gadgets/office-content/xml";
+import { openZip, type ZipArchive } from "@gadgets/office-content/zip";
 import { writeZip, type ZipWriteEntry } from "./zip-write";
 
 /** One cell: text, a number, TRUE/FALSE, or empty. Text starting with `=` is a formula. */

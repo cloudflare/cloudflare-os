@@ -4,9 +4,9 @@
 // relationship a part refers to exists.
 
 import { expect } from "vitest";
-import { parsePart } from "../../src/content/ooxml";
-import { attribute, childElements, descendants, firstChild, type XmlElement } from "../../src/content/xml";
-import { openZip } from "../../src/content/zip";
+import { parsePart } from "@gadgets/office-content/ooxml";
+import { attribute, childElements, descendants, firstChild, type XmlElement } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 
 const ORDERS: Record<string, readonly string[]> = {
   "w:pPr": ["pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr", "widowControl", "numPr", "suppressLineNumbers", "pBdr", "shd",

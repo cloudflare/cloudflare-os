@@ -4,8 +4,8 @@
 // accent rule under the title, Aptos (Microsoft 365's default face), and a muted palette whose
 // accent colors stay legible on both backgrounds.
 
-import { escapeAttribute } from "./ooxml";
-import { XML_DECLARATION } from "./ooxml";
+import { escapeAttribute } from "@gadgets/office-content/ooxml";
+import { XML_DECLARATION } from "@gadgets/office-content/ooxml";
 import { CONTENT_TYPE, OpcPackage, REL } from "./pptx-package";
 
 /** The DrawingML, relationships and PresentationML namespace declarations a slide part's root carries. */

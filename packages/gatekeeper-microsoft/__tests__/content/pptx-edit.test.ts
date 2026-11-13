@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { pptxToMarkdown } from "../../src/content/pptx";
+import { pptxToMarkdown } from "@gadgets/office-content/pptx";
 import { describePptx, editPptx, pptxFeatures, PresentationEditError, type PresentationEdit } from "../../src/content/pptx-edit";
 import { OpcPackage } from "../../src/content/pptx-package";
 import { markdownToPptx } from "../../src/content/pptx-write";

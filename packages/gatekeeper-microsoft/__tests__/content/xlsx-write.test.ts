@@ -5,9 +5,9 @@ import {
   FormulaError, MAX_CELL_CHARS, checkFormula, columnName, csvCells, parseCsv, rowsToXlsx, sheetNames, xlsxFeatures,
   type CellValue,
 } from "../../src/content/xlsx-write";
-import { attribute, childElements, firstChild, parseXml, textContent, type XmlElement } from "../../src/content/xml";
-import { openZip } from "../../src/content/zip";
-import { buildZip } from "./test-fixtures";
+import { attribute, childElements, firstChild, parseXml, textContent, type XmlElement } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
+import { buildZip } from "@gadgets/office-content/test-fixtures";
 
 const MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const NAMESPACES = {

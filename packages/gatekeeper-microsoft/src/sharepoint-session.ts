@@ -16,7 +16,7 @@ import { ArrayCursor, TokenCursor } from "@gadgets/gatekeeper-kit/cursors";
 import { ObservationGate, escapeObservationValue, type ObserverStrategy } from "@gadgets/gatekeeper-kit/observers";
 import type { ApprovalQueue, Cursor } from "@gadgets/workshop-shared/gatekeeper";
 import { authorizeRead, isProvisional, type ReadAuthority } from "./binding";
-import { convertToText } from "./content/index";
+import { convertToText } from "@gadgets/office-content";
 import { GraphApiError, type GraphApi } from "./graph-api";
 import { parseCanvas, splitSiteId, type GraphColumn, type GraphDrive, type GraphDriveItem, type GraphList, type GraphListItem, type GraphSite, type GraphSitePage } from "./graph-parse";
 import type { SharePointAccess, SharePointSites } from "./microsoft-env";
