@@ -1986,10 +1986,10 @@ export type AdminSettingRecord = {
 
 /** One record of the deployment-wide admin audit log, kept for the deployment's retention
  * (AdminSettingsView.adminAuditRetentionDays). */
-export type AdminAuditRecord = AdminAccessRecord | AdminSettingRecord;
+export type AdminAuditRecord = AdminAccessRecord | AdminSettingRecord | AdminWriteRecord;
 
 /** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "setting" for a change to
- * the deployment's settings. */
+ * the deployment's settings, "write" for a step in a write to a workspace. */
 export type AdminAuditKind = AdminAuditRecord["kind"];
 
 /** Options for AdminApi.listAdminAudit(). The filters combine. */
@@ -1998,12 +1998,14 @@ export type AdminAuditQuery = {
   kind?: AdminAuditKind;
   /** Only this admin's records, by canonical user id. At most 1000 characters. */
   admin?: string;
-  /** Only records of calls to this method. */
+  /** Only records of calls to this method or, for write records, of steps in a request for this
+   * action (see AdminWriteRecord.method). */
   method?: AdminAuditRecord["method"];
-  /** Only records of access to this workspace. At most 1000 characters. */
+  /** Only records of access to, or a write to, this workspace. At most 1000 characters. */
   workspace?: string;
-  /** Only records of access to workspaces this user owns (see AdminAccessRecord.workspaceOwner), by
-   * canonical user id, whole or as the records keep it. At most 1000 characters. */
+  /** Only records of access to, or a write to, workspaces this user owns (see
+   * AdminAccessRecord.workspaceOwner), by canonical user id, whole or as the records keep it. At
+   * most 1000 characters. */
   owner?: string;
   /** Only records made at or after this time. */
   since?: Date;
@@ -2030,14 +2032,15 @@ export type AdminAuditStatsQuery = {
   /** The window: the last `days` UTC days, today included. A whole number from 1 to
    * MAX_ADMIN_AUDIT_STATS_DAYS, 7 when absent. */
   days?: number;
-  /** Only records of this kind; both kinds when absent. */
+  /** Only records of this kind; every kind when absent. */
   kind?: AdminAuditKind;
 };
 
 /**
  * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
- * covers the records of the queried kind (both kinds when none is given). A record older than the
- * retention is gone, so a window reaching past it counts nothing there.
+ * covers the records of the queried kind (every kind when none is given). Only AdminWriteRecords
+ * can be writes, so that count is zero for any other kind. A record older than the retention is
+ * gone, so a window reaching past it counts nothing there.
  */
 export type AdminAuditStats = {
   /** The window's length in UTC days, today included. */
@@ -2049,6 +2052,35 @@ export type AdminAuditStats = {
   byDay: { day: string; count: number }[];
   /** The admins with the most records in the window, most first (ties by id), at most 10. */
   topAdmins: { admin: string; count: number }[];
+  /** The writes to workspaces approved in the window: the records whose `event` is "approved". */
+  writes: number;
+/**
+ */
+export const ADMIN_WRITE_ACTIONS = [
+  "stopAgent", "restartWorkspace", "deleteChat", "rejectPendingActions",
+] as const;
+
+/** One of ADMIN_WRITE_ACTIONS. */
+export type AdminWriteAction = typeof ADMIN_WRITE_ACTIONS[number];
+
+/**
+ * The arguments of a write request. Each action takes only its own, and a request naming any
+ * other, or missing a required one, is rejected:
+ *   - stopAgent, deleteChat: `chatId`;
+ *   - rejectPendingActions: `gatekeeperId`, optional;
+ *   - restartWorkspace: none.
+ */
+export type AdminWriteArgs = {
+  /** The chat, by AiChatMetadata.id. */
+  chatId?: number;
+  /** The connection, by workpiece id. */
+  gatekeeperId?: WorkpieceId;
+};
+
+/** The most pending actions one "rejectPendingActions" request rejects one by one. A creation
+ * among them takes everything queued on its connection with it, however much that is. */
+export const MAX_ADMIN_REJECTED_ACTIONS = 500;
+
 /**
  * Why a passkey answer was refused. Its caller is told only `passkeyRefused`
  * (ADMIN_WRITE_ERROR_CODES); the audit record of a refused approval says which
@@ -2070,6 +2102,82 @@ export type AdminAuditStats = {
 export type AdminPasskeyRefusal =
     "malformed" | "type" | "challenge" | "origin" | "relyingParty" | "userPresence" |
     "userVerification" | "credential" | "algorithm" | "signature" | "counter";
+
+/**
+ * One step in the life of a write request, in the deployment-wide audit log:
+ *   - "requested": an admin asked for the write. Recorded before the request is stored;
+ *   - "refused":   an admin's attempt to approve the request was not accepted (`refusal`). Either
+ *                  the answer failed a passkey check, which leaves a pending request pending, or
+ *                  the request was no longer pending, as when an approval is sent again;
+ *   - "approved":  an admin confirmed it with a passkey. Recorded by the workspace itself, before
+ *                  it changes anything, so that a write whose record cannot be written does not
+ *                  happen;
+ *   - "applied":   the workspace ran the approved write (`outcome`);
+ *   - "failed":    the workspace refused the approved write or failed to run it, or its answer
+ *                  never arrived (`error`). With no "approved" record before it, nothing changed;
+ *                  after one, the workspace may have changed in part or in whole;
+ *   - "denied":    an admin denied the request;
+ *   - "expired":   the request ran out unapproved, or its requester stopped being a deployment
+ *                  admin first (`error`).
+ * Every approved request is closed by "applied" or "failed". Those two are recorded after the
+ * fact, so they are written at least once: a retry after a lost acknowledgement can repeat one.
+ * A "refused" step can follow any other, a closing one included: it is how a replayed approval
+ * Unlike an AdminAccessRecord, an approved write is also shown in the workspace: as an entry of
+ * its action log (see ActionLogEntry.byAdmin), which the workspace's owner and its "build"
+ * collaborators read. A collaborator who only uses a gadget is given no action log, so is shown
+ * nothing.
+ */
+export type AdminWriteRecord = {
+  /** Distinguishes this from an AdminAccessRecord and an AdminSettingRecord. */
+  kind: "write";
+  /** When the step was recorded. */
+  at: Date;
+  /** The admin whose step it is: the requester for "requested" and "expired", the admin who
+   * tried for "refused", the approver for "approved", "applied" and "failed", the denier for
+   * "denied". */
+  admin: string;
+  /** Opaque. The AuthenticatedApi.getAdminApi() capability the step was made through: the
+   * request's own for "expired", the approval's for "applied" and "failed". */
+  sessionId: string;
+  /** How that admin's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** The request (AdminWriteRequest.id). */
+  requestId: string;
+  /** The step. */
+  event: "requested" | "refused" | "approved" | "applied" | "failed" | "denied" | "expired";
+  /** The workspace. */
+  workspaceId: string;
+  /** The workspace's owner, kept as an AdminAccessRecord keeps it: as the workspace itself gives
+   * them for "approved", as the deployment directory listed them when the request was made for
+   * the other steps. */
+  workspaceOwner: string;
+  /** The workspace's title, cut as an AdminAccessRecord cuts it, from the same source as
+   * `workspaceOwner`. */
+  workspaceTitle: string;
+  /** The action requested. Named `method` as on the other records, so that
+   * AdminAuditQuery.method filters all three. */
+  method: AdminWriteAction;
+  /** The request's arguments by name. */
+  args: Record<string, string | number>;
+  /** The reason the requester gave. */
+  reason: string;
+  /** The admin who made the request. */
+  requestedBy: string;
+  /** The passkey behind the step, by credential id as the setting record of its enrolment keys
+   * it (AdminSettingChange.key): for "approved", "applied" and "failed", the one whose assertion
+   * approved the request; for "refused", the one the answer named, when it is one of that
+   * admin's own, whether or not it signed the answer (see `refusal`). */
+  passkey?: string;
+  /** For "refused": the check the attempt failed. An attempt on a request that was no longer
+   * pending is refused "challenge". */
+  refusal?: AdminPasskeyRefusal;
+  /** For "applied": what the workspace reported, when it reports anything (see
+   * AdminWriteRequest.outcome). */
+  outcome?: string;
+  /** For "failed": why. For "expired": why it ended before its time, absent when it simply ran
+   * out. Cut to MAX_ADMIN_AUDIT_ARG_LENGTH characters. */
+  error?: string;
+};
 
 /**
  * What a browser needs for one WebAuthn ceremony on the Workshop's own origin: creating a passkey
@@ -2503,8 +2611,9 @@ export interface AdminApi {
 
   /**
    * One page of the deployment-wide admin audit log, newest first, filtered as `options` says. It
-   * holds access to workspaces and changes to settings. Rejects a `limit` that is not a whole
-   * number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a malformed `cursor`.
+   * holds access to workspaces, changes to settings and the steps of writes to workspaces. Rejects
+   * a `limit` that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000
+   * characters, and a malformed `cursor`.
    */
   listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
 
