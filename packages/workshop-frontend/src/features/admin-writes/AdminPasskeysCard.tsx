@@ -5,6 +5,7 @@ import {
   ADMIN_WRITE_ERROR_CODES,
   getAdminWriteErrorCode,
   MAX_ADMIN_PASSKEY_NAME_LENGTH,
+  MAX_ADMIN_PASSKEYS,
   type AdminApi,
   type AdminPasskey,
 } from '@gadgets/workshop-shared/api'
@@ -154,6 +155,10 @@ export const AdminPasskeysCard = ({ admin, user, siteName, writesOn }: {
   // A deployment that never turned writes on shows no trace of them.
   if (!writesOn && (passkeys === null || passkeys.length === 0)) return null
 
+  // The server enrols no more than this many for one admin. An enrolment offered past it would
+  // have the authenticator make a passkey that the server then refuses.
+  const atLimit = (passkeys ?? []).filter((passkey) => passkey.admin === user.id).length >= MAX_ADMIN_PASSKEYS
+
   return (
     <div className="bg-kumo-elevated border border-kumo-line rounded-xl p-6">
       <h2 className="text-lg font-semibold text-kumo-strong mb-1">Passkeys for approving writes</h2>
@@ -226,6 +231,13 @@ export const AdminPasskeysCard = ({ admin, user, siteName, writesOn }: {
         </>
       )}
 
+      {writesOn && atLimit && (
+        <p className="text-sm text-kumo-subtle mt-5 pt-5 border-t border-kumo-line">
+          You have enrolled {MAX_ADMIN_PASSKEYS} passkeys, the most an admin may have. Remove one to
+          add another.
+        </p>
+      )}
+      {writesOn && !atLimit && (
         <form noValidate onSubmit={enrol} className="grid gap-3 mt-5 pt-5 border-t border-kumo-line">
           <h3 className="text-sm font-medium text-kumo-strong">Add a passkey</h3>
           <Input

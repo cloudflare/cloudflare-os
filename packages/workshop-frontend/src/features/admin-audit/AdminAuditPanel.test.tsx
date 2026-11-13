@@ -222,10 +222,6 @@ const key = (target: HTMLElement, init: KeyboardEventInit) => act(async () => {
 // The log's page controls.
 const pages = () => document.body.querySelector('nav[aria-label="Audit log pages"]')!
 
-// What a record's details say under `term`.
-const detail = (details: HTMLElement, term: string) =>
-  [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent
-
 // Each change in a record's details, as its name and its two sides.
 const changesIn = (details: HTMLElement) => [...details.querySelectorAll('li')].map((li) => li.textContent)
 
@@ -412,6 +408,19 @@ describe('AdminAuditPanel', () => {
       expect(card('Admin actions, last 7 days').textContent).toMatch(/1 approved write(?!s)/)
       await click(button('Refresh'))
       expect(card('Admin actions, last 7 days').textContent).toContain('1,234 approved writes')
+    })
+
+    it('says nothing of approved writes to a backend whose statistics lack the count', async () => {
+      const admin = fakeAdmin()
+      // As a backend older than admin writes sends them.
+      const { writes: _, ...older } = testStats()
+      admin.getAdminAuditStats.mockResolvedValue(older as AdminAuditStats)
+      await render(settingsWith(), admin)
+
+      const shown = card('Admin actions, last 7 days').textContent
+      expect(shown).toMatch(/\d+ actions, by UTC day/)
+      expect(shown).not.toContain('approved write')
+      expect(shown).not.toContain('NaN')
     })
 
     it('says when the window holds no activity', async () => {

@@ -20,6 +20,7 @@ import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
 import { type AdminSettingActor, type AdminViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
+import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, newPasskeyChallenge } from './admin-writes.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
 import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
@@ -116,6 +117,10 @@ const RESOLVED_WRITE_KEPT_MS = 24 * 60 * 60 * 1000;
 // back this often rather than at once.
 const MIN_WRITE_ALARM_DELAY_MS = 30_000;
 
+// The most "refused" records one write request keeps owed while the audit log cannot be written
+// (see StoredAdminWrite.refusals). An attempt refused past it in the same outage is only logged.
+const MAX_OWED_REFUSALS = 10;
+
 // What an approved write request fails with when its workspace's answer never arrived.
 const WRITE_ANSWER_LOST =
     "The workspace's answer never arrived, so whether the write was applied is unknown.";
@@ -128,6 +133,19 @@ function writeDueAt(request: StoredAdminWrite): number {
   if (request.unrecorded) return 0;
   return (request.resolvedAt?.getTime() ?? 0) + (request.state === "approved"
       ? ADMIN_WRITE_SETTLE_SECONDS * 1000 : RESOLVED_WRITE_KEPT_MS);
+}
+
+// Throws `notAdmin` unless `admin` is a deployment admin in `env`, and `writesOff` when `writes`
+// are needed and `env` leaves them off. AdminApiImpl asks it of the session Worker's environment
+// before it calls AdminSettings, which asks it again of its own: a session can outlive the config
+// its Worker started with.
+function requireAdmin(env: Cloudflare.Env, admin: string, writes: boolean): void {
+  if (!isDeploymentAdmin(env, admin)) {
+    throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+  }
+  if (writes && !adminWorkspaceWritesEnabled(env)) {
+    throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.writesOff);
+  }
 }
 
 // The admin who made a write request, as the actor of the steps recorded in their name.
@@ -729,10 +747,20 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     return challenge && Date.now() < challenge.expiresAt ? challenge : undefined;
   }
 
+  // Throws once `admin` holds MAX_ADMIN_PASSKEYS. The limit counts only the admin's own passkeys:
+  // nobody else can remove one of them, so nobody else's count against it.
+  #assertBelowLimit(admin: string): void {
     if (this.#passkeysOf(admin).length >= MAX_ADMIN_PASSKEYS) {
       throw new Error(
           `An admin can enrol at most ${MAX_ADMIN_PASSKEYS} passkeys. Remove one first.`);
     }
+  }
+
+  // Throws unless `admin` may enrol the credential `id`. A credential id is enrolled once, to one
+  // admin.
+  #assertEnrolable(id: string, admin: string): void {
+    if (this.storage.adminPasskeys.get(id)) refusePasskey(new PasskeyError("credential"));
+    this.#assertBelowLimit(admin);
   }
 
   /** Every passkey enrolled, as AdminApi.listAdminPasskeys() lists them: by admin, then by
@@ -744,7 +772,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   }
 
   /** Start `admin`'s enrolment of a passkey: a fresh challenge, replacing the one they had
+   * outstanding. Throws at the limit, before an authenticator makes a credential that
+   * addAdminPasskey() would refuse. */
   beginAdminPasskeyEnrolment(admin: string): AdminPasskeyChallenge {
+    requireAdmin(this.env, admin, true);
+    this.#assertBelowLimit(admin);
     return this.#issueChallenge({ key: `enrol:${admin}`, challenge: newPasskeyChallenge() }, admin);
   }
 
@@ -755,6 +787,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    */
   async addAdminPasskey(name: string, registration: AdminPasskeyRegistration,
                         actor: AdminSettingActor): Promise<AdminPasskey> {
+    requireAdmin(this.env, actor.admin, true);
     name = name.trim();
     if (!name || name.length > MAX_ADMIN_PASSKEY_NAME_LENGTH) {
       throw new TypeError(
@@ -788,6 +821,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * SHA-256 of the id, so that the passkey confirming the removal signs which passkey it removes.
    * `id` must name one of `admin`'s own passkeys: any other id, another admin's included, throws. */
   async beginAdminPasskeyRemoval(id: string, admin: string): Promise<AdminPasskeyChallenge> {
+    requireAdmin(this.env, admin, false);
     if (!this.#ownPasskey(id, admin)) throw new Error(NO_SUCH_PASSKEY);
     let digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id));
     return this.#issueChallenge({
@@ -800,6 +834,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * challenge is spent whatever the assertion says. */
   async removeAdminPasskey(id: string, assertion: AdminPasskeyAssertion, actor: AdminSettingActor)
       : Promise<void> {
+    requireAdmin(this.env, actor.admin, false);
     let challenge = this.#takeChallenge(`remove:${actor.admin}`);
     let passkey = this.#ownPasskey(id, actor.admin);
     if (!passkey) throw new Error(NO_SUCH_PASSKEY);
@@ -878,6 +913,33 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     this.storage.adminWrites.put(recorded);
   }
 
+  // Appends the "refused" record of `refusal`, an attempt to approve `request`.
+  #recordRefusal(request: StoredAdminWrite, { refusal, passkey, ...actor }: AdminWriteRefusal)
+      : Promise<void> {
+    return this.#recordWrite(request, "refused", actor, { refusal, ...(passkey && { passkey }) });
+  }
+
+  // Writes the "refused" records `request` still owes (see #refuseApproval()), oldest first,
+  // storing it without each one as that is written, and returns it as stored. One that cannot be
+  // written stays owed, with those after it. That is logged, not thrown: no step waits on a
+  // refusal's record, so the sweep goes on.
+  async #recordOwedRefusals(request: StoredAdminWrite): Promise<StoredAdminWrite> {
+    let { refusals = [], ...rest } = request;
+    try {
+      while (refusals.length > 0) {
+        await this.#recordRefusal(rest, refusals[0]!);
+        refusals = refusals.slice(1);
+        request = refusals.length > 0 ? { ...rest, refusals } : rest;
+        this.storage.adminWrites.put(request);
+      }
+    } catch (error) {
+      logger.error("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: request.action, error,
+      });
+    }
+    return request;
+  }
+
   // Goes through the stored requests, oldest first:
   //   - a pending one that has run out is ended, recorded "expired" before it is stored as such.
   //     A request has run out at its `expiresAt`, or sooner when its requester is no longer a
@@ -888,6 +950,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   //     failed: the session Worker that carried the approval was lost between its calls, so the
   //     answer never arrived. It is never run again;
   //   - one whose closing record is still owed has it written (see #recordClosing());
+  //   - any other is forgotten a day after it was resolved, unless it still owes a "refused"
+  //     record. Those are written first, for a request in any state (see #recordOwedRefusals()).
   // Then forgets the passkey challenges past their expiry.
   //
   // A record that cannot be appended throws, and the pass stops there: an overdue request stays
@@ -899,6 +963,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     let requests = [...this.storage.adminWrites.list()].toSorted(
         (a, b) => a.requestedAt.getTime() - b.requestedAt.getTime());
     for (let request of requests) {
+      if (request.refusals) request = await this.#recordOwedRefusals(request);
       if (request.state === "approved" && writeDueAt(request) <= now) {
         request = { ...request, state: "failed", error: WRITE_ANSWER_LOST, unrecorded: true };
         this.storage.adminWrites.put(request);
@@ -908,6 +973,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         continue;
       }
       if (request.state !== "pending") {
+        if (!request.refusals && writeDueAt(request) <= now) {
+          this.storage.adminWrites.delete(request.id);
+        }
         continue;
       }
       let overdue = writeDueAt(request) <= now;
@@ -925,7 +993,12 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     }
   }
 
+  // Sets the alarm for the stored request that is due first (see writeDueAt()), at once for one
+  // that owes a "refused" record, and never sooner than MIN_WRITE_ALARM_DELAY_MS from now, which
+  // is when a record still owed is tried again; clears it when no request is stored.
   async #scheduleWriteAlarm(): Promise<void> {
+    let due = [...this.storage.adminWrites.list()].map(
+        request => request.refusals ? 0 : writeDueAt(request));
     if (due.length === 0) {
       await this.ctx.storage.deleteAlarm();
     } else {
@@ -955,6 +1028,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * recording nothing, while MAX_PENDING_ADMIN_WRITES are pending. */
   requestWorkspaceWrite(request: StoredAdminWrite): Promise<void> {
     return this.#serializeWrites(async () => {
+      requireAdmin(this.env, request.requestedBy, true);
       await this.#sweepWrites();
       let pending = [...this.storage.adminWrites.list()].filter(
           stored => stored.state === "pending");
@@ -980,6 +1054,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * `requestNotPending` for a request that has left "pending", an overdue one included. */
   denyWorkspaceWrite(id: string, actor: AdminWriteActor): Promise<void> {
     return this.#serializeWrites(async () => {
+      requireAdmin(this.env, actor.admin, true);
       await this.#sweepWrites();
       let request = this.#storedWrite(id);
       if (request.state !== "pending") {
@@ -1002,6 +1077,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * with no passkey of their own. Never recorded: beginning answers nothing. */
   beginWorkspaceWriteApproval(id: string, admin: string): Promise<AdminPasskeyChallenge> {
     return this.#serializeWrites(async () => {
+      requireAdmin(this.env, admin, true);
       await this.#sweepWrites();
       let request = this.#storedWrite(id);
       if (request.state !== "pending") {
@@ -1029,6 +1105,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   approveWorkspaceWrite(id: string, assertion: AdminPasskeyAssertion, actor: AdminWriteActor)
       : Promise<StoredAdminWrite & { approver: AdminWriteApprover }> {
     return this.#serializeWrites(async () => {
+      // Refused as AdminApiImpl refuses it, with nothing spent or recorded.
+      requireAdmin(this.env, actor.admin, true);
+      // Taken before any check of the answer, so that the challenge is spent by its first answer,
+      // right or wrong. The passkey is read here too, before anything awaits, so that every
+      // refusal below can name the passkey the answer named, when it is the actor's own.
       let challenge = this.#takeChallenge(`approve:${actor.admin}`);
       let passkey = this.#ownPasskey(assertion.credentialId, actor.admin);
 
@@ -1090,6 +1171,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // recorded "refused" with the passkey the answer named when it is the actor's own, and thrown
   // as `code`, which never says which check it was. A pending request stays pending. A refusal
   // whose record cannot be written is still a refusal: nothing was approved, so the failure is
+  // logged rather than thrown in the refusal's place, and the record is kept with the request,
+  // owed, for the sweep to write. At most MAX_OWED_REFUSALS are kept for one request.
   async #refuseApproval(request: StoredAdminWrite, actor: AdminWriteActor,
                         refusal: AdminPasskeyRefusal, passkey?: AdminPasskeyRecord,
                         code: AdminWriteErrorCode = ADMIN_WRITE_ERROR_CODES.passkeyRefused)
@@ -1097,11 +1180,21 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     logger.warn("refused a write approval", {
       event: "admin.write.approval.refused", reason: refusal,
     });
+    let attempt: AdminWriteRefusal =
+        { ...actor, refusal, ...(passkey && { passkey: auditOwnerId(passkey.id) }) };
     try {
+      await this.#recordRefusal(request, attempt);
     } catch (error) {
       logger.error("failed to append to the admin audit log", {
         event: "admin.audit.append.failed", operation: request.action, error,
       });
+      // Read again: the append awaited.
+      let stored = this.#storedWrite(request.id);
+      let owed = stored.refusals ?? [];
+      if (owed.length < MAX_OWED_REFUSALS) {
+        this.storage.adminWrites.put({ ...stored, refusals: [...owed, attempt] });
+        await this.#scheduleWriteAlarm();
+      }
     }
     throw createAdminWriteError(code);
   }
@@ -2137,10 +2230,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   // Refuses a caller who is no longer a deployment admin.
   #requireAdmin(): void {
+    requireAdmin(this.env, this.adminUserId, false);
   }
 
   // Refuses that caller too, and every caller while the environment leaves writes off.
   #requireWrites(): void {
+    requireAdmin(this.env, this.adminUserId, true);
   }
 
   // Who takes a step in a write request through this capability, as its audit record says.
@@ -2151,6 +2246,7 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   // A stored request as the API returns it: without what only the server keeps, and with the page
   // of this deployment that approves it.
   #writeView(stored: StoredAdminWrite): AdminWriteRequest {
+    let { sessionId, approver, unrecorded, refusals, ...request } = stored;
     let approvalUrl = `${adminPasskeyRelyingParty(this.env).origin}/admin/approve/${stored.id}`;
     return { ...request, approvalUrl };
   }

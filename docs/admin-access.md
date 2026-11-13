@@ -477,6 +477,7 @@ Each action runs the `OverseerImpl` operation that a member's session runs for i
 | `deleteChat` | `chatId` | `Overseer.deleteChat(chatId)` |
 | `rejectPendingActions` | `gatekeeperId`, optional | `Overseer.rejectAction()`, for each pending action |
 
+Two of them need more said:
 
 - **`stopAgent` keeps the messages queued for the turn.** A member's stop drops the messages sent
   while the agent worked that it had not read yet, and the client that stops puts them back in its

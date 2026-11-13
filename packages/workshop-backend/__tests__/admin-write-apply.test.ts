@@ -420,6 +420,32 @@ describe("the effect of a write", () => {
         .toEqual({ outcome: undefined });
     expect(await adminEntries(ws)).toMatchObject([{ state: "approved" }]);
   }));
+
+  it("stopAgent keeps the messages queued for the turn it stops, as their senders' own",
+      () => withWorkspace(async ws => {
+    // A turn at work, with two messages the agent has not read: no client stops it, so none
+    // would put them in a draft.
+    ws.impl.storage.chatMeta.put({
+      ...ws.impl.storage.chatMeta.get(CHAT_ID),
+      activeAgent: AGENT,
+      queuedSteers: [
+        { text: "Also add a streak counter.", author: BOB },
+        { text: "And make it dark.", author: OWNER },
+      ],
+    });
+
+    await ws.instance.applyAdminWrite(grantOf("stopAgent", { chatId: CHAT_ID }));
+
+    let meta = ws.impl.storage.chatMeta.get(CHAT_ID);
+    expect(meta.queuedSteers).toBeUndefined();
+    expect(meta.activeAgent).toBeUndefined();
+    // Before the stop itself, in the order they were sent.
+    expect(messagesOf(ws).slice(0, 3)).toMatchObject([
+      { author: BOB, type: "message", message: "Also add a streak counter.", steered: true },
+      { author: OWNER, type: "message", message: "And make it dark.", steered: true },
+      { author: AGENT, type: "agentNudge" },
+    ]);
+  }));
 });
 
 // The stored actions that are no admin write's entry, by id, each with its state.

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import {
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES,
   ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   getAdminWriteErrorCode,
   type AdminPasskeyAssertion, type AdminPasskeyChallenge, type AdminPasskeyRefusal,
@@ -381,17 +382,81 @@ describe("a refused approval", () => {
     expect(passkey.lastUsed).toBeUndefined();
   });
 
+  it("is still a refusal when its record cannot be appended, and the record is written later",
+      async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const assertion = await answer(passkeyA, ADMIN, made.id, { userVerified: false });
     harness.audit.fail = true;
+    const before = Date.now();
     expect(await refusal(assertion)).toBe(passkeyRefused);
     expect(logged.mock.calls.map(([entry]) => entry)).toEqual([expect.objectContaining(
         { event: "admin.audit.append.failed", operation: "deleteChat" })]);
+    // Still pending, with the record owed and the alarm due for it, not for the expiry.
+    const owed = { ...actor(ADMIN), refusal: "userVerification", passkey: passkeyA.credentialId };
+    expect(await stored()).toStrictEqual({ ...made, refusals: [owed] });
     expect(await storedChallenges()).toEqual([]);
+    expect(eventsOf()).toEqual(["requested"]);
+    const alarm = await harness.inDo((_settings, state) => state.storage.getAlarm());
+    expect(alarm).toBeGreaterThanOrEqual(before + 30_000);
+    expect(alarm).toBeLessThan(made.expiresAt.getTime());
+
+    // While the log stays down the record stays owed, and no call fails for it.
+    expect(await harness.inDo(settings => settings.getWorkspaceWrite(made.id)))
+        .toStrictEqual({ ...made, refusals: [owed] });
+    expect(eventsOf()).toEqual(["requested"]);
+
+    // Once the log is back the next sweep writes it, and the request can still be approved with
+    // a fresh challenge.
+    harness.audit.fail = false;
+    expect((await approve(await answer(passkeyA))).state).toBe("approved");
+    expect(recordsOf().slice(1)).toStrictEqual(
+        [refusedRecord(made, ADMIN, "userVerification", passkeyA)]);
+    expect(await stored()).not.toHaveProperty("refusals");
+  });
+
+  it("keeps a resolved request until the record of a replay it owes is written", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const assertion = await answer(passkeyA);
+    await approve(assertion);
+    await harness.inDo(settings => settings.settleWorkspaceWrite(made.id, {}));
+    harness.audit.fail = true;
+    expect(await refusal(assertion)).toBe(requestNotPending);
+    const owed = { ...actor(ADMIN), refusal: "challenge", passkey: passkeyA.credentialId };
+
+    await harness.inDo(async settings => {
+      const writes = harness.storageOf(settings).adminWrites;
+      expect(writes.get(made.id)!.refusals).toStrictEqual([owed]);
+      // A day after it was resolved, when it would be forgotten.
+      writes.put({ ...writes.get(made.id)!, resolvedAt: new Date(Date.now() - DAY_MS - 1000) });
+      await settings.alarm();
+      expect(writes.get(made.id)!.refusals).toStrictEqual([owed]);
+
+      harness.audit.fail = false;
+      await settings.alarm();
+      expect(writes.get(made.id)).toBeUndefined();
+    });
+    expect(recordsOf().at(-1)).toStrictEqual(refusedRecord(made, ADMIN, "challenge", passkeyA));
+    expect(eventsOf()).toEqual(["requested", "applied", "refused"]);
+  });
+
+  it("keeps the first ten refusals owed while the log is down, each written once", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    harness.audit.fail = true;
+    for (let attempt = 0; attempt < 11; attempt++) {
+      expect(await refusal(await answer(passkeyA, ADMIN, made.id, { userVerified: false })))
+          .toBe(passkeyRefused);
+    }
+    expect((await stored())!.refusals).toHaveLength(10);
     expect(eventsOf()).toEqual(["requested"]);
 
     harness.audit.fail = false;
-    expect((await approve(await answer(passkeyA))).state).toBe("approved");
+    await harness.inDo(async settings => {
+      await settings.alarm();
+      await settings.alarm();
+    });
+    expect(await stored()).toStrictEqual(made);
+    expect(recordsOf().slice(1)).toStrictEqual(Array.from(
+        { length: 10 }, () => refusedRecord(made, ADMIN, "userVerification", passkeyA)));
   });
 
   it("records a replay: the assertion that approved a request, sent again for it", async () => {
@@ -997,5 +1062,33 @@ describe("an approved request whose workspace never answers", () => {
       await settings.alarm();
     });
     expect(eventsOf()).toEqual(["requested", "failed"]);
+  });
+});
+
+// AdminApiImpl asks the same of the session Worker's environment before it calls. This object's
+// can be newer: a session outlives the config its Worker started with.
+describe("the object's own environment", () => {
+  it.each([
+    ["an admin who is no longer one", { ADMINS: [OTHER_ADMIN] }, ADMIN_ACCESS_ERROR_CODES.notAdmin],
+    ["every admin while writes are off", { ADMIN_WORKSPACE_WRITES: "off" },
+     ADMIN_WRITE_ERROR_CODES.writesOff],
+  ] as const)("lets %s begin and approve nothing, spending and recording nothing",
+      async (_who, vars, code) => {
+    const theirs = await requestWrite({ requestedBy: OTHER_ADMIN });
+    // Answered while ADMIN could still approve.
+    const assertion = await answer(passkeyA, ADMIN, theirs.id);
+    const challenges = await storedChallenges();
+
+    const begun = await harness.inDo(settings => rejection(
+        settings.beginWorkspaceWriteApproval(theirs.id, ADMIN)), vars);
+    expect(begun).toMatchObject({ code });
+    const approved = await harness.inDo(settings => rejection(
+        settings.approveWorkspaceWrite(theirs.id, assertion, actor(ADMIN))), vars);
+    expect(approved).toMatchObject({ code });
+
+    expect(eventsOf(theirs.id)).toEqual(["requested"]);
+    expect(await stored(theirs.id)).toStrictEqual(theirs);
+    expect(await storedChallenges()).toStrictEqual(challenges);
+    expect((await storedPasskey(passkeyA))!.lastUsed).toBeUndefined();
   });
 });
