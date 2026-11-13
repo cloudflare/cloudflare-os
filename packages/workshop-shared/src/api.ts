@@ -2049,6 +2049,79 @@ export type AdminAuditStats = {
   byDay: { day: string; count: number }[];
   /** The admins with the most records in the window, most first (ties by id), at most 10. */
   topAdmins: { admin: string; count: number }[];
+/**
+ * Why a passkey answer was refused. Its caller is told only `passkeyRefused`
+ * (ADMIN_WRITE_ERROR_CODES); the audit record of a refused approval says which
+ * (AdminWriteRecord.refusal):
+ *   - "malformed":        a value is not what its field holds, or is too long;
+ *   - "type":             the answer is to the other kind of ceremony;
+ *   - "challenge":        the caller has no challenge outstanding for this (none was issued, it
+ *                         has expired, it was already answered, or the request it approves is
+ *                         no longer pending), or the answer signs another;
+ *   - "origin":           the answer was made on another origin, or in a cross-origin frame;
+ *   - "relyingParty":     the authenticator signed for another relying party;
+ *   - "userPresence":     the authenticator did not report that a user was present;
+ *   - "userVerification": the authenticator did not report that it verified the user;
+ *   - "credential":       the passkey is not one the caller enrolled;
+ *   - "algorithm":        the key is neither ES256 nor RS256, or is too short;
+ *   - "signature":        the signature does not verify under the passkey's key;
+ *   - "counter":          the authenticator's signature counter did not rise.
+ */
+export type AdminPasskeyRefusal =
+    "malformed" | "type" | "challenge" | "origin" | "relyingParty" | "userPresence" |
+    "userVerification" | "credential" | "algorithm" | "signature" | "counter";
+
+/**
+ * What a browser needs for one WebAuthn ceremony on the Workshop's own origin: creating a passkey
+ * (AdminApi.beginAdminPasskeyEnrolment()), or confirming with one the removal of a passkey
+ * (AdminApi.beginAdminPasskeyRemoval()) or the approval of a write request
+ * (AdminApi.beginWorkspaceWriteApproval()). User verification is always required.
+ */
+export type AdminPasskeyChallenge = {
+  /** The challenge, as unpadded base64url. Single-use: starting another ceremony of the same kind
+   * replaces it, and answering it spends it whatever the answer. An approval's ends with the
+   * SHA-256 of the request it approves, and a removal's with that of the credential id it
+   * removes, so the passkey signs what it confirms. */
+  challenge: string;
+  /** The relying party: the host name of the deployment's PUBLIC_BASE_URL, without its port. */
+  rpId: string;
+  /** The credential ids of the caller's own passkeys, as unpadded base64url: the ones to offer
+   * for an approval or a removal, the ones to exclude from an enrolment. */
+  credentialIds: string[];
+  /** When the challenge stops being answerable. */
+  expiresAt: Date;
+};
+
+/**
+ * A browser's answer to an enrolment challenge, read from the PublicKeyCredential that
+ * navigator.credentials.create() returned. Binary values are unpadded base64url.
+ */
+export type AdminPasskeyRegistration = {
+  /** The credential's rawId. */
+  credentialId: string;
+  /** response.clientDataJSON. */
+  clientDataJSON: string;
+  /** response.getAuthenticatorData(). */
+  authenticatorData: string;
+  /** response.getPublicKey(): the public key as DER SubjectPublicKeyInfo. */
+  publicKey: string;
+  /** response.getPublicKeyAlgorithm(): -7 (ES256) or -257 (RS256). */
+  publicKeyAlgorithm: number;
+};
+
+/**
+ * A browser's answer to an approval or a removal challenge, read from the PublicKeyCredential
+ * that navigator.credentials.get() returned. Binary values are unpadded base64url.
+ */
+export type AdminPasskeyAssertion = {
+  /** The credential's rawId. */
+  credentialId: string;
+  /** response.clientDataJSON. */
+  clientDataJSON: string;
+  /** response.authenticatorData. */
+  authenticatorData: string;
+  /** response.signature. */
+  signature: string;
 };
 
 /**
