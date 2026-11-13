@@ -1,0 +1,31 @@
+packages/workshop-frontend/src/ChatInterface.actions.test.tsx
+  s_99c049c8391965::t_48dcd4af867d18 291-294
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_99c049c8391965::t_365df158a7793f 5482-5487
+packages/workshop-frontend/src/Activity.autoApproval.test.tsx
+  s_1ecc0303fce4fa::t_0a06cad1067add 130-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "d59b6e471aa9ab4bd98418491773d65924f7adc0",
+  "prompts": {},
+  "sessions": {
+    "s_1ecc0303fce4fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba8cdb65-1849-4cc2-aad1-1b9665f743d4",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
