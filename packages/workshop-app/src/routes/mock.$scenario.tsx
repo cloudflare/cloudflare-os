@@ -91,7 +91,12 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
       <ApiContext value={session}>
         <WorkspacesProvider>
           <ChatSessionsProvider>
-            <MockLayout onOpenScenarios={onOpenScenarios} onSetUpConnection={onSetUpConnection} onAlwaysApprove={onAlwaysApprove}>
+            <MockLayout
+              onOpenScenarios={onOpenScenarios}
+              onSetUpConnection={onSetUpConnection}
+              onAlwaysApprove={onAlwaysApprove}
+              status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
+            >
               <MockControls
                 scenarios={SCENARIOS}
                 scenario={scenario}
@@ -102,12 +107,6 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
             </MockLayout>
           </ChatSessionsProvider>
         </WorkspacesProvider>
-        <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">
-          <ConnectionIsland
-            state={connectionState.status === 'hidden' ? undefined : connectionState}
-            onDismiss={notice.dismiss}
-          />
-        </div>
       </ApiContext>
     </ConnectionNoticeContext>
   )
@@ -119,10 +118,12 @@ const CHAT = { workspaceId: MOCK_WORKSPACE_ID, chatId: 0 }
  * Laid out as the app lays out a chat, without the sidebar, so what it opens shows beside it. What
  * is shown is kept here rather than in the URL, which belongs to the scenario.
  */
-const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, children }: {
+const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, status, children }: {
   onOpenScenarios: () => void
   onSetUpConnection: ChatPaneProps['onSetUpConnection']
   onAlwaysApprove: ChatPaneProps['onAlwaysApprove']
+  /** Said over the chat at the top of the window, as the app's frame does: the connection island. */
+  status: ReactNode
   /** Over the chat, such as the player's controls. */
   children: ReactNode
 }) => {
@@ -180,6 +181,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
           setAskedEmpty(false)
         }}
         edgeInset={8}
+        status={status}
       >
         <div className="relative flex min-h-0 flex-1 flex-col">
           {expanded && named ? null : settings ? (
