@@ -545,8 +545,8 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   /**
    * Read all admin-managed settings for the admin UI in one call: the stored config plus the live
    * resource catalog (every bound gatekeeper's resource types annotated with their enabled state),
-   * and the admin access level and audit retention as chosen, bounded by the environment and
-   * enforced.
+   * the admin access level and audit retention as chosen, bounded by the environment and enforced,
+   * and whether the environment turns admin writes to workspaces on.
    *
    * `adminUserId` is the requesting admin's user id (email/username), forwarded to each gatekeeper's
    * getSupportedResources(). Most gatekeepers ignore it, but RBAC-gated ones (e.g. the internal GTM
@@ -580,6 +580,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
         chosen: config.adminAuditRetentionDays,
         min: minAdminAuditRetentionDays(this.env),
       },
+      adminWorkspaceWrites: adminWorkspaceWritesEnabled(this.env),
     };
   }
 
