@@ -11,7 +11,8 @@ import { cdp, page, userEvent } from 'vitest/browser'
 import { TooltipProvider, Toasty } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
 import type {
-  AiChatAuthorInfo, AuthenticatedApi, CollaboratorInfo, Overseer, ShareLinkInfo, WorkspaceMetadata,
+  AiChatAuthorInfo, AuthenticatedApi, CollaboratorInfo, ObserverBindingNeed, Overseer, ShareLinkInfo,
+  WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import ShareModal from './ShareModal'
 import './styles.css'
@@ -29,6 +30,10 @@ const BEA = {
   addedBy: [{ type: 'user', sharer: OWNER.id, created: new Date(), role: 'build' }],
   access: { role: 'build' },
 } satisfies CollaboratorInfo
+
+const CRM_REQUIREMENT: ObserverBindingNeed = {
+  gatekeeperId: 8, vendorId: 'salesforce', resourceTitle: 'Pipeline dashboard',
+}
 
 let root: Root | undefined
 let container: HTMLElement | undefined
@@ -59,11 +64,13 @@ afterEach(async () => {
   }
 })
 
-const renderModal = (link = FROZEN_LINK, initiallyOpen = true, metadata = {}) => {
+const renderModal = (
+  link = FROZEN_LINK, initiallyOpen = true, metadata = {}, requirements: ObserverBindingNeed[] = [],
+) => {
   const overseer = {
     listCollaborators: async () => [BEA],
     listShareLinks: async () => [link],
-    listObserverRequirements: async () => [],
+    listObserverRequirements: async () => requirements,
   } as unknown as RpcStub<Overseer>
   const Harness = () => {
     const [open, setOpen] = useState(initiallyOpen)
@@ -95,6 +102,42 @@ const expectReachableMenuItem = async (role: 'menuitem' | 'menuitemradio', name:
   await userEvent.keyboard('{Escape}')
   await expect.element(item).not.toBeInTheDocument()
 }
+
+it('keeps the protected-resources pill readable in a narrow viewport', async () => {
+  previousViewport = { width: window.innerWidth, height: window.innerHeight }
+  await page.viewport(320, 640)
+  renderModal(FROZEN_LINK, true, {}, [CRM_REQUIREMENT])
+  const pill = page.getByRole('button', { name: /Protected resources/ })
+  await expect.element(pill).toBeVisible()
+
+  const label = page.getByText('Protected resources', { exact: true }).element() as HTMLElement
+  expect(label.clientWidth).toBeGreaterThan(0)
+  expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth)
+  for (const icon of pill.element().querySelectorAll('svg')) {
+    expect(icon.getBoundingClientRect().width).toBeGreaterThanOrEqual(12)
+  }
+  // The footer reflows rather than pushing anything out of the dialog.
+  const dialogBox = page.getByRole('dialog').element().getBoundingClientRect()
+  for (const control of [pill, page.getByRole('button', { name: 'Copy link' })]) {
+    const box = control.element().getBoundingClientRect()
+    expect(box.left).toBeGreaterThanOrEqual(dialogBox.left)
+    expect(box.right).toBeLessThanOrEqual(dialogBox.right)
+  }
+})
+
+it('moves focus into a dialog page and back to the button that opened it', async () => {
+  renderModal(FROZEN_LINK, true, {}, [CRM_REQUIREMENT])
+  const back = page.getByRole('button', { name: 'Back to sharing' })
+  for (const name of ['Advanced settings', /Protected resources/]) {
+    const opener = page.getByRole('button', { name })
+    await expect.element(opener).toBeVisible()
+    ;(opener.element() as HTMLElement).focus()
+    await userEvent.keyboard('{Enter}')
+    await expect.element(back).toHaveFocus()
+    await userEvent.keyboard('{Enter}')
+    await expect.element(opener).toHaveFocus()
+  }
+})
 
 const isOnTop = (element: Element) => {
   const box = element.getBoundingClientRect()

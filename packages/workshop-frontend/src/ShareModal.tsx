@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { Checkbox, Dialog, DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretDown, CaretLeft, CaretRight, Check, Copy, Link, LockSimple, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
@@ -364,6 +364,20 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const [gadgetTooltip, setGadgetTooltip] = useState<{ linkId: string; pinned: boolean } | null>(null)
   const gadgetTooltipId = useId()
   const [scrolled, setScrolled] = useState(false)
+  // A page replaces the view holding the button that opened it, and leaving it unmounts Back, so
+  // focus is handed across explicitly rather than left to fall back to the dialog.
+  const backButtonRef = useRef<HTMLButtonElement>(null)
+  const advancedButtonRef = useRef<HTMLButtonElement>(null)
+  const resourcesButtonRef = useRef<HTMLButtonElement>(null)
+  const openSubpage = (page: 'resources' | 'advanced') => {
+    flushSync(() => setSubpage(page))
+    backButtonRef.current?.focus()
+  }
+  const closeSubpage = () => {
+    const opener = subpage === 'resources' ? resourcesButtonRef : advancedButtonRef
+    flushSync(() => setSubpage(null))
+    opener.current?.focus()
+  }
   const [landedPersonIds, setLandedPersonIds] = useState<ReadonlySet<string>>(NO_IDS)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
   const [editingShareLinkId, setEditingShareLinkId] = useState<string | null>(null)
@@ -1017,7 +1031,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
         <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
           {shownSubpage ? (
             <div className="flex min-w-0 items-center gap-1.5">
-              <WorkshopIconButton aria-label="Back to sharing" onClick={() => setSubpage(null)}>
+              <WorkshopIconButton ref={backButtonRef} aria-label="Back to sharing" onClick={closeSubpage}>
                 <CaretLeft size={16} />
               </WorkshopIconButton>
               <Dialog.Title className="truncate text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
@@ -1552,22 +1566,24 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           )}
         </div>
         )}
-        <div className={`${shownSubpage ? 'hidden' : 'flex'} shrink-0 items-center justify-between gap-3 border-t border-kumo-line/70 px-4 py-3 sm:px-6`}>
+        <div className={`${shownSubpage ? 'hidden' : 'flex'} shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-kumo-line/70 px-4 py-3 sm:px-6`}>
           {showResourcesPill ? (
             <button
+              ref={resourcesButtonRef}
               type="button"
-              className="inline-flex h-8 min-w-0 cursor-pointer items-center gap-1.5 rounded-full bg-kumo-info-tint px-3 text-[13px] leading-4 font-medium tracking-[-0.15px] text-kumo-info transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-info"
-              onClick={() => setSubpage('resources')}
+              className="inline-flex h-8 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-kumo-info-tint px-3 text-[13px] leading-4 font-medium tracking-[-0.15px] text-kumo-info transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-info"
+              onClick={() => openSubpage('resources')}
             >
-              <LockSimple size={14} weight="bold" />
+              <LockSimple size={14} weight="bold" className="shrink-0" />
               <span className="truncate">Protected resources</span>
-              {!requirementsFailed && <span className="opacity-70">({requirements?.length})</span>}
-              <CaretRight size={12} weight="bold" className="opacity-70" />
+              {!requirementsFailed && <span className="shrink-0 opacity-70">({requirements?.length})</span>}
+              <CaretRight size={12} weight="bold" className="shrink-0 opacity-70" />
             </button>
           ) : <span />}
-          <div className="flex shrink-0 items-center gap-2">
+          {/* Wraps below the pill, and then onto two lines, rather than squeezing it. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
           {showAdvancedButton && (
-            <WorkshopButton className="!h-9 !rounded-xl !border-0 !bg-kumo-tint enabled:hover:!bg-kumo-elevated" onClick={() => setSubpage('advanced')}>
+            <WorkshopButton ref={advancedButtonRef} className="!h-9 !rounded-xl !border-0 !bg-kumo-tint enabled:hover:!bg-kumo-elevated" onClick={() => openSubpage('advanced')}>
               Advanced settings
             </WorkshopButton>
           )}
