@@ -1,0 +1,29 @@
+{
+  "name": "@gadgets/pdf-renderer",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/worker.ts",
+  "exports": {
+    ".": "./src/worker.ts",
+    "./api": "./src/api.ts"
+  },
+  "scripts": {
+    "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
+    "deploy": "wrangler deploy",
+    "test:run": "vitest run && vitest run -c vitest.worker.config.ts"
+  },
+  "dependencies": {
+    "@gadgets/observability": "workspace:*",
+    "capnweb": "catalog:",
+    "capnweb-validate": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "catalog:",
+    "@gadgets/scripts": "workspace:*",
+    "miniflare": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "wrangler": "catalog:"
+  }
+}
