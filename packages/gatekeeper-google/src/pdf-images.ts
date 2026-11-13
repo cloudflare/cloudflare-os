@@ -355,6 +355,10 @@ export class PdfImageScan {
       return false;
     }
     this.#object = Number(header[1]);
+    // The masks an earlier definition of this object named were let go as masks, and are not
+    // taken up again as images: that is said, whatever the object is defined as now, since one
+    // of them may be a page's image in the file as it stands.
+    if (this.#masked.has(this.#object)) this.#masksRedefined = true;
     this.#drop(header.index + header[0].length);
     this.#searched = 0;
     this.#within = "value";
@@ -556,9 +560,6 @@ export class PdfImageScan {
 
   /** The image a dictionary describes, kept if it could be a page. */
   #candidate(dict: PdfDict): Candidate | undefined {
-    // The masks an earlier definition of this image named were let go as masks, and are not
-    // taken up again as images: that is said, since one of them may be a page's image now.
-    if (this.#masked.has(this.#object)) this.#masksRedefined = true;
     for (let key of ["/SMask", "/Mask"]) {
       let mask = dict.get(key);
       if (!isRef(mask)) continue;
