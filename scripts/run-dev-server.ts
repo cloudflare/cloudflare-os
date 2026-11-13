@@ -599,8 +599,9 @@ for (const gk of gatekeepers) {
     "CF_AI_GATEWAY", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_ACCOUNT_ID",
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
     // The bounds on admin access to workspaces (see docs/admin-access.md), e.g.
-    // `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` turns the dev admin's inspection off.
-    "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS",
+    // `ADMIN_WORKSPACE_ACCESS_MAX=off pnpm dev-server` turns the dev admin's inspection off, and
+    // `ADMIN_WORKSPACE_WRITES=on pnpm dev-server` lets the dev admin request and approve writes.
+    "ADMIN_WORKSPACE_ACCESS_MAX", "ADMIN_AUDIT_RETENTION_MIN_DAYS", "ADMIN_WORKSPACE_WRITES",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).
