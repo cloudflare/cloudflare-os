@@ -12,11 +12,12 @@ import {
   DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_WORKSPACE_ACCESS, DEFAULT_BANNER_COLOR,
   DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
-  type AdminWorkspaceAccess,
+  type AdminPasskey, type AdminWorkspaceAccess,
   type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
   type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
   type ReasoningLevel,
 } from "@gadgets/workshop-shared/api";
+import type { PasskeyKey } from "../webauthn.js";
 
 export type AdminConfig = {
   /**
@@ -222,6 +223,17 @@ export type UpdateCheck = {
   result?: { latestReleaseId: string; upgradeAvailable: boolean; availableSince?: number };
 };
 
+/** A passkey as stored. `id` is the credential id (unpadded base64url); `publicKey` is DER
+ * SubjectPublicKeyInfo. Kept out of AdminConfig, and so out of the KV mirror, as authentication
+ * material. */
+export type AdminPasskeyRecord = PasskeyKey & AdminPasskey;
+
+/** The one ceremony an admin has outstanding of each kind. `key` is `enrol:<admin>`,
+ * `remove:<admin>` or `approve:<admin>`. `subject` is what a removal or an approval confirms: the
+ * credential id to remove, or the id of the request to approve. */
+export type AdminPasskeyChallengeRecord =
+    { key: string; challenge: string; expiresAt: number; subject?: string };
+
 export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
@@ -229,6 +241,19 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
       // authoritative featured bit; this DO keeps the publishable deployment-wide copy.
       featuredBlueprints: collection<BlueprintPublicInfo>()({
         primaryKey: 'id',
+      }),
+
+      // The passkeys admins enrolled, by credential id. Not part of AdminConfig, which is mirrored
+      // to KV and read on hot paths: authentication material stays out of both, and a passkey is
+      // read only here, when an admin confirms something with it.
+      adminPasskeys: collection<AdminPasskeyRecord>()({
+        primaryKey: 'id',
+      }),
+
+      // The passkey challenges waiting for their answers, at most one of each kind per admin. Each
+      // is deleted as it is answered, so that none can be answered twice.
+      adminPasskeyChallenges: collection<AdminPasskeyChallengeRecord>()({
+        primaryKey: 'key',
       }),
     },
     singletons: {

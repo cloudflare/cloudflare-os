@@ -13,17 +13,19 @@
 import { createHash } from "node:crypto";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
-  ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  ADMIN_WORKSPACE_ACCESS_LEVELS, ADMIN_WRITE_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+  DEFAULT_ADMIN_COMMIT_LOG_DEPTH, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
+  MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError, createAdminWriteError,
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminSettingChange, type AdminSettingRecord, type AdminVia,
-  type AdminWorkspaceAccess, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
-  type CommitInfo, type GatekeeperCreationSpec,
+  type AdminWorkspaceAccess, type AdminWriteRecord, type AiChatMetadata,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
+import { handoffTargetOrigin } from "./connect-handoff.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.admin.access");
@@ -104,6 +106,21 @@ export function adminWorkspaceWritesEnabled(env: Cloudflare.Env): boolean {
   return false;
 }
 
+/** The Workshop's origin and its WebAuthn relying party id, from PUBLIC_BASE_URL alone, as
+ * handoffTargetOrigin() reads it: no request header is consulted. The relying party id is the
+ * origin's host name (`URL.hostname`, never `URL.host`: a port is not part of one, so
+ * `http://localhost:3000` gives "localhost"). Throws `originUnset` (ADMIN_WRITE_ERROR_CODES)
+ * while it is unset. */
+export function adminPasskeyRelyingParty(env: Cloudflare.Env): { origin: string; rpId: string } {
+  let origin: string;
+  try {
+    origin = handoffTargetOrigin(env);
+  } catch {
+    throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.originUnset);
+  }
+  return { origin, rpId: new URL(origin).hostname };
+}
+
 /** The lower of two access levels (ADMIN_WORKSPACE_ACCESS_LEVELS lists them in order). */
 export function lowerAdminWorkspaceAccess(a: AdminWorkspaceAccess, b: AdminWorkspaceAccess)
     : AdminWorkspaceAccess {
@@ -141,6 +158,9 @@ export function adminAccessPolicy(
  * the call besides its time and changes. AdminApiImpl passes one with every AdminSettings
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
+
+/** Who takes a step in a write request, as its AdminWriteRecord says. */
+export type AdminWriteActor = Pick<AdminWriteRecord, "admin" | "sessionId" | "via">;
 
 /** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()), fixed for
  * the view's life. */

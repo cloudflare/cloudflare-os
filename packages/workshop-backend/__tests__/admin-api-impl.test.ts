@@ -1,9 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  createAdminAccessError, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminVia,
+  type AdminAccessRecord, type AdminPasskeyAssertion, type AdminPasskeyRegistration,
 } from "@gadgets/workshop-shared/api";
 import { AdminApiImpl } from "../src/admin-settings.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
@@ -384,5 +382,97 @@ describe("AdminApiImpl audit log", () => {
     for (let days of [0, 367, 2.5]) {
       expect(await rejection(api.getAdminAuditStats({ days }))).toBeInstanceOf(TypeError);
     }
+  });
+});
+
+describe("AdminApiImpl passkeys", () => {
+  const REGISTRATION: AdminPasskeyRegistration = {
+    credentialId: "AA", clientDataJSON: "AA", authenticatorData: "AA", publicKey: "AA",
+    publicKeyAlgorithm: -7,
+  };
+  const ON = { ADMIN_WORKSPACE_WRITES: "on" };
+
+  // What the AdminSettings stub answers each method with.
+  const answers = {
+    listAdminPasskeys: [{ id: "AA" }],
+    beginAdminPasskeyEnrolment: { challenge: "enrol" },
+    addAdminPasskey: { id: "AA", name: "Laptop" },
+    beginAdminPasskeyRemoval: { challenge: "remove" },
+    removeAdminPasskey: undefined,
+  };
+  type Method = keyof typeof answers;
+  const NEEDS_WRITES: Method[] = ["beginAdminPasskeyEnrolment", "addAdminPasskey"];
+  const NEEDS_ADMIN: Method[] =
+      ["listAdminPasskeys", "beginAdminPasskeyRemoval", "removeAdminPasskey"];
+
+  const passkeyDeployment = (vars: object) => deployment({
+    vars,
+    handlers: { admin: Object.fromEntries(
+        Object.entries(answers).map(([method, answer]) => [method, () => answer])) },
+  });
+
+  const call = (api: AdminApiImpl, method: Method): Promise<unknown> => ({
+    listAdminPasskeys: () => api.listAdminPasskeys(),
+    beginAdminPasskeyEnrolment: () => api.beginAdminPasskeyEnrolment(),
+    addAdminPasskey: () => api.addAdminPasskey("Laptop", REGISTRATION),
+    beginAdminPasskeyRemoval: () => api.beginAdminPasskeyRemoval("credential"),
+    removeAdminPasskey: () => api.removeAdminPasskey("credential", ASSERTION),
+  })[method]();
+
+  const actor = (method: string) =>
+      ({ admin: ADMIN, sessionId: expect.any(String), via: "cli", method });
+  // What each method forwards to the AdminSettings object: the caller's id, or the actor.
+  const forwarded: Record<Method, unknown[]> = {
+    listAdminPasskeys: [],
+    beginAdminPasskeyEnrolment: [ADMIN],
+    addAdminPasskey: ["Laptop", REGISTRATION, actor("addAdminPasskey")],
+    beginAdminPasskeyRemoval: ["credential", ADMIN],
+    removeAdminPasskey: ["credential", ASSERTION, actor("removeAdminPasskey")],
+  };
+
+  it("forwards each method with the caller's id or its actor while writes are on", async () => {
+    const { mint, calls } = passkeyDeployment(ON);
+    const api = mint();
+    for (let method of [...NEEDS_ADMIN, ...NEEDS_WRITES]) {
+      calls.length = 0;
+      expect(await call(api, method)).toBe(answers[method]);
+      expect(calls).toStrictEqual([{ target: "admin", method, args: forwarded[method] }]);
+    }
+  });
+
+  it.each([
+    ["unset", {}],
+    ["\"off\"", { ADMIN_WORKSPACE_WRITES: "off" }],
+    ["\"true\"", { ADMIN_WORKSPACE_WRITES: "true" }],
+  ])("refuses enrolment, and still lists and removes, while ADMIN_WORKSPACE_WRITES is %s",
+      async (_label, vars) => {
+    // A value that is neither "on" nor "off" is reported once, as an error.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { mint, calls } = passkeyDeployment(vars);
+    const api = mint();
+    for (let method of NEEDS_WRITES) {
+      expect(getAdminWriteErrorCode(await rejection(call(api, method))))
+          .toBe(ADMIN_WRITE_ERROR_CODES.writesOff);
+    }
+    expect(calls).toEqual([]);
+
+    for (let method of NEEDS_ADMIN) {
+      calls.length = 0;
+      expect(await call(api, method)).toBe(answers[method]);
+      expect(calls).toStrictEqual([{ target: "admin", method, args: forwarded[method] }]);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it.each([["on", ON], ["unset", {}]])(
+      "refuses a caller no longer an admin before touching anything, with writes %s",
+      async (_label, vars) => {
+    const { mint, calls } = passkeyDeployment(vars);
+    const api = mint("former@example.test");
+    for (let method of [...NEEDS_ADMIN, ...NEEDS_WRITES]) {
+      expect(getAdminAccessErrorCode(await rejection(call(api, method))))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    expect(calls).toEqual([]);
   });
 });

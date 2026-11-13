@@ -7,7 +7,7 @@ import { createWorkshopLogger } from "./observability";
 import { sanitizeBlueprintOutput } from './blueprint-archive.js';
 import { ADMIN_CONFIG_KEY, FEATURED_BLUEPRINTS_KEY, isReservedBlueprintKey, parseBlueprintKvRecord, readBlueprintKvRecord, serializeFeaturedBlueprints } from './storage-schema/blueprints-kv.js';
 import { MAX_AGENT_HINT, MAX_ALLOWED_MODELS, adminConfigSeed, assertPermutation, changesModelSettings, defaultOutputFormatId, diffAdminConfig, effectiveAdminConfig, isAllowedModelName, isUpdateCheckInterval, isUpdateHours, listPromotedFormats, parseRestrictedWebFetchHosts, reorderFormats, sanitizeAddedModel, sanitizeModelSettings, sanitizeOutputOverrides, serializeAdminConfig } from './admin-config.js';
-import { makeAdminSettingsStorage, type AdminConfig, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
+import { makeAdminSettingsStorage, type AdminConfig, type AdminPasskeyChallengeRecord, type AdminPasskeyRecord, type AdminSettingsStorage, type FormatCuration } from './storage-schema/admin-settings-storage.js';
 import { getModelTokenLimits } from './agent-compaction.js';
 import { AUTO_ROUTER_PROVIDER_NAMES, AiGatewayConfig, GatewayModels, assertGatewayProvider, gatewayModelConfig, gatewayRunConfig, getAiGatewayConfig, isCatalogModel } from './ai-gateway.js';
 import { AgentTurnError, completeText } from './ai-invoke.js';
@@ -19,7 +19,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
-import { type AdminSettingActor, type AdminViewTerms, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminSettingChange, adminViewLifetimeMs, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, validateAdminAccessReason } from './admin-access.js';
+import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
 import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
@@ -84,6 +84,28 @@ const MODEL_TEST: GatewayTest = {
 function testFailureMessage(text: string, apiToken: string | undefined): string {
   if (apiToken) text = text.replaceAll(apiToken, "[redacted]");
   return text.replace(/\s+/g, " ").trim().slice(0, 300);
+}
+
+// What an admin is told about an id that names no passkey of theirs: the same whether it names
+// none or another admin's, since an admin removes only their own.
+const NO_SUCH_PASSKEY = "You have no such passkey.";
+
+// A stored passkey as AdminApi.listAdminPasskeys() lists it: without its key, algorithm and
+// counter.
+function adminPasskeyView({ id, admin, name, created, lastUsed }: AdminPasskeyRecord)
+    : AdminPasskey {
+  return { id, admin, name, created, ...(lastUsed && { lastUsed }) };
+}
+
+// Refuses a passkey ceremony for the check `error` names (anything but a PasskeyError is thrown
+// as it is). The check is logged for operators, with nothing of the answer, and the caller is
+// never told which it was.
+function refusePasskey(error: unknown): never {
+  if (!(error instanceof PasskeyError)) throw error;
+  logger.warn("refused a passkey ceremony", {
+    event: "admin.passkey.refused", reason: error.refusal,
+  });
+  throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.passkeyRefused);
 }
 
 /**
@@ -615,6 +637,150 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
           `${MAX_ADMIN_AUDIT_RETENTION_DAYS}.`);
     }
     await this.#mutateAdminConfig(actor, config => ({ ...config, adminAuditRetentionDays: days }));
+  }
+
+  // --- Admin passkeys ---
+  //
+  // Enrolling a passkey and removing one are WebAuthn ceremonies with user verification: a
+  // challenge is issued, and its answer is checked against the deployment's origin and relying
+  // party, read from the environment on each call. Passkeys are stored outside AdminConfig, so
+  // both mutators record their change explicitly, before making it.
+
+  // `admin`'s own passkeys.
+  #passkeysOf(admin: string): AdminPasskeyRecord[] {
+    return [...this.storage.adminPasskeys.list()].filter(passkey => passkey.admin === admin);
+  }
+
+  // The passkey `credentialId` names, when it is one of `admin`'s own.
+  #ownPasskey(credentialId: string, admin: string): AdminPasskeyRecord | undefined {
+    // Bounded before it is used as a storage key.
+    if (credentialId.length > MAX_CREDENTIAL_ID_LENGTH) return undefined;
+    let passkey = this.storage.adminPasskeys.get(credentialId);
+    return passkey?.admin === admin ? passkey : undefined;
+  }
+
+  // Stores that `admin`'s passkey `id` confirmed something, with the counter its assertion
+  // reported. False, with nothing written, when the passkey is no longer theirs: the caller awaited
+  // after reading it, a passkey removed meanwhile must not come back, and one another admin has
+  // enrolled under the id since confirmed nothing. The stored counter never falls: two ceremonies
+  // one passkey confirmed may finish out of order.
+  #usedPasskey(id: string, admin: string, signCount: number): boolean {
+    let passkey = this.#ownPasskey(id, admin);
+    if (!passkey) return false;
+    signCount = Math.max(passkey.signCount, signCount);
+    this.storage.adminPasskeys.put({ ...passkey, signCount, lastUsed: new Date() });
+    return true;
+  }
+
+    let { rpId } = adminPasskeyRelyingParty(this.env);
+    this.storage.adminPasskeyChallenges.put({ ...challenge, expiresAt });
+    return {
+      challenge: challenge.challenge, rpId,
+      credentialIds: this.#passkeysOf(admin).map(passkey => passkey.id),
+      expiresAt: new Date(expiresAt),
+    };
+  }
+
+  // Takes the challenge stored under `key`, if it can still be answered. It is deleted before
+  // anything about its answer is checked, so that a challenge is spent by its first answer, right
+  // or wrong.
+  #takeChallenge(key: string): AdminPasskeyChallengeRecord | undefined {
+    let challenge = this.storage.adminPasskeyChallenges.get(key);
+    this.storage.adminPasskeyChallenges.delete(key);
+    return challenge && Date.now() < challenge.expiresAt ? challenge : undefined;
+  }
+
+    if (this.#passkeysOf(admin).length >= MAX_ADMIN_PASSKEYS) {
+      throw new Error(
+          `An admin can enrol at most ${MAX_ADMIN_PASSKEYS} passkeys. Remove one first.`);
+    }
+  }
+
+  /** Every passkey enrolled, as AdminApi.listAdminPasskeys() lists them: by admin, then by
+   * enrolment time. */
+  listAdminPasskeys(): AdminPasskey[] {
+    return [...this.storage.adminPasskeys.list()].map(adminPasskeyView).toSorted((a, b) =>
+        a.admin === b.admin ? a.created.getTime() - b.created.getTime()
+            : a.admin < b.admin ? -1 : 1);
+  }
+
+  /** Start `admin`'s enrolment of a passkey: a fresh challenge, replacing the one they had
+  beginAdminPasskeyEnrolment(admin: string): AdminPasskeyChallenge {
+    return this.#issueChallenge({ key: `enrol:${admin}`, challenge: newPasskeyChallenge() }, admin);
+  }
+
+  /**
+   * Enrol the passkey `registration` describes for `actor`, named `name`, recording the change
+   * before storing it. The registration must answer the enrolment challenge `actor` was last
+   * given, which it spends whatever it says.
+   */
+  async addAdminPasskey(name: string, registration: AdminPasskeyRegistration,
+                        actor: AdminSettingActor): Promise<AdminPasskey> {
+    name = name.trim();
+    if (!name || name.length > MAX_ADMIN_PASSKEY_NAME_LENGTH) {
+      throw new TypeError(
+          `A passkey needs a name of at most ${MAX_ADMIN_PASSKEY_NAME_LENGTH} characters.`);
+    }
+    let challenge = this.#takeChallenge(`enrol:${actor.admin}`);
+    if (!challenge) refusePasskey(new PasskeyError("challenge"));
+    let { origin, rpId } = adminPasskeyRelyingParty(this.env);
+    let key = await verifyPasskeyRegistration(
+        registration, { challenge: challenge.challenge, origin, rpId }).catch(refusePasskey);
+    let id = registration.credentialId;
+    this.#assertEnrolable(id, actor.admin);
+
+    // The id is recorded as auditOwnerId() keeps it: one of ordinary length as itself, a long one
+    // as its start and a digest, where a plain cut would record two long ids sharing a start as
+    // one.
+    let change = adminSettingChange("adminPasskeys", auditOwnerId(id), undefined,
+        { admin: actor.admin, name, algorithm: key.algorithm });
+    await this.#recordSetting(actor, [change!], await this.committedAdminConfig());
+
+    // The append awaited, and another enrolment of this credential, or the one that brought this
+    // admin to the limit, may have landed meanwhile. An enrolment refused here has left its
+    // record, which is of the attempt.
+    this.#assertEnrolable(id, actor.admin);
+    let passkey = { id, admin: actor.admin, name, ...key, created: new Date() };
+    this.storage.adminPasskeys.put(passkey);
+    return adminPasskeyView(passkey);
+  }
+
+  /** Start `admin`'s removal of their own passkey `id`: a fresh challenge that ends with the
+   * SHA-256 of the id, so that the passkey confirming the removal signs which passkey it removes.
+   * `id` must name one of `admin`'s own passkeys: any other id, another admin's included, throws. */
+  async beginAdminPasskeyRemoval(id: string, admin: string): Promise<AdminPasskeyChallenge> {
+    if (!this.#ownPasskey(id, admin)) throw new Error(NO_SUCH_PASSKEY);
+    let digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(id));
+    return this.#issueChallenge({
+      key: `remove:${admin}`, challenge: newPasskeyChallenge(new Uint8Array(digest)), subject: id,
+    }, admin);
+  }
+
+  /** Verifies the assertion (one of the actor's own passkeys, over the removal challenge issued for
+   * `id`, itself one of the actor's own), records the change, then removes the passkey. The
+   * challenge is spent whatever the assertion says. */
+  async removeAdminPasskey(id: string, assertion: AdminPasskeyAssertion, actor: AdminSettingActor)
+      : Promise<void> {
+    let challenge = this.#takeChallenge(`remove:${actor.admin}`);
+    let passkey = this.#ownPasskey(id, actor.admin);
+    if (!passkey) throw new Error(NO_SUCH_PASSKEY);
+    if (challenge?.subject !== id) refusePasskey(new PasskeyError("challenge"));
+    let signer = this.#ownPasskey(assertion.credentialId, actor.admin);
+    if (!signer) refusePasskey(new PasskeyError("credential"));
+    let { origin, rpId } = adminPasskeyRelyingParty(this.env);
+    let signCount = await verifyPasskeyAssertion(
+        assertion, signer, { challenge: challenge.challenge, origin, rpId }).catch(refusePasskey);
+
+    let { admin, name, algorithm } = passkey;
+    let change = adminSettingChange(
+        "adminPasskeys", auditOwnerId(id), { admin, name, algorithm }, undefined);
+    await this.#recordSetting(actor, [change!], await this.committedAdminConfig());
+    // The append awaited, and a concurrent removal may have got there first, after which another
+    // admin may have enrolled a credential with this id, or with the signer's: only a passkey that
+    // is still the actor's own is deleted, or has its use stored. Nothing is awaited from here on,
+    // so the removal and the signer's use are stored together.
+    if (this.#ownPasskey(id, actor.admin)) this.storage.adminPasskeys.delete(id);
+    if (signer.id !== id) this.#usedPasskey(signer.id, actor.admin, signCount);
   }
 
   // --- Standard output formats ---
@@ -1260,9 +1426,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
 
 // Capability for managing and investigating the deployment, obtained via
 // AuthenticatedApi.getAdminApi() (which is null for non-admins). The admin access check happens
-// once, when the capability is minted in server.ts, so its methods don't re-check, with one
-// exception: inspectWorkspace() re-checks, as openForAdmin() and every call on the view it mints
-// do, since a view is the one thing an admin holds that reads users' data. Setting by setting,
+// once, when the capability is minted in server.ts, so its methods don't re-check, with two
+// exceptions. inspectWorkspace() re-checks, as openForAdmin() and every call on the view it mints
+// do, since a view is what an admin holds that reads users' data. The write and passkey methods
+// re-check admin status on every call too, and all but the listing and removal of passkeys
+// re-check the environment's switch (ADMIN_WORKSPACE_WRITES) as well. Setting by setting,
 // this is a thin validation+forwarding facade over the AdminSettings DO — fully user-independent —
 // so a disabled gatekeeper/resource can't be re-enabled via a crafted request, and the client
 // never receives a stub to the DO's internal methods. Every setter's change is recorded in the
@@ -1604,5 +1772,43 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   setAdminAuditRetentionDays(days: number): Promise<void> {
     return this.admin.setAdminAuditRetentionDays(days, this.#actor("setAdminAuditRetentionDays"));
+  }
+
+  // --- Writes to workspaces, approved with a passkey ---
+
+  // Refuses a caller who is no longer a deployment admin.
+  #requireAdmin(): void {
+  }
+
+  // Refuses that caller too, and every caller while the environment leaves writes off.
+  #requireWrites(): void {
+  }
+
+  /** Listing and removal ask only for an admin: while writes are off a passkey approves nothing,
+   * but it can still be seen, and removed by its own admin. */
+  async listAdminPasskeys(): Promise<AdminPasskey[]> {
+    this.#requireAdmin();
+    return await this.admin.listAdminPasskeys();
+  }
+
+  async beginAdminPasskeyEnrolment(): Promise<AdminPasskeyChallenge> {
+    this.#requireWrites();
+    return await this.admin.beginAdminPasskeyEnrolment(this.adminUserId);
+  }
+
+  async addAdminPasskey(name: string, registration: AdminPasskeyRegistration)
+      : Promise<AdminPasskey> {
+    this.#requireWrites();
+    return await this.admin.addAdminPasskey(name, registration, this.#actor("addAdminPasskey"));
+  }
+
+  async beginAdminPasskeyRemoval(id: string): Promise<AdminPasskeyChallenge> {
+    this.#requireAdmin();
+    return await this.admin.beginAdminPasskeyRemoval(id, this.adminUserId);
+  }
+
+  async removeAdminPasskey(id: string, assertion: AdminPasskeyAssertion): Promise<void> {
+    this.#requireAdmin();
+    await this.admin.removeAdminPasskey(id, assertion, this.#actor("removeAdminPasskey"));
   }
 }
