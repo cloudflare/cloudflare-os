@@ -27,7 +27,7 @@ src/
   routes/       Route declarations; they connect the data folders below to the UI layers above
 
   rpc/          The backend connection and sign-in; `useApi()` beneath `RpcGate`
-  workspaces/   The user's workspace list, and one workspace's chats (`WorkspacePane`)
+  workspaces/   The user's workspace list, and one workspace's page (`WorkspacePane`)
   chat/         One chat: `ChatSession` (plain class, no React), the mapping from server
                 messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
   chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
@@ -206,6 +206,11 @@ row that moves past others into another group (starred, unstarred) does not trav
 out of its old group, as a copy left there, and grows into its new one. A row reordered within its
 group slides over a surface that stays still. `groupedLayout.ts` draws the surface: rows whose
 padding meets share one rounded run, so groups never notch where they meet.
+
+A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
+title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
+in place in the history): its chats, what it has made (the library's, as beside a chat, opening
+as their own pages), and its members, the owner first. Each tab loads what it lists once chosen.
 
 Pages other than a chat (`PageLayout`) float their header over the content, unfilled, with the
 content fading under it as a conversation's does (`.chat-fade`).

@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
+import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
 
@@ -33,21 +34,34 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [api, reconnecting, version])
 
-  const markPinned = (id: string, pinned: boolean) =>
+  const mark = (id: string, change: Partial<WorkspaceMetadataWithTimestamps>) =>
     setState((current) =>
       current.status === 'ready'
-        ? { ...current, workspaces: current.workspaces.map((workspace) => (workspace.id === id ? { ...workspace, pinned } : workspace)) }
+        ? { ...current, workspaces: current.workspaces.map((workspace) => (workspace.id === id ? { ...workspace, ...change } : workspace)) }
         : current,
     )
   const setPinned = async (id: string, pinned: boolean) => {
-    markPinned(id, pinned)
+    mark(id, { pinned })
     try {
       await api.setWorkspacePinned(id, pinned)
     } catch (error) {
-      markPinned(id, !pinned)
+      mark(id, { pinned: !pinned })
       throw error
     }
   }
+  const rename = async (id: string, title: string) => {
+    const before = state.status === 'ready' ? state.workspaces.find((workspace) => workspace.id === id)?.title : undefined
+    mark(id, { title })
+    const overseer = api.openWorkspace(id)
+    try {
+      await overseer.setTitle(title)
+    } catch (error) {
+      if (before !== undefined) mark(id, { title: before })
+      throw error
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+  }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename }}>{children}</WorkspacesContext>
 }
