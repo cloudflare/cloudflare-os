@@ -39,8 +39,10 @@ it("reads a file someone opened in a worker of its own, which a stopped card rea
 });
 
 it("stops an opened file's read when another file is opened", async () => {
-  const first = readOffice("document", await docx("First"), {}, { lane: "viewer" });
-  const second = readOffice("document", await docx("Second"), {}, { lane: "viewer" });
+  // Both built first, so the second opens while the first is still being read.
+  const [one, two] = await Promise.all([docx("First"), docx("Second")]);
+  const first = readOffice("document", one, {}, { lane: "viewer" });
+  const second = readOffice("document", two, {}, { lane: "viewer" });
   await expect(first).rejects.toMatchObject({ name: "AbortError" });
   expect(firstText(await second)).toBe("Second");
 });
