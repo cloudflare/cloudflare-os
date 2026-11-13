@@ -968,8 +968,6 @@ describe("workshop-shared's API", () => {
   const SHARED = join(PACKAGE, "..", "workshop-shared");
   const API = join(SHARED, "src", "api.ts");
   const TSCONFIG = join(SHARED, "tsconfig.json");
-  /** What the generator leaves out: an agent already holds an authenticated stub. */
-  const CREDENTIAL_METHODS = ["authenticate", "authenticateFromCfAccess", "createAccount", "login", "changePassword"];
   const ROOT = "AuthenticatedApi";
 
   const schema = extractSchema({ entry: API, tsconfig: TSCONFIG, entryName: "PublicApi" });

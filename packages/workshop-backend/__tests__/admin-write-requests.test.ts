@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS,
   DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_PENDING_ADMIN_WRITES,
   getAdminWriteErrorCode,
   type AdminAuditRecord, type AdminWriteRecord,
@@ -625,5 +626,35 @@ describe("the alarm", () => {
       expect([...challenges.list()].map(challenge => challenge.key))
           .toEqual([`enrol:${OTHER_ADMIN}`]);
     });
+  });
+});
+
+// AdminApiImpl asks the same of the session Worker's environment before it calls. This object's
+// can be newer: a session outlives the config its Worker started with.
+describe("the object's own environment", () => {
+  const CASES = [
+    ["an admin who is no longer one", { ADMINS: [OTHER_ADMIN] }, ADMIN_ACCESS_ERROR_CODES.notAdmin],
+    ["every admin while writes are off", { ADMIN_WORKSPACE_WRITES: "off" },
+     ADMIN_WRITE_ERROR_CODES.writesOff],
+  ] as const;
+
+  it.each(CASES)("refuses a request from %s, recording and storing nothing",
+      async (_who, vars, code) => {
+    const error = await harness.inDo(
+        admin => rejection(admin.requestWorkspaceWrite(pendingWrite())), vars);
+    expect(error).toMatchObject({ code });
+    expect(harness.appended).toEqual([]);
+    expect(await harness.inDo(admin => [...harness.storageOf(admin).adminWrites.list()]))
+        .toEqual([]);
+  });
+
+  it.each(CASES)("lets %s deny nothing", async (_who, vars, code) => {
+    const theirs = await requestWrite({ requestedBy: OTHER_ADMIN });
+    const error = await harness.inDo(
+        admin => rejection(admin.denyWorkspaceWrite(theirs.id, actor(ADMIN))), vars);
+    expect(error).toMatchObject({ code });
+    expect(eventsOf(theirs.id)).toEqual(["requested"]);
+    expect(await harness.inDo(admin => harness.storageOf(admin).adminWrites.get(theirs.id)))
+        .toStrictEqual(theirs);
   });
 });

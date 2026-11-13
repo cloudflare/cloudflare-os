@@ -3,6 +3,7 @@
 
 import {
   MAX_ADMIN_AUDIT_ARG_LENGTH,
+  type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord, type AdminWriteRequest,
 } from "@gadgets/workshop-shared/api";
 import {
   adminAuditValue, cutAdminAuditText, type AdminWriteActor,
@@ -19,11 +20,19 @@ export type StoredAdminWrite = Omit<AdminWriteRequest, "approvalUrl"> & {
   /** Set while its "applied" or "failed" record is still to be written. The workspace has run by
    * then, so its answer is stored first and recorded until that succeeds. */
   unrecorded?: true;
+  /** The refused attempts to approve it whose "refused" record could not be written, oldest
+   * first: each is kept until the audit log takes it. */
+  refusals?: AdminWriteRefusal[];
 };
 
 /** Who approved a write request, and with which passkey: its credential id as
  * AdminWriteRecord.passkey keeps it (auditOwnerId() of the id). */
 export type AdminWriteApprover = AdminWriteActor & { passkey: string };
+
+/** A refused attempt to approve a write request, as its "refused" record keeps it: who tried, the
+ * check the attempt failed and, when the answer named one of that admin's own, the passkey. */
+export type AdminWriteRefusal =
+    AdminWriteActor & Required<Pick<AdminWriteRecord, "refusal">> & Pick<AdminWriteRecord, "passkey">;
 
 /** What OverseerDurableObject.applyAdminWrite() is given: an approved request, and who approved
  * it, through which session and with which passkey, for the "approved" record the workspace

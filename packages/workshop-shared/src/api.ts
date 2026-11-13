@@ -2190,7 +2190,11 @@ export type AdminAuditStats = {
   topAdmins: { admin: string; count: number }[];
   /** The writes to workspaces approved in the window: the records whose `event` is "approved". */
   writes: number;
+};
+
 /**
+ * What a deployment admin may do to a workspace through an approved write request. What each
+ * action does is said where one is requested: see AdminApi.requestWorkspaceWrite().
  */
 export const ADMIN_WRITE_ACTIONS = [
   "stopAgent", "restartWorkspace",
@@ -2266,6 +2270,7 @@ export type AdminWriteRequest = {
    * workspace the directory does not list cannot be requested. A request is run only while the
    * workspace still has this owner. */
   workspaceOwner: string;
+  /** What it would do (see AdminApi.requestWorkspaceWrite()). */
   action: AdminWriteAction;
   /** The action's arguments (see AdminWriteArgs). */
   args: AdminWriteArgs;
@@ -2338,6 +2343,8 @@ export type AdminPasskeyRefusal =
  * Every approved request is closed by "applied" or "failed". Those two are recorded after the
  * fact, so they are written at least once: a retry after a lost acknowledgement can repeat one.
  * A "refused" step can follow any other, a closing one included: it is how a replayed approval
+ * shows. It is recorded after the fact too, so one whose record could not be written when the
+ * attempt was refused is written later, at least once.
  * Unlike an AdminAccessRecord, an approved write is also shown in the workspace: as an entry of
  * its action log (see ActionLogEntry.byAdmin), which the workspace's owner and its "build"
  * collaborators read. A collaborator who only uses a gadget is given no action log, so is shown
@@ -2910,6 +2917,10 @@ export interface AdminApi {
   // their own, and every enrolment and removal is recorded.
 
   /**
+   * Ask for a write to a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. A
+   * reason is required, as for inspectWorkspace(), but unlike an inspection's it does not stay in
+   * the admins' log: once the write is approved, everyone who reads the workspace's action log,
+   * its owner and its "build" collaborators, reads it word for word, so write it for them.
    *
    * Nothing in the workspace is read or changed: its title and owner are the deployment
    * directory's. The request is recorded ("requested") before it is stored, so a request whose
@@ -2917,6 +2928,18 @@ export interface AdminApi {
    * ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, and is run once an admin approves it at its
    * `approvalUrl`. Its arguments are checked against the workspace only then.
    *
+   * Each action then runs the operation a member would:
+   *   - "stopAgent": Overseer.stopAgent(chatId), except that the chat's queued steers are kept:
+   *     no client stops the turn to put them in its draft, so they go into the chat as their
+   *     senders' messages (see `steered` of AiChatMessageBody).
+   *   - "restartWorkspace": ends every session on the workspace, as a revoked collaborator does.
+   *
+   * Refused `notAdmin` for a caller who is no longer a deployment admin, `writesOff` unless the
+   * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on", `workspaceNotFound` for a
+   * malformed id, `workspaceUnlisted` for a workspace the directory does not list (see
+   * listWorkspaces()), `originUnset` while the deployment has no PUBLIC_BASE_URL, and
+   * `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending. Rejects arguments the action
+   * does not take.
    */
   requestWorkspaceWrite(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
                         reason: string): Promise<AdminWriteRequest>;
@@ -2957,6 +2980,8 @@ export interface AdminApi {
   listAdminPasskeys(): Promise<AdminPasskey[]>;
 
   /** Start enrolling a passkey for the caller: the challenge navigator.credentials.create() is
+   * given. Refused `originUnset`. Throws once the caller has MAX_ADMIN_PASSKEYS enrolled, so that
+   * no authenticator makes a credential addAdminPasskey() would refuse. */
   beginAdminPasskeyEnrolment(): Promise<AdminPasskeyChallenge>;
 
   /**
@@ -5672,7 +5697,8 @@ export type AiChatMetadata = {
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`). Absent when none.
+   * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
+   * `steered` messages. Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
@@ -6127,7 +6153,8 @@ export type AiChatMessageBody = {
   /**
    * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
    * reads it before its next model request, or, if the turn ended before it could and started no
-   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   * other (it failed, stopped to wait on the user's decision, or was stopped by a deployment
+   * admin's write), when the agent next runs.
    */
   steered?: true;
 } | {

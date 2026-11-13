@@ -15109,6 +15109,9 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 }
 
 // Runs the operation of an approved admin write (see OverseerDurableObject.applyAdminWrite()):
+// for each action, the one a member's session runs for it (see AdminApi.requestWorkspaceWrite()).
+// `args` are as adminWriteArgs() kept them. Resolves what the workspace reported, for an action
+// that reports something.
 async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs)
     : Promise<string | undefined> {
   // adminWriteArgs() checked that every argument the action needs was given.
@@ -15117,6 +15120,10 @@ async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args:
   switch (action) {
     case "stopAgent":
       impl.getChatMetaOrThrow(chatId);
+      // A stop drops the chat's queued steers, which the client that stops puts in its draft. No
+      // client stops this turn, so they are logged first, as when a turn fails: they stay in the
+      // chat as their senders' messages, and the agent reads them when it next runs.
+      impl.takeSteers(chatId);
       impl.cancelAgent(chatId);
       return undefined;
 
