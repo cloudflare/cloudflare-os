@@ -70,9 +70,10 @@ const labels = () => [...document.body.querySelectorAll("[aria-label]")]
   .map(element => element.getAttribute("aria-label"));
 const button = (label: string) =>
   [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim() === label);
-/** The whole text of the row a run occupies, cue included. */
-const rowText = (title: string) => [...document.body.querySelectorAll("button")]
-  .find(b => b.textContent?.startsWith(title))?.textContent;
+const runButton = (title: string) => [...document.body.querySelectorAll("button")]
+  .find(b => b.textContent?.startsWith(title));
+/** The whole text of the row a run occupies, its Review button included. */
+const rowText = (title: string) => runButton(title)?.parentElement?.textContent;
 
 it("names both kinds of attention when one count covers both", async () => {
   await renderRow(
@@ -94,6 +95,16 @@ it("answers a run's action approval without leaving the list", async () => {
   expect(approveAction).toHaveBeenCalledWith(10, undefined);
   // Decided in place: the list never sent anyone to the run to do it.
   expect(onOpenRun).not.toHaveBeenCalled();
+});
+
+it("opens the run from its row, leaving the approval to its Review button", async () => {
+  const {onOpenRun} = await renderRow([run(1)], new Map([[1, [request(10)]]]), true);
+
+  await act(async () => { button("Review")!.click(); });
+  expect(onOpenRun).not.toHaveBeenCalled();
+
+  await act(async () => { runButton("Run 1")!.click(); });
+  expect(onOpenRun.mock.calls).toEqual([[1]]);
 });
 
 it("tells the two errands apart on the runs themselves", async () => {

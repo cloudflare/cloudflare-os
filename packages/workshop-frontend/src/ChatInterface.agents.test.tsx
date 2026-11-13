@@ -94,6 +94,8 @@ const text = () => document.body.textContent ?? "";
 const button = (match: RegExp) =>
   [...document.body.querySelectorAll("button")].find(b => match.test(b.textContent ?? ""));
 const openAgentsTab = async () => { await act(async () => button(/^Agents/)!.click()); };
+const reviewButton = (title: string) =>
+  document.body.querySelector<HTMLButtonElement>(`button[aria-label="Review ${title}"]`);
 
 const WORKSPACE = [
   chat({id: 1, title: "Build me a habit tracker"}),
@@ -229,11 +231,9 @@ it("places each request on the run that made it, reading no transcript", async (
   await openAgentsTab();
   await act(async () => { button(/Email joker/)!.click(); });
   await act(async () => { button(/Weekly digest/)!.click(); });
-  const run = (title: string) => [...document.body.querySelectorAll("button")]
-    .find(b => b.textContent?.startsWith(title));
-  expect(run("Triage weekend inbox")?.textContent).toContain("Review");
-  expect(run("Reply to Acme")?.textContent).not.toContain("Review");
-  expect(run("Monday digest")?.textContent).not.toContain("Review");
+  expect(reviewButton("Triage weekend inbox")).not.toBeNull();
+  expect(reviewButton("Reply to Acme")).toBeNull();
+  expect(reviewButton("Monday digest")).toBeNull();
   expect(getChatHistory).not.toHaveBeenCalled();
 });
 
@@ -249,10 +249,7 @@ it("sends a run stopped on a connection or web fetch to the run, where its card 
   expect(button(/^Agents/)!.textContent).toContain("1");
   await openAgentsTab();
   await act(async () => { button(/Email joker/)!.click(); });
-  const run = [...document.body.querySelectorAll("button")]
-    .find(b => b.textContent?.startsWith("Triage weekend inbox"));
-  expect(run?.textContent).toContain("Review");
-  await act(async () => { run!.click(); });
+  await act(async () => { reviewButton("Triage weekend inbox")!.click(); });
   expect(server.navigate).toHaveBeenCalledWith(11);
 });
 
@@ -274,8 +271,7 @@ it("marks a run that stops on a decision while the page is open", async () => {
   expect(button(/^Agents/)!.textContent).toContain("1");
   await openAgentsTab();
   await act(async () => { button(/Weekly digest/)!.click(); });
-  expect([...document.body.querySelectorAll("button")]
-    .find(b => b.textContent?.startsWith("Monday digest"))?.textContent).toContain("Review");
+  expect(reviewButton("Monday digest")).not.toBeNull();
 });
 
 it("keeps a run's thread read controls, which left the chat list with it", async () => {

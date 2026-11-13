@@ -25,7 +25,7 @@ export const RunApprovalPopover = ({
   onOpenRun: () => void
   /** Told when the popover opens or closes. */
   onOpenChange: (open: boolean) => void
-  /** The run's row, which opens this. */
+  /** The run's Review button, which opens this. */
   children: ReactElement
 }) => {
   const [open, setOpen] = useState(false)

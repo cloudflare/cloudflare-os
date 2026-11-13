@@ -78,6 +78,9 @@ async function renderList(
   return {approveAction, show};
 }
 
+/** The run's Review button, the one control on its row that opens the approval. */
+const reviewButton = () => page.getByRole("button", {name: `Review ${RUN_TITLE}`});
+
 /** The open popup, once base-ui has placed it. */
 const popup = () => vi.waitFor(() => {
   const found = document.querySelector<HTMLElement>(".themed-floating-shadow");
@@ -88,7 +91,7 @@ const popup = () => vi.waitFor(() => {
 it("opens the request beside the list, at a width it can be read at", async () => {
   await renderList();
 
-  await userEvent.click(page.getByText(RUN_TITLE));
+  await userEvent.click(reviewButton());
   const panel = await popup();
   const box = panel.getBoundingClientRect();
 
@@ -101,11 +104,21 @@ it("opens the request beside the list, at a width it can be read at", async () =
   expect(box.top).toBeGreaterThanOrEqual(0);
 });
 
-it("hands over to the run for whoever wants the whole thread", async () => {
+it("opens the run from anywhere on its row but Review", async () => {
   const opened: number[] = [];
   await renderList(chatId => opened.push(chatId));
 
   await userEvent.click(page.getByText(RUN_TITLE));
+
+  expect(opened).toEqual([1]);
+  expect(document.querySelector(".themed-floating-shadow")).toBeNull();
+});
+
+it("hands over to the run for whoever wants the whole thread", async () => {
+  const opened: number[] = [];
+  await renderList(chatId => opened.push(chatId));
+
+  await userEvent.click(reviewButton());
   await popup();
   await userEvent.click(page.getByText("Open run"));
 
@@ -127,7 +140,7 @@ it("scrolls multiple long requests without clipping their decision controls", as
   } as ActionLogEntry;
   await renderList(() => {}, [request, second]);
 
-  await userEvent.click(page.getByText(RUN_TITLE));
+  await userEvent.click(reviewButton());
   const panel = await popup();
   const requestList = [...panel.children].find(
     child => child instanceof HTMLElement && child.classList.contains("overflow-y-auto"),
@@ -142,7 +155,7 @@ it("scrolls multiple long requests without clipping their decision controls", as
 it("gives the run back its focus once its last request is decided", async () => {
   const {approveAction, show} = await renderList();
 
-  await userEvent.click(page.getByText(RUN_TITLE));
+  await userEvent.click(reviewButton());
   const panel = await popup();
   const approve = [...panel.querySelectorAll("button")]
     .find(button => button.textContent?.trim() === "Approve")!;

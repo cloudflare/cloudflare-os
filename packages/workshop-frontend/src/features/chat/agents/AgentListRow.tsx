@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { Button } from '@cloudflare/kumo'
 import { ArrowRight, CaretRight, Check, Lightning } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, AiChatMetadata, Overseer } from '@gadgets/workshop-shared/api'
@@ -16,7 +17,7 @@ const RunRow = ({
   run: AiChatMetadata
   now: Date
   activityLine: string | undefined
-  /** Action approvals attached to this run; a row with any becomes the approval's trigger. */
+  /** Action approvals attached to this run, which its Review button opens in place. */
   approvals: ActionLogEntry[]
   /** The run has a request to review (see `needsReview`), whether or not it is an approval. */
   review: boolean
@@ -31,73 +32,90 @@ const RunRow = ({
   const rowRef = useRef<HTMLButtonElement>(null)
   const reviewingRef = useRef(false)
 
-  // Deciding the last request takes the popover away with the row it was anchored to, and the
-  // focus inside it with them. The row that takes their place is where the user was.
+  // Deciding the last request takes the popover away with the Review button it was anchored to,
+  // and the focus inside it with them. The run's row is where the user was.
   useEffect(() => {
     if (hasApprovals || !reviewingRef.current) return
     reviewingRef.current = false
     rowRef.current?.focus()
   }, [hasApprovals])
 
-  const row = (
-    <button
-      ref={rowRef}
-      type="button"
-      // An action approval is answered in place; chat-native decisions live in the run itself.
+  // The one control on the row that does more than open the run: an approval is answered in
+  // place. A connection or web-fetch request is answered on its card in the run, so that one's
+  // Review opens the run too.
+  const reviewButton = (
+    <Button
+      size="xs"
+      variant="secondary"
+      aria-label={`Review ${run.title}`}
+      className="flex-shrink-0"
       onClick={hasApprovals ? undefined : onOpen}
-      aria-current={selected ? 'true' : undefined}
-      className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring ${
-        review || changes
-          ? 'bg-kumo-warning-tint/60 hover:bg-kumo-warning-tint/80'
-          : selected ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/60'
-      }`}
     >
-      <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center" aria-hidden="true">
-        {review || changes ? (
-          <span className="h-1.5 w-1.5 rounded-full bg-kumo-warning" />
-        ) : run.activeAgent ? (
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-kumo-brand" />
-        ) : (
-          // "Nothing is waiting on you", not "it succeeded": a run that failed or was stopped
-          // clears `activeAgent` exactly as a finished one does, so the client cannot tell them
-          // apart and this mark must not claim to.
-          <Check size={11} weight="bold" className="text-kumo-inactive" />
-        )}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.2px] text-kumo-subtle">
-        {run.title}
-      </span>
-      {review || changes ? (
-        <span className="flex flex-shrink-0 items-center gap-1 text-[11.5px] leading-4 font-semibold text-kumo-warning">
-          {/* Two different errands: one is answered here, the other is in the run itself. */}
-          {review ? 'Review' : 'Changes'}
-          <ArrowRight size={10} weight="bold" aria-hidden="true" />
-        </span>
-      ) : activityLine ? (
-        <span className="max-w-[45%] flex-shrink-0 truncate text-[11px] leading-4 text-kumo-inactive">
-          {activityLine}
-        </span>
-      ) : (
-        <span className="flex-shrink-0 text-[11px] leading-4 tabular-nums text-kumo-inactive">
-          {formatRunAge(run.lastActive, now)}
-        </span>
-      )}
-    </button>
+      Review
+    </Button>
   )
 
   return (
     <div className="group flex items-center gap-0.5">
-      {hasApprovals ? (
-        <RunApprovalPopover
-          overseer={overseer}
-          records={approvals}
-          restricted={restricted}
-          onOpenRun={onOpen}
-          onOpenChange={open => { reviewingRef.current = open }}
+      <div
+        className={`flex min-w-0 flex-1 items-center rounded-md ${
+          review || changes ? 'bg-kumo-warning-tint/60 pr-1' : ''
+        }`}
+      >
+        <button
+          ref={rowRef}
+          type="button"
+          onClick={onOpen}
+          aria-current={selected ? 'true' : undefined}
+          className={`flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-left transition-colors duration-150 ease-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring ${
+            review || changes
+              ? 'hover:bg-kumo-warning-tint/60'
+              : selected ? 'bg-kumo-tint' : 'hover:bg-kumo-tint/60'
+          }`}
         >
-          {row}
-        </RunApprovalPopover>
-      ) : row}
+          <span className="flex h-3.5 w-3.5 flex-shrink-0 items-center justify-center" aria-hidden="true">
+            {review || changes ? (
+              <span className="h-1.5 w-1.5 rounded-full bg-kumo-warning" />
+            ) : run.activeAgent ? (
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-kumo-brand" />
+            ) : (
+              // "Nothing is waiting on you", not "it succeeded": a run that failed or was stopped
+              // clears `activeAgent` exactly as a finished one does, so the client cannot tell
+              // them apart and this mark must not claim to.
+              <Check size={11} weight="bold" className="text-kumo-inactive" />
+            )}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[12.5px] leading-[17px] tracking-[-0.2px] text-kumo-subtle">
+            {run.title}
+          </span>
+          {review ? null : changes ? (
+            // Unaccepted work is reviewed against its code, in the run, which is where the row goes.
+            <span className="flex flex-shrink-0 items-center gap-1 text-[11.5px] leading-4 font-semibold text-kumo-warning">
+              Changes
+              <ArrowRight size={10} weight="bold" aria-hidden="true" />
+            </span>
+          ) : activityLine ? (
+            <span className="max-w-[45%] flex-shrink-0 truncate text-[11px] leading-4 text-kumo-inactive">
+              {activityLine}
+            </span>
+          ) : (
+            <span className="flex-shrink-0 text-[11px] leading-4 tabular-nums text-kumo-inactive">
+              {formatRunAge(run.lastActive, now)}
+            </span>
+          )}
+        </button>
+        {review && (hasApprovals ? (
+          <RunApprovalPopover
+            overseer={overseer}
+            records={approvals}
+            restricted={restricted}
+            onOpenRun={onOpen}
+            onOpenChange={open => { reviewingRef.current = open }}
+          >
+            {reviewButton}
+          </RunApprovalPopover>
+        ) : reviewButton)}
+      </div>
       <RunUnreadMenu workspaceId={workspaceId} run={run} overseer={overseer} />
     </div>
   )
