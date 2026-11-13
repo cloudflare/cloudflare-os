@@ -1,14 +1,14 @@
-// Reads a rendered page's bands with a vision model, a few at a time, and puts their texts
-// together in the page's order. What can be told of one band's answer is acted on here. A call
-// that failed as any call may is made once more. A band whose answer was stopped at the model's
-// output limit, ran away repeating itself, or is far shorter than the band's writing would make
-// is cut in two, and its halves asked for.
+// Reads a rendered page's bands with a vision model, as many at a time as the text's limiter of
+// model calls has slots for, and puts their texts together in the page's order. What can be told
+// of one band's answer is acted on here. A call the service refused for rate or capacity is made
+// again after a pause, a few times. A call that failed as any call may is made once more. A band
+// whose answer was stopped at the model's output limit, ran away repeating itself, or is far
+// shorter than the band's writing would make is cut in two, and its halves asked for.
 
 import type { RenderedBand, RenderedPage } from "@gadgets/pdf-renderer/api";
+import type { PageSlots } from "./pdf-read-ahead";
 import { CAPACITY_CODE, TranscriptionError, type Transcription } from "./workers-ai-vision";
 
-/** The most model calls in flight for one page. */
-const MAX_IN_FLIGHT = 4;
 /**
  * What makes an answer a runaway: a unit of at least {@link RUNAWAY_UNIT_CHARS} characters said
  * {@link RUNAWAY_REPEATS} times on end, or {@link RUNAWAY_SHORT_CHARS} characters on end of one
@@ -47,6 +47,43 @@ const CUT_MIN_ROWS = 64;
 export const RETRY_PAUSE = { ms: 250, jitterMs: 250 };
 
 /**
+ * How long a call the service refused for rate or capacity waits before it is made again: the
+ * nth refusal of an ask `ms[n]` milliseconds, and up to `jitter` of that more at random. No
+ * pause is as long as a text may sit idle, and each refusal counts as the text moving, so a band
+ * being refused is not what ends a text that sits idle. Refused once more than there are pauses,
+ * the call is not made again. Tests set the pauses to nothing, or leave none.
+ */
+export const REFUSED_PAUSE = { ms: [1000, 2000, 4000, 8000, 16000], jitter: 0.25 };
+
+/**
+ * Whether `error` is the service refusing a call for rate or capacity: one that failed before
+ * any answer with HTTP 429, or with the service's code for a model with no room under any status.
+ */
+export function refusedCall(error: unknown): boolean {
+  if (!(error instanceof TranscriptionError) || !("httpStatus" in error.failure)) return false;
+  return error.failure.httpStatus === 429 || error.failure.providerCode === CAPACITY_CODE;
+}
+
+/** Waits out `ms` milliseconds, or until `signal` aborts. */
+export function pause(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise<void>(resolve => {
+    if (ms <= 0 || signal.aborted) return resolve();
+    let end = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", end);
+      resolve();
+    };
+    let timer = setTimeout(end, ms);
+    signal.addEventListener("abort", end, { once: true });
+  });
+}
+
+/** Waits out the pause that the nth refusal of an ask has in {@link REFUSED_PAUSE}, from 0. */
+export function refusedPause(refusals: number, signal: AbortSignal): Promise<void> {
+  return pause(REFUSED_PAUSE.ms[refusals]! * (1 + Math.random() * REFUSED_PAUSE.jitter), signal);
+}
+
+/**
  * Asks the model for one band of a page `width` pixels wide: a transcription of a PNG made
  * afresh of the band's rows, so that nothing but the rows is held between two asks. Aborting
  * `signal` gives the call up.
@@ -62,6 +99,8 @@ export type BandEvent = {
   imageBytes: number;
   /** How many times the model was asked for the band, its halves included: 1 to 3. */
   asks: number;
+  /** How many of the band's calls the service refused for rate or capacity, over every ask. */
+  refused?: number;
   /**
    * Why it was asked again: the first call failed, its answer was stopped at the output limit,
    * its answer ran away, or its answer was short for the band's writing.
@@ -91,16 +130,24 @@ type Answer = { text: string; ended: "whole" | "truncated" | "runaway" };
 type Asked = Answer | { failure: TranscriptionError; transient: boolean };
 
 /**
- * The text of `page`, read from its bands that have pixels by `call`, at most
- * {@link MAX_IN_FLIGHT} at a time: the bands' texts in the page's order, each on a line of its
+ * The text of `page`, read from its bands that have pixels by `call`, every band at once and
+ * each call in a slot of `slots`: the bands' texts in the page's order, each on a line of its
  * own after the last, given only once every band has been read. `cutOff` says that a band's text
- * ends early. `moved` is called as any band's text arrives, and `log` once for each band asked
- * for, also when the page fails.
+ * ends early. `moved` is called as any band's text arrives and at each refusal, and `log` once
+ * for each band asked for, also when the page fails.
  *
- * A band costs three calls at most. Its call is made again as it was, once and after
- * {@link RETRY_PAUSE}, when it failed with HTTP 429, a 5xx or the service's code for a model
- * with no room, or its response broke or reported an error partway: a second failure is thrown,
- * any other failure is thrown at once, and the second answer is the band's however it ended.
+ * A call holds its slot from the request until its answer has been read to the end, has failed
+ * or was cancelled: not while it waits for one, and not during a pause. One the service refused
+ * for rate or capacity, which is one that failed before any answer with HTTP 429, or with the
+ * service's code for a model with no room under any status, is not an ask of its own: `slots`
+ * is told, and the call is made again within its ask after {@link REFUSED_PAUSE}. Refused once
+ * more than there are pauses, it is the ask's failure, and not one the band is asked again
+ * after. `slots` is told of each ask that ends with an answer, however the answer ended.
+ *
+ * A band costs three calls at most, not counting refused ones. Its call is made again as it
+ * was, once and after {@link RETRY_PAUSE}, when it failed with a 5xx without that code, or its
+ * response broke or reported an error partway: a second failure is thrown, any other failure is
+ * thrown at once, and the second answer is the band's however it ended.
  *
  * A band whose first answer was stopped at the output limit, or ran away and was stopped here,
  * is not asked for again as it was: the model would answer the same. It is cut in two (see
@@ -115,14 +162,15 @@ type Asked = Answer | { failure: TranscriptionError; transient: boolean };
  * as it is: after an answer that did not end whole, a second that did is the band's, and after
  * a short one the longer of the two is.
  *
- * When a band fails, or `signal` aborts, every other call in flight is given up and waited for
- * before this rejects, with the band's failure or the signal's reason: no call outlives it.
+ * When a band fails, or `signal` aborts, every other call that is running, waiting for a slot
+ * or pausing is given up and waited for before this rejects, with the band's failure or the
+ * signal's reason: no call outlives it.
  */
 export async function readBands(
   page: RenderedPage, call: BandCall, signal: AbortSignal, moved: () => void,
-  log: (event: BandEvent) => void,
+  log: (event: BandEvent) => void, slots: PageSlots,
 ): Promise<{ text: string; cutOff: boolean }> {
-  /** Gives up every call in flight: aborted with `signal`, and by the first band to fail. */
+  /** Gives up every call, running or yet to be: aborted with `signal`, and by the first band to fail. */
   let abort = new AbortController();
   let chain = () => abort.abort(signal.reason);
   signal.addEventListener("abort", chain, { once: true });
@@ -132,13 +180,19 @@ export async function readBands(
   let reads = page.bands.flatMap((rendered, index): BandRead[] => rendered.pixels
     ? [{ rendered, band: index + 1, imageBytes: 0, asks: 0, text: "", cutOff: false }] : []);
 
-  /** Asks for `read`'s band, or for `band` of it: not for the first time when `again` says why. */
-  let ask = async (
-    read: BandRead, again?: BandEvent["askedAgain"], band = read.rendered,
-  ): Promise<Asked> => {
+  /**
+   * Makes one call for `read`'s band, or for `band` of it, and reads its answer to the end: the
+   * first call of an ask when `refusals` is 0, and not the band's first ask when `again` says
+   * why. `refused` is what a call the service refused for rate or capacity failed with.
+   */
+  let attempt = async (
+    read: BandRead, again: BandEvent["askedAgain"], band: RenderedBand, refusals: number,
+  ): Promise<Asked | { refused: TranscriptionError }> => {
     abort.signal.throwIfAborted();
-    read.asks++;
-    read.askedAgain = again;
+    if (refusals === 0) {
+      read.asks++;
+      read.askedAgain = again;
+    }
     let answer: Transcription;
     try {
       answer = await call(band, page.width, abort.signal);
@@ -146,12 +200,9 @@ export async function readBands(
       if (!(error instanceof TranscriptionError)) throw error;
       read.imageBytes += error.sentBytes;
       if (abort.signal.aborted) throw error;
-      let answered = "httpStatus" in error.failure ? error.failure : undefined;
-      let status = answered?.httpStatus ?? 0;
-      return {
-        failure: error,
-        transient: status === 429 || (status >= 500 && status <= 599) || answered?.providerCode === CAPACITY_CODE,
-      };
+      if (refusedCall(error)) return { refused: error };
+      let status = "httpStatus" in error.failure ? error.failure.httpStatus : 0;
+      return { failure: error, transient: status >= 500 && status <= 599 };
     }
     // An answer being read is not ended by the signal its request was made with.
     let stop = () => void answer.cancel(abort.signal.reason).catch(() => undefined);
@@ -177,19 +228,28 @@ export async function readBands(
       read.imageBytes += answer.sentBytes;
     }
   };
-  /** Waits out {@link RETRY_PAUSE}, or until the page is given up. */
-  let pause = async () => {
-    let ms = RETRY_PAUSE.ms + Math.random() * RETRY_PAUSE.jitterMs;
-    if (ms <= 0 || abort.signal.aborted) return;
-    await new Promise<void>(resolve => {
-      let end = () => {
-        clearTimeout(timer);
-        abort.signal.removeEventListener("abort", end);
-        resolve();
-      };
-      let timer = setTimeout(end, ms);
-      abort.signal.addEventListener("abort", end, { once: true });
-    });
+  /**
+   * Asks for `read`'s band, or for `band` of it: not for the first time when `again` says why.
+   * Each call is made in a slot. One the service refused is made again, after the pause its
+   * refusal has in {@link REFUSED_PAUSE}; refused once more than there are pauses, it is the
+   * ask's failure.
+   */
+  let ask = async (
+    read: BandRead, again?: BandEvent["askedAgain"], band = read.rendered,
+  ): Promise<Asked> => {
+    for (let refusals = 0;; refusals++) {
+      let called = await slots.run(abort.signal, () => attempt(read, again, band, refusals));
+      if (!("refused" in called)) {
+        if (!("failure" in called)) slots.answered();
+        return called;
+      }
+      slots.refused();
+      // A refusal is the service answering: a band being refused is not a text that sits idle.
+      moved();
+      read.refused = (read.refused ?? 0) + 1;
+      if (refusals === REFUSED_PAUSE.ms.length) return { failure: called.refused, transient: false };
+      await refusedPause(refusals, abort.signal);
+    }
   };
   /**
    * What the halves of `read`'s band that have ink say, the top first, as one answer, which did
@@ -215,7 +275,7 @@ export async function readBands(
     let why: BandEvent["askedAgain"];
     if ("failure" in asked) {
       if (!asked.transient) throw asked.failure;
-      await pause();
+      await pause(RETRY_PAUSE.ms + Math.random() * RETRY_PAUSE.jitterMs, abort.signal);
       why = "failed";
     } else if (asked.ended === "whole") {
       return keep(read, asked);
@@ -237,34 +297,35 @@ export async function readBands(
     let second = read.rendered.rows >= CUT_MIN_ROWS ? await recut(read, "short") : await ask(read, "short");
     if (second && "text" in second && second.text.length > read.text.length) keep(read, second);
   };
-  /** Runs `run` for each of `some`, {@link MAX_IN_FLIGHT} at a time, until one fails. */
-  let inFlight = async (some: BandRead[], run: (read: BandRead) => Promise<void>) => {
-    let next = 0;
-    let turn = async () => {
-      while (next < some.length && !abort.signal.aborted) {
-        try {
-          await run(some[next++]!);
-        } catch (error) {
-          // What a call that was given up throws is not why the page failed.
-          if (abort.signal.aborted) continue;
-          failures.push(error);
-          abort.abort(error);
-        }
+  /** Runs `run` for each of `some`, all at once, and gives the others up when one fails. */
+  let each = async (some: BandRead[], run: (read: BandRead) => Promise<void>) => {
+    // Nothing is begun, nor a band cut in two, for a page that was given up.
+    if (abort.signal.aborted) return;
+    await Promise.all(some.map(async read => {
+      try {
+        await run(read);
+      } catch (error) {
+        // What a call that was given up throws is not why the page failed.
+        if (abort.signal.aborted) return;
+        failures.push(error);
+        abort.abort(error);
       }
-    };
-    await Promise.all(Array.from({ length: Math.min(MAX_IN_FLIGHT, some.length) }, turn));
+    }));
   };
 
   try {
-    await inFlight(reads, first);
-    await inFlight(reads.filter(read => short(read, reads)), again);
+    await each(reads, first);
+    await each(reads.filter(read => short(read, reads)), again);
     if (failures.length > 0) throw failures[0];
     signal.throwIfAborted();
   } finally {
     signal.removeEventListener("abort", chain);
-    for (let { band, imageBytes, asks, askedAgain } of reads) {
+    for (let { band, imageBytes, asks, refused, askedAgain } of reads) {
       if (asks === 0) continue;
-      log({ band, bands: page.bands.length, imageBytes, asks, ...(askedAgain ? { askedAgain } : {}) });
+      log({
+        band, bands: page.bands.length, imageBytes, asks, ...(refused ? { refused } : {}),
+        ...(askedAgain ? { askedAgain } : {}),
+      });
     }
   }
   return {

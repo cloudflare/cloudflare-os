@@ -277,6 +277,30 @@ describe("forwardRangeReader", () => {
     expect(opens.every(({ cancelled }) => cancelled)).toBe(true);
   });
 
+  it("opens a pass for a page that is asked for again, however often, and counts none of those among the four", async () => {
+    let { open, opens } = fakeFile();
+    let { readRange } = forwardRangeReader(open, GMAIL_PDF);
+
+    // A page whose call the model's service refused is asked for again, from a pass that stands
+    // past it: at its own end, or at the end of a page after it.
+    for (let again = 0; again < 6; again++) {
+      expect(await bytes(await readRange(range(1, 600, 50)))).toEqual(FILE.slice(600, 650));
+    }
+    expect(await bytes(await readRange(range(2, 700, 50)))).toEqual(FILE.slice(700, 750));
+    expect(await bytes(await readRange(range(1, 600, 50)))).toEqual(FILE.slice(600, 650));
+    expect(purposes(opens)).toEqual(Array.from({ length: 7 }, () => ({ page: 1, again: false })));
+
+    // The four passes for a page image that lies before the pass's place are all still to be had.
+    for (let page = 3; page <= 10; page += 2) {
+      expect(await bytes(await readRange(range(page, 700, 50)))).toEqual(FILE.slice(700, 750));
+      expect(await bytes(await readRange(range(page + 1, 200, 50)))).toEqual(FILE.slice(200, 250));
+    }
+    expect(opens).toHaveLength(11);
+    await bytes(await readRange(range(11, 700, 50)));
+    await expect(readRange(range(12, 200, 50))).rejects.toThrow(new Error(GMAIL_PDF.transcriptionFailed));
+    expect(opens).toHaveLength(11);
+  });
+
   it.each([
     ["under a range", 300],
     ["before one", 200],

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
 import { RENDER_LIMITS } from "@gadgets/pdf-renderer/api";
+import { READ_AHEAD } from "../src/pdf-read-ahead";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
   GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
@@ -87,6 +88,12 @@ function topLevelNames(sourceText: string): string[] {
 function duplicates(names: string[]): string[] {
   return names.filter((name, i) => names.indexOf(name) !== i);
 }
+
+/** What a PDF's types say of the pages read ahead of the text's reader: how many, and that they are billed. */
+const PAGES_AHEAD = [
+  `up to ${READ_AHEAD.pages} pages that are drawn, and up to ${READ_AHEAD.storedPages} of a scan read as the file stores it`,
+  "billed, for a page begun ahead of you also when you never read it",
+];
 
 /** The lines in square brackets that `text` holds in double quotes, after any line breaks, sorted. */
 function quotedNotes(text: string): string[] {
@@ -663,6 +670,7 @@ const unsaid: DrivePdfText = { text: new ReadableStream(), hasText: true };
     expect(given).not.toEqual([]);
     expect(quotedNotes(driveTypes)).toEqual(given);
     expect(driveTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
+    for (const said of PAGES_AHEAD) expect(driveTypes).toContain(said);
   });
 
   it("streams a PDF's text from a Gmail attachment, a draft's too, and takes no argument", () => {
@@ -699,6 +707,7 @@ const unsaid: GmailPdfText = { text: new ReadableStream(), hasText: true };
     expect(given).not.toEqual([]);
     expect(quotedNotes(gmailTypes)).toEqual(given);
     expect(gmailTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
+    for (const said of PAGES_AHEAD) expect(gmailTypes).toContain(said);
   });
 
   it("streams a file's bytes from both Drive sessions, whole or by range", () => {

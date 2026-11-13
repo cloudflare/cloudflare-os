@@ -9,6 +9,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 import {RENDER_LIMITS} from "@gadgets/pdf-renderer/api";
 import {PDF_FIRST_READ, type GmailGatekeeperImplProps} from "../../src/gmail";
 import {buildEncodedEmail, MAX_GMAIL_ATTACHMENT_BYTES} from "../../src/google-api";
+import {READ_AHEAD} from "../../src/pdf-read-ahead";
 import type {GmailDraftInfo, GmailPdfText} from "../../src/types";
 import {faxMarks, imagePdf, scanPage} from "../pdf-fixture";
 import type {TestHooks} from "./worker";
@@ -198,15 +199,18 @@ const text = (pdf: GmailPdfText) => new Response(pdf.text).text();
 
 let renderLimit: number;
 let firstReadIdleMs: number;
+let storedPagesAhead: number;
 
 beforeEach(() => {
   renderLimit = RENDER_LIMITS.fileBytes;
   firstReadIdleMs = PDF_FIRST_READ.idleMs;
+  storedPagesAhead = READ_AHEAD.storedPages;
 });
 
 afterEach(() => {
   RENDER_LIMITS.fileBytes = renderLimit;
   PDF_FIRST_READ.idleMs = firstReadIdleMs;
+  READ_AHEAD.storedPages = storedPagesAhead;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -426,6 +430,9 @@ describe("a PDF attachment read through a Gmail binding", () => {
   it("lets the approval queue and Gmail's answer go when the text is cancelled partway", async () => {
     const gmail = installGmail([pdfPart(JPEG_SCAN.bytes)]);
     tooLargeToRender();
+    // No page image is read ahead, so that the second is asked for only once the first page's
+    // text has been read to its end.
+    READ_AHEAD.storedPages = 1;
     const binding = await gmailBinding();
 
     // What is cancelled is a text whose first page the model has begun to answer.
@@ -435,6 +442,23 @@ describe("a PDF attachment read through a Gmail binding", () => {
     // The second page image was never read: its end lies further into Gmail's answer than was read.
     const {offset, length} = JPEG_SCAN.images[1]!;
     expect(gmail.opened[1]!.read).toBeLessThan(Math.floor((offset + length) / 3) * 4);
+  });
+
+  it("asks for the second page image, in the pass it reported, before the first page's text is given, and lets it go when cancelled", async () => {
+    const gmail = installGmail([pdfPart(JPEG_SCAN.bytes)]);
+    tooLargeToRender();
+    const binding = await gmailBinding();
+
+    // What is cancelled is a text whose first page the model has begun to answer.
+    expect(await binding.run("message.cancelPdf", [MESSAGE_ID, 0])).toBe("### Page 1\n");
+    // Gmail's answer was read on to where the second page image begins, which is in a later
+    // piece of it than the first ends in: that image was asked for ahead of the text's reader.
+    const {offset} = JPEG_SCAN.images[1]!;
+    expect(gmail.opened[1]!.read).toBeGreaterThan(Math.ceil(offset / 3) * 4);
+    // It came from the pass that was reported for the first, and the cancel let all of it go.
+    expect(await binding.reads()).toEqual([FIRST_READ, STORED_READ]);
+    await vi.waitFor(async () => expect(await binding.letGo()).toBe(1));
+    expect(gmail.opened).toMatchObject([{ended: true, cancelled: false}, {ended: false, cancelled: true}]);
   });
 
   it("fails a draft attachment's text at its next read once the attachment has left the draft", async () => {
