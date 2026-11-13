@@ -76,8 +76,9 @@ type AuditRow = {
  *
  * A deployment may hold the table as it was created without the "write" kind, and SQLite cannot
  * alter a CHECK. Such a table is rebuilt once, when the object starts: its rows are copied to a
- * table of this definition, which then takes its name. The copy keeps every seq, so a cursor stays
- * valid, and the next seq follows the highest one copied.
+ * table of this definition, which then takes its name. The copy keeps every seq, and the next seq
+ * follows the highest one the table ever issued, a pruned record's included, so a cursor stays
+ * valid: no later record is numbered below it.
  */
 export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
@@ -89,6 +90,10 @@ export class AdminAuditDurableObject extends DurableObject<Cloudflare.Env> {
     if (!definition.includes("'write'")) {
       ctx.storage.transactionSync(() => {
         sql.exec(`CREATE TABLE admin_audit_next ${TABLE_DEFINITION}`);
+        // SQLite keeps the highest seq a table has issued in sqlite_sequence, and the copy alone
+        // would start that again from the highest row left.
+        sql.exec(`INSERT INTO sqlite_sequence (name, seq)
+            SELECT 'admin_audit_next', seq FROM sqlite_sequence WHERE name = 'admin_audit'`);
         sql.exec("INSERT INTO admin_audit_next SELECT * FROM admin_audit");
         sql.exec("DROP TABLE admin_audit");
         sql.exec("ALTER TABLE admin_audit_next RENAME TO admin_audit");

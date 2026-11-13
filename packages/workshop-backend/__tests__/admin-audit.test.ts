@@ -540,6 +540,31 @@ describe("AdminAuditDurableObject rebuild", () => {
     expect(await stored()).toEqual(rows);
   });
 
+  it.each([
+    ["every record", "DELETE FROM admin_audit", [] as number[]],
+    ["the latest records", "DELETE FROM admin_audit WHERE seq > 2", [2, 1]],
+  ])("numbers on from the highest seq issued when %s were pruned before the rebuild",
+      async (_pruned, prune, left) => {
+    let log = auditLog();
+    await sql(log, "DROP TABLE admin_audit");
+    for (let statement of TWO_KIND_SCHEMA) await sql(log, statement);
+    for (let i = 0; i < 4; i++) await log.append(setting(), RETENTION);
+    let { nextCursor } = await log.list({ limit: 2 }, RETENTION);
+    expect(nextCursor).toBe("3");
+    // As the retention deletes records, which leaves the table's count of issued seqs alone.
+    await sql(log, prune);
+
+    await listRestarted(log);
+    await log.append(setting({ admin: "grace" }), RETENTION);
+    expect(await sql(log, "SELECT seq FROM admin_audit ORDER BY seq DESC"))
+        .toEqual([5, ...left].map(seq => ({ seq })));
+    expect(await sql(log, "SELECT name, seq FROM sqlite_sequence"))
+        .toEqual([{ name: "admin_audit", seq: 5 }]);
+    // A cursor taken before the rebuild pages only what is older than it, never a later record.
+    let older = (await log.list({ limit: 50, cursor: nextCursor }, RETENTION)).records;
+    expect(older.map(record => record.admin)).toEqual(left.map(() => "ada"));
+  });
+
   it("leaves a table that has the write kind as it is", async () => {
     let log = auditLog();
     await log.append(write(), RETENTION);

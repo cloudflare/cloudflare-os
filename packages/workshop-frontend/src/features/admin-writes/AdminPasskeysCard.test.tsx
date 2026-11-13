@@ -6,6 +6,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import {
+  ADMIN_WRITE_ACTIONS,
   ADMIN_WRITE_ERROR_CODES,
   createAdminWriteError,
   MAX_ADMIN_PASSKEY_NAME_LENGTH,
@@ -18,6 +19,7 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import type * as PasskeyCeremony from './passkeyCeremony'
+import { WRITE_ACTION_LABELS } from './writeLabels'
 
 const { addToast, createPasskey, assertPasskey } = vi.hoisted(() => ({
   addToast: vi.fn<(toast: { title: string; description?: string; variant: string }) => void>(),
@@ -227,6 +229,14 @@ describe('AdminPasskeysCard', () => {
       expect(findButton('Remove passkey Work laptop')).toBeDefined()
       expect(findButton('Remove passkey Security key')).toBeUndefined()
       expect(container.textContent).toContain('A passkey works only for the admin it belongs to.')
+    })
+
+    it('names every write a passkey approves, and no other', async () => {
+      await render()
+
+      const named = /change a workspace \(([^)]*)\)/.exec(container.textContent ?? '')?.[1]
+      expect(named?.split(', ')).toEqual(
+        ADMIN_WRITE_ACTIONS.map((action) => WRITE_ACTION_LABELS[action].toLowerCase()))
     })
 
     it('says so when no passkey is enrolled', async () => {

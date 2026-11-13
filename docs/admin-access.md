@@ -799,7 +799,8 @@ every step of the requests for it.
 The log's table constrains `kind`, and SQLite cannot alter a constraint. A deployment whose
 `admin_audit` table was created without the `"write"` kind has it rebuilt once, when the audit
 object starts: its rows are copied to a table that allows all three kinds, which takes its name.
-The copy keeps every row's sequence number, so a listing's cursor stays valid.
+The copy keeps every row's sequence number, and the table goes on numbering from the highest one it
+ever issued, a pruned record's included, so a listing's cursor stays valid.
 
 ### What the metadata level withholds
 
@@ -1075,17 +1076,16 @@ Writes add these, in the same directory. The passkey suites sign with a software
   cannot be written; settling, with a closing record owed the same way; and a workspace that
   never answers.
 - `admin-write-apply.test.ts`: `applyAdminWrite()` on a real workspace. The refusals that write
-  nothing, each action running its one operation, a stop that keeps the queued messages, a retry
-  as the owner, a collaborator granted as the owner (where only the owner may add people too,
-  still verified as an observer, and not into a workspace deleted meanwhile), a
-  rejected queue with its bound and a pending creation, the record before the effect, the action
-  log entry as the owner reads it and as a `use` session does not, and a deletion that fails
-  partway or completes.
+  nothing, each action running its one operation, a stop that keeps the queued messages, a
+  rejected queue with its bound and a pending creation, the record before the effect, a workspace
+  deleted while its write runs, and the action log entry as the owner reads it and as a `use`
+  session does not.
 - `admin-api-impl.test.ts` also covers `AdminApiImpl`'s write and passkey methods: the checks
   before anything is touched, the directory's title and owner, and an approval that has the
   workspace run the write once and settles it.
 - `admin-audit.test.ts` also covers write records in the log's listing, filters and statistics,
-  and the table's one-time rebuild, which keeps every row and sequence number.
+  and the table's one-time rebuild, which keeps every row and sequence number and numbers on from
+  the highest one issued, whatever was pruned.
 - `git-push-actions.test.ts` also covers rejecting an action whose connection was removed, with
   no gatekeeper left to tell.
 
@@ -1114,9 +1114,8 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   and entered in the workspace's action log, where its owner reads who did it and why; nothing
   changing when the record cannot be written; a replayed and a falsified approval refused, each
   recorded; a denial; a passkey removed only by its own admin; every other action as its
-  operation, a collaborator added where only the owner may add people among them; a workspace
-  that is gone; and passkeys kept through writes being turned off, and a former admin's, which do
-  nothing.
+  operation, and a request for anything else refused; a workspace that is gone; and passkeys kept
+  through writes being turned off, and a former admin's, which do nothing.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
