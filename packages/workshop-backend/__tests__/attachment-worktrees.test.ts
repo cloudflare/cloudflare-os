@@ -231,7 +231,7 @@ describe("scratch worktree attachment ingress", () => {
 
   it("accepts a workpiece written with the env. prefix the attachment note uses", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const ref = await impl.gitStore.writeBlob(new TextEncoder().encode("hello needle\n"));
+    const ref = await impl.gitCache.writeBlob(new TextEncoder().encode("hello needle\n"));
     const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined,
       [{oid: ref.oid, mimeType: "text/plain", name: "notes.txt"}]);
     const requests = await scriptedTurn(impl, chatId, [
