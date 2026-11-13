@@ -166,8 +166,14 @@ interface SheetContext {
  * worker sends back), so a long string used by many cells would otherwise cost each of them.
  */
 const MAX_CELL_TEXT = 2_000;
-/** The most cell text kept across a workbook; the cells past it are reported as truncated. */
+/** The most cell text and link targets kept across a workbook; the cells past it are reported as truncated. */
 const MAX_WORKBOOK_TEXT = 4_000_000;
+
+/**
+ * The longest link target kept, far past any address someone writes. Each cell a link covers carries its
+ * own copy once the workbook leaves the reader, so each copy is charged to the workbook's text too.
+ */
+const MAX_LINK_TARGET = 8_192;
 
 const PIXELS_PER_POINT = 96 / 72;
 /** Excel's row height when the sheet names none: 15 points, which fits Calibri 11. */
@@ -347,7 +353,7 @@ async function readSettings(sheetXml: string, part: string, context: SheetContex
           const location = attribute(link, "location");
           // An external target is kept as the address it is, to offer as a link; nothing reads it.
           const target = relationship?.external ? relationship.target + (location ? `#${location}` : "") : location ? `#${location}` : undefined;
-          if (range && target) settings.links.push({ range, target });
+          if (range && target && target.length <= MAX_LINK_TARGET) settings.links.push({ range, target });
         }
         break;
       case "s:conditionalFormatting":
@@ -540,7 +546,13 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
       if (content.text === "" && attribute(cell, "t") !== "str" && firstChild(cell, "s:f")) uncalculated = true;
       if (content.text === "" && styleId === undefined) continue;
       const style = format.style;
-      const hyperlink = linkAt(rowLinks, column);
+      let hyperlink = linkAt(rowLinks, column);
+      if (hyperlink && hyperlink.length > context.textLeft) {
+        hyperlink = undefined;
+        truncated = true;
+      } else if (hyperlink) {
+        context.textLeft -= hyperlink.length;
+      }
       cells.push({ column, ...content, style, ...(hyperlink ? { hyperlink } : {}) });
       columnCount = Math.max(columnCount, column + 1);
       if (content.text !== "") {

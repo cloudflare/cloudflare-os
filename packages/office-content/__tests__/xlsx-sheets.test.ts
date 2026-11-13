@@ -358,6 +358,28 @@ describe("readWorkbookSheets", () => {
     ]);
   });
 
+  it("drops a link target too long to be an address, and counts each cell's copy against the workbook's text", async () => {
+    const cells = (row: number) => Array.from({ length: 20 }, (_, column) =>
+      `<c r="${String.fromCharCode(65 + column)}${row}" t="inlineStr">${text("x")}</c>`).join("");
+    const workbook = await read({
+      sheets: [{
+        name: "Links",
+        rows: Array.from({ length: 40 }, (_, row) => `<row r="${row + 1}">${cells(row + 1)}</row>`).join(""),
+        after: '<hyperlinks><hyperlink ref="A1:T40" r:id="rIdLong"/><hyperlink ref="A1" r:id="rIdHuge"/></hyperlinks>',
+        relationships: [
+          { id: "rIdLong", type: "hyperlink", target: `https://example.com/${"a".repeat(8_000)}`, external: true },
+          { id: "rIdHuge", type: "hyperlink", target: `https://example.com/${"a".repeat(10_000)}`, external: true },
+        ],
+      }],
+    });
+    const links = workbook.sheets[0]!.rows.flatMap(row => row.cells.map(cell => cell.hyperlink));
+    // 800 copies of an 8,000-character address would pass the workbook's budget of 4 million.
+    expect(links[0]).toMatch(/^https:\/\/example\.com\/a{8000}$/);
+    expect(links.filter(Boolean).length).toBeLessThan(500);
+    expect(links.at(-1)).toBeUndefined();
+    expect(workbook.sheets[0]!.truncated).toBe(true);
+  });
+
   it("reports what a sheet holds that is not in the model", async () => {
     const X14 = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
     const XDR = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
