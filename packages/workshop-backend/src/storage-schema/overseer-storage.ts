@@ -527,6 +527,7 @@ export type ActionRecord = {
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  byAdmin?: true;                 // a deployment admin's write (see ActionLogEntry.byAdmin)
 } | {
   type: "observation";
 
