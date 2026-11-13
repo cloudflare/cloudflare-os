@@ -9,6 +9,7 @@ import ts from "typescript6";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { AWAITABLE, emitDeclarations, PIPELINED, UNTYPED_STUB } from "../src/emit/dts.ts";
 import { extractSchema } from "../src/extract.ts";
+import { AGENT_OMIT } from "../scripts/generate.ts";
 import { type ApiShape, FORMAT, type Schema, type SchemaMethod, type SchemaService, type SchemaShape } from "../src/schema.ts";
 
 /**
@@ -972,7 +973,7 @@ describe("workshop-shared's API", () => {
   const ROOT = "AuthenticatedApi";
 
   const schema = extractSchema({ entry: API, tsconfig: TSCONFIG, entryName: "PublicApi" });
-  const emitted = emitDeclarations(schema, { root: ROOT, omit: CREDENTIAL_METHODS });
+  const emitted = emitDeclarations(schema, { root: ROOT, omit: AGENT_OMIT });
   const dir = mkdtempSync(join(tmpdir(), "api-schema-dts-"));
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -980,7 +981,30 @@ describe("workshop-shared's API", () => {
     expect(/^export (?:interface|type) ([\w$]+)/m.exec(emitted.full)?.[1]).toBe(ROOT);
     expect(declared(emitted.full)).not.toContain("PublicApi");
     expect(declared(emitted.full)).not.toContain("LoginAttempt");
-    for (const name of CREDENTIAL_METHODS) expect(emitted.full).not.toMatch(new RegExp(`^  ${name}\\(`, "m"));
+    // What the generator leaves out is read here, and by the probes below, as bare method names:
+    // one the API renamed, or one written `Service.method`, is no method of it.
+    const methods = Object.values(schema.services).flatMap((service) => service.methods.map((m) => m.name));
+    for (const name of AGENT_OMIT) {
+      expect(methods).toContain(name);
+      expect(emitted.full).not.toMatch(new RegExp(`^  ${name}\\(`, "m"));
+    }
+  });
+
+  test("declares what requests, reads and denies an admin write and lists passkeys, and none of the passkey ceremonies", () => {
+    const ceremonies = ["beginAdminPasskeyEnrolment", "addAdminPasskey", "beginAdminPasskeyRemoval", "removeAdminPasskey",
+      "beginWorkspaceWriteApproval", "approveWorkspaceWrite"];
+    const kept = ["requestWorkspaceWrite", "getWorkspaceWrite", "denyWorkspaceWrite", "listAdminPasskeys"];
+    // Every method of AdminApi named for a passkey or a write request is one or the other, so one
+    // renamed or added is sorted into either list here.
+    const named = schema.services.AdminApi!.methods.map((m) => m.name).filter((name) => /Passkey|WorkspaceWrite/.test(name));
+    expect(named.toSorted()).toEqual([...ceremonies, ...kept].toSorted());
+    expect(AGENT_OMIT).toEqual(expect.arrayContaining(ceremonies));
+    for (const text of [emitted.full, emitted.fragments.AdminApi!]) {
+      // The methods declared, by their own lines: a doc may still name one that is left out.
+      const methods = [...text.matchAll(/^  (\w+)\(/gm)].map((match) => match[1]);
+      for (const name of ceremonies) expect(methods).not.toContain(name);
+      expect(methods).toEqual(expect.arrayContaining(kept));
+    }
   });
 
   test("fragments: together what the full file declares, each missing only other services", () => {
@@ -1077,14 +1101,14 @@ describe("workshop-shared's API", () => {
   }, 60_000);
 
   function checkProbes(): string[][] {
-    const branded = parameterServices(schema, ROOT, CREDENTIAL_METHODS)
+    const branded = parameterServices(schema, ROOT, AGENT_OMIT)
       .filter((name) => extendsRpcTargetDirectly(API, name));
-    const held = heldServices(schema, ROOT, CREDENTIAL_METHODS);
+    const held = heldServices(schema, ROOT, AGENT_OMIT);
     const callers = new Set([ROOT, ...held.map(({ service }) => service)]);
-    const callbacks = parameterServices(schema, ROOT, CREDENTIAL_METHODS)
+    const callbacks = parameterServices(schema, ROOT, AGENT_OMIT)
       .filter((name) => !callers.has(name) && declaresPlainInterface(API, name));
     const reverse = [...callers, ...callbacks].flatMap((service) =>
-      schema.services[service]!.methods.filter((m) => !CREDENTIAL_METHODS.includes(m.name)).flatMap((m) => {
+      schema.services[service]!.methods.filter((m) => !AGENT_OMIT.includes(m.name)).flatMap((m) => {
         const key = JSON.stringify(m.name);
         const called = callers.has(service);
         const checks = dataParts(schema, m.returns, `Awaited<ReturnType<Real_${service}[${key}]>>`,
@@ -1133,7 +1157,7 @@ ${reverse.map((check, i) => `export type Reverse${i} = ${check};`).join("\n")}
 type NoKeys<Keys extends never> = Keys;
 /** A type's method names, less capnweb's brands. */
 type Methods<T> = Exclude<Extract<keyof T, string>, \`__RPC_\${string}\`>;
-type Omitted = ${CREDENTIAL_METHODS.map((name) => JSON.stringify(name)).join(" | ")};
+type Omitted = ${AGENT_OMIT.map((name) => JSON.stringify(name)).join(" | ")};
 ${[...callers, ...callbacks].map((service) =>
     `export type Missing_${service} = NoKeys<Exclude<Methods<Real_${service}>, keyof Generated.${service} | Omitted>>;
 export type Extra_${service} = NoKeys<Exclude<Methods<Generated.${service}>, keyof Real_${service}>>;`).join("\n")}
@@ -1249,7 +1273,7 @@ export async function use(id: string): Promise<number> {
   function corrupt(edit: (copy: Schema) => string) {
     const copy = structuredClone(schema);
     const target = edit(copy);
-    const index = probe(emitDeclarations(copy, { root: ROOT, omit: CREDENTIAL_METHODS }).full);
+    const index = probe(emitDeclarations(copy, { root: ROOT, omit: AGENT_OMIT }).full);
     return {
       target,
       get diagnostics() {
@@ -1267,7 +1291,7 @@ export async function use(id: string): Promise<number> {
     return shape;
   }
   function firstMethod(copy: Schema, service: string, kind: ApiShape["kind"]) {
-    const found = copy.services[service]!.methods.find((m) => m.returns.kind === kind && !CREDENTIAL_METHODS.includes(m.name));
+    const found = copy.services[service]!.methods.find((m) => m.returns.kind === kind && !AGENT_OMIT.includes(m.name));
     expect(found, `a ${kind}-returning method of ${service}`).toBeDefined();
     return found!;
   }
@@ -1311,8 +1335,8 @@ export async function use(id: string): Promise<number> {
       expect(diagnostics.join("\n")).toMatch(new RegExp(`'${target}\\b`));
     });
 
-    const services = [ROOT, ...heldServices(schema, ROOT, CREDENTIAL_METHODS).map(({ service }) => service)];
-    const deepest = deepestShape(schema, services, CREDENTIAL_METHODS);
+    const services = [ROOT, ...heldServices(schema, ROOT, AGENT_OMIT).map(({ service }) => service)];
+    const deepest = deepestShape(schema, services, AGENT_OMIT);
     expect(deepest.depth, deepest.name).toBeGreaterThanOrEqual(4);
     const deepestProperty = corrupt((copy) => {
       const shape = copy.shapes[deepest.name] as Extract<ApiShape, { kind: "object" }>;
@@ -1388,7 +1412,7 @@ export async function use(id: string): Promise<number> {
     });
 
     const narrowedParameter = corrupt((copy) => {
-      const m = copy.services[ROOT]!.methods.find((candidate) => !CREDENTIAL_METHODS.includes(candidate.name)
+      const m = copy.services[ROOT]!.methods.find((candidate) => !AGENT_OMIT.includes(candidate.name)
         && candidate.params.some((param) => param.type.kind === "string"))!;
       expect(m, "a root method with a string parameter").toBeDefined();
       m.params.find((param) => param.type.kind === "string")!.type = { kind: "literal", value: "only-this" };
@@ -1400,7 +1424,7 @@ export async function use(id: string): Promise<number> {
     });
 
     const widenedParameter = corrupt((copy) => {
-      const m = copy.services[ROOT]!.methods.find((candidate) => !CREDENTIAL_METHODS.includes(candidate.name)
+      const m = copy.services[ROOT]!.methods.find((candidate) => !AGENT_OMIT.includes(candidate.name)
         && candidate.params.some((param) => param.type.kind === "string"))!;
       expect(m, "a root method with a string parameter").toBeDefined();
       m.params.find((param) => param.type.kind === "string")!.type = { kind: "any" };
@@ -1441,7 +1465,7 @@ export async function use(id: string): Promise<number> {
       return m.name;
     });
     test("a subscriber's parameter widened to unknown", () => {
-      expect(parameterServices(schema, ROOT, CREDENTIAL_METHODS)).toContain("ConnectedAccountsSubscriber");
+      expect(parameterServices(schema, ROOT, AGENT_OMIT)).toContain("ConnectedAccountsSubscriber");
       const { target, diagnostics } = widenedSubscriberParameter;
       expect(diagnostics.join("\n")).toMatch(new RegExp(`ConnectedAccountsSubscriber\\["${target}"\\]`));
     });

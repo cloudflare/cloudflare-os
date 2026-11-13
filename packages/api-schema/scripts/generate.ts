@@ -63,14 +63,16 @@ export const API_SOURCE: ExtractOptions = {
 export const AGENT_ROOT = "AuthenticatedApi";
 
 /**
- * Methods an agent never calls: it is handed an already-authenticated stub, so the ways to obtain
- * or change credentials are left out of its surface, with whatever only they reach.
+ * Methods an agent never calls. It is handed an already-authenticated stub, so the ways to obtain
+ * or change credentials are left out of its surface, with whatever only they reach; and
  */
-export const AGENT_OMIT = ["authenticate", "authenticateFromCfAccess", "createAccount", "login", "changePassword"];
+export const AGENT_OMIT = ["authenticate", "authenticateFromCfAccess", "createAccount", "login", "changePassword",
+  "beginAdminPasskeyEnrolment", "addAdminPasskey", "beginAdminPasskeyRemoval", "removeAdminPasskey",
+  "beginWorkspaceWriteApproval", "approveWorkspaceWrite"];
 
 const DTS_HEADER =
   "Generated from packages/workshop-shared/src/api.ts by packages/api-schema/scripts/generate.ts -- do not edit.\n" +
-  `The Workshop API as an agent holding an ${AGENT_ROOT} stub sees it, without the credential methods.\n` +
+  `The Workshop API as an agent holding an ${AGENT_ROOT} stub sees it, without the credential methods and the passkey ceremonies' methods.\n` +
   "Change api.ts and run `pnpm api-schema:generate`.";
 
 /** Where the gatekeeper app UIs' files go, from the repository root. */
