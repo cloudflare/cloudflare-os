@@ -85,6 +85,22 @@ export class QueuedChanges<A, C = A> {
   }
 
   /**
+   * Resolves once the changes sent before this have been queued, so that a read sent behind them
+   * shows them. Never awaited from inside a turn, which would wait for itself.
+   */
+  afterTurns(): Promise<void> {
+    return this.#preparing.run(() => {});
+  }
+
+  /**
+   * The file's changes awaiting a decision, oldest first, read outside the gate: for a document,
+   * whose reads overlap its approvals and are kept right by the write markers instead.
+   */
+  pending(): JournalEntry<C>[] {
+    return this.#mine(this.#options.journal.listUndecided());
+  }
+
+  /**
    * Runs `body`, which applies change `actionId`, once reads in progress have settled. Each change
    * was checked against those queued before it, so they apply in that order. A decided or failed
    * change is left to `body`, which answers it without a write.

@@ -14,8 +14,19 @@ import {
   type ActionSubmitter,
 } from "@gadgets/gatekeeper-kit/actions";
 import { ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
-import type { DriveScopeNode } from "./drive-api";
-import { GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "./drive-session";
+import type { GoogleDocsApi } from "./docs-api";
+import {
+  DOC_DEFINITIONS, googleDocSnapshot, invalidateUnreplayableGoogleDocActions,
+  parseGoogleDocWriteReceipt,
+  type DocHost, type GoogleDocAction, type GoogleDocEdits, type GoogleDocInvalidator,
+  type GoogleDocPendingAction, type GoogleDocSimulationCacheHolder, type GoogleDocWriteReceipt,
+} from "./doc-actions";
+import type { DocChangeQueue, DocFreshness } from "./docs";
+import type { DriveApi, DriveScopeNode } from "./drive-api";
+import {
+  GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE,
+} from "./drive-session";
+import { obsContext } from "./observability";
 import { isLiftable, type DriveWriteTargetPayload } from "./drive-writes";
 import { QueuedChanges } from "./queued-changes";
 import type { SheetsChangeQueue } from "./sheets";
@@ -40,7 +51,7 @@ export type DriveEdit<P> = {
 export type DriveEdits<M> = { [K in keyof M]: DriveEdit<M[K]> };
 
 /** The editors a Drive binding edits files through. */
-export type DriveEditorName = "slides" | "sheets";
+export type DriveEditorName = "slides" | "sheets" | "docs";
 
 /** A spreadsheet's host, which also records the changes applied to that spreadsheet. */
 export type DriveSheetsHost = SheetsHost & {
@@ -52,6 +63,7 @@ export type DriveSheetsHost = SheetsHost & {
 export type DriveEditorHosts = {
   slides(fileId: string): SlidesHost;
   sheets(fileId: string): DriveSheetsHost;
+  docs(fileId: string): DocHost;
   /**
    * Proves again, inside the action set's one queue of approvals, that edit `id` of `target` may
    * still be made with `editor`: no approval ahead of it, such as a move, has taken the file out of
@@ -170,10 +182,23 @@ const SHEETS_EDITOR: DriveEditor<SheetsHost> = {
 export const DRIVE_SHEETS_DEFINITIONS = onDriveFiles<SheetsActions, SheetsHost>(
   SHEETS_DEFINITIONS, SHEETS_EDITOR);
 
+const DOCS_EDITOR: DriveEditor<DocHost> = {
+  name: "docs", mimeType: GOOGLE_DOC_MIME_TYPE, noun: "Doc",
+  host: (drive, fileId) => drive.editors.docs(fileId),
+};
+
+/** The Doc edits a Drive binding queues: the text edits, since a Drive binding adds no tabs. */
+export type DriveDocEdits = Omit<GoogleDocEdits, "addTab">;
+
+/** The Doc edits a Drive binding queues, by the names the editor's definitions have. */
+export const DRIVE_DOCS_DEFINITIONS = onDriveFiles<DriveDocEdits, DocHost>(
+  { replaceText: DOC_DEFINITIONS.replaceText, appendText: DOC_DEFINITIONS.appendText }, DOCS_EDITOR);
+
 /** Each editor, with the kind tag of each of its definitions by the definition's name. */
 const EDITORS: { editor: { name: DriveEditorName; mimeType: string }; tags: Record<string, string> }[] = [
   { editor: SLIDES_EDITOR, tags: tagsOf(DRIVE_SLIDES_DEFINITIONS) },
   { editor: SHEETS_EDITOR, tags: tagsOf(DRIVE_SHEETS_DEFINITIONS) },
+  { editor: DOCS_EDITOR, tags: tagsOf(DRIVE_DOCS_DEFINITIONS) },
 ];
 
 /** The editor whose definition each name is, for a record of the Drive journal. */
@@ -228,8 +253,18 @@ export const EDIT_NOT_ALLOWED = "The connected Google account cannot edit that f
 export const EDIT_OUT_OF_ORDER = "Changes to one file apply in the order they were queued. " +
   "Approve or reject the earlier change to this file first.";
 
+const logger = obsContext.createLogger({
+  component: "gatekeeper.google.drive.editors", vendorId: "google",
+});
+
 /** Where a spreadsheet's state is kept, by its file ID. */
 export const SHEETS_STATE_PREFIX = "driveSheets:file:";
+
+/**
+ * Where a document's receipt is kept, by its file ID: the write of an edit that landed, whose
+ * marker is still to be deleted once the action set has retired the edit's record.
+ */
+export const DOC_RECEIPT_PREFIX = "driveDocs:receipt:";
 
 /** How many applied changes a spreadsheet's state remembers, twice the journal's capacity. */
 const MAX_APPLIED = 100;
@@ -262,6 +297,10 @@ export type DriveFileEditorsOptions = {
   };
   /** The Sheets API an approved change is written with. */
   sheets: GoogleSheetsApi;
+  /** The Docs API an approved edit is written with, and its write marker deleted. */
+  docs: GoogleDocsApi;
+  /** Drive, asked for a document's type only to explain a write Google refused. */
+  drive: Pick<DriveApi, "getFile">;
   journal: Pick<ActionJournal<DriveRecord>,
     "get" | "listPending" | "listUndecided" | "markSubmitted" | "markFailed">;
   /** Queues edit `payload` as definition `name` through `queue`. */
@@ -287,6 +326,12 @@ type EditRefusal = { message: string; liftable: boolean };
 export class DriveFileEditors {
   #options: DriveFileEditorsOptions;
   #files = new Map<string, QueuedChanges<DriveRecord, unknown>>();
+  /**
+   * Each document's replay and writes landed, kept beside its QueuedChanges for the activation:
+   * a read waiting on Google when a write lands reads again, and no session reuses a snapshot
+   * from before it.
+   */
+  #docCaches = new Map<string, GoogleDocSimulationCacheHolder>();
 
   constructor(options: DriveFileEditorsOptions) {
     this.#options = options;
@@ -353,6 +398,130 @@ export class DriveFileEditors {
   }
 
   /**
+   * The change queue of a document a session opened, found as `target`. Its reads do not enter
+   * the file's gate, as on a document's own binding: they overlap its approvals, and are kept
+   * right by the write markers, the receipt and the writes landed.
+   */
+  docs(target: DriveWriteTargetPayload, queue: ActionSubmitter): DocChangeQueue {
+    let { fileId } = target;
+    let changes = this.#changes<{ payload: GoogleDocAction }>("docs", fileId);
+    return {
+      pending: () => this.#docsPending(fileId),
+      invalidate: this.#docsInvalidator(),
+      cache: this.#docCache(fileId),
+      queue: prepare => changes.queue(
+        async () => {
+          await this.#requireEditable("docs", target);
+          let { action, result } = await prepare();
+          return { payload: action, result };
+        },
+        change => this.#options.submit(queue, change.type, { target, change })),
+      afterTurns: () => changes.afterTurns(),
+      // A Drive binding adds no tab, so no tab ID is ever provisional.
+      adoptedTabId: tabId => tabId,
+      // The read records, for the chat that queues the edit, the file its approval card shows.
+      authorizesPreparation: true,
+      simulates: true,
+    };
+  }
+
+  /** What a session open on document `fileId` learns of the document's other sessions. */
+  docsFreshness(fileId: string): DocFreshness {
+    return {
+      writes: () => this.#docCache(fileId).writes,
+      newestPending: () => Math.max(0,
+        ...this.#docsPending(fileId).map(({ action }) => action.submittedAt)),
+    };
+  }
+
+  /** The host an approved edit to document `fileId` is written with. */
+  docsHost(fileId: string): DocHost {
+    let key = `${DOC_RECEIPT_PREFIX}${fileId}`;
+    let { kv } = this.#options;
+    return {
+      api: this.#options.docs,
+      documentId: fileId,
+      mimeType: async () => (await this.#options.drive.getFile(fileId)).mimeType,
+      receipt: () => this.#docReceipt(fileId),
+      clearReceipt: markerId => {
+        if (this.#docReceipt(fileId)?.markerId === markerId) kv.delete(key);
+      },
+      saved: () => { throw new Error("A Drive binding adds no Doc tabs."); },
+      // The record is the action set's to retire, once this returns: the marker is deleted only
+      // after that, so that a read, and an approval tried again, find the write proven meanwhile.
+      landed: (id, marker) => {
+        if (marker) {
+          kv.put<GoogleDocWriteReceipt>(key, { actionId: id, markerId: marker.id, tabId: marker.tabId });
+        }
+        let cache = this.#docCache(fileId);
+        cache.writes++;
+        cache.current = undefined;
+      },
+      // The action set fails this edit; the edits behind it are replayed by the next read.
+      unapplyable: async () => {
+        this.#docCache(fileId).current = undefined;
+      },
+    };
+  }
+
+  /**
+   * What follows an edit to document `fileId` once the action set has retired its record: its
+   * marker is deleted, and the edits queued behind it are replayed over the new revision, failing
+   * any that no longer applies.
+   */
+  async #afterDocApplied(fileId: string, actionId: number): Promise<void> {
+    let receipt = this.#docReceipt(fileId);
+    if (receipt?.actionId === actionId) {
+      try {
+        if (receipt.tabId === undefined) throw new Error("The write receipt names no tab.");
+        await this.#options.docs.deleteNamedRange(fileId, receipt.markerId, receipt.tabId);
+        this.docsHost(fileId).clearReceipt(receipt.markerId);
+      } catch (error) {
+        logger.warn("failed to clean up Google Doc write marker", {
+          event: "google.doc.write-marker.cleanup.failed", actionId, error,
+        });
+      }
+    }
+    this.#docCache(fileId).current = undefined;
+    if (this.#docsPending(fileId).length === 0) return;
+    try {
+      let snapshot = googleDocSnapshot(await this.#options.docs.getDocument(fileId));
+      invalidateUnreplayableGoogleDocActions(
+        this.#docsInvalidator(), snapshot, this.#docsPending(fileId),
+        `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
+    } catch (error) {
+      logger.warn("failed to refresh Google Doc simulation after applying action", {
+        event: "google.doc.simulation.refresh.failed", error,
+      });
+    }
+  }
+
+  /**
+   * Document `fileId`'s edits awaiting a decision, oldest first, less the one whose write the
+   * receipt says landed: its content is in the document, and replaying it would show it twice.
+   */
+  #docsPending(fileId: string): GoogleDocPendingAction[] {
+    let landed = this.#docReceipt(fileId)?.actionId;
+    return this.#changes<{ payload: GoogleDocAction }>("docs", fileId).pending()
+      .flatMap(({ id, action }) => id === landed ? [] : [{ id, action: action.payload }]);
+  }
+
+  /** Fails, in the journal, an edit that can no longer be replayed. */
+  #docsInvalidator(): GoogleDocInvalidator {
+    return ({ id }, reason) => this.#options.journal.markFailed(id, reason);
+  }
+
+  #docReceipt(fileId: string): GoogleDocWriteReceipt | undefined {
+    return parseGoogleDocWriteReceipt(this.#options.kv.get<unknown>(`${DOC_RECEIPT_PREFIX}${fileId}`));
+  }
+
+  #docCache(fileId: string): GoogleDocSimulationCacheHolder {
+    let cache = this.#docCaches.get(fileId);
+    if (!cache) this.#docCaches.set(fileId, cache = { writes: 0 });
+    return cache;
+  }
+
+  /**
    * Drops what no change can still need: a spreadsheet's state once the journal holds none of the
    * numbers noted in it and no marker it keeps can still land, and past those, all but the
    * spreadsheets written most recently.
@@ -374,6 +543,15 @@ export class DriveFileEditors {
     // Its markers' later deletion and its applied numbers serve no change still queued.
     for (let [key] of idle.toSorted((a, b) => b[1].at - a[1].at).slice(MAX_IDLE_SHEETS)) {
       kv.delete(key);
+    }
+    // A receipt still matters while an edit to its document can be approved: until the action
+    // set retires the record it names, and to settle a marker the next edit then deletes.
+    let editing = new Set(journal.listPending().flatMap(({ action }) => {
+      let edited = editedFile(action);
+      return edited?.editor === "docs" ? [edited.target.fileId] : [];
+    }));
+    for (let [key] of kv.list<unknown>({ prefix: DOC_RECEIPT_PREFIX })) {
+      if (!editing.has(key.slice(DOC_RECEIPT_PREFIX.length))) kv.delete(key);
     }
   }
 
@@ -413,6 +591,7 @@ export class DriveFileEditors {
         }
       }
       await this.#options.apply(actionId);
+      if (editor === "docs") await this.#afterDocApplied(target.fileId, actionId);
     });
   }
 
@@ -428,8 +607,14 @@ export class DriveFileEditors {
   reject(actionId: number): Promise<void | { restart?: boolean }> | undefined {
     let edited = this.#edited(actionId);
     if (!edited) return undefined;
-    return this.#changes(edited.editor, edited.target.fileId)
-      .reject(actionId, () => this.#options.reject(actionId));
+    let { editor, target } = edited;
+    return this.#changes(editor, target.fileId).reject(actionId, async () => {
+      let result = await this.#options.reject(actionId);
+      // As on a Doc's own binding, an edit behind it that no longer replays is failed by the next
+      // read's replay.
+      if (editor === "docs") this.#docCache(target.fileId).current = undefined;
+      return result;
+    });
   }
 
   #edited(actionId: number) {

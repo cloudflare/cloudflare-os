@@ -1,5 +1,6 @@
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";
 import type { GoogleDriveFolderReadSession, GoogleDriveReadSession } from "./drive-read-types";
+import type { GoogleDocEditSession } from "./docs-types";
 import type { GoogleSpreadsheetSession } from "./sheets-types";
 import type { GooglePresentationSession } from "./slides-types";
 export type * from "./drive-read-types";
@@ -240,11 +241,18 @@ export interface DriveSharing {
 
 /**
  * An account binding with read and write access: everything {@link GoogleDriveReadSession} reads,
- * anywhere the connected account can reach in Google Drive, plus edits of Google Sheets and Slides
- * files, comment writes, sharing and moves.
+ * anywhere the connected account can reach in Google Drive, plus edits of Google Docs, Sheets and
+ * Slides files, comment writes, sharing and moves.
  */
 export interface GoogleDriveSession
     extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
+  /**
+   * Open an in-scope native Google Doc as an independently disposable capability that reads it
+   * and queues edits to it, each for the user's approval, as one connected on its own does. Its
+   * comments are this binding's own comment writes.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;
+
   /**
    * Open an in-scope native Google Sheet as an independently disposable capability that reads it
    * and queues changes to it, each for the user's approval, as one connected on its own does.
@@ -280,10 +288,17 @@ export interface GoogleDriveSession
 /**
  * An exact-file binding with read and write access: everything {@link GoogleDriveReadSession}
  * reads of its one Drive file, the only file its methods accept, plus edits when it is a Google
- * Sheets or Slides file, comment writes and sharing on it. It cannot move the file.
+ * Docs, Sheets or Slides file, comment writes and sharing on it. It cannot move the file.
  */
 export interface GoogleDriveFileSession
     extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
+  /**
+   * Open an in-scope native Google Doc as an independently disposable capability that reads it
+   * and queues edits to it, each for the user's approval, as one connected on its own does. Its
+   * comments are this binding's own comment writes.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;
+
   /**
    * Open an in-scope native Google Sheet as an independently disposable capability that reads it
    * and queues changes to it, each for the user's approval, as one connected on its own does.
@@ -300,12 +315,19 @@ export interface GoogleDriveFileSession
 
 /**
  * A folder binding with read and write access: navigation within the originally selected folder as
- * {@link GoogleDriveFolderReadSession} offers it, plus edits of the Google Sheets and Slides files
- * among the positioned folder's direct children, comment writes on those children, sharing of them
+ * {@link GoogleDriveFolderReadSession} offers it, plus edits of the Google Docs, Sheets and Slides
+ * files among the positioned folder's direct children, comment writes on those children, sharing of them
  * and of the positioned folder itself, and moves within the originally selected folder.
  */
 export interface GoogleDriveFolderSession
     extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing {
+  /**
+   * Open a live direct-child native Google Doc as an independently disposable capability that
+   * reads it and queues edits to it, each for the user's approval, as one connected on its own
+   * does. Its comments are this binding's own comment writes.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;
+
   /**
    * Open a live direct-child native Google Sheet as an independently disposable capability that
    * reads it and queues changes to it, each for the user's approval, as one connected on its own

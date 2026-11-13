@@ -67,7 +67,7 @@ describe("resource declarations", () => {
     expect(GOOGLE_DRIVE_RESOURCE.description).toBe(
       "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
       "Slides, PDFs, other files and comments. Connect all of Drive, or just one shared drive, " +
-      "folder or file, as read only or as read and write, which also lets agents edit " +
+      "folder or file, as read only or as read and write, which also lets agents edit Docs, " +
       "spreadsheets and presentations, comment on files, change who they are shared with and, " +
       "in all of Drive or a folder, move them, each with your approval; a Doc, spreadsheet or " +
       "presentation connected on its own can be edited, and a Doc commented on, with your " +
@@ -78,7 +78,7 @@ describe("resource declarations", () => {
     expect(GOOGLE_DRIVE_FOLDER_RESOURCE.description).toBe(
       "Browse a selected folder or shared drive, search its direct children, and read native " +
       "Google Docs, Sheets and Slides, PDFs as text, any other file's content as bytes, and " +
-      "comments. A read and write connection also lets agents edit its spreadsheets and " +
+      "comments. A read and write connection also lets agents edit its Docs, spreadsheets and " +
       "presentations, comment on its files, move them within it and change who they are shared " +
       "with, each with your approval; a connection request asks for one by adding ?access=write " +
       "to the URL.",
@@ -86,7 +86,7 @@ describe("resource declarations", () => {
     expect(GOOGLE_DRIVE_FILE_RESOURCE.description).toBe(
       "Read metadata, comments and, for a native Google Doc, Sheet or Slides presentation, " +
       "content from one Drive file, its text when it is a PDF, or otherwise its content as " +
-      "bytes. A read and write connection also lets agents edit the file when it is a " +
+      "bytes. A read and write connection also lets agents edit the file when it is a Doc, " +
       "spreadsheet or presentation, comment on it and change who it is shared with, each with " +
       "your approval; a connection request asks for one by adding ?access=write to the URL.",
     );

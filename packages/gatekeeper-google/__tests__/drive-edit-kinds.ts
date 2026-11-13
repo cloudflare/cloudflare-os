@@ -23,3 +23,8 @@ export const DRIVE_SHEETS_KINDS: ActionKind[] = [
   { tag: "formatSheets", label: "Sheet formatting" },
   { tag: "edit-spreadsheet", label: "Spreadsheet edits that keep every sheet, row and column" },
 ].map(kind => onDrive(kind, "spreadsheet"));
+
+/** The Doc kinds a user may let apply without asking, as a read and write Drive binding lists them. */
+export const DRIVE_DOCS_KINDS: ActionKind[] = [
+  { tag: "editDocument", label: "Document edits" },
+].map(kind => onDrive(kind, "Doc"));

@@ -1,11 +1,16 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ActionField } from "@gadgets/workshop-shared/gatekeeper";
 import { googleDocActionTab } from "../../src/doc-actions";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { officeFileError } from "../../src/office-conversion";
+import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import type { GoogleDocsTab } from "../../src/docs-api";
 import type { GoogleDocSession } from "../../src/docs-types";
 import { buildTab } from "../doc-fixture";
+import { DriveFiles, DOC_MIME as DRIVE_DOC_MIME, FOLDER_MIME } from "../drive-files";
+import { serveFakes, type ProviderFake } from "../slides-provider";
+import { GoogleDocEditSessionImpl } from "../../src/docs";
 
 /** Every write coordinate names the tab it applies to; tab bodies index independently. */
 type DocCoordinate = { tabId?: string };
@@ -117,12 +122,15 @@ const OFFICE_REFUSAL =
 
 /**
  * A batch either carries the edit and its marker, or deletes a marker on its own; or a create; or
- * a read, whose answer is fixed when it arrives, so holding it delivers what was then current.
+ * a read, whose answer is fixed when it arrives, so holding it delivers what was then current;
+ * Drive's batched read of the scope a binding proves an edit's file in.
  * `applied` holds a content batch after Google has applied it, before it answers.
  */
-type RequestKind = "content" | "cleanup" | "create" | "read" | "applied";
+type RequestKind = "content" | "cleanup" | "create" | "read" | "applied" | "scope";
 
 class DocsModel {
+  /** The document this model is, which a fake serving several answers by. */
+  documentId = "doc-1";
   cleanupFailures = 0;
   ambiguousContentResponses = 0;
   /** How many content batches to fail before Google applies them, as a dropped connection can. */
@@ -151,8 +159,11 @@ class DocsModel {
   driveModifiedTime = "2026-01-02T03:04:05Z";
   /** What Drive answers with instead of that time, if anything. */
   driveFailure: { status: number; reason?: string } | "malformed" | null = null;
-  /** The file's type as Drive reports it, when it reports one. */
-  driveMimeType: string | undefined;
+  /**
+   * The file's type as Drive reports it, when it reports one: a Drive binding opens the file only
+   * as the type it is, so a run through Drive has Drive report it.
+   */
+  driveMimeType: string | undefined = run.drive ? DOC_MIME : undefined;
   /** Whether Google refuses every content edit as it refuses one to an Office file. */
   refusesEdits = false;
   readonly deletedMarkerIds: string[] = [];
@@ -168,6 +179,8 @@ class DocsModel {
   readonly suggestions: { suggestionId: string; summaryText: string; notes: string[] }[] = [];
   /** Whether Drive says the account may comment; a viewer is also refused the threads read. */
   canComment = true;
+  /** Whether Drive says the account may edit the Doc, which a Drive binding's edits are held to. */
+  canEdit = true;
   /** Comment threads reads, and comment writes (comments, replies, suggestions, notes). */
   threadReads = 0;
   commentWrites = 0;
@@ -293,6 +306,7 @@ class DocsModel {
     this.fetches++;
     if (url.hostname === "www.googleapis.com" && url.pathname.startsWith("/batch/")) {
       this.driveFetches++;
+      await this.#hold("scope");
       return this.#scopeNodes();
     }
     if (url.hostname === "www.googleapis.com") {
@@ -531,7 +545,7 @@ class DocsModel {
     let boundary = "batch_boundary";
     let body = {
       id: "doc-1", mimeType: "application/vnd.google-apps.document", trashed: false,
-      capabilities: { canComment: this.canComment },
+      capabilities: { canComment: this.canComment, canEdit: this.canEdit },
     };
     let text = [
       `--${boundary}`, "Content-Type: application/http", "Content-ID: <response-item-0>", "",
@@ -930,7 +944,7 @@ class DocsModel {
 
   #document() {
     return {
-      documentId: "doc-1",
+      documentId: this.documentId,
       title: "Test document",
       ...this.editable ? { revisionId: `revision-${this.#revision}` } : {},
       tabs: this.tabs.filter(tab => tab.parentId === undefined)
@@ -939,8 +953,142 @@ class DocsModel {
   }
 }
 
-function hooks() {
+/**
+ * How a suite reaches doc-1: bound directly, or opened from a read and write Drive file binding,
+ * whose facets the hooks tell apart by their `drive:` prefix. Through Drive, every card names the
+ * file first, every kind's label says it covers each Doc the binding reaches, a fresh session
+ * opens the file before anything else, and the read that prepares an edit is authorized; `hooks()`
+ * checks each and takes it off what it reports, so the suite's assertions hold for both runs.
+ * What is left to differ is a parameter of the run.
+ */
+type Run = {
+  name: string;
+  drive: boolean;
+  /** The refusal of an approval while edit `earlier` waits before edit `later`. */
+  outOfOrder(earlier: number, later: number): string;
+  /**
+   * Checks what approving an applied edit again answers: a Doc's own store has forgotten it, and a
+   * Drive binding's journal remembers it was applied and settles (brief §3.9).
+   */
+  appliedAgain(answer: string | null): void;
+  /**
+   * What approving an edit that could not be applied answers after the first time: a Doc's own
+   * store keeps the reason it recorded, and the journal the error the approval failed with.
+   */
+  unapplied(reason: string): string;
+};
+
+const STANDALONE: Run = {
+  name: "bound directly",
+  drive: false,
+  outOfOrder: (earlier, later) =>
+    `Google Doc edits must be approved in order. Approve earlier edit ${earlier} before edit ${later}.`,
+  appliedAgain: answer => expect(answer).toMatch(/Unknown pending/),
+  unapplied: reason => `Pending Google Doc edit could not be applied: ${reason}`,
+};
+
+const THROUGH_DRIVE: Run = {
+  name: "opened from a read and write Drive binding",
+  drive: true,
+  outOfOrder: () => "Changes to one file apply in the order they were queued. Approve or reject " +
+    "the earlier change to this file first.",
+  appliedAgain: answer => expect(answer).toBeNull(),
+  unapplied: reason => reason,
+};
+
+/**
+ * The runs of a block that asserts what the engine does. A block runs bound directly alone when it
+ * is about what only a Doc's own binding has: metadata dated by the revisions it observed, edits
+ * stored in its own store under an earlier rendering or before tabs, creating a Doc, an Office
+ * file connected as a Doc, its comments, and its stored layout. Within a block that runs twice, a
+ * test that reads or writes the bound Doc's storage, or counts the fetches of its stored snapshot,
+ * runs bound directly alone, and says why where that is not the reason.
+ */
+const RUNS = [STANDALONE, THROUGH_DRIVE];
+
+/** The run the current test is in. */
+let run: Run = STANDALONE;
+
+const DOC_MIME = "application/vnd.google-apps.document";
+const DRIVE_GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
+const DRIVE_LABEL = ", in any Doc this connection reaches";
+const DRIVE_OPEN = "Check current metadata for Drive file doc-1 and open it as a Google Doc.";
+const DRIVE_PREPARE = /^Read tab .* to change it\.$/;
+
+/** Runs the tests of the enclosing describe block in `current`. */
+function inRun(current: Run): void {
+  beforeEach(async () => {
+    run = current;
+    if (current.drive) await rawHooks().setDriveGrants(DRIVE_GRANTED);
+  });
+  afterEach(async () => {
+    if (current.drive) {
+      await rawHooks().setDriveGrants([]);
+      // Ended, so the facets of a second run do not add to what one activation of the hooks holds.
+      for (let facet of driveFacets) await rawHooks().restartDrive(facet);
+      driveFacets.clear();
+    }
+    run = STANDALONE;
+  });
+}
+
+function rawHooks() {
   return env.TEST_HOOKS.getByName("hooks");
+}
+
+/** The facets a test in a run through Drive reached. */
+const driveFacets = new Set<string>();
+
+/** The Doc hooks that name a facet first. */
+const FACET_HOOKS = new Set([
+  "submitAppend", "submitReplace", "submitEdit", "callsDuringTableRead", "readMetadata",
+  "readContent", "listTabs", "applyAction", "rejectAction", "callDoc", "describe",
+  "docAutoApprovable",
+]);
+
+/** `fields` without the two a Drive binding's card names the file by, which it checks. */
+function withoutFileFields(fields: ActionField[]): ActionField[] {
+  if (fields.length === 0) return fields;
+  let [file, name, ...rest] = fields;
+  expect([file, name]).toMatchObject([
+    { label: "File", value: "doc-1" }, { label: "File name", value: "Test document" },
+  ]);
+  return rest;
+}
+
+function hooks() {
+  let stub = rawHooks();
+  if (!run.drive) return stub;
+  return new Proxy(stub, {
+    get(target, property) {
+      let value = Reflect.get(target, property);
+      if (property === "lastActionFields") {
+        return Promise.resolve(target.lastActionFields).then(withoutFileFields);
+      }
+      if (property === "lastActionVerdict") {
+        return Promise.resolve(target.lastActionVerdict).then(verdict => {
+          let { actionKind } = verdict;
+          if (!actionKind) return verdict;
+          expect(actionKind.label.endsWith(DRIVE_LABEL)).toBe(true);
+          return { ...verdict, actionKind: { ...actionKind, label: actionKind.label.slice(0, -DRIVE_LABEL.length) } };
+        });
+      }
+      if (property === "lastObservations") {
+        return Promise.resolve(target.lastObservations).then(observations =>
+          observations.filter(observed => observed !== DRIVE_OPEN && !DRIVE_PREPARE.test(observed)));
+      }
+      if (typeof property === "string" && FACET_HOOKS.has(property)) {
+        // Called on the stub itself: an RPC method's own `call` would be a remote property.
+        return (facet: string, ...args: unknown[]) => {
+          driveFacets.add(`drive:${facet}`);
+          // A plain promise, so a rejection the test handles is not reported again unhandled.
+          return Promise.resolve((target as unknown as Record<string, (...all: unknown[]) => unknown>)[
+            property](`drive:${facet}`, ...args));
+        };
+      }
+      return value;
+    },
+  }) as typeof stub;
 }
 
 function markdownField(label: string, value: string) {
@@ -955,10 +1103,13 @@ afterEach(() => {
 
 const ADD_DOCUMENT_TAB = { tag: "addDocumentTab", label: "New document tabs" };
 
-describe("Google Doc auto-approval", () => {
+describe.each(RUNS)("Google Doc auto-approval, $name", r => {
+  inRun(r);
+
   const EDIT_DOCUMENT = { tag: "editDocument", label: "Document edits" };
 
-  it("reports document edits, new tabs and Doc comments as its auto-approvable kinds", async () => {
+  // A Drive binding's catalog is its own (drive-editors.test.ts).
+  it.skipIf(r.drive)("reports document edits, new tabs and Doc comments as its auto-approvable kinds", async () => {
     expect(await hooks().docAutoApprovable("verdict-kinds")).toEqual([
       EDIT_DOCUMENT, ADD_DOCUMENT_TAB, { tag: "docComments", label: "Google Doc comments" },
     ]);
@@ -978,7 +1129,9 @@ describe("Google Doc auto-approval", () => {
   });
 });
 
-describe("Google Doc tables", () => {
+describe.each(RUNS)("Google Doc tables, $name", r => {
+  inRun(r);
+
   it("returns table cells with their row structure", async () => {
     let docs = new DocsModel();
     docs.setTable(MAIN_TAB, "Before", [["Owner", "Status"], ["Alice", "Ready"]], "After");
@@ -1081,7 +1234,9 @@ describe("Google Doc tables", () => {
   });
 });
 
-describe("Google Doc structured elements", () => {
+describe.each(RUNS)("Google Doc structured elements, $name", r => {
+  inRun(r);
+
   it("rejects a rich-link URL edit before requesting approval", async () => {
     let docs = new DocsModel();
     docs.setBody(MAIN_TAB, buildTab([{ runs: [
@@ -1127,7 +1282,9 @@ describe("Google Doc structured elements", () => {
   });
 });
 
-describe("Google Doc list edits", () => {
+describe.each(RUNS)("Google Doc list edits, $name", r => {
+  inRun(r);
+
   it("prepends an item to the existing numbered list", async () => {
     let docs = new DocsModel();
     docs.setNumberedList(MAIN_TAB, ["Existing"]);
@@ -1329,7 +1486,9 @@ describe("Google Doc list edits", () => {
   });
 });
 
-describe("Google Doc write receipts", () => {
+describe.each(RUNS)("Google Doc write receipts, $name", r => {
+  inRun(r);
+
   it("applies content once and immediately deletes its exact marker", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -1341,7 +1500,7 @@ describe("Google Doc write receipts", () => {
     expect(docs.contentBatches).toBe(1);
     expect(docs.deletedMarkerIds).toEqual(["marker-1"]);
     expect(docs.markers.size).toBe(0);
-    expect(await hooks().applyAction("normal", actionId)).toMatch(/Unknown pending/);
+    run.appliedAgain(await hooks().applyAction("normal", actionId));
   });
 
   it("replays a queued edit after applying an escaped parenthesized link", async () => {
@@ -1652,7 +1811,7 @@ describe("Google Doc write receipts", () => {
     );
   });
 
-  it("drops an append stored under an earlier Markdown version", async () => {
+  it.skipIf(r.drive)("drops an append stored under an earlier Markdown version", async () => {
     let docs = new DocsModel();
     docs.setText(MAIN_TAB, "base");
     docs.install();
@@ -1672,7 +1831,7 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().readContent(facet)).toBe("base\n");
   });
 
-  it("stores one copy of an append payload", async () => {
+  it.skipIf(r.drive)("stores one copy of an append payload", async () => {
     let docs = new DocsModel();
     docs.install();
     let facet = "append-storage";
@@ -1687,7 +1846,7 @@ describe("Google Doc write receipts", () => {
     await hooks().rejectAction(facet, actionId);
   });
 
-  it("rejects an oversized UTF-8 append before reading the document", async () => {
+  it.skipIf(r.drive)("rejects an oversized UTF-8 append before reading the document", async () => {
     let docs = new DocsModel();
     docs.install();
 
@@ -1698,7 +1857,7 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().lastActionDescription).toBe("");
   });
 
-  it("rejects an oversized aggregate replacement before reading the document", async () => {
+  it.skipIf(r.drive)("rejects an oversized aggregate replacement before reading the document", async () => {
     let docs = new DocsModel();
     docs.install();
 
@@ -1709,7 +1868,7 @@ describe("Google Doc write receipts", () => {
     expect(await hooks().lastActionDescription).toBe("");
   });
 
-  it("rejects complex Markdown before reading the document", async () => {
+  it.skipIf(r.drive)("rejects complex Markdown before reading the document", async () => {
     let docs = new DocsModel();
     docs.install();
 
@@ -1811,10 +1970,11 @@ describe("Google Doc write receipts", () => {
 
     expect(docs.contentBatches).toBe(1);
     expect(docs.markers.size).toBe(0);
-    expect(await hooks().applyAction("ambiguous", actionId)).toMatch(/Unknown pending/);
+    run.appliedAgain(await hooks().applyAction("ambiguous", actionId));
   });
 
-  it("cleans a retained receipt after restart before the next write", async () => {
+  // Restarts every object, the Drive binding's receipt included (drive-editors.test.ts).
+  it.skipIf(r.drive)("cleans a retained receipt after restart before the next write", async () => {
     let docs = new DocsModel();
     docs.cleanupFailures = 1;
     docs.install();
@@ -1833,7 +1993,9 @@ describe("Google Doc write receipts", () => {
     expect(docs.markers.size).toBe(0);
   });
 
-  it("keeps the next action pending while receipt cleanup fails", async () => {
+  // Queues the next edit only once the first is applied: a Drive binding's next session then drops
+  // the receipt, no edit of its Doc being left to approve (brief §3.3, and the Drive block below).
+  it.skipIf(r.drive)("keeps the next action pending while receipt cleanup fails", async () => {
     let docs = new DocsModel();
     docs.cleanupFailures = 2;
     docs.install();
@@ -1882,7 +2044,8 @@ describe("Google Doc write receipts", () => {
 
   // The overseer marks a record approved only after applyAction() returns, so a second approval of
   // one action can arrive while the first is mid-write. It must not reach the provider at all.
-  it("holds a second approval of one action behind the first", async () => {
+  // Holds a Docs request from the test, which hangs a Drive binding's apply (see the report).
+  it.skipIf(r.drive)("holds a second approval of one action behind the first", async () => {
     let docs = new DocsModel();
     docs.install();
     let actionId = await hooks().submitAppend("concurrent", "first");
@@ -1895,7 +2058,7 @@ describe("Google Doc write receipts", () => {
     write.release();
 
     expect(await first).toBeNull();
-    expect(await second).toMatch(/Unknown pending/);
+    run.appliedAgain(await second);
     expect(docs.contentBatches).toBe(1);
     expect(docs.text().match(/first/g)).toHaveLength(1);
     expect(docs.markers.size).toBe(0);
@@ -1903,7 +2066,8 @@ describe("Google Doc write receipts", () => {
 
   // Between the handoff and the marker cleanup the edit is committed and its action is gone, so
   // nothing is left to overlay the snapshot the submission cached: it must not be served.
-  it("stops serving the pre-write snapshot once the write is committed", async () => {
+  // Holds a Docs request from the test, which hangs a Drive binding's apply (see the report).
+  it.skipIf(r.drive)("stops serving the pre-write snapshot once the write is committed", async () => {
     let docs = new DocsModel();
     docs.install();
     let actionId = await hooks().submitAppend("cleanup-read", "first");
@@ -1920,7 +2084,8 @@ describe("Google Doc write receipts", () => {
 
   // A read that asked Google before the write landed gets the old document back after the handoff
   // removed the edit from the queue: replayed over, it would show the approved edit missing.
-  it("refetches a read that Google answered before a write landed", async () => {
+  // Holds a Docs request from the test, which hangs a Drive binding's apply (see the report).
+  it.skipIf(r.drive)("refetches a read that Google answered before a write landed", async () => {
     let docs = new DocsModel();
     docs.install();
     let actionId = await hooks().submitAppend("stale-read", "first");
@@ -2069,7 +2234,9 @@ function nestedDocs(): DocsModel {
   return docs;
 }
 
-describe("Google Doc tab isolation", () => {
+describe.each(RUNS)("Google Doc tab isolation, $name", r => {
+  inRun(r);
+
   it("lists the tab tree and appends only to the tab it names", async () => {
     let docs = nestedDocs();
 
@@ -2179,9 +2346,9 @@ describe("Google Doc tab isolation", () => {
 
     // Approving it again must not report success for a write that never happened, and must not
     // decay into "unknown action" either — rejecting is the way out.
-    let repeated = "Pending Google Doc edit could not be applied: " +
+    let repeated = run.unapplied(
       'appendText: no tab with ID "metrics" exists in this document. ' +
-      "Call listTabs() to refresh the tab list.";
+      "Call listTabs() to refresh the tab list.");
     expect(await hooks().applyAction("tabs-deleted", actionId)).toBe(repeated);
     expect(await hooks().applyAction("tabs-deleted", actionId)).toBe(repeated);
 
@@ -3313,5 +3480,312 @@ describe("Google Doc stored layout", () => {
       facet, "doc", [{ kind: "put", key: "docSnapshotCheck", value: { fetchedAt: 7, checkedAt: 0 } }],
       "kv");
     expect((await stored(facet, "docSnapshotCheck")).async).toEqual({ fetchedAt: 7, checkedAt: 0 });
+  });
+});
+
+/** A Docs API serving `models`, each answering for its own document, for a fake beside Drive's. */
+function docsProvider(...models: DocsModel[]): ProviderFake {
+  return {
+    async handle(request) {
+      let url = new URL(request.url);
+      if (url.hostname !== "docs.googleapis.com") return undefined;
+      let id = /^\/v1\/documents\/([^/:]+)/.exec(url.pathname)?.[1];
+      let model = models.find(candidate => candidate.documentId === id) ?? models[0];
+      let body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
+      return model.fetch(request.url, { method: request.method, body, headers: request.headers });
+    },
+  };
+}
+
+/** How many times `text` occurs in `content`. */
+function occurrences(content: string, text: string): number {
+  return content.split(text).length - 1;
+}
+
+describe("Google Doc edits through a read and write Drive binding", () => {
+  inRun(THROUGH_DRIVE);
+
+  type Binding = { scope: { kind: "account" } | { kind: "folder"; folderId: string } |
+    { kind: "file"; fileId: string }; access?: "write"; deployment?: "read" };
+  const DRIVE_DOC: Binding = { scope: { kind: "file", fileId: "doc-1" }, access: "write" };
+  const READ_ONLY_DEPLOYMENT: Binding = { ...DRIVE_DOC, deployment: "read" };
+  const ROOT = "folder-root";
+  const FOLDER: Binding = { scope: { kind: "folder", folderId: ROOT }, access: "write" };
+  const ACCOUNT: Binding = { scope: { kind: "account" }, access: "write" };
+  const RECEIPT = "driveDocs:receipt:doc-1";
+  const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
+  const DEPLOYMENT_READ_ONLY =
+    "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
+    "changes, and none can be connected with read and write access. Only the deployment's " +
+    "administrator can change that.";
+
+  /** A document reading `text`, which the model answers Drive's requests for too. */
+  function draft(text = "Draft"): DocsModel {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, text);
+    docs.install();
+    return docs;
+  }
+
+  /** The stored record of action `id` of the Drive facet `facet`. */
+  async function record(facet: string, id: number) {
+    let stored = await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, `drive:action:${id}`);
+    return stored === null ? null : JSON.parse(stored) as {
+      state: string; error?: string;
+      action: { kind: string; payload: { change: { writeId: string } } };
+    };
+  }
+
+  // The write has landed and the action set has retired the record, so nothing replays the
+  // append; its marker is still in the document. Reads are made from inside the marker's deletion
+  // and inside the read of the new revision that follows it, as an overlapping read would land.
+  it("reads an appended text once while its approval completes", async () => {
+    let docs = draft();
+    let facet = "drive-read-in-window";
+    let appended = await hooks().submitAppend(facet, "Appended");
+    let replaced = await hooks().submitReplace(facet, "Draft", "Final");
+
+    let model = globalThis.fetch;
+    let inside = false;
+    let cleaning = false;
+    let reads: { during: string; read: string; retired?: boolean; markers: number }[] = [];
+    let readDuring = async (during: string, retired?: boolean) => {
+      inside = true;
+      try {
+        let read = await hooks().readContent(facet);
+        reads.push({ during, read, retired, markers: docs.markers.size });
+      } finally {
+        inside = false;
+      }
+    };
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      let request = new Request(input, init);
+      let url = new URL(request.url);
+      if (!inside && url.hostname === "docs.googleapis.com") {
+        if (url.pathname.endsWith(":batchUpdate") &&
+            (await request.clone().text()).includes("deleteNamedRange")) {
+          cleaning = true;
+          await readDuring("cleanup", await record(facet, appended) === null);
+        } else if (cleaning && request.method === "GET" && !url.searchParams.has("fields")) {
+          cleaning = false;
+          await readDuring("refresh");
+        }
+      }
+      return model(input, init);
+    });
+
+    expect(await hooks().applyAction(facet, appended)).toBeNull();
+    // The record goes before the marker does; each read shows the append once and the
+    // replacement still queued.
+    expect(reads.map(({ during, retired, markers }) => ({ during, retired, markers }))).toEqual([
+      { during: "cleanup", retired: true, markers: 1 },
+      { during: "refresh", retired: undefined, markers: 0 },
+    ]);
+    for (let { read } of reads) {
+      expect(occurrences(read, "Appended")).toBe(1);
+      expect(read).toContain("Final");
+    }
+    expect((await record(facet, replaced))?.state).toBe("pending");
+    expect(await hooks().applyAction(facet, replaced)).toBeNull();
+    expect(occurrences(docs.text(), "Appended")).toBe(1);
+    expect(docs.text()).toContain("Final");
+  });
+
+  it("settles from its receipt an edit whose approval ended before its record was retired", async () => {
+    let docs = draft();
+    let facet = "drive-receipt-crash";
+    let id = await hooks().submitAppend(facet, "Once");
+    let { writeId } = (await record(facet, id))!.action.payload.change;
+    // The write landed with its marker and its receipt was recorded; the activation ended there.
+    docs.setText(MAIN_TAB, "Draft\nOnce");
+    docs.addMarker(`gadgets-write-${writeId}`, "marker-landed");
+    await rawHooks().writeDriveStored(
+      `drive:${facet}`, DRIVE_DOC, RECEIPT, JSON.stringify({ actionId: id, markerId: "marker-landed" }));
+    await rawHooks().restartDrive(`drive:${facet}`);
+
+    expect(await hooks().applyAction(facet, id)).toBeNull();
+    // Nothing written again, and its marker deleted only once the record was retired.
+    expect(docs.contentBatches).toBe(0);
+    expect(docs.deletedMarkerIds).toEqual(["marker-landed"]);
+    expect(await record(facet, id)).toBeNull();
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+    expect(docs.text()).toBe("Draft\nOnce");
+  });
+
+  it("keeps a receipt whose marker cleanup failed for the next edit to settle", async () => {
+    let docs = draft();
+    docs.cleanupFailures = 1;
+    let facet = "drive-receipt-cleanup";
+    let first = await hooks().submitAppend(facet, "first");
+    // Queued before the first applies, so no session starts while no edit of the Doc waits.
+    let second = await hooks().submitAppend(facet, "second");
+    expect(await hooks().applyAction(facet, first)).toBeNull();
+    expect(JSON.parse((await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT))!))
+      .toMatchObject({ actionId: first });
+    expect(docs.markers.size).toBe(1);
+
+    expect(await hooks().applyAction(facet, second)).toBeNull();
+    expect(docs.markers.size).toBe(0);
+    expect(docs.maxMarkerCount).toBe(1);
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+    expect(docs.text()).toContain("first");
+    expect(docs.text()).toContain("second");
+  });
+
+  it("drops a receipt at a new session once no edit of its Doc can be approved", async () => {
+    draft();
+    let facet = "drive-receipt-sweep";
+    let id = await hooks().submitAppend(facet, "kept");
+    let receipt = JSON.stringify({ actionId: 999, markerId: "marker-old" });
+    await rawHooks().writeDriveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT, receipt);
+    await hooks().readContent(facet);
+    // An edit of the Doc can still be approved, so its marker may still be wanted.
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBe(receipt);
+
+    await hooks().rejectAction(facet, id);
+    await hooks().readContent(facet);
+    expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+  });
+
+  // The first edit's check of the file is slowed: the second, sent behind it, still takes its turn
+  // after it, and is prepared with the first queued.
+  it("queues edits in the order they were sent, the first's proof slowed", async () => {
+    draft();
+    let facet = "drive-doc-order";
+    let model = globalThis.fetch;
+    let proofs = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(new Request(input, init).url).pathname.startsWith("/batch/") && proofs++ === 0) {
+        await scheduler.wait(50);
+      }
+      return model(input, init);
+    });
+    let { outcomes, submitted } = await rawHooks().callDriveNativeTwice(
+      `drive:${facet}`, DRIVE_DOC, "openGoogleDoc", "doc-1",
+      ["appendText", "one"], ["appendText", "two"]);
+
+    expect(outcomes).toEqual([{}, {}]);
+    expect(proofs).toBe(2);
+    expect(submitted.map(({ actionId }) => actionId)).toEqual([1, 2]);
+    let read = await hooks().readContent(facet);
+    expect(read.indexOf("one")).toBeGreaterThan(-1);
+    expect(read.indexOf("two")).toBeGreaterThan(read.indexOf("one"));
+  });
+
+  it("refuses every write of a Doc that left the folder before any Docs request", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "Draft");
+    let drive = new DriveFiles({
+      [ROOT]: { name: "Reports", mimeType: FOLDER_MIME, parents: ["my-root"] },
+      "doc-1": { name: "Test document", mimeType: DRIVE_DOC_MIME, parents: [ROOT] },
+    });
+    serveFakes([drive, docsProvider(docs)]);
+    let facet = `drive:drive-doc-left-folder`;
+    let args: Record<string, unknown[]> = {
+      replaceText: ["Draft", "Final"],
+      appendText: ["More"],
+    };
+    let reads = new Set(["constructor", "getMetadata", "listTabs", "getContent"]);
+    let writes = Object.getOwnPropertyNames(GoogleDocEditSessionImpl.prototype)
+      .filter(name => !reads.has(name));
+    expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
+
+    for (let method of writes) {
+      let refused = await rawHooks().callDriveNativeAfter(
+        facet, FOLDER, "openGoogleDoc", "doc-1", method, args[method], [],
+        async () => { drive.files.get("doc-1")!.parents = ["elsewhere"]; });
+      drive.files.get("doc-1")!.parents = [ROOT];
+      expect(refused.error, method).toBe(OUT_OF_SCOPE);
+      expect(refused.actionId, method).toBeUndefined();
+      expect(docs.fetches, method).toBe(0);
+    }
+
+    // One queued before the file left fails for good at approval, with nothing sent.
+    let queued = await rawHooks().callDriveNative(
+      facet, FOLDER, "openGoogleDoc", "doc-1", "appendText", ["More"]);
+    expect(queued.error).toBeUndefined();
+    let fetched = docs.fetches;
+    drive.files.get("doc-1")!.parents = ["elsewhere"];
+    expect(await rawHooks().applyDrive(facet, FOLDER, queued.actionId!)).toBe(OUT_OF_SCOPE);
+    expect(await rawHooks().applyDrive(facet, FOLDER, queued.actionId!)).toBe(OUT_OF_SCOPE);
+    expect(docs.fetches).toBe(fetched);
+    expect(docs.contentBatches).toBe(0);
+  });
+
+  it("opens a Doc with no comment method: the binding's own comment writes reach it", async () => {
+    draft();
+    for (let [method, args] of [
+      ["listComments", []], ["comment", ["Hi", { quote: "Draft" }]],
+      ["suggestEdit", ["Draft", "Final"]], ["reply", ["c1", "Hi"]], ["resolve", ["c1"]],
+    ] as const) {
+      let called = await rawHooks().callDriveNative(
+        "drive:drive-doc-comments", DRIVE_DOC, "openGoogleDoc", "doc-1", method, [...args]);
+      expect(called.error, method).toMatch(`does not implement the method "${method}"`);
+    }
+  });
+
+  it("holds an edit through Drive to 100 KiB, where the Doc's own binding takes more", async () => {
+    draft();
+    let big = "x".repeat(60_000);
+    await expect(hooks().submitAppend("drive-doc-big", big)).rejects.toThrow(
+      /^This change is too large to queue \(\d+ bytes, limit 102400\)\. Split it up\.$/);
+    expect(await rawHooks().submitAppend("standalone-doc-big", big)).toBeTypeOf("number");
+  });
+
+  it("keeps a deployment's read-only setting: no editable Doc, no kind, and a queued edit waits", async () => {
+    let docs = draft();
+    let facet = "drive-doc-read-only-deployment";
+    let id = await hooks().submitAppend(facet, "More");
+    await rawHooks().restartDrive(`drive:${facet}`);
+
+    let opened = await rawHooks().callDriveNative(
+      `drive:${facet}`, READ_ONLY_DEPLOYMENT, "openGoogleDoc", "doc-1", "appendText", ["Again"]);
+    expect(opened.error).toMatch('does not implement the method "appendText"');
+    expect(await rawHooks().driveAutoApprovable(`drive:${facet}`, READ_ONLY_DEPLOYMENT)).toEqual([]);
+    expect(await rawHooks().applyDrive(`drive:${facet}`, READ_ONLY_DEPLOYMENT, id))
+      .toBe(DEPLOYMENT_READ_ONLY);
+    expect(docs.contentBatches).toBe(0);
+
+    await rawHooks().restartDrive(`drive:${facet}`);
+    expect(await hooks().applyAction(facet, id)).toBeNull();
+    expect(docs.text()).toContain("More");
+  });
+
+  it("keeps two Docs' edits, order and receipts apart on one binding", async () => {
+    let one = new DocsModel();
+    one.setText(MAIN_TAB, "One");
+    one.cleanupFailures = 1;
+    let two = new DocsModel();
+    two.documentId = "doc-2";
+    two.setText(MAIN_TAB, "Two");
+    let drive = new DriveFiles({
+      "doc-1": { name: "First", mimeType: DRIVE_DOC_MIME, parents: ["my-root"] },
+      "doc-2": { name: "Second", mimeType: DRIVE_DOC_MIME, parents: ["my-root"] },
+    });
+    serveFakes([drive, docsProvider(one, two)]);
+    let facet = "drive:drive-two-docs";
+    let queue = async (fileId: string, text: string) => (await rawHooks().callDriveNative(
+      facet, ACCOUNT, "openGoogleDoc", fileId, "appendText", [text])).actionId!;
+    let read = async (fileId: string) => (await rawHooks().callDriveNative(
+      facet, ACCOUNT, "openGoogleDoc", fileId, "getContent", [])).value as string;
+    let a1 = await queue("doc-1", "A1");
+    let b1 = await queue("doc-2", "B1");
+    let a2 = await queue("doc-1", "A2");
+    expect([a1, b1, a2]).toEqual([1, 2, 3]);
+    expect(await read("doc-2")).not.toContain("A1");
+    expect(await read("doc-1")).not.toContain("B1");
+
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, a2)).toBe(THROUGH_DRIVE.outOfOrder(a1, a2));
+    // The other Doc's earlier edit holds nothing back.
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, b1)).toBeNull();
+    expect([one.contentBatches, two.contentBatches]).toEqual([0, 1]);
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, a1)).toBeNull();
+    // The first Doc's marker cleanup failed: its receipt stays, and only its.
+    expect(await rawHooks().driveStoredKeys(facet, ACCOUNT, "driveDocs:receipt:"))
+      .toEqual(["driveDocs:receipt:doc-1"]);
+    expect(await rawHooks().applyDrive(facet, ACCOUNT, a2)).toBeNull();
+    expect(await rawHooks().driveStoredKeys(facet, ACCOUNT, "driveDocs:receipt:")).toEqual([]);
+    expect(one.text()).toContain("A2");
+    expect(two.text()).toContain("B1");
   });
 });

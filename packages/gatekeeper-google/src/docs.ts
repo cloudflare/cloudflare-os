@@ -10,7 +10,7 @@ import {
 } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import {
-  GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
+  GoogleDocSession, DocMetadata, type GoogleDocEditSession, type DocCommentOptions, type DocSuggestEditOptions,
   type GoogleDocReadSession, type GoogleDocTab,
 } from "./docs-types";
 import {
@@ -45,7 +45,17 @@ import { DOCS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import { PENDING_NEXT_ACTION_ID_KEY, PendingActionStore } from "./pending-actions";
 import type { UserAccount } from "./google";
 import {
-  ADD_DOCUMENT_TAB_ACTION, adoptedGoogleDocTabId, assertGoogleDocActionMarkdownSize, describeDocEdit, DOC_ADDED_TABS_KEY, DOC_METADATA_REVISION_KEY, DOC_SNAPSHOT_KEY, DOC_SNAPSHOT_TTL_MS, DOC_WRITE_RECEIPT_KEY, docDefinition, EDIT_DOCUMENT_ACTION, findUniqueMarkdown, GoogleDocAction, GoogleDocAddTabAction, GoogleDocMetadataRevision, GoogleDocPendingAction, googleDocPendingFingerprint, googleDocRevisionUnchanged, GoogleDocSimulatedContent, googleDocSimulatedContent, GoogleDocSimulation, GoogleDocSimulationCacheHolder, GoogleDocSnapshot, googleDocSnapshot, googleDocTabLabel, googleDocTabMetadata, GoogleDocTabSnapshot, GoogleDocWriteMarker, GoogleDocWriteReceipt, invalidateGoogleDocAction, invalidateUnreplayableGoogleDocActions, isGoogleDocSnapshot, MAX_DOC_ADDED_TABS, newGoogleDocTab, parseGoogleDocWriteReceipt, PROVISIONAL_TAB_PREFIX, requireGoogleDocAppendIndex, resolveGoogleDocTab,
+  ADD_DOCUMENT_TAB_ACTION, adoptedGoogleDocTabId, assertGoogleDocActionMarkdownSize,
+  describeDocEdit, DOC_ADDED_TABS_KEY, DOC_METADATA_REVISION_KEY, DOC_SNAPSHOT_KEY,
+  DOC_SNAPSHOT_TTL_MS, DOC_WRITE_RECEIPT_KEY, docDefinition, EDIT_DOCUMENT_ACTION,
+  findUniqueMarkdown, GoogleDocAction, GoogleDocAddTabAction, GoogleDocMetadataRevision,
+  GoogleDocPendingAction, googleDocPendingFingerprint, googleDocRevisionUnchanged,
+  googleDocSimulatedContent, GoogleDocSimulatedContent, GoogleDocSimulation,
+  GoogleDocSimulationCacheHolder, GoogleDocSnapshot, googleDocSnapshot, googleDocTabLabel,
+  googleDocTabMetadata, GoogleDocTabSnapshot, GoogleDocWriteMarker, GoogleDocWriteReceipt,
+  invalidateGoogleDocAction, invalidateUnreplayableGoogleDocActions, isGoogleDocSnapshot,
+  MAX_DOC_ADDED_TABS, newGoogleDocTab, parseGoogleDocWriteReceipt, PROVISIONAL_TAB_PREFIX,
+  requireGoogleDocAppendIndex, resolveGoogleDocTab, storeInvalidator,
 } from "./doc-actions";
 
 const logger = obsContext.createLogger({ component: "gatekeeper.google", vendorId: "google" });
@@ -277,7 +287,7 @@ export class GoogleDocGatekeeperImpl
       },
       changes: {
         pending: () => pendingActions.list(),
-        invalidate: (record, reason) => invalidateGoogleDocAction(pendingActions, record, reason),
+        invalidate: storeInvalidator(pendingActions),
         cache,
         queue: async prepare => {
           let { action, result } = await prepare();
@@ -428,7 +438,7 @@ export class GoogleDocGatekeeperImpl
       }
       await this.ctx.storage.put(DOC_SNAPSHOT_KEY, refreshedSnapshot);
       invalidateUnreplayableGoogleDocActions(
-          (record, reason) => invalidateGoogleDocAction(pendingActions, record, reason),
+          storeInvalidator(pendingActions),
           refreshedSnapshot,
           later,
           `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
@@ -1062,35 +1072,54 @@ function storedDocSource(
 }
 
 /**
- * A Doc opened from a Drive binding: one snapshot per capability, reused for the TTL and then
- * while its revision holds, and only once a completed scope check approved it. The scope check
- * straddles the fetch, so a revision fetched while the document was outside must never reach a
- * later read. Reads issued together still share one fetch: each brackets that fetch with its own
- * checks, exactly as a lone read does. Its title and date are Drive's.
+ * What a Doc opened from Drive learns from its binding about the document's other sessions: how
+ * many writes have landed in it, and when its newest pending edit was queued.
+ */
+export type DocFreshness = { writes(): number; newestPending(): number };
+
+/**
+ * A Doc as a Drive binding opens one, on the snapshot it read last: reused for the TTL, then
+ * confirmed still current before it is reused again. Only a revision a whole scope check approved
+ * becomes reusable, since a revision fetched while the document was outside the binding must never
+ * reach a later read; reads issued together share one fetch, each bracketing it with its own checks.
+ *
+ * Edits are shared by every session open on the document while each keeps its own snapshot, so
+ * with `freshness` a snapshot is not reused once a write has landed since it was fetched, or once
+ * an edit was queued after it, which another session may have checked against a newer revision;
+ * and a fetch a write landed during is made again.
  */
 export function driveDocSource(
-  docsApi: GoogleDocsApi, driveApi: DriveApi, documentId: string,
+  docsApi: GoogleDocReader, driveApi: DriveApi, documentId: string, freshness?: DocFreshness,
 ): DocSource {
+  let writes = () => freshness?.writes() ?? 0;
+  /** The writes landed when each snapshot was fetched. */
+  let fetchedAfter = new WeakMap<GoogleDocSnapshot, number>();
   /** A fetch still in flight, so reads issued together observe one revision. */
   let inFlight: Promise<GoogleDocSnapshot> | undefined;
   /** The last revision a completed scope check approved, the only one a later read may reuse. */
   let approved: GoogleDocSnapshot | undefined;
-
-  /** Reuse one revision for the TTL, then confirm it is still current before reusing it again. */
-  async function nextSnapshot(): Promise<GoogleDocSnapshot> {
-    let cached = approved;
-    if (cached) {
-      if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
-      if (await googleDocRevisionUnchanged(docsApi, documentId, cached)) {
-        cached.fetchedAt = Date.now();
-        return cached;
+  let next = async (): Promise<GoogleDocSnapshot> => {
+    for (;;) {
+      let landed = writes();
+      let cached = approved;
+      if (cached && fetchedAfter.get(cached) === landed &&
+          (freshness?.newestPending() ?? 0) <= cached.fetchedAt) {
+        if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
+        if (await googleDocRevisionUnchanged(docsApi, documentId, cached)) {
+          if (landed !== writes()) continue;
+          cached.fetchedAt = Date.now();
+          return cached;
+        }
       }
+      let snapshot = googleDocSnapshot(await docsApi.getDocument(documentId));
+      // Fetched before a write landed, it would read the edit as neither made nor pending.
+      if (landed !== writes()) continue;
+      fetchedAfter.set(snapshot, landed);
+      return snapshot;
     }
-    return googleDocSnapshot(await docsApi.getDocument(documentId));
-  }
-
+  };
   return {
-    snapshot: () => inFlight ??= nextSnapshot().finally(() => { inFlight = undefined; }),
+    snapshot: () => inFlight ??= next().finally(() => { inFlight = undefined; }),
     // A slow guard must not republish its older revision over a newer one already approved.
     approved: snapshot => {
       if (snapshot.fetchedAt >= (approved?.fetchedAt ?? 0)) approved = snapshot;
@@ -1140,5 +1169,44 @@ export class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocRead
 
   getContent(tabId?: string): Promise<string> {
     return this.#session.getContent(tabId);
+  }
+}
+
+/**
+ * A Doc as a read and write Drive binding opens one: its reads and edits, and no comment method,
+ * since the binding's own comment writes reach the file. It holds the session rather than
+ * extending it, so its RPC surface has nothing else to call.
+ */
+@validateRpc()
+export class GoogleDocEditSessionImpl extends RpcTarget implements GoogleDocEditSession {
+  #session: GoogleDocSessionImpl;
+
+  constructor(options: Omit<GoogleDocSessionOptions, "comments">) {
+    super();
+    this.#session = new GoogleDocSessionImpl(options);
+  }
+
+  [Symbol.dispose](): void {
+    this.#session[Symbol.dispose]();
+  }
+
+  getMetadata(): Promise<DocMetadata> {
+    return this.#session.getMetadata();
+  }
+
+  listTabs(): Promise<GoogleDocTab[]> {
+    return this.#session.listTabs();
+  }
+
+  getContent(tabId?: string): Promise<string> {
+    return this.#session.getContent(tabId);
+  }
+
+  replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {
+    return this.#session.replaceText(oldMarkdown, newMarkdown, tabId);
+  }
+
+  appendText(markdown: string, tabId?: string): Promise<void> {
+    return this.#session.appendText(markdown, tabId);
   }
 }

@@ -11,7 +11,8 @@ import { GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
 import { DEPLOYMENT_READ_ONLY, WRITES_GRANT_MISSING } from "../src/drive-writes";
 import { SLIDES_DEFINITIONS, type SlidesHost } from "../src/slides-actions";
 import type { SlidesActions } from "../src/slides-simulation";
-import { DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "./drive-edit-kinds";
+import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "./drive-edit-kinds";
+import type { GoogleDocsApi } from "../src/docs-api";
 import type { GoogleSheetsApi } from "../src/sheets-api";
 import { FakeKv } from "./fake-kv";
 
@@ -26,6 +27,7 @@ function host(slides: (fileId: string) => SlidesHost): DriveEditorsHost {
     editors: {
       slides,
       sheets: () => { throw new Error("No spreadsheet is edited here."); },
+      docs: () => { throw new Error("No Doc is edited here."); },
       prove: async () => {},
     },
   };
@@ -158,7 +160,7 @@ describe("Slides definitions reused through Drive", () => {
     };
     let actions = DRIVE_ACTIONS.bind(new ActionJournal<DriveAction>(new FakeKv(), { namespace: "drive" }), drive);
     expect(actions.autoApprovableKinds()).toEqual(
-      [{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS]);
+      [{ tag: "driveComments", label: "Drive comments" }, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
   });
 });
 
@@ -172,6 +174,8 @@ function editors(options: {
   let fileEditors = new DriveFileEditors({
     kv: new FakeKv(),
     sheets: {} as GoogleSheetsApi,
+    docs: {} as GoogleDocsApi,
+    drive: { getFile: () => Promise.reject(new Error("No file is read here.")) },
     journal,
     submit: async (_queue, name, payload) => {
       let id = journal.allocate({ kind: name, payload } as DriveAction);
@@ -252,6 +256,8 @@ describe("a Drive binding's edits", () => {
     let gated = new DriveFileEditors({
       kv: new FakeKv(),
       sheets: {} as GoogleSheetsApi,
+      docs: {} as GoogleDocsApi,
+      drive: { getFile: () => Promise.reject(new Error("No file is read here.")) },
       journal,
       submit: async () => 0,
       apply: async id => { applied.push(id); journal.retire(id); },

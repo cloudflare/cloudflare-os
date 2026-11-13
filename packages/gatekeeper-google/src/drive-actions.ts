@@ -7,7 +7,9 @@
 import { defineActions, type TaggedAction } from "@gadgets/gatekeeper-kit/actions";
 import { DRIVE_COMMENT_DEFINITIONS, type DriveCommentActions } from "./drive-comments";
 import {
-  DRIVE_SHEETS_DEFINITIONS, DRIVE_SLIDES_DEFINITIONS, type DriveEdits, type DriveEditorsHost,
+  DRIVE_DOCS_DEFINITIONS, DRIVE_SHEETS_DEFINITIONS, DRIVE_SLIDES_DEFINITIONS, type DriveDocEdits,
+  type DriveEdits,
+  type DriveEditorsHost,
 } from "./drive-editors";
 import { DRIVE_MOVE_DEFINITIONS, type DriveMoveActions } from "./drive-moves";
 import { DRIVE_SHARING_DEFINITIONS, type DriveSharingActions } from "./drive-sharing";
@@ -17,7 +19,7 @@ import type { SlidesActions } from "./slides-simulation";
 
 /** Every Drive write, by the action kind it is queued as. */
 export type DriveActions = DriveCommentActions & DriveSharingActions & DriveMoveActions &
-  DriveEdits<SlidesActions> & DriveEdits<SheetsActions>;
+  DriveEdits<SlidesActions> & DriveEdits<SheetsActions> & DriveEdits<DriveDocEdits>;
 
 /** One queued Drive write. */
 export type DriveAction = TaggedAction<DriveActions>;
@@ -36,7 +38,7 @@ export type DriveHost = DriveWritesHost & DriveEditorsHost;
  */
 export const DRIVE_ACTIONS = defineActions<DriveHost, DriveActions>({
   ...DRIVE_COMMENT_DEFINITIONS, ...DRIVE_SHARING_DEFINITIONS, ...DRIVE_MOVE_DEFINITIONS,
-  ...DRIVE_SLIDES_DEFINITIONS, ...DRIVE_SHEETS_DEFINITIONS,
+  ...DRIVE_SLIDES_DEFINITIONS, ...DRIVE_SHEETS_DEFINITIONS, ...DRIVE_DOCS_DEFINITIONS,
 }, {
   fence: "none",
   fenceOverrides: {

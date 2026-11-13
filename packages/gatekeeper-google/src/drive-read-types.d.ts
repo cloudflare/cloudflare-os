@@ -207,8 +207,8 @@ export type DriveFileBytes = {
  * Google Docs/Sheets/Slides content, PDF text, the bytes of any other file, and comments.
  *
  * A read-only binding changes nothing, and the native sessions it opens have no write methods.
- * Editing Google Sheets and Slides files, commenting on files, seeing or changing who they are
- * shared with, and moving them take a binding with read and write access, which the user chooses when
+ * Editing Google Docs, Sheets and Slides files, commenting on files, seeing or changing who they
+ * are shared with, and moving them take a binding with read and write access, which the user chooses when
  * connecting: request one with `?access=write` added to the resource URL, the narrowest that covers
  * the files to change: `https://drive.google.com/file/d/<fileId>/view?access=write` for one file
  * (which can be commented on and shared, not moved),
@@ -290,8 +290,8 @@ export interface GoogleDriveReadSession {
 
 /**
  * Read-only navigation within the originally selected folder, with its direct children's content
- * and comments. Editing Google Sheets and Slides files, commenting, sharing and moving take a
- * binding with read and write access, requested as {@link GoogleDriveReadSession} describes.
+ * and comments. Editing Google Docs, Sheets and Slides files, commenting, sharing and moving take
+ * a binding with read and write access, requested as {@link GoogleDriveReadSession} describes.
  */
 export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSession, "getScope"> {
   /** List only the positioned folder's direct children. */

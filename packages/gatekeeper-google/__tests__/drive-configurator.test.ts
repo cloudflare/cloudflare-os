@@ -274,7 +274,8 @@ describe("the Drive picker's access choice", () => {
   const WAITING = "Waiting for permission in Google's window…";
   const CHECKING = "Checking whether changes are allowed…";
   const ALLOWED = "Changes are allowed.";
-  const AS_DRIVE_FILE = "Connects as a Drive file, whose content can be read but not edited.";
+  const EDITED_AS_DRIVE_FILE =
+    "Connects as a Drive file, whose content can be edited, each change with your approval.";
   const WRITE_URL = "https://drive.google.com/drive/folders/F?access=write";
 
   const NATIVE_DOC: DriveNode = {
@@ -664,9 +665,7 @@ describe("the Drive picker's access choice", () => {
     frame.choose("slides:P");
     frame.chooseAccess("write");
     await settle();
-    expect(frame.notices()).toEqual(info(
-      "Connects as a Drive file, whose content can be edited, each change with your approval.",
-      WRITE_PROMPT));
+    expect(frame.notices()).toEqual(info(EDITED_AS_DRIVE_FILE, WRITE_PROMPT));
     frame.chooseAccess("read");
     await settle();
     expect(frame.notices()).toEqual(info(
@@ -688,9 +687,10 @@ describe("the Drive picker's access choice", () => {
     asFile.choose("doc:D");
     asFile.chooseAccess("write");
     await settle();
-    expect(asFile.notices()).toEqual(info(AS_DRIVE_FILE, WRITE_PROMPT));
+    expect(asFile.notices()).toEqual(info(EDITED_AS_DRIVE_FILE, WRITE_PROMPT));
     // And before the cards: the Access field sits below the picker and the file's notice.
-    expect(asFile.order()).toEqual(["HierarchyPicker", AS_DRIVE_FILE, "RadioCards", WRITE_PROMPT]);
+    expect(asFile.order())
+      .toEqual(["HierarchyPicker", EDITED_AS_DRIVE_FILE, "RadioCards", WRITE_PROMPT]);
 
     // The confirmation stays when the shared-drives notice then appears after it.
     const allowed = await open();
@@ -781,10 +781,7 @@ describe("the Drive picker's access choice", () => {
     await expect(asked.prefill("https://docs.google.com/spreadsheets/d/S1/edit?access=write"))
       .resolves.toEqual({ target: "sheets:S1", access: "write" });
     expect(asked.ui.getWriteAccess).toHaveBeenCalledTimes(1);
-    expect(asked.notices()).toEqual(info(
-      PRESET_PENDING,
-      "Connects as a Drive file, whose content can be edited, each change with your approval.",
-      WRITE_PROMPT));
+    expect(asked.notices()).toEqual(info(PRESET_PENDING, EDITED_AS_DRIVE_FILE, WRITE_PROMPT));
   });
 
   it("says the choice may have to be made again on a card that lacks an editable type", async () => {

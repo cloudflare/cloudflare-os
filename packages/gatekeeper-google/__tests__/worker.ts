@@ -141,6 +141,17 @@ type DocCall = {
  */
 type DriveBinding = { scope: DriveBindingScope; access?: DriveAccessLevel; deployment?: "read" };
 
+/** The read and write Drive file binding a facet named `drive:<name>` reaches doc-1 through. */
+const DRIVE_DOC: DriveBinding = { scope: { kind: "file", fileId: "doc-1" }, access: "write" };
+
+/**
+ * Whether the Doc hooks reach doc-1 through a read and write Drive file binding in this facet,
+ * rather than through a directly bound Doc: so a Doc suite runs a second time through Drive.
+ */
+function throughDrive(facetName: string): boolean {
+  return facetName.startsWith("drive:");
+}
+
 /** A Drive session method that opens a native file. */
 type NativeOpener = "openGoogleSlides" | "openGoogleSheet" | "openGoogleDoc";
 
@@ -280,7 +291,35 @@ export class TestHooks extends DurableObject<Env> {
 
   /** The kinds the bound Google Doc reports as auto-approvable. */
   async docAutoApprovable(facetName: string): Promise<ActionKind[]> {
-    return this.#gatekeeper(facetName).getAutoApprovableActions();
+    return throughDrive(facetName)
+      ? this.#drive(facetName, DRIVE_DOC).getAutoApprovableActions()
+      : this.#gatekeeper(facetName).getAutoApprovableActions();
+  }
+
+  /** A session of doc-1, of the bound Doc or as a Drive binding opens it (see throughDrive()). */
+  async #openDoc(
+    facetName: string, approvalQueue: RpcStub<ApprovalQueue>,
+  ): Promise<{ session: GoogleDocSession } & Disposable> {
+    if (!throughDrive(facetName)) {
+      let session = await this.#gatekeeper(facetName).startSession(
+        approvalQueue as unknown as ApprovalQueue) as GoogleDocSession & Disposable;
+      return { session, [Symbol.dispose]: () => session[Symbol.dispose]() };
+    }
+    let drive = await this.#drive(facetName, DRIVE_DOC).startSession(
+      approvalQueue as unknown as ApprovalQueue) as unknown as GoogleDriveSession & Disposable;
+    try {
+      let doc = await drive.openGoogleDoc("doc-1") as unknown as GoogleDocSession & Disposable;
+      return {
+        session: doc,
+        [Symbol.dispose]: () => {
+          doc[Symbol.dispose]();
+          drive[Symbol.dispose]();
+        },
+      };
+    } catch (error) {
+      drive[Symbol.dispose]();
+      throw error;
+    }
   }
 
   /** Observation descriptions authorized by the most recent session, successful or not. */
@@ -341,7 +380,9 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   async describe(facetName: string): Promise<ResourceDescription> {
-    return this.#gatekeeper(facetName).describe();
+    return throughDrive(facetName)
+      ? this.#drive(facetName, DRIVE_DOC).describe()
+      : this.#gatekeeper(facetName).describe();
   }
 
   async #withReadSession<Session, T>(
@@ -386,9 +427,8 @@ export class TestHooks extends DurableObject<Env> {
   ): Promise<T> {
     let queue = new TestApprovalQueue();
     using approvalQueue = new RpcStub<ApprovalQueue>(queue);
-    using session = await this.#gatekeeper(facetName).startSession(
-      approvalQueue as unknown as ApprovalQueue,
-    ) as GoogleDocSession & Disposable;
+    using opened = await this.#openDoc(facetName, approvalQueue);
+    let { session } = opened;
     try {
       // Awaited inside the scope: `return body(...)` would dispose both stubs mid-call.
       return await body(session, queue);
@@ -455,7 +495,9 @@ export class TestHooks extends DurableObject<Env> {
       // The overseer always passes an action-scoped git cache with the apply call, and the
       // validator (sharpened by the `Gatekeeper` interface) requires it, so the test passes a
       // stand-in the same way.
-      await this.#gatekeeper(facetName).applyAction(actionId, new RpcStub(new TestGitCache()));
+      let gatekeeper = throughDrive(facetName)
+        ? this.#drive(facetName, DRIVE_DOC) : this.#gatekeeper(facetName);
+      await gatekeeper.applyAction(actionId, new RpcStub(new TestGitCache()));
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -463,6 +505,9 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   async rejectAction(facetName: string, actionId: number): Promise<void | { restart?: boolean }> {
+    if (throughDrive(facetName)) {
+      return await this.#drive(facetName, DRIVE_DOC).rejectAction(actionId) ?? undefined;
+    }
     return this.#gatekeeper(facetName).rejectAction(actionId);
   }
 
@@ -470,9 +515,8 @@ export class TestHooks extends DurableObject<Env> {
   async callDoc(facetName: string, method: keyof GoogleDocSession, args: unknown[]): Promise<DocCall> {
     let queue = new TestApprovalQueue();
     using approvalQueue = new RpcStub<ApprovalQueue>(queue);
-    using session = await this.#gatekeeper(facetName).startSession(
-      approvalQueue as unknown as ApprovalQueue,
-    ) as GoogleDocSession & Disposable;
+    using opened = await this.#openDoc(facetName, approvalQueue);
+    let { session } = opened;
     let outcome: { value?: DocCall["value"]; error?: string };
     try {
       let call = session[method] as (...args: unknown[]) => Promise<DocCall["value"]>;

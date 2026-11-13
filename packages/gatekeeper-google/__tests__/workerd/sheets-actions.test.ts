@@ -5,7 +5,7 @@ import type { ActionDescription, ActionField, ActionKind } from "@gadgets/worksh
 import { EDIT_OUT_OF_ORDER, SHEETS_STATE_PREFIX } from "../../src/drive-editors";
 import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import { DriveFiles, DOC_MIME, FOLDER_MIME, SHEET_MIME } from "../drive-files";
-import { DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
+import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
 import { GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl } from "../../src/sheets";
 import { MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry } from "../../src/sheets-actions";
 import { GoogleSheetsApi } from "../../src/sheets-api";
@@ -2717,7 +2717,7 @@ describe("Google Sheets edits through a read and write Drive binding", () => {
   it("lists the spreadsheets' kinds where the binding can edit them", async () => {
     serve(budget());
     expect(await connection(ACCOUNT).autoApprovable())
-      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS]);
+      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
 
     let spreadsheetFile = connection(fileBinding("sheet-1"));
     expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS]);

@@ -110,6 +110,7 @@ function driveReadBundle(): string {
 function driveWriteBundle(): string {
   return [
     driveReadBundle(),
+    stripTypeModulePrefix(source("docs-types.txt"), DOCS_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("sheets-types.txt"), SHEETS_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("slides-types.txt"), SLIDES_TYPES_MODULE_PREFIX),
     stripTypeModulePrefix(source("drive-types.txt"), DRIVE_TYPES_MODULE_PREFIX),
@@ -226,15 +227,17 @@ message.addAttachment(file);
     },
   );
 
-  it("keeps Drive Docs authority read-only", () => {
+  it("keeps the Doc read session free of writes, and gives them to the edit session", () => {
     const readTypes = source("docs-read-types.d.ts");
     expect(readTypes).toContain("export interface GoogleDocReadSession");
     expect(readTypes).not.toContain("replaceText");
     expect(readTypes).not.toContain("appendText");
     const writeTypes = source("docs-types.d.ts");
     expect(writeTypes).toContain(
-      "export interface GoogleDocSession extends GoogleDocReadSession",
+      "export interface GoogleDocEditSession extends GoogleDocReadSession",
     );
+    // A directly bound Doc's session adds its comments to the edits.
+    expect(writeTypes).toContain("export interface GoogleDocSession extends GoogleDocEditSession");
     expect(writeTypes).toContain(
       "replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void>;",
     );
@@ -257,6 +260,20 @@ async function use(): Promise<void> {
 doc.addTab();
 // @ts-expect-error A new tab is placed by its parent's ID, not by an object.
 doc.addTab("Notes", { parentTabId: { id: "t.0" } });
+`)).toEqual([]);
+  });
+
+  it("gives a Doc opened from a read and write Drive binding its text edits and no tab add", () => {
+    expect(compileAgentTypes(driveWriteBundle() + `
+declare const doc: GoogleDocEditSession;
+async function use(): Promise<void> {
+  await doc.appendText("Hello");
+  await doc.replaceText("Hello", "Hi");
+}
+// @ts-expect-error A Doc opened from Drive adds no tabs.
+doc.addTab("Notes");
+// @ts-expect-error A Drive binding's own comment writes reach the file.
+doc.listComments();
 `)).toEqual([]);
   });
 
@@ -348,18 +365,22 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
     );
     expect(readTypes).toContain("export interface GoogleDriveReadSession");
     expect(readTypes).not.toContain("GoogleDocSession>");
+    expect(readTypes).not.toContain("GoogleDocEditSession>");
     expect(readTypes).not.toContain("GoogleSpreadsheetSession>");
     expect(readTypes).not.toContain("GooglePresentationSession>");
     expect(topLevelNames(driveReadBundle())).not.toContain("GooglePresentationSession");
     expect(topLevelNames(driveReadBundle())).not.toContain("GoogleSpreadsheetSession");
   });
 
-  it("hands out editable spreadsheets and presentations from every read and write Drive session", () => {
+  it("hands out editable Docs, spreadsheets and presentations from every read and write Drive session", () => {
     const writeTypes = source("drive-types.d.ts");
+    expect(writeTypes.split("openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;"))
+      .toHaveLength(4);
     expect(writeTypes.split("openGoogleSlides(fileId: string): Promise<GooglePresentationSession>;"))
       .toHaveLength(4);
     expect(writeTypes.split("openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;"))
       .toHaveLength(4);
+    // Not the directly bound Doc's session: the binding's own comment writes reach the file.
     expect(writeTypes).not.toContain("GoogleDocSession>");
     expect(topLevelNames(driveWriteBundle())).toContain("GooglePresentationSession");
     expect(topLevelNames(driveWriteBundle())).toContain("GoogleSpreadsheetSession");
@@ -371,6 +392,10 @@ const legacy: SheetCellFormat = { wrap: "OVERFLOW_CELL" };
         for (const binding of [drive, folder, file]) {
           const deck = await binding.openGoogleSlides("deck");
           await deck.updateSlides([{ op: "editText", slideId: "s", elementId: "e", find: "a", replace: "b" }]);
+          const doc = await binding.openGoogleDoc("doc");
+          await doc.appendText("More");
+          // @ts-expect-error A Doc opened from Drive takes comments through the binding.
+          await doc.comment("Hi", { quote: "More" });
           const sheet = await binding.openGoogleSheet("sheet");
           await sheet.updateSpreadsheet([{ op: "clearRange", range: "Sheet1!A1:B2" }]);
         }

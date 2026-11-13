@@ -109,7 +109,13 @@ export const DOC_ADDED_TABS_KEY = "docAddedTabs";
 /** How many added tabs' provisional IDs keep resolving after their adds apply. */
 export const MAX_DOC_ADDED_TABS = 100;
 
-export type GoogleDocWriteReceipt = { actionId: number; markerId: string };
+/** A landed write whose marker is still to be deleted, and the edit it was. */
+export type GoogleDocWriteReceipt = {
+  actionId: number;
+  markerId: string;
+  /** The tab the marker is in, where the connection records it. */
+  tabId?: string;
+};
 
 /** The document revision this binding has already reported, and when it first saw it. */
 export type GoogleDocMetadataRevision = { revisionId?: string; observedAt: number };
@@ -281,12 +287,14 @@ export function parseGoogleDocWriteReceipt(value: unknown): GoogleDocWriteReceip
   if (!value || typeof value !== "object") {
     throw new Error("Stored Google Doc write receipt is invalid");
   }
-  let { actionId, markerId } = value as { actionId?: unknown; markerId?: unknown };
+  let { actionId, markerId, tabId } =
+    value as { actionId?: unknown; markerId?: unknown; tabId?: unknown };
   if (typeof actionId !== "number" || !Number.isSafeInteger(actionId) || actionId < 1 ||
-      typeof markerId !== "string" || markerId.length === 0) {
+      typeof markerId !== "string" || markerId.length === 0 ||
+      (tabId !== undefined && typeof tabId !== "string")) {
     throw new Error("Stored Google Doc write receipt is invalid");
   }
-  return { actionId, markerId };
+  return { actionId, markerId, ...(tabId === undefined ? {} : { tabId }) };
 }
 
 export type GoogleDocPendingAction = { id: number; action: GoogleDocAction };
@@ -529,6 +537,11 @@ export function invalidateGoogleDocAction(
   }
 }
 
+/** The invalidator of a store that marks such an edit in its record. */
+export function storeInvalidator(pendingActions: PendingActionStore<GoogleDocAction>): GoogleDocInvalidator {
+  return (record, reason) => invalidateGoogleDocAction(pendingActions, record, reason);
+}
+
 /**
  * The tabs that could hold the write marker of `action`.
  *
@@ -572,7 +585,7 @@ export function googleDocActionTab(
 }
 
 /** Records that edit `record` can no longer be replayed, for `reason`. */
-type GoogleDocInvalidator = (record: GoogleDocPendingAction, reason: string) => void;
+export type GoogleDocInvalidator = (record: GoogleDocPendingAction, reason: string) => void;
 
 /**
  * Replay the pending queue over `snapshot`, invalidating any action that no longer applies.
