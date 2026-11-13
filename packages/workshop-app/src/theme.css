@@ -44,6 +44,10 @@
      On the card the two look the same, in both themes. */
   --color-kumo-tint: light-dark(oklch(97% 0 0), oklch(25.9% 0 0));
 
+  /* What is drawn in the page's opposite (the viewer's own messages, the primary button, the
+     mascot): in light a near black that is softer than Kumo's, which is all but black. */
+  --color-kumo-contrast: light-dark(#222, oklch(98.5% 0 0));
+
   /* The primary colour is the logo's orange (#FF5C2E). Kumo ships blue for the fill and hover and a
      different orange for brand text, so all three are set. It is the same in dark, where Kumo would
      darken it: an unread dot matches the logo beside it. */
