@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
+import { isNarrowScreen } from '@/hooks/useNarrowScreen'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { parseAsideRef } from './asideItems'
 import { lastShown, rememberShown } from './lastShown'
@@ -10,9 +11,10 @@ export type ChatRef = { workspaceId: string; chatId: number }
 /**
  * What to show beside a chat that is being gone to with nothing named: what was last shown beside
  * it, when the aside was showing when last left. A link that names something shows that instead.
+ * Nothing on a narrow screen, where the aside would cover the chat that was asked for.
  */
 export const asideFor = ({ workspaceId, chatId }: ChatRef): string | undefined =>
-  readLayoutPrefs().asideOpen ? lastShown(workspaceId, chatId) : undefined
+  readLayoutPrefs().asideOpen && !isNarrowScreen() ? lastShown(workspaceId, chatId) : undefined
 
 /**
  * The ways to show something beside a chat page and to put the aside away, which are history: the

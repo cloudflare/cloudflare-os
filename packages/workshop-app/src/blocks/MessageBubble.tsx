@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useId, useRef, type ReactNode } from 'react'
+import { useEffect, useEffectEvent, useId, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react'
 import { CaretUpIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
@@ -90,10 +90,16 @@ const JOINED = {
 // along, so showing them moves nothing, and show while the message or the place they are in is
 // pointed at, or one of them was reached by keyboard; the rest of the row does not bring them up,
 // and nor does having clicked one. They touch the bubble (the gap is their own padding), so the
-// pointer crosses to them without leaving both.
+// pointer crosses to them without leaving both. A screen that is touched has nothing to point
+// with: there the message is tapped to show them, and until then they cannot be tapped either,
+// which would be done unseen by a tap beside the message.
 const ACTIONS =
   'absolute top-1/2 -translate-y-1/2 opacity-0 transition-opacity motion-reduce:transition-none ' +
-  'group-hover/message:opacity-100 has-[:focus-visible]:opacity-100'
+  'group-hover/message:opacity-100 has-[:focus-visible]:opacity-100 ' +
+  'pointer-coarse:pointer-events-none group-data-[actions=shown]/message:pointer-events-auto group-data-[actions=shown]/message:opacity-100'
+
+// What a tap on a message is for already, rather than for showing its actions.
+const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
 
 /**
  * One chat message: the user's on the right in a bubble of their own colour, the assistant's and errors on the left.
@@ -108,6 +114,27 @@ export const MessageBubble = ({ role, children, media, joins, onReply, copyText,
   // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
   const actions = (onReply || copyText !== undefined || details) &&
     <MessageActions onReply={onReply} copyText={copyText} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+
+  // Shown by a tap, rather than by a pointer that is there, until the message is tapped again or
+  // anything else is.
+  const bubble = useRef<HTMLDivElement>(null)
+  const touched = useRef(false)
+  const [tapped, setTapped] = useState(false)
+  const tapElsewhere = useEffectEvent(({ target }: MouseEvent) => {
+    if (!(target instanceof Node) || !bubble.current?.contains(target)) setTapped(false)
+  })
+  useEffect(() => {
+    if (!tapped) return
+    document.addEventListener('click', tapElsewhere)
+    return () => document.removeEventListener('click', tapElsewhere)
+  }, [tapped])
+  // Not a tap that was for something in the message, such as a link, nor one that ends choosing
+  // some of its text.
+  const tap = ({ target }: ReactMouseEvent) => {
+    if (!actions || !touched.current || !(target instanceof Element) || target.closest(OWN_TAP)) return
+    if (document.getSelection()?.isCollapsed === false) return
+    setTapped((shown) => !shown)
+  }
 
   // A click anywhere outside the details puts them away, the message they are about included.
   // The button that shows them is left to do its own switching.
@@ -147,13 +174,22 @@ export const MessageBubble = ({ role, children, media, joins, onReply, copyText,
           joins?.below && JOINED[role].below,
         )}
       >
-        <div className={cn(
-          'message-bubble-text group/message relative rounded-[inherit] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
-          // 21px corners less a 5px inset leave a tile's 16px.
-          media ? 'p-[5px]' : 'px-5 py-[11px]',
-          BUBBLE[role],
-          joinsDetails && JOINED[role].below,
-        )}>
+        {/* Tapped from a touch screen only: pointed at, or reached by keyboard, the actions show already. */}
+        <div
+          ref={bubble}
+          data-actions={tapped ? 'shown' : undefined}
+          onPointerDown={({ pointerType }) => {
+            touched.current = pointerType !== 'mouse'
+          }}
+          onClick={tap}
+          className={cn(
+            'message-bubble-text group/message relative rounded-[inherit] transition-[border-radius] duration-300 ease-out motion-reduce:transition-none',
+            // 21px corners less a 5px inset leave a tile's 16px.
+            media ? 'p-[5px]' : 'px-5 py-[11px]',
+            BUBBLE[role],
+            joinsDetails && JOINED[role].below,
+          )}
+        >
           {children}
           {actions && role === 'user' && <div className={cn(ACTIONS, 'right-full pe-2')}>{actions}</div>}
           {actions && role === 'assistant' && <div className={cn(ACTIONS, 'left-full ps-2')}>{actions}</div>}

@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { greeting } from '@/chat/greeting'
 import { NewChatPane } from '@/chat/NewChatPane'
 import { startConversation } from '@/chat/startConversation'
 import { useApi } from '@/rpc/ApiContext'
@@ -8,17 +9,12 @@ export const Route = createFileRoute('/_app/')({
   component: Home,
 })
 
-const greet = (name: string) => {
-  const [firstName] = name.trim().split(/\s+/)
-  return `Hello${firstName ? ` ${firstName}` : ''}, what should we do today?`
-}
-
 function Home() {
   const { api, user } = useApi()
   const navigate = useNavigate()
   return (
     <NewChatPane
-      greeting={greet(user.name)}
+      greeting={greeting(user.name)}
       start={(text, files, modelId) => startConversation(() => api.newWorkspace(), text, files, modelId)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
     />

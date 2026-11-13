@@ -8,6 +8,7 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { WorkspaceChatList } from './WorkspaceChatList'
@@ -48,6 +49,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
   useDocumentTitle(title || 'Workspace')
+  const narrow = useNarrowScreen()
 
   const renameWorkspace = useRenameWorkspace()
   // Why the last new title was not kept.
@@ -67,7 +69,10 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
         <>
           {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} expanded />}
           <HeaderBubble className="ms-auto">
-            <Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>
+            {/* Its icon alone on a narrow screen, which leaves the workspace's title the room. */}
+            {narrow
+              ? <Button variant="primary" icon={NotePencilIcon} aria-label="New chat" title="New chat" onClick={onNewChat} />
+              : <Button variant="primary" icon={NotePencilIcon} onClick={onNewChat}>New chat</Button>}
           </HeaderBubble>
         </>
       )}

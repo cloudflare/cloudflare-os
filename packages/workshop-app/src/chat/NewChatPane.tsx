@@ -5,6 +5,7 @@ import { Composer } from '@/blocks/Composer'
 import { UserMessage } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
+import { StartLayout } from '@/layouts/StartLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
@@ -61,7 +62,13 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
 
   // Once something is said, it is shown as the conversation it becomes; if it could not be sent,
   // nothing was, and the page is as it was.
-  if (greeting !== undefined && !pending) return <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} problem={composerProblem} autoFocus />
+  if (greeting !== undefined && !pending) {
+    return (
+      <StartLayout header={header}>
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} problem={composerProblem} autoFocus />
+      </StartLayout>
+    )
+  }
 
   return (
     <ChatLayout header={header} composer={<Composer onSend={send} problem={composerProblem} />}>

@@ -20,15 +20,16 @@ export type ChatHeaderProps = {
 
 /** A chat's header: the way back to its workspace, then the chat's title, which opens its settings. */
 export const ChatHeader = ({ workspace, title, onOpenSettings }: ChatHeaderProps) => (
-  <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+  <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5">
     {workspace && <WorkspaceCrumb {...workspace} />}
     {title && (
-      <HeaderBubble>
-        <Button title={onOpenSettings && 'Chat settings'} onClick={onOpenSettings}>
+      // Cut off where there is not room for all of it, as on a phone.
+      <HeaderBubble className="min-w-0">
+        <Button title={onOpenSettings && 'Chat settings'} onClick={onOpenSettings} className="min-w-0 shrink">
           {/* Wrapped, so the caret keeps a chevron's size rather than an icon's. */}
-          <span className="flex items-center gap-1.5">
-            {title}
-            {onOpenSettings && <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 text-kumo-subtle" />}
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="truncate">{title}</span>
+            {onOpenSettings && <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />}
           </span>
         </Button>
       </HeaderBubble>

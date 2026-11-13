@@ -8,7 +8,9 @@ import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
+import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
+import { NarrowShell } from '@/layouts/NarrowShell'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
@@ -41,6 +43,9 @@ const absolute = (href: string) => new URL(href, window.location.origin).href
  * The frame, laid out for the page the URL names (see `AppShell`): beside a chat, what it names
  * there (`?open=`); as an item's own page (an app's, or one in the library), the item alone. Both are the same card, so going from
  * one to the other keeps what is in it running.
+ *
+ * On a narrow screen there is room for one thing at a time (see `NarrowShell`): the sidebar is
+ * beneath the page, and what is beside a chat comes over it.
  */
 const AppFrame = () => {
   const { user } = useApi()
@@ -52,7 +57,10 @@ const AppFrame = () => {
   const aside = useAsideNavigation()
   const { workspaceId } = useParams({ strict: false })
   const [prefs] = useState(readLayoutPrefs)
+  const narrow = useNarrowScreen()
 
+  const homePage = useMatch({ from: '/_app/', shouldThrow: false })
+  const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
   const chatPage = useMatch({ from: '/_app/workspace/$workspaceId/chat/$chatId', shouldThrow: false })
   const newChatPage = useMatch({ from: '/_app/workspace/$workspaceId/new', shouldThrow: false })
   const appPage = useMatch({ from: '/_app/app/$itemId', shouldThrow: false })
@@ -95,7 +103,21 @@ const AppFrame = () => {
   const [fullScreenAt, setFullScreenAt] = useState<string>()
   const [setFullScreen] = useState(() => (on: boolean) => setFullScreenAt(on ? router.state.location.pathname : undefined))
   const pathname = useLocation({ select: (location) => location.pathname })
-  const fullScreen = pageItem !== undefined && fullScreenAt === pathname
+  // A narrow screen is filled already.
+  const fullScreen = !narrow && pageItem !== undefined && fullScreenAt === pathname
+  // The sidebar out over a narrow screen, which, like full screen, is left behind with the page:
+  // going anywhere puts it away.
+  const [sidebarAt, setSidebarAt] = useState<string>()
+  const sidebarOpen = sidebarAt === pathname
+  const leaveSidebar = () => setSidebarAt(undefined)
+  // Up from an item's own page on a narrow screen, to what it is in: the chat it was shown from,
+  // or the Library page it was opened from, or else its workspace's library.
+  const up = () => {
+    if (!pageItem) return
+    if (pageChatId !== undefined) return void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageItem.workspaceId, chatId: pageChatId } })
+    if (router.state.location.state.fromLibrary) return void navigate({ to: '/library' })
+    void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageItem.workspaceId }, search: { tab: 'library' } })
+  }
 
   // Its own page, shown with the changes proposed in the chat it is shown from.
   const linkTo = (inWorkspace: string, item: AsideItem, fromChat: number | undefined) =>
@@ -115,9 +137,11 @@ const AppFrame = () => {
         link={linkTo(pageWorkspaceId, item, fromChat)}
         fullScreen={fullScreen}
         onFullScreenChange={setFullScreen}
+        narrow={narrow}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
-        // Opened otherwise, such as from the library, there is nothing to collapse into.
-        onCollapse={expandedHere
+        // Opened otherwise, such as from the library, there is nothing to collapse into. On a
+        // narrow screen, where it is beside nothing, it goes up.
+        onCollapse={narrow ? up : expandedHere
           ? () => router.history.back()
           : fromChat !== undefined
             ? () => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: fromChat }, search: { open } })
@@ -134,13 +158,14 @@ const AppFrame = () => {
         items={items}
         link={linkTo(besideWorkspaceId, item, chatId)}
         onFullScreenChange={setFullScreen}
+        narrow={narrow}
         onSelect={(key) => aside.show(key, chatRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
       />
     )
   } else if (openedEmpty) {
-    asideElement = <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={hideEmpty} />
+    asideElement = <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={hideEmpty} narrow={narrow} />
   }
 
   // Each workspace is listed by its title and when it was last active.
@@ -161,46 +186,91 @@ const AppFrame = () => {
         ? 'No workspaces yet.'
         : undefined
 
+  const sidebar = (collapsed: boolean) => (
+    <Sidebar
+      user={{ name: user.name }}
+      workspaces={workspaces}
+      selectedWorkspaceId={workspaceId}
+      // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
+      onSelectWorkspace={(id) => {
+        leaveSidebar()
+        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })
+      }}
+      onGoHome={() => {
+        leaveSidebar()
+        void navigate({ to: '/' })
+      }}
+      notice={notice}
+      connections={placeholderLogos}
+      library={{
+        current: libraryPage !== undefined || libraryItemPage !== undefined,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/library' })
+        },
+      }}
+      workspacesPage={{
+        current: workspacesPage !== undefined,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/workspaces' })
+        },
+      }}
+      collapsed={collapsed}
+    />
+  )
+  const status = (
+    <ConnectionIsland
+      state={connectionState.status === 'hidden' ? undefined : connectionState}
+      onDismiss={connection.dismiss}
+    />
+  )
+  // Had back from the edge: what was last shown beside the chat, or what was made last. Before
+  // the library has been read, the pane opens empty until it has.
+  const openAside = chatRef && chatKey && !named && !openedEmpty
+    ? () => {
+        const open = lastShown(chatRef.workspaceId, chatRef.chatId) ?? items[0]?.key
+        if (open !== undefined) return aside.show(open, chatRef)
+        writeLayoutPrefs({ asideOpen: true })
+        setOpenedEmptyAt(chatKey)
+      }
+    : undefined
+  const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
+
+  if (narrow) {
+    return (
+      <NarrowShell
+        sidebar={{
+          content: sidebar(false),
+          open: sidebarOpen,
+          onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
+          // On the pages the sidebar goes to. Those further in have their way up already, such as
+          // a chat's workspace crumb, or an item's own back button.
+          button: [homePage, workspacePage, libraryPage, workspacesPage].some((match) => match !== undefined),
+        }}
+        status={status}
+        aside={pageItem ? undefined : asideElement}
+        onOpenAside={openAside}
+        onCloseAside={closeAside}
+      >
+        {pageItem ? asideElement : <Outlet />}
+      </NarrowShell>
+    )
+  }
+
   return (
     <AppShell
-      sidebar={(collapsed) => (
-        <Sidebar
-          user={{ name: user.name }}
-          workspaces={workspaces}
-          selectedWorkspaceId={workspaceId}
-          onSelectWorkspace={(id) => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })}
-          onGoHome={() => navigate({ to: '/' })}
-          notice={notice}
-          connections={placeholderLogos}
-          library={{ current: libraryPage !== undefined || libraryItemPage !== undefined, onOpen: () => navigate({ to: '/library' }) }}
-          workspacesPage={{ current: workspacesPage !== undefined, onOpen: () => navigate({ to: '/workspaces' }) }}
-          collapsed={collapsed}
-        />
-      )}
-      status={(
-        <ConnectionIsland
-          state={connectionState.status === 'hidden' ? undefined : connectionState}
-          onDismiss={connection.dismiss}
-        />
-      )}
+      sidebar={sidebar}
+      status={status}
       initialSidebar={prefs.sidebar}
-      onSidebarChange={(sidebar) => writeLayoutPrefs({ sidebar })}
+      onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}
       initialAsideShare={prefs.asideShare}
       onAsideShareChange={(asideShare) => writeLayoutPrefs({ asideShare })}
       aside={asideElement}
       asideAlone={pageItem !== undefined}
       asideFullScreen={fullScreen}
-      // Had back from the edge: what was last shown beside the chat, or what was made last. Before
-      // the library has been read, the pane opens empty until it has.
-      onOpenAside={chatRef && chatKey && !named && !openedEmpty
-        ? () => {
-            const open = lastShown(chatRef.workspaceId, chatRef.chatId) ?? items[0]?.key
-            if (open !== undefined) return aside.show(open, chatRef)
-            writeLayoutPrefs({ asideOpen: true })
-            setOpenedEmptyAt(chatKey)
-          }
-        : undefined}
-      onCloseAside={besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined}
+      onOpenAside={openAside}
+      onCloseAside={closeAside}
     >
       <Outlet />
     </AppShell>
