@@ -11,7 +11,7 @@ import { cdp, page, userEvent } from 'vitest/browser'
 import { TooltipProvider, Toasty } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
 import type {
-  AiChatAuthorInfo, AuthenticatedApi, Overseer, ShareLinkInfo, WorkspaceMetadata,
+  AiChatAuthorInfo, AuthenticatedApi, CollaboratorInfo, Overseer, ShareLinkInfo, WorkspaceMetadata,
 } from '@gadgets/workshop-shared/api'
 import ShareModal from './ShareModal'
 import './styles.css'
@@ -23,6 +23,12 @@ const FROZEN_LINK: ShareLinkInfo = {
   linkId: 'link-frozen', note: 'Old link', created: new Date(), createdBy: OWNER, role: 'use',
   gadgets: [{ id: 0, title: 'Packing list' }, { id: 1, title: 'Budget tracker' }],
 }
+
+const BEA = {
+  profile: { type: 'user', id: 'bea@cloudflare.com', name: 'Bea' },
+  addedBy: [{ type: 'user', sharer: OWNER.id, created: new Date(), role: 'build' }],
+  access: { role: 'build' },
+} satisfies CollaboratorInfo
 
 let root: Root | undefined
 let container: HTMLElement | undefined
@@ -55,7 +61,7 @@ afterEach(async () => {
 
 const renderModal = (link = FROZEN_LINK, initiallyOpen = true, metadata = {}) => {
   const overseer = {
-    listCollaborators: async () => [],
+    listCollaborators: async () => [BEA],
     listShareLinks: async () => [link],
     listObserverRequirements: async () => [],
   } as unknown as RpcStub<Overseer>
@@ -81,6 +87,15 @@ const renderModal = (link = FROZEN_LINK, initiallyOpen = true, metadata = {}) =>
   ))
 }
 
+// Assistive technology must reach a menu the way a pointer does: by role and name, painted on top.
+const expectReachableMenuItem = async (role: 'menuitem' | 'menuitemradio', name: string) => {
+  const item = page.getByRole(role, { name })
+  await expect.element(item).toBeVisible()
+  await expect.poll(() => isOnTop(item.element())).toBe(true)
+  await userEvent.keyboard('{Escape}')
+  await expect.element(item).not.toBeInTheDocument()
+}
+
 const isOnTop = (element: Element) => {
   const box = element.getBoundingClientRect()
   return element.contains(document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2))
@@ -103,6 +118,17 @@ const touch = async (element: Element) => {
   await sendCdp('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
   await sendCdp('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
 }
+
+it('keeps the access menus in the dialog’s accessibility tree and above it', async () => {
+  renderModal()
+  await userEvent.click(page.getByRole('button', { name: 'Anyone with your link: Requires invite' }))
+  await expectReachableMenuItem('menuitemradio', 'Can join')
+
+  await userEvent.click(page.getByRole('button', { name: 'Bea: Member' }))
+  await expectReachableMenuItem('menuitem', 'Remove Bea')
+  // The dialog survives the menu's Escape.
+  await expect.element(page.getByRole('dialog')).toBeVisible()
+})
 
 it('puts a warning card exactly the size of the link row in its place once links are off', async () => {
   renderModal()

@@ -23,7 +23,6 @@ import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
 import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
-import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { useVendorBranding, type VendorBranding } from './useVendorBranding'
 
@@ -359,8 +358,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   const landedTimerRef = useRef<number | null>(null)
   const [directoryPortalContainer, setDirectoryPortalContainer] =
     useState<HTMLDivElement | null>(null)
-  // Kumo portals menus to the body, beneath this dialog's layer, unless given a host above it.
-  const menuPortalContainer = useDialogSelectPortalContainer()
+  // Menus portal here, inside the dialog: Kumo's own body portal paints beneath the dialog, and a
+  // host elsewhere on the body is hidden from assistive technology while the dialog is modal.
+  const [menuPortalContainer, setMenuPortalContainer] = useState<HTMLDivElement | null>(null)
   const [gadgetTooltip, setGadgetTooltip] = useState<{ linkId: string; pinned: boolean } | null>(null)
   const gadgetTooltipId = useId()
   const [scrolled, setScrolled] = useState(false)
@@ -1586,6 +1586,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           </div>
         </div>
         <div ref={setDirectoryPortalContainer} className="pointer-events-none absolute inset-0 z-30" />
+        {/* Zero-size so it takes no pointer events itself; the menus it holds overflow it. */}
+        <div ref={setMenuPortalContainer} className="absolute left-0 top-0 z-40" />
       </Dialog>
     </Dialog.Root>
   )
