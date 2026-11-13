@@ -374,6 +374,9 @@ type GadgetExportSource = {
   worker(): WorkerStub;
   facet(): Promise<RpcStub<any>>;
   renderMode?: "snapshot";
+  // Keeps the error of a call the Workshop made to the worker's ExportHandler as the gadget's
+  // (OverseerImpl.#recordGadgetException()). Absent for a snapshot, whose errors are a viewer's.
+  recordException?(event: ConsoleLogEvent): void;
 };
 
 interface CodeModeEntrypoint extends WorkerEntrypoint {
@@ -5367,6 +5370,14 @@ class OverseerImpl implements AgentHooks {
   // proposed changes. (The caller is presumed to have verified the chat exists and has proposed
   // changes.)
   loadGadgetWorker(gadgetId: WorkpieceId, chatId?: number): WorkerStub {
+    return this.#loadGadgetWorker(gadgetId, chatId, this.#resolveGadgetChatId(gadgetId, chatId));
+  }
+
+  // loadGadgetWorker() for `keptChatId`, the chat whose draft of the gadget the load runs, if any,
+  // as #resolveGadgetChatId() gave it to the caller: a chat that proposes no change to the gadget
+  // loads its mainline, and may propose its first before an exception of this Worker arrives.
+  #loadGadgetWorker(gadgetId: WorkpieceId, chatId: number | undefined, keptChatId: number | undefined)
+      : WorkerStub {
     let codeVersion = `${this.storage.codeVersion.get()}`;
     let sequence: number | undefined;
     // Snapshotted in the same synchronous step as the cache key's sequence: the loader callback
@@ -5379,7 +5390,6 @@ class OverseerImpl implements AgentHooks {
       sequence = this.storage.nextChatSequences.get(chatId)?.nextSequence || 0;
       codeVersion += `.${chatId}.${sequence}`;
     }
-
     // The name of this workspace's log object, which the Worker's tail carries and the cache key
     // holds. A workspace initialised again under a deleted one's id starts again at that one's
     // code versions and gadget ids, and the name is what the two never share: with it in the key,
@@ -5409,6 +5419,7 @@ class OverseerImpl implements AgentHooks {
 
       let tailProps: GadgetTailLoopbackProps = {
         chatId,
+        keptChatId,
         gadgetId,
         overseerId: this.ctx.id.toString(),
         errorLogId,
@@ -5504,7 +5515,7 @@ class OverseerImpl implements AgentHooks {
     }
 
     return this.ctx.facets.get<DurableObject>(facetName, () => {
-      let stub = this.loadGadgetWorker(gadgetId, chatId);
+      let stub = this.#loadGadgetWorker(gadgetId, chatId, chatId);
 
       return {
         class: stub.getDurableObjectClass<any>("Gadget"),
@@ -5652,11 +5663,18 @@ class OverseerImpl implements AgentHooks {
   // What exporting gadget `gadgetId`, as seen from `chatId`, runs.
   async #gadgetExportSource(gadgetId: WorkpieceId, chatId?: number)
       : Promise<GadgetExportSource> {
+    // The chat whose draft of the gadget the handler's Worker runs, if any, fixed in the step that
+    // loads it, for both its tail and the handler's exceptions.
+    let loadedChatId: number | undefined;
     return {
       gadgetId,
       files: await this.readGadgetFiles(gadgetId, chatId),
-      worker: () => this.loadGadgetWorker(gadgetId, chatId),
+      worker: () => {
+        loadedChatId = this.#resolveGadgetChatId(gadgetId, chatId);
+        return this.#loadGadgetWorker(gadgetId, chatId, loadedChatId);
+      },
       facet: () => this.getGadgetFacet(gadgetId, chatId),
+      recordException: event => this.#recordGadgetException(gadgetId, loadedChatId, event),
     };
   }
 
@@ -5687,8 +5705,13 @@ class OverseerImpl implements AgentHooks {
 
     if (format.mode === "server") {
       if (!handler) throw new Error("The Gadget export handler is unavailable.");
-      return await exportServerFormat(() =>
-        handler.export(exportGadget, format.id));
+      try {
+        return await exportServerFormat(() =>
+          handler.export(exportGadget, format.id));
+      } catch (error) {
+        source.recordException?.(failedGadgetCall(error, `${GADGET_EXPORT_ENTRYPOINT}.export`));
+        throw error;
+      }
     } else {
       let browser = this.env.BROWSER;
       if (!browser) throw new Error("Gadget export is not configured for this deployment.");
@@ -5730,6 +5753,12 @@ class OverseerImpl implements AgentHooks {
         }
         : {formats, handler, gadget};
     } catch (error) {
+      // A failure of the call to the gadget's ExportHandler (what it threw, the refusal of what
+      // it answered, a Worker that did not start): kept as an error of the gadget. A gadget
+      // whose Worker starts and that has no ExportHandler does not come here
+      // (readCustomExportFormats() answers null for it).
+      source.recordException?.(
+          failedGadgetCall(error, `${GADGET_EXPORT_ENTRYPOINT}.getExportFormats`));
       gadget[Symbol.dispose]();
       throw error;
     }
@@ -11019,10 +11048,11 @@ class OverseerImpl implements AgentHooks {
   // Keeps `events`, the exceptions the runtime reported for gadget `gadgetId`'s Worker, which its
   // tail hands over apart from what it delivers live (GadgetTailLoopback).
   //
-  // `chatId` is the chat the Worker was loaded for, which for an export handler's Worker is the
-  // chat the export was asked under, whether or not it proposes a change to the gadget. It is
-  // narrowed here, as a failed call's is, so an entry's chat is null whenever the code that ran
-  // was the mainline's.
+  // `chatId` is the chat whose draft of the gadget the Worker was loaded with (loadGadgetWorker()),
+  // so the mainline's Worker that an export under a chat with no change to the gadget loads keeps
+  // its exceptions under no chat, whatever that chat proposes later. It is kept as it was fixed
+  // then and not narrowed again: a draft's Worker can throw after the draft was reverted or
+  // merged (a ctx.waitUntil() task outliving its call), and what threw was still the draft's.
   //
   // `errorLogId` names the log object of the workspace that loaded the gadget's Worker, which
   // the Worker's tail carries, and nothing is kept unless it is this workspace's. A deleted
@@ -11033,19 +11063,23 @@ class OverseerImpl implements AgentHooks {
   async deliverGadgetExceptions(chatId: number | null, events: ConsoleLogEvent[],
                                 gadgetId: WorkpieceId, errorLogId: string): Promise<void> {
     if (events.length === 0 || errorLogId !== this.storage.errorLogId.get()) return;
-    await this.#keepGadgetExceptions(this.#tailErrorLimiter, gadgetId,
-        () => this.#resolveGadgetChatId(gadgetId, chatId ?? undefined) ?? null, events);
+    await this.#keepGadgetExceptions(this.#tailErrorLimiter, gadgetId, () => chatId, events);
   }
 
-  // Keeps the error of a call the facet proxy caught. The tail keeps the rest, and most of these
-  // exceptions never reach it. One that does, because the runtime reports it for the gadget's
-  // request as well (a constructor's throw), is kept by both, as live subscribers are sent both.
-  // `chatId` is the chat whose proposed changes the stub's facet was loaded with, so a stub of
-  // the mainline keeps its errors under no chat even once the chat it was asked under proposes
-  // a change to the gadget. It is resolved again when the call fails, so a stub whose draft was
-  // merged since keeps its error under no chat too, and only for an error that is kept. The
-  // proxy calls this inside its catch, ahead of its rethrow, so nothing here may throw, or the
-  // gadget's caller would get that in place of the gadget's own error.
+  // Keeps the error of a call that failed: one the facet proxy caught, or one of the Workshop's
+  // two calls to a gadget's ExportHandler (#resolveGadgetExportFormats(), exportGadget()). The
+  // tail keeps the rest, and most of these exceptions never reach it. One that does, because the
+  // runtime reports it for the gadget's request as well (a constructor's throw), is kept by both,
+  // as live subscribers are sent both.
+  //
+  // From the proxy, `chatId` is the chat whose proposed changes the stub's facet was loaded with,
+  // so a stub of the mainline keeps its errors under no chat even once the chat it was asked
+  // under proposes a change to the gadget. From the two ExportHandler calls it is the chat whose
+  // draft the handler's Worker was loaded with, so an export of the mainline does the same.
+  // Either is kept as it was fixed then, not resolved again when the call fails: the code that
+  // failed was that draft's, even once the draft is reverted or merged. Each caller calls this
+  // inside its catch, ahead of its rethrow, so nothing here may throw, or the
+  // gadget's caller would get that in place of the call's own error.
   //
   // A gadget is held to a limit of these, with a marker for the rest. The text of one is its
   // caller's choice (the error names the method that was called), every session that may call
@@ -11055,7 +11089,7 @@ class OverseerImpl implements AgentHooks {
   #recordGadgetException(gadgetId: WorkpieceId, chatId: number | undefined, event: ConsoleLogEvent)
       : void {
     this.ctx.waitUntil(this.#keepGadgetExceptions(this.#callErrorLimiter, gadgetId,
-        () => this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [event]));
+        () => chatId ?? null, [event]));
   }
 
   // Keeps the error of a call that a firing of `hook` made to its stored callback and that
@@ -12545,6 +12579,10 @@ export class AgentSelfLoopback
 type GadgetTailLoopbackProps = {
   chatId?: number;
 
+  // The chat whose draft of the gadget the worker runs, and so the chat its exceptions are kept
+  // under: `chatId` if that chat proposed a change to the gadget when the worker was loaded.
+  keptChatId?: number;
+
   // Which gadget's worker these logs come from.
   gadgetId: WorkpieceId;
 
@@ -12575,10 +12613,10 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
     await stub.deliverGadgetLogs(this.ctx.props.chatId ?? null, logs);
 
     // A worker whose props name no log object has nowhere to keep them.
-    let {chatId, gadgetId, errorLogId} = this.ctx.props;
+    let {keptChatId, gadgetId, errorLogId} = this.ctx.props;
     if (exceptions.length === 0 || errorLogId === undefined) return;
     try {
-      await stub.deliverGadgetExceptions(chatId ?? null, exceptions, gadgetId, errorLogId);
+      await stub.deliverGadgetExceptions(keptChatId ?? null, exceptions, gadgetId, errorLogId);
     } catch (error) {
       // This loopback and the Overseer can run different versions while a deployment is under
       // way, and one that has no such method rejects the call. The logs were delivered live by

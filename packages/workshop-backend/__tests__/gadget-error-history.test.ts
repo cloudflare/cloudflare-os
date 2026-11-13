@@ -203,15 +203,17 @@ function addChat(ws: Workspace, id: number): void {
 }
 
 // Gives chat `chatId` a materialized draft of the gadget, whose server says "draft " before what
-// the mainline's says, so that the chat pins the gadget and its facet runs the draft.
-async function addDraft(ws: Workspace, chatId: number, baseCommit: string): Promise<void> {
+// the mainline's says, so that the chat pins the gadget and its facet runs the draft. `server` is
+// the gadget's server, for a mainline that is not serverJs().
+async function addDraft(ws: Workspace, chatId: number, baseCommit: string,
+                        server: (prefix?: string) => string = serverJs): Promise<void> {
   addChat(ws, chatId);
   let content = (source: string): CodeContent =>
       new Map([[GADGET_ID, new Map([["server.js", source]])]]);
   let submission: CodeChangeSubmission = {
     generation: 0, revision: 0, clientId: "cli", seq: 1,
     pins: [{ gadgetId: GADGET_ID, baseCommit }],
-    change: diffFiles(content(serverJs()), content(serverJs("draft "))),
+    change: diffFiles(content(server()), content(server("draft "))),
   };
   await ws.impl.submitCodeChange(chatId, submission, USER, "alice-user-do");
   ws.impl.materializeChatChanges(chatId);
@@ -321,8 +323,8 @@ function logged(warn: { mock: { calls: unknown[][] } }): string {
 const RECORD_FAILED = "gadget.error.record.failed";
 
 describe("a gadget Worker's exceptions", () => {
-  it("are kept as server entries, under the chat given only if it pins the gadget, and are " +
-      "told to no live subscriber", () => withWorkspace(async ws => {
+  it("are kept as server entries, under the chat their tail carries, and are told to no live " +
+      "subscriber", () => withWorkspace(async ws => {
     initialise(ws);
     let commit = await addGadget(ws);
     addChat(ws, 1);
@@ -333,18 +335,17 @@ describe("a gadget Worker's exceptions", () => {
         new Date(1700000001_000));
     let keyed = thrown("Error: key sk-live0123456789abcdefghij", new Date(1700000002_000));
 
-    // The chat that pins the gadget, then one that proposes no change to it, one that does not
-    // exist and none: the last three ran the mainline's code.
+    // The tail carries the chat fixed when its Worker was loaded (loadGadgetWorker() narrows it
+    // then), which is kept as it is, whatever the chat proposes or whether it exists by the time
+    // the exception arrives: what threw was that load's code.
     await deliver(ws, 2, [first, keyed, thrown(long, new Date(1700000003_000))]);
-    await deliver(ws, 1, [thrown("under a chat with no draft")]);
-    await deliver(ws, 99, [thrown("under a chat that is gone")]);
+    await deliver(ws, 1, [thrown("under a chat whose draft is gone")]);
     await deliver(ws, null, [thrown("under none")]);
 
     let entries = await kept(ws);
     expect(entries.map(({ chatId, text }) => ({ chatId, text }))).toStrictEqual([
       { chatId: null, text: "under none" },
-      { chatId: null, text: "under a chat that is gone" },
-      { chatId: null, text: "under a chat with no draft" },
+      { chatId: 1, text: "under a chat whose draft is gone" },
       { chatId: 2, text: `${long.slice(0, MAX_GADGET_ERROR_TEXT_LENGTH - 1)}…` },
       { chatId: 2, text: "Error: key [redacted]" },
       { chatId: 2, text: "Error: late\n    at Gadget.later (server.js:8:48)" },
@@ -493,10 +494,10 @@ describe("a gadget Worker's exceptions", () => {
         .toStrictEqual(["two", "one"]);
     expect(texts(await ws.impl.readGadgetErrors())).toStrictEqual(["two", "one"]);
 
-    // One reported for it afterwards is kept under no chat: a deleted gadget has no draft.
+    // One reported for it afterwards is kept under the chat its Worker was loaded with.
     await deliver(ws, 7, [thrown("three")]);
     expect((await ws.impl.readGadgetErrors({ gadgetId: GADGET_ID })).entries[0])
-        .toMatchObject({ text: "three", chatId: null });
+        .toMatchObject({ text: "three", chatId: 7 });
   }));
 
   it("are held to 30 a minute for one gadget, with a marker for the rest",
@@ -574,7 +575,7 @@ describe("the tail of a gadget's Worker", () => {
 
   it("sends the workspace everything live and only the exceptions to keep", async () => {
     let overseer = fakeOverseer();
-    let props = { chatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
+    let props = { chatId: 2, keptChatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
                   errorLogId: ERROR_LOG_ID };
     await loopback(props, overseer).tail([traceItem()]);
 
@@ -607,6 +608,18 @@ describe("the tail of a gadget's Worker", () => {
     await loopback(props, overseer).tail([traceItem()]);
 
     expect(overseer.deliverGadgetLogs.mock.calls[0][0]).toBeNull();
+    expect(overseer.deliverGadgetExceptions.mock.calls[0][0]).toBeNull();
+  });
+
+  it("hands the exceptions over under the chat whose draft was loaded, not the one it was " +
+      "loaded for", async () => {
+    let overseer = fakeOverseer();
+    // A Worker of the mainline, loaded for a chat that proposed no change to the gadget.
+    let props = { chatId: 1, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
+                  errorLogId: ERROR_LOG_ID };
+    await loopback(props, overseer).tail([traceItem()]);
+
+    expect(overseer.deliverGadgetLogs.mock.calls[0][0]).toBe(1);
     expect(overseer.deliverGadgetExceptions.mock.calls[0][0]).toBeNull();
   });
 
@@ -661,7 +674,7 @@ describe("the tail of a gadget's Worker", () => {
 
   it("splits a streamed trace the same way", async () => {
     let overseer = fakeOverseer();
-    let props = { chatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
+    let props = { chatId: 2, keptChatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
                   errorLogId: ERROR_LOG_ID };
     let handlers: any = await loopback(props, overseer).tailStream({} as never);
 
@@ -682,10 +695,13 @@ describe("the tail of a gadget's Worker", () => {
 });
 
 // Gives the synthetic trace to the loopback the workspace mints for a Worker it loads for
-// `chatId`, which carries `name` as the name of the log object.
-function tail(ws: Workspace, chatId: number | undefined, name: string): Promise<void> {
+// `chatId`, which carries `name` as the name of the log object, and `keptChatId` when the Worker
+// runs that chat's draft of the gadget.
+function tail(ws: Workspace, chatId: number | undefined, name: string, keptChatId?: number)
+    : Promise<void> {
   return ws.impl.ctx.exports.GadgetTailLoopback({
-    props: { chatId, gadgetId: GADGET_ID, overseerId: ws.state.id.toString(), errorLogId: name },
+    props: { chatId, keptChatId, gadgetId: GADGET_ID, overseerId: ws.state.id.toString(),
+             errorLogId: name },
   }).tail([traceItem()]);
 }
 
@@ -702,7 +718,7 @@ describe("a trace through the workspace's own tail", () => {
     // The mainline's Worker, the Worker of a chat that pins the gadget, and one loaded for a
     // chat that proposes no change to it (an export asked for under that chat).
     await tail(ws, undefined, name);
-    await tail(ws, 2, name);
+    await tail(ws, 2, name, 2);
     await tail(ws, 1, name);
 
     // Subscribers are told each batch whole, under the chat its tail carries.
@@ -833,7 +849,7 @@ describe("an exception a gadget's method did not catch", () => {
     expect(newest.text).toContain("draft boom");
   }), GADGET_TEST_MS);
 
-  it("follows its stub's draft: under the chat while it pins the gadget, under none once merged",
+  it("follows its stub's draft: under the chat it was loaded with, merged since or not",
       () => withWorkspace(async ws => {
     initialise(ws);
     let commit = await addGadget(ws);
@@ -846,11 +862,11 @@ describe("an exception a gadget's method did not catch", () => {
 
     expect(await ws.impl.mergeChanges(2, { profile: USER }, "user-do-id"))
         .toEqual({ outcome: "merged" });
-    // The stub still names the chat, which proposes nothing any more. Whatever this call rejects
-    // with, its entry is labelled when it fails.
+    // The stub still runs the draft it was loaded with, which proposes nothing any more: its
+    // error is still the draft's.
     await rejection(gadget.fail());
     await vi.waitFor(async () => expect(await failEntries(ws)).toHaveLength(2), KEPT_SOON);
-    expect((await failEntries(ws)).map(entry => entry.chatId)).toStrictEqual([null, 2]);
+    expect((await failEntries(ws)).map(entry => entry.chatId)).toStrictEqual([2, 2]);
   }), GADGET_TEST_MS);
 
   it("is kept under no chat from a stub of the mainline, though the chat it was asked under " +
@@ -1016,14 +1032,14 @@ describe("an exception a gadget's method did not catch", () => {
     expect(texts({ entries: await dropMarkers(ws, 2) })).toStrictEqual(["5 errors dropped"]);
   }), GADGET_TEST_MS);
 
-  it("does not resolve the chat of an error it drops", () => withWorkspace(async ws => {
+  it("reads no chat to keep an error, nor to drop one", () => withWorkspace(async ws => {
     initialise(ws);
     await addDraft(ws, 2, await addGadget(ws));
     vi.spyOn(Date, "now").mockReturnValue(Date.now());
 
-    // The stub of a chat's draft: each error that is kept reads the chat, to find whether it
-    // still proposes a change to the gadget. The first call starts the draft's facet, which
-    // reads the chat for itself, so the reads are counted from the second.
+    // The stub of a chat's draft keeps its errors under the chat it was loaded with, reading no
+    // chat. The first call starts the draft's facet, which reads the chat for itself, so the
+    // reads are counted from the second.
     using gadget = await ws.impl.getGadgetFacet(GADGET_ID, 2);
     await failCalls(gadget, 1);
     let read = vi.spyOn(ws.impl.storage.chatMeta, "get");
@@ -1035,11 +1051,11 @@ describe("an exception a gadget's method did not catch", () => {
       expect(await keptForged(ws)).toHaveLength(30);
       expect(await dropMarkers(ws)).toHaveLength(1);
     }, KEPT_SOON);
-    expect(resolved()).toBe(30);
+    expect(resolved()).toBe(0);
 
     // The limiter is asked before the call's promise rejects, so nothing is still to come.
     await failCalls(gadget, 20, 31);
-    expect(resolved()).toBe(30);
+    expect(resolved()).toBe(0);
     expect(await kept(ws)).toHaveLength(31);
   }), GADGET_TEST_MS);
 });
@@ -1499,6 +1515,294 @@ describe("a hook's firing", () => {
   }), GADGET_TEST_MS);
 });
 
+// The one format the handlers below answer, as the source of its object.
+const CSV_FORMAT = `{
+      id: "csv", label: "CSV", mode: "server", contentType: "text/csv", fileExtension: ".csv",
+    }`;
+
+// A gadget's server with one method that throws and an ExportHandler whose two methods have the
+// bodies given: by default one that answers the "csv" format and one that exports "x".
+function exportServerJs(bodies: { getExportFormats?: string; export?: string } = {}): string {
+  return `
+import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+
+export class Gadget extends DurableObject {
+  fail() {
+    throw new Error("gadget boom");
+  }
+}
+
+export class ExportHandler extends WorkerEntrypoint {
+  async getExportFormats(gadget) {
+    ${bodies.getExportFormats ?? `return [${CSV_FORMAT}];`}
+  }
+
+  async export(gadget, id) {
+    ${bodies.export ?? `return new Response("x").body;`}
+  }
+}
+`;
+}
+
+// The same server with an export() that throws, saying `prefix` first: a mainline and its draft.
+function throwingExportJs(prefix = ""): string {
+  return exportServerJs({ export: `throw new Error("${prefix}export boom");` });
+}
+
+// The entries kept for the Workshop's call to `method` of the gadget's ExportHandler, newest
+// first: found by how their text ends, as the catch names the entrypoint and its method.
+async function handlerEntries(ws: Workspace, method: "getExportFormats" | "export")
+    : Promise<GadgetErrorEntry[]> {
+  return (await kept(ws, { gadgetId: GADGET_ID }))
+      .filter(entry => entry.text.endsWith(`at ExportHandler.${method}()`));
+}
+
+describe("a gadget's ExportHandler", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("keeps what export() throws", () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, { "server.js": exportServerJs({
+      export: `throw new Error("export boom: Bearer abcdefghijklmnop1234567890");`,
+    }) });
+
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv"))).toContain("export boom");
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+
+    // The runtime reports a method's throw to no tail, so the catch's entry stays the only one.
+    await noLaterTrace();
+    expect(await kept(ws)).toStrictEqual([{
+      time: expect.any(Date), source: "server", gadgetId: GADGET_ID, chatId: null,
+      text: "Error: export boom: Bearer [redacted]\n    at ExportHandler.export()",
+    }]);
+  }), GADGET_TEST_MS);
+
+  it("keeps what getExportFormats() throws, for a listing and for an export",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, { "server.js": exportServerJs({
+      getExportFormats: `throw new Error("formats boom");`,
+    }) });
+    let text = "Error: formats boom\n    at ExportHandler.getExportFormats()";
+
+    expect(await rejection(ws.impl.getGadgetExportFormats(GADGET_ID))).toContain("formats boom");
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+    expect(texts({ entries: await kept(ws) })).toStrictEqual([text]);
+
+    // An export reads the formats first, so it fails there and never calls export().
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv"))).toContain("formats boom");
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(2), KEPT_SOON);
+    expect(texts({ entries: await kept(ws) })).toStrictEqual([text, text]);
+  }), GADGET_TEST_MS);
+
+  it("keeps the Workshop's refusal of what getExportFormats() returned",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, { "server.js": exportServerJs({
+      getExportFormats: `return [${CSV_FORMAT}, ${CSV_FORMAT}];`,
+    }) });
+    let refusal = "Gadget export format id is not unique: csv";
+
+    expect(await rejection(ws.impl.getGadgetExportFormats(GADGET_ID))).toContain(refusal);
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(1), KEPT_SOON);
+    expect(texts({ entries: await kept(ws) }))
+        .toStrictEqual([`Error: ${refusal}\n    at ExportHandler.getExportFormats()`]);
+  }), GADGET_TEST_MS);
+
+  it("keeps nothing for a gadget with no ExportHandler", () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, {
+      "server.js": `
+import { DurableObject } from "cloudflare:workers";
+
+export class Gadget extends DurableObject {
+  hello() {
+    return "hi";
+  }
+}
+`,
+      "client.js": `export default function App() { return null; }\n`,
+    });
+
+    // The gadget's Worker starts and has no such entrypoint, which the read of its formats takes
+    // for an answer and not for a failure: the gadget has the default formats.
+    let formats = await ws.impl.getGadgetExportFormats(GADGET_ID);
+    expect(formats.map((format: { id: string }) => format.id)).toStrictEqual(["html", "pdf"]);
+    expect(await ws.impl.getGadgetExportFormats(GADGET_ID)).toStrictEqual(formats);
+    // The Workshop's refusal ahead of any call to a handler.
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv")))
+        .toContain("This Gadget does not support export format: csv");
+
+    await noLaterTrace();
+    expect(await ws.impl.readGadgetErrors()).toStrictEqual({ entries: [] });
+  }), GADGET_TEST_MS);
+
+  it("keeps a Worker that does not start, for each read of its formats",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, {
+      "server.js": `
+import { DurableObject } from "cloudflare:workers";
+
+throw new Error("module boom");
+
+export class Gadget extends DurableObject {
+  hello() {
+    return "hi";
+  }
+}
+`,
+      "client.js": `export default function App() { return null; }\n`,
+    });
+    let events = await subscribe(ws);
+
+    // The Workshop's call to the handler is what failed, so it is kept with no filter, though the
+    // gadget has no ExportHandler and no method of it was called. A gadget whose Worker starts
+    // and that has no handler is the case above.
+    for (let read = 0; read < 2; read++) {
+      expect(await rejection(ws.impl.getGadgetExportFormats(GADGET_ID)))
+          .toContain("Failed to start Worker");
+    }
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(2), KEPT_SOON);
+
+    await noLaterTrace();
+    let entries = await kept(ws);
+    expect(entries).toHaveLength(2);
+    for (let entry of entries) {
+      expect(entry).toMatchObject({ gadgetId: GADGET_ID, chatId: null, source: "server" });
+      expect(entry.text).toContain("module boom");
+      expect(entry.text).toMatch(/at ExportHandler\.getExportFormats\(\)$/);
+    }
+    expect(told(events)).toStrictEqual([]);
+  }), GADGET_TEST_MS);
+
+  it("keeps a failure the handler lets escape twice, as the gadget's call and as the handler's",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, { "server.js": exportServerJs({
+      export: `return await gadget.fail();`,
+    }) });
+
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv"))).toContain("gadget boom");
+
+    // The facet proxy keeps the call the handler made on the gadget, and the catch around the
+    // handler's own call keeps the same error again: it crossed RPC twice, and nothing tells that
+    // the two are one.
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(2), KEPT_SOON);
+    expect(texts({ entries: await failEntries(ws) }))
+        .toStrictEqual(["Error: gadget boom\n    at fail()"]);
+    expect(texts({ entries: await handlerEntries(ws, "export") }))
+        .toStrictEqual(["Error: gadget boom\n    at ExportHandler.export()"]);
+  }), GADGET_TEST_MS);
+
+  it("keeps an export's failure under the chat whose draft ran", () => withWorkspace(async ws => {
+    initialise(ws);
+    let commit = await addGadget(ws, GADGET_ID, { "server.js": throwingExportJs() });
+    addChat(ws, 1);
+    await addDraft(ws, 2, commit, throwingExportJs);
+
+    // A chat that pins the gadget exports its draft.
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv", 2)))
+        .toContain("draft export boom");
+    await vi.waitFor(async () => expect(await handlerEntries(ws, "export")).toHaveLength(1),
+        KEPT_SOON);
+    expect((await handlerEntries(ws, "export"))[0]).toMatchObject({
+      chatId: 2, text: "Error: draft export boom\n    at ExportHandler.export()",
+    });
+
+    // A chat that proposes no change to the gadget exports the mainline.
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv", 1))).toContain("export boom");
+    await vi.waitFor(async () => expect(await handlerEntries(ws, "export")).toHaveLength(2),
+        KEPT_SOON);
+    expect((await handlerEntries(ws, "export"))[0]).toMatchObject({
+      chatId: null, text: "Error: export boom\n    at ExportHandler.export()",
+    });
+  }), GADGET_TEST_MS);
+
+  it("keeps a getExportFormats() failure under the chat whose draft ran",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    let throwingFormatsJs = (prefix = "") =>
+        exportServerJs({ getExportFormats: `throw new Error("${prefix}formats boom");` });
+    let commit = await addGadget(ws, GADGET_ID, { "server.js": throwingFormatsJs() });
+    addChat(ws, 1);
+    await addDraft(ws, 2, commit, throwingFormatsJs);
+    let formatsEntries = () => handlerEntries(ws, "getExportFormats");
+    let ofDraft = {
+      chatId: 2, text: "Error: draft formats boom\n    at ExportHandler.getExportFormats()",
+    };
+
+    // A chat that pins the gadget reads its draft's formats.
+    expect(await rejection(ws.impl.getGadgetExportFormats(GADGET_ID, 2)))
+        .toContain("draft formats boom");
+    await vi.waitFor(async () => expect(await formatsEntries()).toHaveLength(1), KEPT_SOON);
+    expect((await formatsEntries())[0]).toMatchObject(ofDraft);
+
+    // A chat that proposes no change to the gadget reads the mainline's.
+    expect(await rejection(ws.impl.getGadgetExportFormats(GADGET_ID, 1)))
+        .toContain("formats boom");
+    await vi.waitFor(async () => expect(await formatsEntries()).toHaveLength(2), KEPT_SOON);
+    expect((await formatsEntries())[0]).toMatchObject({
+      chatId: null, text: "Error: formats boom\n    at ExportHandler.getExportFormats()",
+    });
+
+    // An export under the chat that pins the gadget fails at the read of its draft's formats.
+    expect(await rejection(ws.impl.exportGadget(GADGET_ID, "csv", 2)))
+        .toContain("draft formats boom");
+    await vi.waitFor(async () => expect(await formatsEntries()).toHaveLength(3), KEPT_SOON);
+    expect((await formatsEntries())[0]).toMatchObject(ofDraft);
+    expect(await kept(ws)).toHaveLength(3);
+  }), GADGET_TEST_MS);
+
+  it("holds an ExportHandler's failures to the limit of failed calls",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, { "server.js": exportServerJs({
+      getExportFormats: `throw new Error("formats boom");`,
+    }) });
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+
+    // Both are calls to the gadget that failed, so one limit counts them.
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    for (let i = 0; i < 20; i++) await rejection(gadget.fail());
+    for (let i = 0; i < 15; i++) await rejection(ws.impl.getGadgetExportFormats(GADGET_ID));
+
+    await vi.waitFor(async () => expect(await kept(ws)).toHaveLength(31), KEPT_SOON);
+    // Oldest first: the facet's twenty, the first ten of the handler's, and the marker that the
+    // eleventh brought.
+    let entries = (await kept(ws)).toReversed();
+    expect(texts({ entries })).toStrictEqual([
+      ...Array.from({ length: 20 }, () => "Error: gadget boom\n    at fail()"),
+      ...Array.from({ length: 10 },
+          () => "Error: formats boom\n    at ExportHandler.getExportFormats()"),
+      "1 error dropped",
+    ]);
+    expect(entries.map(entry => entry.source)).toStrictEqual(entries.map(() => "server"));
+  }), GADGET_TEST_MS);
+
+  it("does not keep a stream that fails after export() returned it",
+      () => withWorkspace(async ws => {
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, { "server.js": exportServerJs({
+      export: `return new ReadableStream({
+      pull(controller) {
+        controller.error(new Error("stream boom"));
+      },
+    });`,
+    }) });
+
+    // The call to export() succeeded: the stream it answered fails when it is read, past the
+    // catch. (The runtime tells the reader that the stream ended early, not what it failed with.)
+    let stream: ReadableStream<Uint8Array> = await ws.impl.exportGadget(GADGET_ID, "csv");
+    expect(await rejection(stream.getReader().read())).toContain("disconnected prematurely");
+
+    await noLaterTrace();
+    expect(await ws.impl.readGadgetErrors()).toStrictEqual({ entries: [] });
+  }), GADGET_TEST_MS);
+});
+
 // The entries the tail kept for an exception whose message is `message`, newest first.
 async function reported(ws: Workspace, message: string): Promise<GadgetErrorEntry[]> {
   return (await kept(ws)).filter(entry => entry.text.startsWith(`Error: ${message}`));
@@ -1558,6 +1862,34 @@ describe("a gadget Worker's trace", () => {
     expect(live("hello")).toStrictEqual([null]);
     expect(texts({ entries: await kept(ws) }).join("\n")).not.toContain("hello");
     expect(await kept(ws)).toHaveLength(4);
+  }), GADGET_TEST_MS);
+
+  it("is kept under no chat from a Worker of the mainline, though the chat it was loaded for " +
+      "proposes a change before the exception arrives", () => withWorkspace(async ws => {
+    initialise(ws);
+    // An export handler that leaves a task which fails a while after it answered.
+    let slowJs = (prefix = "") => exportServerJs({ getExportFormats: `
+    this.ctx.waitUntil(new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("${prefix}slow formats failed")), 1500)));
+    return [${CSV_FORMAT}];` });
+    let commit = await addGadget(ws, GADGET_ID, { "server.js": slowJs() });
+    addChat(ws, 1);
+
+    // Chat 1 proposes nothing, so its export formats are read from the mainline's Worker.
+    expect(await ws.impl.getGadgetExportFormats(GADGET_ID, 1)).toMatchObject([{ id: "csv" }]);
+    // Its first change to the gadget lands while that Worker's task is still running.
+    await addDraft(ws, 1, commit, slowJs);
+    expect(await reported(ws, "slow formats failed")).toStrictEqual([]);
+
+    await vi.waitFor(async () => expect(await reported(ws, "slow formats failed"))
+        .toHaveLength(1), KEPT_SOON);
+    expect((await reported(ws, "slow formats failed"))[0]).toMatchObject({ chatId: null });
+
+    // The draft's Worker, loaded since, keeps its own under the chat.
+    expect(await ws.impl.getGadgetExportFormats(GADGET_ID, 1)).toMatchObject([{ id: "csv" }]);
+    await vi.waitFor(async () => expect(await reported(ws, "draft slow formats failed"))
+        .toHaveLength(1), KEPT_SOON);
+    expect((await reported(ws, "draft slow formats failed"))[0]).toMatchObject({ chatId: 1 });
   }), GADGET_TEST_MS);
 
   it("is not kept by the workspace its id names once the one that loaded its Worker is deleted",
