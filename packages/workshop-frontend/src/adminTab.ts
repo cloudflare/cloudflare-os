@@ -12,7 +12,7 @@ export const isAdminTab = (value: unknown): value is AdminTab =>
  * The tab to show for the one requested in the URL. The Updates tab exists only for a deployment
  * the deploy flow installed, which is known once the update status has loaded: until then a request
  * for it stands, so a link to it does not flash another tab first. The Audit tab exists only while
- * the backend's settings carry the audit retention (a backend older than the admin audit log
+ * the backend's settings carry the admin access settings (a backend older than the admin audit log
  * sends none); the settings load before any tab shows, so its availability is never pending.
  */
 export const resolveAdminTab = (
