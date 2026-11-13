@@ -3,7 +3,7 @@ import { ChatSession } from '../ChatSession'
 import type { ChatItem } from '../chatItems'
 import { createMockApi, MOCK_WORKSPACE_ID } from './mockApi'
 import { playThrough } from './playThrough'
-import type { Scenario } from './scenario'
+import { AGENT, type Scenario } from './scenario'
 import { SCENARIOS } from './scenarios'
 
 const scenario = (id: string) => SCENARIOS.find((candidate) => candidate.id === id)!
@@ -163,6 +163,20 @@ describe('scenarios', () => {
 
     expect(seen).toContain(',retry')
     expect(of(rows(), 'error').map(({ recovery }) => recovery)).toEqual([undefined, undefined, 'continue'])
+  })
+
+  it('send-refused: a refused message says so and did not go; sent again, it goes and is answered', async () => {
+    const { session, overseer, ready, rows } = await open(scenario('send-refused'))
+    const before = rows().length
+
+    expect(await session.send('What caused the slowdown?', AGENT.id)).toBe(false)
+    expect(ready().sendError).toBe('The workspace is busy saving the last changes. Try again in a moment.')
+    expect(rows()).toHaveLength(before)
+
+    expect(await session.send('What caused the slowdown?', AGENT.id)).toBe(true)
+    expect(ready().sendError).toBeUndefined()
+    await playThrough(overseer)
+    expect(rows().map(({ kind }) => kind).slice(before)).toEqual(['user', 'assistant'])
   })
 
   it('steer-slash: a steer waits unread and is the same row once read; the compaction is marked', async () => {

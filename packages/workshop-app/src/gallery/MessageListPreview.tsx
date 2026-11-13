@@ -89,6 +89,7 @@ export const MessageListPreview = () => {
             onSend={() => {
               list.current?.scrollToLatest()
               setIds((current) => [...current, current.at(-1)! + 1])
+              return true
             }}
           />
         )}>

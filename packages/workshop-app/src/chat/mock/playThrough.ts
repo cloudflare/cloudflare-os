@@ -10,7 +10,14 @@ const act = async (overseer: MockOverseer, trigger: Trigger, messages: AiChatMes
     case 'onStart':
       return
     case 'onSend':
-      return overseer.sendChatMessage(0, 'And then?')
+      // A message the workspace refuses is sent again, as whoever wrote it would.
+      for (let tries = 1; ; tries++) {
+        try {
+          return await overseer.sendChatMessage(0, 'And then?')
+        } catch (error) {
+          if (tries === 3) throw error
+        }
+      }
     case 'onRetry':
       return overseer.retryAgent()
     case 'onStop':

@@ -243,28 +243,34 @@ export class ChatSession {
   }
 
   /**
-   * Sends a message to the chat, with `files` uploaded for it to carry. The message and the reply
+   * Sends a message to the chat, with `files` uploaded for it to carry, and resolves to whether it
+   * went, so that whoever drafted it can keep the draft when it did not. The message and the reply
    * come back through the subscription, not from here; a failure is reported in the snapshot's
    * `sendError`.
    */
-  send = async (text: string, modelId: string, files: readonly File[] = []) => {
+  send = async (text: string, modelId: string, files: readonly File[] = []): Promise<boolean> => {
     const overseer = this.#overseer
-    if (!overseer || !this.#loaded) return
+    if (!overseer || !this.#loaded) return false
     const run = this.#run
     this.#sendError = undefined
     // Only plain text steers a running agent; the server refuses anything else until it is done.
     if (files.length && this.#agentActive) {
       this.#sendError = 'Files can be sent once the agent has finished.'
-      return this.#publishReady()
+      this.#publishReady()
+      return false
     }
     try {
       const attachments = await uploadAttachments(overseer, files)
       await overseer.sendChatMessage(this.chatId, text, modelId, undefined, attachments)
     } catch (error) {
-      if (run !== this.#run) return
-      this.#sendError = messageOf(error)
+      if (run === this.#run) {
+        this.#sendError = messageOf(error)
+        this.#publishReady()
+      }
+      return false
     }
     if (run === this.#run) this.#publishReady()
+    return true
   }
 
   /** Puts away the report of a failed send. */
