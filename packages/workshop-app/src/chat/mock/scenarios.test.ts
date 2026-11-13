@@ -253,12 +253,12 @@ describe('scenarios', () => {
     expect(await session.send('Thanks!', AGENT.id)).toBe(true)
   })
 
-  it('untrusted-content: the SVG sent is shown as its text, and only the PNG as a picture', async () => {
+  it('untrusted-content: the SVG sent and the PNG are both shown as pictures', async () => {
     const { ready } = await open(scenario('untrusted-content'))
     const [sent] = of(ready().items, 'user')
 
     expect(sent.attachments.map(({ name, mimeType, content }) => previewOf({ name, mimeType: mimeType ?? '' }, content!))).toEqual([
-      { kind: 'text', text: expect.stringContaining('<script>') },
+      { kind: 'image', type: 'image/svg+xml' },
       { kind: 'image', type: 'image/png' },
     ])
   })

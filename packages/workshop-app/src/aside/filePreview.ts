@@ -1,11 +1,13 @@
 import { attachmentKind } from '@/files/attachmentKind'
 import { isRasterImage } from '@/files/rasterImage'
+import { isSvgImage, looksLikeSvg, SVG_TYPE } from '@/files/svgImage'
 
 /**
  * How a file is shown: by the browser, from its bytes with the type given here (`url`), as text,
  * or not at all. The type is never the file's own word for itself unless it is one of the kinds
- * the browser only displays: a file that says it is a page is shown as text, and never run, and
- * so is an SVG, which is a page too. Only raster images are images (`isRasterImage`).
+ * the browser only displays: a file that says it is a page is shown as text, and never run. An
+ * image is pixels (`isRasterImage`), or an SVG, which is a page too and so is only ever shown as
+ * an image from an address of no origin (`svgImage.ts`).
  */
 export type FilePreview =
   | { kind: 'image' | 'pdf' | 'audio' | 'video'; type: string }
@@ -48,10 +50,14 @@ const asText = (name: string, mimeType: string, bytes: Uint8Array): FilePreview 
 export const previewOf = (file: { name: string; mimeType: string }, bytes: Uint8Array): FilePreview => {
   const mimeType = file.mimeType.toLowerCase()
   const sniffed = sniff(bytes)
+  if (!sniffed && isSvgImage({ name: file.name, type: mimeType })) {
+    const text = decodeText(bytes)
+    if (text !== undefined && looksLikeSvg(text)) return { kind: 'image', type: SVG_TYPE }
+  }
   switch (attachmentKind({ name: file.name, type: mimeType })) {
     case 'image':
       if (isRasterImage(mimeType)) return { kind: 'image', type: mimeType }
-      // Its bytes may still be pixels; otherwise it is shown as what it is written in, such as an SVG.
+      // Its bytes may still be pixels; otherwise it is shown as what it is written in.
       if (sniffed?.startsWith('image/')) return { kind: 'image', type: sniffed }
       return asText(file.name, mimeType, bytes)
     case 'pdf':

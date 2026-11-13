@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useApi } from '@/rpc/ApiContext'
 import type { AsideFile } from './asideItems'
+import { SVG_TYPE, svgDataUrl } from '@/files/svgImage'
 import { previewOf, type FilePreview } from './filePreview'
 
 /** How a file is shown, with an address for its bytes where the browser shows them. */
@@ -72,13 +73,18 @@ export const useFilePreview = (file: AsideFile | undefined): FileState => {
   const mimeType = file?.mimeType ?? ''
   const preview = useMemo(() => bytes && previewOf({ name, mimeType }, bytes), [bytes, name, mimeType])
 
-  // An address for the bytes, for as long as they are shown. It is of the app's own origin, and can
-  // be opened in a tab of its own, so its type is only ever one `previewOf` chose, which runs
-  // nothing: never an SVG or a page.
+  // An address for the bytes, for as long as they are shown. An object URL is of the app's own
+  // origin, and can be opened in a tab of its own, so its type is only ever one `previewOf` chose,
+  // which runs nothing: never a page. An SVG, which is one, is given from a `data:` URL instead,
+  // which has no origin.
   const [address, setAddress] = useState<{ bytes: Uint8Array; url: string }>()
   const type = preview && 'type' in preview ? preview.type : undefined
   useEffect(() => {
     if (!bytes || !type) return
+    if (type === SVG_TYPE) {
+      setAddress({ bytes, url: svgDataUrl(bytes) })
+      return
+    }
     const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
     setAddress({ bytes, url })
     return () => URL.revokeObjectURL(url)
