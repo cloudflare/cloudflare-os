@@ -221,7 +221,10 @@ Anything else offers its download, which the pane's more menu has for every file
 inline with the message or are fetched through the chat it was sent in, so a file's own page
 needs `?chat=`. What the browser is given to show is never typed by the file's word alone: only
 the kinds a browser displays without running anything are, a PDF must start like one, a page is
-shown as its text, and a file that says nothing is told by its first bytes. Downloads are typed
+shown as its text, and a file that says nothing is told by its first bytes. Only raster images
+(`files/rasterImage.ts`) are images, here, in a message and in the composer: an SVG is a page, which
+from a `blob:` URL of the app's origin opened in a tab would run as the app, so it is shown as its
+text. Downloads are typed
 as plain bytes, so they are saved rather than opened.
 
 Full screen has the pane fill the window to its very edges, with no frame or corners, over the

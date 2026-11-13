@@ -70,7 +70,9 @@ export const useFilePreview = (file: AsideFile | undefined): FileState => {
   const mimeType = file?.mimeType ?? ''
   const preview = useMemo(() => bytes && previewOf({ name, mimeType }, bytes), [bytes, name, mimeType])
 
-  // An address for the bytes, for as long as they are shown.
+  // An address for the bytes, for as long as they are shown. It is of the app's own origin, and can
+  // be opened in a tab of its own, so its type is only ever one `previewOf` chose, which runs
+  // nothing: never an SVG or a page.
   const [address, setAddress] = useState<{ bytes: Uint8Array; url: string }>()
   const type = preview && 'type' in preview ? preview.type : undefined
   useEffect(() => {

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { attachmentKind } from '@/files/attachmentKind'
+import { isRasterImage } from '@/files/rasterImage'
+import { useObjectUrl } from '@/hooks/useObjectUrl'
 import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 
 export type MessageAttachmentProps = {
@@ -11,25 +12,10 @@ export type MessageAttachmentProps = {
   onOpen: () => void
 }
 
-/** An object URL for `content`, released when the bytes change or the component goes away. */
-const useObjectUrl = (content: Uint8Array | undefined, type: string) => {
-  const [url, setUrl] = useState<string>()
-  useEffect(() => {
-    if (!content) return
-    const created = URL.createObjectURL(new Blob([new Uint8Array(content)], { type }))
-    setUrl(created)
-    return () => {
-      URL.revokeObjectURL(created)
-      setUrl(undefined)
-    }
-  }, [content, type])
-  return url
-}
-
 /** A file sent with a message: its picture when there is one, otherwise a tile naming its kind. */
 export const MessageAttachment = ({ name, mimeType, content, onOpen }: MessageAttachmentProps) => {
-  const isImage = mimeType.startsWith('image/')
-  const preview = useObjectUrl(isImage ? content : undefined, mimeType)
+  // Only pixels: the picture can be opened in a tab of its own, as the app's origin.
+  const preview = useObjectUrl(isRasterImage(mimeType) ? content : undefined, mimeType)
   const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind({ name, type: mimeType })]
 
   return (

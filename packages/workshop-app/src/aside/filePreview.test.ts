@@ -24,6 +24,23 @@ describe('previewOf', () => {
     expect(previewOf({ name: 'a.html', mimeType: 'text/html' }, text('<script>1</script>'))).toEqual({ kind: 'text', text: '<script>1</script>' })
   })
 
+  it('shows an SVG as what it is written in, never as an image, which could run its script', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script></svg>'
+    expect(previewOf({ name: 'logo.svg', mimeType: 'image/svg+xml' }, text(svg))).toEqual({ kind: 'text', text: svg })
+    expect(previewOf({ name: 'logo.svg', mimeType: '' }, text(svg))).toEqual({ kind: 'text', text: svg })
+    expect(previewOf({ name: 'logo.svg', mimeType: 'IMAGE/SVG+XML' }, text(svg))).toEqual({ kind: 'text', text: svg })
+  })
+
+  it('shows only raster images as images, going by the bytes for any other kind of image', () => {
+    const AVIF = Uint8Array.from([0, 0, 0, 0x1c, ...text('ftypavif')])
+    for (const type of ['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']) {
+      expect(previewOf({ name: 'a', mimeType: type }, PNG)).toEqual({ kind: 'image', type })
+    }
+    expect(previewOf({ name: 'a.heic', mimeType: 'image/heic' }, PNG)).toEqual({ kind: 'image', type: 'image/png' })
+    expect(previewOf({ name: 'a.avif', mimeType: 'image/x-avif' }, AVIF)).toEqual({ kind: 'image', type: 'image/avif' })
+    expect(previewOf({ name: 'a.bmp', mimeType: 'image/bmp' }, new Uint8Array([0x42, 0x4d, 0, 0xff]))).toEqual({ kind: 'none' })
+  })
+
   it('goes by the bytes for a file that does not say what it is', () => {
     expect(previewOf({ name: 'File', mimeType: '' }, PNG)).toEqual({ kind: 'image', type: 'image/png' })
     expect(previewOf({ name: 'File', mimeType: 'application/octet-stream' }, PDF)).toEqual({ kind: 'pdf', type: 'application/pdf' })

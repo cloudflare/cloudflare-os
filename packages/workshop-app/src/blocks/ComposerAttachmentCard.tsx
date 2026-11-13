@@ -3,6 +3,7 @@ import { XIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Tooltip } from '@/components/Tooltip'
 import { attachmentKind } from '@/files/attachmentKind'
+import { isRasterImage } from '@/files/rasterImage'
 import { useObjectUrl } from '@/hooks/useObjectUrl'
 import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 import type { ComposerAttachment } from './useComposerAttachments'
@@ -13,7 +14,8 @@ export const ComposerAttachmentCard = ({ attachment, onRemove }: {
 }) => {
   const { file } = attachment
   const [previewFailed, setPreviewFailed] = useState(false)
-  const previewUrl = useObjectUrl(file.type.startsWith('image/') ? file : undefined, file.type)
+  // Only pixels: the picture can be opened in a tab of its own, as the app's origin.
+  const previewUrl = useObjectUrl(isRasterImage(file.type) ? file : undefined, file.type)
   const name = file.name || 'Attached file'
   const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(file)]
 
