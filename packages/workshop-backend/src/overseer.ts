@@ -756,6 +756,12 @@ export function sanitizeMessageFormatRefs(
 // owner's sessions are never counted, since the owner is never an observer.
 type SessionHolder = {kind: CollaboratorRole, profileId: string};
 
+// How folding a chat's content reads the base text of a worktree edit (see
+// OverseerImpl.seedWorktreeEditBases): one file of a commit as text, undefined when the commit has
+// no file there.
+type BaseTextReader =
+    (commit: string, path: string) => string | undefined | Promise<string | undefined>;
+
 class OverseerImpl implements AgentHooks {
   public storage: OverseerStorage;
   readonly logger: ReturnType<typeof createWorkshopLogger>;
@@ -2505,7 +2511,10 @@ class OverseerImpl implements AgentHooks {
   // Live (unmaterialized) change rows are deliberately NOT included: callers that need them either
   // materialize first (accept, update-from-mainline, UI bundle loads) or apply them on top
   // themselves (getCurrentChatContent).
-  async buildChatContent(chatId: number, through?: number): Promise<CodeContent> {
+  //
+  // `readBase` is the reader seedWorktreeEditBases takes for the base texts of worktree edits.
+  async buildChatContent(chatId: number, through?: number, readBase?: BaseTextReader)
+      : Promise<CodeContent> {
     let messages = [...this.storage.chats.list({prefix: chatKeyPrefix(chatId)})];
     if (through !== undefined) {
       messages = messages.filter(msg => msg.sequence <= through);
@@ -2547,7 +2556,7 @@ class OverseerImpl implements AgentHooks {
         }
       }
       if (msg.change !== undefined) {
-        content = await this.seedWorktreeEditBases(content, msg.change, worktreeBases);
+        content = await this.seedWorktreeEditBases(content, msg.change, worktreeBases, readBase);
         content = applyCodeChange(content, msg.change);
       }
     }
@@ -2565,8 +2574,14 @@ class OverseerImpl implements AgentHooks {
   // out for hand-rolled clients only: a row that edits a path an earlier row removed re-seeds
   // the base text rather than failing -- every fold applies the same rule in the same order, so
   // all replicas agree; the shipped producers never emit that sequence.)
-  async seedWorktreeEditBases(content: CodeContent, change: CodeChange,
-                              worktreeBases: Map<WorkpieceId, string>): Promise<CodeContent> {
+  //
+  // `readBase` does the read. The default, readFileAtCommit(), pulls what the store lacks; a
+  // caller that must not reach a connection gives a reader of stored objects alone. A reader's
+  // `undefined` is final: no other reader is asked.
+  async seedWorktreeEditBases(
+      content: CodeContent, change: CodeChange, worktreeBases: Map<WorkpieceId, string>,
+      readBase: BaseTextReader = (commit, path) => this.readFileAtCommit(commit, path))
+      : Promise<CodeContent> {
     let result = content;
     for (let [key, entries] of Object.entries(change)) {
       let worktreeId = Number(key);
@@ -2574,7 +2589,7 @@ class OverseerImpl implements AgentHooks {
       if (base === undefined) continue;
       for (let [path, fileChange] of entries) {
         if (!("edit" in fileChange) || result.get(worktreeId)?.has(path)) continue;
-        let text = await this.gitCache.readFileAtCommitIfExists(base, path);
+        let text = await readBase(base, path);
         if (text === undefined) continue;
         if (result === content) result = new Map(content);
         let files = new Map(result.get(worktreeId));
@@ -2659,7 +2674,12 @@ class OverseerImpl implements AgentHooks {
 
   // The chat's current content: what the next change row will apply to. Cached; treat the result as
   // immutable (it is shared with the cache and with code-change's structure sharing).
-  async getCurrentChatContent(chatId: number, meta: AiChatMetadata): Promise<CodeContent> {
+  //
+  // `readBase` reads the base texts of worktree edits (see seedWorktreeEditBases). The cache holds
+  // the same content whichever reader filled it: a commit is immutable, so every reader that
+  // reads a base returns the same text, and one that cannot throws before anything is cached.
+  async getCurrentChatContent(chatId: number, meta: AiChatMetadata, readBase?: BaseTextReader)
+      : Promise<CodeContent> {
     for (let attempt = 0; ; attempt++) {
       let codeBase = this.chatCodeBase(meta);
       let cached = this.#chatContentCache.get(chatId);
@@ -2672,7 +2692,7 @@ class OverseerImpl implements AgentHooks {
       // materialization retiring rows out from under the row scan), and the re-reads pick up
       // rows appended meanwhile.
       let token = this.nextChatSequencePeek(chatId);
-      let content = await this.buildChatContent(chatId);
+      let content = await this.buildChatContent(chatId, undefined, readBase);
       // Pins established by live rows are not yet declared in any message; their bases enter
       // the content before the rows apply. (Rows before the establishing row never touch the
       // gadget, so establishing all of them up front is equivalent to establishing in order.)
@@ -2693,7 +2713,8 @@ class OverseerImpl implements AgentHooks {
       if (worktreeBases.size > 0) {
         let probe = content;
         for (let row of this.listLiveChatChanges(chatId, codeBase.generation)) {
-          probe = await this.#prefetchWorktreeSeeds(probe, row.change, worktreeBases, seeds);
+          probe = await this.#prefetchWorktreeSeeds(
+              probe, row.change, worktreeBases, seeds, readBase);
           probe = applyCodeChange(probe, row.change);
         }
       }
@@ -2736,9 +2757,11 @@ class OverseerImpl implements AgentHooks {
   // seedWorktreeEditBases, but additionally records every looked-up base into `seeds`
   // (`${worktreeId}:${path}` -> text, or null for a path absent from the base), so the
   // synchronous tail can re-seed without awaiting.
-  async #prefetchWorktreeSeeds(content: CodeContent, change: CodeChange,
-                               worktreeBases: Map<WorkpieceId, string>,
-                               seeds: Map<string, FileContent | null>): Promise<CodeContent> {
+  async #prefetchWorktreeSeeds(
+      content: CodeContent, change: CodeChange, worktreeBases: Map<WorkpieceId, string>,
+      seeds: Map<string, FileContent | null>,
+      readBase: BaseTextReader = (commit, path) => this.readFileAtCommit(commit, path))
+      : Promise<CodeContent> {
     let result = content;
     for (let [key, entries] of Object.entries(change)) {
       let worktreeId = Number(key);
@@ -2749,7 +2772,7 @@ class OverseerImpl implements AgentHooks {
         let key = `${worktreeId}:${path}`;
         let text = seeds.get(key);
         if (text === undefined) {
-          text = await this.gitCache.readFileAtCommitIfExists(base, path) ?? null;
+          text = await readBase(base, path) ?? null;
           seeds.set(key, text);
         }
         if (text === null) continue;
@@ -4503,7 +4526,7 @@ class OverseerImpl implements AgentHooks {
     // out stale below.
     let worktreeAccepts = new Map<WorkpieceId, string>();
     if (entryCodeBase.pins.some(pin => this.isWorktree(pin.gadgetId))) {
-      let touchedByWorktree = this.#worktreeTouchedPaths(messages, statuses);
+      let touchedByWorktree = this.worktreeTouchedPaths(messages, statuses);
       for (let pin of entryCodeBase.pins) {
         let record = this.storage.gadgets.get(pin.gadgetId);
         if (record?.type !== "worktree") continue;
@@ -4747,10 +4770,21 @@ class OverseerImpl implements AgentHooks {
   // each declaration, which re-roots it; reverted messages excluded). The accept's re-pin plan
   // needs this alongside the flattened content: content answers what a path holds now, but only
   // the change stream knows which paths were touched at all -- a removed path is simply absent
-  // from content, and must enter the auto-commit's change map as a deletion.
-  #worktreeTouchedPaths(messages: AiChatMessage[], statuses: Map<number, "merged" | "reverted">)
+  // from content, and must enter the auto-commit's change map as a deletion. `liveRows` are the
+  // rows not yet materialized into a message, whose paths are touched too.
+  worktreeTouchedPaths(messages: AiChatMessage[], statuses: Map<number, "merged" | "reverted">,
+                       liveRows: readonly ChatChangeRecord[] = [])
       : Map<WorkpieceId, Set<string>> {
     let touched = new Map<WorkpieceId, Set<string>>();
+    let touch = (change: CodeChange) => {
+      for (let [key, entries] of Object.entries(change)) {
+        let id = Number(key);
+        if (!this.isWorktree(id)) continue;
+        let paths = touched.get(id);
+        if (paths === undefined) touched.set(id, paths = new Set());
+        for (let [path] of entries) paths.add(path);
+      }
+    };
     for (let msg of messages) {
       if (msg.type === "merge" && msg.epochBoundary) {
         touched.clear();
@@ -4760,15 +4794,9 @@ class OverseerImpl implements AgentHooks {
       if (statuses.get(msg.sequence) === "reverted") continue;
       if (msg.conversionBoundary) touched.clear();
       for (let pin of msg.pins ?? []) touched.delete(pin.gadgetId);
-      if (msg.change === undefined) continue;
-      for (let [key, entries] of Object.entries(msg.change)) {
-        let id = Number(key);
-        if (!this.isWorktree(id)) continue;
-        let paths = touched.get(id);
-        if (paths === undefined) touched.set(id, paths = new Set());
-        for (let [path] of entries) paths.add(path);
-      }
+      if (msg.change !== undefined) touch(msg.change);
     }
+    for (let row of liveRows) touch(row.change);
     return touched;
   }
 
