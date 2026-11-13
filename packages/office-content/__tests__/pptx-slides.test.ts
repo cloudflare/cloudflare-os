@@ -422,6 +422,26 @@ describe("readPptxSlides", () => {
       `<p:spPr>${transform(INCH, INCH, 2 * INCH, INCH)}</p:spPr></p:pic>`;
     const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
 
+    it("finds a picture fill a slide inherits from its layout among the layout's own relationships", async () => {
+      const other = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9, 9]);
+      const [shape] = await shapesOf({
+        parts: [{ name: "ppt/media/image1.png", data: png }, { name: "ppt/media/image2.png", data: other }],
+        layoutShapes: drawnShape({
+          placeholder: '<p:ph type="body" idx="1"/>',
+          properties: `${transform(INCH, INCH, INCH, INCH)}<a:blipFill><a:blip r:embed="rIdPicture"/></a:blipFill>`,
+          body: "",
+        }),
+        layoutRelationships: [{ id: "rIdPicture", type: "image", target: "../media/image1.png" }],
+        // The slide uses the same id for another picture, which is not the one the layout means.
+        slides: [{
+          shapes: drawnShape({ placeholder: '<p:ph idx="1"/>', body: slideParagraph("x") }),
+          relationships: [{ id: "rIdPicture", type: "image", target: "../media/image2.png" }],
+        }],
+      });
+      const { fill } = drawn(shape);
+      expect(fill?.kind === "image" && [...fill.image.bytes]).toEqual([...png]);
+    });
+
     it("returns an embedded picture's bytes, type, crop and description", async () => {
       const [shape] = await shapesOf({
         parts: [{ name: "ppt/media/image1.png", data: png }],

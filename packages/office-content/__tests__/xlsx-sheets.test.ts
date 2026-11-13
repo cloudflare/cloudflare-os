@@ -399,6 +399,16 @@ describe("readWorkbookSheets", () => {
     ]);
   });
 
+  it("keeps no more of a cell's text than it can show, however many cells share a long string", async () => {
+    const workbook = await readWorkbookSheets(await buildXlsx({
+      strings: `<si><t>${"x".repeat(100_000)}</t></si>`,
+      sheets: [{ name: "Shared", rows: `<row r="1">${Array.from({ length: 20 }, (_, index) => `<c r="${String.fromCharCode(65 + index)}1" t="s"><v>0</v></c>`).join("")}</row>` }],
+    }), LIMITS);
+    const [sheet] = workbook.sheets;
+    expect(sheet!.rows[0]!.cells.map(cell => cell.text.length)).toEqual(Array.from({ length: 20 }, () => 2_000));
+    expect(sheet!.truncated).toBe(false);
+  });
+
   it("stops at the row and column limits and says so", async () => {
     const workbook = await read({
       sheets: [

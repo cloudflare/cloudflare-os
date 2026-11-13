@@ -126,6 +126,7 @@ export async function readWorkbookSheets(bytes: Uint8Array, limits: SheetLimits)
     // Workbooks from old Mac versions of Excel count days from 1904 rather than 1900.
     date1904: isTrue(attribute(firstChild(workbook, "s:workbookPr"), "date1904")),
     limits: { maxRows: Math.max(0, Math.floor(limits.maxRows)), maxColumns: Math.max(0, Math.floor(limits.maxColumns)) },
+    textLeft: MAX_WORKBOOK_TEXT,
   };
 
   const sheets: SheetModel[] = [];
@@ -155,7 +156,18 @@ interface SheetContext {
   readonly digitWidth: number;
   readonly date1904: boolean;
   readonly limits: SheetLimits;
+  /** The cell text the workbook may still return, in characters. */
+  textLeft: number;
 }
+
+/**
+ * The most of one cell's text kept: more than a cell shows at any width or height a sheet allows.
+ * A shared string is one copy in the file but one per cell in the model (and in the copy a
+ * worker sends back), so a long string used by many cells would otherwise cost each of them.
+ */
+const MAX_CELL_TEXT = 2_000;
+/** The most cell text kept across a workbook; the cells past it are reported as truncated. */
+const MAX_WORKBOOK_TEXT = 4_000_000;
 
 const PIXELS_PER_POINT = 96 / 72;
 /** Excel's row height when the sheet names none: 15 points, which fits Calibri 11. */
@@ -518,7 +530,12 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
       const format = (styleId !== undefined
         ? formats[Number(styleId)]
         : rowFormat ?? formats[settings.columnFormats.get(column) ?? 0]) ?? formats[0]!;
-      const content = cellContent(cell, format, context);
+      const read = cellContent(cell, format, context);
+      const text = read.text.slice(0, Math.min(MAX_CELL_TEXT, context.textLeft));
+      // A cell cut to what it can show is not missing anything; one cut by the workbook's budget is.
+      if (text.length < Math.min(read.text.length, MAX_CELL_TEXT)) truncated = true;
+      context.textLeft -= text.length;
+      const content = text === read.text ? read : { ...read, text };
       // A formula's text result may truly be empty; any other formula with nothing stored was never calculated.
       if (content.text === "" && attribute(cell, "t") !== "str" && firstChild(cell, "s:f")) uncalculated = true;
       if (content.text === "" && styleId === undefined) continue;

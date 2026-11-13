@@ -418,6 +418,8 @@ export interface DeckFixture {
   readonly tableStyles?: string;
   /** Further parts, such as media. */
   readonly parts?: readonly FixtureEntry[];
+  /** The layout's relationships besides the one to its master. */
+  readonly layoutRelationships?: readonly FixtureRelationship[];
 }
 
 const THEME_COLORS = [
@@ -463,7 +465,10 @@ export async function buildDeck(fixture: DeckFixture): Promise<Uint8Array> {
     { name: "ppt/slideLayouts/slideLayout1.xml", data: `<p:sldLayout ${SLIDE_NAMESPACES}><p:cSld>${tree(fixture.layoutShapes)}</p:cSld></p:sldLayout>` },
     {
       name: "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
-      data: relationshipsXml([{ id: "rId1", type: "slideMaster", target: "../slideMasters/slideMaster1.xml" }]),
+      data: relationshipsXml([
+        { id: "rId1", type: "slideMaster", target: "../slideMasters/slideMaster1.xml" },
+        ...(fixture.layoutRelationships ?? []),
+      ]),
     },
     ...(fixture.parts ?? []),
   ];

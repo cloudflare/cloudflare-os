@@ -28,17 +28,14 @@ it("drops a read still waiting its turn when it is aborted", async () => {
   expect(firstText(await first)).toBe("First");
 });
 
-it("reads a file someone opened before the thumbnails waiting", async () => {
-  const [card, other, opened] = await Promise.all([docx("Card"), docx("Other"), docx("Opened")]);
-  const order: string[] = [];
-  const track = (name: string, read: Promise<unknown>) => read.then(() => order.push(name));
-  await Promise.all([
-    track("card", readOffice("document", card, {})),
-    track("other", readOffice("document", other, {})),
-    track("opened", readOffice("document", opened, {}, { ahead: true })),
-  ]);
-  // The first card was already being read; the opened file goes before the card still waiting.
-  expect(order).toEqual(["card", "opened", "other"]);
+it("reads a file someone opened in a worker of its own, which a stopped card read leaves alone", async () => {
+  const [card, opened] = await Promise.all([docx("Card"), docx("Opened")]);
+  const abort = new AbortController();
+  const cardRead = readOffice("document", card, {}, { signal: abort.signal });
+  const viewerRead = readOffice("document", opened, {}, { lane: "viewer" });
+  abort.abort();
+  await expect(cardRead).rejects.toMatchObject({ name: "AbortError" });
+  expect(firstText(await viewerRead)).toBe("Opened");
 });
 
 it("stops the worker for a read aborted while running, and reads the next file in a new one", async () => {

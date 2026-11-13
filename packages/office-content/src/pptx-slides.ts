@@ -143,6 +143,9 @@ interface Scope {
   /** The layout's and master's placeholder shapes a slide's placeholders inherit from; empty for the layout's and master's own shapes. */
   readonly layoutPlaceholders: PlaceholderIndex;
   readonly masterPlaceholders: PlaceholderIndex;
+  /** The layout's and master's relationships, which the pictures their placeholders hold name theirs by. */
+  readonly layoutRelationships: Relationships | undefined;
+  readonly masterRelationships: Relationships | undefined;
   /** Placeholders on a layout or master are templates for slides, not content. */
   readonly skipPlaceholders: boolean;
   /** The presentation's and master's styles for a category, lowest priority first. */
@@ -208,6 +211,8 @@ class DeckReader {
         context,
         layoutPlaceholders: inherits ? placeholderIndex(layout?.root) : NO_PLACEHOLDERS,
         masterPlaceholders: inherits ? placeholderIndex(master?.root) : NO_PLACEHOLDERS,
+        layoutRelationships: layout?.relationships,
+        masterRelationships: master?.relationships,
         skipPlaceholders: !inherits,
         baseStyles: category => {
           let found = styles.get(category);
@@ -354,10 +359,13 @@ class DeckReader {
     }
   }
 
-  /** The shape and the layout and master placeholders it inherits from, nearest first. */
-  #inheritance(shape: XmlElement, scope: Scope): { layers: XmlElement[]; category: TextCategory } {
+  /**
+   * The shape and the layout and master placeholders it inherits from, nearest first, with the
+   * scope each layer's own references (a picture fill's `r:embed`) are resolved in.
+   */
+  #inheritance(shape: XmlElement, scope: Scope): { layers: XmlElement[]; scopes: Scope[]; category: TextCategory } {
     const placeholder = placeholderOf(shape);
-    if (!placeholder) return { layers: [shape], category: "other" };
+    if (!placeholder) return { layers: [shape], scopes: [scope], category: "other" };
     const type = attribute(placeholder, "type");
     const index = attribute(placeholder, "idx");
     const layout = scope.layoutPlaceholders;
@@ -369,10 +377,16 @@ class DeckReader {
       ?? (type !== undefined ? layout.byType.get(type) ?? layout.byKind.get(masterKind(type)) : undefined);
     const kind = masterKind(type ?? (inLayout ? placeholderType(inLayout) : "obj"));
     const inMaster = scope.masterPlaceholders.byKind.get(kind);
-    return {
-      layers: [shape, inLayout, inMaster].filter((layer): layer is XmlElement => layer !== undefined),
-      category: kind === "title" ? "title" : kind === "body" ? "body" : "other",
+    const layers: XmlElement[] = [shape];
+    const scopes: Scope[] = [scope];
+    const inherit = (layer: XmlElement | undefined, relationships: Relationships | undefined) => {
+      if (!layer) return;
+      layers.push(layer);
+      scopes.push(relationships ? { ...scope, relationships } : scope);
     };
+    inherit(inLayout, scope.layoutRelationships);
+    inherit(inMaster, scope.masterRelationships);
+    return { layers, scopes, category: kind === "title" ? "title" : kind === "body" ? "body" : "other" };
   }
 
   /** The shape's own position, or the one its placeholder inherits, placed through its groups. */
@@ -386,15 +400,15 @@ class DeckReader {
 
   async #shape(shape: XmlElement, scope: Scope, frame: GroupFrame | undefined): Promise<SlideShape | undefined> {
     const { context } = scope;
-    const { layers, category } = this.#inheritance(shape, scope);
+    const { layers, scopes, category } = this.#inheritance(shape, scope);
     const bounds = this.#bounds(shape, scope, frame);
     if (!bounds) return undefined;
     const properties = layers.map(layer => firstChild(layer, "p:spPr"));
     const style = firstChild(shape, "p:style");
 
     let fill: FillChoice;
-    for (const layer of properties) {
-      fill = await this.#fill(layer, scope);
+    for (const [index, layer] of properties.entries()) {
+      fill = await this.#fill(layer, scopes[index]!);
       if (fill) break;
     }
     fill ??= this.#themeFill(firstChild(style, "a:fillRef"), scope);

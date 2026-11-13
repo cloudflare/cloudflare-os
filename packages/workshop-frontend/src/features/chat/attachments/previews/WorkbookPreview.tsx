@@ -11,7 +11,7 @@ import { SheetGrid } from "./SheetGrid";
 /** A workbook's sheets, refusing a password-protected file. */
 export const readSheets = async (bytes: Uint8Array) => {
   assertOpenXml(bytes);
-  return readOffice("workbook", bytes, { maxRows: MAX_GRID_ROWS, maxColumns: MAX_GRID_COLUMNS }, { ahead: true });
+  return readOffice("workbook", bytes, { maxRows: MAX_GRID_ROWS, maxColumns: MAX_GRID_COLUMNS }, { lane: "viewer" });
 };
 
 const UNDRAWN_NAMES: Record<UndrawnFeature, string> = {

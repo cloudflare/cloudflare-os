@@ -26,7 +26,7 @@ const OMITTED_LABELS: Readonly<Record<DocxUnsupportedKind | "notes", string>> = 
 /** A document's layout, refusing a password-protected file. */
 export const readDocument = async (bytes: Uint8Array): Promise<DocxDocument> => {
   assertOpenXml(bytes);
-  return readOffice("document", bytes, {}, { ahead: true });
+  return readOffice("document", bytes, {}, { lane: "viewer" });
 };
 
 /** The body as the runs of blocks between its page breaks, one per sheet. */
