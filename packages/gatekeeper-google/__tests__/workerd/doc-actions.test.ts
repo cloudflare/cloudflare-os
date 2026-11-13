@@ -1,7 +1,13 @@
 import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { describe, expect, it, vi } from "vitest";
-import { DOC_DEFINITIONS, type DocHost } from "../../src/doc-actions";
-import type { GoogleDocsDocument } from "../../src/docs-api";
+import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
+import type { RpcStub } from "cloudflare:workers";
+import {
+  DOC_DEFINITIONS, googleDocSnapshot, type DocHost, type GoogleDocAction,
+} from "../../src/doc-actions";
+import { GoogleDocSessionImpl, type DocChangeQueue } from "../../src/docs";
+import type { GoogleDocsApi, GoogleDocsDocument } from "../../src/docs-api";
+import type { DriveApi } from "../../src/drive-api";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { buildTab } from "../doc-fixture";
 
@@ -122,5 +128,87 @@ describe("Google Doc edit definitions", () => {
       2, replace, expect.stringMatching(/^Pending Google Doc edit could not be applied: /),
       expect.anything());
     expect(api.batchUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("a Doc edit prepared through a read that is authorized", () => {
+  /** A session over "Draft" with `pending` queued, whose next read's authorization runs `during`. */
+  function session(pending: { id: number; action: GoogleDocAction }[]) {
+    let during: (() => void) | undefined;
+    let queued: GoogleDocAction[] = [];
+    let document = {
+      documentId: "doc-1", title: "Plan", revisionId: "r1",
+      tabs: [{ ...buildTab([{ runs: ["Draft\n"] }]), title: "Main" }],
+    };
+    let changes: DocChangeQueue = {
+      pending: () => pending,
+      invalidate: () => {},
+      cache: { writes: 0 },
+      queue: async prepare => {
+        let { action, result } = await prepare();
+        queued.push(action);
+        return result;
+      },
+      afterTurns: async () => {},
+      adoptedTabId: tabId => tabId,
+      authorizesPreparation: true,
+      simulates: true,
+    };
+    let docs = new GoogleDocSessionImpl({
+      docsApi: {
+        getDocument: async () => structuredClone(document),
+        getRevisionId: async () => "r1",
+        getDocumentMetadata: async () => ({ title: "Plan", revisionId: "r1" }),
+      } as unknown as GoogleDocsApi,
+      driveApi: {} as DriveApi,
+      documentId: "doc-1",
+      approvalQueue: {} as RpcStub<ApprovalQueue>,
+      // The authorization is awaited after the fetch, as a Drive binding's is.
+      read: async (fetch, observe) => {
+        let value = await fetch();
+        observe(value);
+        let decide = during;
+        during = undefined;
+        decide?.();
+        return value;
+      },
+      changes,
+      source: {
+        snapshot: async () => googleDocSnapshot(structuredClone(document)),
+        approved: () => {},
+        metadata: async () => ({ title: "Plan", modifiedAt: 0 }),
+        metadataObservation: { title: "t", description: "d" },
+      },
+    });
+    return { docs, queued, decideDuringNextRead: (decide: () => void) => { during = decide; } };
+  }
+
+  // The read's authorization is awaited after the check: an edit rejected meanwhile would leave
+  // the new one queued against content that will never exist.
+  it("is refused when an edit it was checked against is decided meanwhile", async () => {
+    let pending = [{ id: 1, action: { ...APPEND, markdown: "More" } }];
+    let { docs, queued, decideDuringNextRead } = session(pending);
+    decideDuringNextRead(() => pending.splice(0));
+
+    await expect(docs.replaceText("More", "Most")).rejects.toThrow("was approved or rejected");
+    expect(queued).toEqual([]);
+  });
+
+  // Checked again, the caller's text would be matched over another queue than
+  // the one it read, and could name other content: the caller reads again instead.
+  it("is refused even where a fresh check over the moved queue would pass", async () => {
+    let pending = [{ id: 1, action: { ...APPEND, markdown: "More" } }];
+    let { docs, queued, decideDuringNextRead } = session(pending);
+    decideDuringNextRead(() => pending.splice(0));
+
+    await expect(docs.replaceText("Draft", "Final")).rejects.toThrow("was approved or rejected");
+    expect(queued).toEqual([]);
+  });
+
+  it("is queued when nothing it was checked against moved", async () => {
+    let pending = [{ id: 1, action: { ...APPEND, markdown: "More" } }];
+    let { docs, queued } = session(pending);
+    await docs.replaceText("More", "Most");
+    expect(queued).toMatchObject([{ type: "replaceText", oldMarkdown: "More", newMarkdown: "Most" }]);
   });
 });

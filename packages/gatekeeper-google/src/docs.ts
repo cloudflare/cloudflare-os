@@ -792,19 +792,32 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
     tabId: string | undefined, operation: "replaceText" | "appendText",
     check: (selected: GoogleDocSelectedContent) => T,
   ): Promise<{ selected: GoogleDocSelectedContent; value: T }> {
+    /** The queue the last check ran against, as the replay saw it. */
+    let checkedOver: string | undefined;
     let fetch = async (snapshot: () => Promise<GoogleDocSnapshot>) => {
       try {
         let selected = this.#simulate(await snapshot(), tabId, operation);
-        return { selected, value: check(selected) };
+        let value = check(selected);
+        checkedOver = googleDocPendingFingerprint(this.#changes.pending());
+        return { selected, value };
       } catch (error) {
         return new ReadFailure(error);
       }
     };
     if (this.#changes.authorizesPreparation) {
-      return this.#readDocument(fetch, ({ selected }) => ({
+      // The check runs inside the read, and the read's authorization (and a folder's second scope
+      // proof) is awaited after it. An approval or a rejection can land meanwhile, and the caller's
+      // text was matched over the queue it moved: checked again, it could match other text than
+      // the caller read. So the edit is refused, and the caller reads again.
+      let prepared = await this.#readDocument(fetch, ({ selected }) => ({
         title: "Read Google Doc content",
         description: `Read tab ${googleDocTabLabel(selected.tab)} to change it.`,
       }));
+      if (checkedOver !== googleDocPendingFingerprint(this.#changes.pending())) {
+        throw new Error(`${operation}: an edit queued on this Doc was approved or rejected while ` +
+          "this one was checked against it, so it was not queued. Read the Doc again and retry.");
+      }
+      return prepared;
     }
     let result = await fetch(() => this.#source.snapshot());
     if (result instanceof ReadFailure) {
