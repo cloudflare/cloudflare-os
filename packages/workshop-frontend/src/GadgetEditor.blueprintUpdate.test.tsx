@@ -13,8 +13,9 @@ import type {
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
 // chat into view (the one a blueprint update was proposed in, or the one a notification opens),
-// which gadget stub a use-only collaborator's view is given while gadgets are admitted, and which
-// workspace a gadget's deletion is confirmed in.
+// which gadget stub a use-only collaborator's view is given while gadgets are admitted, which
+// workspace a gadget's deletion is confirmed in, and where each gadget view is told to report its
+// uncaught errors.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -28,6 +29,7 @@ afterAll(() => {
 const PROPOSAL_CHAT_ID = 7
 
 const GADGET: GadgetSummary = { id: 1, type: 'gadget', title: 'Itinerary', commitId: 'head' }
+const BUDGET: GadgetSummary = { id: 2, type: 'gadget', title: 'Budget', commitId: 'head' }
 
 const mocks = vi.hoisted(() => {
   const disposable = { [Symbol.dispose]() {} }
@@ -40,10 +42,14 @@ const mocks = vi.hoisted(() => {
     workspaceId: 'workspace',
     // The props the use-only view was last rendered with.
     useView: null as null | {
+      overseer: unknown
       gadget: unknown
+      selectedGadgetId: WorkpieceId | null
       gadgetOpenFailure: string | null
       onRetryGadget: () => void
     },
+    // The props the pane's gadget view was last rendered with.
+    gadgetUI: null as null | { overseer: unknown; gadget: unknown; gadgetId: WorkpieceId },
     workspace: {
       overseer: {
         stub: {
@@ -153,7 +159,12 @@ vi.mock('./ActivityNotifications', () => ({ default: () => null }))
 vi.mock('./BlueprintModal', () => ({ default: () => null }))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
-vi.mock('./GadgetUI', () => ({ default: () => null }))
+vi.mock('./GadgetUI', () => ({
+  default: (props: NonNullable<typeof mocks.gadgetUI>) => {
+    mocks.gadgetUI = props
+    return null
+  },
+}))
 vi.mock('./GadgetUseView', () => ({
   default: (props: NonNullable<typeof mocks.useView>) => {
     mocks.useView = props
@@ -228,6 +239,7 @@ beforeEach(() => {
   mocks.navigate.mockReset()
   mocks.search = {}
   mocks.workspaceId = 'workspace'
+  mocks.gadgetUI = null
   localStorage.clear()
   container = document.createElement('div')
   document.body.append(container)
@@ -380,7 +392,6 @@ describe('GadgetEditor, opening a chat from a notification', () => {
 // A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only
 // once its admission resolves, and never one disposed when an earlier admission was abandoned.
 describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
-  const BUDGET: GadgetSummary = { id: 2, type: 'gadget', title: 'Budget', commitId: 'head' }
   type Client = { gadgetId: WorkpieceId; disposed: boolean }
   const workspace = mocks.workspace
   const original = { overseer: workspace.overseer, metadata: workspace.metadata }
@@ -460,6 +471,68 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     await act(async () => mocks.useView!.onRetryGadget())
     expect(mocks.useView?.gadgetOpenFailure).toBeNull()
     expect(shownClient()).toBeNull()
+  })
+
+  it("gives the use view the workspace's connection and the selected gadget, also after a reconnect", async () => {
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    await act(async () => admissions.at(-1)!.resolve())
+    expect(mocks.useView?.overseer).toBe(workspace.overseer.stub)
+    expect(mocks.useView?.selectedGadgetId).toBe(GADGET.id)
+
+    workspace.overseer = useOnlyOverseer()
+    await openEditor('desktop')
+    expect(mocks.useView?.overseer).toBe(workspace.overseer.stub)
+    expect(mocks.useView?.selectedGadgetId).toBe(GADGET.id)
+  })
+})
+
+// `overseer` may be null by its type and an id is only a number, so a mount site that passed no
+// workspace, or another gadget's id, would type-check and report nothing.
+describe('GadgetEditor, telling a gadget view where its uncaught errors go', () => {
+  const workspace = mocks.workspace
+  const original = workspace.overseer
+  const stub: typeof original.stub = {
+    ...original.stub,
+    subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+      await subscriber.entry(GADGET)
+      await subscriber.entry(BUDGET)
+      await subscriber.ready()
+      return { [Symbol.dispose]() {} }
+    },
+    getGadget: (gadgetId?: WorkpieceId) => ({ gadgetId, [Symbol.dispose]() {} }),
+  }
+
+  beforeEach(() => {
+    workspace.overseer = { stub }
+    // Two gadgets make the editor render its pane tabs, which observe their own size.
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    })
+  })
+
+  afterEach(() => {
+    workspace.overseer = original
+    vi.unstubAllGlobals()
+  })
+
+  // No chat is selected here: the editor says where the errors go whether or not one is open.
+  // The preview overlay's view takes the same props and cannot be rendered, its state having no
+  // setter in use, so that mount is only type-checked.
+  it("gives the pane's view the workspace's connection and the selected gadget", async () => {
+    mocks.search = { w: BUDGET.id }
+    await openEditor('desktop')
+    expect(mocks.gadgetUI?.overseer).toBe(stub)
+    expect(mocks.gadgetUI?.gadgetId).toBe(BUDGET.id)
+    expect(mocks.gadgetUI?.gadget).toMatchObject({ gadgetId: BUDGET.id })
+
+    mocks.search = { w: GADGET.id }
+    await openEditor('desktop')
+    expect(mocks.gadgetUI?.gadgetId).toBe(GADGET.id)
+    expect(mocks.gadgetUI?.gadget).toMatchObject({ gadgetId: GADGET.id })
+    expect(mocks.gadgetUI?.overseer).toBe(stub)
   })
 })
 

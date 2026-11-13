@@ -2,8 +2,9 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { GadgetClient, ConsoleLogEvent, Overseer, WorkpieceId } from '@gadgets/workshop-shared/api'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
+import { useGadgetErrorReporter } from './features/gadget-errors/useGadgetErrorReporter'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -75,12 +76,15 @@ window.addEventListener('click', (event) => {
   anchor.setAttribute('rel', Array.from(rel).join(' '));
 }, true);
 
-// Capture unhandled exceptions and promise rejections.
+// Capture unhandled exceptions and promise rejections. The "uncaught" marker is what the Workshop
+// reports to the workspace's error log, beside showing the message in the live console like a
+// console call.
 window.addEventListener('error', (event) => {
   window.parent.postMessage({
     type: 'console',
     level: 'error',
     message: ['Uncaught', event.error?.stack || event.message],
+    uncaught: true,
   }, '*');
 });
 window.addEventListener('unhandledrejection', (event) => {
@@ -89,6 +93,7 @@ window.addEventListener('unhandledrejection', (event) => {
     type: 'console',
     level: 'error',
     message: ['Unhandled promise rejection:', reason?.stack || String(reason)],
+    uncaught: true,
   }, '*');
 });
 
@@ -108,6 +113,11 @@ const createSandboxedHtml = (jsCode: string): string => {
 
 interface GadgetUIProps {
   gadget: RpcStub<GadgetClient>
+  // Where the UI's uncaught errors are reported: the gadget's workspace, and its id there.
+  // `overseer` is null only where the workspace has no connection at all (it has not opened, or
+  // failed to), which holds the errors back.
+  overseer: RpcStub<Overseer> | null
+  gadgetId: WorkpieceId
   height: string
   reloadTrigger?: number
   isVisible?: boolean
@@ -130,7 +140,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, overseer, gadgetId, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
@@ -164,6 +174,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onConsoleLogRef.current = onConsoleLog
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
+  const reportError = useGadgetErrorReporter(overseer, gadgetId, chatId)
+  const reportErrorRef = useRef(reportError)
+  reportErrorRef.current = reportError
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -388,8 +401,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
-      } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
-        onConsoleLogRef.current({
+      } else if (event.data?.type === 'console') {
+        // A message the frame marked as an uncaught error is also reported to the workspace.
+        if (event.data.uncaught === true) reportErrorRef.current(event.data.message)
+        onConsoleLogRef.current?.({
           timestamp: new Date(),
           level: event.data.level,
           message: event.data.message,
