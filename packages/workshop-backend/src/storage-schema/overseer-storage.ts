@@ -1445,6 +1445,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // The highest titleRev the directory has acknowledged; -1 until it acknowledges one, and
       // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
       directoryRev: -1,
+
+      // The name of the Durable Object that keeps this workspace's gadget errors
+      // (workspace-error-log.ts): random, made when the workspace first loads a gadget Worker or
+      // keeps an entry. It goes with the rest of this storage when the workspace is deleted, so a
+      // workspace initialised again under the same id starts with no log, nothing written late to
+      // the old one is ever read from the new, and no exception of a Worker that the old one
+      // loaded is kept in the new (OverseerImpl.deliverGadgetExceptions()).
+      errorLogId: <string | undefined>undefined,
     },
 
     collections: {
