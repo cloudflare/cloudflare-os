@@ -1,6 +1,6 @@
 import { ActionApplyError } from "@gadgets/gatekeeper-kit/actions";
 import { describe, expect, it, vi } from "vitest";
-import { DOC_DEFINITIONS, type DocHost } from "../../src/docs";
+import { DOC_DEFINITIONS, type DocHost } from "../../src/doc-actions";
 import type { GoogleDocsDocument } from "../../src/docs-api";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { buildTab } from "../doc-fixture";
