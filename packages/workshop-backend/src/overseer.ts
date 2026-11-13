@@ -13661,10 +13661,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   // --- Share link management ---
 
-  async createShareLink(grant: CollaboratorGrant, note?: string)
+  async createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }> {
-    return (await this.impl.getSharingManager())
-        .createShareLink({ caller: this.#sharingCaller(), grant, note });
+    return (await this.impl.getSharingManager()).createShareLink(
+        { caller: this.#sharingCaller(), grant, note, default: options?.default });
   }
 
   async newShareLinkKey(linkId: string): Promise<{ key: string }> {
@@ -13712,6 +13712,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         ...(record.gadgetIds !== undefined ? {gadgets: record.gadgetIds
           .filter(id => this.impl.isShareableGadget(id))
           .map(id => ({id, title: this.impl.getGadgetRecord(id).title}))} : {}),
+        ...(record.default ? {default: true} : {}),
       });
     }
     return result;

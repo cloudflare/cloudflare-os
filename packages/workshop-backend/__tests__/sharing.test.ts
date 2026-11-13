@@ -827,6 +827,56 @@ describe("createShareLink", () => {
   });
 });
 
+describe("default share links", () => {
+  it("gives a caller one default link per grant, even when created concurrently", async () => {
+    let { storage, mgr } = makeManager();
+    let [first, second] = await Promise.all([
+      mgr.createShareLink({ caller: owner, grant: "workspace", default: true }),
+      mgr.createShareLink({ caller: owner, grant: "workspace", default: true }),
+    ]);
+    expect(second.linkId).toBe(first.linkId);
+    expect(second.key).not.toBe(first.key);
+    expect(mgr.listShareLinkRecords().map(record => record.id)).toEqual([first.linkId]);
+    expect(link(storage, first.linkId).default).toBe(true);
+
+    // Either key joins through the one link.
+    for (let [profileId, rawKey] of [["a", first.key], ["b", second.key]]) {
+      await mgr.redeemShareKey({ rawKey, profileId, fetchProfile: async () => profile(profileId) });
+      expect(edgesOf(storage, profileId)).toEqual([
+        expect.objectContaining({ type: "shareKey", keyId: first.linkId }),
+      ]);
+    }
+  });
+
+  it("keeps each creator's and each grant's default apart from the rest", async () => {
+    let { storage, mgr } = makeManager();
+    seedCollaborator(storage, "bob", [userEdge(OWNER)]);
+    let named = await mgr.createShareLink({ caller: owner, grant: "workspace", note: "team" });
+    let ownerWorkspace =
+        await mgr.createShareLink({ caller: owner, grant: "workspace", default: true });
+    let ownerGadget =
+        await mgr.createShareLink({ caller: owner, grant: { gadgetId: 1 }, default: true });
+    let bobWorkspace =
+        await mgr.createShareLink({ caller: collab("bob"), grant: "workspace", default: true });
+
+    let linkIds = [named, ownerWorkspace, ownerGadget, bobWorkspace].map(result => result.linkId);
+    expect(new Set(linkIds).size).toBe(4);
+    expect(link(storage, named.linkId).default).toBeUndefined();
+  });
+
+  it("creates a fresh default once the previous one is revoked", async () => {
+    let { mgr } = makeManager();
+    let revoked =
+        await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 }, default: true });
+    mgr.revokeShareLink(owner, revoked.linkId, []);
+
+    let fresh =
+        await mgr.createShareLink({ caller: owner, grant: { gadgetId: 2 }, default: true });
+    expect(fresh.linkId).not.toBe(revoked.linkId);
+    expect(mgr.listShareLinkRecords().map(record => record.id)).toEqual([fresh.linkId]);
+  });
+});
+
 describe("newShareLinkKey", () => {
   it("mints a new key for the same link that redeems to one grant", async () => {
     let { storage, mgr } = makeManager();

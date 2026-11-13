@@ -4073,10 +4073,16 @@ export interface Overseer extends RpcTarget {
    * Anyone who redeems the link receives `grant`. The caller must be the owner or a "build"
    * collaborator.
    *
+   * With `default`, the link is the caller's *default* link for `grant`: each sharer has at
+   * most one live default link per grant, which the share dialog presents apart from the named
+   * links. If the caller already has one, this mints another key for it (as `newShareLinkKey`
+   * does) instead of creating a second, and returns that link's id. Otherwise it behaves as any
+   * other link, and revoking it leaves the caller with none until they create another.
+   *
    * A signed-in user redeems the key by passing it as `shareKey` to
    * AuthenticatedApi.openWorkspace(), which adds them as a collaborator and opens the workspace.
    */
-  createShareLink(grant: CollaboratorGrant, note?: string)
+  createShareLink(grant: CollaboratorGrant, note?: string, options?: {default?: boolean})
       : Promise<{ key: string; linkId: string }>;
 
   /**
@@ -6656,4 +6662,7 @@ export type ShareLinkInfo = {
    * be created, but it can still be copied and redeemed.
    */
   gadgets?: {id: WorkpieceId; title: string}[];
+
+  /** Whether this is its creator's default link for what it grants (see `createShareLink`). */
+  default?: true;
 };
