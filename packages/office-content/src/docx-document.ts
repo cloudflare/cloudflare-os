@@ -31,6 +31,7 @@ import { attribute, childElements, firstChild, firstDescendant, textContent, typ
 import { openZip, type ZipArchive } from "./zip";
 import { lookupTable } from "./lookup-table";
 import { symbolText } from "./symbol-text";
+import { MAX_LINK_TARGET } from "./link-target";
 
 /** A page's size and margins, in points. */
 export interface DocxPageSetup {
@@ -809,6 +810,7 @@ const SAFE_SCHEMES = new Set(["http:", "https:", "mailto:"]);
 
 /** The address a link may open: an absolute http, https or mailto URL, and nothing else. */
 function safeHref(target: string): string | undefined {
+  if (target.length > MAX_LINK_TARGET) return undefined;
   let url: URL;
   try {
     url = new URL(target.trim());

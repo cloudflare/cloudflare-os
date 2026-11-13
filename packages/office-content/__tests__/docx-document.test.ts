@@ -327,20 +327,26 @@ describe("readDocxDocument", () => {
     expect(document.omitted).toEqual(["picture"]);
   });
 
-  it("keeps only web and mail links", async () => {
+  it("keeps only web and mail links, and no address too long to be one", async () => {
     const link = (id: string, label: string) => `<w:hyperlink r:id="${id}">${run(label)}</w:hyperlink>`;
+    // Every run a link covers carries its own copy of the address once the model leaves the reader.
+    const long = `https://example.com/${"a".repeat(10_000)}`;
     const document = await readDocxDocument(await buildLayoutDocx({
-      body: paragraph(link("rIdWeb", "web") + link("rIdMail", "mail") + link("rIdScript", "script") + link("rIdFile", "file")),
+      body: paragraph(link("rIdWeb", "web") + link("rIdMail", "mail") + link("rIdScript", "script") + link("rIdFile", "file") +
+        link("rIdLong", "long") + `<w:fldSimple w:instr=' HYPERLINK "${long}" '>${run("field")}</w:fldSimple>`),
       relationships: [
         { id: "rIdWeb", type: "hyperlink", target: "https://example.com/a b", external: true },
         { id: "rIdMail", type: "hyperlink", target: "mailto:someone@example.com", external: true },
         { id: "rIdScript", type: "hyperlink", target: "javascript:alert(1)", external: true },
         { id: "rIdFile", type: "hyperlink", target: "file:///etc/passwd", external: true },
+        { id: "rIdLong", type: "hyperlink", target: long, external: true },
       ],
     }));
     const links = paragraphs(document.body)[0]!.inlines.map(inline => inline.kind === "text" ? [inline.text, inline.href] : []);
 
-    expect(links).toEqual([["web", "https://example.com/a%20b"], ["mail", "mailto:someone@example.com"], ["script", undefined], ["file", undefined]]);
+    expect(links).toEqual([
+      ["web", "https://example.com/a%20b"], ["mail", "mailto:someone@example.com"], ["script", undefined], ["file", undefined], ["long", undefined], ["field", undefined],
+    ]);
   });
 
   it("reads the first section's page, header and footer, and starts a new page only where asked", async () => {

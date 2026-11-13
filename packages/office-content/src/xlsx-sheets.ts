@@ -4,6 +4,7 @@
 // drawing here. A cell's value is what the file stores: a formula's last calculated result, never
 // a recalculation. Charts, pictures and the like are only reported as present.
 
+import { MAX_LINK_TARGET } from "./link-target";
 import { findMainPart, readPart, readPartText, readRelationships, streamPart } from "./ooxml";
 import { attribute, childElements, firstChild, textContent, type XmlElement } from "./xml";
 import { maxDigitWidth, readStyles, type SheetCellStyle, type WorkbookStyles } from "./xlsx-sheet-styles";
@@ -166,14 +167,11 @@ interface SheetContext {
  * worker sends back), so a long string used by many cells would otherwise cost each of them.
  */
 const MAX_CELL_TEXT = 2_000;
-/** The most cell text and link targets kept across a workbook; the cells past it are reported as truncated. */
-const MAX_WORKBOOK_TEXT = 4_000_000;
-
 /**
- * The longest link target kept, far past any address someone writes. Each cell a link covers carries its
- * own copy once the workbook leaves the reader, so each copy is charged to the workbook's text too.
+ * The most cell text kept across a workbook, counting each cell's copy of its link; the cells past
+ * it are reported as truncated.
  */
-const MAX_LINK_TARGET = 8_192;
+const MAX_WORKBOOK_TEXT = 4_000_000;
 
 const PIXELS_PER_POINT = 96 / 72;
 /** Excel's row height when the sheet names none: 15 points, which fits Calibri 11. */
