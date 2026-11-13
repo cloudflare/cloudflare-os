@@ -18,6 +18,13 @@
   "ai": {
     "binding": "AI"
   },
+  "services": [
+    {
+      "binding": "PDF_RENDERER",
+      "service": "pdf-renderer",
+      "entrypoint": "PdfRenderer"
+    }
+  ],
   "build": {
     "command": "pnpm exec capnweb-validate build --out .wrangler/validate",
     "watch_dir": "src"

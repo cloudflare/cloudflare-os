@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Generates dev-only wrangler.dev.jsonc files for dynamic service bindings,
-// then launches `wrangler dev` with all discovered workers.
+// then launches `wrangler dev` with all discovered workers and the PDF renderer.
 //
 // Flags:
 //   --use-workers-ai-binding   Include the Workers AI binding in workshop-backend and in the
@@ -32,6 +32,9 @@ const SCRIPTS_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SCRIPTS_DIR, "..");
 const PACKAGES_DIR = join(ROOT, "packages");
 const WORKSHOP_BACKEND_DIR = join(PACKAGES_DIR, "workshop-backend");
+// The Worker that draws PDF pages for the Google gatekeeper, which binds to it by name. It is not a
+// gatekeeper, so nothing below discovers it, routes to it or gives it credentials.
+const PDF_RENDERER_DIR = join(PACKAGES_DIR, "pdf-renderer");
 
 /** A gatekeeper package as {@link findGatekeepers} discovers it. */
 interface Gatekeeper {
@@ -564,6 +567,20 @@ for (const gk of gatekeepers) {
 }
 
 // ---------------------------------------------------------------------------
+// Generate packages/pdf-renderer/wrangler.dev.jsonc. Only other Workers reach the renderer, through
+// a service binding their own config declares, so all its config needs for dev is the dev build
+// settings.
+// ---------------------------------------------------------------------------
+{
+  const config = parse(readFileSync(join(PDF_RENDERER_DIR, "wrangler.jsonc"), "utf8"));
+  config.build = devBuildConfig(config.build, PDF_RENDERER_DIR);
+
+  const outPath = join(PDF_RENDERER_DIR, "wrangler.dev.jsonc");
+  writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
+  console.log(`generated: ${outPath}`);
+}
+
+// ---------------------------------------------------------------------------
 // Generate packages/workshop-backend/wrangler.dev.jsonc (with gatekeeper
 // service bindings using the GatekeeperVendor entrypoint).
 // ---------------------------------------------------------------------------
@@ -661,6 +678,7 @@ const configs = [
   "wrangler.dev.jsonc",
   join("packages", "workshop-backend", "wrangler.dev.jsonc"),
   ...gatekeepers.map(gk => join(gk.dir, "wrangler.dev.jsonc")),
+  join(PDF_RENDERER_DIR, "wrangler.dev.jsonc"),
 ];
 
 const args = configs.flatMap(c => ["-c", c]);

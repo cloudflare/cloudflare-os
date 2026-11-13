@@ -16,6 +16,8 @@ export default defineGadgetsWorker({
     // Workers AI's `toMarkdown()`, which converts Drive PDFs to text. It always runs remotely, so
     // `pnpm dev-server` keeps it only with --use-workers-ai-binding.
     AI: bindings.ai(),
+    // The Worker that renders the pages of a scanned PDF for readPdf() to have them transcribed.
+    PDF_RENDERER: bindings.worker({ worker: "pdf-renderer", exportName: "PdfRenderer" }),
   },
 });
 

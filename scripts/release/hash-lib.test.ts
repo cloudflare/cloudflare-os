@@ -45,6 +45,18 @@ test("collectModules finds the main module and skips maps and READMEs", () => {
   }
 });
 
+test("collectModules types a WebAssembly module as wasm beside the one ESM module", () => {
+  const { mainModule, modules } =
+      collectModules(join(TESTDATA, "fixture-bundles", "pdf-renderer"));
+  assert.equal(mainModule, "worker.js");
+  assert.deepEqual(modules.map((m) => [m.name, m.type]),
+      [["abc123-pdfium.wasm", "wasm"], ["worker.js", "esm"]]);
+  // Binary contents are hashed as they are on disk.
+  const wasm = modules[0];
+  assert.deepEqual([...wasm.bytes], [0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+  assert.equal(wasm.sha256, sha256Hex(wasm.bytes));
+});
+
 test("collectModules fails on unrecognized file types", () => {
   const out = mkdtempSync(join(tmpdir(), "release-hash-test-"));
   try {
