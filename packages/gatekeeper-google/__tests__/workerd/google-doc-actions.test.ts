@@ -1,6 +1,6 @@
 import { abortAllDurableObjects, env } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { googleDocActionTab } from "../../src/google";
+import { googleDocActionTab } from "../../src/docs";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
 import { officeFileError } from "../../src/office-conversion";
 import type { GoogleDocsTab } from "../../src/docs-api";

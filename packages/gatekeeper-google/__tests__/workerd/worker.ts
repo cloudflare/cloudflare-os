@@ -6,8 +6,9 @@ import {
   BigQueryGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl,
   GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl, GoogleVerifier, UserAccount as GoogleUserAccount,
   type BigQueryGatekeeperImplProps, type GoogleCalendarGatekeeperImplProps,
-  type GoogleDocGatekeeperImplProps, type GoogleDriveGatekeeperImplProps, type HookDriverRef,
+  type GoogleDriveGatekeeperImplProps, type HookDriverRef,
 } from "../../src/google";
+import type { GoogleDocGatekeeperImplProps } from "../../src/docs";
 import type { BigQuerySession } from "../../src/bigquery-types";
 import type { GoogleDocSession } from "../../src/docs-types";
 import type { GoogleDriveSession } from "../../src/drive-types";
