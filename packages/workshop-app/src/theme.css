@@ -51,3 +51,16 @@
   --color-kumo-brand-hover: color-mix(in oklch, #ff5c2e, black 15%);
   --text-color-kumo-brand: #ff5c2e;
 }
+
+/* A switch is the light one in dark too: its thumb is raised, and so the lightest part, on or off,
+   on a track that is a fill when off. Kumo's own dark switch has a dark thumb that turns pale blue,
+   and paints it off with a shade Tailwind does not have, so that it shows as an outline. */
+[data-mode='dark'] button[data-kumo-component='Switch'] {
+  &[data-unchecked] {
+    background-color: oklch(34% 0 0);
+    --tw-ring-color: oklch(40% 0 0);
+  }
+  & > div {
+    background-color: oklch(94% 0 0);
+  }
+}
