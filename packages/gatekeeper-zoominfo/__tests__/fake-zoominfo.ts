@@ -32,6 +32,8 @@ function unsignedJwt(claims: Record<string, unknown>): string {
   return `${base64UrlJson({ alg: "RS256", kid: "test" })}.${base64UrlJson(claims)}.signature`;
 }
 
+const GRANTED_SCOPES = ["api:data:company", "api:data:contact"];
+
 export class FakeZoomInfo {
   readonly requests: FakeRequest[] = [];
   /** The claims of the ID token a grant for `user` carries; `null` sends none. */
@@ -45,6 +47,8 @@ export class FakeZoomInfo {
   holdRefreshes?: Promise<void>;
   /** While set, the token endpoint refuses each refresh with this OAuth error. */
   refuseRefreshes?: { status: number; error: string };
+  /** Scopes the provider requests when a refresh omits scope; may exceed the original grant. */
+  refreshScopeDefaults: readonly string[] = GRANTED_SCOPES;
   /** While set, the data API holds each lookup until it settles, so a test can act mid-load. */
   holdLookups?: Promise<void>;
   /** The user each live access token, refresh token and authorization code belongs to. */
@@ -119,6 +123,12 @@ export class FakeZoomInfo {
     const redeemed = form.get("grant_type") === "authorization_code" ? form.get("code") : form.get("refresh_token");
     const user = redeemed === null ? undefined : this.#owners.get(redeemed);
     if (!user || redeemed === null) return json({ error: "invalid_grant" }, 400);
+    const scopes = form.get("grant_type") === "refresh_token"
+      ? (form.get("scope")?.split(" ") ?? this.refreshScopeDefaults)
+      : GRANTED_SCOPES;
+    if (scopes.some(scope => !GRANTED_SCOPES.includes(scope))) {
+      return json({ error: "access_denied", error_description: "Requested scopes exceed the original grant" }, 400);
+    }
     this.#owners.delete(redeemed);
     const grant = this.grant(user);
     const claims = this.idToken(user);
@@ -126,7 +136,7 @@ export class FakeZoomInfo {
       access_token: grant.accessToken,
       refresh_token: grant.refreshToken,
       expires_in: 1000,
-      scope: "api:data:company api:data:contact",
+      scope: scopes.join(" "),
       token_type: "Bearer",
       ...(claims ? { id_token: unsignedJwt(claims) } : {}),
     });
@@ -147,7 +157,7 @@ export function accountStub(userObjectId: string) {
  * user's ID did. Returns the account id.
  */
 export async function seedAccount(fake: FakeZoomInfo, user: FakeUser, options: {
-  legacy?: boolean; expiresInMs?: number;
+  legacy?: boolean; expiresInMs?: number; scopes?: string[];
 } = {}): Promise<string> {
   const grant = fake.grant(user);
   const id = env.USER_ACCOUNT.newUniqueId();
@@ -156,7 +166,7 @@ export async function seedAccount(fake: FakeZoomInfo, user: FakeUser, options: {
     const stored = {
       ...grant,
       accessTokenExpiresAt: Date.now() + (options.expiresInMs ?? 60 * 60 * 1000),
-      scopes: ["api:data:company"],
+      scopes: options.scopes ?? ["api:data:company"],
       identity: { displayName: user.name, uniqueName: user.email },
     };
     if (options.legacy) {

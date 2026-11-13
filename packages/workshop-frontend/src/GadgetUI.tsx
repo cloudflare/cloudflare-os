@@ -3,15 +3,7 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
-
-// We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
-// the whole module and embed it. We can import the module using ?raw to get a string of the
-// content.
-import CAPNWEB_BUNDLE from 'capnweb?raw'
-
-// btoa() below requires this to stay ASCII; capnweb's build enforces ASCII-only dist bundles
-// since 0.11.1.
-let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
+import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -23,7 +15,7 @@ let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 // In any case, we'll prefix the gadget code with this prefix which imports the Cap'n Web library
 // (from a massive data URL) and sets up the RPC connection to the parent.
 let INJECTED_CODE_PREFIX = encodeURIComponent(String.raw`//# sourceURL=client.js
-import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
+import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
 let gadget;  // RPC stub to the gadget's server-side Durable Object.
 {
@@ -106,8 +98,7 @@ const createSandboxedHtml = (jsCode: string): string => {
   return `<!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline' 'wasm-unsafe-eval'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
+  ${SANDBOX_HEAD}
 </head>
 <body>
     <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
@@ -142,7 +133,9 @@ export default function GadgetUI(props: GadgetUIProps) {
 function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
+  const [error, setError] = useState<{ message: string; stub?: RpcStub<GadgetClient> } | null>(null)
+  const errorMessage = error && (error.stub ?? gadget) === gadget ? error.message : null
   const [hasLoaded, setHasLoaded] = useState(false)
   const [isInvalidated, setIsInvalidated] = useState(false)
   const [iframeGeneration, setIframeGeneration] = useState(0)
@@ -237,6 +230,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     const reconnect = async () => {
       let timeout: ReturnType<typeof setTimeout> | undefined
       try {
+        // A pipelined client resolves only once the connection is back and the workspace reopened.
+        // The budget is for the gadget's own answer, not for the outage before it.
+        await gadget
         const replacementStub = await Promise.race([
           replacementPromise,
           new Promise<never>((_, reject) => {
@@ -297,7 +293,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       if (!isCurrent()) return
       loadGenerationRef.current++      // so a late reply can no longer write state
       setLoading(false)
-      setError('Timed out loading this view.')
+      setError({ message: 'Timed out loading this view.' })
     }, UI_BUNDLE_LOAD_TIMEOUT_MS)
 
     const loadUiBundle = async () => {
@@ -318,7 +314,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       } catch (err) {
         if (!isCurrent()) return
         console.error('Failed to load UI bundle:', err)
-        setError('Failed to load UI bundle')
+        setError({ message: 'Failed to load UI bundle' })
       } finally {
         if (isCurrent()) setLoading(false)
         clearTimeout(giveUp)
@@ -353,6 +349,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        const client = gadgetRef.current
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
         const generation = connectionGenerationRef.current
@@ -362,7 +359,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           event.source === iframeRef.current?.contentWindow
         try {
           // Open the RPC connection to the gadget's server side
-          gadgetStub = await gadgetRef.current.connectToGadget(chatId)
+          gadgetStub = await client.connectToGadget(chatId)
           if (!isCurrent()) {
             gadgetStub[Symbol.dispose]?.()
             port.close()
@@ -387,7 +384,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           port.close()
           if (!isCurrent()) return
           console.error('Failed to establish RPC connection:', caught)
-          setError('Failed to connect gadget to server')
+          setError({ message: 'Failed to connect gadget to server', stub: client })
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
@@ -437,7 +434,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     )
   }
 
-  if (error) {
+  if (errorMessage) {
     return (
       <div style={{
         height,
@@ -449,7 +446,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         <Banner
           variant="error"
           title="Error"
-          description={error}
+          description={errorMessage}
           action={
             <Banner.Action
               onClick={() => {

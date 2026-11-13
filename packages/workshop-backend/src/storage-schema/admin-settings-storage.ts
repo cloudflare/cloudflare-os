@@ -9,7 +9,8 @@
 
 import { collection, createTypedStorage } from "@gadgets/typed-storage";
 import {
-  DEFAULT_BANNER_COLOR, DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
+  DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_BANNER_COLOR,
+  DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES, DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
   type AiModelProvider, type AmbientGatekeeperMode, type BannerConfig, type BlueprintOutput,
   type BlueprintPublicInfo, type GatewayModel, type GatewayModelMode, type GatewayModelSettings,
@@ -55,12 +56,17 @@ export type AdminConfig = {
    */
   ambientGatekeeperModes: Record<string, AmbientGatekeeperMode>;
   /**
-   * The hosts `webFetch` may reach in a workspace that has observed restricted data (see
-   * Overseer.getWebFetchEnv), as lowercase ASCII host names. Empty ⇒ no web fetches there. A host
+   * The hosts `webFetch` may reach without asking in a workspace that has observed restricted data
+   * (see Overseer.authorizeWebFetch), as lowercase ASCII host names. A host
    * belongs here only if everyone who can see requests to it is cleared for that data: its logs,
    * analytics and caches, and anything it fetches on a request's behalf.
    */
   restrictedWebFetchHosts: string[];
+  /**
+   * Whether a user may approve, one URL at a time, a fetch that `restrictedWebFetchHosts` doesn't
+   * allow. Off by default: approving moves the leak check onto the approver.
+   */
+  restrictedWebFetchApprovals: boolean;
 
   /**
    * The blueprints offered as this deployment's standard output formats. What a user gets from
@@ -85,8 +91,20 @@ export type AdminConfig = {
    * (see GatewayModels in ai-gateway.ts).
    */
   addedProviders: AiModelProvider[];
-  /** Models added to the ones the deployment provides through AI Gateway, in listing order. */
+  /**
+   * The order an admin gave the AI Gateway providers, which their models are listed in. A provider
+   * left out follows the listed ones, in SUGGESTED_MODELS order.
+   */
+  providerOrder: AiModelProvider[];
+  /** Models added to the ones the deployment provides through AI Gateway, in the order added. */
   addedModels: GatewayModel[];
+  /**
+   * The order an admin gave each AI Gateway provider's models: provider -> model IDs, suggested
+   * and added alike. A model left out follows the listed ones in its own place, the suggested
+   * models in SUGGESTED_MODELS order and then the added ones in `addedModels` order. An ID that
+   * names none of the provider's models is ignored.
+   */
+  modelOrder: Partial<Record<AiModelProvider, string[]>>;
   /**
    * What an admin set for each AI Gateway model: model id -> settings, for the models that have
    * any. Absent ⇒ the model's built-in behaviour, at `defaultReasoning` where that is set. Only
@@ -111,6 +129,12 @@ export type AdminConfig = {
    */
   modelsDevSuggestions: boolean;
   /**
+   * Whether an admin has changed one of the Models tab settings ADMIN_CONFIG_SEED may set (see
+   * effectiveAdminConfig in admin-config.ts). Until then the seed decides them; from then on the
+   * stored values do. Absent from a config stored before this field existed, which counts as true.
+   */
+  modelsSaved: boolean;
+  /**
    * Whether the deployment checks for a newer release by itself (default true). Only meaningful
    * for a deployment the deploy flow installed (see deployment-updates.ts).
    */
@@ -121,6 +145,9 @@ export type AdminConfig = {
   updateMinimumAgeHours: number;
   /** How many hours a dismissed update notice stays hidden in the browser that dismissed it. */
   updateNoticeSnoozeHours: number;
+  /** How many days admins chose to keep admin audit records. Held at or above
+   * ADMIN_AUDIT_RETENTION_MIN_DAYS wherever it is enforced. */
+  adminAuditRetentionDays: number;
 };
 
 /**
@@ -159,18 +186,23 @@ export const DEFAULT_ADMIN_CONFIG: AdminConfig = {
   disabledGatekeepers: [],
   ambientGatekeeperModes: {},
   restrictedWebFetchHosts: [],
+  restrictedWebFetchApprovals: false,
   formats: [],
   modelModes: {},
   addedProviders: [],
+  providerOrder: [],
   addedModels: [],
+  modelOrder: {},
   modelSettings: {},
   defaultReasoning: null,
   userModelsEnabled: true,
   modelsDevSuggestions: false,
+  modelsSaved: false,
   updateChecksEnabled: true,
   updateCheckIntervalMinutes: DEFAULT_UPDATE_CHECK_INTERVAL_MINUTES,
   updateMinimumAgeHours: DEFAULT_UPDATE_MINIMUM_AGE_HOURS,
   updateNoticeSnoozeHours: DEFAULT_UPDATE_NOTICE_SNOOZE_HOURS,
+  adminAuditRetentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
 };
 
 /**
@@ -195,8 +227,9 @@ export function makeAdminSettingsStorage(storage: DurableObjectStorage) {
     },
     singletons: {
       // Authoritative deployment admin config. Mirrored to BLUEPRINTS KV (ADMIN_CONFIG_KEY) so the
-      // connect/login/agent hot paths can read it without touching this singleton DO.
-      adminConfig: DEFAULT_ADMIN_CONFIG as AdminConfig,
+      // connect/login/agent hot paths can read it without touching this singleton DO. Null until
+      // the first write; read through effectiveAdminConfig() (admin-config.ts) either way.
+      adminConfig: null as Partial<AdminConfig> | null,
 
       // Which set of bundled blueprints has been installed (see
       // bundledBlueprintsManifestVersion). Empty means none yet; a mismatch means the repo shipped

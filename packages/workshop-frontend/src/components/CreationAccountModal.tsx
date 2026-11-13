@@ -15,7 +15,7 @@ import ResourceConfiguratorHost from '../ResourceConfiguratorHost'
 import { disposeConfiguratorFrame } from '../disposeConfiguratorFrame'
 import { WorkshopButton } from './WorkshopControls'
 
-type CreationTarget = { vendor: GatekeeperVendorInfo; typeUrlPattern: string }
+type CreationTarget = { vendor: GatekeeperVendorInfo; typeUrlPattern: string; configuration?: string }
 
 // The popup flow whose start request is in flight.
 type StartingFlow = { kind: 'connect' } | { kind: 'reconnect' | 'grant'; accountId: number }
@@ -27,7 +27,8 @@ type Configurator = { accountId: number } & ({ frame: GatekeeperUiFrame } | { er
  * Approving a creation (see ActionLogEntry.creation) makes the resource in one of the approver's
  * own accounts for its vendor. This asks which, and offers to connect one. For a type with a
  * creation configurator (see SupportedResource.creationConfigurator), it also hosts that
- * account's configurator, whose choice becomes CreationApproval.configuration.
+ * account's configurator, opened on the configuration the agent suggested, if any; its choice
+ * becomes CreationApproval.configuration.
  */
 export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCancel }: {
   overseer: RpcStub<Overseer>
@@ -60,7 +61,7 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
           [gatekeeper.getCreationSpec(), authenticatedApi.listGatekeeperVendors()])
         const vendor = spec.type === 'gatekeeper' && vendors.find(v => v.id === spec.vendorId)
         if (!vendor || spec.type !== 'gatekeeper') throw new Error('This service is unavailable.')
-        if (!cancelled) setTarget({ vendor, typeUrlPattern: spec.typeUrlPattern })
+        if (!cancelled) setTarget({ vendor, typeUrlPattern: spec.typeUrlPattern, configuration: spec.configuration })
       } finally {
         gatekeeper[Symbol.dispose]()
       }
@@ -228,6 +229,8 @@ export const CreationAccountModal = ({ overseer, gatekeeperId, onChoose, onCance
                     ? patterns => requestAccountResources(
                       authenticatedApi, toasts, configuratorAccountId, patterns)
                     : undefined}
+                  initialResourceUrl={target.configuration}
+                  resourceUrlPattern={target.typeUrlPattern}
                   acceptedResourceUrlPatterns={[target.typeUrlPattern]}
                 />
               )}

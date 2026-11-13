@@ -9,18 +9,16 @@
 //
 // Its worktrees are the same WorktreeSessionImpl the agent's worktree bindings use, over an
 // InMemoryWorktree in place of the agent turn's state: uncommitted content lives in the session
-// object and dies with it, while commit() writes through the workspace's GitStore like any other
+// object and dies with it, while commit() writes to the workspace's git store like any other
 // worktree commit, leaving the commit id as the only durable handle.
 
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
-import type { CommitMetadata, CommitSignature, Git, Worktree } from "./worktree-binding";
+import type { CommitMetadata, Git, Worktree } from "./worktree-binding";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type FileChange, type FileContent } from "@gadgets/workshop-shared/code-change";
-import type { CommitObject } from "isomorphic-git";
 
 import type { WorkspaceGitCache } from "./git-cache";
-import type { GitStore } from "./git-store";
 import type { WorktreeTurnAccess } from "./agent";
 import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost }
   from "./worktree-session";
@@ -28,7 +26,6 @@ import { WorktreeSessionImpl, type WorktreeRecordView, type WorktreeSessionHost 
 /** What the binding needs from the overseer: the workspace's git plumbing. */
 export interface GitBindingHost {
   gitCache: WorkspaceGitCache;
-  gitStore: GitStore;
 }
 
 // The WorktreeTurnAccess methods all take a worktree id, but an InMemoryWorktree is a single
@@ -44,13 +41,13 @@ const IN_MEMORY_WORKTREE_ID = 0;
  * overlay and removal maps are replaced rather than mutated, so a session operation iterating one
  * across an await sees a consistent snapshot.
  */
-class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
+export class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
   #head: string;
   #files = new Map<string, FileContent>();  // replaced, never mutated
   #removed = new Set<string>();  // likewise
+  #revision = 0;
 
-  constructor(readonly gitCache: WorkspaceGitCache, readonly gitStore: GitStore,
-              private base: string) {
+  constructor(readonly gitCache: WorkspaceGitCache, private base: string) {
     this.#head = base;
   }
 
@@ -106,10 +103,22 @@ class InMemoryWorktree implements WorktreeTurnAccess, WorktreeSessionHost {
       removed.delete(path);
     }
     this.#removed = removed;
+    this.#revision++;
   }
 
   appendCommit(_worktreeId: unknown, commit: string): void {
     this.#head = commit;
+  }
+
+  reRoot(_worktreeId: unknown, commit: string): void {
+    this.base = commit;
+    this.#files = new Map();
+    this.#removed = new Set();
+    this.#revision++;
+  }
+
+  getRevision(): number {
+    return this.#revision;
   }
 }
 
@@ -126,7 +135,7 @@ export class GitImpl extends RpcTarget implements Git {
 
   async newWorktree(commitId: string): Promise<Worktree> {
     let base = await this.host.gitCache.fetchCommit(commitId);
-    let worktree = new InMemoryWorktree(this.host.gitCache, this.host.gitStore, base);
+    let worktree = new InMemoryWorktree(this.host.gitCache, base);
     return new WorktreeSessionImpl(worktree, IN_MEMORY_WORKTREE_ID, worktree, this.author);
   }
 
@@ -134,22 +143,7 @@ export class GitImpl extends RpcTarget implements Git {
     let oid = this.host.gitCache.resolveCommitId(commitId);
     // Pulls only the commit object itself, if absent -- unlike newWorktree, which wants the tree.
     await this.host.gitCache.ensureObject(oid, { type: "commit" });
-    let commit = await this.host.gitStore.readCommitObject(oid);
-    return {
-      parents: commit.parent,
-      message: commit.message,
-      author: toSignature(commit.author),
-      committer: toSignature(commit.committer),
-    };
+    let { parents, message, author, committer } = this.host.gitCache.readCommitObject(oid);
+    return { parents, message, author, committer };
   }
-}
-
-function toSignature(person: CommitObject["author"]): CommitSignature {
-  return {
-    name: person.name,
-    email: person.email,
-    timestamp: new Date(person.timestamp * 1000),
-    // isomorphic-git follows Date.getTimezoneOffset(): minutes *behind* UTC. (`|| 0` avoids -0.)
-    utcOffsetMinutes: -person.timezoneOffset || 0,
-  };
 }

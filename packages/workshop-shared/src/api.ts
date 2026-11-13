@@ -596,6 +596,24 @@ export const createAuthError = authErrors.create;
 /** Reads the machine-readable code from an authentication failure. */
 export const getAuthErrorCode = authErrors.getCode;
 
+/** Stable error codes attached to expected refusals to use a gatekeeper (connection). */
+export const GATEKEEPER_ERROR_CODES = {
+  /** Blocked until a scheduled workspace restart lands (e.g. after adding or binding it); the same
+   * call on the replacement session succeeds. */
+  pendingRestart: "GATEKEEPER_PENDING_RESTART",
+} as const;
+
+const gatekeeperErrors = codedErrorFamily({
+  [GATEKEEPER_ERROR_CODES.pendingRestart]:
+      "The workspace is restarting to apply a connection change. Please retry.",
+});
+
+/** Creates a gatekeeper refusal with a machine-readable code. */
+export const createGatekeeperError = gatekeeperErrors.create;
+
+/** Reads the machine-readable code from a gatekeeper refusal. */
+export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
+
 /**
  * One user as listed in the deployment-wide user directory (see
  * `AuthenticatedApi.searchUsers`).
@@ -699,8 +717,9 @@ export interface AuthenticatedApi extends RpcTarget {
   authorizeNotificationDevice(): Promise<string>;
 
   /**
-   * Subscribe while this client can visibly present notifications. Dispose the returned handle
-   * when the page becomes hidden so the backend can promptly fall back to push.
+   * Subscribe to live notifications while able to present them. Dispose the returned handle
+   * while hidden or on logout so unavailable clients do not delay push. A client that becomes
+   * unable to present an event must reject `notify()`. Receipt does not mark its chat read.
    */
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
@@ -1210,8 +1229,9 @@ export interface AuthenticatedApi extends RpcTarget {
   /**
    * Returns a capability for managing deployment-wide admin settings, or null when the caller is not
    * an admin. The access check happens once here, so the returned stub's methods need no per-call
-   * checks. (Authentication config — sign-in providers, password login — is intentionally not
-   * managed here; it stays env-var driven.)
+   * checks. Every audit record the capability makes is labelled with an AdminVia derived from the
+   * client's User-Agent. (Authentication config — sign-in providers, password login — is
+   * intentionally not managed here; it stays env-var driven.)
    *
    * @nullWhen the caller is not a deployment admin; amIAdmin() says whether it is
    */
@@ -1405,6 +1425,20 @@ export type AdminSettingsView = {
   signupsEnabled: boolean;
   /** Whether users may search the user directory to find collaborators. */
   userSearchEnabled: boolean;
+  /**
+   * How many days the admin audit log keeps a record (see AdminApi.setAdminAuditRetentionDays):
+   * `effective`.
+   */
+  adminAuditRetentionDays: {
+    /** The retention enforced: the higher of `chosen` and `min`. */
+    effective: number;
+    /** The retention an admin set, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS until one does. */
+    chosen: number;
+    /** The fewest days the deployment allows, which its ADMIN_AUDIT_RETENTION_MIN_DAYS environment
+     * variable sets: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS while that is unset, blank or not a
+     * positive whole number. */
+    min: number;
+  };
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
   siteName: string;
   /** Custom deployment logo, or undefined to use the default Cloudflare OS mark. */
@@ -1419,6 +1453,11 @@ export type AdminSettingsView = {
   accentColor: string;
   /** The hosts `webFetch` may reach in a workspace that has observed restricted data. */
   restrictedWebFetchHosts: string[];
+  /**
+   * Whether a user may approve, one URL at a time, a fetch that `restrictedWebFetchHosts` doesn't
+   * allow, in a workspace that has observed restricted data.
+   */
+  restrictedWebFetchApprovals: boolean;
   /** Every bound gatekeeper and its resource types, with enabled state (not hidden when disabled). */
   resourceVendors: AdminResourceVendor[];
   /** The blueprints promoted as standard output formats, in menu order (including disabled ones). */
@@ -1560,12 +1599,198 @@ export type DeploymentUpdateStatus = {
 };
 
 /**
+ * How an admin's calls reach the deployment, as their audit records say: "cli" when the session's
+ * User-Agent is the cf-os CLI's, "api" for any other client of the API (the Workshop's admin panel
+ * among them). The User-Agent is the client's own claim, so this is an unverified label that
+ * grants nothing.
+ */
+export type AdminVia = "api" | "cli";
+
+/** How many records one page of AdminApi.listAdminAudit() holds when the caller gives no
+ * `limit`. */
+export const ADMIN_LIST_DEFAULT_LIMIT = 50;
+
+/** The most records one page of AdminApi.listAdminAudit() may hold. */
+export const ADMIN_LIST_MAX_LIMIT = 200;
+
+/**
+ * How many days the admin audit log keeps a record until an admin sets otherwise, and the fewest
+ * an admin may set unless the deployment's ADMIN_AUDIT_RETENTION_MIN_DAYS says otherwise.
+ */
+export const DEFAULT_ADMIN_AUDIT_RETENTION_DAYS = 90;
+
+/** The longest retention an admin may set, in days: ten years. */
+export const MAX_ADMIN_AUDIT_RETENTION_DAYS = 3650;
+
+/**
+ * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
+ * before its change takes effect. The rest change no setting and are not recorded: the reads
+ * (getSettings, isBlueprintFeatured, getUpdateStatus, listAdminAudit, getAdminAuditStats), the
+ * gateway tests, and checkForUpdates.
+ */
+export const ADMIN_SETTING_METHODS = [
+  "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
+  "setInstanceInstructions", "setResourceEnabled", "setGatekeeperMode", "setAnnouncement",
+  "setBanner", "setAccentColor", "setBlueprintFeatured", "promoteFormat", "removeFormat",
+  "updateFormat", "setFormatOrder", "setGatewayModelMode", "addGatewayModel",
+  "removeGatewayModel", "setUserModelsEnabled", "setModelsDevSuggestions",
+  "setGatewayModelSettings", "setDefaultReasoning", "setGatewayProviderEnabled",
+  "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
+  "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
+  "setAdminAuditRetentionDays", "setGatewayProviderOrder", "setGatewayModelOrder",
+] as const satisfies readonly (keyof AdminApi)[];
+
+/** One of ADMIN_SETTING_METHODS. */
+export type AdminSettingMethod = typeof ADMIN_SETTING_METHODS[number];
+
+/** The longest setting entry's key an audit record keeps, in characters: a longer one is cut to
+ * this, its last character replaced with "…". */
+export const MAX_ADMIN_AUDIT_ARG_LENGTH = 256;
+
+/** The longest value an AdminSettingChange keeps whole, in characters: more than any bounded
+ * setting holds (the longest, the agent instructions, are at most
+ * MAX_INSTANCE_INSTRUCTIONS_LENGTH characters, recorded as themselves). A longer value is kept as
+ * an excerpt (see AdminSettingChange.excerpt). */
+export const MAX_ADMIN_AUDIT_VALUE_LENGTH = 10_000;
+
+/**
+ * One setting an AdminSettingRecord changed, with its value before and after. `setting` names a
+ * field of the deployment's stored settings ("siteName", "modelModes", ...) or one of the two kept
+ * apart from them, "siteLogo" and "featured". The names are those the settings are stored under: a
+ * diagnostic vocabulary, not a schema clients may depend on.
+ *
+ * A setting holding a map (an object keyed by id or name, such as "modelModes" or "banner") or a
+ * list of entries with ids ("formats", by blueprint id; "addedModels", by model id) is recorded
+ * one entry at a time: `key` names the entry, and the values are that entry's alone. A change to
+ * the order of such a list is one more change, without `key`, whose values are the lists of every
+ * entry's id, in order.
+ *
+ * A string is recorded as itself, any other value as JSON with object keys sorted. A value is kept
+ * whole up to MAX_ADMIN_AUDIT_VALUE_LENGTH characters, more than any bounded setting holds; past
+ * that both values are excerpts (see `excerpt`). A key is cut to MAX_ADMIN_AUDIT_ARG_LENGTH. No
+ * credential is a setting (provider keys and tokens live in the environment), but a free-text
+ * setting such as the agent instructions is recorded as an admin entered it. A logo is recorded
+ * as its size and SHA-256, never its bytes.
+ */
+export type AdminSettingChange = {
+  /** The setting. */
+  setting: string;
+  /** The entry of a map or list setting: a model id, a vendor id, a blueprint id, a field name;
+   * cut past MAX_ADMIN_AUDIT_ARG_LENGTH characters, a length no real entry's id reaches. */
+  key?: string;
+  /** The value before; absent when there was none. */
+  before?: string;
+  /** The value after; absent when the change removed it. */
+  after?: string;
+  /**
+   * Present when a value was longer than MAX_ADMIN_AUDIT_VALUE_LENGTH. `before` and `after` are
+   * then excerpts: each starts at character `offset` of its value, a little before the first
+   * character at which the two differ, and holds at most MAX_ADMIN_AUDIT_VALUE_LENGTH characters.
+   */
+  excerpt?: {
+    /** Where both excerpts start, in characters (UTF-16 code units) into their values. */
+    offset: number;
+    /** The whole `before` value's length, when there was one. */
+    beforeLength?: number;
+    /** The whole `after` value's length, when there is one. */
+    afterLength?: number;
+  };
+};
+
+/**
+ * One change an admin made to the deployment's settings through an AdminApi method (see
+ * ADMIN_SETTING_METHODS), recorded in the deployment-wide audit log before the change takes
+ * effect, so that a change whose record cannot be written is refused. A call that changes nothing
+ * records nothing. A record is kept if its change then fails to take effect (the setter throws):
+ * it records the attempt.
+ */
+export type AdminSettingRecord = {
+  /** The kind of audit record (see AdminAuditKind). */
+  kind: "setting";
+  /** When the change was made. */
+  at: Date;
+  /** The admin who made it, by canonical user id. */
+  admin: string;
+  /** Opaque. Shared by every record made through one AuthenticatedApi.getAdminApi() capability,
+   * so one admin session's records can be read together. */
+  sessionId: string;
+  /** How the admin's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** The AdminApi method called. */
+  method: AdminSettingMethod;
+  /** What it changed; never empty. */
+  changes: AdminSettingChange[];
+};
+
+/** One record of the deployment-wide admin audit log, kept for the deployment's retention
+ * (AdminSettingsView.adminAuditRetentionDays). */
+export type AdminAuditRecord = AdminSettingRecord;
+
+/** The kinds of AdminAuditRecord: "setting" for a change to the deployment's settings. */
+export type AdminAuditKind = AdminAuditRecord["kind"];
+
+/** Options for AdminApi.listAdminAudit(). The filters combine. */
+export type AdminAuditQuery = {
+  /** Only records of this kind. */
+  kind?: AdminAuditKind;
+  /** Only this admin's records, by canonical user id. At most 1000 characters. */
+  admin?: string;
+  /** Only records of calls to this method. */
+  method?: AdminAuditRecord["method"];
+  /** Only records made at or after this time. */
+  since?: Date;
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor?: string;
+  /** The page size: a whole number from 1 to ADMIN_LIST_MAX_LIMIT, ADMIN_LIST_DEFAULT_LIMIT when
+   * absent. */
+  limit?: number;
+};
+
+/** One page of AdminApi.listAdminAudit(). */
+export type AdminAuditPage = {
+  /** The page's records, newest first. */
+  records: AdminAuditRecord[];
+  /** Pass as `cursor` for the next page; absent once there is none. */
+  nextCursor?: string;
+};
+
+/** The longest window AdminApi.getAdminAuditStats() reports on, in days. */
+export const MAX_ADMIN_AUDIT_STATS_DAYS = 366;
+
+/** Options for AdminApi.getAdminAuditStats(). */
+export type AdminAuditStatsQuery = {
+  /** The window: the last `days` UTC days, today included. A whole number from 1 to
+   * MAX_ADMIN_AUDIT_STATS_DAYS, 7 when absent. */
+  days?: number;
+  /** Only records of this kind; every kind when absent. */
+  kind?: AdminAuditKind;
+};
+
+/**
+ * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
+ * covers the records of the queried kind (every kind when none is given). A record older than the
+ * retention is gone, so a window reaching past it counts nothing there.
+ */
+export type AdminAuditStats = {
+  /** The window's length in UTC days, today included. */
+  days: number;
+  /** The records in the window. */
+  totalEvents: number;
+  /** One entry per UTC day of the window, oldest first, days with no records included. `day` is
+   * the date as YYYY-MM-DD. */
+  byDay: { day: string; count: number }[];
+  /** The admins with the most records in the window, most first (ties by id), at most 10. */
+  topAdmins: { admin: string; count: number }[];
+};
+
+/**
  * Capability for managing deployment-wide admin settings, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
  * capability is minted, so these methods don't re-check. Covers branding, agent instructions,
  * which gatekeeper connectors/resources are offered, and the models an AI Gateway deployment
  * provides — NOT authentication config (that's env-var driven). Each setter throws on invalid
- * input.
+ * input, and records the change it makes in the deployment's audit log before making it (see
+ * AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -1601,6 +1826,9 @@ export interface AdminApi {
    * host name, such as one with a scheme, port, path or wildcard. Resolves to the list as stored.
    */
   setRestrictedWebFetchHosts(hosts: string[]): Promise<string[]>;
+
+  /** Set `AdminSettingsView.restrictedWebFetchApprovals`. */
+  setRestrictedWebFetchApprovals(enabled: boolean): Promise<void>;
 
   /**
    * Enable or disable a single gatekeeper resource type, keyed by vendor id + resource urlPattern.
@@ -1693,8 +1921,9 @@ export interface AdminApi {
   setGatewayModelMode(modelId: string, mode: GatewayModelMode): Promise<void>;
 
   /**
-   * Add a model to the ones the deployment provides, listed after its provider's suggested models
-   * and 'enabled' by default. Throws if the model is malformed (an empty or over-long ID or name,
+   * Add a model to the ones the deployment provides, 'enabled' by default and listed where its
+   * provider's order puts it (see setGatewayModelOrder): after the provider's other models unless
+   * the order names its ID. Throws if the model is malformed (an empty or over-long ID or name,
    * an over-long `behavesLike`, a token limit that isn't a positive integer), if the gateway does
    * not serve and enable its provider (see AdminSettingsView.gatewayModels), if a suggested or
    * added model already has its ID, if the model runtime does not know its `behavesLike` under
@@ -1768,6 +1997,28 @@ export interface AdminApi {
    * minted for one of its models, which setUserModelsEnabled(false) does.
    */
   setGatewayProviderEnabled(provider: AiModelProvider, enabled: boolean): Promise<void>;
+
+  /**
+   * List the providers, and so their models, in the order `providers` gives: in the admin's and
+   * users' model pickers, and for the default model, which is the first one enabled. Throws
+   * unless `providers` lists each provider of AdminSettingsView.gatewayModels.providerSettings,
+   * on or off, exactly once.
+   *
+   * A provider a later release adds follows the listed ones.
+   */
+  setGatewayProviderOrder(providers: AiModelProvider[]): Promise<void>;
+
+  /**
+   * List one provider's models in the order `modelIds` gives, which also decides the provider's
+   * first model and so may change the default model (see setGatewayProviderOrder). Throws for a
+   * provider the gateway does not serve or that is off, and unless `modelIds` lists each of the
+   * provider's gateway models exactly once: suggested and added, in every mode.
+   *
+   * A model that joins the provider later, added or suggested by a later release, follows the
+   * listed ones. A removed model keeps its place until the next call, so one added again under its
+   * ID takes the place back.
+   */
+  setGatewayModelOrder(provider: AiModelProvider, modelIds: string[]): Promise<void>;
 
   /**
    * Send one small request to the first of a provider's SUGGESTED_MODELS through the gateway, as
@@ -1859,6 +2110,29 @@ export interface AdminApi {
    * visit to Home. Throws unless `hours` is a whole number from 0 to MAX_UPDATE_HOURS.
    */
   setUpdateNoticeSnoozeHours(hours: number): Promise<void>;
+
+  // --- The audit log ---
+
+  /**
+   * One page of the deployment-wide admin audit log, newest first, filtered as `options` says.
+   * Rejects a `limit` that is not a whole number
+   * from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a malformed `cursor`.
+   */
+  listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
+
+  /** Counts from the admin audit log over the last `days` UTC days, today included (7 by
+   * default). Throws unless `days` is a whole number from 1 to MAX_ADMIN_AUDIT_STATS_DAYS. */
+  getAdminAuditStats(options?: AdminAuditStatsQuery): Promise<AdminAuditStats>;
+
+  /**
+   * Set how many days the admin audit log keeps a record, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS by
+   * default. A record older than that is no longer listed or counted, and is deleted as the log is
+   * next used. Throws
+   * unless `days` is a whole number from the deployment's minimum
+   * (AdminSettingsView.adminAuditRetentionDays.min, set by its ADMIN_AUDIT_RETENTION_MIN_DAYS
+   * environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.
+   */
+  setAdminAuditRetentionDays(days: number): Promise<void>;
 }
 
 /** A partial edit to one promoted format. Absent fields are left alone. */
@@ -2414,7 +2688,7 @@ type SuggestedModel = {
 // The literal is kept apart from the export so SuggestedModelId can derive the model ids from it.
 const SUGGESTED_MODEL_CATALOG = {
   // First so that, when its provider is on, Auto leads the model pickers and is the model a new
-  // user or chat gets by default.
+  // user or chat gets by default, unless the admin lists the providers in another order.
   "cloudflare-auto-router": {
     // The router answers with whichever model it picks, so the window is the smallest documented
     // in its pool (https://developers.cloudflare.com/ai-gateway/features/auto-router/#models:
@@ -2426,20 +2700,28 @@ const SUGGESTED_MODEL_CATALOG = {
     },
   },
   "cloudflare": {
+    // First, so that it is the Workers AI model a deployment defaults to.
+    "@cf/deepseek-ai/deepseek-v4.1-flash-1017": {
+      name: "DeepSeek V4.1 Flash (Workers AI)", contextWindow: 1048576,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
     "@cf/moonshotai/kimi-k2.7-code": {
       name: "Kimi K2.7 Code (Workers AI)", contextWindow: 262144,
       outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+    },
+    "@cf/zai-org/glm-5.3": {
+      name: "GLM 5.3 (Workers AI)", contextWindow: 1048576, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.2": {
       name: "GLM 5.2 (Workers AI)", contextWindow: 262144, outputLimit: WORKERS_AI_OUTPUT_LIMIT,
     },
     "@cf/zai-org/glm-5.3-flash": {
       name: "GLM 5.3 Flash (Workers AI)", contextWindow: 1048576,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT, hidden: true,
     },
     "@cf/deepseek-ai/deepseek-v4-pro-0813": {
       name: "DeepSeek V4 Pro 0813 (Workers AI)", contextWindow: 1048576,
-      outputLimit: WORKERS_AI_OUTPUT_LIMIT,
+      outputLimit: WORKERS_AI_OUTPUT_LIMIT, hidden: true,
     },
     "@cf/cloudflare/clef": {name: "Clef (Workers AI)", contextWindow: 65536, kind: "decision"},
     "@cf/cloudflare/clef-flash": {
@@ -2449,10 +2731,11 @@ const SUGGESTED_MODEL_CATALOG = {
   "anthropic": {
     "claude-opus-5-5": {name: "Claude Opus 5.5", contextWindow: 1000000},
     "claude-sonnet-5-5": {name: "Claude Sonnet 5.5", contextWindow: 1000000},
+    "claude-haiku-5-5": {name: "Claude Haiku 5.5", contextWindow: 1000000},
     "claude-fable-5-1": {name: "Claude Fable 5.1", contextWindow: 1000000},
     "claude-opus-5": {name: "Claude Opus 5", contextWindow: 1000000, hidden: true},
     "claude-sonnet-5": {name: "Claude Sonnet 5", contextWindow: 1000000, hidden: true},
-    "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000},
+    "claude-haiku-4-5": {name: "Claude Haiku 4.5", contextWindow: 200000, hidden: true},
   },
   "openai": {
     // pi's GPT-6 catalog reports a 272K window, but these models support 1.05M. Use 272K as the
@@ -2571,8 +2854,8 @@ export type WorkspaceMetadata = {
    * True when the workspace has observed data marked `containsRestrictedData` (see
    * `ObservationDescription`). It can still be shared, with collaborators verified per
    * gatekeeper (if `ownerInvitesOnly` is also set, only the owner can add them), but its web
-   * fetches reach only the hosts the deployment admin trusts (none by default), and every action
-   * requires manual approval.
+   * fetches reach only the hosts the deployment admin trusts (none by default) or, where the admin
+   * allows it, a URL a user approves, and every action requires manual approval.
    */
   containsRestrictedData?: boolean;
 
@@ -2808,11 +3091,17 @@ export type TreeNode =
  * One file's content at a commit, as returned by Overseer.readFilesAtCommit(). `text` carries
  * the file's UTF-8 content; `absent` means the path names no entry at that commit (or names a
  * directory); `unreadable` means the entry exists but cannot be presented as text -- a symlink,
- * a submodule, binary content, or a blob over the git store's per-object size cap -- and carries
- * a descriptive, path-flavored message suitable for display in place of the file.
+ * a submodule, or binary content (never a matter of size) -- and carries a descriptive,
+ * path-flavored message suitable for display in place of the file.
+ *
+ * `stream` is how a regular file over MAX_BUFFERED_BLOB_SIZE arrives instead of `text`: its raw
+ * bytes, `byteLength` of them, as a stream. The server has not checked that they are text, so
+ * the caller applies the same rules it would have (no NUL byte, valid UTF-8). The caller must
+ * consume or cancel every stream it receives.
  */
 export type FileAtCommit =
   | { kind: "text"; text: string }
+  | { kind: "stream"; byteLength: number; content: ReadableStream<Uint8Array> }
   | { kind: "absent" }
   | { kind: "unreadable"; message: string };
 
@@ -2826,8 +3115,8 @@ export const MAX_READ_FILES_PER_CALL = 64;
  * Text bytes after which Overseer.readFilesAtCommit() stops decoding and omits the remaining
  * requested paths from its response (the client re-requests them). Keeps one response well
  * under the RPC message ceiling even with the UTF-16 inflation of serialized text. The first
- * file is always returned whole, however large, so every call makes progress; its size is
- * bounded only by what the git store could hold.
+ * file is always returned whole, however large, so every call makes progress. A `stream` entry's
+ * bytes travel outside the response message, so they do not count toward this budget.
  */
 export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
 
@@ -3093,7 +3382,8 @@ export interface Overseer extends RpcTarget {
    * the workspace's git store are pulled in one batch through the gatekeeper that provided the
    * commit; a pull failure fails the whole call, since it is transient or actionable rather than
    * a fact about any one file, whereas per-file conditions -- absent path, symlink, submodule,
-   * binary or oversized content -- are reported per entry (see FileAtCommit).
+   * binary content -- are reported per entry (see FileAtCommit). A file of any size is read: one
+   * over MAX_BUFFERED_BLOB_SIZE (see `@gadgets/workshop-shared/gatekeeper`) as a `stream` entry.
    *
    * At most MAX_READ_FILES_PER_CALL paths per call. The server stops decoding once the
    * accumulated text exceeds READ_FILES_RESPONSE_BUDGET and omits the remaining paths from the
@@ -3319,6 +3609,16 @@ export interface Overseer extends RpcTarget {
   denyConnectionRequest(requestId: string): Promise<void>;
 
   /**
+   * Approve an agent's pending request to fetch a URL (a "webFetchRequest" chat message) that the
+   * workspace's restricted mode refuses. Updates the inline card and resumes the agent, which may
+   * then fetch that URL, and follow its redirects, until the user's next prompt.
+   */
+  approveWebFetchRequest(requestId: string): Promise<void>;
+
+  /** Deny an agent's pending request to fetch a URL. Like denyConnectionRequest, the turn stays ended. */
+  denyWebFetchRequest(requestId: string): Promise<void>;
+
+  /**
    * Subscribe to action adds/updates. Dispose the returned stub to unsubscribe.
    *
    * The subscription delivers live deltas only — nothing pre-existing is replayed. Query for
@@ -3459,9 +3759,17 @@ export interface Overseer extends RpcTarget {
    * comes back after durable storage. Retrying identical bytes returns the same OID. This does not
    * change any worktree or message. Use the OID in a chat attachment, or in a worktree's whole-file
    * `setBytes` change together with the payload's byte length. The blob must be present in this
-   * workspace's Git store. Limited to 8,000,000 bytes; larger-file support is deferred.
+   * workspace's Git store.
+   *
+   * There is no size limit. A `Uint8Array` travels in one RPC message; for large content, pass
+   * `{stream, byteLength}` instead, which the server stores as it arrives without holding it
+   * whole. `byteLength` must be the stream's exact length: it is verified, and a stream that
+   * ends short of it or runs past it fails the call and stores no blob (though pieces already
+   * written may remain, unreferenced, as after any interrupted write). Either way, the OID is
+   * returned only once the whole blob is durably stored.
    */
-  uploadBlob(content: Uint8Array): Promise<GitOid>;
+  uploadBlob(content: Uint8Array | { stream: ReadableStream<Uint8Array>; byteLength: number })
+      : Promise<GitOid>;
 
   /**
    * Fetch the bytes of a committed chat attachment over RPC. The canonical metadata is already
@@ -3615,9 +3923,10 @@ export interface Overseer extends RpcTarget {
    * Wait for the agent's turn in a chat to end, and return the latest message the agent wrote in
    * it. This is the way to wait for the turn `newChat()`, `sendChatMessage()` or `retryAgent()`
    * starts: the message is then its reply (`message`), the `error` that ended it, or what it stopped
-   * to wait on (an `action` or a `connectionRequest`). Returns at once if no turn is running, and
-   * null if the agent has written nothing in the chat. The other records logged under the agent,
-   * such as the `changes` a step records after its reply, are not messages it wrote.
+   * to wait on (an `action`, a `connectionRequest` or a `webFetchRequest`). Returns at once if no
+   * turn is running, and null if the agent has written nothing in the chat. The other records
+   * logged under the agent, such as the `changes` a step records after its reply, are not messages
+   * it wrote.
    *
    * The wait ends when the chat's `AiChatMetadata.activeAgent` clears: the turn finished, failed
    * or was stopped, or paused for the user's decision on an action. A turn that hands straight on
@@ -3908,9 +4217,9 @@ export type ChatCodeBase = {
    * but the content carries over -- `prior` describes the closed stream, and in-flight
    * submissions are transformed onto the new generation (see submitCodeChange()). **Destructive**
    * (a revert, draft discard, or agent turn abort erased already-applied changes, or
-   * updateChatFromMainline() re-rooted pins): content other clients may have transformed against
-   * is gone, so they must discard local state and rebuild. Pin additions do *not* bump -- they
-   * only append changes.
+   * updateChatFromMainline() or an agent step re-rooted pins): content other clients may have
+   * transformed against is gone, so they must discard local state and rebuild. Pin additions do
+   * *not* bump -- they only append changes.
    */
   generation: number;
 
@@ -4018,6 +4327,10 @@ export type ChatGadgetPinState = ChatGadgetPin & {
    * that was merged; accepting then fast-forwards the head from here through the merge commit
    * (see Overseer.mergeChanges()). A revert puts back what the earliest update it covers
    * records the pin had before (see AiChatMessageBody.mainlineMerge).
+   *
+   * A worktree's is always its accepted commit (WorktreeSummary.pinBase). An agent step can
+   * re-root a worktree's pin at a commit of its own, holding the result of a command it ran
+   * there, which then differs from this; accepting commits the chat's content on this commit.
    */
   mergedCommit: string;
 };
@@ -4609,6 +4922,22 @@ export type AiChatMessageBody = {
    * turn-start naming chokepoint.
    */
   bindingName?: string;
+} | {
+  /**
+   * The agent asked to fetch a URL that the workspace's restricted mode refuses (see
+   * `AdminSettingsView.restrictedWebFetchApprovals`). Rendered as an approve/deny card, and mutated
+   * in place when the user decides, who vouches that the URL holds no restricted data.
+   */
+  type: "webFetchRequest";
+
+  /** Unique id used by approveWebFetchRequest()/denyWebFetchRequest(). */
+  requestId: string;
+
+  /** The URL, exactly as it will be requested. */
+  url: string;
+
+  /** Starts "pending"; set by the user's decision. */
+  state: "pending" | "approved" | "denied";
 };
 
 /**
@@ -4992,6 +5321,13 @@ export type AiToolCall = {
 
     /** Title of the new resource, e.g. a document's title. */
     title: string;
+
+    /**
+     * A configuration to suggest, for a type that describes one (see
+     * `SupportedResource.creationConfigurationDescription`): the approver's configurator opens on
+     * it, and they may choose otherwise. Refused for any other type.
+     */
+    configuration?: string;
 
     /** Name under which the resource appears in the chat's env (see validateBindingName()). */
     bindingName: string;
@@ -5569,7 +5905,8 @@ export type ApplyBlueprintResult = {
  * The WorkpieceSummary of a worktree: a checkout of an external git repository that an agent
  * works in (see AiChatMessageBody.createdWorktrees). It has no app and no bindings; the UI shows
  * only its code. Its three commits are the worktree's state as the chat sees it; the OT rows of
- * the chat's current epoch compose on `pinBase`.
+ * the chat's current epoch compose on the chat pin's `baseCommit`, which is `pinBase` unless an
+ * agent step re-rooted the pin (see ChatGadgetPinState.mergedCommit).
  */
 export type WorktreeSummary = {
   id: WorkpieceId;
@@ -5673,6 +6010,8 @@ export type GatekeeperCreationSpec = {
   vendorId: string;        // identifies the gatekeeper adapter (e.g. "google")
   resourceUrl?: string;    // absent until a resource created by createExternalResource exists
   typeUrlPattern: string;  // URL pattern from the vendor's SupportedResource (not the specific URL)
+  /** The configuration createExternalResource suggested (see its `configuration`). */
+  configuration?: string;
 } | {
   type: "aiModel";
   modelId: string;         // the user's configured model ID
@@ -6175,21 +6514,18 @@ export type CollaboratorRole = "build" | "use";
 
 /**
  * Access a new grant confers: "workspace" ("build" on the whole workspace), or "use" of one
- * gadget's deployed UI. ("use" of every gadget at once can no longer be granted, though
- * collaborators who received it before gadgets were shared individually keep it; see
- * CollaboratorAccess.)
+ * gadget's deployed UI.
  */
 export type CollaboratorGrant = "workspace" | {gadgetId: WorkpieceId};
 
 /**
  * A collaborator's effective access: the union of their valid grants reachable from the owner.
  * A grant counts only while its sharer (or share link creator) holds "build"; the owner is the
- * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open, or is
- * "all" for a collaborator granted every gadget before gadgets were shared individually.
+ * implicit root with "build". `gadgetIds` lists the gadgets a "use" collaborator may open.
  */
 export type CollaboratorAccess =
   | {role: "build"}
-  | {role: "use", gadgetIds: WorkpieceId[] | "all"};
+  | {role: "use", gadgetIds: WorkpieceId[]};
 
 /** One person currently connected to a gadget. */
 export type PresenceParticipant = {
@@ -6220,9 +6556,8 @@ export type PermissionEdge = {
   role?: CollaboratorRole;
 
   /**
-   * The one gadget a "use" edge grants (for a share key edge, a copy of its link's). A "use" edge
-   * without one grants every gadget in the workspace; those are no longer created except to keep
-   * access someone already had (see removeCollaborator()'s `keepUsers`).
+   * The one gadget a "use" edge grants. Every "use" edge names one, including each of the edges
+   * a share link to several gadgets gives its recipient, one per gadget.
    */
   gadgetId?: WorkpieceId;
 } & ({
@@ -6236,7 +6571,7 @@ export type PermissionEdge = {
 
   /**
    * The id of the share link that was redeemed (the hash of its first key). Every key of the link
-   * resolves to this id, so redeeming any of them yields this one edge.
+   * resolves to this id, so redeeming any of them yields the same edges.
    */
   keyId: string;
 });
@@ -6282,10 +6617,14 @@ export type ShareLinkInfo = {
    */
   role?: CollaboratorRole;
 
-  /**
-   * The one gadget a "use" link grants. A "use" link without one grants every gadget, as links
-   * did before gadgets were shared individually; such a link can no longer be created, but it
-   * can still be copied and redeemed.
-   */
+  /** The one gadget a "use" link grants, unless it grants several (see `gadgets`). */
   gadgetId?: WorkpieceId;
+
+  /**
+   * The gadgets a "use" link to several gadgets grants, those of them that can still be shared,
+   * with their titles. Such a link is what became of a link to every gadget, made before gadgets
+   * were shared individually: it was frozen to the gadgets its workspace then held. No new one can
+   * be created, but it can still be copied and redeemed.
+   */
+  gadgets?: {id: WorkpieceId; title: string}[];
 };

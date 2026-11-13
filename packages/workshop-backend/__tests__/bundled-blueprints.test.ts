@@ -104,7 +104,7 @@ async function instantiate(blueprintId: string, metadata: BlueprintMetadata)
     let [gadget, ...others] = [...impl.storage.gadgets.list()];
     expect(others).toEqual([]);
     expect(gadget.output).toEqual(metadata.output);
-    return await impl.gitStore.readCommitFiles(gadget.commitId);
+    return impl.gitCache.readCommitFiles(gadget.commitId);
   });
 }
 
@@ -278,7 +278,7 @@ describe("bundled blueprints", () => {
     expect(client).toContain('["html", "pdf"].includes(');
     expect(client).toContain("gadgetExportFormatId");
     expect(client).toContain('document.documentElement.classList.add("document-export")');
-    expect(client).toContain("app.replaceChildren(canvas)");
+    expect(client).toContain("bar.remove();");
   });
 
   it("declares the intended export formats for every standard output format", () => {
@@ -287,6 +287,7 @@ describe("bundled blueprints", () => {
         'id: "markdown", label: "Markdown", mode: "server", contentType: "text/markdown"',
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',
         'id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf"',
+        'id: "docx", label: "Word", mode: "server", contentType: DOCX_CONTENT_TYPE',
       ],
       "format.slides": [
         'id: "html", label: "HTML", mode: "browser", contentType: "text/html"',

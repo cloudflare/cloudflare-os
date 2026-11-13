@@ -1,7 +1,8 @@
 import { RpcTarget } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { displayText } from "@gadgets/configurator-ui/options";
-import { BigQueryApi } from "./bigquery-api";
+import { BigQueryApi, BigQueryApiError } from "./bigquery-api";
+import type { BigQueryDataset, BigQueryProject, BigQueryTable } from "./bigquery-types";
 import { GoogleCalendarApi } from "./calendar-api";
 import { ChatApi, chatSpaceIdFromReference, isChatNoAccessError } from "./chat-api";
 import type { ChatSpaceInfo } from "./chat-types";
@@ -11,7 +12,9 @@ import {
   DriveApi, DriveApiDisabledError, FOLDER_MIME_TYPE, SHORTCUT_MIME_TYPE, isFileInvisible,
   isListableFolderFile, isListableFolderNode, type DriveFile, type DriveFileList, type DriveScopeNode,
 } from "./drive-api";
-import type { BigQueryConfiguratorRpc } from "./configurator/bigquery-configurator-types";
+import type {
+  BigQueryConfiguratorRpc, BigQueryNode, BigQueryNodeKind, BigQueryNodePage,
+} from "./configurator/bigquery-configurator-types";
 import type { CalendarConfiguratorRpc } from "./configurator/calendar-configurator-types";
 import type { GmailConfiguratorRpc } from "./configurator/gmail-configurator-types";
 import type { ConfiguratorOption } from "./configurator/configurator-option";
@@ -25,9 +28,13 @@ import type {
 import type { ChatSpaceConfiguratorRpc } from "./configurator/chat-space-configurator-types";
 import type { ChatThreadConfiguratorRpc } from "./configurator/chat-thread-configurator-types";
 import type {
-  DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage,
+  DriveConfiguratorRpc, DriveNode, DriveNodeAncestor, DriveNodePage, DriveWriteAccess,
 } from "./configurator/drive-configurator-types";
-import { OFFICE_IMPORT_GRANT, parseResourceUrl, SHARED_DRIVES_GRANT } from "./resources";
+import type { CreationLocationConfiguratorRpc } from "./configurator/creation-location-configurator-types";
+import {
+  BIGQUERY_HOST, CREATED_FILES_GRANT, DRIVE_WRITES_GRANT, OFFICE_IMPORT_GRANT, parseResourceUrl,
+  SHARED_DRIVES_GRANT,
+} from "./resources";
 
 /**
  * Mints an access token for a configurator, forwarding `AccessTokenRequest` to the `UserAccount`
@@ -37,20 +44,28 @@ type ConfiguratorTokenGetter = (opts?: AccessTokenRequest) => Promise<GoogleAcce
 
 const googleTokenGetters = new WeakMap<object, ConfiguratorTokenGetter>();
 const grantChecks = new WeakMap<object, (grant: string) => Promise<boolean>>();
+/** Whether the deployment a Drive picker was opened on offers read and write Drive connections. */
+const writeOffers = new WeakMap<object, boolean>();
 const calendarConfiguratorCaches = new WeakMap<object, Promise<ConfiguratorOption[]>>();
-const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, ConfiguratorOption[]>>();
+const bigQueryConfiguratorCaches = new WeakMap<object, Map<string, Promise<unknown>>>();
 const BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES = 200;
-const BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS = { maxPages: 1, maxResults: 200 };
-const BIGQUERY_CONFIGURATOR_SEARCH_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
-
-function bigQueryConfiguratorListOptions(query: string) {
-  return query.trim() ? BIGQUERY_CONFIGURATOR_SEARCH_LIST_OPTIONS : BIGQUERY_CONFIGURATOR_EMPTY_LIST_OPTIONS;
-}
+const BIGQUERY_CONFIGURATOR_LIST_OPTIONS = { maxPages: 5, maxResults: 1000 };
+/** Nodes per picker page, within the hierarchy picker's limit of 200. */
+const BIGQUERY_PICKER_PAGE_SIZE = 100;
+/** Must equal `ROOT_ID` in configurator/bigquery-configurator-ui.tsx. */
+const BIGQUERY_ROOT_ID = "bigquery";
 
 function googleToken(target: object, opts?: AccessTokenRequest): Promise<GoogleAccessToken> {
   let getToken = googleTokenGetters.get(target);
   if (!getToken) throw new Error("Google configurator is not initialized.");
   return getToken(opts);
+}
+
+/** Whether the account `target` was opened for holds `grant`, asked afresh on every call. */
+function holdsGrant(target: object, grant: string): Promise<boolean> {
+  let holds = grantChecks.get(target);
+  if (!holds) throw new Error("Google configurator is not initialized.");
+  return holds(grant);
 }
 
 /** A provider that re-asks on every call, so `fetchWithAuthRetry` can refresh a rejected token. */
@@ -80,23 +95,31 @@ async function calendarApi(target: object): Promise<GoogleCalendarApi> {
   return new GoogleCalendarApi(googleTokenProvider(target));
 }
 
-async function cachedBigQueryOptions(
-  target: object,
-  key: string,
-  load: () => Promise<ConfiguratorOption[]>,
-): Promise<ConfiguratorOption[]> {
+/**
+ * Answers a BigQuery picker request once per frame: the picker asks again for a location it returns
+ * to, and the same project list stands behind every lookup. A failed request is asked again. The
+ * least recently used answer makes room when the cache is full.
+ */
+function cachedBigQuery<T>(target: object, key: string, load: () => Promise<T>): Promise<T> {
   let cache = bigQueryConfiguratorCaches.get(target);
   if (!cache) {
     cache = new Map();
     bigQueryConfiguratorCaches.set(target, cache);
   }
   let cached = cache.get(key);
-  if (cached) return cached;
-  let result = await load();
+  if (cached) {
+    cache.delete(key);
+    cache.set(key, cached);
+    return cached as Promise<T>;
+  }
   if (cache.size >= BIGQUERY_CONFIGURATOR_CACHE_MAX_ENTRIES) {
     let oldestKey = cache.keys().next().value;
     if (oldestKey !== undefined) cache.delete(oldestKey);
   }
+  let result = load();
+  result.catch(() => {
+    if (cache.get(key) === result) cache.delete(key);
+  });
   cache.set(key, result);
   return result;
 }
@@ -195,6 +218,117 @@ export class CalendarConfiguratorUI extends RpcTarget implements CalendarConfigu
   }
 }
 
+type BigQueryNodeRef = { kind: BigQueryNodeKind; projectId: string; datasetId?: string; tableId?: string };
+
+/** `<kind>:<project>[/<dataset>[/<table>]]`; must mirror `idOf` in configurator/bigquery-configurator-ui.tsx. */
+function bigQueryNodeId({ kind, projectId, datasetId, tableId }: BigQueryNodeRef): string {
+  return `${kind}:${[projectId, datasetId, tableId].filter(Boolean).join("/")}`;
+}
+
+function parseBigQueryNodeId(id: string): BigQueryNodeRef | undefined {
+  let colon = id.indexOf(":");
+  if (colon < 0) return undefined;
+  let kind = id.slice(0, colon);
+  let [projectId, datasetId, tableId, ...rest] = id.slice(colon + 1).split("/");
+  if (!projectId || rest.length > 0) return undefined;
+  if (kind === "project" && datasetId === undefined) return { kind, projectId };
+  if (kind === "dataset" && datasetId && tableId === undefined) return { kind, projectId, datasetId };
+  if (kind === "table" && datasetId && tableId) return { kind, projectId, datasetId, tableId };
+  return undefined;
+}
+
+/**
+ * `project.dataset.table`, `project.dataset` or a project ID, as BigQuery writes them, where a legacy
+ * project ID carries a domain (`example.com:proj`). Dataset and table IDs are BigQuery identifiers.
+ */
+const BIGQUERY_REFERENCE_RE =
+  /^((?:[a-z0-9][a-z0-9.-]*:)?[a-z0-9][a-z0-9-]*)(?:\.([A-Za-z0-9_]+)(?:\.([A-Za-z0-9_]+))?)?$/;
+
+/** The shortest a Google Cloud project ID can be; a bare word shorter than this is only a search. */
+const BIGQUERY_PROJECT_ID_MIN_LENGTH = 6;
+
+const kindOf = (datasetId?: string, tableId?: string): BigQueryNodeKind =>
+  tableId ? "table" : datasetId ? "dataset" : "project";
+
+/**
+ * What typing into the picker's search names, when it names a place rather than searches for one: a
+ * connection's URL, a Cloud Console link (`?p=<project>&d=<dataset>&t=<table>`, or the console's
+ * own `?project=` when it names nothing narrower), a node id or a reference. `explicit` is false for
+ * a bare word, which is as likely a search as a project ID; `link` is true for a URL or node id,
+ * which can name nothing else.
+ */
+function linkedBigQueryNodeRef(input: string): { ref: BigQueryNodeRef; explicit: boolean; link?: true } | undefined {
+  let text = input.trim().replace(/^`(.*)`$/, "$1");
+  if (!text) return undefined;
+  // Only a known host is read as a link: a legacy project ID (`example.com:proj`) parses as a URL too.
+  let url = URL.canParse(text) ? new URL(text) : undefined;
+  if (url?.hostname === BIGQUERY_HOST) {
+    try {
+      let target = parseResourceUrl(text);
+      if (target.kind !== "bigquery") return undefined;
+      let { projectId, datasetId, tableId } = target;
+      return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true, link: true };
+    } catch {
+      return undefined;
+    }
+  }
+  if (url?.hostname === "console.cloud.google.com" && url.pathname.startsWith("/bigquery")) {
+    let projectId = url.searchParams.get("p") ?? url.searchParams.get("project");
+    let datasetId = url.searchParams.get("d") ?? undefined;
+    let tableId = datasetId ? url.searchParams.get("t") ?? undefined : undefined;
+    return projectId ? { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: true, link: true } : undefined;
+  }
+  let node = parseBigQueryNodeId(text);
+  if (node) return { ref: node, explicit: true, link: true };
+  let match = BIGQUERY_REFERENCE_RE.exec(text);
+  if (!match) return undefined;
+  let [, projectId, datasetId, tableId] = match;
+  if (datasetId === undefined && projectId.length < BIGQUERY_PROJECT_ID_MIN_LENGTH) return undefined;
+  return { ref: { kind: kindOf(datasetId, tableId), projectId, datasetId, tableId }, explicit: datasetId !== undefined };
+}
+
+/** BigQuery's answers for what this account cannot see: denied (which also hides existence), unknown, or not a project. */
+function isBigQueryNotVisible(error: unknown): boolean {
+  return error instanceof BigQueryApiError &&
+    (error.status === 404 || error.status === 400 || (error.status === 403 && error.reason === "accessDenied"));
+}
+
+const BIGQUERY_TABLE_KINDS: Record<string, string> = {
+  VIEW: "View", MATERIALIZED_VIEW: "Materialized view", EXTERNAL: "External table", SNAPSHOT: "Snapshot",
+};
+const BIGQUERY_VIEW_TYPES = new Set(["VIEW", "MATERIALIZED_VIEW"]);
+
+const bigQueryProjectCrumb = (projectId: string) =>
+  ({ id: bigQueryNodeId({ kind: "project", projectId }), kind: "project" as const, title: projectId });
+const bigQueryDatasetCrumb = (projectId: string, datasetId: string) =>
+  ({ id: bigQueryNodeId({ kind: "dataset", projectId, datasetId }), kind: "dataset" as const, title: datasetId });
+
+function bigQueryProjectNode(project: BigQueryProject, listed: boolean): BigQueryNode {
+  return {
+    id: bigQueryNodeId({ kind: "project", projectId: project.projectId }), kind: "project",
+    title: project.projectId, subtitle: project.friendlyName, listed,
+  };
+}
+
+function bigQueryDatasetNode(dataset: BigQueryDataset, listed: boolean): BigQueryNode {
+  return {
+    id: bigQueryNodeId({ kind: "dataset", projectId: dataset.projectId, datasetId: dataset.datasetId }), kind: "dataset",
+    title: dataset.datasetId, subtitle: dataset.friendlyName ?? dataset.description, listed,
+    path: [bigQueryProjectCrumb(dataset.projectId)],
+  };
+}
+
+function bigQueryTableNode(table: BigQueryTable, listed: boolean): BigQueryNode {
+  return {
+    id: bigQueryNodeId({ kind: "table", projectId: table.projectId, datasetId: table.datasetId, tableId: table.tableId }),
+    kind: "table", title: table.tableId, subtitle: table.friendlyName ?? BIGQUERY_TABLE_KINDS[table.type], listed,
+    view: BIGQUERY_VIEW_TYPES.has(table.type) || undefined,
+    path: [bigQueryProjectCrumb(table.projectId), bigQueryDatasetCrumb(table.projectId, table.datasetId)],
+  };
+}
+
+const byTitle = (a: { title: string }, b: { title: string }) => a.title.localeCompare(b.title);
+
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
 @validateRpc()
 export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfiguratorRpc {
@@ -203,53 +337,97 @@ export class BigQueryConfiguratorUI extends RpcTarget implements BigQueryConfigu
     googleTokenGetters.set(this, getToken);
   }
 
+  /** The projects BigQuery lists for this account, by id: those it holds a role in. */
+  #heldProjects(): Promise<Map<string, BigQueryProject>> {
+    return cachedBigQuery(this, "projects", async () => {
+      let api = await bigQueryApi(this);
+      let projects = await api.listProjects(BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
+      return new Map(projects.map(project => [project.projectId, project]));
+    });
+  }
+
   async listProjects(query: string): Promise<ConfiguratorOption[]> {
-    return cachedBigQueryOptions(this, `projects:${query.trim().toLowerCase()}`, async () => {
+    let projects = [...(await this.#heldProjects()).values()];
+    return projects
+      .filter(project => optionMatches([project.projectId, project.friendlyName, project.numericId], query))
+      .toSorted((a, b) => a.projectId.localeCompare(b.projectId))
+      .slice(0, 100)
+      .map(project => ({ value: project.projectId, title: project.projectId, subtitle: project.friendlyName }));
+  }
+
+  async listNodes(parentId: string, query: string, cursor: string | null): Promise<BigQueryNodePage> {
+    let linked = linkedBigQueryNodeRef(query);
+    if (linked?.explicit) {
+      let node = await this.#node(linked.ref);
+      if (node) return { nodes: [node] };
+      if (linked.link) return { nodes: [], notice: "This account can't see what that names, or it doesn't exist." };
+      // A dotted term that names nothing (`q3.report`) is searched for like any other.
+    }
+    let nodes = await this.#children(parentId);
+    let matching = nodes.filter(node => optionMatches([node.title, node.subtitle], query));
+    // A project the account holds no role in is never listed, but BigQuery still answers for it
+    // when a dataset in it was shared with the account, so a project ID no listed project has is
+    // looked up, even where listed names contain it.
+    if (linked && !linked.explicit && parentId === BIGQUERY_ROOT_ID && !matching.some(node => node.title === linked.ref.projectId)) {
+      let node = await this.#node(linked.ref);
+      if (node) matching = [node, ...matching];
+    }
+    // The whole listing is in hand, so the cursor is an offset into it.
+    let offset = cursor === null ? 0 : Number(cursor);
+    if (!Number.isInteger(offset) || offset < 0) throw new Error("Unknown page.");
+    let end = offset + BIGQUERY_PICKER_PAGE_SIZE;
+    return { nodes: matching.slice(offset, end), ...(end < matching.length ? { nextCursor: String(end) } : {}) };
+  }
+
+  async getNode(id: string): Promise<BigQueryNode | null> {
+    let ref = parseBigQueryNodeId(id);
+    return ref ? this.#node(ref) : null;
+  }
+
+  #children(parentId: string): Promise<BigQueryNode[]> {
+    return cachedBigQuery(this, `children:${parentId}`, async () => {
+      if (parentId === BIGQUERY_ROOT_ID) {
+        return [...(await this.#heldProjects()).values()].map(project => bigQueryProjectNode(project, true)).toSorted(byTitle);
+      }
+      let ref = parseBigQueryNodeId(parentId);
+      if (!ref || ref.kind === "table") throw new Error("Unknown BigQuery location.");
       let api = await bigQueryApi(this);
-      let projects = await api.listProjects(bigQueryConfiguratorListOptions(query));
-      return projects
-        .filter(project => optionMatches([project.projectId, project.friendlyName, project.numericId], query))
-        .slice(0, 100)
-        .map(project => ({
-          value: project.projectId,
-          title: project.projectId,
-          subtitle: project.friendlyName,
-        }));
+      let listed = (await this.#heldProjects()).has(ref.projectId);
+      if (ref.kind === "project") {
+        let datasets = await api.listDatasets(ref.projectId, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
+        return datasets.map(dataset => bigQueryDatasetNode(dataset, listed)).toSorted(byTitle);
+      }
+      let tables = await api.listTables(ref.projectId, ref.datasetId!, BIGQUERY_CONFIGURATOR_LIST_OPTIONS);
+      return tables.map(table => bigQueryTableNode(table, listed)).toSorted(byTitle);
     });
   }
 
-  async listDatasets(projectId: string, query: string): Promise<ConfiguratorOption[]> {
-    return cachedBigQueryOptions(this, `datasets:${projectId}:${query.trim().toLowerCase()}`, async () => {
+  /** The node `ref` names, asked of BigQuery, or null when this account cannot see it. */
+  #node(ref: BigQueryNodeRef): Promise<BigQueryNode | null> {
+    return cachedBigQuery(this, `node:${bigQueryNodeId(ref)}`, async () => {
+      let held = await this.#heldProjects();
+      let listed = held.has(ref.projectId);
       let api = await bigQueryApi(this);
-      let datasets = await api.listDatasets(projectId, bigQueryConfiguratorListOptions(query));
-      return datasets
-        .filter(dataset => optionMatches([dataset.datasetId, dataset.friendlyName, dataset.description, dataset.location], query))
-        .slice(0, 100)
-        .map(dataset => ({
-          value: dataset.datasetId,
-          title: dataset.datasetId,
-          subtitle: dataset.friendlyName ?? dataset.description,
-          meta: dataset.location,
-        }));
+      try {
+        if (ref.kind === "project") {
+          let project = held.get(ref.projectId);
+          if (project) return bigQueryProjectNode(project, true);
+          // Listing a project's datasets needs no role in it: one that was shared a dataset sees that
+          // dataset, and a project the account cannot see at all refuses.
+          await api.listDatasets(ref.projectId, { maxPages: 1, maxResults: 1 });
+          return bigQueryProjectNode({ projectId: ref.projectId }, false);
+        }
+        if (ref.kind === "dataset") {
+          return bigQueryDatasetNode(await api.getDataset(ref.projectId, ref.datasetId!), listed);
+        }
+        let { table } = await api.getTable(ref.projectId, ref.datasetId!, ref.tableId!);
+        return bigQueryTableNode(table, listed);
+      } catch (error) {
+        if (isBigQueryNotVisible(error)) return null;
+        throw error;
+      }
     });
   }
-
-  async listTables(projectId: string, datasetId: string, query: string): Promise<ConfiguratorOption[]> {
-    return cachedBigQueryOptions(this, `tables:${projectId}:${datasetId}:${query.trim().toLowerCase()}`, async () => {
-      let api = await bigQueryApi(this);
-      let tables = await api.listTables(projectId, datasetId, bigQueryConfiguratorListOptions(query));
-      return tables
-        .filter(table => optionMatches([table.tableId, table.friendlyName, table.type], query))
-        .slice(0, 100)
-        .map(table => ({
-          value: table.tableId,
-          title: table.tableId,
-          subtitle: table.friendlyName,
-          meta: table.type,
-        }));
-    });
-  }
-
 }
 
 // RPC interface exposed by Gatekeeper to the resource selection/configuration iframe.
@@ -358,7 +536,9 @@ function driveFileNode(
     ...(file.modifiedTime ? { modifiedTime: file.modifiedTime } : {}),
     ...(detail ? { detail } : {}),
   };
-  if (mimeType === FOLDER_MIME_TYPE) return { id: `folder:${id}`, kind: "folder", listable, ...shown };
+  if (mimeType === FOLDER_MIME_TYPE) {
+    return { id: `folder:${id}`, kind: "folder", listable, ...file.capabilities?.canAddChildren && { addable: true }, ...shown };
+  }
   let size = file.size === undefined ? NaN : Number(file.size);
   return {
     id: `${editorKind(mimeType) ?? "file"}:${id}`, kind: "file", ...(mimeType ? { mimeType } : {}), ...shown,
@@ -401,8 +581,10 @@ async function drivePath(drive: DriveApi, file: DriveFile): Promise<DriveNodeAnc
     ancestors.unshift(top);
   }
   // Judged as `readFolderRoot` judges a folder binding, so the picker offers only folders that connect.
-  let folders = ancestors.map(folder =>
-    ({ id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder) }));
+  let folders = ancestors.map(folder => ({
+    id: `folder:${folder.id}`, title: folder.name, listable: isListableFolderFile(folder),
+    ...folder.capabilities?.canAddChildren && { addable: true as const },
+  }));
   if (top.driveId === top.id) return [SHARED_DRIVES, ...folders];
   if (top.driveId === undefined && top.id === await myDriveId(drive)) {
     return folders.map((folder, index) => index === 0 ? { ...folder, title: "My Drive" } : folder);
@@ -435,75 +617,95 @@ function linkedDriveNodeId(text: string): string | undefined {
   }
 }
 
+/**
+ * One page of what the Drive picker shows at `parentId` (see DriveConfiguratorRpc.listDriveNodes()),
+ * or, with `foldersOnly`, of only the folders there. Search spans My Drive, "Shared with me" and
+ * every shared drive, wherever the picker is open; a folder's listing spans them too, since its id
+ * does not say which it lives in. A pasted link is answered with the node the picker would list for
+ * what it names.
+ */
+async function listDriveNodes(
+  picker: object, parentId: string, query: string, cursor: string | null, foldersOnly = false,
+): Promise<DriveNodePage> {
+  let linked = linkedDriveNodeId(query);
+  if (linked) {
+    // Only a folder link can name a folder, so no other is read.
+    let node = foldersOnly && !linked.startsWith("folder:") ? null : await driveNode(picker, linked);
+    return { nodes: node ? [node] : [] };
+  }
+  let drive = new DriveApi(googleTokenProvider(picker));
+  let page = {
+    pageSize: DRIVE_PAGE_SIZE, ...(cursor ? { pageToken: cursor } : {}),
+    ...(foldersOnly ? { mimeType: FOLDER_MIME_TYPE } : {}),
+  };
+  return withDriveApiEnabled<DriveNodePage>(DRIVE_BROWSE_DISABLED, async () => {
+    if (query.trim()) {
+      return driveFilePage(drive,
+        await drive.listFiles({ ...page, namePrefix: query, corpus: { kind: "allDrives" } }),
+        file => file.driveId
+          ? "In a shared drive"
+          : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive");
+    }
+    if (parentId === DRIVE_ROOT_ID) {
+      let myDrive = await myDriveId(drive);
+      return {
+        nodes: [
+          { id: `folder:${myDrive}`, title: "My Drive", kind: "folder", listable: true },
+          { ...SHARED_DRIVES, kind: "group" },
+          { ...SHARED_WITH_ME, kind: "group" },
+          { ...RECENT, kind: "group" },
+        ],
+      };
+    }
+    if (parentId === SHARED_DRIVES.id) {
+      // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
+      // for it when the user first opens them.
+      if (!(await grantChecks.get(picker)!(SHARED_DRIVES_GRANT))) {
+        return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
+      }
+      let { drives, nextPageToken } = await drive.listSharedDrives(page);
+      return drivePage(
+        drives.map(({ id, name, canAddChildren }) =>
+          ({ id: `folder:${id}`, title: name, kind: "sharedDrive", ...canAddChildren && { addable: true } })),
+        nextPageToken);
+    }
+    if (parentId === SHARED_WITH_ME.id) {
+      return driveFilePage(drive,
+        await drive.listFiles({ ...page, sharedWithMe: true, orderBy: "folder,name" }));
+    }
+    if (parentId === RECENT.id) {
+      // Files the account created, opened or had shared with it, newest first, as Drive's Recent
+      // shows them. Folders are browsed, so Drive leaves them out before paging, where they could
+      // empty a page; a shortcut to one is dropped once resolved.
+      let recent = await driveFilePage(drive, await drive.listFiles({ ...page, excludeFolders: true }));
+      return { ...recent, nodes: recent.nodes.filter(node => node.kind === "file") };
+    }
+    let folder = parseDriveNodeId(parentId);
+    if (folder?.kind !== "folder") throw new Error("Unknown Drive location.");
+    return driveFilePage(drive, await drive.listFiles({
+      ...page, directParentIds: [folder.fileId], corpus: { kind: "allDrives" }, orderBy: "folder,name",
+    }));
+  });
+}
+
 @validateRpc()
 export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorRpc {
-  /** `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is open. */
-  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+  /**
+   * `holds` says whether the account holds a grant, asked afresh: one can arrive while the picker is
+   * open. `offersWrite` says whether the deployment lets a Drive connection be read and write.
+   */
+  constructor(
+    getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>,
+    offersWrite: boolean,
+  ) {
     super();
     googleTokenGetters.set(this, getToken);
     grantChecks.set(this, holds);
+    writeOffers.set(this, offersWrite);
   }
 
-  /**
-   * Search spans My Drive, "Shared with me" and every shared drive, wherever the picker is open;
-   * a folder's listing spans them too, since its id does not say which it lives in. A pasted link
-   * is answered with the node the picker would list for what it names.
-   */
   async listDriveNodes(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
-    let linked = linkedDriveNodeId(query);
-    if (linked) {
-      let node = await driveNode(this, linked);
-      return { nodes: node ? [node] : [] };
-    }
-    let drive = new DriveApi(googleTokenProvider(this));
-    let page = { pageSize: DRIVE_PAGE_SIZE, ...(cursor ? { pageToken: cursor } : {}) };
-    return withDriveApiEnabled<DriveNodePage>(DRIVE_BROWSE_DISABLED, async () => {
-      if (query.trim()) {
-        return driveFilePage(drive,
-          await drive.listFiles({ ...page, namePrefix: query, corpus: { kind: "allDrives" } }),
-          file => file.driveId
-            ? "In a shared drive"
-            : file.owners?.[0]?.displayName ?? file.owners?.[0]?.emailAddress ?? "My Drive");
-      }
-      if (parentId === DRIVE_ROOT_ID) {
-        let myDrive = await myDriveId(drive);
-        return {
-          nodes: [
-            { id: `folder:${myDrive}`, title: "My Drive", kind: "folder", listable: true },
-            { ...SHARED_DRIVES, kind: "group" },
-            { ...SHARED_WITH_ME, kind: "group" },
-            { ...RECENT, kind: "group" },
-          ],
-        };
-      }
-      if (parentId === SHARED_DRIVES.id) {
-        // Drive lists shared drives only under a wider grant than browsing needs, so the picker asks
-        // for it when the user first opens them.
-        if (!(await grantChecks.get(this)!(SHARED_DRIVES_GRANT))) {
-          return { nodes: [], needsGrant: SHARED_DRIVES_GRANT };
-        }
-        let { drives, nextPageToken } = await drive.listSharedDrives(page);
-        return drivePage(
-          drives.map(({ id, name }) => ({ id: `folder:${id}`, title: name, kind: "sharedDrive" })),
-          nextPageToken);
-      }
-      if (parentId === SHARED_WITH_ME.id) {
-        return driveFilePage(drive,
-          await drive.listFiles({ ...page, sharedWithMe: true, orderBy: "folder,name" }));
-      }
-      if (parentId === RECENT.id) {
-        // Files the account created, opened or had shared with it, newest first, as Drive's Recent
-        // shows them. Folders are browsed, so Drive leaves them out before paging, where they could
-        // empty a page; a shortcut to one is dropped once resolved.
-        let recent = await driveFilePage(drive, await drive.listFiles({ ...page, excludeFolders: true }));
-        return { ...recent, nodes: recent.nodes.filter(node => node.kind === "file") };
-      }
-      let folder = parseDriveNodeId(parentId);
-      if (folder?.kind !== "folder") throw new Error("Unknown Drive location.");
-      return driveFilePage(drive, await drive.listFiles({
-        ...page, directParentIds: [folder.fileId], corpus: { kind: "allDrives" }, orderBy: "folder,name",
-      }));
-    });
+    return listDriveNodes(this, parentId, query, cursor);
   }
 
   /** A Drive file link (`file:`) keeps its id for a pre-fill, and so binds as a Drive file. */
@@ -523,6 +725,48 @@ export class DriveConfiguratorUI extends RpcTarget implements DriveConfiguratorR
   async convertFile(kind: OfficeKind, fileId: string, opts?: { reuse?: string }): Promise<OfficeConversionResult> {
     return officeConversion(this, kind).convertFile(fileId, opts);
   }
+
+  async offersWriteAccess(): Promise<boolean> {
+    // An instance the map does not hold answers no: unknown is read-only.
+    return writeOffers.get(this) === true;
+  }
+
+  async getWriteAccess(): Promise<DriveWriteAccess> {
+    return { grant: DRIVE_WRITES_GRANT, held: await holdsGrant(this, DRIVE_WRITES_GRANT) };
+  }
+}
+
+/** The creation picker's My Drive tab: Drive's alias for its root, where a new file lands unmoved. */
+const MY_DRIVE_TAB = "folder:root";
+
+/**
+ * `node` under the creation picker's tabs. `drivePath` gives My Drive's root an empty path, and a
+ * path in My Drive starts at the root's real ID, where the picker's tab is its alias.
+ */
+function underMyDriveTab(node: DriveNode): DriveNode {
+  if (node.path?.length === 0) return { ...node, id: MY_DRIVE_TAB, title: "My Drive" };
+  let [top, ...below] = node.path ?? [];
+  return top && top.id !== SHARED_DRIVES.id ? { ...node, path: [{ ...top, id: MY_DRIVE_TAB }, ...below] } : node;
+}
+
+/** The picker of the folder a new Doc, Sheet, Presentation or folder is created in. */
+@validateRpc()
+export class CreationLocationConfiguratorUI extends RpcTarget implements CreationLocationConfiguratorRpc {
+  /** As for {@link DriveConfiguratorUI}. */
+  constructor(getToken: () => Promise<GoogleAccessToken>, holds: (grant: string) => Promise<boolean>) {
+    super();
+    googleTokenGetters.set(this, getToken);
+    grantChecks.set(this, holds);
+  }
+
+  async listFolders(parentId: string, query: string, cursor: string | null): Promise<DriveNodePage> {
+    let page = await listDriveNodes(this, parentId, query, cursor, true);
+    return { ...page, nodes: page.nodes.map(underMyDriveTab) };
+  }
+
+  async hasCreationAccess(): Promise<boolean> {
+    return grantChecks.get(this)!(CREATED_FILES_GRANT);
+  }
 }
 
 function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): OfficeConversion {
@@ -533,7 +777,7 @@ function officeConversion(picker: DriveConfiguratorUI, kind: OfficeKind): Office
  * The node the picker would list for what `id` names, or null when this account cannot see it or it
  * is another kind of node. A Drive file link (`file:`) names any file.
  */
-async function driveNode(picker: DriveConfiguratorUI, id: string): Promise<DriveNode | null> {
+async function driveNode(picker: object, id: string): Promise<DriveNode | null> {
   let named = parseDriveNodeId(id);
   if (!named) return null;
   let drive = new DriveApi(googleTokenProvider(picker));

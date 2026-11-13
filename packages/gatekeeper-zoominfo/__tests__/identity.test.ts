@@ -181,6 +181,32 @@ describe("a connection made before its user's ID was kept", () => {
 });
 
 describe("a refresh", () => {
+  it("keeps reads working when app refresh defaults exceed the recorded grant", async () => {
+    const fake = new FakeZoomInfo().install();
+    fake.refreshScopeDefaults = ["api:data:company", "api:data:contact", "api:agent:read"];
+    const id = await seedAccount(fake, ALICE, {
+      expiresInMs: 0, scopes: ["api:data:company", "api:data:contact"],
+    });
+    const zoominfo = binding(id);
+    expect(unwrap(await zoominfo.run(["getCreditUsage"]))).toEqual({
+      usage: [{ limitType: "record", currentUsage: 3 }],
+    });
+    expect(await storedGrant(id)).toMatchObject({ scopes: ["api:data:company", "api:data:contact"] });
+    expect(await zoominfo.reported()).toEqual([[ALICE_ID]]);
+    expect(await hooks().expiredNotices(id)).toBe(0);
+  });
+
+  it("recovers unknown scopes without requesting an empty or guessed scope", async () => {
+    const fake = new FakeZoomInfo().install();
+    const id = await seedAccount(fake, ALICE, { expiresInMs: 0, scopes: [] });
+    const zoominfo = binding(id);
+    expect(unwrap(await zoominfo.run(["getCreditUsage"]))).toEqual({
+      usage: [{ limitType: "record", currentUsage: 3 }],
+    });
+    expect(await storedGrant(id)).toMatchObject({ scopes: ["api:data:company", "api:data:contact"] });
+    expect(await zoominfo.reported()).toEqual([[ALICE_ID]]);
+  });
+
   it("whose ID token names another user fails closed, keeping the connection's user", async () => {
     const fake = new FakeZoomInfo().install();
     const id = await seedAccount(fake, ALICE, { expiresInMs: 0 });

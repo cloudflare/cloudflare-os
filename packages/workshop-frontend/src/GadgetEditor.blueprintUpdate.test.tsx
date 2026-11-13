@@ -13,7 +13,8 @@ import type {
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
 // chat into view (the one a blueprint update was proposed in, or the one a notification opens),
-// and which gadget stub a use-only collaborator's view is given while gadgets are admitted.
+// which gadget stub a use-only collaborator's view is given while gadgets are admitted, and which
+// workspace a gadget's deletion is confirmed in.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
@@ -36,6 +37,7 @@ const mocks = vi.hoisted(() => {
       replace?: boolean
     }) => void>(),
     search: {} as Record<string, unknown>,
+    workspaceId: 'workspace',
     // The props the use-only view was last rendered with.
     useView: null as null | {
       gadget: unknown
@@ -72,7 +74,7 @@ const mocks = vi.hoisted(() => {
 })
 
 vi.mock('@tanstack/react-router', () => ({
-  useParams: () => ({ id: 'workspace' }),
+  useParams: () => ({ id: mocks.workspaceId }),
   useNavigate: () => mocks.navigate,
   useSearch: () => mocks.search,
   Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
@@ -167,6 +169,21 @@ vi.mock('./components/SiteLogo', () => ({ default: () => null }))
 vi.mock('./components/UserMenu', () => ({ default: () => null }))
 vi.mock('./components/WorkspaceOpenErrorPage', () => ({ default: () => null }))
 vi.mock('./features/notifications/WorkspaceNotificationsMenu', () => ({ WorkspaceNotificationsMenu: () => null }))
+// A gadget's tab with its menu's Delete beside it, and the confirmation as one button.
+vi.mock('./features/gadget-deletion/GadgetContextMenu', () => ({
+  GadgetContextMenu: ({ trigger, onDelete }: { trigger: ReactElement<{ title: string }>; onDelete: () => void }) => (
+    <>
+      {trigger}
+      <button type="button" onClick={onDelete}>delete {trigger.props.title}</button>
+    </>
+  ),
+}))
+vi.mock('./features/gadget-deletion/DeleteGadgetDialog', () => ({
+  DeleteGadgetDialog: ({ gadget, onDelete }: {
+    gadget: GadgetSummary
+    onDelete: (id: WorkpieceId) => Promise<boolean>
+  }) => <button type="button" onClick={() => void onDelete(gadget.id)}>confirm deleting {gadget.title}</button>,
+}))
 
 import GadgetEditor from './GadgetEditor'
 import { isChatVisible } from './features/notifications/visibleChat'
@@ -191,6 +208,9 @@ function button(name: string): HTMLButtonElement {
   return found
 }
 
+const hasButton = (name: string) =>
+  [...container.querySelectorAll('button')].some(candidate => candidate.textContent === name)
+
 async function click(name: string) {
   await act(async () => { button(name).click() })
 }
@@ -207,6 +227,7 @@ async function proposeUpdate() {
 beforeEach(() => {
   mocks.navigate.mockReset()
   mocks.search = {}
+  mocks.workspaceId = 'workspace'
   localStorage.clear()
   container = document.createElement('div')
   document.body.append(container)
@@ -340,6 +361,20 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     expect(isChatVisible('workspace', 3)).toBe(false)
     window.history.replaceState(null, '', window.location.pathname)
   })
+
+  it('withdraws the visible chat in the conversation list and restores it on return', async () => {
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+
+    mocks.search = {}
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(false)
+
+    mocks.search = { chat: 3 }
+    await openEditor('desktop')
+    expect(isChatVisible('workspace', 3)).toBe(true)
+  })
 })
 
 // A use-only collaborator is verified as each gadget opens, so the view gets a gadget's stub only
@@ -425,5 +460,89 @@ describe('GadgetEditor, admitting a use-only collaborator to gadgets', () => {
     await act(async () => mocks.useView!.onRetryGadget())
     expect(mocks.useView?.gadgetOpenFailure).toBeNull()
     expect(shownClient()).toBeNull()
+  })
+})
+
+describe('GadgetEditor, deleting a gadget', () => {
+  const workspace = mocks.workspace
+  const original = workspace.overseer
+  let removed: string[]
+
+  // Workspaces number their gadgets alike, from 1, so these share ids.
+  function overseerFor(workspaceId: string, titles: string[]): typeof original {
+    const disposable = { [Symbol.dispose]() {} }
+    return {
+      stub: {
+        ...original.stub,
+        subscribeToWorkpieces: async (subscriber: WorkpiecesSubscriber) => {
+          for (const [index, title] of titles.entries()) {
+            await subscriber.entry({ id: index + 1, type: 'gadget', title, commitId: 'head' })
+          }
+          await subscriber.ready()
+          return disposable
+        },
+        getGadget: (gadgetId?: WorkpieceId) => ({
+          remove: async () => { removed.push(`${workspaceId}:${gadgetId}`) },
+          ...disposable,
+        }),
+      },
+    }
+  }
+
+  async function openWorkspace(workspaceId: string, titles: string[]) {
+    mocks.workspaceId = workspaceId
+    workspace.overseer = overseerFor(workspaceId, titles)
+    await openEditor('desktop')
+  }
+
+  beforeEach(() => {
+    removed = []
+    mocks.search = { w: 1 }
+    // The tab strip watches its own width.
+    vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} })
+  })
+
+  afterEach(() => {
+    workspace.overseer = original
+    vi.unstubAllGlobals()
+  })
+
+  it('deletes the gadget once confirmed', async () => {
+    await openWorkspace('trips', ['Itinerary', 'Packing'])
+
+    await click('delete Packing')
+    expect(removed).toEqual([])
+    await click('confirm deleting Packing')
+
+    expect(removed).toEqual(['trips:2'])
+  })
+
+  // The pane names a lone gadget rather than tabbing it.
+  it('offers the menu on the open gadget when it is the only one', async () => {
+    await openWorkspace('trips', ['Itinerary'])
+
+    // The keyboard's menu key opens the menu of whatever has focus.
+    const name = container.querySelector<HTMLElement>('[title="Itinerary"]')!
+    act(() => name.focus())
+    expect(document.activeElement).toBe(name)
+
+    await click('delete Itinerary')
+    await click('confirm deleting Itinerary')
+
+    expect(removed).toEqual(['trips:1'])
+  })
+
+  // Back, or a notification's "Open task", moves the editor to another workspace without
+  // remounting it.
+  it('drops a confirmation when the editor moves to another workspace', async () => {
+    await openWorkspace('trips', ['Itinerary', 'Packing'])
+    await click('delete Packing')
+
+    await openWorkspace('budget', ['Expenses', 'Invoices'])
+    expect(hasButton('confirm deleting Packing')).toBe(false)
+
+    await openWorkspace('trips', ['Itinerary', 'Packing'])
+    expect(hasButton('confirm deleting Packing')).toBe(false)
+    expect(removed).toEqual([])
   })
 })

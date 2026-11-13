@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type PointerEvent as ReactPointerEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, type ComponentProps, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
@@ -57,6 +57,8 @@ import ChatInterface, {
 import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import ShareModal from './ShareModal'
+import { DeleteGadgetDialog } from './features/gadget-deletion/DeleteGadgetDialog'
+import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
@@ -206,13 +208,15 @@ const ACTIVITY_TABS: { value: ActivityView; label: string }[] = [
 ]
 
 // Names what the pane is showing. `icon` is for the workspace-level views (Activity); a workpiece
-// passes its summary instead, so a Doc gets a document glyph rather than the gadget hexagon.
+// passes its summary instead, so a Doc gets a document glyph rather than the gadget hexagon. Other
+// props go to its element, so that a gadget's label can open the gadget's menu.
 function PaneLabel({
   icon: LabelIcon,
   workpiece,
   title,
   badge,
-}: {
+  ...props
+}: Omit<ComponentProps<'div'>, 'title'> & {
   icon?: Icon
   workpiece?: WorkpieceSummary
   title: string
@@ -220,8 +224,9 @@ function PaneLabel({
 }) {
   return (
     <div
+      {...props}
       title={title}
-      className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default"
+      className="inline-flex w-full min-w-0 max-w-[180px] items-center gap-1.5 overflow-hidden rounded-lg bg-kumo-tint px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] text-kumo-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
     >
       {LabelIcon
         ? <LabelIcon size={14} weight="bold" className="flex-shrink-0" />
@@ -247,10 +252,13 @@ function PaneWorkpieceTabs({
   gadgets,
   activeId,
   onSelect,
+  onDelete,
 }: {
   gadgets: WorkpieceSummary[]
   activeId: WorkpieceId | null
   onSelect: (id: WorkpieceId) => void
+  // Asks to delete a gadget, from its tab's right-click menu; the caller confirms it.
+  onDelete: (gadget: GadgetSummary) => void
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
@@ -296,7 +304,7 @@ function PaneWorkpieceTabs({
     >
       {gadgets.map(gadget => {
         const active = gadget.id === activeId
-        return (
+        const tab = (
           <button
             key={gadget.id}
             ref={active ? activeRef : undefined}
@@ -308,7 +316,7 @@ function PaneWorkpieceTabs({
             className={`inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] transition-colors duration-150 ${
               active
                 ? 'max-w-[240px] bg-kumo-tint text-kumo-default'
-                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default'
+                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default data-[popup-open]:bg-kumo-tint/50 data-[popup-open]:text-kumo-default'
             }`}
           >
             <WorkpieceGlyph summary={gadget} className="flex-shrink-0" />
@@ -320,6 +328,10 @@ function PaneWorkpieceTabs({
             )}
           </button>
         )
+        // A worktree is the chat's own and goes with it.
+        return gadget.type === 'gadget'
+          ? <GadgetContextMenu key={gadget.id} trigger={tab} onDelete={() => onDelete(gadget)} />
+          : tab
       })}
     </div>
   )
@@ -466,7 +478,7 @@ export default function GadgetEditor() {
   const params = useParams({ strict: false }) as { id?: string }
   const id = params.id
   const navigate = useNavigate()
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
   const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
@@ -680,7 +692,9 @@ export default function GadgetEditor() {
   const [chatCount, setChatCount] = useState<number | null>(null)
   const [hasChatZero, setHasChatZero] = useState(false)
   const [_hasBindings, setHasBindings] = useState(false)
-  const [isAgentActive, setIsAgentActive] = useState(false)
+  const [agentActivity, setAgentActivity] = useState<{chatId: number | null; active: boolean}>({
+    chatId: null, active: false,
+  })
   // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
   const [anyChatProposedWorkpieces, setAnyChatProposedWorkpieces] =
     useState<readonly WorkpieceId[]>([])
@@ -722,6 +736,8 @@ export default function GadgetEditor() {
   const pinInitialChatSelection =
     singleInitialChat && !hasCommittedCode && !userNavigatedToList
   const effectiveSelectedChatId = selectedChatId ?? (pinInitialChatSelection ? 0 : null)
+  const isViewActive = agentActivity.chatId === effectiveSelectedChatId && agentActivity.active
+  const isAgentActive = effectiveSelectedChatId !== null && isViewActive
 
   // ── workpiece selection ──────────────────────────────────────────────────────
 
@@ -1110,9 +1126,13 @@ export default function GadgetEditor() {
     if (showsNoUi) showCodeIfNoUi()
   }, [showCodeIfNoUi])
 
-  const handleAgentActiveChange = useCallback((chatId: number, isActive: boolean) => {
+  const handleAgentActiveChange = useCallback((chatId: number | null, isActive: boolean) => {
     if (chatId !== selectedChatIdRef.current) return
-    setIsAgentActive(isActive)
+    setAgentActivity({chatId, active: isActive})
+    if (chatId === null) {
+      turnOutputRef.current = null
+      return
+    }
     if (isActive) {
       turnOutputRef.current = {
         chatId,
@@ -1149,6 +1169,12 @@ export default function GadgetEditor() {
     setActiveTab(tab)
   }, [])
 
+  // A gadget awaiting confirmation of its deletion, tagged with its workspace. The editor stays
+  // mounted when Back or a toast's "Open task" moves it to another workspace, whose gadgets reuse
+  // the same ids, so a confirmation must not follow it there; the reset below drops it.
+  const [gadgetToDelete, setGadgetToDelete] =
+    useState<{ workspaceId: string, gadget: GadgetSummary } | null>(null)
+
   useEffect(() => {
     setChatChanges(undefined)
     setLiveRows(undefined)
@@ -1168,6 +1194,7 @@ export default function GadgetEditor() {
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
+    setGadgetToDelete(null)
   }, [id])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
@@ -1186,8 +1213,8 @@ export default function GadgetEditor() {
     })
   }, [showChatParam, id, navigate, setWorkspaceVisibility, exitGadgetFullscreen])
 
-  // Notifications skip the chat on screen: rendered, and not covered by full-screen preview or, on a
-  // phone, by the workspace pane.
+  // Notifications and read receipts apply only to the chat on screen, not one covered by a
+  // full-screen preview or, on a phone, by the workspace pane.
   useEffect(() => {
     if (!chatRendered || isGadgetFullscreen || effectiveSelectedChatId === null) return
     const chat = { workspaceId: id!, chatId: effectiveSelectedChatId }
@@ -1444,6 +1471,27 @@ export default function GadgetEditor() {
       target[Symbol.dispose]()
     }
   }, [overseer, toasts])
+
+  // ── gadget deletion ─────────────────────────────────────────────────────────────
+  const requestGadgetDeletion = (target: GadgetSummary) => {
+    if (id) setGadgetToDelete({ workspaceId: id, gadget: target })
+  }
+
+  // The subscription drops the deleted gadget, and the selection falls back past it on its own.
+  const handleDeleteGadget = async (workpieceId: WorkpieceId) => {
+    if (!overseer) return false
+    const target = overseer.stub.getGadget(workpieceId)
+    try {
+      await target.remove()
+      return true
+    } catch (err) {
+      console.error('Failed to delete gadget:', err)
+      toasts.add({ title: 'Failed to delete gadget', variant: 'error' })
+      return false
+    } finally {
+      target[Symbol.dispose]()
+    }
+  }
 
   // ── console log subscription ──────────────────────────────────────────────────
   useEffect(() => {
@@ -1957,8 +2005,10 @@ export default function GadgetEditor() {
       {/* ═══ BODY ═════════════════════════════════════════════════════════════ */}
       <div className="flex flex-1 min-h-0 relative overflow-hidden">
 
-        {isAgentActive && (
+        {isViewActive && (
           <div
+            role="progressbar"
+            aria-label="Agent working"
             className="absolute left-0 z-10 h-0 max-md:!right-0 max-md:!top-0"
             style={{ top: simpleMode ? 0 : TABBAR_H, right: outputRailWidth }}
           >
@@ -2034,14 +2084,15 @@ export default function GadgetEditor() {
 
         {/* ── Resize handle ───────────────────────────────────────────────────── */}
         <div
-          className={`relative flex-shrink-0 touch-none cursor-col-resize overflow-visible bg-kumo-line max-md:hidden ${workspaceTransitionClass}`}
+          className={`relative z-10 flex-shrink-0 touch-none cursor-col-resize overflow-visible bg-kumo-line max-md:hidden ${workspaceTransitionClass}`}
           style={{ width: showFullEditor ? 1 : 0 }}
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
           onPointerCancel={handleResizePointerUp}
         >
-          <div className="absolute inset-y-0 -left-2 -right-2" />
+          {/* Widened only to the right: the chat pane's scrollbar sits just left of the handle. */}
+          {showFullEditor && <div className="absolute inset-y-0 left-0 -right-3" />}
         </div>
 
         {/* ── RIGHT: App / Code / Connections tabs ───────────────────────────── */}
@@ -2065,14 +2116,24 @@ export default function GadgetEditor() {
                   gadgets={visibleWorkpieces}
                   activeId={selectedWorkpieceId}
                   onSelect={handleSelectWorkpiece}
+                  onDelete={requestGadgetDeletion}
+                />
+              ) : selectedGadgetSummary ? (
+                <GadgetContextMenu
+                  trigger={(
+                    // Focusable, so that the keyboard's menu key reaches it as it does a tab.
+                    <PaneLabel
+                      tabIndex={0}
+                      workpiece={selectedGadgetSummary}
+                      title={selectedGadgetSummary.title}
+                      badge={selectedGadgetSummary.chatId !== undefined ? 'Draft' : undefined}
+                    />
+                  )}
+                  onDelete={() => requestGadgetDeletion(selectedGadgetSummary)}
                 />
               ) : selectedWorkpieceSummary && (
-                <PaneLabel
-                  workpiece={selectedWorkpieceSummary}
-                  title={selectedWorkpieceSummary.title}
-                  badge={selectedWorkpieceSummary.type === 'gadget' &&
-                      selectedWorkpieceSummary.chatId !== undefined ? 'Draft' : undefined}
-                />
+                // A worktree, which is its chat's own and goes with it.
+                <PaneLabel workpiece={selectedWorkpieceSummary} title={selectedWorkpieceSummary.title} />
               )}
             </div>
 
@@ -2271,6 +2332,7 @@ export default function GadgetEditor() {
               onExpandedChange={handleWorkpieceRailExpandedChange}
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
+              onDelete={requestGadgetDeletion}
               pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
@@ -2331,6 +2393,8 @@ export default function GadgetEditor() {
               }}
               overseer={overseer.stub}
               publicApi={publicApi}
+              authenticatedApi={authenticatedApi}
+              userId={isCurrentUserConfirmed ? currentUser?.id : undefined}
               onClose={() => setBlueprintUpdateDialogOpen(false)}
               onProposed={chatId => {
                 setBlueprintUpdateDialogOpen(false)
@@ -2352,6 +2416,14 @@ export default function GadgetEditor() {
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleDeleteConfirm}
       />
+      {gadgetToDelete && gadgetToDelete.workspaceId === id && (
+        <DeleteGadgetDialog
+          key={gadgetToDelete.gadget.id}
+          gadget={gadgetToDelete.gadget}
+          onDelete={handleDeleteGadget}
+          onClosed={() => setGadgetToDelete(null)}
+        />
+      )}
       {observerConfigModal}
 
     </div>

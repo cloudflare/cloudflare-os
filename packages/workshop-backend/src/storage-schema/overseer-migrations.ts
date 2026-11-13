@@ -12,7 +12,7 @@
 // bump of OVERSEER_STORAGE_VERSION.
 
 import type {
-  AgentSpawnerConfig, CommitIdentity, GadgetUpstream, WorkpieceId,
+  AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
   chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
@@ -20,7 +20,7 @@ import {
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
 import { retryOnDoReset } from "../do-retry";
-import { GitStore, commitIdentityForAuthor } from "../git-store";
+import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
 import type { createWorkshopLogger } from "../observability";
 import type { UserDurableObject } from "../user";
 
@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 6;
+export const OVERSEER_STORAGE_VERSION = 7;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -49,8 +49,8 @@ export interface OverseerMigrationHost {
   /** The workspace's storage. */
   storage: OverseerStorage;
 
-  /** The workspace's git object store, which receives the commits the git migration writes. */
-  gitStore: GitStore;
+  /** The workspace's git store, which receives the commits the git migration writes. */
+  gitCache: WorkspaceGitCache;
 
   /** The Overseer's logger, so migration logs carry the workspace's id like all its others. */
   logger: ReturnType<typeof createWorkshopLogger>;
@@ -195,7 +195,7 @@ export async function migrateToGitStorage(host: OverseerMigrationHost): Promise<
   let startedAt = Date.now();
   let { commits } = await migrateCodeLogToGit({
     storage: host.storage,
-    gitStore: host.gitStore,
+    gitCache: host.gitCache,
     ownerIdentity: await ownerCommitIdentity(host),
     defaultGadgetId: host.defaultGadgetId,
     createDefaultGadget: () => host.ensureDefaultGadget(undefined),
@@ -376,5 +376,55 @@ export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
   });
   host.logger.info("moved agent spawners' bindings", {
     event: "storage.migration.spawner-bindings.completed",
+  });
+}
+
+// A pre-v7 grant of every gadget, before use grants named individual gadgets.
+function isWorkspaceWide(grant: {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[];
+}): boolean {
+  return grant.role === "use" && grant.gadgetId === undefined && grant.gadgetIds === undefined;
+}
+
+/**
+ * Version 6 -> 7: each grant of every gadget, made before gadgets were shared individually, is
+ * frozen to the gadgets that can be shared now, so that a gadget created later is shared only on
+ * purpose. An edge keeps its source, timestamp and note; a link keeps its keys, creator and note.
+ * Inactive grants are frozen too, since they can confer access again when their sharer regains
+ * build. Like every migration this runs before anything reads the sharing graph. Synchronous and
+ * atomic, like migrateToWorkpieceTypes.
+ */
+export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 6) return;
+  host.ctx.storage.transactionSync(() => {
+    // The gadgets that can be shared: permanent ones, not those still provisional to a chat.
+    let gadgetIds = Array.from(host.storage.gadgets.list())
+        .filter(record => record.type === "gadget" && !record.pending)
+        .map(record => record.id)
+        .toSorted((a, b) => a - b);
+    // Listed up front, so that nothing below writes while a listing is open.
+    for (let link of Array.from(host.storage.shareKeys.list())) {
+      if (link.alias !== undefined || !isWorkspaceWide(link)) continue;
+      if (gadgetIds.length === 0) {
+        link.revoked = true;
+        host.storage.shareKeys.byAlias.delete(link.id);
+      } else if (gadgetIds.length === 1) {
+        link.gadgetId = gadgetIds[0];
+      } else {
+        link.gadgetIds = gadgetIds;
+      }
+      host.storage.shareKeys.put(link);
+    }
+
+    for (let record of Array.from(host.storage.collaborators.list())) {
+      if (!record.addedBy.some(isWorkspaceWide)) continue;
+      record.addedBy = record.addedBy.flatMap(edge =>
+          isWorkspaceWide(edge) ? gadgetIds.map(gadgetId => ({...edge, gadgetId})) : [edge]);
+      host.storage.collaborators.put(record);
+    }
+    host.storage.version.put(7);
+  });
+  host.logger.info("froze grants of every gadget", {
+    event: "storage.migration.gadget-grants.completed",
   });
 }

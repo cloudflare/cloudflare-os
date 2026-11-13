@@ -114,10 +114,10 @@ describe("transformMessages over rehydrated history", () => {
 
     expect(result.role).toBe("assistant");
     let content = (result as AssistantMessage).content;
-    // Unencrypted thinking becomes plain text; the redacted block is dropped entirely.
+    // Another model's thinking is dropped, readable or redacted, so the new model never takes it
+    // for part of the reply.
     expect(content.filter(block => block.type === "thinking")).toEqual([]);
     expect(content.filter(block => block.type === "text").map(block => block.text)).toEqual([
-      "Let me look at the file.",
       "Reading the file now.",
     ]);
     // Thought signatures are stripped from tool calls, but the calls themselves survive.

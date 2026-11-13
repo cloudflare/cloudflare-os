@@ -113,6 +113,8 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   denyConnectionRequest: ws => ws.denyConnectionRequest("request"),
   markChatRead: ws => ws.markChatRead(1),
   markChatUnread: ws => ws.markChatUnread(1),
+  approveWebFetchRequest: ws => ws.approveWebFetchRequest("1:request"),
+  denyWebFetchRequest: ws => ws.denyWebFetchRequest("1:request"),
   listChats: ws => ws.listChats(),
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),

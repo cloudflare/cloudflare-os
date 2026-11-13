@@ -13,6 +13,9 @@ import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
 import { FakeChatResponseTarget } from "./response-target";
+import {DELIM_PKT, encodePktLine, FLUSH_PKT} from "@gadgets/gatekeeper-kit/git-transport";
+import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import type {GitOid, GitPullHints, GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -57,6 +60,8 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+/** What an enabled hook delivers its events through, likewise. */
+export { GatekeeperHookLoopback } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather
@@ -255,5 +260,46 @@ export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env>
 
   async accountCalls(accountName: string): Promise<string[]> {
     return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
+  }
+}
+
+/**
+ * Git provider fixture for worktree fetches beyond the workspace's own history: answers the
+ * workspace's commit-only history check, and streams any other pull's shallow-info followed by
+ * a pack that stays open until cancelled.
+ */
+export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
+  async getAgentCatalog() { return null; }
+  async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT", tsType: "Git"}; }
+  /** A commit the history check reports as outside the worktree's history. */
+  setUnrelated(oid: string): void { this.ctx.storage.kv.put("unrelated", oid); }
+  /** An error the pulls' packs end with partway, sent on Git's error band. */
+  setFailing(message: string): void { this.ctx.storage.kv.put("failing", message); }
+  /** The protocol-v2 fetch requests the pulls received, in order. */
+  requests(): string[] { return this.ctx.storage.kv.get<string[]>("requests") ?? []; }
+  async gitPull(oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer> {
+    return startGitPull(async request => {
+      const body = new TextDecoder().decode(request);
+      this.ctx.storage.kv.put("requests", [...this.requests(), body]);
+      // A pack holding one object for a history check of an unrelated commit, else none.
+      const unrelated = this.ctx.storage.kv.get<string>("unrelated");
+      const count = hints.filterTreeDepth === 0 && unrelated && oids.includes(unrelated) ? 1 : 0;
+      const header = new Uint8Array(12);
+      header.set(new TextEncoder().encode("PACK"));
+      new DataView(header.buffer).setUint32(4, 2);
+      new DataView(header.buffer).setUint32(8, count);
+      const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
+      const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
+      const shallow = hints.filterTreeDepth === 0 ? [] :
+        [encodePktLine("shallow-info"), ...oids.map(oid => encodePktLine(`shallow ${oid}`)), DELIM_PKT];
+      const failing = this.ctx.storage.kv.get<string>("failing");
+      if (failing !== undefined) {
+        const sideband = (n: number, data: Uint8Array) =>
+          new Uint8Array([...new TextEncoder().encode((data.length + 5).toString(16).padStart(4, "0")), n, ...data]);
+        return new Response(new Blob([...shallow, encodePktLine("packfile"), sideband(1, header),
+          sideband(3, new TextEncoder().encode(failing))]));
+      }
+      return new Response(new Blob([...shallow, encodePktLine("packfile"), band, FLUSH_PKT]));
+    }, oids, hints);
   }
 }

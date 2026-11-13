@@ -244,6 +244,17 @@ class TestApprovalQueue extends RpcTarget {
   }
 
   [Symbol.dispose](): void {}
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 /** Keeps the controller a subscription binds, where the Overseer would store it. */
@@ -728,6 +739,12 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
     let queue = this.#queues.get(queueId);
     if (!queue) this.#queues.set(queueId, queue = new TestApprovalQueue());
     return queue;
+  }
+
+  async bigQueryDescribe(
+      facetName: string, id: string, props: BigQueryGatekeeperImplProps,
+  ): Promise<ResourceDescription> {
+    return await this.#bigQuery(facetName, id, props).describe();
   }
 
   async openBigQuerySession(

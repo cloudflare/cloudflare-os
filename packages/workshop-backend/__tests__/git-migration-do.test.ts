@@ -12,8 +12,8 @@
 // #initializeNewWorkspace would stamp version 4 and shadow the scenario.
 //
 // The version-3 action-index backfill, the version-4 workpiece-type stamp, the version-5
-// blueprint-upstream backfill and the version-6 spawner-bindings move ride the same constructor
-// trigger, so their tests live here too.
+// blueprint-upstream backfill, the version-6 spawner-bindings move and the version-7 gadget-grant
+// freeze ride the same constructor trigger, so their tests live here too.
 
 import { describe, expect, it } from "vitest";
 import { env } from "cloudflare:workers";
@@ -106,18 +106,18 @@ describe("git-storage migration via the Overseer constructor", () => {
       // The type stamp (3→4) covered the row the git migration wrote.
       expect(impl.storage.gadgets.get(1)!.type).toBe("gadget");
 
-      await expectHeadsMatchDoc(impl.storage, impl.gitStore, ws.docAt("current"), 1);
+      await expectHeadsMatchDoc(impl.storage, impl.gitCache, ws.docAt("current"), 1);
 
       // Chain sanity: an empty parentless root, the pre-gap batch (v1-v3), and the final
       // version, linearly chained and authored as the ownerless fallback identity.
       let head = impl.storage.gadgets.get(1)!.commitId!;
-      let log = await impl.gitStore.readCommitLog(head);
+      let log = impl.gitCache.readCommitLog(head);
       expect(log.length).toBe(3);
       expect(log[0].parents).toEqual([log[1].oid]);
       expect(log[1].parents).toEqual([log[2].oid]);
       expect(log[2].parents).toEqual([]);
-      expect(await impl.gitStore.readCommitFiles(log[2].oid)).toEqual(new Map());
-      expect(await impl.gitStore.readCommitFiles(log[1].oid)).toEqual(new Map([
+      expect(impl.gitCache.readCommitFiles(log[2].oid)).toEqual(new Map());
+      expect(impl.gitCache.readCommitFiles(log[1].oid)).toEqual(new Map([
         ["app.js", "hello\n"],
         ["util.js", "util one\n"],
       ]));
@@ -158,12 +158,12 @@ describe("git-storage migration via the Overseer constructor", () => {
       expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
 
       // Every gadget's head equals its own root's content in an independent replay of the log.
-      await expectHeadsMatchDoc(impl.storage, impl.gitStore, ws.docAt("current"), 1);
+      await expectHeadsMatchDoc(impl.storage, impl.gitCache, ws.docAt("current"), 1);
 
       // Non-pollution: each chain is the empty root plus that gadget's own commit points,
       // regardless of the others' activity, and carries only its own filenames.
       let logOf = async (gadgetId: number) =>
-          await impl.gitStore.readCommitLog(impl.storage.gadgets.get(gadgetId)!.commitId!);
+          impl.gitCache.readCommitLog(impl.storage.gadgets.get(gadgetId)!.commitId!);
       let appLog = await logOf(1);
       let leftLog = await logOf(2);
       let rightLog = await logOf(3);
@@ -171,12 +171,12 @@ describe("git-storage migration via the Overseer constructor", () => {
       expect(leftLog.length).toBe(2);   // empty root + merge point v3
       expect(rightLog.length).toBe(3);  // empty root + pre-gap batch (v6) + final (v7)
 
-      expect(await impl.gitStore.readCommitFiles(appLog[1].oid))
+      expect(impl.gitCache.readCommitFiles(appLog[1].oid))
           .toEqual(new Map([["app.js", "a one\n"]]));
-      expect(await impl.gitStore.readCommitFiles(leftLog[0].oid))
+      expect(impl.gitCache.readCommitFiles(leftLog[0].oid))
           .toEqual(new Map([["left.js", "l one\n"]]));
       // Gadget 3's intermediate commit is the batch's end state, checked against the replay.
-      expect(await impl.gitStore.readCommitFiles(rightLog[1].oid))
+      expect(impl.gitCache.readCommitFiles(rightLog[1].oid))
           .toEqual(readDocFiles(ws.docAt(6), "3"));
     });
   });
@@ -428,6 +428,43 @@ describe("the spawner-bindings move via the Overseer constructor", () => {
       });
       expect(impl.storage.gatekeepers.get(2).creationSpec.config).not.toHaveProperty("env");
       expect(impl.storage.gatekeepers.get(1).bindings).toBeUndefined();
+    });
+  });
+});
+
+describe("the gadget-grant freeze via the Overseer constructor", () => {
+  it("freezes each grant of every gadget to the permanent gadgets before anything reads it",
+      async () => {
+    let created = new Date(0);
+    await inOverseer("gadget-grants", async impl => {
+      expect(impl.storage.version.get()).toBe(0);
+      for (let [id, title] of [[100, "Trip"], [101, "Draft"], [102, "Budget"]] as const) {
+        impl.storage.gadgets.put({
+          type: "gadget", id, title, created, bindingName: title.toUpperCase(), bindings: {},
+          ...(id === 101 ? { pending: { chatId: 1, sequence: 0 } } : {}),
+        });
+      }
+      impl.storage.shareKeys.put({ id: "link", created, createdBy: "owner", role: "use" });
+      impl.storage.collaborators.put({ profile: { type: "user", id: "bob", name: "Bob" }, addedBy: [
+        { type: "user", sharer: "owner", created, role: "use", note: "trip" },
+        { type: "shareKey", keyId: "link", created, role: "use" },
+      ] });
+      impl.storage.version.put(6);
+    });
+
+    await abortAllDurableObjects();
+
+    await inOverseer("gadget-grants", async impl => {
+      expect(impl.storage.version.get()).toBe(OVERSEER_STORAGE_VERSION);
+      // Gadget 101 is still provisional to a chat, so it is not among them.
+      expect(impl.storage.shareKeys.get("link")).toMatchObject({ role: "use", gadgetIds: [100, 102] });
+      expect(impl.storage.collaborators.get("bob").addedBy).toEqual([100, 102].map(gadgetId =>
+          ({ type: "user", sharer: "owner", created, role: "use", note: "trip", gadgetId }))
+          .concat([100, 102].map(gadgetId =>
+              ({ type: "shareKey", keyId: "link", created, role: "use", gadgetId }))));
+      impl.ownerProfileId = "owner";
+      expect((await impl.getSharingManager()).getEffectiveAccess("bob"))
+          .toEqual({ role: "use", gadgetIds: [100, 102] });
     });
   });
 });

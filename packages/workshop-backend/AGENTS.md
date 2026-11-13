@@ -3,6 +3,14 @@
 The Gadgets Workshop server on Cloudflare Workers: the **kernel**, held to the bar in the root
 `AGENTS.md` (The kernel).
 
+## Worktree replicas
+
+See [`../../docs/worktree-replicas.md`](../../docs/worktree-replicas.md) before changing
+worktree Git transport or replica synchronization. A replica's sync must keep step
+transactionality (see `plans/tree-sync-replicas.md`): the kernel only knows snapshots and
+submissions bound to an `executeCode` call. Guest paths, mount names, command approvals and
+process lifetimes belong to the gatekeeper.
+
 ## Bundled blueprints
 
 The backend installs the **bundled blueprints** from `@gadgets/bundled-blueprints` on a deployment's
@@ -75,16 +83,28 @@ them:
 - The `AdminSettings` durable object owns the authoritative `AdminConfig` and mirrors it to a single
   reserved KV key (`.adminConfig`, see `isReservedBlueprintKey()`), so hot-path code (connect/agent)
   reads it with one cheap KV get via `readAdminConfig(env)`. The DO is the only writer
-  (`updateAdminConfig(patch)`).
+  (`updateAdminConfig(patch, actor)` and the other mutators, all through `#mutateAdminConfig()`).
 - Admin operations are exposed as an `AdminApi` capability obtained via
-  `AuthenticatedApi.getAdminApi()` (returns null for non-admins). The `#isAdmin()` check happens once
-  when the capability is minted, so the individual methods don't re-check.
+  `AuthenticatedApi.getAdminApi()` (returns null for non-admins). The admin check
+  (`isDeploymentAdmin()` in `src/auth/config.ts`) runs once when the capability is minted, so the
+  individual methods don't re-check.
+- Every `AdminApi` setter is recorded in the deployment-wide audit log (`AdminAuditDurableObject`,
+  `src/admin-audit.ts`) before it takes effect: each `AdminSettings` mutator takes a trailing
+  `AdminSettingActor` and writes through `#mutateAdminConfig()`, which records the diff before
+  storing it (the site logo and featured blueprints, which live outside `AdminConfig`, record
+  explicitly first). A change whose record cannot be written is refused. See
+  [docs/admin-access.md](../../docs/admin-access.md).
+- The audit log's minimum retention, `ADMIN_AUDIT_RETENTION_MIN_DAYS`, is an env var beside
+  `ADMINS`, parsed in `src/admin-access.ts`, so that a compromised admin session cannot shorten it.
+  An invalid value falls back to 90 days. Admins choose a retention at or above it;
+  `adminAccessPolicy()` holds the choice there wherever it is enforced.
 - `user.ts:#assertResourceEnabled()` is the single core chokepoint where disabled
   gatekeepers/resources are enforced before a capability is minted. Both mints call it:
   `getGatekeeperClassFor()` (gadget/agent code can't reach it directly) and
   `createResourceGatekeeper()` (reached only through the agent's `createExternalResource` tool).
 - In AI Gateway mode the deployment's models are admin settings too (`AdminConfig.modelModes`,
-  `addedModels`, `modelSettings`, `addedProviders`, `userModelsEnabled`). `GatewayModels` in
+  `addedModels`, `modelSettings`, `addedProviders`, `providerOrder`, `modelOrder`,
+  `userModelsEnabled`). `GatewayModels` in
   `ai-gateway.ts` is the only place that merges them with `SUGGESTED_MODELS`, and *disabled* is
   enforced where a model is about to run: `user.ts:getChatContext()` and
   `LanguageModelGatekeeper.startSession()`. The Auto Router model's pool (`modelSettings[id]

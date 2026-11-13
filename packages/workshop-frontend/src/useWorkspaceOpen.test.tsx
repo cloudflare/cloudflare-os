@@ -6,6 +6,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import {
+  AUTH_ERROR_CODES,
+  createAuthError,
   createOpenWorkspaceError,
   OPEN_WORKSPACE_ERROR_CODES,
   type AuthenticatedApi,
@@ -16,9 +18,15 @@ import {
   type Overseer,
 } from '@gadgets/workshop-shared/api'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
+import { reportIssue } from './errorReporting'
 import { useWorkspaceOpen } from './useWorkspaceOpen'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+vi.mock('./errorReporting', async importOriginal => ({
+  ...await importOriginal<typeof import('./errorReporting')>(),
+  reportIssue: vi.fn<typeof reportIssue>(),
+}))
 
 vi.mock('./components/WorkshopControls', () => ({
   WorkshopButton: ({ children, onClick }: { children: ReactNode; onClick?: () => void }) => (
@@ -39,6 +47,19 @@ function disposableStub<T extends object>(value: T, dispose = vi.fn<() => void>(
 function api(overseer: RpcStub<Overseer>): RpcStub<AuthenticatedApi> {
   return { openWorkspace: () => overseer } as unknown as RpcStub<AuthenticatedApi>
 }
+
+const openOverseer = () => disposableStub({
+  subscribeToMetadata: vi.fn<
+    (callback: (metadata: WorkspaceMetadata) => void) => Promise<RpcStub<{}>>
+  >(async callback => {
+      callback(METADATA)
+      return disposableStub({}) as RpcStub<{}>
+    }),
+}) as unknown as RpcStub<Overseer>
+
+const failingOverseer = (error: Error, dispose = vi.fn<() => void>()) => disposableStub({
+  subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(async () => { throw error }),
+}, dispose) as unknown as RpcStub<Overseer>
 
 const METADATA = {
   id: 'workspace-1',
@@ -67,7 +88,7 @@ function WorkspaceProbe({ authenticatedApi }: { authenticatedApi: RpcStub<Authen
     )
   }
   if (state.error?.kind === 'message') return <p>{state.error.message}</p>
-  return <p>{state.metadata?.title}</p>
+  return <p>{state.connectionLost ? 'Reconnecting' : state.metadata?.title}</p>
 }
 
 describe('useWorkspaceOpen', () => {
@@ -78,7 +99,9 @@ describe('useWorkspaceOpen', () => {
     act(() => root?.unmount())
     container?.remove()
     document.title = ''
+    vi.useRealTimers()
     vi.restoreAllMocks()
+    vi.clearAllMocks()
   })
 
   it('disposes a metadata subscription that resolves after its load attempt is cleaned up', async () => {
@@ -165,6 +188,74 @@ describe('useWorkspaceOpen', () => {
     expect(container.textContent).toContain('Share links are turned off for this workspace')
     expect(container.textContent)
       .toContain('Ask the workspace owner to add you directly, then try again.')
+  })
+
+  it('retries a reopen that fails on a live connection until it succeeds', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failedDispose = vi.fn<() => void>()
+    const failed = failingOverseer(
+      new Error('Durable Object reset because its code was updated.'), failedDispose)
+    const openWorkspace = vi.fn<() => RpcStub<Overseer>>()
+      .mockReturnValueOnce(failed)
+      .mockReturnValueOnce(failed)
+      .mockReturnValue(openOverseer())
+    const reconnected = { openWorkspace } as unknown as RpcStub<AuthenticatedApi>
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(openOverseer())} />))
+    expect(container.textContent).toBe('Quarterly planning')
+
+    vi.useFakeTimers()
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={reconnected} />))
+    expect(container.textContent).toBe('Reconnecting')
+    expect(openWorkspace).toHaveBeenCalledOnce()
+
+    // Each wait is the longest its jittered backoff can be.
+    await act(async () => vi.advanceTimersByTimeAsync(1_150))
+    expect(container.textContent).toBe('Reconnecting')
+    expect(openWorkspace).toHaveBeenCalledTimes(2)
+
+    await act(async () => vi.advanceTimersByTimeAsync(2_300))
+    expect(container.textContent).toBe('Quarterly planning')
+    expect(failedDispose).toHaveBeenCalledTimes(2)
+
+    await act(async () => vi.advanceTimersByTimeAsync(60_000))
+    expect(openWorkspace).toHaveBeenCalledTimes(3)
+    expect(reportIssue).not.toHaveBeenCalled()
+  })
+
+  // Reopens a workspace on a connection where every open fails with `error`, through the
+  // longest jittered waits before the second, third and fourth attempts.
+  async function failReopens(error: Error) {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={api(openOverseer())} />))
+
+    vi.useFakeTimers()
+    const failing = api(failingOverseer(error))
+    await act(async () => root!.render(<WorkspaceProbe authenticatedApi={failing} />))
+    for (const wait of [1_150, 2_300, 4_600]) {
+      await act(async () => vi.advanceTimersByTimeAsync(wait))
+    }
+    expect(container!.textContent).toBe('Reconnecting')
+  }
+
+  it('reports a reopen once, when two retries have not cured it', async () => {
+    await failReopens(new Error('Durable Object reset because its code was updated.'))
+    expect(reportIssue).toHaveBeenCalledExactlyOnceWith(
+      'gadget.reopen', expect.any(Error), { severity: 'warning', gadgetId: 'workspace-1' })
+  })
+
+  it.each([
+    ['a dropped socket', new Error('Peer closed WebSocket')],
+    ['an expired session', createAuthError(AUTH_ERROR_CODES.invalidSessionToken)],
+  ])('does not report a reopen that fails with %s', async (_, error) => {
+    await failReopens(error)
+    expect(reportIssue).not.toHaveBeenCalled()
   })
 
   describe('account prompts for opening gadgets', () => {

@@ -26,7 +26,7 @@ import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./a
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import {
-  authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
+  authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
 } from "./notification-service.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
@@ -691,6 +691,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       let others = Object.entries(store.get()).filter(([key]) => key !== deviceKey);
       store.put(Object.fromEntries(
           [...others, [deviceKey, subscriptionId]].slice(-NOTIFICATION_DEVICES_PER_KIND)));
+      if (store === this.storage.phoneNotificationSubscriptions) this.#queueBadge(true);
     });
     this.#notificationRegistration = registered.catch(() => {});
     return registered;
@@ -938,6 +939,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #unreadChanged(workspaceId?: string, chatId?: number): void {
+    this.#queueBadge();
     let cursor = workspaceId === undefined || chatId === undefined ? undefined :
       this.#readCursors.get(`${workspaceId}:${chatId}`);
     let chat = cursor && this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted ? this.#readState(cursor) : null;
@@ -962,6 +964,56 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         subscriber[Symbol.dispose]();
       }));
     }
+  }
+
+  // This version belongs to the existing push-service replacement protocol, not read state.
+  #queueBadge(force = false): void {
+    if (!this.env.NOTIFICATION_SERVICE_URL ||
+        !Object.keys(this.storage.phoneNotificationSubscriptions.get()).length) return;
+    let previous = this.storage.notificationBadge.get();
+    let {unreadMessageCount} = this.#unreadSummary();
+    if (!force && previous.count === unreadMessageCount) return;
+    this.storage.notificationBadge.put({version: previous.version + 1,
+      count: unreadMessageCount, retryAt: Math.min(previous.retryAt ?? Infinity, Date.now() + 1_000),
+      expiresAt: Date.now() + NOTIFICATION_RETRY_LIFETIME_MS});
+    this.ctx.waitUntil(this.#armExpirySweep());
+  }
+
+  async #flushBadge(): Promise<void> {
+    let pending = this.storage.notificationBadge.get();
+    if (pending.count === null || pending.retryAt === undefined) return;
+    let now = Date.now();
+    // Pending replacements from before expiry was introduced get one bounded retry window.
+    let expiresAt = pending.expiresAt ?? now + NOTIFICATION_RETRY_LIFETIME_MS;
+    if (expiresAt <= now) {
+      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
+      await this.#armExpirySweep();
+      return;
+    }
+    if (pending.retryAt > now) return;
+    // Persist the retry before dispatch, so eviction or a lost ACK replays the same replacement.
+    this.storage.notificationBadge.put({...pending, expiresAt, retryAt: Math.min(expiresAt, now + 30_000)});
+    await this.#armExpirySweep();
+    let store = this.storage.phoneNotificationSubscriptions;
+    let {version, count} = pending;
+    let results = await Promise.allSettled(Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
+      if (!await deliverBadge(this.env, subscriptionId, version, count)) {
+        let current = store.get();
+        if (current[deviceKey] === subscriptionId) {
+          delete current[deviceKey];
+          store.put(current);
+        }
+      }
+    }));
+    let failed = false;
+    for (let result of results) if (result.status === "rejected") {
+      failed = true;
+      logger.warn("unread badge delivery deferred", {event: "notification.badge.deferred", error: result.reason});
+    }
+    if (!failed && this.storage.notificationBadge.get().version === version) {
+      this.storage.notificationBadge.put({version, count});
+    }
+    await this.#armExpirySweep();
   }
 
   /**
@@ -2733,6 +2785,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
       consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
     }
+    let badgeRetry = this.storage.notificationBadge.get().retryAt;
+    if (badgeRetry !== undefined) consider(badgeRetry);
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
     for (let pending of this.storage.pendingDeviceHandoffs.list()) {
       consider(pending.expiresAt.getTime());
@@ -2768,7 +2822,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    */
   async alarm(): Promise<void> {
     // A stalled workspace/push service must not prevent unrelated auth expiry cleanup.
-    let deliveries = Promise.allSettled([this.#deliverNotifications()]);
+    let deliveries = Promise.allSettled([this.#deliverNotifications(), this.#flushBadge()]);
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
@@ -2822,9 +2876,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /**
    * Mint a gatekeeper class simulating a new resource of a creatable type (see
    * GatekeeperVendor.createResource()). It belongs to no account; the returned `action` is the
-   * creation to queue.
+   * creation to queue. A suggested `configuration` must be a URL, for a type that describes one
+   * (see SupportedResource.creationConfigurationDescription).
    */
-  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string)
+  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string,
+                                 configuration?: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, typeUrlPattern: string,
                   action: ActionDescription}> {
     let vendor = this.vendors.get(vendorId);
@@ -2834,6 +2890,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!advertised) {
       throw new Error(`This vendor does not advertise creation of "${resourceUrlPattern}". ` +
           "Call listConnectableResources to see the available creations.");
+    }
+    let takes = advertised.creationConfigurator && advertised.creationConfigurationDescription;
+    if (configuration !== undefined && !takes) {
+      throw new Error(`A new ${advertised.title} takes no configuration. Leave configuration out.`);
+    }
+    if (configuration !== undefined && !URL.canParse(configuration)) {
+      throw new Error(`configuration must be ${takes}.`);
     }
     await this.#assertResourceEnabled(vendorId, advertised);
     let {class: cls, resource, action} = await (vendor as unknown as ResourceCreatorStub)

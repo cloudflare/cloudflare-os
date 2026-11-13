@@ -1,20 +1,21 @@
-import { env } from "cloudflare:workers";
+import { env, type RpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessTokenRequest } from "../../src/auth-retry";
 import type { OfficeConversionResult, OfficeFileInspection } from "../../src/office-conversion";
 import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SHEET_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../../src/drive-session";
-import { GatekeeperUserImpl, type UserAccount } from "../../src/google";
+import { GatekeeperUserImpl, UserAccount } from "../../src/google";
 import {
   calendarPickerRank, hasCalendarPrivateAccessRole, hasCalendarWriteRole,
 } from "../../src/calendar-api";
 import {
-  BigQueryConfiguratorUI, CalendarConfiguratorUI, DriveConfiguratorUI,
+  BigQueryConfiguratorUI, CalendarConfiguratorUI, CreationLocationConfiguratorUI, DriveConfiguratorUI,
 } from "../../src/google-configurators";
 import type { GoogleAccessToken } from "../../src/google-api";
 import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../../src/drive-api";
 import {
-  GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
+  DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
   OFFICE_IMPORT_GRANT,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
@@ -44,7 +45,8 @@ describe("Google resource configurators", () => {
 
   describe("Drive picker", () => {
     const picker = (holdsSharedDrivesGrant = true) => new DriveConfiguratorUI(
-      async () => token("access-token"), async grant => grant !== SHARED_DRIVES_GRANT || holdsSharedDrivesGrant);
+      async () => token("access-token"), async grant => grant !== SHARED_DRIVES_GRANT || holdsSharedDrivesGrant,
+      true);
 
     /**
      * Answers each Drive request from `routes` by path, recording every URL asked for. A batch is
@@ -140,6 +142,55 @@ describe("Google resource configurators", () => {
       expect(calls[0].searchParams.get("corpora")).toBe("allDrives");
       expect(calls[0].searchParams.get("orderBy")).toBe("folder,name");
       expect(calls[0].searchParams.get("pageToken")).toBe("page-2");
+    });
+
+    it("lists only folders for a creation's location, and which ones take new files", async () => {
+      const calls = stubDrive({
+        "/files": {
+          files: [
+            { id: "open", name: "Plans", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: true } },
+            { id: "viewer", name: "Archive", mimeType: FOLDER, capabilities: { canListChildren: true, canAddChildren: false } },
+          ],
+        },
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+
+      await expect(creating.listFolders("folder:root", "", null)).resolves.toEqual({
+        nodes: [
+          { id: "folder:open", title: "Plans", kind: "folder", listable: true, addable: true },
+          { id: "folder:viewer", title: "Archive", kind: "folder", listable: true },
+        ],
+      });
+      expect(calls[0].searchParams.get("q")).toBe(`trashed = false and mimeType = '${FOLDER}' and 'root' in parents`);
+    });
+
+    // The creation picker's My Drive tab is Drive's `root` alias, so a pasted folder's path must
+    // start there, or at the Shared drives tab, for the picker to open it where it lives.
+    it("places a pasted folder link for a creation under its tab", async () => {
+      const folder = (id: string, name: string, parents?: string[], driveId?: string) => ({
+        id, name, mimeType: FOLDER, trashed: false, ...parents && { parents }, ...driveId && { driveId },
+        capabilities: { canListChildren: true, canAddChildren: true },
+      });
+      stubDrive({
+        "/files/root": folder("0AMyRoot", "My Drive"),
+        "/files/0AMyRoot": folder("0AMyRoot", "My Drive"),
+        "/files/plans": folder("plans", "Plans", ["0AMyRoot"]),
+        "/files/specs": folder("specs", "Specs", ["0ADrive"], "0ADrive"),
+        "/files/0ADrive": folder("0ADrive", "Engineering", undefined, "0ADrive"),
+      });
+      const creating = new CreationLocationConfiguratorUI(async () => token("access-token"), async () => true);
+      const pasted = async (id: string) =>
+        (await creating.listFolders("folder:root", `https://drive.google.com/drive/folders/${id}`, null)).nodes;
+
+      await expect(pasted("plans")).resolves.toEqual([{
+        id: "folder:plans", title: "Plans", kind: "folder", listable: true, addable: true,
+        path: [{ id: "folder:root", title: "My Drive", listable: true, addable: true }],
+      }]);
+      await expect(pasted("0AMyRoot"))
+        .resolves.toMatchObject([{ id: "folder:root", title: "My Drive", addable: true, path: [] }]);
+      await expect(pasted("specs")).resolves.toMatchObject([{
+        id: "folder:specs", path: [{ id: "shared-drives" }, { id: "folder:0ADrive", title: "Engineering" }],
+      }]);
     });
 
     // A shortcut outlives its target being deleted, unshared or trashed, and a listing says nothing
@@ -316,7 +367,7 @@ describe("Google resource configurators", () => {
         .resolves.toEqual({ nodes: [] });
     });
 
-    // An agent asking for a Drive file connection of a native file asked for read-only access.
+    // An agent asking for a Drive file connection of a native file asked for it as a Drive file.
     it("keeps a pre-filled Drive file id for a Google Doc, so it binds as a Drive file", async () => {
       stubDrive({
         "/files/F9": { id: "F9", name: "Q3", mimeType: "application/vnd.google-apps.document" },
@@ -411,6 +462,59 @@ describe("Google resource configurators", () => {
       await expect(browser.getDriveNode("file:D1")).resolves.toBeNull();
       await expect(browser.getDriveNode("folder:missing")).resolves.toBeNull();
       await expect(browser.getDriveNode("shared-drives")).resolves.toBeNull();
+    });
+
+    // Every Drive type opens the one picker, and each is where a connection is made read and write.
+    it.each([GOOGLE_DRIVE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE])(
+      "names the writes grant and reads it live, without asking Drive ($urlPattern)", async resource => {
+        const calls = stubDrive({});
+        const granted: string[] = [SHARED_DRIVES_GRANT];
+        const account = {
+          getAccessToken: vi.fn(async () => token("access-token")),
+          getGrantedResourceUrlPatterns: vi.fn(async () => granted),
+        };
+        const ctx = {
+          props: { userObjectId: "account-id" },
+          exports: { UserAccount: { idFromString: () => "account-id", get: () => account } },
+        };
+        const frame = await new GatekeeperUserImpl(ctx as never, {} as never)
+          .startResourceConfigurator(resource.urlPattern);
+        const ui = frame.ui as unknown as { getWriteAccess(): Promise<unknown> };
+
+        await expect(ui.getWriteAccess()).resolves.toEqual({ grant: DRIVE_WRITES_GRANT, held: false });
+        // The grant lands while the dialog is open, and the same configurator sees it.
+        granted.push(DRIVE_WRITES_GRANT);
+        await expect(ui.getWriteAccess()).resolves.toEqual({ grant: DRIVE_WRITES_GRANT, held: true });
+        expect(account.getGrantedResourceUrlPatterns).toHaveBeenCalledTimes(2);
+        expect(calls).toEqual([]);
+      });
+
+    it("says whether the deployment offers read and write", async () => {
+      const calls = stubDrive({});
+      const account = {
+        getAccessToken: vi.fn(async () => token("access-token")),
+        getGrantedResourceUrlPatterns: vi.fn(async () => [DRIVE_WRITES_GRANT]),
+      };
+      const ctx = {
+        props: { userObjectId: "account-id" },
+        exports: { UserAccount: { idFromString: () => "account-id", get: () => account } },
+      };
+      /** What the picker's frame is told on a deployment whose Worker has the environment `deployed`. */
+      const offers = async (deployed: { GOOGLE_DRIVE_ACCESS?: string }) => {
+        const frame = await new GatekeeperUserImpl(ctx as never, deployed as never)
+          .startResourceConfigurator(GOOGLE_DRIVE_RESOURCE.urlPattern);
+        // The Drive pattern's frame is the picker's, which the frame's own type does not say.
+        const ui = frame.ui as RpcStub<DriveConfiguratorUI>;
+        return await ui.offersWriteAccess();
+      };
+
+      await expect(offers({})).resolves.toBe(true);
+      await expect(offers({ GOOGLE_DRIVE_ACCESS: "read" })).resolves.toBe(false);
+      // A value the setting does not know is read as the safe side.
+      await expect(offers({ GOOGLE_DRIVE_ACCESS: "READ-ONLY" })).resolves.toBe(false);
+      // The account is not asked either: the answer is the deployment's alone.
+      expect(account.getGrantedResourceUrlPatterns).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
     });
   });
 
@@ -695,7 +799,7 @@ async function startOfficeConfigurator(testCase: OfficeKindCase, granted: string
  * workerd reports a rejection through a local RPC stub as uncaught even once it is handled.
  */
 function directOfficeConfigurator(testCase: OfficeKindCase): OfficeConfigurator {
-  let target = new DriveConfiguratorUI(async () => token("access-token"), async () => true);
+  let target = new DriveConfiguratorUI(async () => token("access-token"), async () => true, true);
   return {
     inspectFile: fileId => target.inspectFile(testCase.kind, fileId),
     hasConversionAccess: () => target.hasConversionAccess(),
@@ -908,14 +1012,20 @@ const testEnv = env as unknown as { UserAccount: DurableObjectNamespace<UserAcco
 /** The storage key oauth-flow.ts keeps a prepared consent flow under. */
 const OAUTH_FLOW_KEY = "oauthFlow";
 
-/** A stored account whose recorded grant is `resourceUrlPatterns`, and the user entrypoint over it. */
-async function storedAccount(resourceUrlPatterns: string[]) {
+/**
+ * A stored account whose recorded grant is `resourceUrlPatterns`, and the user entrypoint over it.
+ * `oauthScopes` is what Google returned at its last consent: all the grant asks for, unless given.
+ */
+async function storedAccount(
+  resourceUrlPatterns: string[],
+  oauthScopes: string[] = resourceUrlPatternsToOAuthScopes(resourceUrlPatterns),
+) {
   let account = testEnv.UserAccount.get(testEnv.UserAccount.newUniqueId());
   await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) => {
     state.storage.kv.put("refreshToken", "refresh-token");
     state.storage.kv.put("accessToken", token("access-token"));
     state.storage.kv.put("grantedResources", resourceUrlPatterns);
-    state.storage.kv.put("grantedScopes", resourceUrlPatternsToOAuthScopes(resourceUrlPatterns));
+    state.storage.kv.put("grantedScopes", oauthScopes);
   });
   let ctx = {
     props: { userObjectId: account.id.toString() },
@@ -949,5 +1059,190 @@ describe("the Office import grant on a stored account", () => {
       state.storage.kv.get<{ requestedResources: string[] }>(OAUTH_FLOW_KEY));
     expect(flow?.requestedResources.toSorted())
       .toEqual([GOOGLE_SHEETS_RESOURCE.urlPattern, OFFICE_IMPORT_GRANT].toSorted());
+  });
+});
+
+/** The grants the consent flow `account` last prepared will ask Google for. */
+const requested = (account: DurableObjectStub<UserAccount>) =>
+  runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+    state.storage.kv.get<{ requestedResources: string[] }>(OAUTH_FLOW_KEY)?.requestedResources);
+
+// A consent records what it asked for when it completes, whatever Google returned, and every later
+// consent asks for all of it again.
+describe("the Drive writes grant on a stored account", () => {
+  const FILE = GOOGLE_DRIVE_FILE_RESOURCE.urlPattern;
+  const SHEETS = GOOGLE_SHEETS_RESOURCE.urlPattern;
+
+  it("is asked for again by every later consent once it was asked for, granted or not", async () => {
+    // What a completed Allow changes consent leaves when Drive's line was left unchecked.
+    let declined = await storedAccount([FILE, DRIVE_WRITES_GRANT], resourceUrlPatternsToOAuthScopes([FILE]));
+    expect(await declined.account.getGrantedResourceUrlPatterns()).toEqual([FILE]);
+
+    // A widening for another resource asks for it too.
+    let { url } = await declined.user.ensureResources([SHEETS]);
+    expect(url).toMatch(new RegExp(`/${declined.account.id.toString()}/[^/]+$`));
+    expect((await requested(declined.account))?.toSorted()).toEqual([FILE, SHEETS, DRIVE_WRITES_GRANT].toSorted());
+
+    await declined.user.reconnect();
+    expect((await requested(declined.account))?.toSorted()).toEqual([FILE, DRIVE_WRITES_GRANT].toSorted());
+
+    let granted = await storedAccount([FILE, DRIVE_WRITES_GRANT]);
+    expect(await granted.account.getGrantedResourceUrlPatterns()).toContain(DRIVE_WRITES_GRANT);
+    await granted.user.ensureResources([SHEETS]);
+    expect(await requested(granted.account)).toContain(DRIVE_WRITES_GRANT);
+  });
+
+  it("is asked for by no consent of an account that never asked for it", async () => {
+    let { account, user } = await storedAccount([FILE]);
+
+    await user.ensureResources([SHEETS]);
+    expect(await requested(account)).not.toContain(DRIVE_WRITES_GRANT);
+
+    await user.reconnect();
+    expect(await requested(account)).toEqual([FILE]);
+  });
+
+  it("is asked for by no consent where the deployment keeps Drive read-only, and stays recorded", async () => {
+    const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+    const REDIRECT_URI = "https://gatekeeper-google.example.workers.dev/oauth";
+    let { account, user } = await storedAccount([FILE, DRIVE_WRITES_GRANT]);
+    /** A reconnect's initiation nonce, which its URL ends with. */
+    let reconnect = async () => (await user.reconnect()).url.split("/").at(-1) ?? "";
+
+    // The account as a deployment that sets the variable runs it: its own class over its own state.
+    let nonce = await reconnect();
+    let capped = await runInDurableObject(account, (_instance: unknown, state: DurableObjectState) =>
+      new UserAccount(state, { ...env, GOOGLE_DRIVE_ACCESS: "read" } as never)
+        .beginOAuthFlow(nonce, REDIRECT_URI));
+    expect(capped?.scopes).toEqual(resourceUrlPatternsToOAuthScopes([FILE]));
+    expect(capped?.scopes).not.toContain(DRIVE_SCOPE);
+    // The grant is still what completing that consent records, so the next one asks again.
+    expect(await requested(account)).toContain(DRIVE_WRITES_GRANT);
+
+    let lifted = await account.beginOAuthFlow(await reconnect(), REDIRECT_URI);
+    expect(lifted?.scopes).toContain(DRIVE_SCOPE);
+  });
+});
+
+describe("BigQuery picker", () => {
+  const dataset = (projectId: string, datasetId: string, extra = {}) =>
+    ({ datasetReference: { projectId, datasetId }, location: "US", ...extra });
+  const table = (projectId: string, datasetId: string, tableId: string, type = "TABLE", friendlyName?: string) =>
+    ({ tableReference: { projectId, datasetId, tableId }, type, friendlyName });
+
+  /** An account holding a role in `mine` only, which was shared `theirs.events`. */
+  function bigQuery() {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+      const path = decodeURIComponent(url.pathname.replace("/bigquery/v2", ""));
+      calls.push(path);
+      switch (path) {
+        case "/projects":
+          return Response.json({ projects: [
+            { id: "mine", friendlyName: "My project", projectReference: { projectId: "mine" } },
+            { id: "theirs-app", projectReference: { projectId: "theirs-app" } },
+          ] });
+        case "/projects/mine/datasets":
+          return Response.json({ datasets: [dataset("mine", "web", { friendlyName: "Web v2.0" }), dataset("mine", "sales", { friendlyName: "Sales" })] });
+        case "/projects/mine/datasets/sales/tables":
+          return Response.json({ tables: [table("mine", "sales", "orders", "TABLE", "Customer purchases"), table("mine", "sales", "daily", "VIEW")] });
+        case "/projects/mine/datasets/web/tables":
+          // Date-sharded, as a GA4 export is: one table a day.
+          return Response.json({ tables: Array.from({ length: 250 }, (_, i) => table("mine", "web", `events_${20240000 + i}`)) });
+        case "/projects/theirs/datasets":
+          return Response.json({ datasets: [dataset("theirs", "events")] });
+        case "/projects/theirs/datasets/events":
+          return Response.json(dataset("theirs", "events", { description: "Shared events" }));
+        case "/projects/theirs/datasets/events/tables/clicks":
+          return Response.json(table("theirs", "events", "clicks"));
+        case "/projects/example.com:legacy/datasets/events/tables/clicks":
+          return Response.json(table("example.com:legacy", "events", "clicks", "SNAPSHOT"));
+      }
+      return Response.json({ error: { code: 403, message: "Access Denied", errors: [{ reason: "accessDenied" }] } }, { status: 403 });
+    }));
+    return { ui: new BigQueryConfiguratorUI(async () => token("t")), calls };
+  }
+
+  it("lists the projects the account holds a role in, and inside one its datasets and tables, by name", async () => {
+    const { ui } = bigQuery();
+    expect(await ui.listNodes("bigquery", "", null)).toEqual({ nodes: [
+      { id: "project:mine", kind: "project", title: "mine", subtitle: "My project", listed: true },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
+    ] });
+    expect(await ui.listNodes("project:mine", "", null)).toMatchObject({ nodes: [
+      { id: "dataset:mine/sales", title: "sales", subtitle: "Sales", listed: true, path: [{ id: "project:mine", title: "mine" }] },
+      { id: "dataset:mine/web", title: "web" },
+    ] });
+    expect(await ui.listNodes("dataset:mine/sales", "dai", null)).toMatchObject({ nodes: [
+      { id: "table:mine/sales/daily", kind: "table", subtitle: "View", view: true, path: [{ id: "project:mine" }, { id: "dataset:mine/sales" }] },
+    ] });
+    // A table's friendly name is shown and searched, as before the picker.
+    expect(await ui.listNodes("dataset:mine/sales", "customer", null)).toMatchObject({ nodes: [
+      { id: "table:mine/sales/orders", subtitle: "Customer purchases", view: undefined },
+    ] });
+    expect(await ui.listProjects("proj")).toEqual([{ value: "mine", title: "mine", subtitle: "My project" }]);
+  });
+
+  it("pages a long listing within the picker's limit", async () => {
+    const { ui } = bigQuery();
+    const first = await ui.listNodes("dataset:mine/web", "", null);
+    expect(first.nodes).toHaveLength(100);
+    expect(first.nodes[0]).toMatchObject({ id: "table:mine/web/events_20240000" });
+    const second = await ui.listNodes("dataset:mine/web", "", first.nextCursor!);
+    expect(second.nodes[0]).toMatchObject({ id: "table:mine/web/events_20240100" });
+    const last = await ui.listNodes("dataset:mine/web", "", second.nextCursor!);
+    expect(last).toEqual({ nodes: expect.any(Array) });
+    expect(last.nodes).toHaveLength(50);
+    expect((await ui.listNodes("dataset:mine/web", "events_202400", null)).nextCursor).toBeUndefined();
+    await expect(ui.listNodes("dataset:mine/web", "", "later")).rejects.toThrow("Unknown page");
+  });
+
+  it("reaches a project the account holds no role in by its ID, a Console link or a reference", async () => {
+    const { ui, calls } = bigQuery();
+    // Ahead of a listed project whose name merely contains the ID typed.
+    expect(await ui.listNodes("bigquery", "theirs", null)).toEqual({ nodes: [
+      { id: "project:theirs", kind: "project", title: "theirs", subtitle: undefined, listed: false },
+      { id: "project:theirs-app", kind: "project", title: "theirs-app", subtitle: undefined, listed: true },
+    ] });
+    expect(calls).toContain("/projects/theirs/datasets");
+    expect(await ui.listNodes("project:theirs", "", null)).toMatchObject({ nodes: [{ id: "dataset:theirs/events", listed: false }] });
+    const console = "https://console.cloud.google.com/bigquery?project=mine&p=theirs&d=events&page=dataset";
+    expect(await ui.listNodes("bigquery", console, null)).toMatchObject({ nodes: [
+      { id: "dataset:theirs/events", subtitle: "Shared events", listed: false, path: [{ id: "project:theirs" }] },
+    ] });
+    expect(await ui.listNodes("dataset:mine/sales", "`theirs.events.clicks`", null)).toMatchObject({ nodes: [
+      { id: "table:theirs/events/clicks", kind: "table", listed: false },
+    ] });
+    // A legacy domain-scoped project ID parses as a URL, but is a reference all the same.
+    expect(await ui.listNodes("bigquery", "example.com:legacy.events.clicks", null)).toMatchObject({ nodes: [
+      { id: "table:example.com:legacy/events/clicks", subtitle: "Snapshot", view: undefined, listed: false },
+    ] });
+    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?project=theirs", null)).toMatchObject({ nodes: [
+      { id: "project:theirs", listed: false },
+    ] });
+    expect(await ui.getNode("dataset:theirs/events")).toMatchObject({ title: "events", listed: false });
+  });
+
+  it("answers nothing for what the account cannot see, saying so only for an explicit link", async () => {
+    const { ui, calls } = bigQuery();
+    expect(await ui.getNode("project:nowhere")).toBeNull();
+    expect(await ui.getNode("not an id")).toBeNull();
+    expect(await ui.listNodes("bigquery", "nowhere", null)).toEqual({ nodes: [] });
+    expect(await ui.listNodes("bigquery", "https://console.cloud.google.com/bigquery?p=nowhere", null))
+      .toEqual({ nodes: [], notice: expect.stringContaining("can't see") });
+    // A listing's own words, not a project ID, never trigger a lookup.
+    expect(await ui.listNodes("project:mine", "nowhere", null)).toEqual({ nodes: [] });
+    // A dotted term is tried as a reference, then searched for like any other word.
+    expect(await ui.listNodes("project:mine", "sales.v2", null)).toEqual({ nodes: [] });
+    expect(await ui.listNodes("project:mine", "v2.0", null)).toMatchObject({ nodes: [{ id: "dataset:mine/web" }] });
+    expect(calls.filter(path => path.startsWith("/projects/nowhere"))).toHaveLength(1);
+  });
+
+  it("looks up a word typed at the root only once it is long enough to be a project ID", async () => {
+    const { ui, calls } = bigQuery();
+    for (const prefix of ["th", "thei", "their"]) await ui.listNodes("bigquery", prefix, null);
+    expect(calls.filter(path => path !== "/projects")).toEqual([]);
+    expect((await ui.listNodes("bigquery", "theirs", null)).nodes[0]).toMatchObject({ id: "project:theirs" });
   });
 });

@@ -252,7 +252,11 @@ export type RawIssue = {
   labels?: RawConnection<RawLabel> | null;
   team: RawTeam;
   project?: RawProject | null;
-  parent?: { id: string; identifier: string; url: string; title: string } | null;
+  /**
+   * `team` is absent only from a parent a pending action recorded before reads reported the
+   * parent's team (see LinearGatekeeperImpl.issueTeamIds).
+   */
+  parent?: { id: string; identifier: string; url: string; title: string; team?: { id: string } } | null;
   cycle?: RawCycle | null;
 };
 
@@ -295,7 +299,7 @@ const ISSUE_DETAIL_FIELDS = `
   ${ISSUE_SUMMARY_FIELDS}
   description branchName
   creator { ${USER_FIELDS} }
-  parent { id identifier url title }
+  parent { id identifier url title team { id } }
   cycle { ${CYCLE_FIELDS} }
 `;
 

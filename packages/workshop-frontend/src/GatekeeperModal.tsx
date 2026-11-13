@@ -11,13 +11,14 @@ import {
   Sparkle,
   X,
 } from '@phosphor-icons/react'
-import { RpcStub } from 'capnweb'
+import { RpcPromise, RpcStub } from 'capnweb'
 import {
   AGENT_SPAWNER_CONNECTION_ID,
   AgentSpawnerConfig,
   AiChatAuthorInfo,
   GatekeeperClient,
   Overseer,
+  WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import { SupportedResource, VendorDescription, matchesResourceUrlPattern } from '@gadgets/workshop-shared/gatekeeper'
 import { ResourceConfiguratorFrame } from '@gadgets/workshop-shared/gatekeeper'
@@ -40,6 +41,7 @@ import { useSiteName } from './ServerConfigContext'
 import { AccountsSubscriberAdapter } from './accountsSubscriber'
 import { useDialogSelectPortalContainer } from './useDialogSelectPortalContainer'
 import { openConnectWindow } from './connectHandoff'
+import { getStoredSelectedModel } from './modelSelection'
 import { AuthPopupCancelledError } from './features/native-app/authPopup'
 
 export interface GatekeeperModalProps {
@@ -51,11 +53,11 @@ export interface GatekeeperModalProps {
    */
   getOverseer: () => Promise<RpcStub<Overseer>> | RpcStub<Overseer>
   /**
-   * Called after the gatekeeper is successfully created. The caller decides what to do with
-   * the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this callback
-   * and shows a loading state while it runs.
+   * Called after the gatekeeper is successfully created, with its id. The caller decides what to
+   * do with the stub (e.g. assign a binding name, or insert a capsule). The modal awaits this
+   * callback and shows a loading state while it runs.
    */
-  onCreated: (gk: RpcStub<GatekeeperClient<any>>) => Promise<void>
+  onCreated: (gk: RpcStub<GatekeeperClient<any>>, id: WorkpieceId) => Promise<void>
   /**
    * Workpieces offered as env entries when creating an agent spawner (see AgentSpawnerConfig.env),
    * normally the gadget the spawner is being created for plus that gadget's own bindings. All are
@@ -227,7 +229,8 @@ export default function GatekeeperModal({
   open, onClose, getOverseer, onCreated, spawnerEnvCandidates,
   initialVendorId, initialResourceUrl, initialResourceUrlPattern, initialAccountId,
 }: GatekeeperModalProps) {
-  const { authenticatedApi } = useAuthenticatedApi()
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined
   const toasts = useKumoToastManager()
 
   const [selectedConnectionId, setSelectedConnectionId] = useState<ConnectionTypeId | null>(null)
@@ -257,7 +260,13 @@ export default function GatekeeperModal({
   const selectPortalContainer = useDialogSelectPortalContainer()
 
   const [spawnerDisplayName, setSpawnerDisplayName] = useState('')
-  const [spawnerModelId, setSpawnerModelId] = useState<string | null>(null)
+  // Wrapped, so that a pick of "None" (null) is told from no pick at all. Until there is a pick the
+  // form shows the model a new chat would start on, read at render since the user may be confirmed
+  // only after the models load, as when the connection drops while this is open.
+  const [spawnerModelPick, setSpawnerModelPick] = useState<{ modelId: string | null } | null>(null)
+  const spawnerModelId = spawnerModelPick
+    ? spawnerModelPick.modelId
+    : getStoredSelectedModel(userId, availableModels) ?? availableModels[0]?.id ?? null
   const [spawnerEnv, setSpawnerEnv] = useState<SpawnerEnvRow[]>([])
   const spawnerEnvError = validateSpawnerEnv(spawnerEnv)
 
@@ -408,7 +417,7 @@ export default function GatekeeperModal({
     setConfiguratorSelectionReady(null)
     setSelectedModelId(undefined)
     setSpawnerDisplayName('')
-    setSpawnerModelId(null)
+    setSpawnerModelPick(null)
     setSpawnerEnv(
       (spawnerEnvCandidatesRef.current ?? []).map(entry => ({ ...entry, enabled: true })))
 
@@ -418,14 +427,6 @@ export default function GatekeeperModal({
       setAvailableModels(models)
       setDecisionModels(decisions)
       setSelectedModelId((models[0] ?? decisions[0])?.id)
-      if (models.length > 0) {
-        const lastSelected = localStorage.getItem('lastSelectedModel')
-        if (lastSelected && models.some(m => m.id === lastSelected)) {
-          setSpawnerModelId(lastSelected)
-        } else {
-          setSpawnerModelId(models[0].id)
-        }
-      }
     }).catch(err => {
       if (cancelled) return
       console.error('Failed to load models:', err)
@@ -711,29 +712,33 @@ export default function GatekeeperModal({
     }
   }
 
+  // The id is pipelined onto the creation and pulled with it: creating a vendor connection
+  // restarts the workspace about 100 ms after it commits whenever a "build" collaborator is live,
+  // and a separate getId() round trip from a distant client arrives after that.
+  const handOff = async (created: RpcPromise<GatekeeperClient<any>>) => {
+    const [gatekeeper, id] = await Promise.all([created, created.getId()])
+    try {
+      await onCreated(gatekeeper, id)
+    } catch (err) {
+      gatekeeper[Symbol.dispose]()
+      throw err
+    }
+    onClose()
+  }
+
   const handleCreateAiModel = async () => {
     if (!selectedModelId) {
       toasts.add({ title: 'Please select an AI model', variant: 'warning' })
       return
     }
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newAiModelGatekeeper(selectedModelId)
-      if (gatekeeper) {
-        await onCreated(gatekeeper)
-        transferred = true
-        onClose()
-      } else {
-        toasts.add({ title: 'Failed to create AI model connection', variant: 'error' })
-      }
+      await handOff(overseer.newAiModelGatekeeper(selectedModelId))
     } catch (err) {
       console.error('Failed to create AI model gatekeeper:', err)
       toasts.add({ title: 'Failed to create AI model connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }
@@ -754,23 +759,13 @@ export default function GatekeeperModal({
     }
 
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newAgentSpawnerGatekeeper(config)
-      if (gatekeeper) {
-        await onCreated(gatekeeper)
-        transferred = true
-        onClose()
-      } else {
-        toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
-      }
+      await handOff(overseer.newAgentSpawnerGatekeeper(config))
     } catch (err) {
       console.error('Failed to create agent spawner gatekeeper:', err)
       toasts.add({ title: 'Failed to create agent spawner connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }
@@ -782,8 +777,6 @@ export default function GatekeeperModal({
     if (!resourceUrlPattern) return
 
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       if (!configuratorFrameState?.frame || configuratorFrameState.accountId !== selectedAccountId || configuratorFrameState.resourceUrlPattern !== resourceUrlPattern) {
         throw new Error('Configurator is not ready.')
@@ -800,19 +793,12 @@ export default function GatekeeperModal({
         throw new Error(`Grant access to ${resource.title} to connect it.`)
       }
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newGatekeeper(selectedAccountId, resourceUrl)
-      if (gatekeeper) {
-        await onCreated(gatekeeper)
-        transferred = true
-        onClose()
-      } else {
-        toasts.add({ title: 'Failed to create connection', variant: 'error' })
-      }
+      // Typed nullable, but never null: the overseer throws instead.
+      await handOff(overseer.newGatekeeper(selectedAccountId, resourceUrl) as RpcPromise<GatekeeperClient<any>>)
     } catch (err) {
       console.error('Failed to create resource gatekeeper:', err)
       toasts.add({ title: err instanceof Error && err.message ? err.message : 'Failed to create connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }
@@ -953,7 +939,7 @@ export default function GatekeeperModal({
                     env={spawnerEnv}
                     envError={spawnerEnvError}
                     onDisplayNameChange={setSpawnerDisplayName}
-                    onModelIdChange={setSpawnerModelId}
+                    onModelIdChange={modelId => setSpawnerModelPick({ modelId })}
                     onEnvChange={setSpawnerEnv}
                     selectContainer={selectPortalContainer}
                   />

@@ -1,14 +1,14 @@
 // The per-binding gatekeeper against a fake Graph, reached through TestHooks facets as the overseer
 // reaches it: the binding pinned to its Entra user, its description and type at each access level,
-// the folder boundary, the access units each read names for observers, and rejections that strand
-// a temporary ID.
+// the folder boundary, and rejections that strand a temporary ID. What reads report for observers is
+// in observers.test.ts.
 
 import { runInDurableObject } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SharePointBrowserPage } from "../../src/configurator/sharepoint-configurator-types";
 import type { DriveEntry, ResolvedLink, SharePointScopeInfo } from "../../src/types";
 import {
-  BRIEF, DEEP, DRIVE, EMPTY, FakeGraph, GRAPH, NOTES, OTHER, OTHER_FILE, PHILLIP, READ_SCOPES, ROOT, SARAH, SITE_ID, SPECS,
+  BRIEF, DEEP, DRIVE, FakeGraph, GRAPH, NOTES, OTHER, OTHER_FILE, PHILLIP, READ_SCOPES, ROOT, SARAH, SITE_ID, SPECS,
   accountStub, facet, failure, folderProps, hooks, identityOf, json, props, ref, seedAccount, unwrap,
 } from "./fake-graph";
 import type { GatekeeperProps, Outcome, Step } from "./worker";
@@ -180,72 +180,6 @@ describe("a folder binding", () => {
     const id = await seedAccount(graph);
     expect(failure(await hooks().run(facet("folder-top"), folderProps(id), [["rename", ref(SPECS), "Renamed"]])))
       .toMatch(/top of what this connection covers/);
-  });
-});
-
-describe("observations", () => {
-  it("name the folder and every child a listing revealed", async () => {
-    const graph = new FakeGraph().install();
-    const id = await seedAccount(graph);
-    const sarah = await seedAccount(graph, SARAH);
-    const binding = folderProps(id);
-    const name = facet("units-listing");
-    await walk(name, binding, [["list"]]);
-    const [observation] = (await hooks().queueLog(name)).observations;
-    expect(observation).toMatchObject({ title: "Listed a SharePoint folder" });
-    expect(observation.description).toContain("brief\\.docx");
-
-    unwrap(await hooks().addObserver(name, binding, "sarah", sarah));
-    expect(graph.probedItems(SARAH).toSorted()).toEqual([SPECS, DEEP, EMPTY, BRIEF].toSorted());
-  });
-
-  it("refuse a collaborator who can't open one of the children", async () => {
-    const graph = new FakeGraph().install();
-    const id = await seedAccount(graph);
-    const sarah = await seedAccount(graph, SARAH);
-    graph.hide(SARAH, BRIEF);
-    const binding = folderProps(id);
-    const name = facet("units-hidden");
-    await walk(name, binding, [["list"]]);
-    expect(failure(await hooks().addObserver(name, binding, "sarah", sarah)))
-      .toMatch(/can't open something in SharePoint that this workspace has read/);
-  });
-
-  it("authorize an empty listing against the folder itself", async () => {
-    const graph = new FakeGraph().install();
-    const id = await seedAccount(graph);
-    const sarah = await seedAccount(graph, SARAH);
-    const binding = folderProps(id);
-    const name = facet("units-empty");
-    expect(await walk(name, binding, [["list", { folderId: ref(EMPTY) }]])).toEqual([]);
-    const [observation] = (await hooks().queueLog(name)).observations;
-    expect(observation.description).toMatch(/Listed the folder Empty; it holds nothing more\./);
-    unwrap(await hooks().addObserver(name, binding, "sarah", sarah));
-    expect(graph.probedItems(SARAH)).toEqual([EMPTY]);
-  });
-
-  it("leave an admitted collaborator out of a later read they can't open", async () => {
-    const graph = new FakeGraph().install();
-    const id = await seedAccount(graph);
-    const sarah = await seedAccount(graph, SARAH);
-    graph.hide(SARAH, NOTES);
-    const binding = folderProps(id);
-    const name = facet("units-exclude");
-    unwrap(await hooks().run(name, binding, [["getScope"]]));
-    unwrap(await hooks().addObserver(name, binding, "sarah", sarah));
-    unwrap(await hooks().run(name, binding, [["getEntry", ref(NOTES)]]));
-    const log = (await hooks().queueLog(name));
-    expect(log.observations.at(-1)).toMatchObject({ title: "Read SharePoint file details", excludeObservers: ["sarah"] });
-  });
-
-  it("refuse a collaborator from another organization outright", async () => {
-    const graph = new FakeGraph().install();
-    const id = await seedAccount(graph);
-    const outsider = await seedAccount(graph, { ...SARAH, tid: "22222222-2222-2222-2222-222222222222" });
-    const binding = folderProps(id);
-    const name = facet("units-tenant");
-    unwrap(await hooks().run(name, binding, [["getScope"]]));
-    expect(failure(await hooks().addObserver(name, binding, "outsider", outsider))).toMatch(/different organization/);
   });
 });
 

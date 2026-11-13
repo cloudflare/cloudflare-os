@@ -68,11 +68,10 @@ export const useComposerAttachments = ({
     name: string | undefined,
   ) => {
     try {
-      const content = new Uint8Array(await blob.arrayBuffer());
-      if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) return;
       const overseer = await getOverseerRef.current();
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) return;
-      const oid = await overseer.uploadBlob(content);
+      // Streamed, so no upload needs the whole file in memory at either end.
+      const oid = await overseer.uploadBlob({ stream: blob.stream(), byteLength: blob.size });
       if (!mountedRef.current || !attachmentsRef.current.some((item) => item.id === id)) {
         return;
       }

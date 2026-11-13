@@ -4,7 +4,9 @@
 import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { FileAtCommit, GadgetSummary, TreeNode } from '@gadgets/workshop-shared/api'
+import type {
+  FileAtCommit, GadgetSummary, TreeNode, WorktreeSummary,
+} from '@gadgets/workshop-shared/api'
 import type { ChatCodeChanges } from '../../ChatInterface'
 import type { ChangedFile } from './workpieceTree'
 
@@ -103,17 +105,18 @@ afterEach(() => {
   listChangedPaths.mockClear()
 })
 
-const render = (changes: ChatCodeChanges) => act(async () => {
-  root.render(
-    <WorkpieceCodeInterface
-      overseer={overseer}
-      summary={GADGET}
-      isAgentActive={false}
-      selectedChatId={CHAT_ID}
-      chatChanges={changes}
-    />,
-  )
-})
+const render = (changes: ChatCodeChanges, summary: GadgetSummary | WorktreeSummary = GADGET) =>
+  act(async () => {
+    root.render(
+      <WorkpieceCodeInterface
+        overseer={overseer}
+        summary={summary}
+        isAgentActive={false}
+        selectedChatId={CHAT_ID}
+        chatChanges={changes}
+      />,
+    )
+  })
 
 describe('WorkpieceCodeInterface changes of a merge', () => {
   it('lists the files that only the merge changed', async () => {
@@ -144,6 +147,33 @@ describe('WorkpieceCodeInterface changes of a merge', () => {
       expect(listed.changes).toEqual([{ path: 'client.js', status: 'modified' }])
     })
     expect(listChangedPaths).not.toHaveBeenCalled()
+  })
+
+  // An agent step re-roots a worktree's pin at a commit of a command's result, keeping the
+  // worktree's accepted commit as `mergedCommit`: the chat's content is read from the former
+  // and reviewed against the latter, as a gadget's merge is.
+  it('reviews a re-rooted worktree against its accepted commit', async () => {
+    const worktree: WorktreeSummary = {
+      id: 5, type: 'worktree', title: 'Repo', chatId: CHAT_ID,
+      pinBase: HEAD, headCommit: HEAD, baseCommit: HEAD,
+    }
+    await render({
+      chatId: CHAT_ID,
+      codeBase: {
+        pins: [{ gadgetId: worktree.id, baseCommit: MERGE, mergedCommit: HEAD }],
+        generation: 1,
+        revision: 0,
+      },
+      rowsThrough: 0,
+    }, worktree)
+
+    await vi.waitFor(() => {
+      expect(listed.changes).toEqual([
+        { path: 'client.js', status: 'modified' },
+        { path: 'old.js', status: 'deleted' },
+        { path: 'server.js', status: 'added' },
+      ])
+    })
   })
 
   // A file the merge deleted is in no other listing, so a failed read must not hide it.

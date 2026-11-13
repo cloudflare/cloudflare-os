@@ -16,18 +16,27 @@ function oid(n: number): string {
   return n.toString(16).padStart(40, "0");
 }
 
+/** What the session asked of the queue and the git cache, in order: `authorize <title>` / `advertise <id>`. */
+type EventLog = string[];
+
 class TestGitCache extends RpcTarget {
   readonly advertised: string[] = [];
+  constructor(readonly events: EventLog) { super(); }
   async advertiseCommit(commitId: string): Promise<void> {
     this.advertised.push(commitId);
+    this.events.push(`advertise ${commitId}`);
   }
 }
 
 class TestApprovalQueue extends RpcTarget {
   readonly observations: string[] = [];
-  readonly cache = new TestGitCache();
-  async authorizeObservation(entry: { title: string }): Promise<void> {
+  readonly subresources: string[][] = [];
+  readonly events: EventLog = [];
+  readonly cache = new TestGitCache(this.events);
+  async authorizeObservation(entry: { title: string; subresources: string[] }): Promise<void> {
     this.observations.push(entry.title);
+    this.subresources.push(entry.subresources);
+    this.events.push(`authorize ${entry.title}`);
   }
   async getGitCache(): Promise<TestGitCache> {
     return this.cache;
@@ -65,8 +74,17 @@ function commitSummary(id: string, parents: string[]): GitLabCommitSummary {
   return { id, message: `commit ${id.slice(0, 7)}`, author: {}, committer: {}, parents, url: `${PROJECT.url}/-/commit/${id}` };
 }
 
+/** The subresource the fake gatekeepers report for a read that names none: the bound project. */
+const BOUND = "project/1";
+
 function fakeGatekeeper(methods: Partial<Record<string, unknown>>): GitLabGatekeeperImpl {
-  return { isSimulatedCommitId: () => false, ...methods } as unknown as GitLabGatekeeperImpl;
+  return {
+    isSimulatedCommitId: () => false,
+    // As GitLabGatekeeperImpl.authorizeRead: forward the observation with the subresource it depends on.
+    authorizeRead: async (queue: RpcStub<ApprovalQueue>, observation: object, subresource?: string) =>
+      await queue.authorizeObservation({ ...observation, subresources: [subresource ?? BOUND] } as never),
+    ...methods,
+  } as unknown as GitLabGatekeeperImpl;
 }
 
 function projectSession(queue: TestApprovalQueue, methods: Partial<Record<string, unknown>>) {
@@ -112,19 +130,25 @@ describe("page size", () => {
 });
 
 describe("GitLabProjectSessionImpl advertising", () => {
-  it("advertises source and target shas per fetched page of listMergeRequests, withholding simulated ones", async () => {
+  it("authorizes and then advertises source and target shas per fetched page of listMergeRequests, withholding simulated ones", async () => {
     const queue = new TestApprovalQueue();
     const session = projectSession(queue, {
       listMergeRequests: async () => pagesCursor([[mrSummary(1, oid(1), oid(2))], [mrSummary(2, oid(3), oid(2))]]),
       isSimulatedCommitId: (id: string) => id === oid(3),
     });
     const cursor = await session.listMergeRequests();
+    // Nothing is authorized or advertised until a page is fetched.
+    expect(queue.events).toEqual([]);
     await cursor.next();
-    expect(queue.cache.advertised.toSorted()).toEqual([oid(1), oid(2)]);
+    expect(queue.events[0]).toBe("authorize List merge requests");
+    expect(queue.events.slice(1).toSorted()).toEqual([`advertise ${oid(1)}`, `advertise ${oid(2)}`]);
     await drain(cursor);
-    // oid(3) is a queued push's head: withheld. oid(2) not re-advertised.
+    // oid(3) is a queued push's head: withheld. oid(2) not re-advertised. The second page is
+    // authorized as it leaves, under its own title; the closing null after it is not.
     expect(queue.cache.advertised.toSorted()).toEqual([oid(1), oid(2)]);
-    expect(queue.observations).toEqual(["List merge requests"]);
+    expect(queue.events.slice(3)).toEqual(["authorize List merge requests (page 2)"]);
+    expect(queue.observations).toEqual(["List merge requests", "List merge requests (page 2)"]);
+    expect(queue.subresources).toEqual([[BOUND], [BOUND]]);
   });
 
   it("advertises searchMergeRequests results the same way", async () => {

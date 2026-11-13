@@ -61,7 +61,7 @@ function commitPayload(tree: string, parents: string[], message: string): Uint8A
 }
 
 async function storeLocal(impl: any, type: string, payload: Uint8Array): Promise<string> {
-  let oid = await gitObjectOid(type as any, payload);
+  let oid = gitObjectOid(type as any, payload);
   impl.storage.gitObjects.put({ oid, data: encodeLooseObject(type as any, payload) });
   return oid;
 }

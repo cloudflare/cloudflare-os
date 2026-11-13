@@ -24,15 +24,18 @@ import {
 } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
+import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApprovalQueue, ConnectHandoff,
   Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
-  HookInitiator, HookTargetMetadata, ResourceDescription, ResourceConfiguratorFrame,
-  SupportedResource, VendorDescription,
+  HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
+  ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   ChatGatewayRpcTarget, GadgetResponse, SubmitExternalMessageInput, SubmitExternalMessageResult,
 } from "@gadgets/workshop-shared/external-message-gateway";
+
+import type {ReplicableWorktree, WorktreeReplicator} from "@gadgets/workshop-shared/worktree-replica";
 
 // Nothing but classes and the default handler may be exported from a Worker entry module: workerd
 // treats every named export as an entrypoint and rejects anything that isn't one.
@@ -43,6 +46,10 @@ const SUPPORTED_RESOURCES: SupportedResource[] = [{
   title: "Test Thing",
   description: "A resource that exists only so tests can bind something.",
   creatable: true,
+  // An approver's configuration is whatever a test approves with: nothing here serves the
+  // configurator frame, which only the Workshop UI asks for.
+  creationConfigurator: true,
+  creationConfigurationDescription: "the URL of the test folder to create it in",
 }];
 
 const TYPES_CODE = `
@@ -51,8 +58,14 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Fetches a passed worktree's Git head, as a container's \`git clone\` would, and mounts it. */
+  mountWorktree(worktree: unknown): Promise<string>;
+  /** Runs a command in the kept worktree that leaves it holding just \`path\`, with \`text\`. */
+  runCommand(path: string, text: string): Promise<string>;
   /** Binds a hook the integration test fires through \`/control/fire-hook\`. */
   watch(key: string, callback: ValueHook): Promise<void>;
+  /** Binds a hook the integration test delivers through \`/control/queue-hook\`. */
+  subscribe(name: string, callback: ValueHook): Promise<void>;
 }
 interface ValueHook {
   onValueRequested(value: number): Promise<void>;
@@ -251,6 +264,18 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     return this.ctx.storage.kv.get<number>(`apply-attempts:${label}`) ?? 0;
   }
 
+  recordApplySettled(label: string): void {
+    this.ctx.storage.kv.put(`apply-settled:${label}`, this.getApplySettled(label) + 1);
+  }
+
+  /**
+   * applyAction() calls that have finished, applied or failed. Below getApplyAttempts(), an attempt
+   * is still in flight, and its outcome (a one-shot failure included) is not yet decided.
+   */
+  getApplySettled(label: string): number {
+    return this.ctx.storage.kv.get<number>(`apply-settled:${label}`) ?? 0;
+  }
+
   /** Parks the next applyAction() for `label` until releaseApply(), so a test can race another. */
   holdNextApply(label: string): void {
     this.ctx.storage.kv.put(`hold-next-apply:${label}`, true);
@@ -321,6 +346,29 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     } catch (err) {
       return { error: err instanceof Error ? err.message : String(err) };
     }
+  }
+
+  /** The hooks `TestSession.subscribe()` binds, kept and delivered as a hook driver keeps its own. */
+  readonly #subscribed = new HookRegistry<ValueHook, number, { name: string }>(this.ctx.storage.kv, () => {});
+
+  registerSubscribedHook(key: string, name: string, capabilities: HookCapabilities<ValueHook, number>): void {
+    this.#subscribed.set(key, { name }, capabilities);
+  }
+
+  unregisterSubscribedHook(key: string): void {
+    this.#subscribed.remove(key);
+  }
+
+  /**
+   * Queues `value` as message `id` for each enabled hook subscribed as `name`, as a driver queues a
+   * provider's push, and delivers what is due.
+   * @returns How many hooks it was queued for.
+   */
+  async queueHook(name: string, id: string, value: number): Promise<{ hooks: number }> {
+    const keys = this.#subscribed.entries().filter(([, hook]) => hook.name === name).map(([key]) => key);
+    for (const key of keys) this.#subscribed.enqueue(key, id, value, Date.now());
+    await this.#subscribed.run(Date.now());
+    return { hooks: keys.length };
   }
 
   keepSelfStub(key: string, stub: RpcStub<ConnectionProbe>): void {
@@ -423,9 +471,75 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
         { ...input, chatGatewayRpcTarget });
   }
 
+  /**
+   * Fetches the worktree's head, as `git clone` would, and keeps its replicator for runCommand().
+   */
+  async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
+    using replicator = await worktree.getReplicator();
+    this.ctx.storage.kv.put("mounted-worktree", replicator);
+    const head = await replicator.gitHead();
+    await fetchPack(replicator, head);
+    return `worktree pack received for ${head}`;
+  }
+
+  /**
+   * Runs a command in the worktree mountWorktree() kept, as a container would, for the execution
+   * whose session `queue` belongs to: snapshots it, fetches the snapshot's tree, and submits the
+   * tree the command left, which holds only `path`.
+   */
+  async runCommand(queue: RpcStub<ObservationAuthorizer>, path: string, text: string): Promise<string> {
+    using replicator = this.ctx.storage.kv.get<RpcStub<WorktreeReplicator>>("mounted-worktree");
+    if (!replicator) throw new Error("No worktree is mounted");
+    const snapshot = await replicator.snapshot(queue);
+    await fetchPack(replicator, snapshot.tree);
+    const blob = {type: 3, payload: new TextEncoder().encode(text)};
+    const blobId = await gitObjectId("blob", blob.payload);
+    const tree = {type: 2, payload: concat([new TextEncoder().encode(`100644 ${path}\0`), hexBytes(blobId)])};
+    const treeId = await gitObjectId("tree", tree.payload);
+    const pack = await packBytes([blob, tree]);
+    const result = await replicator.submit(queue, snapshot.tree, treeId, new Blob([pack]).stream());
+    return result.tree === treeId ? `submitted ${path}` : `merged into ${result.tree}`;
+  }
+
   [restore]({ messageKey }: { messageKey: string }): GadgetResponseRecorder {
     return new GadgetResponseRecorder(this, messageKey);
   }
+}
+
+// Fetches `oid` from the worktree, checking that a raw Git pack arrives.
+async function fetchPack(replicator: RpcStub<WorktreeReplicator>, oid: string): Promise<void> {
+  using transfer = await replicator.gitPull([oid], {commitHistory: {kind: "full"}});
+  const bytes = new Uint8Array(await new Response(await transfer.stream()).arrayBuffer());
+  if (new TextDecoder().decode(bytes.slice(0, 4)) !== "PACK") throw new Error("Not a raw Git pack");
+}
+
+function concat(parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  parts.reduce((offset, part) => (out.set(part, offset), offset + part.length), 0);
+  return out;
+}
+const hexBytes = (hex: string) => Uint8Array.from(hex.match(/../g)!, byte => parseInt(byte, 16));
+async function sha1(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-1", bytes));
+}
+async function gitObjectId(type: string, payload: Uint8Array): Promise<string> {
+  const hash = await sha1(concat([new TextEncoder().encode(`${type} ${payload.length}\0`), payload]));
+  return [...hash].map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+// A Git pack holding `objects` whole (type 2 is a tree, 3 a blob).
+async function packBytes(objects: {type: number; payload: Uint8Array}[]): Promise<Uint8Array> {
+  const parts = [new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, objects.length])];
+  for (const {type, payload} of objects) {
+    const header = [(type << 4) | (payload.length & 15)];
+    for (let size = payload.length >> 4; size > 0; size >>= 7) {
+      header[header.length - 1] |= 0x80;
+      header.push(size & 0x7f);
+    }
+    parts.push(new Uint8Array(header), new Uint8Array(
+      await new Response(new Blob([payload]).stream().pipeThrough(new CompressionStream("deflate"))).arrayBuffer()));
+  }
+  const body = concat(parts);
+  return concat([body, await sha1(body)]);
 }
 
 /** Records each delivery rather than the latest, since delivery is at-least-once. */
@@ -646,7 +760,13 @@ export interface TestSession {
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Exercises worktree capability delegation through the real code-mode bridge. */
+  mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
+  /** Runs a command in the worktree mountWorktree() kept, in a later execution. */
+  runCommand(path: string, text: string): Promise<string>;
   watch(key: string, callback: RpcStub<ValueHook>): Promise<void>;
+  /** Binds a hook kept in a `HookRegistry`, which `/control/queue-hook` delivers to by `name`. */
+  subscribe(name: string, callback: RpcStub<ValueHook>): Promise<void>;
   /** Stores a persistent stub to this connection under `key`, for `/control/call-self-stub`. */
   keepSelfStub(key: string): Promise<void>;
 }
@@ -717,12 +837,29 @@ class TestSessionTarget extends RpcTarget implements TestSession {
     return Promise.all(values.map(value => this.writeValue(value)));
   }
 
+  async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
+    return this.state.mountWorktree(worktree);
+  }
+
+  async runCommand(path: string, text: string): Promise<string> {
+    return this.state.runCommand(this.approvalQueue, path, text);
+  }
+
   async watch(key: string, callback: RpcStub<ValueHook>): Promise<void> {
     await this.approvalQueue.bindHook(
         // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
         this.ctx.exports.TestHookController({ props: { key } }),
         callback,
         { title: `Test hook ${key}`, description: "Delivers values the integration test fires." });
+  }
+
+  async subscribe(name: string, callback: RpcStub<ValueHook>): Promise<void> {
+    using delivery = await this.ctx.restore<RpcStub<ValueHookDelivery>>({ hook: name });
+    await this.approvalQueue.bindHook(
+        // @ts-expect-error Workers currently widens the controller's hook type across bindHook RPC.
+        this.ctx.exports.TestSubscribedHookController({ props: { key: crypto.randomUUID(), name, delivery } }),
+        callback,
+        { title: `Test hook ${name}`, description: "Delivers values the integration test queues." });
   }
 
   async keepSelfStub(key: string): Promise<void> {
@@ -757,6 +894,25 @@ class ConnectionProbeTarget extends RpcTarget implements ConnectionProbe {
 
   async label(): Promise<string> {
     return this.labelValue;
+  }
+}
+
+type ValueHookDelivery = HookDelivery<ValueHook, number>;
+
+/** What a subscribed hook's delivery stub restores to: one firing, observed and then called. */
+@validateRpc()
+class ValueHookDeliveryTarget extends RpcTarget implements ValueHookDelivery {
+  constructor(private readonly name: string) {
+    super();
+  }
+
+  async deliver(callback: RpcStub<ValueHook>, approvalQueue: RpcStub<ApprovalQueue>, value: number)
+      : Promise<void> {
+    await approvalQueue.authorizeObservation({
+      title: `Hook ${this.name} requested ${value}`,
+      description: "The integration test queued this hook.",
+    });
+    await callback.onValueRequested(value);
   }
 }
 
@@ -806,8 +962,8 @@ export class TestGatekeeper
         this.ctx.props.resourceUrl, this.ctx);
   }
 
-  [restore](): ConnectionProbe {
-    return new ConnectionProbeTarget(this.ctx.props.label);
+  [restore]({ hook }: { hook?: string }): ConnectionProbe | ValueHookDelivery {
+    return hook === undefined ? new ConnectionProbeTarget(this.ctx.props.label) : new ValueHookDeliveryTarget(hook);
   }
 
   /** The discovery index a test set for this account: none unless it set one. */
@@ -847,10 +1003,14 @@ export class TestGatekeeper
     const { label } = this.ctx.props;
     const held = await state.takeNextApplyHold(label);
     await state.recordApplyAttempt(label);
-    if (held) await waitForApplyRelease(state, label);
-    const failure = await state.takeApplyFailure(label);
-    if (failure !== null) throw new Error(failure);
-    await state.applyAction(label, action);
+    try {
+      if (held) await waitForApplyRelease(state, label);
+      const failure = await state.takeApplyFailure(label);
+      if (failure !== null) throw new Error(failure);
+      await state.applyAction(label, action);
+    } finally {
+      await state.recordApplySettled(label);
+    }
   }
 
   async rejectAction(action: number): Promise<void> {
@@ -883,6 +1043,22 @@ export class TestHookController
 
   async disable(): Promise<void> {
     await control(this.ctx.exports).recordHookDisable(this.ctx.props.key);
+  }
+}
+
+/** Registers a subscribed hook with TestControl's `HookRegistry`, as a controller does with its driver. */
+@validateRpc()
+export class TestSubscribedHookController
+    extends WorkerEntrypoint<Cloudflare.Env, { key: string; name: string; delivery: RpcStub<ValueHookDelivery> }>
+    implements HookController<ValueHook> {
+  async enable(initiator: Fetcher<HookInitiator<ValueHook>>, _target: HookTargetMetadata): Promise<void> {
+    const { key, name, delivery } = this.ctx.props;
+    // @ts-expect-error Worker RPC's mapped types can't relate a stub taking an ApprovalQueue to itself.
+    await control(this.ctx.exports).registerSubscribedHook(key, name, { delivery, initiator });
+  }
+
+  async disable(): Promise<void> {
+    await control(this.ctx.exports).unregisterSubscribedHook(this.ctx.props.key);
   }
 }
 
@@ -1052,11 +1228,13 @@ export default {
       return Response.json({ configurations: await control(ctx.exports).getCreations(label) });
     }
 
-    // Body: {"label": "..."} -> {"attempts": number}
+    // Body: {"label": "..."} -> {"attempts": number, "settled": number}
+    // `settled` is read first, so equal counts mean nothing was in flight in between.
     if (url.pathname === "/control/apply-attempts" && req.method === "POST") {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
-      return Response.json({ attempts: await control(ctx.exports).getApplyAttempts(label) });
+      const settled = await control(ctx.exports).getApplySettled(label);
+      return Response.json({ attempts: await control(ctx.exports).getApplyAttempts(label), settled });
     }
 
     // One-shot: the next applyAction() for `label` waits for /control/release-apply.
@@ -1132,6 +1310,17 @@ export default {
       }
       return Response.json(
           await control(ctx.exports).fireHook(key, value, resourceUrl, subresources));
+    }
+
+    // Queue a value for the hooks TestSession.subscribe() bound as `name` and deliver what is due
+    // (see TestControl.queueHook()); a repeated `id` is not delivered again.
+    // Body: {"name": "...", "id": "...", "value": number} -> {"hooks": number}
+    if (url.pathname === "/control/queue-hook" && req.method === "POST") {
+      const { name, id, value } = body as Record<string, unknown>;
+      if (!isNonEmptyString(name)) return badRequest("`name` must be a non-empty string");
+      if (!isNonEmptyString(id)) return badRequest("`id` must be a non-empty string");
+      if (typeof value !== "number") return badRequest("`value` must be a number");
+      return Response.json(await control(ctx.exports).queueHook(name, id, value));
     }
 
     // Call the stub a session's keepSelfStub() stored.

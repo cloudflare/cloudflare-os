@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } fr
 import { Banner, useKumoToastManager } from '@cloudflare/kumo'
 import { DownloadSimple, GitBranch, List } from '@phosphor-icons/react'
 import type {
-  FileAtCommit, Overseer, WorkpieceId, WorkpieceSummary,
+  Overseer, WorkpieceId, WorkpieceSummary,
 } from '@gadgets/workshop-shared/api'
 import type { CodeChange, FileChange, TextChange } from '@gadgets/workshop-shared/code-change'
 import { RpcStub } from 'capnweb'
@@ -14,7 +14,7 @@ import type {
   ChatCodeChanges, ChatLiveChangeRows, ChatLiveEditPreviews, EditPreviewEvent,
 } from '../../ChatInterface'
 import { ChatOtClient, type ChatContentReader, type RemoteFileEvent } from './otClient'
-import { commitFileStore, type CommitFileReader } from './commitFileStore'
+import { commitFileStore, type CommitFile, type CommitFileReader } from './commitFileStore'
 import { useChangedPaths, useCommitTree, useFilesAtCommit } from './useCommitContent'
 import {
   EMPTY_BROWSER_TREE, browserTreePaths, buildBrowserTree, deriveChanges, mergedPathStatuses,
@@ -46,13 +46,13 @@ import { isTransientRpcError } from '../../rpcErrors'
 //    and `mergedCommit` is the head it merged, so what mainline changed compares equal and
 //    vanishes, rather than being listed as this chat's own changes. Accept requires
 //    `mergedCommit === head`, so where it is enabled the two agree.
-// The two coincide except for a gadget chat whose pin is rooted at a merge: one updated from
-// mainline, or made by applying a blueprint. The paths where they differ are listed by
-// Overseer.listChangedPaths(), which is how a file that only the merge changed reaches the
-// Changes list though the chat's content never touched it. For a worktree
-// they always coincide (it has no mainline), and in particular the worktree's own `headCommit`
-// -- the agent's last explicit commit -- plays no role: an agent that edits and immediately
-// commits still shows its work against the last *accepted* commit.
+// The two coincide except for a chat whose pin is re-rooted: a gadget's at a merge, by an update
+// from mainline or by applying a blueprint, or a worktree's at a commit an agent step made of a
+// command's result there. The paths where they differ are listed by
+// Overseer.listChangedPaths(), which is how a file that only the re-root changed reaches the
+// Changes list though the chat's content never touched it. A worktree's own `headCommit` -- the
+// agent's last explicit commit -- plays no role: an agent that edits and immediately commits
+// still shows its work against the last *accepted* commit.
 //
 // A chat's uncommitted changes are a revisioned stream of code changes (see ChatCodeBase in the
 // API), tracked here by a per-chat ChatOtClient (see otClient.ts). Its content is sparse: for
@@ -976,11 +976,11 @@ export default function WorkpieceCodeInterface({
     return buildBrowserTree(baseTree, present, removed)
   }, [baseTree, presentSignature, removedSignature])
 
-  // The paths where the content base differs from the review base, which a merge commit the
-  // chat is pinned at changed (see ChatGadgetPinState.mergedCommit). An untouched path displays
-  // the content base's entry, so these differ from the review base without the chat's content
-  // touching them; the two trees say how. Trees only: nothing here reads a file.
-  // A failed read leaves those files out of the Changes list, and a file the merge deleted is
+  // The paths where the content base differs from the review base, which the commit the chat's
+  // pin is re-rooted at changed (see ChatGadgetPinState.mergedCommit). An untouched path
+  // displays the content base's entry, so these differ from the review base without the chat's
+  // content touching them; the two trees say how. Trees only: nothing here reads a file.
+  // A failed read leaves those files out of the Changes list, and a file the re-root deleted is
   // in no other listing, so the failure is shown with a retry that re-runs both reads.
   const [mergedRetryToken, setMergedRetryToken] = useState(0)
   const { paths: mergedPaths, error: mergedPathsError } = useChangedPaths(
@@ -1368,7 +1368,7 @@ export default function WorkpieceCodeInterface({
 
   // The open file's text as displayed -- what the agent reads: the overlay's (preview, chat
   // content, or removed), else the content base's. Undefined while the base read is in flight.
-  let activeResolved: FileAtCommit | undefined = { kind: 'absent' }
+  let activeResolved: CommitFile | undefined = { kind: 'absent' }
   if (activeFile !== null) {
     const overlaid = overlayText(activeFile)
     if (overlaid !== undefined) {
@@ -1380,7 +1380,7 @@ export default function WorkpieceCodeInterface({
     }
   }
   const activeFileText = activeResolved?.kind === 'text' ? activeResolved.text : null
-  // A base entry with no readable text (symlink, binary, oversized) shows its reason in place
+  // A base entry with no readable text (symlink, submodule, binary) shows its reason in place
   // of content, read-only.
   const activeFileUnreadable = activeResolved?.kind === 'unreadable'
     ? activeResolved.message : null

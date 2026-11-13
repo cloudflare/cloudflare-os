@@ -20,7 +20,10 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-const P = "group%2Fsub%2Fproject";
+/** The project's path, which the binding reads only to pin its id. */
+const PATH = "group%2Fsub%2Fproject";
+/** Where the binding reads the project once pinned: by its id, the documented project's 3. */
+const P = String(fx.projectResponse.data.id);
 const PROJECT = "group/sub/project";
 const DESC: ActionPresentation = { title: "t", implementsRevert: true };
 /** What applying an action answers once a discard has retired it, directly or by a cascade. */
@@ -37,7 +40,7 @@ function project() {
 /** A fake with the always-needed routes; tests add the endpoints they exercise. */
 function fake(): FakeGitLab {
   const gitlab = new FakeGitLab();
-  gitlab.on("GET", new RegExp(`^/api/v4/projects/${P}$`), () => json(project()));
+  gitlab.on("GET", new RegExp(`^/api/v4/projects/(?:${PATH}|${P})$`), () => json(project()));
   gitlab.on("GET", /^\/api\/v4\/user$/, () => json(fx.currentUserResponse.data));
   return gitlab;
 }

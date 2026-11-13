@@ -4,6 +4,7 @@ import { X } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
+  AuthenticatedApi,
   BlueprintPublicInfo,
   GadgetClient,
   GadgetUpstream,
@@ -29,6 +30,10 @@ type UpdateFromBlueprintDialogProps = {
   gadget: { title: string; upstream?: GadgetUpstream; client: RpcStub<GadgetClient> }
   overseer: RpcStub<Overseer>
   publicApi: RpcStub<PublicApi>
+  /** Saves a reviewer pick as the user's preferred model. */
+  authenticatedApi: RpcStub<AuthenticatedApi>
+  /** The signed-in user, whose remembered model the reviewer starts on; undefined until known. */
+  userId: string | undefined
   onClose: () => void
   /** Called with the new chat that holds the proposal, once there is one. */
   onProposed: (chatId: number) => void
@@ -40,8 +45,6 @@ type Load =
   | {
     status: 'loaded'
     models: AiChatAuthorInfo[]
-    /** The model a new chat would start with, which reviews a merge unless the user picks another. */
-    defaultReviewerId: string | null
     followed: BlueprintPublicInfo | null
   }
 
@@ -98,6 +101,8 @@ export const UpdateFromBlueprintDialog = ({
   gadget,
   overseer,
   publicApi,
+  authenticatedApi,
+  userId,
   onClose,
   onProposed,
 }: UpdateFromBlueprintDialogProps) => {
@@ -123,8 +128,7 @@ export const UpdateFromBlueprintDialog = ({
       followedId === undefined ? null : publicApi.getBlueprint(followedId),
     ]).then(([models, followed]) => {
       if (cancelled) return
-      // The same choice a new chat's composer starts on, since a new chat is where this lands.
-      setLoad({ status: 'loaded', models, defaultReviewerId: getStoredSelectedModel(models), followed })
+      setLoad({ status: 'loaded', models, followed })
     }, err => {
       logRpcFailure('Failed to load the blueprint to update from:', err)
       if (!cancelled) setLoad({ status: 'failed' })
@@ -160,12 +164,13 @@ export const UpdateFromBlueprintDialog = ({
 
   const reviewerId = pickedReviewer
     ? pickedReviewer.modelId
-    : load.status === 'loaded' ? load.defaultReviewerId : null
+    // The same choice a new chat's composer starts on, since a new chat is where this lands.
+    : load.status === 'loaded' ? getStoredSelectedModel(userId, load.models) : null
 
   const pickReviewer = (modelId: string | null) => {
     setPickedReviewer({ modelId })
     // As the composer's selector does, since the chat this opens is where the choice applies.
-    persistSelectedModel(modelId)
+    persistSelectedModel(authenticatedApi, userId, modelId)
   }
 
   const apply = async (blueprint: BlueprintChoice, allowUnrelated: boolean) => {

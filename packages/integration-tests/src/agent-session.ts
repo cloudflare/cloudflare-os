@@ -103,6 +103,10 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   runTurn(prompt: string, options?: AgentTurnOptions): Promise<AgentTurnResult>;
   approveActionsAndWait(
       ids: readonly [number, ...number[]], options?: AgentTurnOptions): Promise<AgentTurnResult>;
+  approveWebFetchRequestsAndWait(
+      requestIds: readonly [string, ...string[]], options?: AgentTurnOptions): Promise<AgentTurnResult>;
+  /** Deny a web fetch request; the turn it paused stays ended. */
+  denyWebFetchRequest(requestId: string): Promise<void>;
   listActions(options?: ActionListOptions): Promise<ActionHistoryPage>;
   connectedAccount(vendorId: string): ConnectedAccount;
   /**
@@ -605,11 +609,32 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
 
   async approveActionsAndWait(
       ids: readonly [number, ...number[]], options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+    if (new Set(ids).size !== ids.length) throw new Error("Action IDs must be unique");
+    return this.#approveAndWait(ids, id => this.#workspace.approveAction(id), options,
+        () => this.#assertActionsPending(ids));
+  }
+
+  approveWebFetchRequestsAndWait(
+      requestIds: readonly [string, ...string[]], options: AgentTurnOptions = {})
+      : Promise<AgentTurnResult> {
+    return this.#approveAndWait(
+        requestIds, id => this.#workspace.approveWebFetchRequest(id), options);
+  }
+
+  async denyWebFetchRequest(requestId: string): Promise<void> {
+    await this.#ready();
+    await this.#workspace.denyWebFetchRequest(requestId);
+  }
+
+  // Approves each decision the paused turn waits on, in order, and observes the activation the
+  // last one resumes.
+  async #approveAndWait<Id>(
+      ids: readonly Id[], approve: (id: Id) => RpcPromise<void>, options: AgentTurnOptions,
+      preflight?: () => Promise<void>): Promise<AgentTurnResult> {
     this.#assertOpen();
     if (this.#activeTurn !== undefined || this.#reserved) {
       throw new Error("An agent activation is already running");
     }
-    if (new Set(ids).size !== ids.length) throw new Error("Action IDs must be unique");
     if (options.signal?.aborted) {
       return this.#resultWithLastState({
         status: "cancelled",
@@ -633,13 +658,15 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
         chatId, options.timeoutMs ?? this.#turnTimeoutMs, options.signal, undefined, true);
     let observationStarted = false;
     try {
-      const preflight = this.#assertActionsPending(ids);
-      preflight.catch(() => {});
-      try {
-        await observer.race(preflight);
-      } catch (error) {
-        const status = observer.outcome?.status;
-        if (status !== "timedOut" && status !== "cancelled") throw error;
+      if (preflight) {
+        const check = preflight();
+        check.catch(() => {});
+        try {
+          await observer.race(check);
+        } catch (error) {
+          const status = observer.outcome?.status;
+          if (status !== "timedOut" && status !== "cancelled") throw error;
+        }
       }
       if (observer.outcome !== undefined) {
         this.#terminal = true;
@@ -654,7 +681,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
             if (index === ids.length - 1) {
               observer.admit(this.#chatSubscriber.latestSequence(chatId));
             }
-            await this.#awaitRpc(this.#workspace.approveAction(id), chatId, observer);
+            await this.#awaitRpc(approve(id), chatId, observer);
           }
         } catch (error) {
           this.#terminal = true;

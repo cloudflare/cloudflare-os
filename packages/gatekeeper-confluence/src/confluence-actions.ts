@@ -24,6 +24,7 @@ import {
   type ContentResponse,
 } from "./confluence-api";
 import { markdownToStorage, storageToMarkdown } from "./confluence-markdown";
+import type { ConfluenceObservedSet } from "./confluence-observers";
 import type { Comment, ContentSummary, ContentType } from "./types";
 
 // ---------------------------------------------------------------------------------------------
@@ -42,6 +43,13 @@ export type ConfluenceAction =
       title: string;
       content?: string;
       status: "current" | "draft";
+      /**
+       * What the creating session's reads of it depended on beyond the binding's baseline: the space
+       * it was opened in through a site binding, and a parent page whose space it names. Reads of the
+       * pending content report them, from whichever session reaches it. Absent on actions queued
+       * before it was recorded, whose reads the legacy tracker recorded.
+       */
+      sources?: ConfluenceObservedSet[];
     }
   | { type: "setContent"; contentId: string; markdown: string; previousMarkdown: string }
   | { type: "appendContent"; contentId: string; markdown: string; previousMarkdown?: string }

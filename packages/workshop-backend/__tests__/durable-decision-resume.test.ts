@@ -1,7 +1,9 @@
-import { env, type RpcStub } from "cloudflare:workers";
+import { env, RpcStub } from "cloudflare:workers";
 import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import * as fc from "fast-check";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
+import type { ActionState, AiChatAuthorInfo, UserNotification } from "@gadgets/workshop-shared/api";
+import { PROPERTY_RUN_OPTIONS } from "@gadgets/scripts/property-runs";
 import type { OverseerDurableObject } from "../src/overseer";
 import { UserDurableObject } from "../src/user";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
@@ -27,21 +29,26 @@ declare module "cloudflare:workers" {
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function inference(gate?: Promise<void>) {
+// Answers each model request with "Done.", or, while `stages()` holds, with an executeCode call.
+function inference(gate?: Promise<void>, stages = () => false) {
   let count = 0;
   const fetch = globalThis.fetch;
   vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== MODEL.config.apiUrl) return fetch(input, init);
     count++;
+    const call = stages();
     const events = [
       {type: "message_start", message: {id: "resume", type: "message", role: "assistant",
         model: MODEL.profile.id, content: [], stop_reason: null, stop_sequence: null,
         usage: {input_tokens: 1, output_tokens: 1}}},
-      {type: "content_block_start", index: 0, content_block: {type: "text", text: ""}},
-      {type: "content_block_delta", index: 0, delta: {type: "text_delta", text: "Done."}},
+      {type: "content_block_start", index: 0, content_block: call
+        ? {type: "tool_use", id: `stage-${count}`, name: "executeCode", input: {}} : {type: "text", text: ""}},
+      {type: "content_block_delta", index: 0, delta: call
+        ? {type: "input_json_delta", partial_json: `{"code": "stage"}`} : {type: "text_delta", text: "Done."}},
       {type: "content_block_stop", index: 0},
-      {type: "message_delta", delta: {stop_reason: "end_turn", stop_sequence: null}, usage: {output_tokens: 1}},
+      {type: "message_delta", delta: {stop_reason: call ? "tool_use" : "end_turn", stop_sequence: null},
+        usage: {output_tokens: 1}},
       {type: "message_stop"},
     ];
     const response = new Response(events.map(e =>
@@ -75,7 +82,7 @@ function decide(impl: Impl, kind: Kind) {
   }
 }
 
-async function scenario(kind: Kind = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
+async function scenario(kind: Kind | null = "connection", active = false, initiator: AiChatAuthorInfo = USER) {
   const stub = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const user = env.TEST_USER.getByName(crypto.randomUUID());
   await runInDurableObject(user, instance => {
@@ -95,6 +102,7 @@ async function scenario(kind: Kind = "connection", active = false, initiator: Ai
     impl.storage.chatMeta.put({id: CHAT, title: "Resume", started: timestamp, lastActive: timestamp,
       ...(active ? {activeAgent: MODEL.profile} : {})});
     impl.storage.chatContext.put({chatId: CHAT, bindings: {}, alwaysAvailableCapsuleIds: []});
+    if (!kind) return;  // A new chat.
     impl.addChatMessages(CHAT, USER, [{type: "message", message: "Do the work"}]);
     request(impl, kind);
     impl.storage.activeAgents.put({chatId: CHAT, modelId: MODEL.profile.id,
@@ -109,6 +117,14 @@ async function reset(stub: DurableObjectStub<OverseerDurableObject>) {
   await expect(runInDurableObject(env.TEST_OVERSEER.get(stub.id), (_, ctx) => {
     ctx.abort("Injected decision recovery reset");
   })).rejects.toThrow("Injected decision recovery reset");
+}
+
+// A gatekeeper class cannot be minted in a test: record connection 31 with one the workspace
+// never instantiates, and answer what a decision asks of its facet.
+function fakeGatekeeper(impl: Impl, applyAction: () => Promise<void> = async () => {}) {
+  impl.storage.gatekeepers.put({id: 31, class: {} as any});
+  vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyAction, rejectAction: async () => {}} as
+      unknown as Awaited<ReturnType<Impl["getGatekeeperFacet"]>>);
 }
 
 function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
@@ -229,7 +245,7 @@ describe("decision handoff using the existing execution row", () => {
       impl.storage.activeAgents.delete(CHAT);
       modelLookup(impl, async () => ({profile: USER, aiModel: MODEL}));
       // Only the rule-setting path reads this record; applying the external effect is stubbed below.
-      impl.storage.gatekeepers.put({id: 31, class: {} as any});
+      fakeGatekeeper(impl);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
       const actionKind = {tag: "edit", label: "Edits"};
@@ -564,21 +580,47 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it("clears the lookup budget before running inference", async () => {
-    const s = await scenario(), gate = Promise.withResolvers<void>(), requests = inference(gate.promise);
-    await s.visit(async impl => {
-      const error = Object.assign(new Error("reset"), {durableObjectReset: true});
-      modelLookup(impl, vi.fn().mockRejectedValueOnce(error).mockRejectedValueOnce(error)
-        .mockResolvedValue({profile: USER, aiModel: MODEL}));
+  it("starts the resume budget afresh once the resumed turn persists a step", async () => {
+    const s = await scenario();
+    let staged = true;
+    const requests = inference(undefined, () => staged);
+    await expect(s.visit(async impl => {
+      // The first step persists; the second never finishes.
+      vi.spyOn(impl, "executeCodeMode").mockResolvedValueOnce("Done.").mockReturnValue(new Promise(() => {}));
+      impl.storage.activeAgents.put({...impl.storage.activeAgents.get(CHAT)!, resumeAttempts: 3});
       decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT);
+      await vi.waitFor(() => expect(requests()).toBe(2));
+      await impl.ctx.storage.sync();
+      impl.ctx.abort("Injected reset during the second step");
+    })).rejects.toThrow(/Injected reset/);
+    staged = false;
+    await s.visit(async impl => {
       await impl.waitForAllAgentsToComplete();
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBe(1);
-      const alarm = impl.runAlarmTasks();
-      await vi.waitFor(() => expect(requests()).toBe(1));
-      expect(impl.storage.activeAgents.get(CHAT)?.resumeAttempts).toBeUndefined();
-      gate.resolve();
-      await alarm;
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect([...impl.storage.chats.list()].map(m => m.type)).not.toContain("error");
     });
+    expect(requests()).toBe(3);
+  });
+
+  it("fails a turn that is reset four times before it persists a step", async () => {
+    const s = await scenario(), requests = inference(new Promise(() => {}));
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await expect(s.visit(async impl => {
+        if (attempt === 1) { decide(impl, "connection"); impl.resumeAgentAfterDecision(CHAT); }
+        await vi.waitFor(() => expect(requests()).toBe(attempt));
+        await impl.ctx.storage.sync();
+        impl.ctx.abort("Injected reset during resumed turn");
+      })).rejects.toThrow(/Injected reset/);
+    }
+    await s.visit(async impl => {
+      await impl.waitForAllAgentsToComplete();
+      expect(impl.storage.activeAgents.get(CHAT)).toBeUndefined();
+      expect(impl.storage.chatMeta.get(CHAT)?.activeAgent).toBeUndefined();
+      expect([...impl.storage.chats.list()]).toContainEqual(expect.objectContaining({
+        type: "error", message: expect.stringContaining("interrupted too many times"),
+      }));
+    });
+    expect(requests()).toBe(4);
   });
 
   it("Stop clears a retry handoff that no longer has a running task", async () => {
@@ -731,8 +773,7 @@ describe("decision handoff using the existing execution row", () => {
       const gate = Promise.withResolvers<void>();
       modelLookup(impl, async () => { await gate.promise; return {profile: USER, aiModel: MODEL}; });
       const apply = vi.fn(async () => {});
-      vi.spyOn(impl, "getGatekeeperFacet").mockResolvedValue({applyAction: apply} as unknown as
-          Awaited<ReturnType<Impl["getGatekeeperFacet"]>>);
+      fakeGatekeeper(impl, apply);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
       await impl.applyPendingAction(action, USER, auto);
@@ -745,4 +786,245 @@ describe("decision handoff using the existing execution row", () => {
     });
     expect(requests()).toBe(1);
   });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Property: a turn that staged writes carries on exactly once. fast-check generates what a user
+// does around a chat whose agent writes through one connection: prompt it (the turn stages one to
+// three awaited writes, each auto-approvable or not), approve or reject a pending write, in any
+// order, and switch the connection's "always approve" rule on or off, in sessions with a workspace
+// restart between them, while the provider may fail an apply. Each step goes through the session's
+// RPC interface. After every step the model requests made, the "approved" notes sent to the agent
+// and every write's state are checked against a model: a hung chat is a request that never came,
+// a double resume one too many.
+//
+// The model keeps the writes in submission order, the rule, and the writes the latest turn waits
+// on. Writes apply as auto-approval.ts documents: an approval applies its own write; after it, and
+// after a rejection, the rule being switched on, or an auto-approvable write being staged under
+// it, the pending writes the rule covers apply in order, up to the first that needs a person or
+// fails. A turn makes one more request once everything it staged is approved: within its step and
+// without a note if that all auto-applies, whether before the step ends or after; else as a resume,
+// when the last approval lands. A rejected write ends the wait for good, as does a newer prompt.
+//
+// Left out: concurrent decisions (pinned in integration-tests' workshop-agent-actions.test.ts),
+// and an apply that fails while the step that staged its write still runs, whose turn carries on
+// regardless (see #drainAutoApprovalsAndResume). Scenarios a seed might miss are pinned as
+// `examples`.
+
+const EDITS = {tag: "edit", label: "Edits"};
+
+// `writes` holds each staged write's auto-approval verdict. `late` lands the auto-applies after
+// the step that staged them has ended, rather than while its tool still runs. `pick` chooses among
+// the pending writes, oldest first, modulo their count. `fail` is which of the step's apply
+// attempts the provider fails, from 1 (0: none).
+type Step =
+  | {kind: "prompt"; writes: boolean[]; late: boolean}
+  | {kind: "approve" | "reject"; pick: number; fail: number}
+  | {kind: "rule"; on: boolean; fail: number};
+
+class ResumeModel {
+  states: ActionState[] = [];
+  auto: boolean[] = [];
+  rule = false;
+  /** The writes the latest turn is suspended on. */
+  waiting: number[] = [];
+  requests = 0;
+  nudges = 0;
+  fail = 0;
+
+  #apply(i: number): boolean {
+    if (--this.fail === 0) return false;
+    this.states[i] = "approved";
+    return true;
+  }
+
+  #drain() {
+    for (const [i, state] of this.states.entries()) {
+      if (state === "pending" && !(this.rule && this.auto[i] && this.#apply(i))) return;
+    }
+  }
+
+  #carryOn(resumed: boolean) {
+    if (this.waiting.some(i => this.states[i] === "rejected")) {
+      this.waiting = [];
+    } else if (this.waiting.length && this.waiting.every(i => this.states[i] === "approved")) {
+      this.waiting = [];
+      this.requests++;
+      if (resumed) this.nudges++;
+    }
+  }
+
+  prompt(writes: boolean[]) {
+    this.requests++;  // The step that stages the writes.
+    this.waiting = writes.map((_, i) => this.states.length + i);
+    for (const auto of writes) {
+      this.states.push("pending");
+      this.auto.push(auto);
+      if (this.rule && auto) this.#drain();
+    }
+    this.#carryOn(false);
+  }
+
+  /** False when the provider failed the approval, which leaves the write pending. */
+  approve(i: number): boolean {
+    const applied = this.#apply(i);
+    if (applied) this.#drain();
+    this.#carryOn(true);
+    return applied;
+  }
+
+  reject(i: number) {
+    this.states[i] = "rejected";
+    this.#drain();
+    this.#carryOn(true);
+  }
+
+  setRule(on: boolean) {
+    this.rule = on;
+    if (on) this.#drain();
+    this.#carryOn(true);
+  }
+}
+
+// Replays a run, one session after another, on a fresh workspace and account.
+async function replayDecisions(sessions: Step[][]) {
+  vi.unstubAllGlobals();  // The previous run's provider.
+  const s = await scenario(null), model = new ResumeModel();
+  // The writes the next executeCode call stages. Until it has, the provider answers with that call.
+  let staged: boolean[] | undefined;
+  let landing: PromiseWithResolvers<void> | undefined, fail = 0, at = 0;
+  const requests = inference(undefined, () => staged !== undefined);
+  // A decision finishes in the background (the drain, and the turn it resumes), so a check first
+  // waits for everything the workspace has started.
+  const background: Promise<unknown>[] = [];
+  const check = (label: string) => s.visit(async impl => {
+    await impl.waitForAllAgentsToComplete();  // A late apply lands once its step is over.
+    landing?.resolve();
+    landing = undefined;
+    do {
+      await Promise.allSettled(background.splice(0));
+      await impl.waitForAllAgentsToComplete();
+    } while (background.length);
+    expect({
+      states: [...impl.storage.actions.list()].map(action => action.state),
+      requests: requests(),
+      nudges: [...impl.storage.chats.list()].filter(m => m.type === "agentNudge").length,
+      busy: impl.storage.chatMeta.get(CHAT)?.activeAgent !== undefined,
+    }, label).toEqual({states: model.states, requests: model.requests, nudges: model.nudges, busy: false});
+  });
+
+  for (const [session, steps] of sessions.entries()) {
+    if (session) await reset(s.stub);
+    await s.visit(impl => {
+      const waitUntil = impl.ctx.waitUntil.bind(impl.ctx);
+      vi.spyOn(impl.ctx, "waitUntil").mockImplementation(task => { background.push(task); waitUntil(task); });
+      fakeGatekeeper(impl, async () => {
+        await landing?.promise;
+        if (--fail === 0) throw new Error("The provider failed.");
+      });
+      // Stands in for the sandbox and the connection's session, which stage through submitAction.
+      vi.spyOn(impl, "executeCodeMode").mockImplementation(async chatId => {
+        const writes = staged!.entries(), started = background.length;
+        staged = undefined;
+        for (const [action, autoApprovable] of writes) {
+          await impl.submitAction(31, action, {title: `Write ${action}`, description: "",
+            implementsRevert: false, awaitDecision: true, autoApprovable, actionKind: EDITS},
+            {from: "agent", chatId});
+        }
+        if (!landing) await Promise.allSettled(background.slice(started));
+        return "Staged.";
+      });
+    });
+    using closed = new RpcStub(() => {});
+    using client = await env.TEST_OVERSEER.get(s.stub.id).open(s.user.id.toString(), USER.id, closed);
+    await check(`session ${session} opens`);
+    for (const step of steps) {
+      const label = `step ${at++} ${JSON.stringify(step)}`;
+      const pending = model.states.flatMap((state, i) => state === "pending" ? [i] : []);
+      model.fail = fail = step.kind === "prompt" ? 0 : step.fail;
+      if (step.kind === "prompt") {
+        staged = step.writes;
+        if (step.late) landing = Promise.withResolvers();
+        await client.sendChatMessage(CHAT, "Write it.", MODEL.profile.id);
+        model.prompt(step.writes);
+      } else if (step.kind === "rule") {
+        await (step.on ? client.setAutoApprovedActionKind(31, EDITS)
+            : client.removeAutoApprovedActionKind(31, EDITS.tag));
+        model.setRule(step.on);
+      } else if (pending.length) {
+        const nth = step.pick % pending.length, write = pending[nth];
+        // The ledger lists the newest first, under ids of its own.
+        const {id} = (await client.listActions({filter: "pending"})).entries.toReversed()[nth];
+        if (step.kind === "approve") {
+          expect(await client.approveAction(id).then(() => true, () => false), `${label}: applied`)
+              .toBe(model.approve(write));
+        } else {
+          await client.rejectAction(id);
+          model.reject(write);
+        }
+      }
+      await check(label);
+    }
+    await s.visit(impl => impl.ctx.storage.sync());  // What a restart must not lose.
+  }
+}
+
+describe("decisions on a turn's staged writes, for generated sessions", () => {
+  const RULE_ON: Step = {kind: "rule", on: true, fail: 0};
+  const fail = fc.constantFrom(0, 0, 0, 0, 1, 2);
+  const pick = fc.nat({max: 5});
+  const prompt = fc.record({kind: fc.constant("prompt" as const),
+    writes: fc.array(fc.boolean(), {minLength: 1, maxLength: 3}), late: fc.boolean()});
+  // Mostly approvals, so that waits often run to their resume.
+  const step: fc.Arbitrary<Step> = fc.oneof(
+    {weight: 8, arbitrary: fc.record({kind: fc.constant("approve" as const), pick, fail})},
+    {weight: 1, arbitrary: fc.record({kind: fc.constant("reject" as const), pick, fail})},
+    {weight: 3, arbitrary: fc.record({kind: fc.constant("rule" as const),
+      on: fc.constantFrom(true, true, false), fail})},
+    {weight: 2, arbitrary: prompt},
+  );
+  // A run opens on a prompt, as often as not with the rule already on, so that turns whose writes
+  // all auto-apply are common. The workspace restarts between a run's sessions.
+  const sessions = fc.tuple(fc.boolean(), prompt,
+      fc.array(fc.array(step, {maxLength: 6}), {minLength: 1, maxLength: 3}))
+      .map(([ruled, first, [session, ...later]]): Step[][] =>
+          [[...ruled ? [RULE_ON] : [], first, ...session], ...later]);
+
+  const examples: [Step[][]][] = [
+    // "Always approve" applies the first of two held writes and fails on the second, which the
+    // user approves after a restart: one resume, at the second.
+    [[
+      [{kind: "prompt", writes: [true, true], late: false}, {kind: "rule", on: true, fail: 2}],
+      [{kind: "approve", pick: 0, fail: 0}],
+    ]],
+    // A newer turn's auto-approvable write queues behind an older turn's held one, so that turn
+    // suspends too. Rejecting the older write applies the newer and resumes its turn.
+    [[[
+      {kind: "prompt", writes: [false], late: false}, RULE_ON,
+      {kind: "prompt", writes: [true], late: true}, {kind: "reject", pick: 0, fail: 0},
+    ]]],
+    // A rejection ends the wait: after a restart, neither approving another of the turn's writes,
+    // at the second attempt, nor always-approving the last resumes it.
+    [[
+      [{kind: "prompt", writes: [false, true, true], late: false}, {kind: "reject", pick: 0, fail: 0}],
+      [{kind: "approve", pick: 0, fail: 1}, {kind: "approve", pick: 0, fail: 0}, RULE_ON],
+    ]],
+    // Writes that all auto-apply after their step ended never suspended it. Of two later turns,
+    // approving the newer one's write resumes it, and then the older one's resumes nothing.
+    [[[
+      RULE_ON, {kind: "prompt", writes: [true, true], late: true},
+      {kind: "prompt", writes: [false], late: false}, {kind: "prompt", writes: [false], late: false},
+      {kind: "approve", pick: 1, fail: 0}, {kind: "approve", pick: 0, fail: 0},
+    ]]],
+  ];
+
+  it("resumes a suspended turn once, when the last write it waits on is approved", async () => {
+    // Every generated turn logs a screenful, failures of the faked services and of the applies
+    // generated to fail included, which would bury a failure's report.
+    for (const level of ["debug", "info", "warn", "error"] as const) {
+      vi.spyOn(console, level).mockImplementation(() => {});
+    }
+    await fc.assert(fc.asyncProperty(sessions, replayDecisions),
+        {...PROPERTY_RUN_OPTIONS, numRuns: 50, examples});
+  }, 120_000);
 });

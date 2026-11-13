@@ -17,13 +17,13 @@ Read `packages/workshop-shared/src/gatekeeper.ts` for the canonical interfaces a
 
 Write new gatekeepers to this observer contract:
 
-- Every observation explicitly reports `subresources`: all resources whose access requirements govern the disclosure. All observer authorization goes through `verifyObserverAccess()`; no requirement may live only in a binding-wide admission check.
-- `subresources: []` means **no observer-access restriction**, never "the binding already checked it." Private-only data reports a real resource ID and denies collaborators through `verifyObserverAccess()`. Workspace or tenant membership is represented by a reported resource and verified explicitly.
+- Every read that returns information to its caller (provider data, anything derived from it, or simulated state) explicitly reports `subresources`: every resource whose access rules govern that information. A [simulated](#simulation) read reports every real resource its data came from. All observer authorization goes through `verifyObserverAccess()`; no requirement may live only in a binding-wide admission check.
+- `subresources: []` adds **no requirement**. It does not clear requirements already recorded, and it never means "the binding already checked it." Private-only provider data reports a real resource ID and denies collaborators through `verifyObserverAccess()`. Report and verify any required workspace or tenant membership explicitly.
 - Implement `getHistoricalSubresources(): Promise<string[]>` as a read-only method returning `[]`, with no legacy tracker. It is required even though the current `Gatekeeper` interface does not declare it, so type-checking will not catch its absence. Do not omit or remove it.
 - Implement `addObserver(id, verifier)` and `removeObserver(id)`, which the current interface requires, as **compatibility-only no-ops**. Do not introduce observer rosters, observed-set logs, stored observer verifiers, `excludeObservers`, or new legacy trackers.
 - Require `subresources` in your read helper's type; the shared type still makes it optional. Type-checking does not enforce the whole contract; use the [review checklist](#reviewing-a-gatekeeper).
 
-The current `gatekeeper.ts` JSDoc still describes the legacy protocol, in which `addObserver()` must verify and throw and a binding-wide requirement such as tenant membership belongs there. For new gatekeepers this section overrides it. The current kernel already supports that: it checks every reported requirement through `verifyObserverAccess()` before authorizing each read, and again at every collaborator's open.
+The current `gatekeeper.ts` JSDoc still describes the legacy protocol, in which `addObserver()` must verify and throw and a binding-wide requirement such as tenant membership belongs there. For new gatekeepers this section overrides it. The current kernel already supports that: it checks every reported requirement itself through `verifyObserverAccess()`.
 
 This is a **new-authoring** rule, not a shortcut for migrating existing gatekeepers. Existing migrations must preserve old checks and export their historical requirements through `getHistoricalSubresources()`; they cannot export a blind `[]` or turn their admission methods into no-ops. See [Existing-code migration and legacy history](#existing-code-migration-and-legacy-history).
 
@@ -108,7 +108,7 @@ packages/gatekeeper-<name>/
 
 #### Authorizing observations
 
-Any operation which reads external data and returns it to the caller (but with no side effects) must await `authorizeObservation()` with explicit `subresources` before returning, including cache hits, cursor pages, and hook deliveries. Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
+Any operation that returns information to its caller must await `authorizeObservation()` with explicit `subresources` before returning, including cached data, simulated reads, cursor pages, and hook deliveries. Study the `ApprovalQueue` API in `gatekeeper.ts` for details.
 
 ##### What counts as an observation
 
@@ -182,6 +182,8 @@ When something already knows the exact resource — most importantly an AI agent
 
   The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards`/`HierarchyPicker` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
 
+  A creation configurator (`startCreationConfigurator`) is pre-filled from the configuration the agent suggested (`createExternalResource`'s `configuration`), paired with the pattern of the type being created. Set `creationConfigurationDescription` on the type to let the agent suggest one, naming what your configurator's `resourceUrl()` returns (Google: "the URL of the Google Drive folder to create it in"); without it the kernel refuses a suggestion. That URL is not one of the type's, so map it with `initialValuesFromResourceUrl`: the automatic mapping would read it as the resource being created. An agent picked it, so tell the approver while the choice is still the agent's.
+
 ### Step 7: STOP — Ask operator whether to proceed to phase 2
 
 The operator may prefer to implement phase 2 later, perhaps in a new context. Stop here and ask the operator whether to proceed.
@@ -217,6 +219,7 @@ Exceptions, kept `true` by decision although a rule covers them; add one only wi
 - Gmail's trash, spam, draft delete and label delete (rule 1): routine mailbox upkeep, and trash and spam are undone in Gmail.
 - GitHub's force push to a branch that is neither the default nor protected (rule 1): it has its own `forcePush` kind, which a user enables apart from other pushes.
 - X's bookmark, mute and hide (rule 3): one billed write each, and the only X writes its developer policy lets software automate (see `packages/gatekeeper-x/AGENTS.md`).
+- Google Drive's comments and replies that mention an address after `@` or `+` (rule 2): Google emails the mentioned person the text, even one who cannot open the file; the comment itself goes on the bound file, and the gatekeeper looks for no mention, so the one "Drive comments" kind covers them (see `packages/gatekeeper-google/README.md`).
 
 Every `false` carries a one-line comment naming its rule. Posting into the resource the user bound (its channel, thread or issue) is not rule 2. A package's `AGENTS.md` or README may be stricter (e.g. `gatekeeper-x`); follow it.
 
@@ -251,20 +254,43 @@ Two possible implementation approaches include:
 
 Choose based on the service's data model and the complexity of simulating each action type.
 
+**Simulation doesn't change what a read reports.** Provider data is anything that came from the
+provider's API, whether fetched by this read or earlier and cached.
+
+- A simulated read reports every real resource its data came from, in the provider's current
+  (unapplied) state, plus every container the simulated view places it in.
+- Content the gatekeeper itself fetched for an action (previous values or a server-side copy source)
+  keeps its source's IDs when stored in pending-action state and replayed.
+- Pending permission changes never relax what a read reports, and `verifyObserverAccess()` checks
+  live provider state only.
+- Caller-supplied content and generated provisional IDs add no source IDs by themselves. The kernel
+  does not propagate source requirements with text an agent quotes into an action argument. A read
+  returning only such content still authorizes, reporting `[]` plus any container or account
+  requirement.
+- Do not invent IDs for pending actions or simulated resources.
+
+Keep simulation and cached state in the connection's facet storage, never in the account Durable
+Object. Every chat and gadget on the connection reads it, so authorize each read through the reading
+session's own queue, never one captured at submission, and never assume the reader already received
+what it replays. Content one chat writes into a pending action reaches other chats and gadgets before
+approval, with no requirement, and stays disclosed if the action is rejected; the kernel accepts this
+as indirect disclosure (`docs/observers.md` §10). See the kit's
+[simulation rules](../../../packages/gatekeeper-kit/USAGE.md#simulation-and-subresources).
+
 Keep in mind that the agent calling the API (or the agent writing a gadget to call it) is generally not aware that actions do not take place immediately. If the simulation is correct, the agent doesn't need to be aware. If the simulation has gaps, you may want to mention it in your API's doc comments, so that the calling agent knows to work around them — but ideally there are no gaps and the calling agent does not need to think about it.
 
 For concrete examples, see the Google gatekeeper's Google Docs simulation/cache handling and BigQuery dry-run scope enforcement.
 
 ### Observer verification
 
-This is responsibility 7. The gatekeeper reports what each disclosure depends on; the Workshop tracks those dependencies and asks which observers can access them. Before authorizing a read, it checks every collaborator who can see the chat or gadget that made it through `verifyObserverAccess()`. It records the reported IDs and checks them again when collaborators open that context.
+This is responsibility 7. The gatekeeper reports what each disclosure depends on; the Workshop tracks those dependencies and asks, through `verifyObserverAccess()`, which observers can access them. Which collaborators it asks about, and when, is the Workshop's policy (`docs/observers.md` §10), not part of the gatekeeper's contract: answer correctly for whichever observers a call names.
 
 For **new gatekeepers**, there is one authoring protocol: explicit `subresources` on every observation, with no binding-wide admission dependency. Omitting the optional field selects legacy behavior; it does not fail type-checking. Prevent that omission with a typed helper, not a legacy tracker.
 
 The members involved:
 
 - `GatekeeperUser.getVerifier()` mints a persistent `GatekeeperUserVerifier` representing this account. The Workshop only passes it back to the same vendor, so its non-standard methods can be trusted as that vendor's access oracle.
-- `ObservationDescription.subresources` is explicit on every observation. `[]` declares that no observer-access restriction applies.
+- `ObservationDescription.subresources` is explicit on every observation. `[]` adds no requirement; requirements already recorded stay in force.
 - `Gatekeeper.verifyObserverAccess(observers, subresources)` returns the IDs of observers whose accounts can read **every** reported resource now. Implement it for every reported resource kind, including any historical IDs an existing connection exports; throw if access is indeterminate.
 - `getHistoricalSubresources(): Promise<string[]>` exports observer history recorded under the legacy protocol. Every gatekeeper implements it, although the current interface does not declare it. New gatekeepers return `[]` from a read-only method; existing ones export what they actually observed (see [Existing-code migration and legacy history](#existing-code-migration-and-legacy-history)).
 - `addObserver(id, verifier)` and `removeObserver(id)` are required by the current interface. New gatekeepers implement them as no-ops, without authorization or bookkeeping.
@@ -309,21 +335,50 @@ async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
 
 #### Choosing a strategy (per resource type / binding)
 
-Choose what each read **reports** and what `verifyObserverAccess()` **checks**, per binding rather than per package. These are access models, not observer-admission strategies:
+Choose a **reporting and verification strategy**, not a legacy observer-admission implementation.
+Start per resource type / binding, then refine **per disclosure**: a single session can combine
+private account discovery, shareable item reads, and unrestricted local results. All strategies
+use the same explicit-`subresources` protocol:
 
-- **A — Private-only.** Report the private resource's real ID (for example, `gmail/user/<sub>`), never a synthetic "private" marker. The verifier denies collaborators or permits only the same provider identity, according to the intended policy. For sensitive data also set `containsRestrictedData: true`; it restricts actions and web fetches, but does not replace reporting or verification.
-- **B — One ACL.** Report the bound resource's ID on every read that reveals its data, including an empty listing. The verifier checks that resource's ACL. A repo/document/page binding must not report `[]` because its old implementation checked access at admission.
-- **C — Distinct ACLs.** Report every access-controlled resource the disclosure depends on, plus any containing workspace or tenant whose membership is independently required. The verifier checks all of them. The Workshop, not the gatekeeper, records what was observed; do not create a data-set log or store observer verifiers.
-- **D — Unrestricted audience.** Report `[]` only when any collaborator may see the disclosure without a provider-side access check. "Low-stakes" by itself does not remove an access requirement. A trivial verifier still needs a public method (e.g. `verify(): void {}`), since an empty `WorkerEntrypoint` is not registered in `ctx.exports`.
+- **A — Private-only / account identity.** Report the private resource's real ID (for example, `gmail/user/<sub>`), never a synthetic "private" marker. The verifier denies collaborators or permits only the same provider identity, according to the intended policy. Labels, searches, and other capability filters do not create separate sharing ACLs. For sensitive data also set `containsRestrictedData: true`; it restricts actions and web fetches, but does not replace reporting or verification.
+- **B — One access-controlled unit.** Report the resource on each read of its data. Its verifier must cover the actual disclosure: access to public metadata, ordinary event details, private details, and free/busy can differ even for one provider object. Use distinct resource kinds when those information classes need different checks. A repo/document/page binding must not report `[]` because its old implementation checked access at admission.
+- **C — Multiple access-controlled units.** Report the union of the disclosure's requirements, including independently required container/tenant membership. Variants include a list spanning ACLs, a query derived from several data sets, and a hierarchical read requiring both a folder and independently protected children. Choose dependencies from the information actually disclosed, not every source consulted. The Workshop, not the gatekeeper, records what was observed; do not create a data-set log or store observer verifiers.
+- **D — Unrestricted disclosure.** Report `[]` only when no provider-side access requirement restricts the answer. This can be a public read, a local echo of supplied configuration, or a source-free computation inside an otherwise restricted binding. "Low-stakes", "no results", and "no newly observed resources" do not establish D. A trivial verifier still needs a public method (e.g. `verify(): void {}`), since an empty `WorkerEntrypoint` is not registered in `ctx.exports`.
 
-If there is no reliable per-observer access oracle for restricted data, choose a private-only policy, not unrestricted sharing. An ACL for a containing resource may cover its children only if the provider actually guarantees that inheritance.
+**Connection-only access is B, not D.** When the deployed Worker's configuration fixes the one
+service instance every account connects to, and any account connected to it may read everything
+disclosed, report `[GLOBAL_SUBRESOURCE_ID]` from `@gadgets/gatekeeper-kit/subresource-ids`, not `[]`.
+When accounts choose their instance, report a structured instance ID and compare it with the
+observer's instance instead. Check a fixed, deployment-defined read entitlement covering every
+disclosure reported as `global`, not the owner's role or scopes; use distinct resource kinds when
+reads need different entitlements. Check that the grant is live and document how long a removal
+from the instance goes unnoticed. Per-resource ACLs, role differences affecting read visibility,
+or private account data need stronger checks. See the kit's
+[connection-only recipe](../../../packages/gatekeeper-kit/USAGE.md#connection-only-access-global).
+
+Keep three decisions separate: **what the binding grants**, **what this answer discloses**, and
+**what the observer oracle proves**. A table grant may report its dataset; a label-scoped mailbox
+can remain private to the account; a folder grant need not make its descendants one ACL. Account-wide
+discovery may reveal private membership or metadata beyond the individually shareable items it lists.
+Mix A with B/C where necessary rather than declaring the whole package private or unrestricted.
+
+Choose IDs and checks together. Resolve account-relative aliases (`me`, `primary`, a personal `root`)
+to stable provider identities before recording them, or refuse them. Encoding does not make an alias
+stable. The same recorded ID must name the same resource across accounts and reconnects.
+
+If there is no reliable oracle for the **disclosed information**, choose private-only, not
+unrestricted sharing. A successful metadata probe is not proof of content, table-row, or private-field
+access; conversely, do not require mutation rights unless they are needed to see everything disclosed.
+A parent ACL may stand in for children only when the provider guarantees equivalent access.
+See the kit's [strategy guide and worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#choosing-reporting-and-verification-strategies)
+for scope-specific examples and implementation caveats.
 
 #### Reporting subresources
 
 Use the `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAccess()` JSDoc for ID limits and answer shape, and this skill for the access model: no restriction may depend on admission.
 
-1. **Report every dependency on every observation**, not just resources new to the binding. Include ordinary reads, cursor pages (even buffered pages), cache hits, nested capability reads, and hook deliveries. An empty result can reveal restricted absence; retain the parent/container or tenant requirement even when there are no rows. `[]` is correct only if nothing restricts that disclosure.
-2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`. Fragments name real resources, never predicates; include enough identity (e.g. provider instance and tenant) for unambiguous checks. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since recorded IDs are checked on later opens.
+1. **Report every dependency on every read that returns information to its caller**, not just resources new to the binding. Include cursor pages (even buffered pages), cached data, simulated reads, nested capability reads, and hook deliveries. There is no blanket requirement to retain every consulted source for an empty result; report requirements for information actually disclosed.
+2. **Build canonical IDs** with `formatSubresourceId()` from `@gadgets/gatekeeper-kit/subresource-ids`; compare the connection-only `GLOBAL_SUBRESOURCE_ID` directly before parsing. Fragments name real resources, never predicates. Cloud IDs, workspace URLs, and similar provider-instance identifiers are tenant identities: qualify resources with their tenant unless the deployed Worker's configuration permanently fixes it. A tenant chosen by an account, binding, or URL is not fixed, and one OAuth app does not establish a single tenant. Omit the namespace for a single-product provider. IDs must be stable and non-secret, since they are checked on later opens. See the kit's [ID guidance](../../../packages/gatekeeper-kit/USAGE.md#subresource-ids-name-resources).
 3. **Make omissions a type error locally.** Route reads through a helper taking `ObservationDescription & { subresources: string[] }` (see [SKELETON.md](SKELETON.md)). New code needs no `ObservationGate`, whose constructor demands a legacy strategy; existing gate code converts reads with the kit's `subresources` scope instead. Thread the authorizer and this contract through child sessions, cursors, and hook-delivery code.
 4. **Check each observer against every ID** in `verifyObserverAccess()`. Reuse `observerAccessVerifier` from `@gadgets/gatekeeper-kit/observers` over a batched vendor oracle, or implement the canonical method directly. Decode/validate resource kinds and identities; refuse unknown IDs. Return only observers allowed for the whole set. Definite denial is `false`; expired credentials, outages, and other indeterminate results must throw, not become an allow or a silent denial.
 5. **Keep verification independent of read authorization.** Do not store supplied verifiers, cache verdicts by observer ID (the same observer can return with another account), or wait on a lock held by a read awaiting authorization. Account-side caches must be partitioned by credential authority.
@@ -335,7 +390,16 @@ The Workshop attributes requirements to the trusted authorizer's original chat/g
 
 This section is **only for existing gatekeepers**, not an alternative new-authoring recipe. Legacy reads and history may still rely on `addObserver()`, `removeObserver()`, observed-set logs, stored verifiers, and `excludeObservers`. Preserve their enforcement while converting every session/cursor/hook path to complete subresource reporting. Do not neutralize old checks merely because new reads now report IDs.
 
-Implement a complete, deduplicated `getHistoricalSubresources()` export of resources actually observed under legacy tracking and not already reported. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not export a binding requirement merely because a connection exists; export the bound resource only if its data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and return a complete list or throw—never truncate or discard history. Connections with no legacy observations return `[]`.
+Implement a complete, deduplicated `getHistoricalSubresources()` export of historical access requirements. Do not omit a legacy requirement merely because a later observation reported the same resource ID: reports are context-specific, so a read in one chat or gadget does not cover historical disclosures in another. `verifyObserverAccess()` must accept and enforce every exported resource kind. Do not seed a binding requirement merely because a connection exists when the legacy state proves that no restricted data was observed. Keep the legacy records the export reads, make the export read-only and repeatable, and never truncate or discard history.
+
+The exporter must return a valid, complete, conservative `string[]` for every supported legacy state.
+Do not intentionally throw because granular historical resource IDs are unavailable; return broader
+real resource IDs whose verifier checks preserve all historical access restrictions. A container or
+tenant ID is sufficient only if its verifier also covers every possible historical disclosure from
+its children; otherwise use an account-private resource whose verifier denies collaborators.
+Return `[]` only when no historical access requirement applies, never merely because history is
+unknown. Unexpected storage or runtime failures must propagate, not become an empty or incomplete
+export.
 
 The current kernel does not call this export; its importer is still deferred in
 [`plans/kernel-observer-tracking.md`](../../../plans/kernel-observer-tracking.md#deferred). Retain
@@ -343,7 +407,7 @@ legacy enforcement until every affected read reports complete requirements and a
 importer has committed the complete historical requirements to the observer ledger. Implementing
 the exporter alone does not replace enforcement of past disclosures.
 
-Existing migrations must preserve/export historical access requirements, including membership requirements that governed past disclosures. If the old state cannot prove a complete export, resolve that migration explicitly; an empty export or a no-op admission method is not a safe substitute. `docs/observers.md` documents the deployed protocol.
+Existing migrations must preserve/export historical access requirements, including membership requirements that governed past disclosures. If existing resource kinds cannot express a safe conservative fallback, define the appropriate real resource kind and its verifier as part of the migration; an empty export or a no-op admission method is not a safe substitute. `docs/observers.md` documents the deployed protocol.
 
 ## Hooks (push notifications)
 
@@ -384,12 +448,13 @@ Reviews tend to stop at general correctness. The most important review is of the
   - Each binding's types expose only what that binding can do and stay small, and its reported resources and verifier checks fit that partition (see [Choosing a strategy](#choosing-a-strategy-per-resource-type--binding)).
 
 - **Observer protocol.** For new gatekeepers, reject any of the following omissions even if the code type-checks:
-  - Every observation explicitly reports all correct dependencies, including the bound resource's ACL and workspace/tenant membership where required. `[]` must mean unrestricted, not "checked at admission."
+  - Every read that returns information to its caller explicitly reports its dependencies, including any applicable bound-resource ACL, parent enumeration, and workspace/tenant membership. [Simulated](#simulation) reads report every real resource their data came from plus the containers the simulated view places it in; only caller-written values and provisional IDs add none, pending permission changes relax nothing, and each read authorizes through the reading session's own queue.
   - No access requirement exists only in `addObserver()`; `verifyObserverAccess()` handles every reported kind, checks all IDs per observer, denies unauthorized accounts, and propagates indeterminate failures.
+  - Grant scope, disclosure dependencies, and oracle strength are reviewed separately. Account discovery, item/member reads, derived results, and descendant capabilities may need different strategies within one binding; metadata visibility must not stand in for content access.
   - `getHistoricalSubresources()` exists and returns `[]` without reading or keeping any observer state; `addObserver(id, verifier)` and `removeObserver(id)` are no-ops.
   - No new observer rosters, stored verifier tracking, observed-set logs, `excludeObservers`, or legacy trackers.
   - A typed helper requires `subresources`; child capabilities, cursor pages, cache hits, empty results, and hook deliveries cannot bypass it.
-  - Runtime coverage exercises denied observers, empty and cached/buffered pages, and hooks where applicable; a successful build alone is not evidence of this contract.
+  - Runtime coverage exercises denied observers, distinct permission classes, derived/empty results, cached/buffered pages, account-relative aliases and reconnect identity, and hooks where applicable; a successful build alone is not evidence of this contract.
   - Existing migrations instead preserve old checks until replaced and export complete historical requirements; do not apply the new-gatekeeper empty-history/no-op shortcut to them.
 - **Auto-approval.** Check every action's verdict against [the opt-out policy](#action-kinds-and-auto-approval) in both directions: a `false` names its rule, and nothing a rule covers is `true` unless it is a listed exception. Ask whether a blanket `false` could be computed from the payload. Flag a renamed tag or definition name, a newly `true` action added to a tag that already had a `true` one, and a `getAutoApprovableActions()` that lists a kind the binding cannot submit as `true`.
 
@@ -410,14 +475,18 @@ Reviews tend to stop at general correctness. The most important review is of the
 
 Start with [SKELETON.md](SKELETON.md) and the [new-gatekeeper observer contract](#new-gatekeeper-observer-contract), including the empty `getHistoricalSubresources()` and no-op `addObserver` / `removeObserver`. Existing implementations can illustrate reporting and access oracles, but their legacy admission checks are **not** a new-authoring pattern:
 
-- `packages/gatekeeper-google/` Calendar — typed read helper requiring `subresources`; calendar and free/busy IDs checked through `observerAccessVerifier` and the observer's account. Copy the reporting/helper pattern, not the retained writer-admission check or legacy tracker.
-- `packages/gatekeeper-google/` BigQuery — per-dataset reporting and account-side access checks without `ObservationGate`. Its oracle establishes metadata access, not table-data permission; verify the rights your own reads require. Its tracker is legacy history, not a template for new bookkeeping.
-- `packages/gatekeeper-google/` Gmail — private mailbox IDs on reads and hooks, checked against the observer's provider identity. Its throwing `addObserver()` protects legacy reads; new private-only gatekeepers deny through `verifyObserverAccess()` instead.
-- `packages/gatekeeper-google/` Chat — conversation bindings report each conversation and member list they read; account bindings report only the owner's Google account, including nested capabilities and hooks. The observer's account checks these through `spaces.get`, `members.list`, or an owner-identity comparison. Its retained `addObserver()` checks protect legacy reads, not new-authoring patterns.
-- `packages/gatekeeper-google/` Drive, Docs, Sheets and Slides — IDs from `src/file-subresources.ts`: a Drive read reports each file whose metadata or PDF text it returned and each folder it listed, and a native read reports its one file as its API names it, bound directly or opened through Drive. Reads of files whose creation is still pending report `[]` instead. The observer's account checks Drive units through batched `files.get`, holding a Drive grant and, for a folder, listing it, and native files through their own API. Their retained `addObserver()` checks and Drive tracker protect legacy reads, not new-authoring patterns.
-- `packages/gatekeeper-github/` — every read, each page of a listing and each hook delivery included, authorizes through `GitHubGatekeeperImpl.authorizeRead`, which reports the bound repository as `repo/<repoId>`, GitHub's numeric id, pinned on first use (nothing is read before it is, and REST reads are addressed by it, so a name a deleted or renamed repository freed can't retarget them). `verifyObserverAccess()` refuses any other ID, then asks `observerAccessVerifier` over `GitHubVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its connection; `addObserver()` asks, live and with the observer's token alone, for reads made before conversion, `hasRepoNameAccess` of the binding's name, which is what those reads followed, and `GitHubVerifier.hasRepoAccess` of the stored id once there is one, never pinning it, so a lapsed owner grant can't lock collaborators out; caches filled before conversion are discarded on upgrade. Its admission checks are legacy migration protection, not a new-authoring pattern.
+- `packages/gatekeeper-google/` — the kit's [worked Google migration patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations) cover Calendar's event/free-busy permission split, BigQuery source-dataset reporting, Gmail's mailbox identity across filters, Chat's account/conversation split, and Drive/Docs/Sheets/Slides file and folder reporting. These combine A–D per disclosure; the guide notes incomplete oracles and missing history exports. Copy the reporting/helper patterns, not retained legacy admission or tracking.
+- `packages/gatekeeper-github/` — every read, each page of a listing and each hook delivery included, authorizes through `GitHubGatekeeperImpl.authorizeRead`, which reports the bound repository as `repo/<repoId>`, GitHub's numeric id, pinned on first use (nothing is read before it is, and REST reads are addressed by it, so a name a deleted or renamed repository freed can't retarget them). `verifyObserverAccess()` refuses any other ID; for the pinned repository it allows every observer when the binding owner's token finds it public (`#reportsPublicRepo`, reused for 15 minutes, an unanswered check counting as not public), and otherwise asks `observerAccessVerifier` over `GitHubVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its connection; `addObserver()` asks, live and with the observer's token alone, for reads made before conversion, `hasRepoNameAccess` of the binding's name, which is what those reads followed, and `GitHubVerifier.hasRepoAccess` of the stored id once there is one, never pinning it, so a lapsed owner grant can't lock collaborators out; caches filled before conversion are discarded on upgrade. Its admission checks are legacy migration protection, not a new-authoring pattern.
+- `packages/gatekeeper-slack/` — every read authorizes through `observe()`, which requires what it disclosed and refuses to report none: `workspace/<teamId>/conversation/<conversationId>` for each conversation it listed, matched or read from (a thread, message or member as its conversation, empty pages included), and `workspace/<teamId>` for workspace metadata, the member directory, and a listing or search page naming no conversation. `verifyObserverAccess()` refuses any other ID, then asks `SlackVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its credentials: a workspace by its membership, a conversation by that and `conversations.info` there. Only Slack's denial codes (`SlackApiError.isDenial`) mean no access. `getHistoricalSubresources()` exports a legacy workspace binding's stored workspace and recorded conversations without provider calls or writes; it throws if the workspace or observation history is unprovable, and returns `[]` for a binding whose props carry `reportsSubresources`. Its retained `addObserver()` checks protect legacy reads, not new-authoring patterns.
+- `packages/gatekeeper-gitlab/` — A **mirror** of gatekeeper-github for a provider with instance configuration (self-hosted URLs, an optional Cloudflare Access service token on upstream requests) and **rotating credentials** (expiring access tokens, single-use refresh tokens refreshed under a mutex). Reads the same `plans/worktrees.md` §3 git contract through `gatekeeper-kit`'s `git-transport`/`git-objects`/`git-diff`. Its `plans/gitlab-gatekeeper.md` divergence table is a worked example of porting one gatekeeper's API to another provider's vocabulary. **Observers:** strategy B reporting subresources, with a role-aware probe (`hasProjectMembership`): Reporter membership whatever the visibility, since a public project can still hold confidential issues and internal notes, read from `members/all?user_ids[]=` because the project's `permissions` object omits group-inherited access. Every read, each page of a listing included, authorizes through `GitLabGatekeeperImpl.authorizeRead`, which reports `project/<projectId>`, GitLab's numeric id, pinned on first use (nothing is read before it is, and REST reads are addressed by it, so a path a deleted or moved project freed can't retarget them). CI job logs report `project/<projectId>/role/developer`; a test report reports `role/developer` when read through an account confirmed below Maintainer and not an administrator, else `role/maintainer`, since `artifacts:access: maintainer` reports reach only Maintainers — chosen with the role probe under one connection-generation fence as the report is fetched, and never recomputed. `verifyObserverAccess()` refuses any other ID, then asks `observerAccessVerifier` over `GitLabVerifier.checkSubresourceAccess`, which the observer's `UserAccount` answers from a `KvTtlCache` partitioned by its connection; `addObserver()` keeps the `ObserverTracker` for the CI-data sets reads marked before conversion (`CI_DATA_ACCESS_LEVELS`), and asks each level, live and with the observer's token alone, of the binding's path, which is what those reads followed, and of the stored id once there is one, never pinning it, so a lapsed owner grant can't lock collaborators out; caches filled before conversion are discarded on upgrade.
+  New GitLab bindings carry immutable `reportsSubresources: true` props and make `addObserver()` /
+  `removeObserver()` no-ops. GitLab exports no legacy history (no `getHistoricalSubresources()`), so
+  older bindings keep their legacy admission, which, like GitHub's, follows a moved project's
+  redirect from its original path; never waive it merely because new reads report IDs.
 - `packages/gatekeeper-context/` — kit `subresources` scopes and `observerAccessVerifier`; its tracker and admission baseline serve existing-code migration only. New code must report membership requirements explicitly too.
 - `packages/integration-tests/fixtures/gatekeeper-test/` — subresource-reporting mode covers reads and hooks and asks the same-vendor verifier. Its unchanged binding-wide admission method is legacy-only.
 - `packages/gatekeeper-scheduler/` and `packages/gatekeeper-websearch/` — explicit `[]` on unrestricted reads/hooks. Do not copy `[]` for restricted provider data.
-- **Legacy observer examples only:** `packages/gatekeeper-gitlab/`, `packages/gatekeeper-supabase/`, `packages/gatekeeper-linear/`, `packages/gatekeeper-notion/`, and `packages/gatekeeper-email/`. Their admission checks, observed-set tracking, and stored verifiers must not be introduced in new gatekeepers. They remain useful references for other concerns (OAuth, credential rotation, capability APIs, simulation, or hook lifecycle).
+- `packages/gatekeeper-confluence/`, `packages/gatekeeper-linear/`, `packages/gatekeeper-notion/` and `packages/gatekeeper-supabase/` — tenant-qualified IDs (`site/<cloudId>/…`, `workspace/<…>/…`, `organization/<slug>/…`, since one deployed Worker serves many tenants) reporting the binding's baseline resource plus each narrower resource a read reveals, checked by the observer's `UserAccount` through a credential-partitioned `KvTtlCache`. `getHistoricalSubresources()` exports the baseline legacy admission checked plus each tracker record, from storage only. Their retained admission checks, observed-set trackers and stored verifiers protect legacy history only and must not be introduced in new gatekeepers.
+- `packages/gatekeeper-mcp/` — private-only `server/<serverId>` on every read; `verifyObserverAccess()` validates the ID and admits nobody. `packages/gatekeeper-email/`, `packages/gatekeeper-homeassistant/` and `packages/gatekeeper-spotify/` — explicit `[]` everywhere, like Scheduled Tasks.
 - `packages/workshop-shared/src/gatekeeper.ts` — current canonical interfaces and ID constraints. Its observer JSDoc still describes the legacy protocol; for new gatekeepers, the contract above overrides it.
+- `packages/gatekeeper-x/` — public reads report `[]`; private-account and unknown-author-privacy reads report `user/<id>`, the binding's pinned numeric X identity, per page. Its typed helper requires subresources, and verification compares stored identities without billed resource probes (credential refresh may still contact X). Public `[]` does not remove the Workshop's account/verifier-choice requirement. Requirements follow data read from X, never actions or drafts the workspace wrote. New bindings carry immutable `redactsActionPreviews: true` and redact private provider context from unguarded action previews; older Post/List bindings, whose kernel-held descriptions and action previews may hold private post/List details, keep same-pinned-user admission and export `user/<id>`, failing closed without identity. The read-only history export also preserves `owner` records as `user/<id>`. This legacy protection is not a new-authoring pattern.

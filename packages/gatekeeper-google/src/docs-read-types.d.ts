@@ -1,5 +1,11 @@
 /** Metadata for one native Google Doc. */
 export type DocMetadata = {
+  /**
+   * The Doc's file ID, as in its URL and in a Google Drive resource URL for it. Empty for a Doc
+   * not created yet.
+   */
+  id: string;
+
   /** Document title. */
   title: string;
 

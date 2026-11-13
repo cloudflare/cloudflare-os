@@ -1,6 +1,6 @@
 // Structured Google Drive API client shared by configurators, sessions, and observer verification.
 
-import type { DriveObservation } from "./drive-observers";
+import type { DriveUnit } from "./file-subresources";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { obsContext } from "./observability";
 
@@ -28,6 +28,42 @@ export function isDriveFileId(id: string): boolean {
   return DRIVE_FILE_ID_PATTERN.test(id);
 }
 
+function requireDriveFileId(id: string): void {
+  if (!isDriveFileId(id)) throw new Error("Not a Google Drive file ID.");
+}
+
+/**
+ * Loose on purpose: Docs and Sheets name comments `doco.…` and Slides an 11-character token. At
+ * least one letter or digit, so a `.` or `..` segment cannot climb the request path.
+ */
+const DRIVE_COMMENT_ID_PATTERN = /^(?=.*[A-Za-z0-9])[A-Za-z0-9._-]{1,256}$/;
+
+/**
+ * Whether `id` has the shape of a Drive comment ID, checked before it reaches a Drive request path.
+ * Reply IDs share the shape.
+ */
+export function isDriveCommentId(id: string): boolean {
+  return DRIVE_COMMENT_ID_PATTERN.test(id);
+}
+
+function requireDriveCommentId(id: string): void {
+  if (!isDriveCommentId(id)) throw new Error("Not a Google Drive comment ID.");
+}
+
+const DRIVE_PERMISSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * A Drive permission ID: a long number for a person, group or domain, or `anyoneWithLink` /
+ * `anyone`.
+ */
+export function isDrivePermissionId(id: string): boolean {
+  return DRIVE_PERMISSION_ID_PATTERN.test(id);
+}
+
+function requireDrivePermissionId(id: string): void {
+  if (!isDrivePermissionId(id)) throw new Error("Not a Google Drive access ID.");
+}
+
 /** Exact MIME type Drive gives a native folder. A shortcut to one has its own type, not this. */
 export const FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
 
@@ -46,7 +82,8 @@ export type DriveFile = {
   owners?: { displayName?: string; emailAddress?: string }[];
   webViewLink?: string;
   trashed?: boolean;
-  capabilities?: { canListChildren?: boolean };
+  /** `canAddChildren`: whether the account can put files in this folder. */
+  capabilities?: { canListChildren?: boolean; canDownload?: boolean; canAddChildren?: boolean };
   shortcutDetails?: { targetId?: string; targetMimeType?: string };
 };
 
@@ -54,7 +91,11 @@ export type DriveFile = {
  * The minimal per-file facts a folder-scope descendant proof rests on.
  *
  * Deliberately narrower than {@link DriveFile}: an ancestry walk touches folders the caller never
- * asked about and must never see, so it fetches only what membership is decided from.
+ * asked about and must never see, so it fetches only what membership is decided from, plus what
+ * this account may do, which a write is checked against in the same read. Each capability is what
+ * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
+ * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file. One a part does
+ * not carry is absent here, which reads as "cannot".
  */
 export type DriveScopeNode = {
   id: string;
@@ -63,41 +104,56 @@ export type DriveScopeNode = {
   driveId?: string;
   trashed?: boolean;
   canListChildren?: boolean;
+  /** Present only when asked for, as observer checks do; a scope proof never needs it. */
+  canDownload?: boolean;
+  canComment?: boolean;
+  canShare?: boolean;
+  canAddChildren?: boolean;
+  canMoveItemWithinDrive?: boolean;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
-const DRIVE_SCOPE_NODE_FIELDS =
-  "id,mimeType,parents,driveId,trashed,capabilities(canListChildren)";
+const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed," +
+  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive)";
+
+/** Field mask for {@link DriveApi.checkObservations}: a scope node, and whether it may be downloaded. */
+const DRIVE_OBSERVATION_FIELDS =
+  "id,mimeType,parents,driveId,trashed,capabilities(canListChildren,canDownload)";
 
 /**
- * Whether these facts describe a folder a binding may stand on: a live native folder whose
- * children this account can list.
+ * Whether these facts describe a live native folder holding `capability`: one whose children this
+ * account can list is one a binding may stand on, and one it can add children to takes a creation.
  *
- * The one definition of that triple. Both record shapes reach it through the adapters below, so a
- * scope check can never accidentally assert two of the three.
+ * The one definition of that triple. Every record shape reaches it through the adapters below, so a
+ * check can never accidentally assert two of the three.
  */
-function listableFolder(
+function liveFolderWith(
   mimeType: string | undefined, trashed: boolean | undefined,
-  canListChildren: boolean | undefined,
+  capability: boolean | undefined,
 ): boolean {
-  return mimeType === FOLDER_MIME_TYPE && trashed === false && canListChildren === true;
+  return mimeType === FOLDER_MIME_TYPE && trashed === false && capability === true;
 }
 
-/** {@link listableFolder} for the narrow ancestry-proof shape. */
+/** {@link liveFolderWith} listing, for the narrow ancestry-proof shape. */
 export function isListableFolderNode(node: DriveScopeNode): boolean {
-  return listableFolder(node.mimeType, node.trashed, node.canListChildren);
+  return liveFolderWith(node.mimeType, node.trashed, node.canListChildren);
 }
 
-/** {@link listableFolder} for a full file resource. */
+/** {@link liveFolderWith} listing, for a full file resource. */
 export function isListableFolderFile(file: DriveFile): boolean {
-  return listableFolder(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+  return liveFolderWith(file.mimeType, file.trashed, file.capabilities?.canListChildren);
+}
+
+/** {@link liveFolderWith} adding children, for a full file resource. */
+export function isAddableFolderFile(file: DriveFile): boolean {
+  return liveFolderWith(file.mimeType, file.trashed, file.capabilities?.canAddChildren);
 }
 
 /** The per-file field mask. `getFile` sends this; {@link DRIVE_FILE_FIELDS} wraps it for lists. */
 export const DRIVE_FILE_ITEM_FIELDS = [
   "id", "name", "mimeType", "modifiedTime", "size", "parents", "driveId", "trashed",
-  "owners(displayName,emailAddress)", "webViewLink", "capabilities(canListChildren)",
-  "shortcutDetails(targetId,targetMimeType)",
+  "owners(displayName,emailAddress)", "webViewLink",
+  "capabilities(canListChildren,canDownload,canAddChildren)", "shortcutDetails(targetId,targetMimeType)",
 ].join(",");
 
 /** Drive returns only requested fields, so this mask and {@link DriveFile} travel together. */
@@ -147,7 +203,7 @@ export const SOURCE_MODIFIED_PROPERTY = "gadgetsSourceModified";
 export type DriveCopyLocation = "besideOriginal" | "myDrive";
 
 /** Drive's alias for the connected account's My Drive root folder. */
-const MY_DRIVE_ROOT = "root";
+export const MY_DRIVE_ROOT = "root";
 
 /** Clauses only the gatekeeper's own lookups add, never built from agent or iframe input. */
 type InternalDriveQuery = {
@@ -198,7 +254,7 @@ export type DriveListFilesOptions = DriveFileQuery & {
 export type DriveFileList = { files: DriveFile[]; nextPageToken?: string };
 
 /** A shared drive this account is a member of. Its id is also its root folder's. */
-export type DriveSharedDrive = { id: string; name: string };
+export type DriveSharedDrive = { id: string; name: string; canAddChildren?: boolean };
 
 export type DriveSharedDriveList = { drives: DriveSharedDrive[]; nextPageToken?: string };
 
@@ -241,6 +297,11 @@ const ACCOUNT_WIDE_403_REASONS = new Set([
 const REASON_EXPLANATIONS: Record<string, string> = {
   teamDriveMembershipRequired:
     "the connected account is not a member of the shared drive this item belongs to",
+  cannotDownloadFile:
+    "the connected account is not allowed to download this file; its owner or administrator " +
+    "has restricted downloading it",
+  cannotDownloadAbusiveFile:
+    "Google identified this file as malware or spam, so only its owner can download it",
 };
 
 function googleErrorReason(value: unknown): string | undefined {
@@ -280,6 +341,9 @@ async function readBoundedText(
   chunks.push(decoder.decode());
   return chunks.join("");
 }
+
+/** A 206's `Content-Range`: where its bytes start and end, and the whole file's size unless `*`. */
+const CONTENT_RANGE = /^bytes (\d+)-(\d+)\/(\d+|\*)$/;
 
 function googleErrorReasonFromText(text: string): string | undefined {
   try {
@@ -350,10 +414,23 @@ function optionalParents(value: unknown): string[] | undefined {
   return value as string[];
 }
 
-function optionalCanListChildren(value: unknown): boolean | undefined {
+function optionalCapabilities(value: unknown): DriveFile["capabilities"] {
   if (value === undefined) return undefined;
   if (!isRecord(value)) throw new Error("Invalid Google Drive file capabilities");
-  return optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
+  let canListChildren = optionalBoolean(value.canListChildren, "file capabilities.canListChildren");
+  let canDownload = optionalBoolean(value.canDownload, "file capabilities.canDownload");
+  let canAddChildren = optionalBoolean(value.canAddChildren, "file capabilities.canAddChildren");
+  return {
+    ...(canListChildren === undefined ? {} : { canListChildren }),
+    ...(canDownload === undefined ? {} : { canDownload }),
+    ...(canAddChildren === undefined ? {} : { canAddChildren }),
+  };
+}
+
+function optionalCapability(value: unknown, capability: string): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("Invalid Google Drive file capabilities");
+  return optionalBoolean(value[capability], `file capabilities.${capability}`);
 }
 
 function parseDriveFile(value: unknown): DriveFile {
@@ -373,11 +450,7 @@ function parseDriveFile(value: unknown): DriveFile {
     if (!isRecord(value.shortcutDetails)) throw new Error("Invalid Google Drive shortcut details");
     shortcutDetails = optionalFields(value.shortcutDetails, ["targetId", "targetMimeType"]);
   }
-  let capabilities: DriveFile["capabilities"];
-  if (value.capabilities !== undefined) {
-    let canListChildren = optionalCanListChildren(value.capabilities);
-    capabilities = canListChildren === undefined ? {} : { canListChildren };
-  }
+  let capabilities = optionalCapabilities(value.capabilities);
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
   return {
@@ -518,13 +591,24 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   }
   let parents = optionalParents(value.parents);
   let trashed = optionalBoolean(value.trashed, "file trashed");
-  let canListChildren = optionalCanListChildren(value.capabilities);
+  let capabilities = optionalCapabilities(value.capabilities);
+  let canListChildren = capabilities?.canListChildren;
+  let canDownload = capabilities?.canDownload;
+  let canComment = optionalCapability(value.capabilities, "canComment");
+  let canShare = optionalCapability(value.capabilities, "canShare");
+  let canAddChildren = optionalCapability(value.capabilities, "canAddChildren");
+  let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
     ...(parents ? { parents } : {}),
     ...(trashed === undefined ? {} : { trashed }),
     ...(canListChildren === undefined ? {} : { canListChildren }),
+    ...(canDownload === undefined ? {} : { canDownload }),
+    ...(canComment === undefined ? {} : { canComment }),
+    ...(canShare === undefined ? {} : { canShare }),
+    ...(canAddChildren === undefined ? {} : { canAddChildren }),
+    ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
   };
 }
 
@@ -657,6 +741,393 @@ function batchPartAllowed(part: BatchAccessPart): boolean {
   throw new Error(`Google Drive batch subrequest failed: ${part.status}`);
 }
 
+/** As {@link isInsufficientScope}, for a batch subrequest: the token lacks a scope it needs. */
+function batchPartLacksScope(part: BatchAccessPart): boolean {
+  return part.status === 403 && googleErrorReasonFromText(part.body) === "insufficientPermissions";
+}
+
+/** Google's limit on a comment's or reply's content, in bytes of UTF-8. */
+export const MAX_COMMENT_BYTES = 4096;
+
+/**
+ * The Docs API's limit on a comment's or post's content, in bytes of UTF-8 ("UTF-8 code units"):
+ * 2048 ASCII characters pass and 2049 are refused, as are 1025 two-byte ones.
+ */
+export const MAX_DOCS_COMMENT_BYTES = 2048;
+
+/** Our own limit on the text a comment quotes or a suggested edit replaces, in characters. */
+export const MAX_QUOTE_CHARS = 500;
+
+/** Our own limit on the text a suggested edit puts in, in characters. */
+export const MAX_REPLACEMENT_CHARS = 1000;
+
+/** Bytes `text` takes in UTF-8, which is what {@link MAX_COMMENT_BYTES} counts. */
+export function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+/**
+ * Refuses content Google would refuse, and content it would wrongly accept: an empty or
+ * whitespace-only comment is created as an empty one. `what` names the content in the error, and
+ * `maxBytes` is {@link MAX_DOCS_COMMENT_BYTES} for content sent through the Docs API.
+ */
+export function checkCommentContent(
+  content: string, what: "comment" | "reply" | "note" = "comment", maxBytes = MAX_COMMENT_BYTES,
+): void {
+  if (!content.trim()) throw new Error(`The ${what} is empty.`);
+  let bytes = utf8ByteLength(content);
+  if (bytes > maxBytes) {
+    let api = maxBytes === MAX_COMMENT_BYTES ? "Google Drive allows" : "Google Docs allows";
+    // A reply through Docs is one to a directly bound Doc's comment, where every write has it.
+    throw new Error(`The ${what} is ${bytes} bytes of UTF-8; ${api} at most ${maxBytes}${
+      maxBytes === MAX_COMMENT_BYTES || what === "reply" ? ""
+        : " on a comment that quotes a Doc or a suggestion's note"}.`);
+  }
+}
+
+/**
+ * Per-attempt budget for a Drive write. A comment write makes at most three attempts (the first,
+ * one after an auth refresh, one after a reconnect changed the stored token).
+ */
+const WRITE_TIMEOUT_MS = 20_000;
+
+/**
+ * The longest a comment write's requests through Drive can take before it settles or is
+ * abandoned, so a write not found this long after it began was not left in flight by that attempt.
+ * A write through Docs has its own bound, `DOCS_WRITE_MAX_MS`.
+ */
+export const COMMENT_WRITE_MAX_MS = 3 * WRITE_TIMEOUT_MS;
+
+/** A comment's or reply's author, as Drive describes them to the connected account. */
+export type DriveCommentAuthorRecord = {
+  displayName: string;
+  /** Whether the author is the connected account. */
+  me: boolean;
+};
+
+/** One reply to a comment. A resolve with no text has content `""`. */
+export type DriveReplyRecord = {
+  id: string;
+  content: string;
+  author: DriveCommentAuthorRecord;
+  createdTime: string;
+  modifiedTime?: string;
+  deleted: boolean;
+  /** Set only on a reply that resolved or reopened its comment. */
+  action?: "resolve" | "reopen";
+};
+
+/** One comment and its replies, as plain text: Drive derives `htmlContent`, which is never read. */
+export type DriveCommentRecord = {
+  id: string;
+  content: string;
+  /** The text of the file the comment is attached to, when Drive reports one. */
+  quotedText?: string;
+  author: DriveCommentAuthorRecord;
+  createdTime: string;
+  /** Bumped by every reply, so a later `startModifiedTime` lists the comment again. */
+  modifiedTime?: string;
+  /** Drive sends this only once a comment has been resolved; absent reads as unresolved. */
+  resolved: boolean;
+  deleted: boolean;
+  replies: DriveReplyRecord[];
+};
+
+/** One page of comments. */
+export type DriveCommentList = { comments: DriveCommentRecord[]; nextPageToken?: string };
+
+/** One page of a comment's replies. */
+export type DriveReplyList = { replies: DriveReplyRecord[]; nextPageToken?: string };
+
+/**
+ * Field masks for replies and comments. Each is the one mask its writes and its reads send: Drive
+ * applies a write before it checks the mask, so an invalid one answers 400 having posted anyway.
+ */
+const REPLY_FIELDS = "id,content,author(displayName,me),createdTime,modifiedTime,deleted,action";
+const COMMENT_FIELDS = "id,content,quotedFileContent,author(displayName,me),createdTime," +
+  `modifiedTime,resolved,deleted,replies(${REPLY_FIELDS})`;
+
+function parseCommentAuthor(value: unknown): DriveCommentAuthorRecord {
+  if (!isRecord(value)) throw new Error("Invalid Google Drive comment author");
+  return {
+    displayName: optionalString(value.displayName, "comment author displayName") ?? "",
+    me: optionalBoolean(value.me, "comment author me") ?? false,
+  };
+}
+
+/** The fields comments and replies share. A deleted one comes without its content. */
+function parseCommentCore(value: unknown, kind: string) {
+  if (!isRecord(value) || typeof value.id !== "string" || !value.id ||
+      typeof value.createdTime !== "string") {
+    throw new Error(`Invalid Google Drive ${kind} response`);
+  }
+  let modifiedTime = optionalString(value.modifiedTime, `${kind} modifiedTime`);
+  return {
+    value,
+    core: {
+      id: value.id,
+      content: optionalString(value.content, `${kind} content`) ?? "",
+      author: parseCommentAuthor(value.author),
+      createdTime: value.createdTime,
+      ...(modifiedTime === undefined ? {} : { modifiedTime }),
+      deleted: optionalBoolean(value.deleted, `${kind} deleted`) ?? false,
+    },
+  };
+}
+
+function parseReply(raw: unknown): DriveReplyRecord {
+  let { value, core } = parseCommentCore(raw, "reply");
+  let action = value.action;
+  if (action !== undefined && action !== "resolve" && action !== "reopen") {
+    throw new Error("Invalid Google Drive reply action");
+  }
+  return { ...core, ...(action === undefined ? {} : { action }) };
+}
+
+/** The characters Drive's HTML names; every other one it escapes is written by number. */
+const HTML_NAMED_REFERENCES: Readonly<Record<string, string>> = {
+  amp: "&", quot: "\"", lt: "<", gt: ">",
+};
+
+/**
+ * Text Drive escaped as HTML, each character reference turned back into its character. One pass,
+ * so text that itself spelled a reference comes back as it was written.
+ */
+function decodeHtmlText(html: string): string {
+  return html.replace(/&(?:(amp|quot|lt|gt)|#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6}));/g,
+    (reference: string, name?: string, decimal?: string, hex?: string) => {
+      if (name !== undefined) return HTML_NAMED_REFERENCES[name] ?? reference;
+      let code = decimal !== undefined ? Number.parseInt(decimal, 10)
+        : Number.parseInt(hex ?? "", 16);
+      // A reference to no character stays as written.
+      return code > 0 && code <= 0x10ffff && (code < 0xd800 || code > 0xdfff)
+        ? String.fromCodePoint(code) : reference;
+    });
+}
+
+/**
+ * The passage a comment is attached to, as text: Drive's `quotedFileContent.value`, unless it is
+ * empty. Drive gives a selection's text escaped as HTML, and says so in `mimeType`.
+ */
+function quotedText(value: unknown): string | undefined {
+  // Optional, and nothing a listing stands on: any other shape reads as no passage.
+  if (!isRecord(value) || typeof value.value !== "string" || !value.value) return undefined;
+  return value.mimeType === "text/html" ? decodeHtmlText(value.value) : value.value;
+}
+
+function parseComment(raw: unknown): DriveCommentRecord {
+  let { value, core } = parseCommentCore(raw, "comment");
+  if (value.replies !== undefined && !Array.isArray(value.replies)) {
+    throw new Error("Invalid Google Drive comment replies");
+  }
+  let quoted = quotedText(value.quotedFileContent);
+  return {
+    ...core,
+    ...(quoted === undefined ? {} : { quotedText: quoted }),
+    resolved: optionalBoolean(value.resolved, "comment resolved") ?? false,
+    replies: (value.replies ?? []).map(parseReply),
+  };
+}
+
+/** A list response's `key` array, parsed item by item, and its continuation token. */
+function parseListPage<K extends string, T>(
+  body: unknown, key: K, parse: (value: unknown) => T,
+): Record<K, T[]> & { nextPageToken?: string } {
+  let raw = isRecord(body) ? body[key] ?? [] : undefined;
+  if (!isRecord(body) || !Array.isArray(raw)) {
+    throw new Error(`Invalid Google Drive ${key} list response`);
+  }
+  let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
+  return {
+    [key]: raw.map(parse), ...(nextPageToken ? { nextPageToken } : {}),
+  } as Record<K, T[]> & { nextPageToken?: string };
+}
+
+/** A role a permission call may give or set: never ownership or a shared drive's manager roles. */
+export type DriveGivableRole = "reader" | "commenter" | "writer";
+
+/** Every role Drive lists a permission or one of its details with. */
+export type DrivePermissionRole = DriveGivableRole | "fileOrganizer" | "organizer" | "owner";
+
+/**
+ * One source of a permission's access: given on the file itself, or inherited from a parent or
+ * the shared drive.
+ */
+export type DrivePermissionDetail = {
+  role: DrivePermissionRole;
+  /** Not given on the file itself: marked inherited by Drive, or a shared drive's membership. */
+  inherited: boolean;
+  /** The item inherited access comes from, which Drive names only for items in a shared drive. */
+  inheritedFrom?: string;
+};
+
+/** One grantee's access to a file, as Drive lists it. */
+export type DrivePermissionRecord = {
+  id: string;
+  type: "user" | "group" | "domain" | "anyone";
+  /** The effective role: the highest of `details`. */
+  role: DrivePermissionRole;
+  emailAddress?: string;
+  domain?: string;
+  displayName?: string;
+  allowFileDiscovery?: boolean;
+  /** The account behind it was deleted. */
+  deleted: boolean;
+  /** Never empty: a permission Drive sends without details has one, its `role`, not inherited. */
+  details: DrivePermissionDetail[];
+};
+
+/** One page of a file's permissions. Those that belong to a view of the file are not among them. */
+export type DrivePermissionList = { permissions: DrivePermissionRecord[]; nextPageToken?: string };
+
+/** Access for {@link DriveApi.createPermission} to give: to whom, and at which role. */
+export type DrivePermissionGrant = {
+  type: DrivePermissionRecord["type"];
+  role: DriveGivableRole;
+  /** The address of a user or a group. */
+  emailAddress?: string;
+  /** The domain, when the grant is a domain's. */
+  domain?: string;
+  /** Whether a domain's or anyone's access can be found by searching. Absent reads as no. */
+  allowFileDiscovery?: boolean;
+};
+
+/**
+ * The one mask every permission read and write sends. Drive makes a write before it checks the
+ * mask, and answers one it does not accept with a 400 having made the change, so the mask is a
+ * constant, and `permissionDetails` is asked for whole, with no selection of its members. `view`
+ * is in it only to tell a view's permission from the file's own.
+ */
+const PERMISSION_FIELDS =
+  "id,type,role,emailAddress,domain,displayName,allowFileDiscovery,deleted,view,permissionDetails";
+
+const PERMISSION_TYPES: ReadonlySet<string> = new Set(["user", "group", "domain", "anyone"]);
+const GIVABLE_ROLES: ReadonlySet<string> = new Set(["reader", "commenter", "writer"]);
+const PERMISSION_ROLES: ReadonlySet<string> =
+  new Set([...GIVABLE_ROLES, "fileOrganizer", "organizer", "owner"]);
+
+function isPermissionType(value: unknown): value is DrivePermissionRecord["type"] {
+  return typeof value === "string" && PERMISSION_TYPES.has(value);
+}
+
+function isPermissionRole(value: unknown): value is DrivePermissionRole {
+  return typeof value === "string" && PERMISSION_ROLES.has(value);
+}
+
+/**
+ * Refuses a role above `writer` before a request is built, whatever the caller's types said: a
+ * role read back from Drive, such as what a parent gives, can be a shared drive manager's.
+ */
+function requireGivableRole(role: string): void {
+  if (!GIVABLE_ROLES.has(role)) throw new Error("Only reader, commenter or writer can be given.");
+}
+
+/**
+ * One source of a permission's access. A detail of type `member` is a shared drive's membership,
+ * never access given on the item, so it reads as inherited whatever its own flag says. Nothing
+ * else of the type is kept.
+ */
+function parsePermissionDetail(value: unknown): DrivePermissionDetail {
+  if (!isRecord(value) || !isPermissionRole(value.role) || typeof value.inherited !== "boolean") {
+    throw new Error("Invalid Google Drive permission detail");
+  }
+  let inheritedFrom = optionalString(value.inheritedFrom, "permission detail inheritedFrom");
+  return {
+    role: value.role,
+    inherited: value.inherited || value.permissionType === "member",
+    ...(inheritedFrom ? { inheritedFrom } : {}),
+  };
+}
+
+/**
+ * One permission of a file, or `undefined` for one that belongs to a view of the file: that is
+ * access to the view, not to the file, and Drive documents a role for it that no file permission
+ * has, so it is left out before anything else of it is read. An expiry is never read.
+ */
+function parsePermission(value: unknown): DrivePermissionRecord | undefined {
+  if (!isRecord(value)) throw new Error("Invalid Google Drive permission response");
+  if (value.view !== undefined) return undefined;
+  if (typeof value.id !== "string" || !value.id || !isPermissionType(value.type) ||
+      !isPermissionRole(value.role)) {
+    throw new Error("Invalid Google Drive permission response");
+  }
+  if (value.permissionDetails !== undefined && !Array.isArray(value.permissionDetails)) {
+    throw new Error("Invalid Google Drive permission details");
+  }
+  let details = (value.permissionDetails ?? []).map(parsePermissionDetail);
+  // An empty address, domain or name reads as none, as one Drive leaves out does.
+  let emailAddress = optionalString(value.emailAddress, "permission emailAddress");
+  let domain = optionalString(value.domain, "permission domain");
+  let displayName = optionalString(value.displayName, "permission displayName");
+  let allowFileDiscovery =
+    optionalBoolean(value.allowFileDiscovery, "permission allowFileDiscovery");
+  return {
+    id: value.id,
+    type: value.type,
+    role: value.role,
+    ...(emailAddress ? { emailAddress } : {}),
+    ...(domain ? { domain } : {}),
+    ...(displayName ? { displayName } : {}),
+    ...(allowFileDiscovery === undefined ? {} : { allowFileDiscovery }),
+    deleted: optionalBoolean(value.deleted, "permission deleted") ?? false,
+    details: details.length ? details : [{ role: value.role, inherited: false }],
+  };
+}
+
+/** The permission a write answered with. One that belongs to a view cannot be what a write made. */
+function parseWrittenPermission(value: unknown): DrivePermissionRecord {
+  let permission = parsePermission(value);
+  if (!permission) throw new Error("Invalid Google Drive permission response");
+  return permission;
+}
+
+/** Reasons a 403 gives for a write Drive would take later. */
+const WRITE_RATE_LIMIT_REASONS: ReadonlySet<string> =
+  new Set([...RATE_LIMIT_REASONS, "sharingRateLimitExceeded"]);
+
+/**
+ * What a failed Drive write proves about whether it took effect.
+ *
+ * - `absent`: Drive refused it before changing anything (an invisible file, comment or permission,
+ *   a missing permission or scope, content over Google's limit, an organization's rule), so it is
+ *   safe to give up.
+ * - `rateLimited`: nothing was changed, and the same write may succeed later.
+ * - `unauthorized`: the token of a write that can be repeated was not accepted. Nothing was
+ *   changed, and the write is worth approving again under the account's token as it is by then.
+ * - `unknown`: anything else. Drive can make a write and still answer 400, and a 5xx, a network
+ *   failure or an unreadable success leaves the outcome open too, so the write must be looked for
+ *   before it is sent again.
+ */
+export type DriveWriteFailure = "absent" | "rateLimited" | "unauthorized" | "unknown";
+
+/**
+ * Classifies an error thrown by a Drive write. `repeatable` says the same call can be made again
+ * at Google without a second effect (a permission or a parent, not a comment): for such a write a
+ * 400 is a refusal, since reading it wrongly costs a wrong failure and never a second change. One
+ * 400 is not: Google answers `invalidParameter` for a response mask it does not accept after it
+ * has made the write, so that reason leaves the outcome open for every write. For a write that
+ * cannot be repeated, so does any 400. A 401 of a write that can be repeated is `unauthorized`:
+ * its token was not accepted, and the write is worth approving again under the account's token
+ * as it is by then. For one that cannot, a 401 is `absent`, as it has been tried under a
+ * refreshed token by then.
+ */
+export function driveWriteFailure(
+  error: unknown, options: { repeatable: boolean },
+): DriveWriteFailure {
+  if (error instanceof DriveApiDisabledError) return "absent";
+  if (!(error instanceof DriveApiRequestError)) return "unknown";
+  let { status, reason } = error;
+  let rateLimited = status === 403 && reason !== undefined && WRITE_RATE_LIMIT_REASONS.has(reason);
+  if (status === 429 || rateLimited) return "rateLimited";
+  if (status === 401) return options.repeatable ? "unauthorized" : "absent";
+  // Google authenticates and authorizes before it acts. A 403 here is a refused permission or
+  // scope, an invisible file, an organization's rule, or `commentLengthLimitExceeded`; a 404 an
+  // absent file, comment or permission.
+  if (status === 403 || status === 404) return "absent";
+  if (status === 400 && options.repeatable && reason !== "invalidParameter") return "absent";
+  return "unknown";
+}
+
 export class DriveApi {
   constructor(private getAccessToken: AccessTokenProvider) {}
 
@@ -696,12 +1167,53 @@ export class DriveApi {
     return parseDriveFile(await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params));
   }
 
+  /** An ID Drive reserves for a file this account creates, which makes the create safe to resend. */
+  async generateFileId(): Promise<string> {
+    let body = await this.#getUnknown("/files/generateIds", new URLSearchParams({ count: "1", space: "drive" }));
+    let id = isRecord(body) && Array.isArray(body.ids) ? body.ids[0] : undefined;
+    if (typeof id !== "string") throw new Error("Invalid Google Drive generated ID response");
+    return id;
+  }
+
+  /**
+   * Makes an empty folder named `name` in folder `parentId` under `id`, from generateFileId(), and
+   * returns whether this request made it. Drive answers a create under an ID already used with 409
+   * and makes nothing, so a lost response is replayed and a caller may send it again; false means
+   * an earlier request made the folder, which may since have been trashed or deleted.
+   */
+  async createFolder(name: string, parentId: string, id: string): Promise<boolean> {
+    let params = new URLSearchParams({ fields: "id", supportsAllDrives: "true" });
+    let response = await fetchWithAuthRetry(`${DRIVE_API_BASE}/files?${params}`, {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({ id, name, mimeType: FOLDER_MIME_TYPE, parents: [parentId] }),
+    }, this.getAccessToken, { idempotent: true });
+    if (response.status !== 409 && !response.ok) throw await driveError(response);
+    await response.body?.cancel();
+    return response.ok;
+  }
+
+  /**
+   * Adds folder `parentId` to file `fileId`'s parents and removes `removeParentIds`. Never replayed
+   * on a 5xx or a network error, so a caller whose reply was lost reads the parents again.
+   */
+  async moveFile(fileId: string, parentId: string, removeParentIds: readonly string[]): Promise<void> {
+    let params = new URLSearchParams({ addParents: parentId, fields: "id", supportsAllDrives: "true" });
+    if (removeParentIds.length > 0) params.set("removeParents", removeParentIds.join(","));
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" },
+      this.getAccessToken);
+    if (!response.ok) throw await driveError(response);
+    await response.body?.cancel();
+  }
+
   /** One page of the shared drives this account is a member of. */
   async listSharedDrives(options: { pageSize?: number; pageToken?: string } = {}):
       Promise<DriveSharedDriveList> {
     let params = new URLSearchParams({
       pageSize: String(options.pageSize ?? 100),
-      fields: "nextPageToken,drives(id,name)",
+      fields: "nextPageToken,drives(id,name,capabilities(canAddChildren))",
     });
     if (options.pageToken) params.set("pageToken", options.pageToken);
     let body = await this.#getUnknown("/drives", params);
@@ -709,11 +1221,12 @@ export class DriveApi {
     if (!isRecord(body) || !Array.isArray(rawDrives)) {
       throw new Error("Invalid Google Drive shared-drive list response");
     }
-    let drives = rawDrives.map((drive: unknown) => {
+    let drives = rawDrives.map((drive: unknown): DriveSharedDrive => {
       if (!isRecord(drive) || typeof drive.id !== "string" || typeof drive.name !== "string") {
         throw new Error("Invalid Google Drive shared drive");
       }
-      return { id: drive.id, name: drive.name };
+      let { canAddChildren } = optionalCapabilities(drive.capabilities) ?? {};
+      return { id: drive.id, name: drive.name, ...(canAddChildren === undefined ? {} : { canAddChildren }) };
     });
     let nextPageToken = optionalString(body.nextPageToken, "nextPageToken");
     return { drives, ...(nextPageToken ? { nextPageToken } : {}) };
@@ -724,13 +1237,68 @@ export class DriveApi {
    * body through, and cancels it to stop the download.
    */
   async openDownload(fileId: string): Promise<ReadableStream<Uint8Array>> {
-    if (!isDriveFileId(fileId)) throw new Error("Not a Google Drive file ID.");
+    let response = await this.#fetchMedia(fileId, {}, DOWNLOAD_TIMEOUT_MS);
+    return response.body ?? new ReadableStream({ start: controller => controller.close() });
+  }
+
+  /**
+   * One file's content from `offset`, as a stream nothing has yet been read from: this resolves
+   * once Drive begins its answer, and nothing is buffered. Never from anywhere else: a whole-file
+   * answer is taken only for a range from the start, and any other misplaced answer is refused.
+   * The answer can run past the range, as a whole-file one does, so the caller takes the bytes it
+   * asked for. `length` is how many a ranged answer says it carries, and `fileSize` the size of
+   * the file they come from, when Drive says.
+   *
+   * Only the wait for the answer to begin is timed. Its body is read at the caller's pace, for as
+   * long as a file of any size takes, so the caller times a body that stalls and cancels it to
+   * stop the download.
+   */
+  async downloadRange(
+    fileId: string, offset: number, length: number,
+  ): Promise<{ content: ReadableStream<Uint8Array>; length?: number; fileSize?: number }> {
+    let begin = new AbortController();
+    let timer = setTimeout(
+      () => begin.abort(new DOMException("Google Drive did not answer in time.", "TimeoutError")),
+      DOWNLOAD_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await this.#fetchMedia(fileId, {
+        headers: { Range: `bytes=${offset}-${offset + length - 1}` }, signal: begin.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    let range = response.status === 206
+      ? CONTENT_RANGE.exec(response.headers.get("Content-Range") ?? "")
+      : undefined;
+    let start = response.status === 206 ? range?.[1] : "0";
+    if (start === undefined || Number(start) !== offset) {
+      await response.body?.cancel();
+      throw new Error("Google Drive did not return the requested byte range.");
+    }
+    let content = response.body ?? new ReadableStream({ start: controller => controller.close() });
+    // A whole-file answer's length is the file's size, unless it was encoded in transit.
+    let total = range ? range[3]
+      : response.headers.has("Content-Encoding") ? null : response.headers.get("Content-Length");
+    return {
+      content,
+      ...range ? { length: Number(range[2]) - offset + 1 } : {},
+      ...total == null || total === "*" ? {} : { fileSize: Number(total) },
+    };
+  }
+
+  /**
+   * Drive's successful answer to a download of one file's content; any other is thrown. With
+   * `timeoutMs`, the whole answer is timed, its body included.
+   */
+  async #fetchMedia(fileId: string, init: RequestInit = {}, timeoutMs?: number): Promise<Response> {
+    requireDriveFileId(fileId);
     let params = new URLSearchParams({ alt: "media", supportsAllDrives: "true" });
     let response = await fetchWithAuthRetry(
-      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, {},
-      this.getAccessToken, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+      `${DRIVE_API_BASE}/files/${encodeURIComponent(fileId)}?${params}`, init,
+      this.getAccessToken, timeoutMs === undefined ? {} : { timeoutMs });
     if (!response.ok) throw await driveError(response);
-    return response.body ?? new ReadableStream({ start: controller => controller.close() });
+    return response;
   }
 
   /** Whether the connected account may edit a file's content, as Drive reports it. */
@@ -884,16 +1452,262 @@ export class DriveApi {
     return { copy, location: besideOriginal ? "besideOriginal" : "myDrive" };
   }
 
-  /** Fresh access checks for typed file and folder disclosure units. */
-  async checkObservations(observations: readonly DriveObservation[]): Promise<boolean[]> {
+  /** Whether the connected account may comment on a file, as Drive reports it. */
+  async canComment(fileId: string): Promise<boolean> {
+    return this.#hasCapability(fileId, "canComment");
+  }
+
+  /** Whether the connected account may change who a file is shared with, as Drive reports it. */
+  async canShare(fileId: string): Promise<boolean> {
+    return this.#hasCapability(fileId, "canShare");
+  }
+
+  /** One named capability of one file. Absent reads as no. */
+  async #hasCapability(fileId: string, capability: "canComment" | "canShare"): Promise<boolean> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({
+      fields: `capabilities(${capability})`, supportsAllDrives: "true",
+    });
+    let body = await this.#getUnknown(`/files/${encodeURIComponent(fileId)}`, params);
+    if (!isRecord(body)) throw new Error("Invalid Google Drive file response");
+    return optionalCapability(body.capabilities, capability) === true;
+  }
+
+  /**
+   * The Google account the token is for: its Drive permission ID, which its own permission on any
+   * file carries, and its address when Drive gives one. The ID is required, since every caller
+   * tells the account by it; the address is only asked for, so an answer without one is not a
+   * failure.
+   */
+  async getAccountIdentity(): Promise<{ permissionId: string; emailAddress?: string }> {
+    // `about.get` takes no `supportsAllDrives`: the account is the same in every drive.
+    let body = await this.#getUnknown(
+      "/about", new URLSearchParams({ fields: "user(permissionId,emailAddress)" }));
+    let user = isRecord(body) ? body.user : undefined;
+    if (!isRecord(user) || typeof user.permissionId !== "string" || !user.permissionId) {
+      throw new Error("Invalid Google Drive account identity response");
+    }
+    let emailAddress = user.emailAddress;
+    return {
+      permissionId: user.permissionId,
+      ...(typeof emailAddress === "string" && emailAddress ? { emailAddress } : {}),
+    };
+  }
+
+  /**
+   * One page of a file's permissions, one per grantee, each with a detail for every source of its
+   * access. Permissions that belong to a view of the file are left out.
+   */
+  async listPermissions(fileId: string, options: { pageToken?: string } = {})
+      : Promise<DrivePermissionList> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({
+      pageSize: "100", fields: `nextPageToken,permissions(${PERMISSION_FIELDS})`,
+      supportsAllDrives: "true",
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    let page = parseListPage(
+      await this.#getUnknown(`/files/${encodeURIComponent(fileId)}/permissions`, params),
+      "permissions", parsePermission);
+    return {
+      permissions: page.permissions.filter(permission => permission !== undefined),
+      ...(page.nextPageToken ? { nextPageToken: page.nextPageToken } : {}),
+    };
+  }
+
+  /**
+   * Gives `grant` on a file and returns the permission Drive holds for the grantee afterwards,
+   * which is an existing one when the grantee already had access. `notify` says whether Google
+   * emails a user or a group, with `message` in the email. A domain and anyone are never emailed:
+   * asking for that is refused before any request is made.
+   *
+   * Ownership is never transferred, no expiry is set, and no role above `writer` is given.
+   * Never replayed on a 429, a 5xx or a timeout (see {@link driveWriteFailure}).
+   */
+  async createPermission(
+    fileId: string, grant: DrivePermissionGrant, options: { notify: boolean; message?: string },
+  ): Promise<DrivePermissionRecord> {
+    requireDriveFileId(fileId);
+    requireGivableRole(grant.role);
+    let body: Record<string, unknown> = { type: grant.type, role: grant.role };
+    if (grant.type === "user" || grant.type === "group") {
+      body.emailAddress = grant.emailAddress;
+    } else {
+      if (options.notify || options.message !== undefined) {
+        throw new Error("Only a user or a group can be emailed about access.");
+      }
+      if (grant.type === "domain") body.domain = grant.domain;
+      // Always said, so that whether public or domain-wide access can be found by searching
+      // never rests on Drive's default.
+      body.allowFileDiscovery = grant.allowFileDiscovery === true;
+    }
+    let params = new URLSearchParams({
+      sendNotificationEmail: String(options.notify), fields: PERMISSION_FIELDS,
+      supportsAllDrives: "true",
+    });
+    if (options.message !== undefined) params.set("emailMessage", options.message);
+    return parseWrittenPermission(await this.#writeJson(
+      "POST", `/files/${encodeURIComponent(fileId)}/permissions`, params, body));
+  }
+
+  /**
+   * Sets the role of one permission of a file and returns the permission as Drive holds it
+   * afterwards. Never replayed on a 429, a 5xx or a timeout (see {@link driveWriteFailure}).
+   */
+  async updatePermission(
+    fileId: string, permissionId: string, role: DriveGivableRole,
+  ): Promise<DrivePermissionRecord> {
+    requireDriveFileId(fileId);
+    requireDrivePermissionId(permissionId);
+    requireGivableRole(role);
+    let params = new URLSearchParams({ fields: PERMISSION_FIELDS, supportsAllDrives: "true" });
+    return parseWrittenPermission(await this.#writeJson(
+      "PATCH",
+      `/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`,
+      params, { role }));
+  }
+
+  /**
+   * Removes one permission from a file. A 404 is thrown like any other failure: Drive answers it
+   * for a permission that is gone and for a file the account cannot see alike, so it does not
+   * prove the access is gone. Never replayed on a 429, a 5xx or a timeout.
+   */
+  async deletePermission(fileId: string, permissionId: string): Promise<void> {
+    requireDriveFileId(fileId);
+    requireDrivePermissionId(permissionId);
+    await this.#writeJson(
+      "DELETE",
+      `/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`,
+      new URLSearchParams({ supportsAllDrives: "true" }));
+  }
+
+  /**
+   * Moves a file or folder by swapping one parent for another, and returns the parents Drive
+   * holds for it afterwards. Both are always sent: adding a parent alone moves the file out of
+   * wherever it is, and removing one alone drops it in the root of My Drive.
+   * Never replayed on a 429, a 5xx or a timeout (see {@link driveWriteFailure}).
+   */
+  async swapParent(
+    fileId: string, move: { addParent: string; removeParent: string },
+  ): Promise<{ id: string; parents: string[] }> {
+    requireDriveFileId(fileId);
+    requireDriveFileId(move.addParent);
+    requireDriveFileId(move.removeParent);
+    let params = new URLSearchParams({
+      addParents: move.addParent, removeParents: move.removeParent, fields: "id,parents",
+      supportsAllDrives: "true",
+    });
+    let body = await this.#writeJson("PATCH", `/files/${encodeURIComponent(fileId)}`, params, {});
+    if (!isRecord(body) || body.id !== fileId) {
+      throw new Error("Google Drive answered a move for a different file");
+    }
+    let parents = optionalParents(body.parents);
+    if (!parents?.length) {
+      throw new Error("Google Drive answered a move without the file's parents");
+    }
+    return { id: fileId, parents };
+  }
+
+  /**
+   * One page of a file's comments, deleted ones left out. `startModifiedTime` (RFC 3339) keeps
+   * only comments modified at or after it, a reply counting as a modification of its comment.
+   */
+  async listComments(
+    fileId: string, options: { pageToken?: string; startModifiedTime?: string } = {},
+  ): Promise<DriveCommentList> {
+    requireDriveFileId(fileId);
+    let params = new URLSearchParams({
+      pageSize: "100", fields: `nextPageToken,comments(${COMMENT_FIELDS})`,
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    if (options.startModifiedTime) params.set("startModifiedTime", options.startModifiedTime);
+    return parseListPage(
+      await this.#getUnknown(`/files/${encodeURIComponent(fileId)}/comments`, params),
+      "comments", parseComment);
+  }
+
+  /** One comment and its replies. */
+  async getComment(fileId: string, commentId: string): Promise<DriveCommentRecord> {
+    requireDriveFileId(fileId);
+    requireDriveCommentId(commentId);
+    let params = new URLSearchParams({ fields: COMMENT_FIELDS });
+    let comment = parseComment(await this.#getUnknown(
+      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}`, params));
+    if (comment.id !== commentId) throw new Error("Google Drive returned a different comment");
+    return comment;
+  }
+
+  /** One page of a comment's replies, deleted ones left out. */
+  async listReplies(fileId: string, commentId: string, options: { pageToken?: string } = {})
+      : Promise<DriveReplyList> {
+    requireDriveFileId(fileId);
+    requireDriveCommentId(commentId);
+    let params = new URLSearchParams({
+      pageSize: "100", fields: `nextPageToken,replies(${REPLY_FIELDS})`,
+    });
+    if (options.pageToken) params.set("pageToken", options.pageToken);
+    return parseListPage(
+      await this.#getUnknown(
+        `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
+        params),
+      "replies", parseReply);
+  }
+
+  /**
+   * Posts a plain comment on a file, with no anchor and no quoted file content: Docs lists a
+   * comment made through the API under "Original content deleted", with or without them.
+   *
+   * Sent again only by the auth retry, after Google refused the token: any other error does not
+   * prove nothing was posted (see {@link driveWriteFailure}).
+   */
+  async createComment(fileId: string, content: string): Promise<DriveCommentRecord> {
+    requireDriveFileId(fileId);
+    checkCommentContent(content);
+    return parseComment(await this.#writeJson(
+      "POST", `/files/${encodeURIComponent(fileId)}/comments`,
+      new URLSearchParams({ fields: COMMENT_FIELDS }), { content }));
+  }
+
+  /**
+   * Posts a reply to a comment, or resolves it with `action: "resolve"`, in which case `content`
+   * may be left out and Drive stores `""`. A plain reply to a resolved comment reopens it.
+   *
+   * Sent again only by the auth retry, after Google refused the token: any other error does not
+   * prove nothing was posted (see {@link driveWriteFailure}).
+   */
+  async createReply(
+    fileId: string, commentId: string, reply: { content?: string; action?: "resolve" },
+  ): Promise<DriveReplyRecord> {
+    requireDriveFileId(fileId);
+    requireDriveCommentId(commentId);
+    // Only a resolve may go without content.
+    if (reply.content !== undefined || reply.action !== "resolve") {
+      checkCommentContent(reply.content ?? "", "reply");
+    }
+    return parseReply(await this.#writeJson(
+      "POST",
+      `/files/${encodeURIComponent(fileId)}/comments/${encodeURIComponent(commentId)}/replies`,
+      new URLSearchParams({ fields: REPLY_FIELDS }),
+      {
+        ...(reply.content === undefined ? {} : { content: reply.content }),
+        ...(reply.action === undefined ? {} : { action: reply.action }),
+      }));
+  }
+
+  /**
+   * Fresh access checks for typed disclosure units. Content needs leave to download it, which Drive
+   * withholds from viewers when downloading is restricted; an omitted answer counts as no leave.
+   */
+  async checkObservations(observations: readonly DriveUnit[]): Promise<boolean[]> {
     return this.#batchGetFiles(
       observations.map(observation => observation.fileId),
-      DRIVE_SCOPE_NODE_FIELDS,
+      DRIVE_OBSERVATION_FIELDS,
       (part, _fileId, index) => {
         if (!batchPartAllowed(part)) return false;
         let observation = observations[index];
         if (observation.kind === "file") return true;
-        return isListableFolderNode(parseDriveScopeNode(part.body, observation.fileId));
+        let node = parseDriveScopeNode(part.body, observation.fileId);
+        return observation.kind === "content" ? node.canDownload === true : isListableFolderNode(node);
       },
     );
   }
@@ -952,6 +1766,7 @@ export class DriveApi {
     };
 
     let replayed = false;
+    let reloaded = false;
     for (;;) {
       let response = await fetchWithAuthRetry(DRIVE_BATCH_URL, {
         method: "POST",
@@ -976,8 +1791,45 @@ export class DriveApi {
         continue;
       }
 
+      if (!reloaded && placed.some(batchPartLacksScope)) {
+        // Likewise a subrequest refused for a missing scope: fetchWithAuthRetry's reload of the
+        // token a reconnect stored never sees it, so a memoized token from before the reconnect
+        // would deny every file until it expires. Replays only on a token that really changed.
+        reloaded = true;
+        if (await this.getAccessToken({ reloadStored: true }) !== lastToken) continue;
+      }
+
       return placed;
     }
+  }
+
+  /**
+   * One write request, with its own timeout on each attempt, whose answer is read through the
+   * mask in `params`; a 204 answers `undefined`. It is never replayed on a 429, a 5xx or a
+   * timeout. The auth retry sends it again after a 401 or a 403 only when the token provider
+   * hands back another token than the one Google refused, so which writes can go out twice is
+   * decided by the provider this client was built over.
+   */
+  async #writeJson(
+    method: "POST" | "PATCH" | "DELETE", path: string, params: URLSearchParams,
+    body?: Record<string, unknown>,
+  ): Promise<unknown> {
+    let response = await fetchWithAuthRetry(
+      `${DRIVE_API_BASE}${path}?${params}`,
+      {
+        method,
+        headers: {
+          Accept: "application/json",
+          ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+        },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      },
+      this.getAccessToken, { timeoutMs: WRITE_TIMEOUT_MS });
+    if (!response.ok) throw await driveError(response);
+    if (response.status === 204) return undefined;
+    let text = await readBoundedText(
+      response, MAX_JSON_RESPONSE_BYTES, "Google Drive response was too large");
+    return parseDriveJson(text, "response");
   }
 
   async #getUnknown(path: string, params: URLSearchParams): Promise<unknown> {

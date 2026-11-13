@@ -5,7 +5,9 @@ import { openAgentSession } from "../src/agent-session.js";
 import { ADMIN_USERNAME, startTestGatekeeperHarness, TEST_VENDOR_ID, type Harness } from "../src/harness.js";
 import { SCRIPTED_MODEL_ID, scriptedModelRouter, type RoutedScriptedModel } from "../src/mock-model.js";
 import { NetworkInterceptor, type Handler } from "../src/network-interceptor.js";
-import { connect, signUp } from "../src/rpc-client.js";
+import {
+  connect, RpcTarget, signUp, stubFor, waitFor, withOwnerWorkspace, WorkpieceRecorder,
+} from "../src/rpc-client.js";
 
 // The trusted-host list is deployment-wide, so this file owns its harness and runs serially.
 let harness: Harness;
@@ -15,10 +17,11 @@ const models = scriptedModelRouter();
 
 const TRUSTED_HOST = "gadgets-test.example";
 const TARGET = `https://${TRUSTED_HOST}/restricted-web-fetch`;
+const OTHER_HOST = "other.example";
 const PAGE = "The trusted page.";
 const webRequests: string[] = [];
 const web: Handler = url => {
-  if (url.host !== TRUSTED_HOST) return null;
+  if (url.host !== TRUSTED_HOST && url.host !== OTHER_HOST) return null;
   webRequests.push(url.href);
   return new Response(PAGE, { headers: { "content-type": "text/plain" } });
 };
@@ -96,5 +99,123 @@ it("fetches only from trusted hosts once the workspace has read restricted data"
     expect(webRequests).toEqual([TARGET]);
   } finally {
     await admin.setRestrictedWebFetchHosts([]);
+  }
+});
+
+it("fetches a URL the trusted hosts refuse once the user approves it, if the admin allows that", async () => {
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const approved = `https://${OTHER_HOST}/approved?ref=docs`;
+    const denied = `https://${OTHER_HOST}/another`;
+    const model = models.script([
+      READ_RESTRICTED,
+      fetchStep("ask", approved),
+      fetchStep("fetch-approved", approved),
+      fetchStep("ask-again", denied),
+      fetchStep("ask-after-prompt", approved),
+    ]);
+    await using session = await openSession(model);
+    const asked = await session.runTurn("Read the restricted value, then fetch the page.");
+
+    expect(asked.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(2);
+    const requests = asked.history.filter(msg => msg.type === "webFetchRequest");
+    expect(requests).toEqual([expect.objectContaining({ url: approved, state: "pending" })]);
+    expect(webRequests).not.toContain(approved);
+
+    const resumed = await session.approveWebFetchRequestsAndWait([requests[0].requestId]);
+
+    expect(resumed.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(4);
+    expect(model.requests[3]).toMatchObject(toolResult("fetch-approved", PAGE));
+    expect(webRequests).toContain(approved);
+    const pending = resumed.history.filter(msg => msg.type === "webFetchRequest")
+        .filter(msg => msg.state === "pending");
+    expect(pending).toEqual([expect.objectContaining({ url: denied })]);
+
+    // A denial leaves the turn ended, and an approval ends with the turn it was given in.
+    await session.denyWebFetchRequest(pending[0].requestId);
+    const next = await session.runTurn("Fetch the first page again.");
+
+    expect(next.outcome).toEqual({ status: "completed" });
+    expect(model.requests).toHaveLength(5);
+    expect(model.requests[4]).toMatchObject({ messages: expect.arrayContaining([
+      expect.objectContaining({ role: "user", content: expect.stringContaining(`The user denied fetching ${denied}`) }),
+    ]) });
+    expect(next.history.filter(msg => msg.type === "webFetchRequest").at(-1))
+      .toEqual(expect.objectContaining({ url: approved, state: "pending" }));
+    expect(webRequests.filter(url => url === approved)).toHaveLength(1);
+    expect(webRequests).not.toContain(denied);
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
+  }
+});
+
+interface Researcher extends RpcTarget {
+  research(): Promise<void>;
+}
+
+const RESEARCHER_SERVER = `import { DurableObject } from "cloudflare:workers";
+export class Gadget extends DurableObject {
+  async research() {
+    await this.env.SPAWNER.spawn("Research", "Fetch the page.");
+  }
+}
+`;
+
+it("asks the user before a sub-agent fetches a URL the trusted hosts refuse", async () => {
+  await admin.setRestrictedWebFetchApprovals(true);
+  try {
+    const url = `https://${OTHER_HOST}/sub-agent`;
+    const model = models.script([
+      READ_RESTRICTED,
+      { toolCalls: [
+        { id: "create", name: "createGadget", arguments: { title: "Researcher", bindingName: "RESEARCHER" } },
+        { id: "write", name: "writeFile",
+          arguments: { workpiece: "RESEARCHER", filename: "server.js", content: RESEARCHER_SERVER } },
+      ] },
+      { text: "Built." },
+      // The sub-agent's steps: it asks, and once approved, fetches.
+      fetchStep("ask", url),
+      fetchStep("fetch-approved", url),
+      { text: "Fetched." },
+    ]);
+    await using session = await openSession(model);
+    const built = await session.runTurn("Read the restricted value, then build the researcher.");
+    expect(built.outcome).toEqual({ status: "completed" });
+    await session.acceptChanges();
+
+    await withOwnerWorkspace(harness.url, session.username, async ws => {
+      const workpieces = new WorkpieceRecorder();
+      using workpiecesStub = stubFor(workpieces);
+      using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
+      await workpieces.loaded;
+      const summary = [...workpieces.summaries.values()]
+          .find(entry => entry.type === "gadget" && entry.title === "Researcher");
+      if (summary === undefined) throw new Error("The Researcher gadget was not created");
+
+      using spawner = await ws.newAgentSpawnerGatekeeper({
+        displayName: "Research agents", modelId: SCRIPTED_MODEL_ID, env: {},
+      });
+      using gadget = await ws.getGadget(summary.id);
+      await gadget.bind("SPAWNER", await spawner.getId());
+      using researcher = await gadget.connectToGadget() as RpcStub<Researcher>;
+      await researcher.research();
+
+      const chat = await waitFor("the sub-agent's chat", async () =>
+        (await ws.listChats()).find(({ spawnerName }) => spawnerName === "Research agents") ?? null);
+      const asked = await ws.waitForAgent(chat.id);
+      if (asked?.type !== "webFetchRequest") {
+        throw new Error(`The sub-agent's turn ended on ${asked?.type}, not a web fetch request`);
+      }
+      expect(asked).toMatchObject({ url, state: "pending" });
+      expect(webRequests).not.toContain(url);
+
+      await ws.approveWebFetchRequest(asked.requestId);
+      expect(await ws.waitForAgent(chat.id)).toMatchObject({ type: "message", message: "Fetched." });
+      expect(webRequests).toContain(url);
+    });
+  } finally {
+    await admin.setRestrictedWebFetchApprovals(false);
   }
 });

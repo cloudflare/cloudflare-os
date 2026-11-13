@@ -237,8 +237,7 @@ export type GitLabAction =
 
 /**
  * The kind of each action, which users' auto-approval rules key on, so a tag must never change. A
- * force push has a kind of its own, and is never auto-approvable: it can drop commits from the
- * branch.
+ * force push has a kind of its own: enabling ordinary pushes does not let history be rewritten.
  */
 const ACTION_KINDS = {
   createIssue: { tag: "gitlab.createIssue", label: "Create issues" },
@@ -260,14 +259,14 @@ const ACTION_KINDS = {
 type AutoApprovalKind = keyof typeof ACTION_KINDS;
 
 // The auto-approvable kinds each binding's session can submit, so a pre-approval UI lists only
-// those its actions can carry. Merges and force pushes never appear: they are never
-// auto-approvable.
+// those its actions can carry. Merges never appear: they are never auto-approvable. Pushes and
+// force pushes do, though one to the default or a protected branch always waits for a person.
 const ISSUE_ACTIONS: AutoApprovalKind[] =
   ["setTitle", "setBody", "addLabels", "removeLabels", "changeState", "postComment"];
 const MERGE_REQUEST_ACTIONS: AutoApprovalKind[] =
   [...ISSUE_ACTIONS, "postReview", "replyToDiffComment", "resolveDiffThread"];
 const BINDING_ACTIONS: Record<ResourceKind, AutoApprovalKind[]> = {
-  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push"],
+  project: ["createIssue", "createMergeRequest", ...MERGE_REQUEST_ACTIONS, "push", "forcePush"],
   issue: ISSUE_ACTIONS,
   mergeRequest: MERGE_REQUEST_ACTIONS,
 };
@@ -279,12 +278,11 @@ export function autoApprovableKinds(resourceKind: ResourceKind): ActionKind[] {
 
 /**
  * The action's kind, and whether it may be applied without a person once the user has enabled
- * that kind. Every action may be except those that pass a gate or drop commits, which always wait
- * for a person: a merge, an approving review, a force push, and a push to the default or a
- * protected branch; and an issue or merge request created with a bot or service account among its
- * assignees, which can start an agent run that spends credits. An approval, a protected push and
- * a create assigned to a bot share their kinds with actions that may apply, so enabling those
- * never covers them.
+ * that kind. Every action may be except those that pass a gate, which always wait for a person: a
+ * merge, an approving review, and a push or force push to the default or a protected branch; and
+ * an issue or merge request created with a bot or service account among its assignees, which can
+ * start an agent run that spends credits. An approval, a protected push and a create assigned to a
+ * bot share their kinds with actions that may apply, so enabling those never covers them.
  */
 export function autoApprovalOf(action: GitLabAction): { actionKind: ActionKind; autoApprovable: boolean } {
   const kind: AutoApprovalKind = action.type === "push" && action.force ? "forcePush" : action.type;
@@ -298,7 +296,7 @@ function isAutoApprovable(action: GitLabAction): boolean {
     case "postReview":
       return action.review.decision !== "approve";
     case "push":
-      return !action.force && action.targetProtected === false;
+      return action.targetProtected === false;
     case "createIssue": case "createMergeRequest":
       return action.assigneeIds.length === 0 || action.assigneeIsBot === false;
     case "setTitle": case "setBody": case "addLabels":

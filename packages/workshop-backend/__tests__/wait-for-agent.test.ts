@@ -177,6 +177,19 @@ describe("waitForAgent", () => {
     expect(await client.waitForAgent(chatId)).toMatchObject({ author: AGENT, type: "message", message: "Done." });
   }));
 
+  it("returns the web fetch request a turn paused on, not the tool call before it", () =>
+      withWorkspace(async ({ impl, client }) => {
+    let chatId = await client.newChat("Start", "some-model");
+    endTurn(impl, chatId, "");
+    impl.storage.chats.put({
+      chatId, sequence: impl.nextChatSequence(chatId), timestamp: impl.getChatTimestamp(),
+      author: AGENT, type: "webFetchRequest", requestId: `${chatId}:1`, url: "https://example.com/",
+      state: "pending",
+    });
+    expect(await client.waitForAgent(chatId)).toMatchObject(
+        { type: "webFetchRequest", requestId: `${chatId}:1`, url: "https://example.com/" });
+  }));
+
   it("fails for a chat that does not exist, or is deleted while waited on", () =>
       withWorkspace(async ({ client }) => {
     await expect(client.waitForAgent(42)).rejects.toThrow("No such chatId: 42");

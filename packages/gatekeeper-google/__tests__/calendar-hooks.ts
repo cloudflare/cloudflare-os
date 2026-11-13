@@ -2,7 +2,9 @@ import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
   ActionDescription, ActionKind, ApprovalQueue, GitCache, HookController, HookDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
-import type { CalendarEventDraft, CalendarEventPatch, GoogleCalendarSession } from "../src/calendar-types";
+import type {
+  CalendarEventDraft, CalendarEventPatch, CalendarSendUpdates, GoogleCalendarSession,
+} from "../src/calendar-types";
 import { GoogleCalendarGatekeeperImpl } from "../src/google";
 
 export { GoogleCalendarGatekeeperImpl };
@@ -34,6 +36,17 @@ class RecordingApprovalQueue extends RpcTarget implements ApprovalQueue {
     _description: HookDescription,
   ): Promise<void> {
     throw new Error("Unexpected hook binding");
+  }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
   }
 }
 
@@ -83,8 +96,10 @@ export class CalendarTestHooks extends DurableObject<Env> {
     }
   }
 
-  async createEvent(facetName: string, event: CalendarEventDraft): Promise<CalendarCall> {
-    return this.#call(facetName, session => session.createEvent(event));
+  async createEvent(
+    facetName: string, event: CalendarEventDraft, opts?: { sendUpdates?: CalendarSendUpdates },
+  ): Promise<CalendarCall> {
+    return this.#call(facetName, session => session.createEvent(event, opts));
   }
 
   async updateEvent(facetName: string, eventId: string, patch: CalendarEventPatch): Promise<CalendarCall> {
