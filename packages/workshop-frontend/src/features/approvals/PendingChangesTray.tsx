@@ -90,9 +90,15 @@ export const PendingChangesTray = ({
   if (groups.length === 0) {
     // The queue can empty under a run that stopped, often because the very request it stopped
     // at has just landed -- a discard whose last request was applied first. What the run says is
-    // still owed to the user, so it outlives the queue until they dismiss it.
+    // still owed to the user, so it outlives the queue until they dismiss it. Capped and
+    // scrolling like the full tray, for the same reason: it sits in the composer's unshrinkable
+    // section, and a long reason on a short window would push the composer off the pane.
     return bulk.failure
-      ? <div className={`${barClass} rounded-t-[calc(1rem-1px)]`}>{failureNotice(false)}</div>
+      ? (
+        <div className={`${barClass} max-h-[min(30rem,45vh)] rounded-t-[calc(1rem-1px)]`}>
+          <div className="min-h-0 overflow-y-auto">{failureNotice(false)}</div>
+        </div>
+      )
       : null
   }
 

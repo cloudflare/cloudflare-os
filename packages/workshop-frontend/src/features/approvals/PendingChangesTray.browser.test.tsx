@@ -173,6 +173,29 @@ it('leaves the composer room on a short window', async () => {
   expect(box.bottom).toBeLessThanOrEqual(tray.getBoundingClientRect().bottom + 1)
 })
 
+it('caps a stopped run\'s message once the queue is empty, as it caps the full tray', async () => {
+  // With the queue gone only the failure is left, and it can carry a provider's whole reason.
+  // It sits in the same unshrinkable section as the full tray, so uncapped, a long one on a short
+  // window pushes the composer past the pane's clipped edge.
+  previousViewport = { width: window.innerWidth, height: window.innerHeight }
+  await page.viewport(900, 500)
+  await render({
+    groups: [],
+    maxHeight: 'none',
+    width: 280,
+    failure: {
+      ...STOPPED,
+      reason: Array.from({ length: 12 }, () => STOPPED.reason).join(' '),
+    },
+  })
+
+  const tray = host!.firstElementChild!
+  // 45vh of a 500px window.
+  expect(tray.getBoundingClientRect().height).toBeLessThanOrEqual(226)
+  const scroller = tray.firstElementChild!
+  expect(scroller.scrollHeight).toBeGreaterThan(scroller.clientHeight)
+})
+
 it('keeps a request in reach however many notices stand above it', async () => {
   // The narrowest supported chat pane is 280px (GadgetEditor), where every notice wraps to
   // several lines. Three can stand at once, and together they were enough to leave the request
