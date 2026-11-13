@@ -87,10 +87,10 @@ them:
 - Admin operations are exposed as an `AdminApi` capability obtained via
   `AuthenticatedApi.getAdminApi()` (returns null for non-admins). The admin check
   (`isDeploymentAdmin()` in `src/auth/config.ts`) runs once when the capability is minted, so the
-  individual methods don't re-check, except for workspace inspection: `inspectWorkspace()`,
-  `OverseerDurableObject.openForAdmin()` and every `AdminWorkspaceView` call re-check
-  `isDeploymentAdmin()` and the view's expiry, and record each call before anything it read
-  leaves the server.
+  individual methods don't re-check, except for inspection: `inspectWorkspace()`, `inspectUser()`,
+  the `openForAdmin()` of the Overseer and of the user object, and every `AdminWorkspaceView` and
+  `AdminUserView` call re-check `isDeploymentAdmin()` and the view's expiry, and record each call
+  before anything it read leaves the server (`src/admin-view.ts`).
 - Every `AdminApi` setter is recorded in the deployment-wide audit log before it takes effect: each
   `AdminSettings` mutator takes a trailing `AdminSettingActor` and writes through
   `#mutateAdminConfig()`, which records the diff before storing it (the site logo and featured

@@ -38,19 +38,33 @@ through logs and errors, then everything else.
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
   `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
-  in two places: `inspectWorkspace()`, so that a KV mirror still holding a higher access level never
-  mints a view at it, and the audit log's retention in `listAdminAudit()` and
-  `getAdminAuditStats()`. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
+  in two places: where a view is minted, for `inspectWorkspace()` and `inspectUser()` alike, so
+  that a KV mirror still holding a higher access level never mints a view at it, and the audit
+  log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The admin-settings conventions
+  are in `packages/workshop-backend/AGENTS.md`.
 - `OverseerDurableObject.openForAdmin()` stays reachable only over the Durable Object binding, never
-  through a capability a user holds, and refuses an uninitialised workspace without writing. Every
-  `AdminWorkspaceView` method runs through `#call()`, which checks the view again once it has read
-  the deployment's setting and once it has read its answer, with nothing awaited before its record
-  is sent; never reaches a connection (an admin's reads of trees and history never pull); and
-  records the call in the deployment-wide log before anything it read leaves the server, so that
-  a call whose record cannot be written returns nothing. No view method returns what the
-  `"metadata"` level withholds (see docs/admin-access.md). Flag a path that returns workspace data
-  to an admin without these, a method that returns content, or a `withhold*` helper applied
-  conditionally.
+  through a capability a user holds, and refuses an uninitialised workspace without writing.
+  `UserDurableObject.openForAdmin()` is held to the same, for an account never created. Both views
+  run every method through `adminViewCall()` (`admin-view.ts`), and neither appends a record
+  itself. `adminViewCall()` checks the view again once it has read the deployment's setting and
+  once the call has read its answer, with nothing awaited before its record is sent, and records
+  the call in the deployment-wide log before anything it read leaves the server, so that a call
+  whose record cannot be written returns nothing. An `AdminWorkspaceView` never reaches a
+  connection (an admin's reads of trees and history never pull). An `AdminUserView` reads only
+  the account's own store, writes nothing to it, and returns no token, hash, API key, API URL or
+  header value. No view method returns what the `"metadata"` level withholds (see
+  docs/admin-access.md). Flag a path that returns a workspace's or an account's data to an admin
+  without these, a method that returns content, or a `withhold*` helper applied conditionally.
+- That an `AdminUserView` never calls a gatekeeper is a type, so check the diff, not a call graph:
+  `AdminUserViewImpl` reaches the account only through `AdminUserViewHost`, whose `UserStoreReads`
+  leaves out the collections that hold gatekeeper stubs and whose `connectedAccounts()` yields
+  records without `account`. Flag a change that widens either type, casts around them, gives the
+  view the Durable Object itself, builds an answer by spreading a stored record, or exports the
+  view's class or constructs it anywhere but in its `open()`: `openAdminUserView()` is the one way
+  to a view, and it records the open first. The rule excepts three stored values, which the view
+  returns whole because each is an API value that holds no credential: `describe()`'s profile, a
+  shared workspace's owner and a workspace's notification mute. It builds everything else field by
+  field, and names neither a connected account's description nor a blueprint's id.
 - `ADMIN_WORKSPACE_ACCESS_MAX` and `ADMIN_AUDIT_RETENTION_MIN_DAYS` are env-driven, like auth
   config, and the cap fails closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or
   prunes with `adminAuditRetentionDays`, without `adminAccessPolicy()`.
