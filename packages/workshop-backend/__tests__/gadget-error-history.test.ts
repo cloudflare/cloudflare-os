@@ -1,9 +1,10 @@
 // The Overseer as the one writer of its workspace's gadget error log: the exceptions the runtime
 // reports for a gadget's Worker and the errors of the calls to a gadget that failed are kept in
 // the workspace's log object and listed back (OverseerImpl.deliverGadgetExceptions(),
-// #recordGadgetException(), recordHookException() and readGadgetErrors()), console calls are kept
-// at no level, live subscribers get what they get without the log, and deleting the workspace
-// deletes the log object before the workspace's own storage.
+// #recordGadgetException(), recordHookException() and readGadgetErrors()), and so is what a
+// session reports of a gadget's UI (reportGadgetErrors()), console calls are kept at no level,
+// live subscribers get what they get without the log, and deleting the workspace deletes the log
+// object before the workspace's own storage.
 //
 // Runs against a real OverseerDurableObject (the TEST_OVERSEER binding) keeping entries in the real
 // log object it reaches through ctx.exports, read back through the TEST_WORKSPACE_ERROR_LOG
@@ -14,9 +15,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import {
-  MAX_GADGET_ERROR_TEXT_LENGTH,
+  MAX_GADGET_ERROR_TEXT_LENGTH, MAX_GADGET_ERRORS_PER_CALL,
   type AiChatAuthorInfo, type CodeChangeSubmission, type ConsoleLogEvent,
-  type GadgetErrorEntry, type GadgetErrorQuery,
+  type GadgetErrorEntry, type GadgetErrorQuery, type Overseer, type ReportedGadgetError,
 } from "@gadgets/workshop-shared/api";
 import { diffFiles, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { GADGET_ERRORS_PER_MINUTE } from "../src/gadget-error-log.js";
@@ -1947,6 +1948,476 @@ describe("readGadgetErrors", () => {
     expect(readGadgetErrors).not.toHaveBeenCalled();
     expect(logs.getByName).not.toHaveBeenCalled();
     (client as unknown as Disposable)[Symbol.dispose]();
+  }));
+});
+
+// A worktree of the workspace, which holds a second gadget as well (OTHER_GADGET_ID).
+const WORKTREE_ID = 3;
+
+// Runs `fn` with the owner's session over a workspace that holds the gadget, at `commit`, a second
+// gadget and a worktree.
+function withReporter(fn: (ws: Workspace, client: Overseer, commit: string) => Promise<void>)
+    : Promise<void> {
+  return withWorkspace(async ws => {
+    using client = await openOwner(ws);
+    let commit = await addGadget(ws);
+    ws.impl.storage.gadgets.put({
+      type: "gadget", id: OTHER_GADGET_ID, title: "Other", created: new Date(0),
+      bindingName: "OTHER", bindings: {},
+    });
+    ws.impl.storage.gadgets.put({
+      type: "worktree", id: WORKTREE_ID, title: "Repo", created: new Date(0), chatId: 0,
+      baseCommit: "c0", headCommit: "c0", pinBase: "c0",
+    });
+    await fn(ws, client, commit);
+  });
+}
+
+// One error as a browser reports it: a text and nothing else.
+const uiError = (text: string): ReportedGadgetError => ({ text });
+
+// `count` reported errors, their texts `prefix` and a number from 0.
+const batch = (count: number, prefix = "n"): ReportedGadgetError[] =>
+  Array.from({ length: count }, (_, i) => uiError(prefix + i));
+
+// The entry kept for an error the owner's browser reported for the gadget, under no chat. Its time
+// is the server's, which the cases that pin it compare apart.
+const reportedEntry = (ws: Workspace, text: string) => ({
+  time: expect.any(Date), gadgetId: GADGET_ID, chatId: null, source: "client",
+  userId: ws.owner.id, text,
+});
+
+// Every entry the Overseer lists for `query`, newest first.
+async function listAll(ws: Workspace, query: GadgetErrorQuery = {}): Promise<GadgetErrorEntry[]> {
+  let entries: GadgetErrorEntry[] = [];
+  let cursor: string | undefined;
+  do {
+    let page = await ws.impl.readGadgetErrors({ ...query, ...(cursor !== undefined && { cursor }) });
+    entries.push(...page.entries);
+    cursor = page.nextCursor;
+  } while (cursor !== undefined);
+  return entries;
+}
+
+// Of those, the errors that were reported for the gadget, and the markers of what was dropped,
+// each oldest first: the order they were kept in. Nothing but its text tells a marker.
+const isMarker = (entry: GadgetErrorEntry) => /^\d+ errors? dropped$/.test(entry.text);
+const lines = async (ws: Workspace) =>
+  (await listAll(ws, { gadgetId: GADGET_ID, source: "client" }))
+      .filter(entry => !isMarker(entry)).toReversed();
+const markers = async (ws: Workspace) =>
+  (await listAll(ws, { gadgetId: GADGET_ID, source: "client" })).filter(isMarker).toReversed();
+
+// Reports three full calls for a gadget, which is all it may keep of reports in a minute.
+async function useUpMinute(client: Overseer, gadgetId = GADGET_ID): Promise<void> {
+  for (let call = 0; call < GADGET_ERRORS_PER_MINUTE / MAX_GADGET_ERRORS_PER_CALL; call++) {
+    await client.reportGadgetErrors(
+        gadgetId, null, batch(MAX_GADGET_ERRORS_PER_CALL, `call${call}-`));
+  }
+}
+
+// Filler of `n` characters in which no run of token characters is long.
+const words = (n: number) => "word ".repeat(Math.ceil(n / 5)).slice(0, n);
+
+// What a session is refused with when its report could not be kept.
+const REPORT_REFUSED = "Gadget errors could not be recorded.";
+
+describe("keeping what a session reports of a gadget's UI", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // What decides is #resolveGadgetChatId, as for an exception of the gadget's server.
+  it("names the chat only while it proposes a change to the gadget", () =>
+      withReporter(async (ws, client, commit) => {
+    addChat(ws, 1);
+    await addDraft(ws, 2, commit);
+
+    // Chat 1 proposes nothing, so the UI it showed was the mainline's. Chat 2 pins the gadget.
+    await client.reportGadgetErrors(GADGET_ID, 1, [uiError("boom")]);
+    await client.reportGadgetErrors(GADGET_ID, 2, [uiError("boom")]);
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("boom")]);
+
+    expect(await listAll(ws)).toStrictEqual([
+      reportedEntry(ws, "boom"), { ...reportedEntry(ws, "boom"), chatId: 2 },
+      reportedEntry(ws, "boom"),
+    ]);
+  }));
+
+  it("leaves nothing of a token that straddles the cut", () =>
+      withReporter(async (ws, client) => {
+    let token = "A1b2C3d4E5".repeat(4);
+    // The token starts five characters before the kept length.
+    let text = (words(1987) + " Bearer " + token + " " + words(4000)).slice(0, 4000);
+
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError(text)]);
+
+    let cut = (words(1987) + " Bearer [redacted] " + words(4000)).slice(0, 1999) + "…";
+    expect(cut).toHaveLength(MAX_GADGET_ERROR_TEXT_LENGTH);
+    expect(texts({ entries: await listAll(ws) })).toStrictEqual([cut]);
+    expect(cut).not.toContain("A1b2");
+  }));
+
+  it("keeps the first entries of a call up to the cap, and marks the rest", () =>
+      withReporter(async (ws, client, commit) => {
+    let began = Date.now();
+    await addDraft(ws, 2, commit);
+    let entries = batch(MAX_GADGET_ERRORS_PER_CALL + 5);
+
+    await client.reportGadgetErrors(GADGET_ID, 2, entries);
+
+    let all = await listAll(ws);
+    expect(all.slice(0, -1)).toStrictEqual(entries.slice(0, MAX_GADGET_ERRORS_PER_CALL)
+        .map(entry => ({ ...reportedEntry(ws, entry.text), chatId: 2 })).toReversed());
+    // The marker was kept first, so the listing ends with it: a "client" entry under the caller.
+    expect(all.at(-1)).toStrictEqual(
+        { ...reportedEntry(ws, "5 errors dropped"), chatId: 2 });
+    // One call is stamped once, when it arrived.
+    expect(new Set(all.map(entry => entry.time.getTime())).size).toBe(1);
+    expect(all[0].time.getTime()).toBeGreaterThanOrEqual(began);
+    expect(all[0].time.getTime()).toBeLessThanOrEqual(Date.now());
+  }));
+
+  it("holds a gadget to 30 a minute, and marks what it drops once a minute", () =>
+      withReporter(async (ws, client) => {
+    let start = Date.now();
+    let now = vi.spyOn(Date, "now").mockReturnValue(start);
+    await useUpMinute(client);
+    expect(await lines(ws)).toHaveLength(GADGET_ERRORS_PER_MINUTE);
+    expect((await lines(ws)).at(-1)!.text).toBe(`call2-${MAX_GADGET_ERRORS_PER_CALL - 1}`);
+    expect(await markers(ws)).toHaveLength(0);
+
+    // The minute is used up: the next call's errors are dropped, and marked at once.
+    await client.reportGadgetErrors(GADGET_ID, null, batch(MAX_GADGET_ERRORS_PER_CALL, "over-"));
+    expect(await lines(ws)).toHaveLength(GADGET_ERRORS_PER_MINUTE);
+    expect(texts({ entries: await markers(ws) })).toStrictEqual(["10 errors dropped"]);
+
+    // A gadget is marked once a minute, so these ten wait for its next: the call keeps nothing,
+    // and reaches no log object.
+    let real = ws.impl.workspaceErrorLogs;
+    let logs = unreachableLogs();
+    ws.impl.workspaceErrorLogs = logs;
+    await client.reportGadgetErrors(GADGET_ID, null, batch(MAX_GADGET_ERRORS_PER_CALL, "later-"));
+    expect(logs.getByName).not.toHaveBeenCalled();
+    ws.impl.workspaceErrorLogs = real;
+
+    // Another gadget's minute is its own.
+    await client.reportGadgetErrors(OTHER_GADGET_ID, null, [uiError("other")]);
+    expect(await listAll(ws, { gadgetId: OTHER_GADGET_ID })).toStrictEqual(
+        [{ ...reportedEntry(ws, "other"), gadgetId: OTHER_GADGET_ID }]);
+
+    now.mockReturnValue(start + 60_000);
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("next")]);
+    let all = await listAll(ws, { gadgetId: GADGET_ID });
+    expect(all).toHaveLength(GADGET_ERRORS_PER_MINUTE + 3);
+    // The marker of the ten that waited, and then the call's own entry.
+    expect(all[0]).toStrictEqual(reportedEntry(ws, "next"));
+    expect(all[1]).toStrictEqual(reportedEntry(ws, "10 errors dropped"));
+    expect(texts({ entries: await markers(ws) }))
+        .toStrictEqual(["10 errors dropped", "10 errors dropped"]);
+  }));
+
+  // What this varies is the chat the calls came under: a marker's count is the gadget's,
+  // whatever chat its calls named (the method's doc), while its labels are those of the call
+  // that brings it. This file has one session, so it says nothing of users: two reporters that
+  // share a gadget's minute and its count are in use-gadget-access.test.ts.
+  it("labels a marker with the call that brings it, whichever calls dropped what it counts", () =>
+      withReporter(async (ws, client, commit) => {
+    await addDraft(ws, 2, commit);
+    let start = Date.now();
+    let now = vi.spyOn(Date, "now").mockReturnValue(start);
+    await useUpMinute(client);
+    await client.reportGadgetErrors(GADGET_ID, null, batch(10));
+    expect(await markers(ws)).toMatchObject([{ text: "10 errors dropped", chatId: null }]);
+    await client.reportGadgetErrors(GADGET_ID, null, batch(5));
+    expect(await markers(ws)).toHaveLength(1);
+
+    // The five were reported under no chat, and are marked under the chat of this call.
+    now.mockReturnValue(start + 60_000);
+    await client.reportGadgetErrors(GADGET_ID, 2, [uiError("next")]);
+    expect(await markers(ws)).toHaveLength(2);
+    expect((await markers(ws))[1]).toMatchObject(
+        { text: "5 errors dropped", chatId: 2, userId: ws.owner.id });
+    expect((await lines(ws)).at(-1)).toStrictEqual({ ...reportedEntry(ws, "next"), chatId: 2 });
+  }));
+
+  // A report that brings neither an entry to keep nor a marker ends in the Overseer. Two kinds
+  // do: one for a gadget whose minute is used up and marked, and an empty one, whose gadget and
+  // chat the session checks all the same. No clock is moved: the gadget's minute runs from its
+  // first report, and the case takes far less.
+  it("reaches no log object for a report that leaves nothing to keep or mark", () =>
+      withReporter(async (ws, client) => {
+    await useUpMinute(client);
+    await client.reportGadgetErrors(GADGET_ID, null, batch(5));
+    expect(await lines(ws)).toHaveLength(GADGET_ERRORS_PER_MINUTE);
+    expect(texts({ entries: await markers(ws) })).toStrictEqual(["5 errors dropped"]);
+
+    // A log object asked from here on fails its report, which would log that and reject.
+    let warn = vi.spyOn(ws.impl.logger, "warn");
+    let real = ws.impl.workspaceErrorLogs;
+    let logs = unreachableLogs();
+    ws.impl.workspaceErrorLogs = logs;
+    await client.reportGadgetErrors(GADGET_ID, null, batch(5));
+    await client.reportGadgetErrors(OTHER_GADGET_ID, null, []);
+    await expect(client.reportGadgetErrors(999, null, [])).rejects.toThrow(/No such gadget: 999/);
+    await expect(client.reportGadgetErrors(GADGET_ID, 424242, []))
+        .rejects.toThrow(/No such chatId: 424242/);
+    expect(logs.getByName).not.toHaveBeenCalled();
+    expect(warnings(warn, RECORD_FAILED)).toHaveLength(0);
+
+    ws.impl.workspaceErrorLogs = real;
+    expect(await listAll(ws)).toHaveLength(GADGET_ERRORS_PER_MINUTE + 1);
+  }));
+
+  // What the log object failed with is in the warning alone. The caller is refused with the
+  // Overseer's own error whatever it was: a log object that was reset fails with a message and
+  // flags that a client takes for a failure a retry cures, and a client that took a refused
+  // report for one would not wait any longer before its next.
+  it.each([
+    ["rejects", () => failingLogs(new Error("down")), /down/],
+    ["was reset", () => failingLogs(Object.assign(
+        new Error("Durable Object storage operation exceeded timeout which caused object to be " +
+            "reset."),
+        { remote: true, overloaded: true, durableObjectReset: true, retryable: true })),
+      /storage operation exceeded timeout/],
+    ["cannot be asked", unreachableLogs, /no log object should be asked/],
+  ])("refuses a report whose log object %s with its own error: one warning, and nothing of the " +
+      "entry in it", (_name, logs, failure) => withReporter(async (ws, client) => {
+    let warn = vi.spyOn(ws.impl.logger, "warn");
+    let real = ws.impl.workspaceErrorLogs;
+    ws.impl.workspaceErrorLogs = logs();
+
+    let refused: unknown = await client
+        .reportGadgetErrors(GADGET_ID, null, [uiError(`${MARKER} unkept`)])
+        .then(() => undefined, error => error);
+    expect(refused).toBeInstanceOf(Error);
+    expect((refused as Error).message).toBe(REPORT_REFUSED);
+    // Nor does the caught error go along as a cause, which is sent to a client with its error.
+    for (let relayed of ["durableObjectReset", "overloaded", "retryable", "cause"]) {
+      expect(refused).not.toHaveProperty(relayed);
+    }
+
+    expect(warn.mock.calls).toStrictEqual([[
+      "failed to keep reported gadget errors",
+      { event: RECORD_FAILED, error: expect.objectContaining(
+          { message: expect.stringMatching(failure) }) },
+    ]]);
+    expect(logged(warn)).not.toContain(MARKER);
+    ws.impl.workspaceErrorLogs = real;
+    expect(await listAll(ws)).toStrictEqual([]);
+  }));
+
+  // The limiter has counted a marker's drops by the time the marker's append fails, so the
+  // Overseer has them counted again: otherwise no marker would ever hold them.
+  it("counts what a marker that could not be written held with the gadget's next", () =>
+      withReporter(async (ws, client) => {
+    let start = Date.now();
+    let now = vi.spyOn(Date, "now").mockReturnValue(start);
+    await useUpMinute(client);
+    await client.reportGadgetErrors(GADGET_ID, null, batch(10));
+    expect(texts({ entries: await markers(ws) })).toStrictEqual(["10 errors dropped"]);
+    // Seven more wait for the gadget's next minute, whose first report cannot be kept.
+    await client.reportGadgetErrors(GADGET_ID, null, batch(7));
+
+    now.mockReturnValue(start + 60_000);
+    let real = ws.impl.workspaceErrorLogs;
+    let handed: string[][] = [];
+    ws.impl.workspaceErrorLogs = { getByName: () => ({
+      append: async (entries: GadgetErrorEntry[]) => {
+        handed.push(entries.map(entry => entry.text));
+        throw new Error("down");
+      },
+    }) };
+    await expect(client.reportGadgetErrors(GADGET_ID, null, batch(3)))
+        .rejects.toThrow(REPORT_REFUSED);
+    // The marker and the call's entries went in one append, the marker first.
+    expect(handed).toStrictEqual([["7 errors dropped", "n0", "n1", "n2"]]);
+    ws.impl.workspaceErrorLogs = real;
+
+    // A gadget is marked once a minute, written or not, so the seven wait for the one after.
+    await client.reportGadgetErrors(GADGET_ID, null, batch(1));
+    expect(await markers(ws)).toHaveLength(1);
+    now.mockReturnValue(start + 120_000);
+    await client.reportGadgetErrors(GADGET_ID, null, batch(1));
+    expect(texts({ entries: await markers(ws) }))
+        .toStrictEqual(["10 errors dropped", "7 errors dropped"]);
+  }));
+
+  it("delivers nothing of a report to a live subscriber", () =>
+      withReporter(async (ws, client) => {
+    let events = await subscribe(ws);
+
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("reported")]);
+    expect(texts({ entries: await listAll(ws) })).toStrictEqual(["reported"]);
+
+    // A subscriber is sent its events in order, so anything the report had delivered would stand
+    // before this one.
+    let sentinel: ConsoleLogEvent[] =
+        [{ timestamp: new Date(), level: "info", message: ["sentinel"] }];
+    await ws.impl.deliverGadgetLogs(null, sentinel);
+    expect(events).toStrictEqual([{ chatId: null, logs: sentinel }]);
+  }));
+
+  // Validation lets members it does not know through, so a reported error can carry any member an
+  // entry has. None is kept: an entry's user and labels are the session's and the kernel's.
+  it("keeps nothing a client adds to an entry", () => withReporter(async (ws, client) => {
+    let forged = {
+      text: "boom", userId: "mallory", source: "server", gadgetId: 999, chatId: 77,
+    } as ReportedGadgetError;
+
+    await client.reportGadgetErrors(GADGET_ID, null, [forged]);
+
+    expect(await listAll(ws)).toStrictEqual([reportedEntry(ws, "boom")]);
+    expect(await listAll(ws, { source: "server" })).toStrictEqual([]);
+  }));
+
+  // The server stamps the time, once for a call, when the call arrives. A session's validation
+  // lets a `time` of the right kind through, and a value of any kind reaches the impl from a
+  // session that does not validate, so both are sent.
+  it("ignores a time a client adds", () => withReporter(async (ws, client) => {
+    let before = Date.now();
+    await client.reportGadgetErrors(GADGET_ID, null, [
+      { time: new Date(0), text: "old" },
+      { time: new Date(Date.now() + 365 * 86_400_000), text: "ahead" },
+    ] as ReportedGadgetError[]);
+    await ws.impl.reportGadgetErrors(GADGET_ID, null, ws.owner.id,
+        [{ time: "not a date", text: "invalid" }, { text: "plain" }]);
+    let after = Date.now();
+
+    let all = await listAll(ws);
+    expect(all).toStrictEqual(
+        ["plain", "invalid", "ahead", "old"].map(text => reportedEntry(ws, text)));
+    for (let entry of all) {
+      expect(entry.time.getTime()).toBeGreaterThanOrEqual(before);
+      expect(entry.time.getTime()).toBeLessThanOrEqual(after);
+    }
+    // The entries of one call have one time.
+    expect(all[0].time).toStrictEqual(all[1].time);
+    expect(all[2].time).toStrictEqual(all[3].time);
+  }));
+
+  // Each of the three limits is the gadget's own for its kind: the runtime's exceptions, the
+  // calls that failed, and what sessions report.
+  it("limits reports and the server's exceptions apart", () => withReporter(async (ws, client) => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    let server = async (gadgetId: number) => (await listAll(ws, { gadgetId, source: "server" }));
+
+    // Both of the gadget's server minutes are used up and marked, and a report is kept whole.
+    await deliver(ws, null, trace(35));
+    using gadget = await ws.impl.getGadgetFacet(GADGET_ID);
+    await failCalls(gadget, 35);
+    await vi.waitFor(async () => expect(await server(GADGET_ID)).toHaveLength(62), KEPT_SOON);
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("reported")]);
+    expect(await listAll(ws, { gadgetId: GADGET_ID, source: "client" }))
+        .toStrictEqual([reportedEntry(ws, "reported")]);
+
+    // The other way round, on a gadget of its own: reports past their limit, then a trace and a
+    // failed call of the same minute, each kept with no marker.
+    await addGadget(ws, OTHER_GADGET_ID);
+    await useUpMinute(client, OTHER_GADGET_ID);
+    await client.reportGadgetErrors(OTHER_GADGET_ID, null, batch(5));
+    expect(texts({ entries: await listAll(ws, { gadgetId: OTHER_GADGET_ID }) }).slice(0, 2))
+        .toStrictEqual(["5 errors dropped", `call2-${MAX_GADGET_ERRORS_PER_CALL - 1}`]);
+    await deliver(ws, null, trace(1), OTHER_GADGET_ID);
+    using other = await ws.impl.getGadgetFacet(OTHER_GADGET_ID);
+    let [name] = await failCalls(other, 1);
+    await vi.waitFor(async () => expect(await server(OTHER_GADGET_ID)).toHaveLength(2), KEPT_SOON);
+    expect(texts({ entries: await server(OTHER_GADGET_ID) }))
+        .toStrictEqual([expect.stringMatching(`at ${name}\\(\\)$`), "Error: reported 0"]);
+    expect(await listAll(ws, { gadgetId: OTHER_GADGET_ID, source: "client" }))
+        .toHaveLength(GADGET_ERRORS_PER_MINUTE + 1);
+  }), GADGET_TEST_MS);
+
+  it.each([
+    ["an unknown gadget", 999, null, /No such gadget: 999/],
+    ["a worktree", WORKTREE_ID, null, /is a worktree, not a gadget/],
+    ["an unknown chat", GADGET_ID, 424242, /No such chatId: 424242/],
+    // A workspace's first chat is chat 0, and this workspace has none.
+    ["chat 0 where there is none", GADGET_ID, 0, /No such chatId: 0/],
+  ] as const)("refuses %s, and keeps nothing", (_name, gadgetId, chatId, error) =>
+      withReporter(async (ws, client) => {
+    // Called inside an async function: validation throws where the method is called, which on
+    // the session itself is here and not in the promise it returns.
+    await expect(async () => client.reportGadgetErrors(gadgetId, chatId, [uiError("refused")]))
+        .rejects.toThrow(error);
+    expect(errorLogId(ws)).toBeUndefined();
+
+    // A report resolves once its entries are kept, so the one that follows a refusal is the only
+    // one kept.
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("accepted")]);
+    expect(await listAll(ws)).toStrictEqual([reportedEntry(ws, "accepted")]);
+  }));
+
+  it("resolves and keeps nothing for a workspace that is being deleted", () =>
+      withReporter(async (ws, client) => {
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("kept")]);
+    let name = errorLogId(ws)!;
+    let warn = vi.spyOn(ws.impl.logger, "warn");
+    let real = ws.impl.workspaceErrorLogs;
+    let logs = unreachableLogs();
+
+    ws.impl.beginDeletion(new Set());
+    ws.impl.workspaceErrorLogs = logs;
+    await expect(client.reportGadgetErrors(GADGET_ID, null, [uiError("too late")]))
+        .resolves.toBeUndefined();
+    expect(logs.getByName).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(texts({ entries: await keptIn(name) })).toStrictEqual(["kept"]);
+
+    // The deletion runs to its end, so that the workspace leaves no alarm retrying it.
+    ws.impl.workspaceErrorLogs = real;
+    await ws.impl.deliverUserUpdates();
+    expect(storageKeys(ws)).toStrictEqual([]);
+  }));
+
+  it("keeps what was reported for a gadget that is deleted, and takes no more for it", () =>
+      withReporter(async (ws, client) => {
+    // A collaborator who may use the gadget, whose session reaches the real access check.
+    let viewer = await openFakeOverseer({ gadgets: ws.impl.storage.gadgets }, {
+      role: "use", impl: {
+        holdsGadget: (profileId: string, gadgetId: number) =>
+            ws.impl.holdsGadget(profileId, gadgetId),
+        reportGadgetErrors: (...args: unknown[]) => ws.impl.reportGadgetErrors(...args),
+      },
+    });
+    ws.impl.storage.collaborators.put({
+      profile: { id: "viewer-id-profile", name: "Viewer" },
+      addedBy: [{
+        type: "user", sharer: ws.owner.id, created: new Date(0), role: "use", gadgetId: GADGET_ID,
+      }],
+    });
+    await client.reportGadgetErrors(GADGET_ID, null, [uiError("one"), uiError("two")]);
+    await viewer.reportGadgetErrors(GADGET_ID, null, [uiError("three")]);
+    let before = await listAll(ws, { gadgetId: GADGET_ID, source: "client" });
+    expect(texts({ entries: before })).toStrictEqual(["three", "two", "one"]);
+    expect(before[0].userId).toBe("viewer-id-profile");
+
+    await ws.impl.removeWorkpiece(GADGET_ID);
+
+    expect(await listAll(ws, { gadgetId: GADGET_ID, source: "client" })).toStrictEqual(before);
+    await expect(client.reportGadgetErrors(GADGET_ID, null, [uiError("late")]))
+        .rejects.toThrow(`No such gadget: ${GADGET_ID}`);
+    await expect(viewer.reportGadgetErrors(GADGET_ID, null, [uiError("late")]))
+        .rejects.toThrow(`No such gadget: ${GADGET_ID}`);
+    expect(await listAll(ws)).toStrictEqual(before);
+    (viewer as unknown as Disposable)[Symbol.dispose]();
+  }));
+
+  it("keeps the entries labelled with a chat that is deleted, and takes no more under it", () =>
+      withReporter(async (ws, client, commit) => {
+    await addDraft(ws, 2, commit);
+    await client.reportGadgetErrors(GADGET_ID, 2, [uiError("draft")]);
+    let before = await listAll(ws);
+    expect(before).toStrictEqual([{ ...reportedEntry(ws, "draft"), chatId: 2 }]);
+
+    await client.deleteChat(2);
+    expect(ws.impl.storage.chatMeta.get(2)).toBeUndefined();
+
+    expect(await listAll(ws)).toStrictEqual(before);
+    expect(await listAll(ws, { chatId: 2 })).toStrictEqual(before);
+    await expect(client.reportGadgetErrors(GADGET_ID, 2, [uiError("gone")]))
+        .rejects.toThrow("No such chatId: 2");
+    expect(await listAll(ws)).toStrictEqual(before);
   }));
 });
 
