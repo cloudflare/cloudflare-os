@@ -3360,6 +3360,26 @@ export interface Overseer extends RpcTarget {
       : Promise<RpcStub<GadgetClient>>;
 
   /**
+   * Open a static snapshot of a gadget, for anyone who may open the gadget itself. A snapshot is a
+   * private copy of the gadget's stored state, taken now, served by the gadget's mainline code as
+   * of now, with no bindings and no network access. Because it can reach nothing the gadget can,
+   * opening one verifies nobody as an observer. Writes stay in the copy, and the copy is discarded
+   * when the returned capability is disposed (or the workspace restarts, or the gadget is
+   * deleted). Throws, like getGadget(), for a gadget the caller may not open.
+   */
+  getGadgetSnapshot(id: WorkpieceId): Promise<RpcStub<GadgetSnapshotClient>>;
+
+  /**
+   * Whether opening the gadget live requires the caller's connected accounts: true when the
+   * caller is a "use" collaborator and the gadget reaches a connection that requires an account
+   * or a legacy connection that cannot verify access. (That is, its observer scope includes
+   * one.) Such gadgets may open as snapshots instead; getGadget() still refuses an unverifiable
+   * legacy connection. False for the owner and "build" collaborators, whom opening the workspace
+   * verified. Throws for a gadget the caller may not open.
+   */
+  gadgetRequiresAccounts(id: WorkpieceId): Promise<boolean>;
+
+  /**
    * Read a commit's whole tree as nested TreeNodes: the root directory's entries, each
    * directory carrying its own, in git tree order (byte order of names, a directory sorting as
    * if its name had a trailing `/`). Only tree objects are read -- never blobs -- so the
@@ -6481,6 +6501,24 @@ export interface GadgetClient extends WorkpieceClient {
 }
 
 /**
+ * A static snapshot of one gadget (see Overseer.getGadgetSnapshot()). It permits rendering,
+ * interacting with and exporting the snapshot, mainline-only (`chatId` must be omitted), and has
+ * none of GadgetClient's other methods.
+ */
+export interface GadgetSnapshotClient extends RpcTarget, Pick<GadgetClient,
+    "getId" | "getTitle" | "getUiBundle" | "connectToGadget" | "getExportFormats" | "export"> {
+  /** When the snapshot's state and code were copied from the gadget. */
+  getRefreshedAt(): Promise<Date>;
+
+  /**
+   * Replace the snapshot with a new copy of the gadget's current state and code, discarding
+   * anything written to the old copy, and return when the new copy was taken. Stubs returned by
+   * earlier connectToGadget() calls stop working; connect again.
+   */
+  refresh(): Promise<Date>;
+}
+
+/**
  * Capability representing one gatekeeper (connection) workpiece. Note that binding-edge
  * operations -- binding names and blueprint annotations -- live on GadgetClient, since a
  * gatekeeper may be bound by several gadgets under different names.
@@ -6533,6 +6571,10 @@ export type PresenceParticipant = {
   key: string;
   user: AiChatAuthorInfo;
   role: CollaboratorRole;
+  /**
+   * Whether any of their sessions holds a static snapshot open (see Overseer.getGadgetSnapshot()).
+   */
+  viewingSnapshot: boolean;
 };
 
 /**

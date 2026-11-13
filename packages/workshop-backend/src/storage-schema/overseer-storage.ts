@@ -1565,6 +1565,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         }
       }),
 
+      // Facets holding static gadget snapshots (see Overseer.getGadgetSnapshot), recorded before
+      // each is cloned. A snapshot lives no longer than the instance that made it, whose sessions
+      // are its only users, so the next instance deletes every one still recorded.
+      gadgetSnapshots: collection<{facetName: string; gadgetId: WorkpieceId}>()({
+        primaryKey: "facetName",
+      }),
+
       gatekeepers: collection<GatekeeperRecord>()({
         primaryKey: "id",
 

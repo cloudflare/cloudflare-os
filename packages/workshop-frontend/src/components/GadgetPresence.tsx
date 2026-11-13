@@ -11,6 +11,9 @@ const ROLE_LABELS: Record<PresenceParticipant['role'], string> = {
   use: 'Gadget only',
 }
 
+const presenceLabel = (p: PresenceParticipant) =>
+  p.viewingSnapshot ? `${ROLE_LABELS[p.role]} · Viewing snapshot` : ROLE_LABELS[p.role]
+
 export function GadgetPresence({
   overseer,
   authenticatedApi,
@@ -197,7 +200,7 @@ export function GadgetPresence({
             <span ref={stackRef} className="relative inline-flex">
               <span className="flex -space-x-2">
                 {visible.map((p) => (
-                  <Tooltip key={p.user.id} content={`${p.user.name} · ${ROLE_LABELS[p.role]}`} asChild>
+                  <Tooltip key={p.user.id} content={`${p.user.name} · ${presenceLabel(p)}`} asChild>
                     {/* Outer span = FLIP target (translateX slide). Inner span = scale/opacity pop.
                         Kept on separate elements so the two transforms don't overwrite each other. */}
                     <span data-flip-id={p.user.id} className="inline-flex cursor-pointer">
@@ -254,7 +257,7 @@ export function GadgetPresence({
                   {p.user.name}
                 </span>
                 <span className="mt-0.5 block text-[11px] leading-4 font-normal text-kumo-subtle">
-                  {ROLE_LABELS[p.role]}
+                  {presenceLabel(p)}
                 </span>
               </span>
             </div>

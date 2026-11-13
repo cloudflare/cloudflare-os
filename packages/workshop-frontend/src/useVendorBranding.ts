@@ -4,13 +4,14 @@ import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 
 /**
- * How a vendor asks to be shown: its logo, and the background that logo was drawn for.
+ * How a vendor asks to be shown: its name, its logo, and the background that logo was drawn for.
  *
- * The two travel together because neither is much use alone. Several vendor logos are single-colour
- * glyphs meant for a specific backdrop — MCP's is white — so showing one without its colour makes it
- * invisible against a light surface.
+ * The logo and colour travel together because neither is much use alone. Several vendor logos are
+ * single-colour glyphs meant for a specific backdrop — MCP's is white — so showing one without its
+ * colour makes it invisible against a light surface.
  */
 export type VendorBranding = {
+  displayName: string
   logoUrl?: string
   color?: string
 }
@@ -20,7 +21,7 @@ const cachedPromises = new WeakMap<RpcStub<AuthenticatedApi>, Promise<Map<string
 
 const EMPTY: Map<string, VendorBranding> = new Map()
 
-/** Maps each vendor id to its branding so connection rows can show the service's icon. */
+/** Maps each vendor id to its branding so connection rows can show the service's name and icon. */
 export function useVendorBranding(
   authenticatedApi: RpcStub<AuthenticatedApi> | null,
 ): Map<string, VendorBranding> {
@@ -37,10 +38,8 @@ export function useVendorBranding(
         const vendors = await api.listGatekeeperVendors()
         const map = new Map<string, VendorBranding>()
         for (const vendor of vendors) {
-          const { logo, color } = vendor.description
-          if (logo?.url || color) {
-            map.set(vendor.id, { logoUrl: logo?.url, color })
-          }
+          const { displayName, logo, color } = vendor.description
+          map.set(vendor.id, { displayName, logoUrl: logo?.url, color })
         }
         return map
       })().catch((err) => {

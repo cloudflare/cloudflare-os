@@ -3,7 +3,7 @@
 
 import { act, type ComponentProps, type ReactElement, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { RpcPromise, type RpcStub } from 'capnweb'
 import type {
   AiChatAuthorInfo,
@@ -81,6 +81,12 @@ vi.mock('./components/PersonAvatar', () => ({
 const copyToClipboard = vi.fn<(text: string) => Promise<boolean>>(async () => true)
 vi.mock('./clipboard', () => ({ copyToClipboard: (text: string) => copyToClipboard(text) }))
 
+vi.mock('./GadgetUI', () => ({
+  default: ({ gadget }: { gadget: { label: string } }) => <div data-testid="gadget-ui">{gadget.label}</div>,
+}))
+
+vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: unknown) => void
@@ -134,7 +140,11 @@ type OverseerOverrides = {
   newShareLinkKey?: Overseer['newShareLinkKey']
   previewRemoveCollaborator?: Overseer['previewRemoveCollaborator']
   removeCollaborator?: Overseer['removeCollaborator']
+  getGadgetSnapshot?: GetGadgetSnapshot
 }
+
+// Overseer.getGadgetSnapshot() as the dialog calls it; the tests only check what they are handed.
+type GetGadgetSnapshot = (gadgetId: number) => unknown
 
 function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
   return {
@@ -149,7 +159,16 @@ function fakeOverseer(overrides: OverseerOverrides = {}): RpcStub<Overseer> {
     updateShareLink: overrides.updateShareLink ?? (async () => {}),
     previewRemoveCollaborator: overrides.previewRemoveCollaborator ?? (async () => []),
     removeCollaborator: overrides.removeCollaborator ?? (async () => []),
+    getGadgetSnapshot: overrides.getGadgetSnapshot ?? (() => fakeGadgetSnapshot('snapshot')),
   } as unknown as RpcStub<Overseer>
+}
+
+// Like Overseer.getGadgetSnapshot(): a disposable promise of the snapshot. `release` disposes what
+// the dialog keeps; `disposeOpening` the promise; `refresh` stands in for taking a new copy.
+function fakeGadgetSnapshot(label: string, release = () => {}, disposeOpening = () => {},
+    refresh = async () => new Date()) {
+  const opened = { dup: () => ({ label, refresh, [Symbol.dispose]: release }), [Symbol.dispose]: () => {} }
+  return Object.assign(Promise.resolve(opened), { [Symbol.dispose]: disposeOpening })
 }
 
 type AuthenticatedApiOverrides = {
@@ -165,6 +184,9 @@ function fakeAuthenticatedApi({
   return {
     // Like the real stub, return a disposable RpcPromise.
     searchUsers: (query: string, excludeIds: string[]) => new RpcPromise(searchUsers(query, excludeIds)),
+    listGatekeeperVendors: async () => [
+      { id: 'google', description: { displayName: 'Google', url: 'https://google.com' }, supportedResources: [] },
+    ],
   } as unknown as RpcStub<AuthenticatedApi>
 }
 
@@ -1138,17 +1160,82 @@ describe('ShareModal', () => {
       METADATA, { target: GADGET_TARGET })
 
     expect(listObserverRequirements.mock.calls).toEqual([[{ gadgetId: 0 }]])
-    const section = sectionFor(rendered, 'recipient-verification-heading')
+    const section = sectionFor(rendered, 'share-audience-heading')
     expect(section.textContent).toContain('Q3 planning')
     expect(section.textContent).toContain('https://docs.google.com/document/d/quarterly')
+    expect(section.textContent).toContain('Google')
     expect(section.textContent).not.toContain('Pipeline dashboard')
+    // A gadget opens as a snapshot for anyone who can't confirm access.
+    expect(section.textContent).toContain('Can see a read-only snapshot')
+  })
+
+  it('offers no snapshot for the workspace, whose members must confirm access', async () => {
+    const getGadgetSnapshot = vi.fn<GetGadgetSnapshot>(() => fakeGadgetSnapshot('snapshot'))
+    const rendered = await render(fakeOverseer({ requirements: [DOC_REQUIREMENT], getGadgetSnapshot }))
+
+    const section = sectionFor(rendered, 'share-audience-heading')
+    expect(section.textContent).toContain('Q3 planning')
+    expect(section.textContent).not.toContain('snapshot')
+    expect(getGadgetSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('takes no snapshot of a gadget everyone will get live', async () => {
+    const getGadgetSnapshot = vi.fn<GetGadgetSnapshot>(() => fakeGadgetSnapshot('snapshot'))
+    await render(fakeOverseer({ getGadgetSnapshot }), fakeAuthenticatedApi(), METADATA, { target: GADGET_TARGET })
+
+    expect(getGadgetSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('previews a real snapshot of the gadget for as long as the dialog is open', async () => {
+    const releases: { held: Mock<() => void>; opening: Mock<() => void> }[] = []
+    const getGadgetSnapshot = vi.fn<GetGadgetSnapshot>(() => {
+      const release = { held: vi.fn<() => void>(), opening: vi.fn<() => void>() }
+      releases.push(release)
+      return fakeGadgetSnapshot(`snapshot ${releases.length}`, release.held, release.opening)
+    })
+    const rendered = await render(fakeOverseer({ requirements: [DOC_REQUIREMENT], getGadgetSnapshot }),
+      fakeAuthenticatedApi(), METADATA, { target: GADGET_TARGET })
+    await act(async () => { await Promise.resolve() })
+
+    expect(getGadgetSnapshot.mock.calls).toEqual([[0]])
+    const section = sectionFor(rendered, 'share-audience-heading')
+    expect(section.querySelector('[data-testid="gadget-ui"]')?.textContent).toBe('snapshot 1')
+    expect(section.textContent).toContain('Everyone with access')
+
+    await setOpen(false)
+    expect(releases[0].held).toHaveBeenCalled()
+    expect(releases[0].opening).toHaveBeenCalled()
+
+    // Reopening takes a fresh one.
+    await setOpen(true)
+    await act(async () => { await Promise.resolve() })
+    expect(rendered.querySelector('[data-testid="gadget-ui"]')?.textContent).toBe('snapshot 2')
+  })
+
+  it('reconnects the preview to the new copy when the snapshot is refreshed', async () => {
+    const refresh = vi.fn<() => Promise<Date>>(async () => new Date())
+    const rendered = await render(fakeOverseer({
+      requirements: [DOC_REQUIREMENT],
+      getGadgetSnapshot: () => fakeGadgetSnapshot('snapshot', undefined, undefined, refresh),
+    }), fakeAuthenticatedApi(), METADATA, { target: GADGET_TARGET })
+    await act(async () => { await Promise.resolve() })
+    const before = rendered.querySelector('[data-testid="gadget-ui"]')
+
+    await click(button(rendered, 'Refresh snapshot'))
+    await act(async () => { await Promise.resolve() })
+
+    expect(refresh).toHaveBeenCalledOnce()
+    // Refreshing breaks the old copy's connections, so the UI must mount afresh.
+    const after = rendered.querySelector('[data-testid="gadget-ui"]')
+    expect(after).not.toBeNull()
+    expect(after).not.toBe(before)
   })
 
   it('hides verification messaging when recipients have nothing to verify', async () => {
     const rendered = await render(fakeOverseer())
 
-    expect(rendered.querySelector('#recipient-verification-heading')).toBeNull()
-    expect(rendered.textContent).not.toContain('verify any connections')
+    expect(rendered.querySelector('#share-audience-heading')).toBeNull()
+    expect(rendered.textContent).not.toContain('confirm access')
   })
 
   it('degrades quietly when the requirements lookup fails', async () => {
@@ -1260,7 +1347,7 @@ describe('ShareModal', () => {
     expect(rendered.textContent).not.toContain('Invite people')
     expect(rendered.querySelector('input[aria-label="Search people"]')).toBeNull()
     expect(rendered.textContent).not.toContain('Create a share link')
-    expect(rendered.textContent).not.toContain('Recipient verification')
+    expect(rendered.textContent).not.toContain('What people see')
     expect(rendered.textContent).toContain('People with access')
   })
 

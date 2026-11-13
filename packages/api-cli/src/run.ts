@@ -1296,8 +1296,10 @@ function argumentWords(table: ApiTable, command: ApiCommand, terms: string[]): M
  * to the shorter command line. A method several capabilities inherit, one name and one first
  * sentence on each, ties with itself on all of these, and only where it sits tells its copies
  * apart: they keep the places they share, the one whose hops and capability say more of the task's
- * words first ("remove a gatekeeper" finds a gatekeeper's remove before a gadget's). Local and
- * deterministic: it reads the table, nothing else.
+ * words first ("remove a gatekeeper" finds a gatekeeper's remove before a gadget's). Every copy but
+ * a method's first then ranks below every other command, so a method several capabilities inherit
+ * does not crowd distinct commands out of the limit. Local and deterministic: it reads the table,
+ * nothing else.
  */
 export function searchCommands(table: ApiTable, query: string, limit = 5): SearchMatch[] {
   const terms = [...new Set(searchTerms(query))].filter((term) => !STOP_WORDS.has(term));
@@ -1341,7 +1343,13 @@ export function searchCommands(table: ApiTable, query: string, limit = 5): Searc
     // Its copies' shared places, reordered among them by what their hops and capability say.
     at.forEach((index, which) => ranked[index] = placed[which]);
   }
-  return ranked.slice(0, limit).map(({ command, summary: said }) => ({ command, summary: said }));
+  const firstCopies = new Map<string, (typeof ranked)[number]>();
+  for (const match of ranked) {
+    if (match.copies !== undefined && !firstCopies.has(match.copies)) firstCopies.set(match.copies, match);
+  }
+  const isRepeat = (match: (typeof ranked)[number]) => match.copies !== undefined && firstCopies.get(match.copies) !== match;
+  return [...ranked.filter((match) => !isRepeat(match)), ...ranked.filter(isRepeat)]
+    .slice(0, limit).map(({ command, summary: said }) => ({ command, summary: said }));
 }
 
 /** Help for `cf-os api search`. */
