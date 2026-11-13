@@ -10,7 +10,7 @@ import { diffFiles, type CodeChange, type CodeContent, type FileChange }
   from "@gadgets/workshop-shared/code-change";
 import { keyString } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
-import { buildCompactionState } from "../src/agent-compaction";
+import { buildCompactionState, chatChangeStatuses } from "../src/agent-compaction";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import { CodePreviewManager } from "../src/code-preview";
 import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
@@ -466,6 +466,197 @@ describe("worktrees in the chat change stream", () => {
     // readGadgetFiles guards independently: it can serve chat content without touching
     // getGadgetRecord, and a worktree id here would hand chat-private content to client paths.
     await expect(impl.readGadgetFiles(id, 1)).rejects.toThrow(/is a worktree, not a gadget/);
+  }));
+});
+
+// The reader of stored objects alone, which a caller that must not reach a connection gives.
+const localReader = (impl: any) => (commit: string, path: string) =>
+    impl.gitCache.readLocalFileAtCommitIfExists(commit, path);
+
+// Chat 1's stored metadata, which getCurrentChatContent() takes beside the chat's id.
+const metaOf = (impl: any) => impl.storage.chatMeta.get(1)!;
+
+// Chat 1 with a worktree at a commit of three files, a.txt edited by a step's message and
+// src/b.txt by a live row: the two places a fold reads a base.
+async function editedWorktree(impl: any): Promise<{ id: number, c1: string }> {
+  addChat(impl, 1);
+  let c1 = await commitFiles(impl,
+      { "a.txt": "one\n", "src/b.txt": "bee\n", "src/c.txt": "sea\n" });
+  let { id } = await createThroughBarrier(impl, 1, c1);
+  await barrier(impl, 1, { changes: [{ change: editChange(id, "a.txt", "one\n", "one!\n") }]});
+  await submit(impl, 1, "cli", editChange(id, "src/b.txt", "bee\n", "bee!\n"));
+  expect(chatMessages(impl, 1).filter(msg => msg.type === "changes" && msg.change !== undefined))
+      .toHaveLength(1);
+  expect(impl.listLiveChatChanges(1, codeBaseOf(impl, 1).generation)).toHaveLength(1);
+  return { id, c1 };
+}
+
+// Records the paths the fold asks its default reader, readFileAtCommit(), for.
+function recordDefaultReads(impl: any): string[] {
+  let asked: string[] = [];
+  let readFileAtCommit = impl.readFileAtCommit.bind(impl);
+  impl.readFileAtCommit = (commit: string, path: string) => {
+    asked.push(path);
+    return readFileAtCommit(commit, path);
+  };
+  return asked;
+}
+
+describe("the reader a fold takes for worktree edit bases", () => {
+  it("folds the same content from stored objects alone, never asking the reader that pulls",
+      () => withImpl(async impl => {
+    let { id } = await editedWorktree(impl);
+    let asked = recordDefaultReads(impl);
+
+    impl.invalidateChatContent(1);
+    let byDefault = await impl.getCurrentChatContent(1, metaOf(impl));
+    expect(Object.fromEntries(byDefault.get(id)))
+        .toEqual({ "a.txt": "one!\n", "src/b.txt": "bee!\n" });
+    // The base of the message's edit, then of the live row's.
+    expect(asked).toEqual(["a.txt", "src/b.txt"]);
+
+    impl.invalidateChatContent(1);
+    let local = await impl.getCurrentChatContent(1, metaOf(impl), localReader(impl));
+    expect(local).not.toBe(byDefault);
+    expect(local).toEqual(byDefault);
+    expect(asked).toEqual(["a.txt", "src/b.txt"]);
+
+    // A fold as the log stood, which reads no live row, takes the reader too.
+    let through = chatMessages(impl, 1).at(-1)!.sequence;
+    let built = await impl.buildChatContent(1, through, localReader(impl));
+    expect(Object.fromEntries(built.get(id))).toEqual({ "a.txt": "one!\n" });
+    expect(asked).toEqual(["a.txt", "src/b.txt"]);
+  }));
+
+  it("fails rather than pulls when a base is not stored, and caches nothing",
+      () => withImpl(async impl => {
+    let { id, c1 } = await editedWorktree(impl);
+    // A connection that every missing object below is recorded as pullable from.
+    impl.storage.gatekeepers.put({ id: 99, resourceTitle: "Conn", class: {} as any });
+    let reached = 0;
+    impl.getGatekeeperFacet = () => {
+      reached++;
+      throw new Error("the fold reached a connection");
+    };
+
+    // The base of the message's edit, then of the live row's.
+    for (let path of ["a.txt", "src/b.txt"]) {
+      let blob = impl.gitCache.localPathEntryAtCommit(c1, path).oid;
+      let stored = impl.storage.gitObjects.get(blob)!;
+      impl.storage.gitObjectMetadata.put(
+          { oid: blob, type: "blob", onRemote: [99], pullableFrom: [], pendingPush: [] });
+      impl.storage.gitObjects.delete(blob);
+      impl.invalidateChatContent(1);
+
+      await expect(impl.getCurrentChatContent(1, metaOf(impl), localReader(impl)))
+          .rejects.toThrow(`git object ${blob} is not stored in this workspace`);
+      expect(reached).toBe(0);
+
+      // The failed fold cached nothing: the default one reads the base itself, through the
+      // connection while the blob is missing and from the store once it is back.
+      await expect(impl.getCurrentChatContent(1, metaOf(impl)))
+          .rejects.toThrow("the fold reached a connection");
+      expect(reached).toBe(1);
+      reached = 0;
+      impl.storage.gitObjects.put(stored);
+      expect(await workpieceContent(impl, 1, id))
+          .toEqual({ "a.txt": "one!\n", "src/b.txt": "bee!\n" });
+      expect(reached).toBe(0);
+    }
+  }));
+
+  it("takes a reader's undefined as final, and reads through readFileAtCommit() without one",
+      () => withImpl(async impl => {
+    let { id, c1 } = await editedWorktree(impl);
+    let asked = recordDefaultReads(impl);
+    let content: CodeContent = new Map([[id, new Map()]]);
+    let change = editChange(id, "src/c.txt", "sea\n", "sea!\n");
+    let worktreeBases = new Map([[id, c1]]);
+
+    expect(await impl.seedWorktreeEditBases(content, change, worktreeBases, () => undefined))
+        .toBe(content);
+    expect(asked).toEqual([]);
+    let seeded = await impl.seedWorktreeEditBases(content, change, worktreeBases);
+    expect(asked).toEqual(["src/c.txt"]);
+    expect(Object.fromEntries(seeded.get(id))).toEqual({ "src/c.txt": "sea\n" });
+
+    // The whole fold likewise, at the message's edit and at the live row's: with no base text
+    // the edit is of an absent file, and the default reader is not asked instead.
+    asked.length = 0;
+    impl.invalidateChatContent(1);
+    await expect(impl.getCurrentChatContent(1, metaOf(impl), () => undefined))
+        .rejects.toThrow(`edit of absent file: gadget ${id} a.txt`);
+    let onlyMessageBase = (commit: string, path: string) =>
+        path === "a.txt" ? localReader(impl)(commit, path) : undefined;
+    await expect(impl.getCurrentChatContent(1, metaOf(impl), onlyMessageBase))
+        .rejects.toThrow(`edit of absent file: gadget ${id} src/b.txt`);
+    expect(asked).toEqual([]);
+  }));
+
+  it("counts a live row's paths among the touched ones, a removed path included",
+      () => withImpl(async impl => {
+    let { id } = await editedWorktree(impl);
+    await submit(impl, 1, "cli-2",
+        { [id]: [["src/c.txt", { remove: true }], ["new.txt", { set: "fresh\n" }]] });
+    let messages = chatMessages(impl, 1);
+    let statuses = chatChangeStatuses(messages);
+    let liveRows = impl.listLiveChatChanges(1, codeBaseOf(impl, 1).generation);
+    expect(liveRows).toHaveLength(2);
+
+    // With two arguments, the messages alone.
+    expect(impl.worktreeTouchedPaths(messages, statuses))
+        .toEqual(new Map([[id, new Set(["a.txt"])]]));
+    let touched = impl.worktreeTouchedPaths(messages, statuses, liveRows);
+    expect(touched)
+        .toEqual(new Map([[id, new Set(["a.txt", "src/b.txt", "src/c.txt", "new.txt"])]]));
+    // A worktree no message touched is listed for its live rows alone.
+    expect(impl.worktreeTouchedPaths([], new Map(), liveRows))
+        .toEqual(new Map([[id, new Set(["src/b.txt", "src/c.txt", "new.txt"])]]));
+
+    // An accept materializes every row before it asks, and so reads the same paths from the
+    // messages alone.
+    impl.materializeChatChanges(1);
+    expect(impl.listLiveChatChanges(1, codeBaseOf(impl, 1).generation)).toEqual([]);
+    let materialized = chatMessages(impl, 1);
+    expect(impl.worktreeTouchedPaths(materialized, chatChangeStatuses(materialized)))
+        .toEqual(touched);
+  }));
+
+  it("counts no path of a reverted message, from before an accept, or of a gadget",
+      () => withImpl(async impl => {
+    let { id } = await editedWorktree(impl);
+    // What chat 1's worktrees have touched, as its log and its live rows stand.
+    let touched = () => {
+      let messages = chatMessages(impl, 1);
+      return impl.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
+          impl.listLiveChatChanges(1, codeBaseOf(impl, 1).generation));
+    };
+    // The pin a client declares with a first modification: the worktree's accepted commit.
+    let pin = () => [{ gadgetId: id, baseCommit: impl.storage.gadgets.get(id)!.pinBase }];
+    expect(touched()).toEqual(new Map([[id, new Set(["a.txt", "src/b.txt"])]]));
+
+    // A revert of everything discards the live row, and the message it reverted counts for
+    // nothing.
+    await impl.revertChanges(1, 0, USER);
+    expect(touched()).toEqual(new Map());
+
+    // An accept closes the epoch: its boundary clears the paths of the messages before it, and
+    // a row of the epoch it opens is counted after it.
+    await submit(impl, 1, "cli-2", { [id]: [["new.txt", { set: "fresh\n" }]] }, pin());
+    expect(touched()).toEqual(new Map([[id, new Set(["new.txt"])]]));
+    expect(await impl.mergeChanges(1, USER_META, "client-user")).toEqual({ outcome: "merged" });
+    expect(touched()).toEqual(new Map());
+    await submit(impl, 1, "cli-3", { [id]: [["later.txt", { set: "later\n" }]] }, pin());
+    expect(touched()).toEqual(new Map([[id, new Set(["later.txt"])]]));
+
+    // Only worktrees are listed: a step that changes a gadget beside one adds the worktree's
+    // path alone.
+    let gadget = impl.createGadget("Gadget", "GADGET_X", 1);
+    await barrier(impl, 1, { changes: [{ change: {
+      [gadget.id]: [["main.js", { set: "code\n" }]],
+      [id]: [["src/c.txt", { remove: true }]],
+    } }]});
+    expect(touched()).toEqual(new Map([[id, new Set(["later.txt", "src/c.txt"])]]));
   }));
 });
 
