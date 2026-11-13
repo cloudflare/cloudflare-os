@@ -454,7 +454,7 @@ test("search reads a command's option names and the callback methods it may be a
   assert.equal(rankOf(asking, "notice", / lock$/), 0);
   // As a doc's words: 2, under the 3 of a command named by the word.
   assert.equal(searchCommands(realTable, "configure observers")[0].command, "cf-os api open-workspace <id>");
-  assert.equal(rankOf(realTable, "observer", /^cf-os api open-workspace <id>$/), 2);
+  assert.equal(rankOf(realTable, "observer", /^cf-os api open-workspace <id>$/), 4);
 });
 
 test("search finds the commands for agents' everyday tasks in the API's own words", () => {
@@ -499,7 +499,7 @@ test("search finds the commands for agents' everyday tasks in the API's own word
     ...["redeem share link", "redeem a share link", "open workspace with share key", "join workspace from link",
       "join a shared workspace", "open a workspace shared with me", "configure observers"]
       .map((task): [string, RegExp, number] => [task, openWorkspace, 1]),
-    ["observer verification", openWorkspace, 3],
+    ["observer verification", openWorkspace, 4],
     ["choose accounts to observe a shared workspace", openWorkspace, 3],
     ["share key", openWorkspace, 3],
   ];
@@ -772,11 +772,25 @@ test("an unknown command or option says which was meant: a near name, or where t
   real(["list-chats"], /list-chats is on Overseer: `cf-os api open-workspace <id> list-chats`/);
   real(["open-workspace", "g", "list-actions", "--option", "{}"], /Did you mean --options\?/);
   real(["list-workspace"], /Did you mean list-workspaces\?/);
-  // A name cut short wins over a typo that changes its verb: get-chat is two edits from new-chat.
-  real(["get-chat"], /Did you mean get-chat-[a-z-]+, on Overseer: `cf-os api open-workspace <id> get-chat-/);
+  // A name cut short wins over a typo that changes its verb: get-gatekeeper is two edits from
+  // new-gatekeeper.
+  real(["get-gatekeeper"], /Did you mean get-gatekeeper-app\? /);
   // A short name a typo starts with is no run-on: list-chtas is list-chats, not a bare `list`.
   real(["open-workspace", "g", "list-chtas"], /^Overseer has no command "list-chtas"\. Did you mean list-chats\? /);
   real(["list-worksapces"], /Did you mean list-workspaces\? /);
+});
+
+test("an admin's view of a workspace has seventeen commands, and none reads content", () => {
+  assert.deepEqual(Object.keys(realTable.nodes.AdminWorkspaceView.commands).toSorted(), [
+    "describe", "get-chat-state", "get-commit-log", "get-diagnostics", "list-actions", "list-auto-approvals",
+    "list-blueprints", "list-changed-paths", "list-chat-attachments", "list-chats", "list-files",
+    "list-files-at-commit", "list-gatekeepers", "list-observer-requirements", "list-observers",
+    "list-pending-changes", "list-share-links",
+  ]);
+  for (const name of ["get-chat", "read-chat-attachment", "read-file", "read-file-at-commit", "read-pending-file"]) {
+    assert.throws(() => parseInvocation(realTable, ["get-admin-api", "inspect-workspace", "w", "why", name]),
+      (error: Error) => error instanceof UsageError && error.message.startsWith(`AdminWorkspaceView has no command "${name}"`));
+  }
 });
 
 test("the root help says what `--` does, and that an option after it is a value", () => {

@@ -1,30 +1,60 @@
-// The bound on how long the admin audit log keeps a record, and the text a record keeps.
+// Deployment admin status, the bounds on admin access to workspaces, and the text an audit record
+// keeps.
 //
-// This is the one place the bound is decided, and the one place audit text is bounded. The bound
-// comes from the environment, beside ADMINS, so that a compromised admin session cannot change it:
-// admins choose a retention within it (in AdminConfig), and adminAccessPolicy() holds that choice
-// inside it wherever it is enforced. This is the reason authentication config stays in
-// auth/config.ts rather than in AdminConfig.
+// This is the one place the admin access bounds are decided, and the one place audit text is
+// bounded (admin status is isDeploymentAdmin() in auth/config.ts). The bounds come from the environment, beside ADMINS, so that a compromised
+// admin session can change neither: admins choose an access level and a retention within them (in
+// AdminConfig), and adminAccessPolicy() holds that choice inside them wherever it is enforced. This
+// is the reason authentication config stays in auth/config.ts rather than in AdminConfig.
 
+import { createHash } from "node:crypto";
 import {
-  ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
-  MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS,
-  MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  type AdminSettingChange, type AdminSettingRecord,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
+  ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
+  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  isAdminWorkspaceAccess,
+  type ActionLogEntry, type AdminSettingChange, type AdminSettingRecord, type AdminVia,
+  type AdminWorkspaceAccess, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
+  type CommitInfo, type GatekeeperCreationSpec,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
+import { isDeploymentAdmin } from "./auth/config.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.admin.access");
 
-// --- The environment's bound ---
+// --- The environment's bounds ---
 
 // The raw values already reported as invalid, so that each is logged once per isolate rather than
 // on every request that reads it.
+const reportedInvalidAccessMax = new Set<unknown>();
 const reportedInvalidRetentionMin = new Set<unknown>();
 
 function isBlank(raw: unknown): boolean {
   return raw === undefined || raw === null || String(raw).trim() === "";
+}
+
+/** The most access ADMIN_WORKSPACE_ACCESS_MAX lets admins choose: "off" or "metadata", in any
+ * case and trimmed; "metadata" while it is unset or blank. Any other value misconfigures a
+ * security bound, so it fails closed to "off" and is logged as an error (once per isolate per
+ * value, never the value itself). */
+export function maxAdminWorkspaceAccess(env: Cloudflare.Env): AdminWorkspaceAccess {
+  let raw: unknown = env.ADMIN_WORKSPACE_ACCESS_MAX;
+  if (isBlank(raw)) return "metadata";
+  let level = String(raw).trim().toLowerCase();
+  if (isAdminWorkspaceAccess(level)) return level;
+
+  // This bounds a security setting, so a value meant to turn inspection off ("none", "false", a
+  // typo of "off") must fail closed, never grant the default.
+  if (!reportedInvalidAccessMax.has(raw)) {
+    reportedInvalidAccessMax.add(raw);
+    logger.error(
+        "ADMIN_WORKSPACE_ACCESS_MAX is not off or metadata, so admin access to workspaces is off",
+        { event: "admin.access.config.invalid" });
+  }
+  return "off";
 }
 
 /** The fewest days ADMIN_AUDIT_RETENTION_MIN_DAYS lets admins keep audit records for: a positive
@@ -49,33 +79,79 @@ export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
   return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
 }
 
-/** What the deployment enforces now: the admins' choices held within the environment's bound. */
+/** The lower of two access levels (ADMIN_WORKSPACE_ACCESS_LEVELS lists them in order). */
+export function lowerAdminWorkspaceAccess(a: AdminWorkspaceAccess, b: AdminWorkspaceAccess)
+    : AdminWorkspaceAccess {
+  let order = ADMIN_WORKSPACE_ACCESS_LEVELS;
+  return order.indexOf(a) <= order.indexOf(b) ? a : b;
+}
+
+/** What the deployment enforces now: the admins' choices held within the environment's bounds. */
 export type AdminAccessPolicy = {
+  /** The level in force: the chosen level, at most maxAdminWorkspaceAccess(); "off" when either
+   * is not a level. */
+  access: AdminWorkspaceAccess;
   /** How many days the audit log keeps a record: the chosen retention, at least
    * minAdminAuditRetentionDays(). */
   retentionDays: number;
 };
 
 /** The policy `config` and the environment give. Every enforcement point computes it from a config
- * it has just read; none holds one from earlier. */
+ * it has just read; none holds one from earlier. A chosen value that is not a level gives "off",
+ * as a bound that is not one does (see maxAdminWorkspaceAccess()). */
 export function adminAccessPolicy(
-    config: Pick<AdminConfig, "adminAuditRetentionDays">, env: Cloudflare.Env): AdminAccessPolicy {
+    config: Pick<AdminConfig, "adminWorkspaceAccess" | "adminAuditRetentionDays">,
+    env: Cloudflare.Env): AdminAccessPolicy {
+  let chosen = config.adminWorkspaceAccess;
   return {
+    access: isAdminWorkspaceAccess(chosen)
+        ? lowerAdminWorkspaceAccess(chosen, maxAdminWorkspaceAccess(env)) : "off",
     retentionDays: Math.max(config.adminAuditRetentionDays, minAdminAuditRetentionDays(env)),
   };
 }
 
-// --- Who acts ---
+// --- Who acts, and on what terms ---
 
 /** Who changes a setting, and through which AdminApi method: what an AdminSettingRecord records of
  * the call besides its time and changes. AdminApiImpl passes one with every AdminSettings
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
 
+/** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()), fixed for
+ * the view's life. */
+export type AdminViewTerms = {
+  /** Recorded on every record the view makes (see AdminVia). */
+  via: AdminVia;
+  /** When the view stops working. */
+  expiresAt: Date;
+};
+
 // --- Validation ---
 
 function isWholeNumberIn(value: number, min: number, max: number): boolean {
   return Number.isInteger(value) && value >= min && value <= max;
+}
+
+/** `reason`, trimmed; throws unless it is non-blank and at most MAX_ADMIN_ACCESS_REASON_LENGTH. */
+export function validateAdminAccessReason(reason: string): string {
+  let trimmed = reason.trim();
+  if (!trimmed || trimmed.length > MAX_ADMIN_ACCESS_REASON_LENGTH) {
+    throw new TypeError(
+        `A reason is required, and must be at most ${MAX_ADMIN_ACCESS_REASON_LENGTH} characters.`);
+  }
+  return trimmed;
+}
+
+/** The lifetime `lifetimeSeconds` asks for, in ms; throws unless absent
+ * (DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS) or a whole number from 1 to MAX_ADMIN_VIEW_LIFETIME_SECONDS. */
+export function adminViewLifetimeMs(lifetimeSeconds: number | undefined): number {
+  if (lifetimeSeconds === undefined) return DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS * 1000;
+  if (!isWholeNumberIn(lifetimeSeconds, 1, MAX_ADMIN_VIEW_LIFETIME_SECONDS)) {
+    throw new TypeError(
+        `The view's lifetime must be a whole number of seconds from 1 to ` +
+            `${MAX_ADMIN_VIEW_LIFETIME_SECONDS}.`);
+  }
+  return lifetimeSeconds * 1000;
 }
 
 /** The page size `limit` asks for; throws unless absent (ADMIN_LIST_DEFAULT_LIMIT) or a whole
@@ -86,6 +162,17 @@ export function adminListLimit(limit: number | undefined): number {
     throw new TypeError(`The page size must be a whole number from 1 to ${ADMIN_LIST_MAX_LIMIT}.`);
   }
   return limit;
+}
+
+/** The depth `depth` asks AdminWorkspaceView.getCommitLog() for; throws unless absent
+ * (DEFAULT_ADMIN_COMMIT_LOG_DEPTH) or a whole number from 1 to MAX_ADMIN_COMMIT_LOG_DEPTH. */
+export function adminCommitLogDepth(depth: number | undefined): number {
+  if (depth === undefined) return DEFAULT_ADMIN_COMMIT_LOG_DEPTH;
+  if (!isWholeNumberIn(depth, 1, MAX_ADMIN_COMMIT_LOG_DEPTH)) {
+    throw new TypeError(
+        `The commit log's depth must be a whole number from 1 to ${MAX_ADMIN_COMMIT_LOG_DEPTH}.`);
+  }
+  return depth;
 }
 
 /** The statistics window `days` asks for; throws unless absent (7) or a whole number from 1 to
@@ -100,6 +187,20 @@ export function adminAuditStatsDays(days: number | undefined): number {
   return days;
 }
 
+// --- View calls ---
+
+/** Throws the refusal that stops a view call before anything is recorded: `viewExpired` at or after
+ * `terms.expiresAt`, then `notAdmin` once `adminId` is no longer a deployment admin. */
+export function assertAdminViewLive(terms: AdminViewTerms, adminId: string, env: Cloudflare.Env,
+    now: number = Date.now()): void {
+  if (now >= terms.expiresAt.getTime()) {
+    throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.viewExpired);
+  }
+  if (!isDeploymentAdmin(env, adminId)) {
+    throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+  }
+}
+
 // --- Audit text ---
 
 function isHighSurrogate(code: number): boolean {
@@ -112,13 +213,42 @@ function isLowSurrogate(code: number): boolean {
 
 /** `text` as an audit record keeps it: whole while at most `maxLength` characters, else its first
  * `maxLength` - 1 characters and "…" (one fewer when the cut would split a surrogate pair). The one
- * cut the audit log applies, marked so that a record never passes a fragment off as the whole: to
- * setting keys. */
+ * cut the audit stores apply, marked so that a record never passes a fragment off as the whole: to
+ * arguments, workspace titles and setting keys. */
 export function cutAdminAuditText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   let end = maxLength - 1;
   if (end > 0 && isHighSurrogate(text.charCodeAt(end - 1))) end--;
   return `${text.slice(0, end)}…`;
+}
+
+// Hex digits of a long owner id's SHA-256 its audit form keeps: 80 bits, so that no two ids, however
+// alike, share one.
+const OWNER_DIGEST_LENGTH = 20;
+
+/** A workspace owner's id as an audit record keeps it (see AdminAccessRecord.workspaceOwner): whole
+ * while at most MAX_ADMIN_AUDIT_ARG_LENGTH characters, else its start, "…#" and a digest of the
+ * whole id, MAX_ADMIN_AUDIT_ARG_LENGTH characters in all. An id is an identity, so unlike
+ * cutAdminAuditText() this keeps two long ids sharing a start apart. Applied to its own result it
+ * returns it unchanged, so the owner filter takes either form. */
+export function auditOwnerId(id: string): string {
+  if (id.length <= MAX_ADMIN_AUDIT_ARG_LENGTH) return id;
+  let digest = createHash("sha256").update(id).digest("hex").slice(0, OWNER_DIGEST_LENGTH);
+  let start = cutAdminAuditText(id, MAX_ADMIN_AUDIT_ARG_LENGTH - OWNER_DIGEST_LENGTH - 1);
+  return `${start}#${digest}`;
+}
+
+/** The arguments an AdminAccessRecord keeps (see AdminAccessRecord.args): undefined ones left out,
+ * each string cut by cutAdminAuditText() to MAX_ADMIN_AUDIT_ARG_LENGTH. */
+export function redactAdminAuditArgs(args: Record<string, string | number | undefined>)
+    : Record<string, string | number> {
+  let kept: Record<string, string | number> = {};
+  for (let [name, value] of Object.entries(args)) {
+    if (value === undefined) continue;
+    kept[name] = typeof value === "string"
+        ? cutAdminAuditText(value, MAX_ADMIN_AUDIT_ARG_LENGTH) : value;
+  }
+  return kept;
 }
 
 // Canonical JSON: object keys sorted at every level, written out as text. Building a sorted copy
@@ -209,4 +339,56 @@ export function adminSettingChange(setting: string, key: string | undefined, bef
     change.excerpt.afterLength = a.length;
   }
   return change;
+}
+
+// --- What an AdminWorkspaceView withholds ---
+
+/** A copy of `meta` as an AdminWorkspaceView lists it: without `queuedSteers`. */
+export function withholdChatContent(meta: AiChatMetadata): AiChatMetadata {
+  let { queuedSteers: _queuedSteers, ...rest } = meta;
+  return rest;
+}
+
+/** A copy of `commit` as an AdminWorkspaceView lists it: `message` emptied. */
+export function withholdCommitContent(commit: CommitInfo): CommitInfo {
+  return { ...commit, message: "" };
+}
+
+/** A copy of `entry` as an AdminWorkspaceView lists it: `description.description` emptied for an
+ * action, observation or hook entry, and `description.fields` dropped; never mutates `entry`. */
+export function withholdActionContent(entry: ActionLogEntry): ActionLogEntry {
+  switch (entry.type) {
+    case "action": {
+      let { fields: _fields, ...description } = entry.description;
+      return { ...entry, description: { ...description, description: "" } };
+    }
+    case "observation": {
+      let { fields: _fields, ...description } = entry.description;
+      return { ...entry, description: { ...description, description: "" } };
+    }
+    case "bindHook":
+      return { ...entry, description: { ...entry.description, description: "" } };
+  }
+}
+
+/** A copy of `hook` as an AdminWorkspaceView lists it: `description.description` emptied. */
+export function withholdHookContent(hook: BoundHookInfo): BoundHookInfo {
+  return { ...hook, description: { ...hook.description, description: "" } };
+}
+
+/** A copy of `spec` as an AdminWorkspaceView lists it: without `configuration`, which is text the
+ * agent that created the resource wrote. */
+export function withholdCreationContent(spec: GatekeeperCreationSpec): GatekeeperCreationSpec {
+  if (spec.type !== "gatekeeper") return spec;
+  let { configuration: _configuration, ...rest } = spec;
+  return rest;
+}
+
+/** A copy of `blueprint` as an AdminWorkspaceView lists it: `id` emptied, and `screenshotUrl`,
+ * which holds the id, left out. A blueprint's id is a share link to its code, which is why
+ * describe() leaves a gadget's `upstream` out too. */
+export function withholdBlueprintContent(blueprint: BlueprintGadgetSummary)
+    : BlueprintGadgetSummary {
+  let { screenshotUrl: _screenshotUrl, ...rest } = blueprint;
+  return { ...rest, id: "" };
 }

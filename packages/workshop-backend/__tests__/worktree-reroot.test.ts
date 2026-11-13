@@ -13,10 +13,12 @@ import {
 } from "@earendil-works/pi-ai";
 import { keyString } from "@gadgets/typed-storage";
 import type {
-  AiChatAuthorInfo, AiChatMessage, AiChatMessageBody, ChatGadgetPinState,
+  AdminPendingChange, AdminWorkspaceView, AiChatAuthorInfo, AiChatMessage, AiChatMessageBody,
+  ChatGadgetPinState,
 } from "@gadgets/workshop-shared/api";
 import type { GitOid } from "@gadgets/workshop-shared/gatekeeper";
 import { runAgent, type WorktreeTurnAccess } from "../src/agent";
+import { chatChangeStatuses } from "../src/agent-compaction";
 import { concatBytes } from "../src/git-codec";
 import type { OverseerDurableObject } from "../src/overseer.js";
 
@@ -27,15 +29,18 @@ declare module "cloudflare:workers" {
 }
 
 const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
+// The pool's ADMINS.
+const ADMIN = "deployment-admin@example.test";
 const AGENT: AiChatAuthorInfo = { type: "agent", id: "faux-model", name: "Faux" };
 const CHAT = 1;
 const BASE = { "a.txt": "one\n", "b.txt": "bee\n" };
 
 let doCounter = 0;
-async function withImpl(fn: (impl: any) => Promise<void>, name?: string): Promise<void> {
+async function withImpl(fn: (impl: any, instance: OverseerDurableObject) => Promise<void>,
+                        name?: string): Promise<void> {
   let stub = env.TEST_OVERSEER.getByName(name ?? `worktree-reroot-${++doCounter}`);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-    await fn((instance as unknown as { impl: any }).impl);
+    await fn((instance as unknown as { impl: any }).impl, instance);
   });
 }
 
@@ -164,6 +169,30 @@ async function reRootedChat(impl: any) {
   ]);
   let step = chatMessages(impl).findLast(msg => msg.type === "changes")!;
   return { id, base, result, live, steps, step };
+}
+
+// One more turn on reRootedChat()'s worktree, whose command adds d.txt, removes c.txt, and writes
+// a.txt as the re-root's commit holds it.
+async function editAfterReRoot(impl: any, id: number): Promise<void> {
+  stubExecution(impl, {
+    more: async turn => {
+      turn.appendChange(id, "d.txt", { set: "d\n" });
+      turn.appendChange(id, "c.txt", { remove: true });
+      turn.appendChange(id, "a.txt", { set: COMMAND_RESULT["a.txt"] });
+      return "ran";
+    },
+  });
+  await agentTurn(impl, [[execute("more")]]);
+}
+
+// The paths of the worktree that the chat has touched since its pin was last declared, as an
+// accept reads them (rows no message holds yet included), sorted.
+function touchedPaths(impl: any, id: number): string[] {
+  let messages = chatMessages(impl);
+  let { generation } = impl.storage.chatMeta.get(CHAT).codeBase;
+  let touched = impl.worktreeTouchedPaths(messages, chatChangeStatuses(messages),
+      impl.listLiveChatChanges(CHAT, generation));
+  return [...touched.get(id) ?? []].toSorted();
 }
 
 const GUARD = "An executeCode call earlier in this step changed files, which take effect when " +
@@ -416,6 +445,20 @@ describe("accepting a re-rooted worktree", () => {
     expect(await history(impl, id)).not.toContain(result);
   }));
 
+  it("is told the paths touched since the last re-root, the removed ones included",
+      () => withImpl(async impl => {
+    let { id } = await reRootedChat(impl);
+    // The chat wrote b.txt before the re-root, whose commit holds it: only c.txt is touched since.
+    expect(touchedPaths(impl, id)).toEqual(Object.keys(await chatFiles(impl, id)));
+    expect(touchedPaths(impl, id)).toEqual(["c.txt"]);
+
+    await editAfterReRoot(impl, id);
+    let files = await chatFiles(impl, id);
+    expect(files).toEqual({ "a.txt": COMMAND_RESULT["a.txt"], "d.txt": "d\n" });
+    // The chat's content lacks c.txt, which the chat removed: only the change stream names it.
+    expect(touchedPaths(impl, id)).toEqual([...Object.keys(files), "c.txt"].toSorted());
+  }));
+
   it("keeps an executable bit the re-rooted tree has", () => withImpl(async impl => {
     let { id, base } = await setup(impl, { "a.txt": "one\n", "run.sh": "#!/bin/sh\n" });
     let blob = (text: string) =>
@@ -443,6 +486,200 @@ describe("accepting a re-rooted worktree", () => {
     expect((await impl.gitCache.pathEntryAtCommit(accepted, "run.sh")).kind).toBe("executable");
     expect(await impl.readFileAtCommit(accepted, "a.txt")).toBe("two\n");
     expect(await history(impl, id)).toEqual([accepted, base]);
+  }));
+});
+
+// A deployment admin's listing of a chat's pending changes
+// (AdminWorkspaceView.listPendingChanges()) folds the chat's content and its touched paths itself,
+// from stored objects alone. It is tested here, where a step can re-root a pin, against what the
+// chat's members are shown and what an accept applies.
+describe("an admin view of a re-rooted worktree", () => {
+  // Like withImpl, with the deployment's stored settings, whose store the pool does not bind,
+  // read as empty: with no cap in the pool's env either, the level is the default, "metadata".
+  function withSettings(fn: (impl: any, instance: OverseerDurableObject) => Promise<void>)
+      : Promise<void> {
+    return withImpl(async (impl, instance) => {
+      let poolEnv = impl.env;
+      impl.env = { ...poolEnv, BLUEPRINTS: { get: async () => null } };
+      try {
+        await fn(impl, instance);
+      } finally {
+        impl.env = poolEnv;
+      }
+    });
+  }
+
+  // Opens a deployment admin's view of the workspace, which is initialised here with an owner
+  // whose account is never asked.
+  async function adminView(impl: any, instance: OverseerDurableObject)
+      : Promise<AdminWorkspaceView> {
+    impl.ownerId = "owner-user-do";
+    impl.storage.ownerId.put("owner-user-do");
+    impl.ownerProfileId = USER.id;
+    return await instance.openForAdmin(ADMIN, "Reroot check", crypto.randomUUID(),
+        { via: "api", expiresAt: new Date(Date.now() + 60_000) });
+  }
+
+  // What a listing should hold for the worktree: its pin's two commits, and each path an accept
+  // would apply (touchedPaths) told apart by the chat's files and by those of `base`, the files
+  // of the pin's base commit.
+  async function expectedChange(impl: any, id: number, base: Record<string, string>)
+      : Promise<AdminPendingChange> {
+    let files = await chatFiles(impl, id);
+    let pin = pins(impl).find(({ gadgetId }) => gadgetId === id)!;
+    let touched = touchedPaths(impl, id);
+    return {
+      gadgetId: id, baseCommit: pin.baseCommit, mergedCommit: pin.mergedCommit,
+      added: touched.filter(path => path in files && !(path in base)),
+      modified: touched.filter(path => path in files && path in base && files[path] !== base[path]),
+      removed: touched.filter(path => !(path in files) && path in base),
+    };
+  }
+
+  it("lists a re-rooted worktree's changes against the commit it was re-rooted at",
+      () => withSettings(async (impl, instance) => {
+    let { id, base, result } = await reRootedChat(impl);
+    let view = await adminView(impl, instance);
+
+    // Against the re-root's commit, with the worktree's accepted commit as what the chat's
+    // content includes. b.txt, which the chat wrote before the re-root, is in no list: the
+    // re-root's commit holds it, and the chat has not touched it since.
+    let expected = await expectedChange(impl, id, COMMAND_RESULT);
+    expect(expected).toEqual({
+      gadgetId: id, baseCommit: result, mergedCommit: impl.storage.gadgets.get(id).pinBase,
+      added: [], modified: ["c.txt"], removed: [],
+    });
+    expect(expected.mergedCommit).toBe(base);
+    // A fold of the view's own, then the cached one.
+    impl.invalidateChatContent(CHAT);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual([expected]);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual([expected]);
+
+    // What the chat changes next is listed against the same commit: d.txt added and c.txt
+    // removed, while a.txt, written as that commit holds it, is in no list.
+    await editAfterReRoot(impl, id);
+    let later = await expectedChange(impl, id, COMMAND_RESULT);
+    expect(later).toEqual({
+      gadgetId: id, baseCommit: result, mergedCommit: base,
+      added: ["d.txt"], modified: [], removed: ["c.txt"],
+    });
+    impl.invalidateChatContent(CHAT);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual([later]);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual([later]);
+  }));
+
+  it("folds an edit made since the re-root onto the text the re-root's commit holds",
+      () => withSettings(async (impl, instance) => {
+    let { id, result } = await reRootedChat(impl);
+    // The re-root made the model forget its reads, so b.txt is read again, then edited. The
+    // chat's content does not hold b.txt, so the edit applies to the text of the pin's base.
+    let [, [edited]] = await agentTurn(impl, [[read("b.txt")], [fauxToolCall("editFile",
+        { workpiece: "REPO", filename: "b.txt", textToReplace: "fixed", replacement: "fixed!" })]]);
+    expect(edited).toContain("success");
+    let view = await adminView(impl, instance);
+
+    // A fold of the view's own reads that text from stored objects, never through the reader
+    // that pulls what the store lacks.
+    let readFileAtCommit = impl.readFileAtCommit;
+    let pulled: string[] = [];
+    impl.readFileAtCommit = async (commit: string, path: string) => {
+      pulled.push(path);
+      return await readFileAtCommit.call(impl, commit, path);
+    };
+    try {
+      impl.invalidateChatContent(CHAT);
+      let [listed] = await view.listPendingChanges(CHAT);
+      expect(listed).toMatchObject({ baseCommit: result, added: [], modified: ["b.txt", "c.txt"],
+                                     removed: [] });
+      // What that fold cached is the base's text with the edit applied.
+      let content = await impl.getCurrentChatContent(CHAT, impl.storage.chatMeta.get(CHAT));
+      expect(Object.fromEntries(content.get(id))).toEqual({
+        "b.txt": COMMAND_RESULT["b.txt"].replace("fixed", "fixed!"), "c.txt": "newer\n",
+      });
+      expect(pulled).toEqual([]);
+      // The members' fold of the same content, which expectedChange() takes, reads through it.
+      expect(listed).toStrictEqual(await expectedChange(impl, id, COMMAND_RESULT));
+      expect(pulled).toContain("b.txt");
+    } finally {
+      impl.readFileAtCommit = readFileAtCommit;
+    }
+  }));
+
+  it("agrees with what an accept would apply", () => withSettings(async (impl, instance) => {
+    let { id, result } = await reRootedChat(impl);
+    await editAfterReRoot(impl, id);
+    let view = await adminView(impl, instance);
+
+    let [listed] = await view.listPendingChanges(CHAT);
+    let changed = [...listed.added, ...listed.modified, ...listed.removed].toSorted();
+    // Every path the accept is told, but for the one whose content is the base's.
+    expect(changed).toEqual(touchedPaths(impl, id).filter(path => path !== "a.txt"));
+
+    // The accept's commit differs from the re-root's by exactly those paths.
+    expect(await impl.mergeChanges(CHAT, { profile: USER }, "alice-user-do"))
+        .toEqual({ outcome: "merged" });
+    let accepted = impl.storage.gadgets.get(id).pinBase;
+    expect(await view.listChangedPaths(result, accepted)).toStrictEqual(changed);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual([]);
+  }));
+
+  it("reads the re-root's base from stored objects alone",
+      () => withSettings(async (impl, instance) => {
+    let { base, result } = await reRootedChat(impl);
+    let view = await adminView(impl, instance);
+
+    // No workpiece names the re-root's commit, which only the chat's pin holds.
+    let named = [...impl.storage.gadgets.list()]
+        .flatMap(record => [record.commitId, record.pinBase]);
+    expect(named).toContain(base);
+    expect(named).not.toContain(result);
+
+    let [{ baseCommit, mergedCommit }] = await view.listPendingChanges(CHAT);
+    expect([mergedCommit, baseCommit]).toEqual([base, result]);
+    // The rest of what accepting would change: the files the command changed, as the chat's
+    // members are shown them.
+    expect(await view.listChangedPaths(mergedCommit!, baseCommit!))
+        .toStrictEqual(await impl.listChangedPaths(base, result));
+    expect(await view.listFilesAtCommit(baseCommit!)).toStrictEqual(
+        Object.keys(COMMAND_RESULT).map(name => ({ name, kind: "file" })));
+    // The workspace has no connection an object could have been pulled through.
+    expect([...impl.storage.gatekeepers.list()]).toEqual([]);
+  }));
+
+  it("lists a reverted re-root's worktree against the commit it was pinned at before",
+      () => withSettings(async (impl, instance) => {
+    let { id, base } = await setup(impl);
+    await agentTurn(impl, [[
+      fauxToolCall("writeFile", { workpiece: "REPO", filename: "b.txt", content: "bee\nchat\n" }),
+    ]]);
+    let view = await adminView(impl, instance);
+    let before = await view.listPendingChanges(CHAT);
+    expect(before).toStrictEqual([await expectedChange(impl, id, BASE)]);
+    expect(before).toStrictEqual([{
+      gadgetId: id, baseCommit: base, mergedCommit: base,
+      added: [], modified: ["b.txt"], removed: [],
+    }]);
+
+    let result!: string;
+    stubExecution(impl, {
+      command: async turn => {
+        result = await resultCommit(impl, turn, id, COMMAND_RESULT);
+        turn.reRoot(id, result);
+        turn.appendChange(id, "c.txt", { set: "newer\n" });
+        return "ran";
+      },
+    });
+    await agentTurn(impl, [[execute("command")]]);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual([{
+      gadgetId: id, baseCommit: result, mergedCommit: base,
+      added: [], modified: ["c.txt"], removed: [],
+    }]);
+
+    let step = chatMessages(impl).findLast(msg => msg.type === "changes")!;
+    let toolStep = chatMessages(impl).findLast(msg =>
+        msg.type === "message" && msg.sequence < step.sequence)!;
+    await impl.revertChanges(CHAT, toolStep.sequence, USER);
+    expect(await view.listPendingChanges(CHAT)).toStrictEqual(before);
   }));
 });
 

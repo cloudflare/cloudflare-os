@@ -1,11 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
-  MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH,
+  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ANNOUNCEMENT_LENGTH,
+  MAX_INSTANCE_INSTRUCTIONS_LENGTH, getAdminAccessErrorCode,
+  type ActionLogEntry, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
+  type CommitInfo, type GatekeeperCreationSpec,
 } from "@gadgets/workshop-shared/api";
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, adminAccessPolicy, adminAuditStatsDays, adminAuditValue,
-  adminListLimit, adminSettingChange, cutAdminAuditText, minAdminAuditRetentionDays,
+  adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewLifetimeMs,
+  assertAdminViewLive, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess,
+  minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
+  withholdCreationContent, withholdHookContent,
+  type AdminViewTerms,
 } from "../src/admin-access.js";
 
 // The variables these helpers read, as a deployment's environment carries them: a secret or a
@@ -13,6 +21,55 @@ import {
 function envWith(vars: Record<string, unknown>): Cloudflare.Env {
   return vars as unknown as Cloudflare.Env;
 }
+
+function codeOf(call: () => unknown): string | undefined {
+  try {
+    call();
+  } catch (err) {
+    return getAdminAccessErrorCode(err);
+  }
+  throw new Error("expected a refusal");
+}
+
+const ADMIN = "admin@example.test";
+const adminEnv = envWith({ ADMINS: [ADMIN] });
+
+function terms(overrides: Partial<AdminViewTerms> = {}): AdminViewTerms {
+  return { via: "api", expiresAt: new Date(Date.now() + 60_000), ...overrides };
+}
+
+describe("maxAdminWorkspaceAccess", () => {
+  it("is metadata while unset or blank", () => {
+    expect(maxAdminWorkspaceAccess(envWith({}))).toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "" }))).toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "  " }))).toBe("metadata");
+  });
+
+  it("reads each level in any case, trimmed", () => {
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: " Off " }))).toBe("off");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "METADATA" })))
+        .toBe("metadata");
+    expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "\tMetadata\n" })))
+        .toBe("metadata");
+  });
+
+  // A value meant to turn inspection off must never grant the default, and neither must one that
+  // names more than a level gives.
+  it("fails closed to off for anything that is not a level, logging each value once", () => {
+    let logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    let values = ["none", "false", "of", "disabled", "1", "full", "FULL", " full "];
+    for (let value of [...values, ...values]) {
+      expect(maxAdminWorkspaceAccess(envWith({ ADMIN_WORKSPACE_ACCESS_MAX: value })), value)
+          .toBe("off");
+    }
+    let entries = logged.mock.calls.map(([entry]) => entry as { event?: unknown });
+    logged.mockRestore();
+    expect(entries.map(entry => entry.event))
+        .toEqual(values.map(() => "admin.access.config.invalid"));
+    // The log names the variable, never the value it holds.
+    expect(JSON.stringify(entries)).not.toMatch(/none|disabled|full/i);
+  });
+});
 
 describe("minAdminAuditRetentionDays", () => {
   it("defaults while unset or blank, and reads a positive whole number", () => {
@@ -35,18 +92,65 @@ describe("minAdminAuditRetentionDays", () => {
 });
 
 describe("adminAccessPolicy", () => {
-  it("holds the admins' choice within the environment's bound", () => {
-    let chosen = { adminAuditRetentionDays: 30 };
-    expect(adminAccessPolicy(chosen, envWith({})))
-        .toEqual({ retentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS });
-    expect(adminAccessPolicy(chosen, envWith({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "7" })))
-        .toEqual({ retentionDays: 30 });
-    expect(adminAccessPolicy({ adminAuditRetentionDays: 400 }, envWith({})))
-        .toEqual({ retentionDays: 400 });
+  it("orders the levels", () => {
+    expect(lowerAdminWorkspaceAccess("metadata", "off")).toBe("off");
+    expect(lowerAdminWorkspaceAccess("off", "metadata")).toBe("off");
+    expect(lowerAdminWorkspaceAccess("metadata", "metadata")).toBe("metadata");
+    expect(lowerAdminWorkspaceAccess("off", "off")).toBe("off");
+  });
+
+  it("holds the admins' choices within the environment's bounds", () => {
+    let metadata = { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: 30 } as const;
+    expect(adminAccessPolicy(metadata, envWith({})))
+        .toEqual({ access: "metadata", retentionDays: DEFAULT_ADMIN_AUDIT_RETENTION_DAYS });
+    expect(adminAccessPolicy(metadata, envWith({
+      ADMIN_WORKSPACE_ACCESS_MAX: "metadata", ADMIN_AUDIT_RETENTION_MIN_DAYS: "7",
+    }))).toEqual({ access: "metadata", retentionDays: 30 });
+    for (let cap of ["off", "nope", "full"]) {
+      expect(adminAccessPolicy(metadata, envWith({ ADMIN_WORKSPACE_ACCESS_MAX: cap })).access, cap)
+          .toBe("off");
+    }
+    expect(adminAccessPolicy({ adminWorkspaceAccess: "off", adminAuditRetentionDays: 400 },
+        envWith({ ADMIN_WORKSPACE_ACCESS_MAX: "metadata" })))
+        .toEqual({ access: "off", retentionDays: 400 });
+  });
+
+  // lowerAdminWorkspaceAccess() sorts a value that is not a level lowest and returns it, so the
+  // policy checks the chosen value itself: every enforcement point compares its answer with "off".
+  describe.each([
+    ["no cap", {}],
+    ["the cap at metadata", { ADMIN_WORKSPACE_ACCESS_MAX: "metadata" }],
+  ])("with %s", (_name, vars) => {
+    it.each(["full", "FULL", "", "none", undefined, null])(
+        "gives off for a chosen value that is not a level: %j", value => {
+      let env = envWith({ ...vars, ADMIN_AUDIT_RETENTION_MIN_DAYS: "7" });
+      expect(adminAccessPolicy(
+          { adminWorkspaceAccess: value as never, adminAuditRetentionDays: 30 }, env))
+          .toEqual({ access: "off", retentionDays: 30 });
+      expect(adminAccessPolicy(
+          { adminWorkspaceAccess: "metadata", adminAuditRetentionDays: 30 }, env))
+          .toEqual({ access: "metadata", retentionDays: 30 });
+    });
   });
 });
 
 describe("validators", () => {
+  it("validates the reason", () => {
+    expect(validateAdminAccessReason("  ticket 42  ")).toBe("ticket 42");
+    expect(validateAdminAccessReason("x".repeat(500))).toHaveLength(500);
+    expect(() => validateAdminAccessReason("   ")).toThrow("at most 500 characters");
+    expect(() => validateAdminAccessReason("x".repeat(501))).toThrow(TypeError);
+  });
+
+  it("validates the view's lifetime", () => {
+    expect(adminViewLifetimeMs(undefined)).toBe(900_000);
+    expect(adminViewLifetimeMs(1)).toBe(1000);
+    expect(adminViewLifetimeMs(3600)).toBe(3_600_000);
+    for (let bad of [0, 3601, 1.5, Number.NaN]) {
+      expect(() => adminViewLifetimeMs(bad), String(bad)).toThrow("from 1 to 3600");
+    }
+  });
+
   it("validates the page size", () => {
     expect(adminListLimit(undefined)).toBe(50);
     expect(adminListLimit(200)).toBe(200);
@@ -55,10 +159,32 @@ describe("validators", () => {
     }
   });
 
+  it("validates the commit log's depth", () => {
+    expect(adminCommitLogDepth(undefined)).toBe(20);
+    expect(adminCommitLogDepth(1)).toBe(1);
+    expect(adminCommitLogDepth(100)).toBe(100);
+    for (let bad of [0, 101, 1.5, NaN]) {
+      expect(() => adminCommitLogDepth(bad)).toThrow(TypeError);
+      expect(() => adminCommitLogDepth(bad))
+          .toThrow("The commit log's depth must be a whole number from 1 to 100.");
+    }
+  });
+
   it("validates the statistics window", () => {
     expect(adminAuditStatsDays(undefined)).toBe(7);
     expect(adminAuditStatsDays(366)).toBe(366);
     for (let bad of [0, 367, 0.5]) expect(() => adminAuditStatsDays(bad)).toThrow("from 1 to 366");
+  });
+});
+
+describe("view calls", () => {
+  it("refuses an expired view before checking the admin", () => {
+    let expired = terms({ expiresAt: new Date(1000) });
+    expect(codeOf(() => assertAdminViewLive(expired, "someone-else", adminEnv, 1000)))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.viewExpired);
+    expect(codeOf(() => assertAdminViewLive(terms(), "someone-else", adminEnv)))
+        .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    expect(() => assertAdminViewLive(terms(), ADMIN, adminEnv)).not.toThrow();
   });
 });
 
@@ -86,7 +212,105 @@ describe("cutAdminAuditText", () => {
     expect(cut).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
     expect(cut.endsWith("…")).toBe(true);
   });
+
+  it("is the cut redactAdminAuditArgs() applies", () => {
+    let long = "p".repeat(1000);
+    expect(redactAdminAuditArgs({ path: long, chatId: 3, beforeSequence: undefined })).toEqual({
+      path: cutAdminAuditText(long, MAX_ADMIN_AUDIT_ARG_LENGTH),
+      chatId: 3,
+    });
+  });
 });
+
+describe("withholding content", () => {
+  it("drops queued steers from a copy", () => {
+    let meta = {
+      id: 1, title: "t", started: new Date(0), lastActive: new Date(0),
+      queuedSteers: [{ text: "secret", author: { id: "u", name: "U" } }],
+    } as AiChatMetadata;
+    let withheld = withholdChatContent(meta);
+    expect(withheld).not.toHaveProperty("queuedSteers");
+    expect(withheld.title).toBe("t");
+    expect(meta.queuedSteers).toHaveLength(1);
+  });
+
+  it("empties descriptions and drops fields from a copy", () => {
+    let fields = [{ label: "To", value: "x@example.com" }];
+    let action = {
+      id: 1, resourceTitle: "r", createdAt: new Date(0), state: "pending", type: "action",
+      description: { title: "Send", description: "body", fields },
+    } as unknown as ActionLogEntry;
+    let observation = {
+      id: 2, resourceTitle: "r", createdAt: new Date(0), state: "approved", type: "observation",
+      description: { title: "Read", description: "content", fields },
+    } as unknown as ActionLogEntry;
+    let hookEntry = {
+      id: 3, resourceTitle: "r", createdAt: new Date(0), state: "approved", type: "bindHook",
+      enabled: true, description: { title: "Hook", description: "what it does" },
+    } as unknown as ActionLogEntry;
+
+    for (let entry of [action, observation, hookEntry]) {
+      let before = structuredClone(entry);
+      let withheld = withholdActionContent(entry);
+      expect(withheld.description.title).toBe(entry.description.title);
+      expect(withheld.description.description).toBe("");
+      expect(withheld.description).not.toHaveProperty("fields");
+      expect(entry).toEqual(before);
+    }
+
+    let hook = {
+      id: 1, gatekeeperId: 2, gadgetId: 3, enabled: true,
+      description: { title: "Hook", description: "what it does" },
+    } as unknown as BoundHookInfo;
+    expect(withholdHookContent(hook).description).toEqual({ title: "Hook", description: "" });
+    expect(hook.description.description).toBe("what it does");
+  });
+
+  it("empties a commit's message on a copy", () => {
+    let commit = commitInfo("Fix the parser\n");
+    let before = structuredClone(commit);
+    expect(withholdCommitContent(commit)).toStrictEqual({ ...before, message: "" });
+    expect(commit).toStrictEqual(before);
+  });
+
+  it("drops a creation spec's configuration on a copy, and returns any other spec as it is", () => {
+    let spec: GatekeeperCreationSpec = {
+      type: "gatekeeper", vendorId: "vendor", typeUrlPattern: "https://*",
+      resourceUrl: "https://example.com/thing", configuration: "what the agent suggested",
+    };
+    let before = structuredClone(spec);
+    let { configuration: _configuration, ...rest } = before;
+    expect(withholdCreationContent(spec)).toStrictEqual(rest);
+    expect(spec).toStrictEqual(before);
+
+    let ambient: GatekeeperCreationSpec = { type: "ambient", vendorId: "library", accountId: 3 };
+    expect(withholdCreationContent(ambient)).toBe(ambient);
+  });
+
+  it("empties a blueprint's id and drops its screenshot URL on a copy", () => {
+    let blueprint = blueprintSummary("bp-1");
+    let before = structuredClone(blueprint);
+    let { screenshotUrl: _screenshotUrl, ...rest } = before;
+    expect(withholdBlueprintContent(blueprint)).toStrictEqual({ ...rest, id: "" });
+    expect(blueprint).toStrictEqual(before);
+  });
+});
+
+// A published blueprint with a screenshot, whose URL holds its id.
+function blueprintSummary(id: string): BlueprintGadgetSummary {
+  return {
+    id, title: "Kit", description: "A kit", version: 2, codeVersionDate: new Date(1700000000_000),
+    screenshotUrl: `/blueprint-screenshot/${id}?v=1`, dirty: true, unpublishedChanges: true,
+  };
+}
+
+// A commit with one parent.
+function commitInfo(message: string): CommitInfo {
+  return {
+    oid: "1".repeat(40), parents: ["2".repeat(40)], message,
+    author: { name: "Owner", email: "owner@example.test" }, timestamp: new Date(1700000000_000),
+  };
+}
 
 describe("adminAuditValue", () => {
   it("keeps strings as themselves and writes anything else as JSON", () => {
