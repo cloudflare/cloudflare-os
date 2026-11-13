@@ -1993,9 +1993,7 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
     expect(docs.markers.size).toBe(0);
   });
 
-  // Queues the next edit only once the first is applied: a Drive binding's next session then drops
-  // the receipt, no edit of its Doc being left to approve (brief §3.3, and the Drive block below).
-  it.skipIf(r.drive)("keeps the next action pending while receipt cleanup fails", async () => {
+  it("keeps the next action pending while receipt cleanup fails", async () => {
     let docs = new DocsModel();
     docs.cleanupFailures = 2;
     docs.install();

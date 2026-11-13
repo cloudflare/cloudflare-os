@@ -636,7 +636,8 @@ type GoogleDocSelectedContent = GoogleDocSimulatedContent & {
 
 /**
  * A Google Doc session: its reads, its edits and, bound directly, its comments. A Doc opened from
- * Drive read-only is handed out through a wrapper (see GoogleDocReadSessionImpl).
+ * Drive is handed out through a wrapper: GoogleDocReadSessionImpl read-only, and
+ * GoogleDocEditSessionImpl, with no comment method, read and write.
  */
 @validateRpc()
 export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
