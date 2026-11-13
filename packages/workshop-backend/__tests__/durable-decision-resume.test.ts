@@ -172,6 +172,62 @@ function recordNotifications() {
   return notifications;
 }
 
+describe("awaitingDecision on a chat's metadata", () => {
+  const delivered = (impl: Impl) => impl.chatMetaForClient(impl.storage.chatMeta.get(CHAT)!);
+
+  // What a metadata subscriber hears from now on: whether each delivery says the chat is waiting,
+  // and whether its agent is responding.
+  function listen(impl: Impl) {
+    const heard: {awaiting?: true, responding: boolean}[] = [];
+    impl.storage.chatMeta.subscribe({add() {}, remove() {}, update: (_, record) => {
+      const meta = impl.chatMetaForClient(record);
+      heard.push({awaiting: meta.awaitingDecision, responding: meta.activeAgent !== undefined});
+    }});
+    return heard;
+  }
+
+  async function openClient(s: Awaited<ReturnType<typeof scenario>>) {
+    return env.TEST_OVERSEER.get(s.stub.id).open(s.user.id.toString(), USER.id, new RpcStub(() => {}));
+  }
+
+  it("is absent with no request, and while the agent is responding", async () => {
+    for (const s of [await scenario(null), await scenario("connection", true)]) {
+      await s.visit(impl => { expect(delivered(impl).awaitingDecision).toBeUndefined(); });
+    }
+  });
+
+  it.each([["connection", false], ["action", false], ["connection", true], ["action", true]] as const)(
+      "reports a pending %s request until it is denied (legacy pause: %s)", async (kind, legacy) => {
+    const s = await scenario(kind);
+    let heard: ReturnType<typeof listen> = [];
+    await s.visit(impl => {
+      if (legacy) impl.storage.activeAgents.delete(CHAT);
+      expect(delivered(impl).awaitingDecision).toBe(true);
+      fakeGatekeeper(impl);
+      heard = listen(impl);
+    });
+    using client = await openClient(s);
+    await (kind === "connection" ? client.denyConnectionRequest("1:connection") : client.rejectAction(7));
+    // A denial resumes nothing, which is the write subscribers would otherwise hear it through.
+    expect(heard).toEqual([{awaiting: undefined, responding: false}]);
+  });
+
+  it("is cleared when an approval resumes the turn", async () => {
+    const requests = inference(), s = await scenario("action");
+    let heard: ReturnType<typeof listen> = [];
+    await s.visit(impl => {
+      fakeGatekeeper(impl);
+      heard = listen(impl);
+    });
+    using client = await openClient(s);
+    await client.approveAction(7);
+    expect(heard).toContainEqual({awaiting: undefined, responding: true});
+    expect(heard.filter(({awaiting}) => awaiting)).toEqual([]);
+    await s.visit(impl => impl.waitForAllAgentsToComplete());
+    expect(requests()).toBe(1);
+  });
+});
+
 describe("decision handoff using the existing execution row", () => {
   it.each(["connection", "action"] as const)("recovers a committed %s decision, before or after teardown", async kind => {
     const requests = inference();

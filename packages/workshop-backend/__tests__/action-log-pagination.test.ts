@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RpcStub } from "capnweb";
 import type { ActionLogEntry, ActionsSubscriber } from "@gadgets/workshop-shared/api";
 import { ACTION_HISTORY_PAGE_DEFAULT_LIMIT, ACTION_REPLAY_PAGE_SIZE } from "../src/overseer.js";
+import type { GatekeeperCaller } from "../src/storage-schema/overseer-storage.js";
 import { makeMockStorage } from "./mock-storage.js";
 import {
   FIXTURE_EPOCH, makeActionStorage, makePreIndexActionStorage, openFakeOverseer, putAction,
@@ -184,6 +185,23 @@ describe("listActions", () => {
       { id: 1, type: "action", description: { autoApprovable: true } },
       { id: 0, type: "action", description: { autoApprovable: false } },
     ]);
+  });
+
+  it("names the chat each entry was made from, and none for a hook firing", async () => {
+    let storage = makeActionStorage();
+    let callers: GatekeeperCaller[] = [
+      { from: "agent", chatId: 1 }, { from: "gadget", chatId: 2 }, { from: "gadget" },
+      { from: "hook" },
+    ];
+    callers.forEach((caller, id) => {
+      putAction(storage, id);
+      storage.actions.put({ ...storage.actions.get(id)!, caller });
+    });
+    let client = await openFakeOverseer(storage);
+
+    let { entries } = await client.listActions();
+    expect(entries.map(e => [e.id, e.chatId])).toEqual(
+        [[3, undefined], [2, undefined], [1, 2], [0, 1]]);
   });
 
   it("pages without overlap or gaps", async () => {

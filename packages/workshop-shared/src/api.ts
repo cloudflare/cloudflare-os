@@ -3142,6 +3142,12 @@ export type ActionLogEntry = {
    */
   gatekeeperId?: WorkpieceId;
 
+  /**
+   * The chat this entry was made from: the chat whose agent made it, or whose slash command or
+   * gadget code did. Absent for a hook firing and for gadget code running outside any chat.
+   */
+  chatId?: number;
+
   resourceTitle: string;
   resourceUrl?: string;
 
@@ -4134,6 +4140,21 @@ export type AiChatMetadata = {
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
+
+  /**
+   * If this was started from an agent spawner, the spawner's id. `spawnerName` is the spawner's
+   * name when the chat started, so one spawner's runs can carry different names and two
+   * spawners' runs the same one; this tells them apart. Absent on chats spawned before it was
+   * recorded.
+   */
+  spawnerId?: WorkpieceId;
+
+  /**
+   * Present while the agent's turn is stopped on a decision only a user can make: an action it
+   * asked to wait for, a connection request, or a restricted web fetch, still pending. Derived
+   * server-side from the chat's log and delivered on metadata updates; never submitted by clients.
+   */
+  awaitingDecision?: true;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
