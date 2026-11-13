@@ -20,18 +20,22 @@ vi.mock("@cloudflare/kumo", async importOriginal => ({
 const testRoot = makeTestRoot();
 afterEach(() => { testRoot.cleanup(); vi.clearAllMocks(); vi.unstubAllGlobals(); });
 
-it.each([false, true])("blocks duplicate saves and allows retry after failure (enabled: %s)", async enabled => {
+it.each([
+  {enabled: true, override: undefined, label: "Mute notifications", value: false},
+  {enabled: false, override: false, label: "Unmute notifications", value: true},
+  {enabled: false, override: undefined, label: "Mute notifications", value: false},
+  {enabled: false, override: undefined, label: "Enable notifications", value: true},
+])("blocks duplicate saves and allows retry after failure ($label, override: $override)", async ({enabled, override, label, value}) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   const pending = Promise.withResolvers<void>();
   const setChatNotificationsEnabled = vi.fn<Overseer["setChatNotificationsEnabled"]>()
     .mockReturnValueOnce(pending.promise).mockResolvedValue(undefined);
-  const label = enabled ? "Mute notifications" : "Unmute notifications";
   await testRoot.render(
     <DropdownMenu open>
       <DropdownMenu.Trigger render={<button>Chat actions</button>} />
       <DropdownMenu.Content>
         <ChatNotificationsMenu overseer={{setChatNotificationsEnabled}} chatId={7}
-          enabled={enabled} disabled={false} />
+          enabled={enabled} override={override} disabled={false} />
       </DropdownMenu.Content>
     </DropdownMenu>,
   );
@@ -39,8 +43,10 @@ it.each([false, true])("blocks duplicate saves and allows retry after failure (e
     .find(element => element.textContent === label)!;
   await act(async () => item().click());
   expect(item().getAttribute("aria-disabled")).toBe("true");
-  await act(async () => item().click());
-  expect(setChatNotificationsEnabled).toHaveBeenCalledExactlyOnceWith(7, !enabled);
+  await act(async () => {
+    for (const element of document.querySelectorAll<HTMLElement>('[role="menuitem"]')) element.click();
+  });
+  expect(setChatNotificationsEnabled).toHaveBeenCalledExactlyOnceWith(7, value);
 
   const error = new Error("Preference update failed");
   await act(async () => pending.reject(error));
@@ -49,7 +55,7 @@ it.each([false, true])("blocks duplicate saves and allows retry after failure (e
   expect(item().getAttribute("aria-disabled")).toBeNull();
   await act(async () => item().click());
   expect(setChatNotificationsEnabled).toHaveBeenCalledTimes(2);
-  expect(setChatNotificationsEnabled).toHaveBeenLastCalledWith(7, !enabled);
+  expect(setChatNotificationsEnabled).toHaveBeenLastCalledWith(7, value);
   expect(item().getAttribute("aria-disabled")).toBeNull();
   expect(mock.addToast).toHaveBeenCalledOnce();
 });

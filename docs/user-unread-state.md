@@ -16,7 +16,10 @@ the existing-chat default enabled, including after later messages.
 
 Approval requests bypass the default-off state so an unattended agent can ask for help, without
 subscribing the user or adding the chat to the unread inbox or badge totals. An explicit chat mute
-suppresses approval alerts too. Approval alerts use the ordinary durable outbox and local retries;
+suppresses approval alerts too. Before participation, the thread menu offers **Enable notifications**
+and **Mute notifications**, so silencing approvals takes one action. An explicitly muted chat offers
+**Unmute notifications**. The private read state reports the explicit override separately from the
+effective preference. Approval alerts use the ordinary durable outbox and local retries;
 read commands, later automated messages and collaborator reopens do not discard them.
 
 Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,

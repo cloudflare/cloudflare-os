@@ -6,18 +6,19 @@ import { MENU_ITEM } from "../../components/menuStyles";
 import { logRpcFailure } from "../../rpcErrors";
 
 /** Per-user chat preference; the unread subscription supplies the saved value. */
-export const ChatNotificationsMenu = ({ overseer, chatId, enabled, disabled }: {
+export const ChatNotificationsMenu = ({ overseer, chatId, enabled, override, disabled }: {
   overseer: Pick<Overseer, "setChatNotificationsEnabled">;
   chatId: number;
   enabled: boolean;
+  override?: boolean;
   disabled: boolean;
 }) => {
   const [saving, setSaving] = useState(false);
   const toasts = useKumoToastManager();
-  const toggle = async () => {
+  const update = async (value: boolean) => {
     setSaving(true);
     try {
-      await overseer.setChatNotificationsEnabled(chatId, !enabled);
+      await overseer.setChatNotificationsEnabled(chatId, value);
     } catch (error) {
       logRpcFailure("Failed to update chat notifications:", error);
       toasts.add({ title: "Failed to update notifications", variant: "error" });
@@ -26,9 +27,17 @@ export const ChatNotificationsMenu = ({ overseer, chatId, enabled, disabled }: {
     }
   };
   return (
-    <DropdownMenu.Item disabled={disabled || saving} onClick={() => { void toggle(); }} className={MENU_ITEM}>
-      {enabled ? <BellSlash size={13} /> : <Bell size={13} />}
-      {enabled ? "Mute notifications" : "Unmute notifications"}
-    </DropdownMenu.Item>
+    <>
+      {!enabled && <DropdownMenu.Item disabled={disabled || saving}
+        onClick={() => { void update(true); }} className={MENU_ITEM}>
+        <Bell size={13} />
+        {override === false ? "Unmute notifications" : "Enable notifications"}
+      </DropdownMenu.Item>}
+      {(enabled || override !== false) && <DropdownMenu.Item disabled={disabled || saving}
+        onClick={() => { void update(false); }} className={MENU_ITEM}>
+        <BellSlash size={13} />
+        Mute notifications
+      </DropdownMenu.Item>}
+    </>
   );
 };

@@ -809,7 +809,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   #readState(cursor: ChatReadCursor): ChatReadState {
     return {workspaceId: cursor.workspaceId, chatId: cursor.chatId,
       readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount,
-      notificationsEnabled: this.#chatNotificationsEnabled(cursor)};
+      notificationsEnabled: this.#chatNotificationsEnabled(cursor),
+      notificationsEnabledOverride: cursor.notificationsEnabled};
   }
 
   #chatNotificationsEnabled(cursor: ChatReadCursor): boolean {

@@ -5665,7 +5665,8 @@ function ChatInterface({
                             void unread?.markUnread(overseer, chat.id).catch(() => {});
                           }}>Mark thread unread</DropdownMenu.Item>
                           <ChatNotificationsMenu overseer={overseer} chatId={chat.id}
-                            enabled={notificationsEnabled} disabled={!unread?.chats} />
+                            enabled={notificationsEnabled} override={readState?.notificationsEnabledOverride}
+                            disabled={!unread?.chats} />
                           <DropdownMenu.Item
                             icon={<Pencil className="size-3" />}
                             onClick={() => startListRename(chat.id, chat.title)}

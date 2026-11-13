@@ -260,6 +260,11 @@ export type ChatReadState = {
    * Absent on older servers.
    */
   notificationsEnabled?: boolean;
+  /**
+   * The user's explicit notification preference. Absent when using the participation default,
+   * or on older servers. A false override suppresses approval alerts as well as completion alerts.
+   */
+  notificationsEnabledOverride?: boolean;
 };
 
 /**

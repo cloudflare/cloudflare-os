@@ -186,6 +186,36 @@ describe("persisted visible positions", () => {
 });
 
 describe("chat notification preferences", () => {
+  it("publishes a direct mute before participation even though the effective default is already off", async () => {
+    const fixture = await setup(undefined, false);
+    await append(fixture, 0);
+    const snapshots: UserUnreadState[] = [], deltas: Parameters<UnreadStateSubscriber["chatUpdated"]>[] = [];
+    class Subscriber extends RpcTarget implements UnreadStateSubscriber {
+      async updated(state: UserUnreadState) { snapshots.push(state); }
+      async summaryUpdated() {}
+      async chatUpdated(...args: Parameters<UnreadStateSubscriber["chatUpdated"]>) { deltas.push(args); }
+    }
+    using callback = new RpcStub(new Subscriber());
+    {
+      using _subscription = await fixture.user.subscribeToUnreadState({workspaceId: fixture.workspaceId}, callback);
+      await vi.waitFor(() => expect(snapshots).toHaveLength(1));
+      expect(snapshots[0].chats[0]).toMatchObject({notificationsEnabled: false});
+      expect(snapshots[0].chats[0].notificationsEnabledOverride).toBeUndefined();
+      await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+      await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toMatchObject({notificationsEnabled: false,
+        notificationsEnabledOverride: false, unreadMessageCount: 1, readThroughSequence: -1}));
+    }
+    expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toMatchObject([
+      {notificationsEnabled: false, notificationsEnabledOverride: false},
+    ]);
+    expect(await fixture.user.getUnreadThreads()).toEqual([]);
+    expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true));
+    expect(await fixture.user.getUnreadThreads()).toMatchObject([
+      {notificationsEnabled: true, notificationsEnabledOverride: true, unreadMessageCount: 1, readThroughSequence: -1},
+    ]);
+  });
+
   it.each([
     {missing: "source chat", error: "No such chatId"},
     {missing: "user chat", error: "Chat has been deleted"},
@@ -917,7 +947,8 @@ describe("local counts and explicit read boundaries", () => {
     await setRead(fixture, 0);
     expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([
       {workspaceId: fixture.workspaceId, chatId: 1, unreadMessageCount: 0, readThroughSequence: 0, notificationsEnabled: true},
-      {workspaceId: fixture.workspaceId, chatId: 2, unreadMessageCount: 1, readThroughSequence: 1, notificationsEnabled: true},
+      {workspaceId: fixture.workspaceId, chatId: 2, unreadMessageCount: 1, readThroughSequence: 1,
+        notificationsEnabled: true, notificationsEnabledOverride: true},
     ]);
     await fixture.user.messageArrived(fixture.workspaceId, 2, null);
     expect((await fixture.user.getUnreadSummary()).workspaces).toEqual([
@@ -945,11 +976,11 @@ describe("local counts and explicit read boundaries", () => {
     await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toBeNull());
     expect(await fixture.user.getUnreadThreads()).toEqual([]);
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
-      .toEqual({...before, notificationsEnabled: false});
+      .toEqual({...before, notificationsEnabled: false, notificationsEnabledOverride: false});
     using _mutedSnapshot = await fixture.user.subscribeToUnreadState("unread", callback);
     await vi.waitFor(() => expect(snapshots.at(-1)?.chats).toEqual([]));
     await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true));
-    await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toEqual(before));
+    await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toEqual({...before, notificationsEnabledOverride: true}));
     expect(await fixture.user.getUnreadThreads()).toMatchObject([{chatId: 1, unreadMessageCount: 1}]);
   });
 

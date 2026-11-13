@@ -84,7 +84,8 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
   expect((await api.getUnreadSummary()).unreadMessageCount).toBe(enabled ? 1 : 0);
   await ws.setChatNotificationsEnabled(chatId, !enabled);
   await ws.setChatNotificationsEnabled(chatId, enabled);
-  expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)).toEqual(state);
+  expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId))
+    .toEqual({...state, notificationsEnabledOverride: enabled});
   // The backend's unread-state tests prove muted suppression and no replay against the outbox.
   // Public RPC exposes no delivery-drained signal, so an empty callback list here would not prove
   // that a muted alert cannot arrive later. Keep delivery assertions positive at this layer.

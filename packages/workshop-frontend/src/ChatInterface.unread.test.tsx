@@ -64,17 +64,19 @@ it.each([10, 0, undefined])("only offers the useful thread read action (unread c
   expect(markUnread.mock.calls).toEqual(count === 0 ? [[server.overseer, 1]] : []);
 });
 
-// Missing preferences retain the existing-chat default; new chats supply an explicit preference.
+// Missing read states retain the existing-chat default; new chats supply their effective default.
 it.each([
-  {spawned: false, enabled: undefined, expectedEnabled: true},
-  {spawned: true, enabled: undefined, expectedEnabled: true},
-  {spawned: true, enabled: true, expectedEnabled: true},
-  {spawned: false, enabled: false, expectedEnabled: false},
-  {spawned: false, enabled: true, expectedEnabled: true},
-  {spawned: true, enabled: false, expectedEnabled: false},
+  {spawned: false, enabled: undefined, override: undefined, expectedEnabled: true},
+  {spawned: true, enabled: undefined, override: undefined, expectedEnabled: true},
+  {spawned: true, enabled: true, override: true, expectedEnabled: true},
+  {spawned: false, enabled: false, override: false, expectedEnabled: false},
+  {spawned: false, enabled: true, override: true, expectedEnabled: true},
+  {spawned: true, enabled: false, override: false, expectedEnabled: false},
+  {spawned: false, enabled: false, override: undefined, expectedEnabled: false},
+  {spawned: true, enabled: false, override: undefined, expectedEnabled: false},
 ].flatMap(preference => [0, 2].map(count => ({...preference, count}))))(
-    "toggles notifications without disabling read actions (spawned: $spawned, override: $enabled, unread: $count)",
-    async ({spawned, enabled, expectedEnabled, count}) => {
+    "changes notifications without disabling read actions (spawned: $spawned, enabled: $enabled, override: $override, unread: $count)",
+    async ({spawned, enabled, override, expectedEnabled, count}) => {
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   const server = makeOverseer();
   const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
@@ -87,7 +89,7 @@ it.each([
   });
   mock.unread = {
     chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: count,
-      notificationsEnabled: enabled}],
+      notificationsEnabled: enabled, notificationsEnabledOverride: override}],
     subscribeToUpdates: () => () => {}, markRead: async () => {}, markUnread: async () => true,
     markAllRead: async () => {}, markWorkspaceRead: async () => {},
   };
@@ -106,7 +108,10 @@ it.each([
     .toBe(count > 0 ? "true" : null);
   expect(items.find(item => item.textContent === "Mark thread read")?.getAttribute("aria-disabled"))
     .toBe(count > 0 ? null : "true");
-  const toggle = items.find(item => item.textContent === (expectedEnabled ? "Mute notifications" : "Unmute notifications"))!;
+  const canMute = expectedEnabled || override !== false;
+  expect(items.some(item => item.textContent === "Enable notifications")).toBe(!expectedEnabled && override !== false);
+  expect(items.some(item => item.textContent === "Mute notifications")).toBe(canMute);
+  const toggle = items.find(item => item.textContent === (canMute ? "Mute notifications" : "Unmute notifications"))!;
   await act(async () => toggle.click());
-  expect(setNotifications).toHaveBeenCalledWith(1, !expectedEnabled);
+  expect(setNotifications).toHaveBeenCalledExactlyOnceWith(1, !canMute);
 });
