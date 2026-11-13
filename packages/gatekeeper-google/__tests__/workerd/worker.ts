@@ -36,6 +36,8 @@ import { GmailHookDriver as GoogleGmailHookDriver, type GmailHookParams } from "
 export { default } from "../../src/google";
 export { ChatHookController } from "../../src/chat-hooks";
 export { GmailHookController } from "../../src/gmail-hooks";
+// The PDF renderer's entrypoint, which the pool binds as a deployment binds the renderer Worker.
+export { PdfRenderer } from "@gadgets/pdf-renderer";
 export {
   BigQueryGatekeeperImpl, GmailGatekeeperImpl, GoogleCalendarGatekeeperImpl, GoogleChatGatekeeperImpl,
   GoogleDocGatekeeperImpl, GoogleDriveGatekeeperImpl, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl,
@@ -344,6 +346,26 @@ type TestExports = {
 function testHooks(exports: Cloudflare.Exports, id: string) {
   const { TestHooks } = exports as unknown as TestExports;
   return TestHooks.get(TestHooks.idFromString(id));
+}
+
+/**
+ * Stands for the Workers AI binding, which answers a `fetch`: it finds no text in any PDF it is
+ * asked to convert, and reads the same two words on every image.
+ */
+export class FakeAi extends WorkerEntrypoint<Cloudflare.Env> {
+  async fetch(request: Request): Promise<Response> {
+    // The request is read whole before it is answered, as the service reads it.
+    await request.arrayBuffer();
+    if (request.url.includes("/markdown/")) {
+      return Response.json({
+        result: [{ id: "conversion-1", name: "file.pdf", mimeType: "application/pdf", format: "markdown",
+          tokens: 9, data: "# file.pdf\n## Contents\n### Page 1\n\n\n" }],
+        success: true,
+      });
+    }
+    return new Response('data: {"response":"Harbour Ledger"}\n\ndata: [DONE]\n\n',
+      { headers: { "Content-Type": "text/event-stream" } });
+  }
 }
 
 /** The Overseer's HookInitiator: each firing reaches the TestHooks object that enabled the hook. */

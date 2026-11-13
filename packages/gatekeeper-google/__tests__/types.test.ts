@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import ts from "typescript6";
+import { RENDER_LIMITS } from "@gadgets/pdf-renderer/api";
 import {
   DOCS_TYPES_MODULE_PREFIX, DRIVE_READ_TYPES_MODULE_PREFIX, DRIVE_TYPES_MODULE_PREFIX,
   GMAIL_TYPES_MODULE_PREFIX, SHEETS_TYPES_MODULE_PREFIX, SLIDES_TYPES_MODULE_PREFIX,
@@ -85,6 +86,11 @@ function topLevelNames(sourceText: string): string[] {
 
 function duplicates(names: string[]): string[] {
   return names.filter((name, i) => names.indexOf(name) !== i);
+}
+
+/** The lines in square brackets that `text` holds in double quotes, after any line breaks, sorted. */
+function quotedNotes(text: string): string[] {
+  return [...text.matchAll(/"(?:\\n)*(\[[^"\]]+\])"/g)].map(match => match[1]!).toSorted();
 }
 
 function docBundle(): string {
@@ -652,6 +658,15 @@ const unsaid: DrivePdfText = { text: new ReadableStream(), hasText: true };
 const asked: DrivePdfReadOptions = { ocr: "yes" };
 `), account).toEqual([]);
     }
+  });
+
+  it("quotes the notes a PDF's text can carry as they are given, and the size a PDF is drawn to", () => {
+    // The comments are wrapped, so a note they quote may run over two of their lines.
+    const driveTypes = source("drive-read-types.d.ts").replace(/\n\s*\* ?/g, " ");
+    const given = quotedNotes(source("drive-pdf.ts"));
+    expect(given).not.toEqual([]);
+    expect(quotedNotes(driveTypes)).toEqual(given);
+    expect(driveTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
   });
 
   it("streams a file's bytes from both Drive sessions, whole or by range", () => {

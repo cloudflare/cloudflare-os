@@ -3,6 +3,7 @@ import path from "node:path";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import capnwebValidate from "capnweb-validate/vite";
 import type { Plugin } from "vite";
+import { kCurrentWorker } from "miniflare";
 import { defineConfig } from "vitest/config";
 import deployed from "./cloudflare.config.ts";
 
@@ -34,12 +35,21 @@ const textModules: Plugin = {
 export default defineConfig({
   plugins: [
     textModules,
-    capnwebValidate(),
+    // The tests' program, which holds the PDF renderer's entrypoint the pool's Worker exports: a
+    // class outside the program is not given its validators, and refuses to be loaded without.
+    capnwebValidate({ tsconfig: "tsconfig.test.json" }),
     cloudflareTest({
       main: "./__tests__/worker.ts",
       miniflare: {
         compatibilityDate,
         compatibilityFlags,
+        // The pool takes its module rules from here, not from the Worker's configuration, and the
+        // PDF renderer's PDFium build is imported as a compiled WebAssembly module.
+        modulesRules: [{ type: "CompiledWasm", include: ["**/*.wasm"] }],
+        // The PDF renderer, which the pool's Worker exports beside the gatekeeper.
+        serviceBindings: {
+          PDF_RENDERER: { name: kCurrentWorker, entrypoint: "PdfRenderer" },
+        },
         // Facets and loopback namespaces need test-only registrations in this test pool.
         durableObjects: {
           CALENDAR_TEST_HOOKS: { className: "CalendarTestHooks", useSQLite: true },

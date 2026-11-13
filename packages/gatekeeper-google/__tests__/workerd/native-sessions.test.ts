@@ -1,5 +1,6 @@
 import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
+import type { PdfRendering } from "@gadgets/pdf-renderer/api";
 import type {
   ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
   ObservationDescription,
@@ -10,7 +11,9 @@ import { DriveApi } from "../../src/drive-api";
 import type { DriveQueue } from "../../src/drive-actions";
 import { FILE_READ_IDLE_MS } from "../../src/drive-file-read";
 import type { DriveBindingScope } from "../../src/drive-session";
-import { TranscriptionRefusal, type PdfConverter, type PdfRangeReader } from "../../src/drive-pdf";
+import {
+  pdfToText, TranscriptionRefusal, type PdfConverter, type PdfRangeReader,
+} from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type {
   DriveComment, DrivePdfReadOptions, DrivePdfText, DriveSessionSearchQuery,
@@ -26,8 +29,12 @@ import type { GoogleSpreadsheetSession } from "../../src/sheets-types";
 import { GoogleSlidesApi } from "../../src/slides-api";
 import type { GooglePresentationSession } from "../../src/slides-types";
 import { buildTab } from "../doc-fixture";
+import { faxMarks, imagePdf } from "../pdf-fixture";
 import { formatSheet } from "../sheets-fixture";
 import { presentation, shape, SIMPLE_LIGHT, slide, text } from "../slides-fixture";
+import {
+  eventResponse, fakeAi, markdownJson, sentImage, streamedResponse, tokenEvents,
+} from "../workers-ai-fixture";
 
 const DOC_MIME = "application/vnd.google-apps.document";
 const SHEET_MIME = "application/vnd.google-apps.spreadsheet";
@@ -70,7 +77,7 @@ function fakeConverter(onConvert?: () => void) {
       },
       cancel() { state.cancelled++; },
     }, { highWaterMark: 0 });
-    return { text: stream, hasText: true, transcribed: false };
+    return { text: stream, hasText: true, transcribed: false, rereads: false };
   };
   return { converted, convert, state };
 }
@@ -95,7 +102,7 @@ function scanConverter(beforePage?: (page: number) => void) {
         controller.enqueue(new Uint8Array(await new Response(image).arrayBuffer()));
       },
     }, { highWaterMark: 0 });
-    return { text: pages, hasText: false, transcribed: readRange !== undefined };
+    return { text: pages, hasText: false, transcribed: readRange !== undefined, rereads: readRange !== undefined };
   };
   return { convert, given };
 }
@@ -108,13 +115,50 @@ const refusingConverter: PdfConverter = async pdf => {
   throw new TranscriptionRefusal(UNTRANSCRIBABLE);
 };
 
-/** A download's answer to `range`: those bytes of PDF_BYTES as a 206, or the whole file to none. */
-function rangedDownload(range: string | null, total = PDF_BYTES.byteLength): Response {
+/**
+ * A download's answer to `range`: those bytes of `bytes` as a 206 that says the file is `total`
+ * bytes long, or the whole file to none.
+ */
+function rangedDownload(
+  range: string | null, total = PDF_BYTES.byteLength, bytes: Uint8Array = PDF_BYTES,
+): Response {
   const [, start, end] = /^bytes=(\d+)-(\d+)$/.exec(range ?? "")?.map(Number) ?? [];
-  if (start === undefined) return new Response(PDF_BYTES, { headers: { "Content-Type": PDF_MIME } });
-  return new Response(PDF_BYTES.slice(start, end! + 1), {
+  if (start === undefined) return new Response(bytes, { headers: { "Content-Type": PDF_MIME } });
+  return new Response(bytes.slice(start, end! + 1), {
     status: 206, headers: { "Content-Range": `bytes ${start}-${end}/${total}` },
   });
+}
+
+/** What Workers AI's conversion answers for a PDF with no text of its own. */
+const SCANNED_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\n\n\n";
+/** What it answers for a PDF whose first page has no text and whose second has some. */
+const MIXED_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\n\n\n\n\n### Page 2\nAppendix of the ledger\n\n";
+/** What the fake model reads on every image it is sent. */
+const MODEL_TEXT = "Harbour Ledger";
+/** A one-page scan stored as fax, which is rendered to be read. */
+const FAX_SCAN = imagePdf([faxMarks()]).bytes;
+/** The range a rendered PDF is read by: all of {@link FAX_SCAN}. */
+const FAX_RANGE = `bytes=0-${FAX_SCAN.byteLength - 1}`;
+const WHOLE_READ = "Read Drive file pdf-1 whole, to render its pages and transcribe them.";
+
+/**
+ * A converter over the real `pdfToText()` and the pool's renderer Worker, by its binding: only
+ * the model is a fake, which converts every PDF to `markdown`, with no text in it unless given,
+ * and reads {@link MODEL_TEXT} on every image. `onRequest` is told of each request the model was
+ * sent, once it has been read whole.
+ */
+function renderingConverter(onRequest?: (kind: "conversion" | "model") => void, markdown = SCANNED_MARKDOWN) {
+  const { ai, sent } = fakeAi(request => {
+    const conversion = request.url.includes("markdown");
+    onRequest?.(conversion ? "conversion" : "model");
+    return conversion
+      ? streamedResponse(markdownJson(markdown), 64) : eventResponse(tokenEvents([MODEL_TEXT]));
+  });
+  const renderer = env.PDF_RENDERER as unknown as PdfRendering;
+  const convert: PdfConverter = (pdf, readRange) => pdfToText(ai, undefined, pdf, readRange, renderer);
+  /** The images the model was sent. */
+  const images = () => sent.filter(request => !request.url.includes("markdown")).map(sentImage);
+  return { convert, images };
 }
 
 /** Reads a PDF read's text stream, as returned over RPC, to the end. */
@@ -166,6 +210,8 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly holds = new Map<string, Promise<void>>();
   /** Whether every stub of this queue has been disposed. */
   released = false;
+  /** Told each observation as it is authorized, for a test that orders them among other things. */
+  onAuthorized?: (description: ObservationDescription) => void;
 
   [Symbol.dispose](): void {
     this.released = true;
@@ -177,6 +223,7 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
       throw new Error("Observation refused");
     }
     this.observations.push(description);
+    this.onAuthorized?.(description);
   }
 
   async getGitCache(): Promise<GitCache> {
@@ -375,6 +422,28 @@ function newSession(
       queueStub,
       NO_COMMENTS,
     )),
+  };
+}
+
+/**
+ * A Drive session called as it is, not over RPC, which reads a stream one piece ahead of whoever
+ * holds it: for a test of what happens only once a text is read.
+ */
+function directSession(convertPdf: PdfConverter) {
+  const queue = new TestApprovalQueue();
+  const queueStub: RpcStub<ApprovalQueue> = new RpcStub(queue);
+  return {
+    queue,
+    session: new GoogleDriveSessionImpl(
+      new DriveApi(getAccessToken),
+      new GoogleDocsApi(getAccessToken),
+      new GoogleSheetsApi(getAccessToken),
+      new GoogleSlidesApi(getAccessToken),
+      convertPdf,
+      { kind: "account" },
+      queueStub,
+      NO_COMMENTS,
+    ),
   };
 }
 
@@ -601,7 +670,7 @@ describe("Drive PDF reads", () => {
     const converted = { cancelled: false };
     const convert: PdfConverter = async () => ({
       text: new ReadableStream({ cancel() { converted.cancelled = true; } }), hasText: true,
-      transcribed: false,
+      transcribed: false, rereads: false,
     });
     const { queue, session } = newSession(convert);
     using owned = session;
@@ -756,6 +825,162 @@ describe("Drive PDF reads", () => {
     await expect(new Response(result.text).text()).rejects.toThrow();
     expect(queue.observations.map(o => o.description)).not.toContain(
       "Read page image 1 of Drive file pdf-1, to transcribe it.");
+  });
+
+  it("returns the three fields a PDF read has, and keeps a queue for any text whose reading reads the file again", async () => {
+    providerDownload = rangedDownload;
+    // A text that is the document's own and reads the file again all the same.
+    const reread = { asked: 0 };
+    const convert: PdfConverter = async (pdf, readRange) => {
+      const fileSize = (await new Response(pdf).arrayBuffer()).byteLength;
+      const own = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          if (!readRange || reread.asked++ > 0) return controller.close();
+          const part = await readRange({ offset: 0, length: fileSize, fileSize });
+          controller.enqueue(new Uint8Array(await new Response(part).arrayBuffer()));
+        },
+      }, { highWaterMark: 0 });
+      return { text: own, hasText: true, transcribed: false, rereads: readRange !== undefined };
+    };
+    const { queue, session } = directSession(convert);
+
+    const plain = await session.readPdf("pdf-1");
+    expect(Object.keys(plain).toSorted()).toEqual(["hasText", "text", "transcribed"]);
+    const result = await session.readPdf("pdf-1", { ocr: true });
+    expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
+    expect(result).toMatchObject({ hasText: true, transcribed: false });
+    session[Symbol.dispose]();
+    // The session's own stub is gone by now; the text's keeps the queue.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(queue.released).toBe(false);
+
+    expect(await new Response(result.text).text()).toBe(new TextDecoder().decode(PDF_BYTES));
+    expect(queue.observations.map(o => o.description).at(-1)).toBe(
+      "Read Drive file pdf-1 whole, to render its pages and transcribe them.");
+    await vi.waitFor(() => expect(queue.released).toBe(true));
+  });
+
+  it("renders a scanned PDF in the renderer Worker, reading it whole as a content read of its own once the text is read", async () => {
+    const events: string[] = [];
+    providerDownload = range => {
+      events.push(`download ${range ?? "whole"}`);
+      return rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN);
+    };
+    const converter = renderingConverter(kind => events.push(kind));
+    const { queue, session } = directSession(converter.convert);
+    queue.onAuthorized = ({ description }) => events.push(description);
+
+    const result = await session.readPdf("pdf-1", { ocr: true });
+    session[Symbol.dispose]();
+    expect(result).toMatchObject({ hasText: false, transcribed: true });
+    // Nothing more is read, authorized or sent until the text is read.
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const converted = [
+      "Check current metadata for Drive file pdf-1 and open it as a PDF.", "download whole", "conversion",
+      "Read the text of Drive file pdf-1.",
+    ];
+    expect(events).toEqual(converted);
+    expect(queue.released).toBe(false);
+
+    // The page is cut into bands, and the model reads the same on each.
+    const transcript = await new Response(result.text).text();
+    const bands = converter.images().length;
+    expect(bands).toBeGreaterThan(1);
+    expect(transcript).toBe(`### Page 1\n${Array.from({ length: bands }, () => MODEL_TEXT).join("\n")}`);
+    expect(events.slice(converted.length)).toEqual([
+      `download ${FAX_RANGE}`, WHOLE_READ, ...Array.from({ length: bands }, () => "model"),
+    ]);
+    expect(queue.observations.map(({ title, description, subresources }) =>
+      ({ title, description, subresources })).at(-1)).toEqual({
+      title: "Read PDF from Google Drive", description: WHOLE_READ, subresources: ["drive/content/pdf-1"],
+    });
+    for (const { mimeType, bytes } of converter.images()) {
+      expect(mimeType).toBe("image/png");
+      // Every band is as wide as a US Letter page drawn at 150 pixels an inch.
+      expect(new DataView(bytes.buffer).getUint32(16)).toBe(1275);
+    }
+    await vi.waitFor(() => expect(queue.released).toBe(true));
+  });
+
+  it("renders a scanned PDF read over RPC, and lets its queue go at the text's end", async () => {
+    providerDownload = range => rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN);
+    const converter = renderingConverter();
+    const { queue, session } = newSession(converter.convert);
+
+    const result = await session.readPdf("pdf-1", { ocr: true });
+    session[Symbol.dispose]();
+    expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
+    const transcript = await new Response(result.text).text();
+    expect(transcript).toBe(`### Page 1\n${Array.from({ length: converter.images().length }, () => MODEL_TEXT).join("\n")}`);
+    expect(providerRanges).toEqual([null, FAX_RANGE]);
+    await vi.waitFor(() => expect(queue.released).toBe(true));
+  });
+
+  it("lets go of a rendered text's queue when it is cancelled, unread or partway", async () => {
+    providerDownload = range => rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN);
+    const converter = renderingConverter();
+    const unread = directSession(converter.convert);
+    const first = await unread.session.readPdf("pdf-1", { ocr: true });
+    unread.session[Symbol.dispose]();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(unread.queue.released).toBe(false);
+    await first.text.cancel();
+    await vi.waitFor(() => expect(unread.queue.released).toBe(true));
+    // The file was never read again.
+    expect(providerRanges).toEqual([null]);
+
+    // Cancelled while the file is being read into the renderer: the read that never ends is let go.
+    const download = { cancelled: 0, reached: () => {} };
+    const reached = new Promise<void>(resolve => { download.reached = resolve; });
+    providerDownload = range => range !== FAX_RANGE ? rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN)
+      : new Response(new ReadableStream<Uint8Array>({
+        pull(controller) {
+          download.reached();
+          controller.enqueue(FAX_SCAN.slice(0, 100));
+          return new Promise<void>(() => {});
+        },
+        cancel() { download.cancelled++; },
+      }, { highWaterMark: 0 }), {
+        status: 206, headers: { "Content-Range": `bytes 0-${FAX_SCAN.byteLength - 1}/${FAX_SCAN.byteLength}` },
+      });
+    const partway = directSession(converter.convert);
+    const second = await partway.session.readPdf("pdf-1", { ocr: true });
+    partway.session[Symbol.dispose]();
+    const reader = second.text.getReader();
+    void reader.read().catch(() => undefined);
+    await reached;
+    await reader.cancel();
+    await vi.waitFor(() => expect(partway.queue.released).toBe(true));
+    await vi.waitFor(() => expect(download.cancelled).toBe(1));
+    expect(converter.images()).toEqual([]);
+  });
+
+  it("fails a rendered text when the file is no longer the size it was converted at, letting its queue go", async () => {
+    // The file has grown by the time it is read again.
+    providerDownload = range => rangedDownload(range, FAX_SCAN.byteLength + (range ? 1 : 0), FAX_SCAN);
+    const converter = renderingConverter();
+    const { queue, session } = directSession(converter.convert);
+
+    const result = await session.readPdf("pdf-1", { ocr: true });
+    session[Symbol.dispose]();
+    await expect(new Response(result.text).text())
+      .rejects.toThrow("The Drive file changed while it was being read; read it again.");
+    expect(queue.observations.map(o => o.description)).not.toContain(WHOLE_READ);
+    expect(converter.images()).toEqual([]);
+    await vi.waitFor(() => expect(queue.released).toBe(true));
+  });
+
+  it("holds no queue for a PDF with text that holds no image, and reads nothing of it again", async () => {
+    const converter = renderingConverter(undefined, MIXED_MARKDOWN);
+    const { queue, session } = directSession(converter.convert);
+
+    const result = await session.readPdf("pdf-1", { ocr: true });
+    expect(result).toMatchObject({ hasText: true, transcribed: false });
+    session[Symbol.dispose]();
+    await vi.waitFor(() => expect(queue.released).toBe(true));
+    expect(await new Response(result.text).text()).toBe("### Page 2\nAppendix of the ledger\n\n");
+    expect(providerRanges).toEqual([null]);
+    expect(converter.images()).toEqual([]);
   });
 
   it("refuses an option that is not a boolean at the RPC boundary", async () => {

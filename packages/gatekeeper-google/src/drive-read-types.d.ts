@@ -157,8 +157,10 @@ export type DriveSessionSearchQuery =
 export type DrivePdfReadOptions = {
   /**
    * Transcribe a scanned or image-only PDF, which has no text of its own, by having a vision
-   * model read its page images. Off by default, since each page is a billed model call. A PDF
-   * with any text of its own is returned as that text whether or not this is set.
+   * model read its pages. Off by default, since the model's calls are billed: up to four for a
+   * page that is drawn, more when a part of it is asked for again, and one for a page read as
+   * the file stores it (see `readPdf()`). A PDF with any text of its own is returned as that
+   * text whether or not this is set.
    */
   ocr?: boolean;
 };
@@ -171,11 +173,23 @@ export type DrivePdfText = {
    * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
    * `hasText` is false and `transcribed` is too. A failure partway through errors the stream.
    *
-   * When `transcribed`, each page is read from Drive and transcribed only as you read the text, so
-   * stop reading, and cancel, to stop paying for pages you do not need. Read it without long
-   * pauses: a transcription left unread for a minute, or whose model stops answering for one, is
-   * ended with an error, and the PDF must be read again. Pages are numbered in the order the file
-   * stores their images, which is page order for a scanner's output.
+   * When `transcribed`, the pages are read only as you read the text, a page at a time, so stop
+   * reading, and cancel, to stop paying for pages you do not need. Read it straight away and
+   * without long pauses: a transcription with nothing moving for a minute, because it was left
+   * unread or the model stopped answering, is ended with an error. It also errors when the file
+   * has changed since `readPdf()` read it, as its pages are read from Drive again while the text
+   * is; when the model fails on a page; and when the pages have to be drawn and cannot be: at
+   * all, as for a file that does not open or has more than 2,000 pages, or just now. A text that
+   * errors did not give the whole PDF, whatever its error says: read the PDF again, a minute
+   * later when it had given nothing.
+   *
+   * Each line quoted here is a note on its page, not the document's text. A page the model
+   * read may end with "[The transcription of this page was cut off.]" or "[This page was read
+   * from a drawing at half the usual resolution, which is what its size allowed, so its text may
+   * be less exact.]". A page of a scanned PDF may have for its text "[This page could not be
+   * drawn within the memory and work a page is allowed, so it was not read.]" or "[This page
+   * came out blank: it has nothing on it, or its image could not be read.]"; a page with nothing
+   * on it has its heading alone.
    */
   text: ReadableStream<Uint8Array>;
   /** False for a scanned or image-only PDF, which has no text layer. */
@@ -286,16 +300,34 @@ export interface GoogleDriveReadSession {
    * when the Google account was connected before Drive bindings could read file content.
    *
    * A scanned PDF has no text: `hasText` is false and `text` is empty. Pass `{ ocr: true }` to
-   * have its pages transcribed instead (see `DrivePdfText.transcribed`). Every image in the file
-   * that is at least 200 pixels on each side, and is not a mask, is read as one page, so a PDF
-   * with no such image still comes back empty with `transcribed` false, and a page the file
-   * stores as several images comes back as several pages, less any piece smaller than that.
-   * Pages stored as JPEG are read, and so are losslessly compressed (Flate) pages in plain grey
-   * or RGB. It fails, before transcribing anything, for an encrypted PDF; for a page, or a mask
-   * the size of one (where a scan stored in layers keeps its text), stored as fax or JBIG2; for
-   * a page stored as JPEG 2000 or as any other kind of image, such as one with a palette or in
-   * CMYK; for a page image that is over 12 MiB as stored, that would have to be uncompressed to
-   * over 128 MiB, or that is not where the file says it is; and for more than 2,000 page images.
+   * have its pages transcribed instead (see `DrivePdfText.transcribed`). An encrypted PDF fails.
+   *
+   * A PDF without text of up to 16 MiB has its pages drawn, so it is read however its images
+   * are stored: as fax, JBIG2 or JPEG 2000, with a palette or in CMYK, in layers, tiles or
+   * strips, or turned, and so is writing that is drawn as shapes and not kept as text.
+   * Each page is drawn in grey, at 150 dpi or fewer for a large one, and cut across where the
+   * least is written into up to four bands. Each band with anything on it is one model call,
+   * and a second when the first failed or its answer was cut off, kept repeating itself or is
+   * short for what the band holds. The bands' texts follow one another under the page's
+   * heading, so a table or a paragraph that a cut falls in comes back in two parts. Pages are
+   * numbered as the document orders them.
+   *
+   * A larger scan is read as the file stores it, and so is a smaller one whose pages cannot be
+   * drawn when `text` is first read, where it can be. Every image at least 200 pixels on each
+   * side that is not a mask is read as one page, in one model call, numbered in the order the
+   * file stores them, which is page order for a scanner's output; a page stored as several
+   * images comes back as several pages, less any piece smaller than that. Pages stored as JPEG
+   * are read so, and losslessly compressed (Flate) ones in plain grey or RGB. A larger PDF that
+   * holds no image comes back empty with `transcribed` false. For a larger scan `readPdf()`
+   * fails, before transcribing anything, for a page, or a mask the size of one
+   * (where a scan stored in layers keeps its text), stored as fax or JBIG2; for a page stored
+   * as JPEG 2000 or as any other kind of image, such as one with a palette or in CMYK; for a
+   * page image that is over 12 MiB as stored, that would have to be uncompressed to over 128
+   * MiB, or that is not where the file says it is; for more than 2,000 page images; for
+   * images that are all too small to be pages, or masks; and when an edit to the file replaced
+   * an image that had a mask.
+   *
+   * Where pages cannot be drawn at all, every scan is read as a larger one is.
    */
   readPdf(fileId: string, options?: DrivePdfReadOptions): Promise<DrivePdfText>;
 

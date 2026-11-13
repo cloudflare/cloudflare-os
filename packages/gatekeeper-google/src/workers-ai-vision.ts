@@ -13,17 +13,31 @@ const MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const RUN_URL = "https://workers-binding.ai/run?version=3";
 const GATEWAY_RUN_URL = "https://workers-binding.ai/ai-gateway/run?version=3";
 
-const PROMPT = "Transcribe the text of this scanned page exactly as it is printed, in reading " +
+/** What a page is to be read as, and what the model is to do with a page that has nothing to read. */
+const PAGE_RULES = "Transcribe the text of this scanned page exactly as it is printed, in reading " +
   "order. Write each paragraph on one line, headings and lists as Markdown, and tables as " +
-  "Markdown tables. Do not describe the page, comment on it, or correct what it says. If the " +
-  "page has no text, reply with nothing at all.";
+  "Markdown tables. Do not describe the page, comment on it, or correct what it says.";
+const NO_TEXT_RULE = "If the page has no text, reply with nothing at all.";
+const PROMPT = `${PAGE_RULES} ${NO_TEXT_RULE}`;
+/**
+ * The prompt for one band of a page: the page's own, and one sentence more. Measured on rendered
+ * pages, a prompt that said the image is a band which may begin or end inside a table made the
+ * model stop short of a long band's end, where the page's prompt had it read to the end. Under
+ * the page's prompt alone it wrote a stamp as a Markdown image, at times with an address it made
+ * up, which the added sentence stops. A table that goes on from the band above may still come
+ * with an empty header row, which is what Markdown has for a table without one.
+ */
+const BAND_PROMPT = `${PAGE_RULES} Never write an image or a link: of a stamp, a logo or a ` +
+  `picture, write only the words printed in it. ${NO_TEXT_RULE}`;
 /** Enough for the densest page; what a model stuck repeating itself is stopped at. */
 const MAX_TOKENS = 8192;
 /**
  * The model's settings. `temperature: 0` because a transcription is not to be varied. Thinking is
  * off because, measured on scanned pages, it tripled the tokens and the time a page takes (about
  * 1,100 tokens against 340) and held the text back until it was over, without making a poor scan
- * any better read: it saved a word or two on clean pages only.
+ * any better read: it saved a word or two on clean pages only. No seed is sent, so an image asked
+ * for twice is asked for by one request: measured on a band of a clean page, the model gave one
+ * answer whatever seed it was sent.
  */
 const SETTINGS = {
   temperature: 0, max_tokens: MAX_TOKENS, stream: true,
@@ -37,6 +51,12 @@ const MAX_LINE_CHARS = 256 * 1024;
 
 /** One image to transcribe. */
 export type ImageSource = { mimeType: "image/jpeg" | "image/png"; body: ReadableStream<Uint8Array> };
+
+/** How an image is asked for. */
+export type TranscribeOptions = {
+  /** Whether the image is one horizontal band of a page, not a whole page. */
+  band?: boolean;
+};
 
 /** A failed transcription, with why it failed and how much of the image had been sent. */
 export class TranscriptionError extends Error {
@@ -67,13 +87,14 @@ export type Transcription = {
  * read. A failed request rejects with a {@link TranscriptionError}, and a failure of the image
  * stream itself with that failure as it is; either way the image is released. Aborting `signal`
  * gives up a request the service has not answered yet, which fails as any other, and releases
- * the image at once.
+ * the image at once. `options` says what the image is, which chooses the prompt.
  */
 export async function transcribeImage(
   ai: AiFetcher, gatewayId: string | undefined, image: ImageSource, signal?: AbortSignal,
+  { band }: TranscribeOptions = {},
 ): Promise<Transcription> {
   // {"inputs":{"messages":[{role, content:[{text}, {image_url:{url}}]}], …settings},"options":…}
-  let text = JSON.stringify({ type: "text", text: PROMPT });
+  let text = JSON.stringify({ type: "text", text: band ? BAND_PROMPT : PROMPT });
   let options = gatewayId ? { gateway: { id: gatewayId } } : {};
   let { body, sent, cancelSource } = base64JsonBody(
     `{"inputs":{"messages":[{"role":"user","content":[${text},{"type":"image_url","image_url":` +
