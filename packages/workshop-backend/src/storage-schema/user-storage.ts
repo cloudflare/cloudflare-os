@@ -340,6 +340,11 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       // (-1 = never, which also lazily backfills users created before the
       // directory existed). See #syncDirectory().
       directoryRev: -1,
+      // When the account was created (see #syncDirectory()); null for one created before this
+      // was recorded.
+      createdAt: <Date | null>null,
+      // Epoch ms of the session start the directory last took (0 = none). See #syncDirectory().
+      directoryLoginAt: 0,
     }
   });
 }

@@ -46,6 +46,7 @@ it.each([
     signupsEnabled: true, userSearchEnabled: false, siteName: '', instanceInstructions: '',
     announcement: '', banner: { text: '', color: 'neutral' }, accentColor: '', formats: [],
     restrictedWebFetchHosts: [], restrictedWebFetchApprovals: false,
+    adminWorkspaceAccess: { effective: 'metadata', chosen: 'metadata', max: 'metadata' },
     adminAuditRetentionDays: { effective: 30, chosen: 30, min: 30 },
     resourceVendors: [vendor],
   }
