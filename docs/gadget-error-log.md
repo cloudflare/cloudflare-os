@@ -264,7 +264,8 @@ Three safeguards cover a workspace id that is initialised again:
 - The log object's name is random and stored with the workspace (`errorLogId`). The id's next life
   starts with no log, and a write that lands late lands where nobody reads, to expire on its own.
 - A gadget Worker's trace carries the name of the log object the Worker was loaded for, and is kept
-  only there.
+  only there. The name is also part of the key a Worker is cached under, so the id's next life
+  loads Workers of its own, though it repeats the earlier one's code versions and gadget ids.
 - The instance that deleted a workspace initialises nothing.
 
 ## Tests

@@ -655,14 +655,11 @@ it("keeps no error of a deleted workspace's gadget once its id names a workspace
   expect(await kept(nextWs)).toEqual([]);
 
   // The id's next life keeps an entry of its own, in a log object of its own, for a gadget that
-  // has the id the deleted one had. A gadget's Worker is cached under the workspace's id, its
-  // code version and the gadget's id, and this life repeats all three with its first merge. So
-  // the gadget's server is merged a second time: a call then loads a Worker of this life, whose
-  // tail names this life's log object.
-  const nextApp = await seedGadget(stack, nextLife);
+  // has the id the deleted one had. Its first merge repeats the code version of the deleted
+  // workspace's as well, and a call then loads a Worker of this life all the same: one that runs
+  // this life's server, and whose tail names this life's log object.
+  const nextApp = await seedGadget(stack, nextLife, server("next life"));
   expect(nextApp.gadgetId).toBe(gadgetId);
-  const change = await proposeServer(nextLife, nextApp, MAINLINE, server("next life"));
-  expect(await nextWs.mergeChanges(change)).toEqual({ outcome: "merged" });
   await fail(nextApp.gadget, "next life");
   const own = failure(gadgetId, null, "next life");
   expect(await keptCount(nextWs, {}, 1)).toStrictEqual([own]);

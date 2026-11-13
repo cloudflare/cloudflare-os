@@ -1827,6 +1827,45 @@ describe("a gadget Worker's trace", () => {
     expect(texts(await ws.impl.readGadgetErrors())).toStrictEqual(["second life"]);
   }), GADGET_TEST_MS);
 
+  it("is kept from the Worker that a workspace loads under a deleted one's id, code version and " +
+      "gadget id", () => withWorkspace(async ws => {
+    // An export handler that leaves an exception to the runtime, told apart by `life`.
+    let server = (life: string) => ({ "server.js": `
+import { WorkerEntrypoint } from "cloudflare:workers";
+export class ExportHandler extends WorkerEntrypoint {
+  async getExportFormats(gadget) {
+    this.ctx.waitUntil(Promise.reject(new Error("${life} life formats failed")));
+    return [];
+  }
+}
+` });
+    let readFormats = () =>
+        ws.impl.loadGadgetWorker(GADGET_ID).getEntrypoint("ExportHandler").getExportFormats(null);
+    let keptTexts = async () =>
+        texts(await ws.impl.readGadgetErrors()).map(text => text.split("\n")[0]);
+
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, server("first"));
+    let codeVersion = ws.impl.storage.codeVersion.get();
+    await readFormats();
+    await vi.waitFor(async () => expect(await keptTexts())
+        .toStrictEqual(["Error: first life formats failed"]), KEPT_SOON);
+
+    beginDeletion(ws);
+    await ws.impl.deliverUserUpdates();
+    expect(storageKeys(ws)).toStrictEqual([]);
+
+    // The id's next life repeats the code version and the gadget's id. The Worker it loads is
+    // its own all the same: it runs this life's code, and what it throws is kept in this life's
+    // log object.
+    initialise(ws);
+    await addGadget(ws, GADGET_ID, server("next"));
+    expect(ws.impl.storage.codeVersion.get()).toBe(codeVersion);
+    await readFormats();
+    await vi.waitFor(async () => expect(await keptTexts())
+        .toStrictEqual(["Error: next life formats failed"]), KEPT_SOON);
+  }), GADGET_TEST_MS);
+
   it("keeps nothing when export formats are read for a gadget with no ExportHandler",
       () => withWorkspace(async ws => {
     initialise(ws);

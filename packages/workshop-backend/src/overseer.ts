@@ -5057,7 +5057,14 @@ class OverseerImpl implements AgentHooks {
       codeVersion += `.${chatId}.${sequence}`;
     }
 
-    return this.env.LOADER.get(`${this.ctx.id}.${codeVersion}.${gadgetId}`, async () => {
+    // The name of this workspace's log object, which the Worker's tail carries and the cache key
+    // holds. A workspace initialised again under a deleted one's id starts again at that one's
+    // code versions and gadget ids, and the name is what the two never share: with it in the key,
+    // the workspace is never handed a Worker that the deleted one loaded, which would run that
+    // one's code and name its log object.
+    let errorLogId = this.errorLogName();
+
+    return this.env.LOADER.get(`${this.ctx.id}.${errorLogId}.${codeVersion}.${gadgetId}`, async () => {
       // The snapshot meta above serves the as-of-`sequence` doc build; this re-read only keeps
       // the old fail-on-deleted-chat behavior (don't cache a load for a chat deleted mid-load).
       if (chatId !== undefined) this.getChatMetaOrThrow(chatId);
@@ -5088,7 +5095,7 @@ class OverseerImpl implements AgentHooks {
         chatId,
         gadgetId,
         overseerId: this.ctx.id.toString(),
-        errorLogId: this.errorLogName(),
+        errorLogId,
       };
 
       return {
