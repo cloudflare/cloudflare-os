@@ -26,6 +26,11 @@ export class ChatSessions {
     return session
   }
 
+  /** Connects every session that is held again, such as over a new connection to the backend. */
+  reconnect() {
+    for (const session of this.#holds.keys()) session.reconnect()
+  }
+
   /** Keeps `session` connected until the function returned is called. The last to let go stops it. */
   hold(session: ChatSession): () => void {
     const holds = this.#holds.get(session) ?? 0

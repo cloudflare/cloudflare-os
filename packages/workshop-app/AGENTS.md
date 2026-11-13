@@ -32,6 +32,13 @@ and layouts take plain typed props and callbacks.
 Put protocol logic in plain classes and functions with no React (like `ChatSession`), so it can be
 tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs the tests.
 
+A lost connection leaves the app as it is. Only the first connection has the page to itself;
+after that `RpcGate` keeps rendering what it did, with `ApiSession.reconnecting` set (the shell
+says so with `ConnectionStatus`), and signs in again on the new connection, whose `api` replaces
+the old. Whatever holds stubs starts over on the new `api` without dropping what it shows: the
+chats (`ChatSessions.reconnect`) and the gadget beside the page read again over what is shown, and
+the lists load again with the old ones up meanwhile.
+
 Build UI by looking at the component gallery (`/gallery`) first: add each new component or block
 there so its states can be reviewed in isolation.
 

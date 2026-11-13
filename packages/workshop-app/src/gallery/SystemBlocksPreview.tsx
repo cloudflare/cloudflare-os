@@ -1,4 +1,6 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { ConnectionStatus } from '@/blocks/ConnectionStatus'
+import { Button } from '@/components/Button'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { SystemRow } from '@/blocks/SystemRow'
@@ -10,6 +12,8 @@ const Column = ({ children }: { children: ReactNode }) => <div className="flex w
 /** The quiet rows for what nobody said, and the ways a turn can fail. */
 export const SystemBlocksPreview = () => {
   const { report, after } = useReport()
+  // Bumped to show the status arriving again.
+  const [drop, setDrop] = useState(0)
 
   return (
     <>
@@ -29,6 +33,10 @@ export const SystemBlocksPreview = () => {
           <ErrorMessage onRetry={after('retry')}>The connection to the model was lost while it was answering.</ErrorMessage>
           <ErrorMessage variant="usageLimit" onContinue={after('continue')}>You’ve used all of this month’s credits.</ErrorMessage>
         </Column>
+      </Section>
+      <Section title="ConnectionStatus (over the top of the app while a lost connection is made again, with everything left as it was; held back a moment, as most drops are soon over)">
+        <ConnectionStatus key={drop} />
+        <Button onClick={() => setDrop((current) => current + 1)}>Lose the connection again</Button>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
     </>

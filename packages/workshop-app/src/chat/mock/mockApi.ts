@@ -38,5 +38,5 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
   })
   // The real API is an RPC stub whose every call is a pipelined promise; the fake answers with
   // plain objects, which is all the app awaits.
-  return { session: { api: api as unknown as ApiSession['api'], user: VIEWER }, overseer }
+  return { session: { api: api as unknown as ApiSession['api'], user: VIEWER, reconnecting: false }, overseer }
 }

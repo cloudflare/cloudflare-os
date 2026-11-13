@@ -15,7 +15,8 @@ type Session =
   | { phase: 'connecting' }
   | { phase: 'signedOut' }
   | { phase: 'failed'; message: string }
-  | { phase: 'ready'; value: ApiSession }
+  // With the same session as it is shown while a lost connection is made again.
+  | { phase: 'ready'; value: ApiSession; reconnecting: ApiSession }
 
 const CONNECTING: Session = { phase: 'connecting' }
 
@@ -25,7 +26,9 @@ const Notice = ({ children }: { children: ReactNode }) => (
 
 /**
  * Renders `children` once the connection is up and the user is signed in, and a short notice until
- * then. A dropped connection returns to "Connecting…" and signs in again on the new one.
+ * then. A dropped connection signs in again on the new one; meanwhile `children` stay as they are,
+ * told that it is reconnecting (`ApiSession.reconnecting`), so that nothing open is lost. Only the
+ * first connection is waited for with the page to itself.
  */
 export const RpcGate = ({ connection, children }: { connection: Connection; children: ReactNode }) => {
   const { publicApi } = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
@@ -47,7 +50,8 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
         if (!token) return finish({ phase: 'signedOut' })
         // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
         api = publicApi.authenticate(token)
-        finish({ phase: 'ready', value: { api, user: await api.whoami() } })
+        const value: ApiSession = { api, user: await api.whoami(), reconnecting: false }
+        finish({ phase: 'ready', value, reconnecting: { ...value, reconnecting: true } })
       } catch (error) {
         if (getAuthErrorCode(error) === AUTH_ERROR_CODES.invalidSessionToken) {
           clearToken()
@@ -66,6 +70,9 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
   }, [publicApi])
 
   const session = publicApi && state?.owner === publicApi ? state.session : CONNECTING
+  // What was signed in on the connection before, until this one is.
+  const kept = state?.session.phase === 'ready' ? state.session : undefined
+  if (session.phase === 'connecting' && kept) return <ApiContext value={kept.reconnecting}>{children}</ApiContext>
 
   switch (session.phase) {
     case 'connecting':

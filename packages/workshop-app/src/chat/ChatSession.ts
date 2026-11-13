@@ -226,12 +226,38 @@ export class ChatSession {
     const run = ++this.#run
     this.#reset()
     this.#publish(LOADING)
-    void this.#load(run)
+    void this.#load(run, false)
   }
 
   stop() {
     this.#run++
     this.#reset()
+    this.#release()
+  }
+
+  /**
+   * Connects to the workspace again, such as over a new connection to the backend, and reads the
+   * conversation again. What is shown stays until the new history is in, which then takes its
+   * place, so a reader keeps their place. Nothing, for a session that is not started.
+   */
+  reconnect() {
+    if (!this.#overseer) return
+    const run = ++this.#run
+    this.#release()
+    const refreshing = this.#snapshot.status === 'ready'
+    if (refreshing) {
+      // Only what belongs to the connection is let go of now; the rest goes when the history is in.
+      this.#loaded = false
+      this.#early = []
+      this.#generation = undefined
+    } else {
+      this.#reset()
+      this.#publish(LOADING)
+    }
+    void this.#load(run, refreshing)
+  }
+
+  #release() {
     for (const lease of this.#leases.splice(0)) {
       void lease.then(
         (held) => held[Symbol.dispose](),
@@ -250,7 +276,14 @@ export class ChatSession {
    */
   send = async (text: string, modelId: string, files: readonly File[] = []): Promise<boolean> => {
     const overseer = this.#overseer
-    if (!overseer || !this.#loaded) return false
+    if (!overseer || !this.#loaded) {
+      // Shown but not loaded: what is shown is from before a reconnect, which is under way.
+      if (this.#snapshot.status === 'ready') {
+        this.#sendError = 'The conversation is reconnecting. Try again in a moment.'
+        this.#publishReady()
+      }
+      return false
+    }
     const run = this.#run
     this.#sendError = undefined
     // Only plain text steers a running agent; the server refuses anything else until it is done.
@@ -515,7 +548,8 @@ export class ChatSession {
     })
   }
 
-  async #load(run: number) {
+  /** Loads the chat for run `run`; `refreshing`, over what is shown, which stays until the history is in. */
+  async #load(run: number, refreshing: boolean) {
     const overseer = this.open()
     this.#overseer = overseer
     try {
@@ -542,8 +576,23 @@ export class ChatSession {
       const history = await overseer.getChatHistory(this.chatId, undefined, HISTORY_PAGE_SIZE)
       if (run !== this.#run) return
 
-      this.#messages = new Map(history.messages.map((message) => [message.sequence, message]))
-      this.#nextBeforeSequence = history.nextBeforeSequence
+      // Read again over what was shown, the earlier pages that had been fetched stay, so that a
+      // reader further up keeps their place.
+      let earlier: AiChatMessage[] = []
+      let nextBeforeSequence = history.nextBeforeSequence
+      if (refreshing) {
+        const pageStart = history.nextBeforeSequence
+        earlier = pageStart === undefined ? [] : [...this.#messages.values()].filter(({ sequence }) => sequence < pageStart)
+        if (earlier.length) nextBeforeSequence = this.#nextBeforeSequence
+        // What this run has received so far goes on top of the history.
+        const early = this.#early
+        const generation = this.#generation
+        this.#reset()
+        this.#early = early
+        this.#generation = generation
+      }
+      this.#messages = new Map([...earlier, ...history.messages].map((message) => [message.sequence, message]))
+      this.#nextBeforeSequence = nextBeforeSequence
       this.#rebuildFeed()
       this.#loaded = true
       for (const apply of this.#early.splice(0)) apply()

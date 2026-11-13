@@ -1129,4 +1129,72 @@ describe('ChatSession', () => {
       expect(ready(session).items).toEqual([])
     })
   })
+
+  describe('reconnect', () => {
+    it('keeps what is shown until the conversation has been read again, then shows that', async () => {
+      const history = deferred<AiChatHistoryPage>()
+      const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi'), agentMessage(1, 'hello')) })
+      const two = fakeOverseer(Promise.resolve([chat(0, 'Renamed', 2)]))
+      two.getChatHistory.mockReturnValueOnce(history.promise)
+      const overseers = [one.overseer, two.overseer]
+      const session = new ChatSession(() => overseers.shift()!, 0)
+      session.start()
+      await settled(session)
+      const shown = session.getSnapshot()
+
+      session.reconnect()
+      await flush()
+      expect(one.dispose).toHaveBeenCalledOnce()
+      expect(one.leaseDispose).toHaveBeenCalledOnce()
+      expect(session.getSnapshot()).toBe(shown)
+      // Live updates from the new connection wait for its history.
+      two.server().message(agentMessage(3, 'live'))
+      expect(session.getSnapshot()).toBe(shown)
+
+      history.resolve(page(userMessage(0, 'hi'), agentMessage(1, 'hello'), userMessage(2, 'while away')))
+      await vi.waitFor(() => expect(ready(session).items.map((item) => item.kind === 'user' || item.kind === 'assistant' ? item.text : item.kind)).toEqual(['hi', 'hello', 'while away', 'live']))
+      await flush()
+      expect(ready(session).title).toBe('Renamed')
+    })
+
+    it('keeps the earlier pages that had been fetched, so a reader further up keeps their place', async () => {
+      const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      one.getChatHistory
+        .mockResolvedValueOnce({ messages: [userMessage(2, 'two'), agentMessage(3, 'three')], nextBeforeSequence: 2 })
+        .mockResolvedValueOnce({ messages: [userMessage(0, 'zero'), agentMessage(1, 'one')] })
+      const two = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      two.getChatHistory.mockResolvedValueOnce({ messages: [agentMessage(3, 'three'), userMessage(4, 'four')], nextBeforeSequence: 3 })
+      const overseers = [one.overseer, two.overseer]
+      const session = new ChatSession(() => overseers.shift()!, 0)
+      session.start()
+      await settled(session)
+      await session.loadEarlier()
+      expect(ready(session).hasEarlier).toBe(false)
+
+      session.reconnect()
+      await vi.waitFor(() => expect(ready(session).items).toHaveLength(5))
+      expect(ready(session).hasEarlier).toBe(false)
+    })
+
+    it('says a message cannot be sent while it is under way', async () => {
+      const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const two = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      two.getChatHistory.mockReturnValueOnce(deferred<AiChatHistoryPage>().promise)
+      const overseers = [one.overseer, two.overseer]
+      const session = new ChatSession(() => overseers.shift()!, 0)
+      session.start()
+      await settled(session)
+
+      session.reconnect()
+      expect(await session.send('hello', 'model-1')).toBe(false)
+      expect(ready(session).sendError).toBe('The conversation is reconnecting. Try again in a moment.')
+      expect(two.sendChatMessage).not.toHaveBeenCalled()
+    })
+
+    it('does nothing for a session that is not started', () => {
+      const open = vi.fn<() => ChatOverseer>()
+      new ChatSession(open, 0).reconnect()
+      expect(open).not.toHaveBeenCalled()
+    })
+  })
 })
