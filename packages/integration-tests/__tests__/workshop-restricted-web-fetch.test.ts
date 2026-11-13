@@ -197,8 +197,9 @@ it("asks the user before a sub-agent fetches a URL the trusted hosts refuse", as
       using spawner = await ws.newAgentSpawnerGatekeeper({
         displayName: "Research agents", modelId: SCRIPTED_MODEL_ID, env: {},
       });
+      const spawnerId = await spawner.getId();
       using gadget = await ws.getGadget(summary.id);
-      await gadget.bind("SPAWNER", await spawner.getId());
+      await gadget.bind("SPAWNER", spawnerId);
       using researcher = await gadget.connectToGadget() as RpcStub<Researcher>;
       await researcher.research();
 
@@ -210,10 +211,14 @@ it("asks the user before a sub-agent fetches a URL the trusted hosts refuse", as
       }
       expect(asked).toMatchObject({ url, state: "pending" });
       expect(webRequests).not.toContain(url);
+      // The chat list hears which spawner ran it, and that it is waiting on the user.
+      const listed = async () => (await ws.listChats()).find(({ id }) => id === chat.id);
+      expect(await listed()).toMatchObject({ spawnerId, awaitingDecision: true });
 
       await ws.approveWebFetchRequest(asked.requestId);
       expect(await ws.waitForAgent(chat.id)).toMatchObject({ type: "message", message: "Fetched." });
       expect(webRequests).toContain(url);
+      expect((await listed())?.awaitingDecision).toBeUndefined();
     });
   } finally {
     await admin.setRestrictedWebFetchApprovals(false);
