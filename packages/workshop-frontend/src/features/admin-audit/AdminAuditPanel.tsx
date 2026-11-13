@@ -236,8 +236,9 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
           <div className="min-w-0 flex-1">
             <h2 id={activityHeading} className="text-lg font-semibold text-kumo-strong">Admin activity</h2>
             <p className="text-sm text-kumo-subtle mt-0.5">
-              Every change an admin makes to the deployment&rsquo;s settings, and every admin call into a
-              workspace or a user&rsquo;s account, kept for {NUMBER.format(retention.effective)} days.
+              Every change an admin makes to the deployment&rsquo;s settings, every admin call into a
+              workspace or a user&rsquo;s account, and every step of an admin write to a workspace, kept
+              for {NUMBER.format(retention.effective)} days.
             </p>
           </div>
           <Button
