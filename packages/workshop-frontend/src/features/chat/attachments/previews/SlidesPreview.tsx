@@ -1,8 +1,9 @@
 import { use, useEffect, useRef, useState } from "react";
-import { readPptxSlides, type SlideDeck, type SlideUnsupportedKind } from "@gadgets/office-content/pptx-slides";
+import type { SlideDeck, SlideUnsupportedKind } from "@gadgets/office-content/pptx-slides";
 import type { AttachmentPreviewProps } from "../attachmentPreviewers";
 import { derivedFrom } from "../derivedFrom";
 import { assertOpenXml } from "./assertOpenXml";
+import { readOffice } from "./officeReader";
 import { SlideFrame } from "./SlideFrame";
 
 /** Slides are drawn no wider than this, however wide the viewer. */
@@ -18,7 +19,7 @@ const UNSUPPORTED_NAMES: Record<SlideUnsupportedKind, string> = {
 /** A deck's slides, refusing a password-protected file. */
 export const readDeck = async (bytes: Uint8Array): Promise<SlideDeck> => {
   assertOpenXml(bytes);
-  return readPptxSlides(bytes);
+  return readOffice("slides", bytes, {});
 };
 
 const listFormat = new Intl.ListFormat("en", { type: "conjunction" });

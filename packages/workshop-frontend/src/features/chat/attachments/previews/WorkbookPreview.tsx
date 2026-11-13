@@ -1,16 +1,17 @@
 import { use, useState } from "react";
 import { Tabs } from "@cloudflare/kumo";
-import { readWorkbookSheets, type UndrawnFeature } from "@gadgets/office-content/xlsx-sheets";
+import type { UndrawnFeature } from "@gadgets/office-content/xlsx-sheets";
 import type { AttachmentPreviewProps } from "../attachmentPreviewers";
 import { derivedFrom } from "../derivedFrom";
 import { assertOpenXml } from "./assertOpenXml";
+import { readOffice } from "./officeReader";
 import { MAX_GRID_COLUMNS, MAX_GRID_ROWS } from "./DataGrid";
 import { SheetGrid } from "./SheetGrid";
 
 /** A workbook's sheets, refusing a password-protected file. */
 export const readSheets = async (bytes: Uint8Array) => {
   assertOpenXml(bytes);
-  return readWorkbookSheets(bytes, { maxRows: MAX_GRID_ROWS, maxColumns: MAX_GRID_COLUMNS });
+  return readOffice("workbook", bytes, { maxRows: MAX_GRID_ROWS, maxColumns: MAX_GRID_COLUMNS });
 };
 
 const UNDRAWN_NAMES: Record<UndrawnFeature, string> = {

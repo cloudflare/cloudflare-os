@@ -32,6 +32,8 @@ const mount = async (fixture: StyledXlsxFixture) => {
       </div>
     </ThemeProvider>,
   ));
+  // The workbook is read in a worker, so the grid arrives after the render.
+  await expect.poll(() => host!.querySelector("table")).toBeTruthy();
 };
 
 const text = (reference: string, value: string, style = 0) =>

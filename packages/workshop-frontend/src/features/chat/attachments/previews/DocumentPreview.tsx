@@ -1,10 +1,11 @@
 import { use, useEffect, useRef, useState } from "react";
 import {
-  readDocxDocument, type DocxBlock, type DocxDocument, type DocxUnsupportedKind,
+  type DocxBlock, type DocxDocument, type DocxUnsupportedKind,
 } from "@gadgets/office-content/docx-document";
 import type { AttachmentPreviewProps } from "../attachmentPreviewers";
 import { derivedFrom } from "../derivedFrom";
 import { assertOpenXml } from "./assertOpenXml";
+import { readOffice } from "./officeReader";
 import { DocumentSheet } from "./DocumentSheet";
 import { PX_PER_PT } from "./documentStyles";
 
@@ -25,7 +26,7 @@ const OMITTED_LABELS: Readonly<Record<DocxUnsupportedKind | "notes", string>> = 
 /** A document's layout, refusing a password-protected file. */
 export const readDocument = async (bytes: Uint8Array): Promise<DocxDocument> => {
   assertOpenXml(bytes);
-  return readDocxDocument(bytes);
+  return readOffice("document", bytes, {});
 };
 
 /** The body as the runs of blocks between its page breaks, one per sheet. */

@@ -254,6 +254,7 @@ export async function readDocxDocument(bytes: Uint8Array, options: { readonly ma
     blocksLeft: Math.min(MAX_BLOCKS, options.maxBlocks ?? MAX_BLOCKS),
     cellsLeft: MAX_TABLE_CELLS,
     atPageStart: true,
+    startedPage: false,
     truncated: false,
     omitted: new Set(),
     notes: 0,
@@ -265,12 +266,17 @@ export async function readDocxDocument(bytes: Uint8Array, options: { readonly ma
   const body: DocxBlock[] = [];
   let firstSection: XmlElement | undefined;
   let sectionBreak: DocxPageBreak | undefined;
+  // Section breaks a paragraph asking to start a page took as its own, which stay even if their
+  // section turns out to continue on the same page.
+  const wanted = new Set<DocxPageBreak>();
   // A section's properties sit at its end and say how it began, so the break before a section is
   // only known to be one once that section closes.
   const endSection = (section: XmlElement): void => {
     firstSection ??= section;
     const type = attribute(firstChild(section, "w:type"), "w:val");
-    if (sectionBreak && (type === "continuous" || type === "nextColumn")) body.splice(body.lastIndexOf(sectionBreak), 1);
+    if (sectionBreak && (type === "continuous" || type === "nextColumn") && !wanted.has(sectionBreak)) {
+      body.splice(body.lastIndexOf(sectionBreak), 1);
+    }
     sectionBreak = undefined;
   };
 
@@ -286,15 +292,18 @@ export async function readDocxDocument(bytes: Uint8Array, options: { readonly ma
       document.truncated = true;
       continue;
     }
-    document.atPageStart = body.length === 0 || body.at(-1)!.kind === "pageBreak";
+    const before = body.at(-1);
+    document.atPageStart = before === undefined || before.kind === "pageBreak";
+    document.startedPage = false;
     body.push(...readBlock(element, part, undefined, 0));
+    if (document.startedPage && before !== undefined && before === sectionBreak) wanted.add(sectionBreak);
     const section = element.name === "w:p" ? firstChild(firstChild(element, "w:pPr"), "w:sectPr") : undefined;
     if (section) {
       endSection(section);
       body.push(sectionBreak = { kind: "pageBreak" });
     }
   }
-  if (sectionBreak) body.splice(body.lastIndexOf(sectionBreak), 1);
+  if (sectionBreak && !wanted.has(sectionBreak)) body.splice(body.lastIndexOf(sectionBreak), 1);
   applyContextualSpacing(body, document);
 
   // The header and footer have a budget of their own: a body that used all of its blocks still
@@ -325,6 +334,8 @@ interface DocumentContext {
   cellsLeft: number;
   /** Whether the body block being read is the first on its page. */
   atPageStart: boolean;
+  /** Set when a paragraph asked to start a page and did not need a break of its own to. */
+  startedPage: boolean;
   truncated: boolean;
   readonly omitted: Set<DocxUnsupportedKind | "notes">;
   /** Foot- and endnote references seen so far, which number them. */
@@ -425,7 +436,12 @@ function readBlock(element: XmlElement, part: PartContext, cell: CellContext | u
     case "w:p":
       return takeBlock(part.document) ? readParagraph(element, part, cell) : [];
     case "w:tbl":
-      return takeBlock(part.document) && tableDepth < MAX_TABLE_DEPTH ? [readTable(element, part, tableDepth)] : [];
+    {
+      if (!takeBlock(part.document) || tableDepth >= MAX_TABLE_DEPTH) return [];
+      const table = readTable(element, part, tableDepth);
+      if (!cell) part.document.atPageStart = false;
+      return [table];
+    }
     case "w:sdt":
       return childElements(firstChild(element, "w:sdtContent")).flatMap(child => readBlock(child, part, cell, tableDepth));
     case "w:customXml":
@@ -537,7 +553,10 @@ function readParagraph(paragraph: XmlElement, part: PartContext, cell: CellConte
   const rule = format.lineRule ?? "auto";
   const blocks: DocxBlock[] = [];
   // Page break before starts the paragraph on a page of its own, which one already starting a page does.
-  if (!cell && format.pageBreakBefore && !document.atPageStart) blocks.push({ kind: "pageBreak" });
+  if (!cell && format.pageBreakBefore) {
+    if (document.atPageStart) document.startedPage = true;
+    else blocks.push({ kind: "pageBreak" });
+  }
   let marked = false;
   flow.forEach((inlines, index) => {
     // Each page break makes a paragraph two blocks more, which the document's budget pays for.
@@ -568,6 +587,8 @@ function readParagraph(paragraph: XmlElement, part: PartContext, cell: CellConte
     blocks.push(block);
     marked = true;
   });
+  // Paragraphs inside a content control are read together, so each says where the next one starts.
+  if (!cell && blocks.length > 0) document.atPageStart = blocks.at(-1)!.kind === "pageBreak";
   return blocks;
 }
 

@@ -199,6 +199,23 @@ describe("readDocxDocument", () => {
       .toEqual(["First", "Body", "pageBreak", "Second", "pageBreak", "Third"]);
   });
 
+  it("keeps the break before a section that continues when its first paragraph asks to start a page", async () => {
+    const sectionEnd = (type: string) => `<w:p><w:pPr><w:sectPr><w:type w:val="${type}"/></w:sectPr></w:pPr></w:p>`;
+    const document = await readDocxDocument(await buildLayoutDocx({
+      body: paragraph(run("One")) + sectionEnd("nextPage") + paragraph(run("Two"), "<w:pageBreakBefore/>") +
+        `<w:sectPr><w:type w:val="continuous"/></w:sectPr>`,
+    }));
+    expect(document.body.map(block => block.kind)).toContain("pageBreak");
+  });
+
+  it("breaks before each paragraph in a content control that asks to start a page", async () => {
+    const heading = (text: string) => paragraph(run(text), "<w:pageBreakBefore/>");
+    const document = await readDocxDocument(await buildLayoutDocx({
+      body: `<w:sdt><w:sdtContent>${heading("First")}${heading("Second")}</w:sdtContent></w:sdt>`,
+    }));
+    expect(document.body.map(block => block.kind)).toEqual(["paragraph", "pageBreak", "paragraph"]);
+  });
+
   it("keeps no more tab stops for a paragraph than Word allows", async () => {
     const tabs = Array.from({ length: 1_000 }, (_, index) => `<w:tab w:val="left" w:pos="${(index + 1) * 20}"/>`).join("");
     const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x"), `<w:tabs>${tabs}</w:tabs>`) }));

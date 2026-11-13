@@ -26,6 +26,7 @@ const view = (drawn: ReactNode): AttachmentThumbnail | null => (drawn ? { type: 
 const makeThumbnail = async (
   format: PreviewFormat,
   bytes: Uint8Array,
+  signal: AbortSignal,
 ): Promise<AttachmentThumbnail | null> => {
   switch (format) {
     case "text":
@@ -39,15 +40,15 @@ const makeThumbnail = async (
     // Each Office renderer loads, like pdf.js, only once such a file is on screen.
     case "document": {
       const { documentThumbnail } = await import("./previews/DocumentThumbnail");
-      return view(await documentThumbnail(bytes));
+      return view(await documentThumbnail(bytes, signal));
     }
     case "slides": {
       const { slideThumbnail } = await import("./previews/SlideThumbnail");
-      return view(await slideThumbnail(bytes));
+      return view(await slideThumbnail(bytes, signal));
     }
     case "workbook": {
       const { sheetThumbnail } = await import("./previews/SheetThumbnail");
-      return view(await sheetThumbnail(bytes));
+      return view(await sheetThumbnail(bytes, signal));
     }
     case "pdf": {
       // pdf.js is large; it loads only once a PDF is on screen.
@@ -83,11 +84,13 @@ export const useAttachmentThumbnail = <E extends Element>(
     if (!element || !hasThumbnail(format)) return;
     let cancelled = false;
     let url: string | undefined;
+    // A card gone before its file arrives, or while it is being read, stops the read.
+    const abort = new AbortController();
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
       observer.disconnect();
       loadRef.current()
-        .then((bytes) => makeThumbnail(format, bytes))
+        .then((bytes) => (cancelled ? null : makeThumbnail(format, bytes, abort.signal)))
         .then((made) => {
           if (made?.type === "image") url = made.url;
           if (cancelled) {
@@ -102,6 +105,7 @@ export const useAttachmentThumbnail = <E extends Element>(
     observer.observe(element);
     return () => {
       cancelled = true;
+      abort.abort();
       observer.disconnect();
       if (url) URL.revokeObjectURL(url);
     };
