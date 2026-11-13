@@ -4,8 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminAccessRecord, type AdminAuditRecord, type AdminSettingRecord,
-  type AdminUserAccessRecord,
+  type AdminUserAccessRecord, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
+import { auditOwnerId, cutAdminAuditText } from "../src/admin-access.js";
 import type { AdminAuditDurableObject } from "../src/admin-audit.js";
 import { utcDayKey } from "../src/ai-gateway-billing/limits/config.js";
 // Load the whole backend (the pool's `main`) up front, so its slow load does not count against the
@@ -51,6 +52,15 @@ function setting(overrides: Partial<AdminSettingRecord> = {}): AdminSettingRecor
     kind: "setting", at: new Date(), admin: "ada", sessionId: "session-1", via: "cli",
     method: "setSiteName", changes: [{ setting: "siteName", before: "Old", after: "New" }],
     ...overrides,
+  };
+}
+
+function write(overrides: Partial<AdminWriteRecord> = {}): AdminWriteRecord {
+  return {
+    kind: "write", at: new Date(), admin: "ada", sessionId: "session-1", via: "cli",
+    requestId: "request-1", event: "requested", workspaceId: "w1", workspaceOwner: "owner-1",
+    workspaceTitle: "Plans", method: "stopAgent", args: { chatId: 4 }, reason: "a stuck turn",
+    requestedBy: "ada", ...overrides,
   };
 }
 
@@ -109,10 +119,11 @@ describe("AdminAuditDurableObject.list", () => {
     await log.append(access(), RETENTION);
     await log.append(userAccess(), RETENTION);
     await log.append(setting(), RETENTION);
+    await log.append(write(), RETENTION);
     let rows = await sql<{ kind: string; workspace_id: string | null; record: string }>(log,
         "SELECT kind, workspace_id, record FROM admin_audit ORDER BY seq");
     expect(rows.map(row => [row.kind, row.workspace_id]))
-        .toEqual([["workspace", "w1"], ["user", null], ["setting", null]]);
+        .toEqual([["workspace", "w1"], ["user", null], ["setting", null], ["write", "w1"]]);
     for (let row of rows) {
       let json = JSON.parse(row.record);
       for (let field of ["kind", "at", "admin", "workspaceId", "workspaceTitle"]) {
@@ -122,6 +133,67 @@ describe("AdminAuditDurableObject.list", () => {
     // The ids a record is found by stay in the JSON, where the target index reads them.
     expect(JSON.parse(rows[0].record).workspaceOwner).toBe("owner-1");
     expect(JSON.parse(rows[1].record).userId).toBe("grace");
+  });
+
+  it("returns each step of a write as appended, its title cut and a long owner kept short",
+      async () => {
+    let log = auditLog();
+    let passkey = "credential-1";
+    let steps: AdminWriteRecord[] = [
+      write(),
+      write({ event: "refused", admin: "grace", refusal: "signature", passkey }),
+      write({ event: "approved", admin: "grace", sessionId: "session-2", via: "api", passkey }),
+      write({ event: "applied", admin: "grace", passkey, outcome: "3 rejected, 0 still pending" }),
+      write({ event: "failed", admin: "grace", passkey, error: "No such chat." }),
+      write({ event: "denied", admin: "grace" }),
+      write({ event: "expired", error: "Its requester is no longer a deployment admin." }),
+    ];
+    for (let record of steps) await log.append(record, RETENTION);
+
+    // Strictly, so that a step gains no field it was not given: a "requested" one has no passkey.
+    let listed = (await log.list({ limit: 50 }, RETENTION)).records;
+    expect(listed).toStrictEqual(steps.toReversed());
+    expect(listed.at(-1)).not.toHaveProperty("passkey");
+    expect(listed.every(record => !("exposed" in record))).toBe(true);
+
+    let long = write({
+      workspaceTitle: "t".repeat(5000), workspaceOwner: `${"o".repeat(600)}a`,
+    });
+    await log.append(long, RETENTION);
+    let [kept] = (await log.list({ limit: 1 }, RETENTION)).records as AdminWriteRecord[];
+    expect(kept).toStrictEqual({
+      ...long,
+      workspaceTitle: cutAdminAuditText(long.workspaceTitle, MAX_ADMIN_AUDIT_ARG_LENGTH),
+      workspaceOwner: auditOwnerId(long.workspaceOwner),
+    });
+    expect(kept.workspaceTitle).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(kept.workspaceTitle.endsWith("…")).toBe(true);
+    expect(kept.workspaceOwner).toMatch(/^o+…#[0-9a-f]{20}$/);
+    expect(kept.workspaceOwner).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+  });
+
+  it("finds a write record by kind, method, workspace and owner", async () => {
+    let log = auditLog();
+    let read = access({ workspaceId: "w7", workspaceOwner: "grace" });
+    let requested = write({ workspaceId: "w7", workspaceOwner: "grace" });
+    let approved = write({
+      event: "approved", admin: "linus", workspaceId: "w7", workspaceOwner: "grace",
+    });
+    let other = write({ method: "restartWorkspace", workspaceId: "w8" });
+    for (let record of [read, setting(), requested, approved, other]) {
+      await log.append(record, RETENTION);
+    }
+
+    let list = async (query: object) =>
+        (await log.list({ limit: 50, ...query }, RETENTION)).records;
+    expect(await list({ kind: "write" })).toEqual([other, approved, requested]);
+    expect(await list({ kind: "workspace" })).toEqual([read]);
+    expect(await list({ method: "stopAgent" })).toEqual([approved, requested]);
+    expect(await list({ method: "restartWorkspace" })).toEqual([other]);
+    expect(await list({ workspace: "w7" })).toEqual([approved, requested, read]);
+    expect(await list({ workspace: "w7", kind: "write", admin: "linus" })).toEqual([approved]);
+    expect(await list({ owner: "grace" })).toEqual([approved, requested, read]);
+    expect(await list({ owner: "grace", kind: "write" })).toEqual([approved, requested]);
   });
 
   it("combines the kind, admin, workspace and since filters", async () => {
@@ -381,6 +453,18 @@ describe("AdminAuditDurableObject schema", () => {
     expect(size).toBeLessThan(10_000);
   });
 
+  it("ties the workspace columns to write records too, and exposed to none of them", async () => {
+    let log = auditLog();
+    await expectRejection(insertRow(log, "write", null, "t", null), "CHECK constraint failed");
+    await expectRejection(insertRow(log, "write", "w1", null, null), "CHECK constraint failed");
+    await expectRejection(insertRow(log, "write", "w1", "t", "metadata"),
+        "CHECK constraint failed");
+    await log.append(write(), RETENTION);
+    await insertRow(log, "write", "w1", "t", null);
+    expect(await sql(log, "SELECT exposed FROM admin_audit"))
+        .toEqual([{ exposed: null }, { exposed: null }]);
+  });
+
   it("keeps a long owner short, apart from another sharing its start, and finds it by its whole id",
       async () => {
     let log = auditLog();
@@ -459,6 +543,7 @@ describe("AdminAuditDurableObject.stats", () => {
       topAdmins: [
         { admin: "ada", count: 2 }, { admin: "grace", count: 2 }, { admin: "linus", count: 1 },
       ],
+      writes: 0,
     });
 
     let many = auditLog();
@@ -525,6 +610,46 @@ describe("AdminAuditDurableObject.stats", () => {
     expect((await log.stats({ days: 7, kind: "workspace" }, RETENTION)).totalEvents).toBe(1);
     expect((await log.stats({ days: 7, kind: "setting" }, RETENTION)).totalEvents).toBe(1);
   });
+
+  it("counts the writes approved in the window, and every step as an event", async () => {
+    let log = auditLog();
+    let steps: AdminAuditRecord[] = [
+      write({ admin: "ada" }),
+      write({ event: "refused", admin: "grace", refusal: "counter" }),
+      write({ event: "approved", admin: "grace" }),
+      write({ event: "applied", admin: "grace" }),
+      write({ event: "approved", admin: "grace", requestId: "request-2", at: daysAgo(2) }),
+      write({ event: "failed", admin: "grace", requestId: "request-2", error: "No such chat." }),
+      write({ event: "denied", admin: "linus", requestId: "request-3" }),
+      write({ event: "expired", requestId: "request-4" }),
+      write({ event: "approved", admin: "grace", requestId: "request-5", at: daysAgo(20) }),
+      // Neither is a write, though each carries an approval's `event` where a write record does.
+      { ...access({ admin: "linus" }), event: "approved" } as AdminAuditRecord,
+      { ...setting({ admin: "linus" }), event: "approved" } as AdminAuditRecord,
+    ];
+    for (let record of steps) await log.append(record, RETENTION);
+
+    let stats = await log.stats({ days: 7 }, RETENTION);
+    expect(stats.writes).toBe(2);
+    expect(stats.totalEvents).toBe(10);
+    expect(stats.byDay.map(day => day.count).filter(count => count > 0).toSorted()).toEqual([1, 9]);
+    expect(stats.topAdmins).toEqual([
+      { admin: "grace", count: 5 }, { admin: "linus", count: 3 }, { admin: "ada", count: 2 },
+    ]);
+    expect((await log.stats({ days: 30 }, RETENTION)).writes).toBe(3);
+
+    let writes = await log.stats({ days: 7, kind: "write" }, RETENTION);
+    expect(writes.writes).toBe(2);
+    expect(writes.totalEvents).toBe(8);
+    expect(writes.topAdmins).toEqual([
+      { admin: "grace", count: 5 }, { admin: "ada", count: 2 }, { admin: "linus", count: 1 },
+    ]);
+    for (let kind of ["setting", "workspace"] as const) {
+      let others = await log.stats({ days: 30, kind }, RETENTION);
+      expect(others.writes, kind).toBe(0);
+      expect(others.totalEvents, kind).toBe(1);
+    }
+  });
 });
 
 // The table and indexes of a build whose log knows only workspace and setting records, statement
@@ -554,6 +679,27 @@ const OWNER_INDEX = `CREATE INDEX IF NOT EXISTS admin_audit_owner
     ON admin_audit (json_extract(record, '$.workspaceOwner'), seq)`;
 const USER_ROW = `INSERT INTO admin_audit (at, kind, admin, exposed, record)
     VALUES (0, 'user', 'ada', 'metadata', '{"userId":"grace"}')`;
+// The table and indexes of a build whose log knows workspace, user and setting records and no
+// write record, statement for statement.
+const THREE_KIND_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS admin_audit (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at INTEGER NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('workspace', 'user', 'setting')),
+  admin TEXT NOT NULL,
+  workspace_id TEXT,
+  workspace_title TEXT,
+  exposed TEXT CHECK (exposed IN ('metadata', 'content')),
+  record TEXT NOT NULL CHECK (json_valid(record)),
+  CHECK ((kind = 'workspace') = (workspace_id IS NOT NULL AND workspace_title IS NOT NULL)),
+  CHECK ((kind = 'setting') = (exposed IS NULL))
+) STRICT`,
+  ...TWO_KIND_SCHEMA.slice(1),
+  `CREATE INDEX IF NOT EXISTS admin_audit_target ON admin_audit
+      (coalesce(json_extract(record, '$.userId'), json_extract(record, '$.workspaceOwner')), seq)`,
+];
+const WRITE_ROW = `INSERT INTO admin_audit (at, kind, admin, workspace_id, workspace_title, record)
+    VALUES (0, 'write', 'ada', 'w1', 'Plans', '{}')`;
 
 type StoredRow = Record<string, SqlStorageValue> & { seq: number };
 type SchemaRow = { type: string; name: string; sql: string | null };
@@ -676,6 +822,45 @@ describe("AdminAuditDurableObject's table rebuild", () => {
     await expectRebuilt([...TWO_KIND_SCHEMA, OWNER_INDEX]);
   });
 
+  it("rebuilds a table that knows no write records, keeping every kind's records under their seqs",
+      async () => {
+    let log = auditLog();
+    for (let record of [
+      access({ at: daysAgo(3) }), userAccess({ at: daysAgo(3) }), setting({ at: daysAgo(2) }),
+      userAccess({ method: "listSessions" }), access({ method: "listChats" }), setting(),
+    ]) {
+      await log.append(record, RETENTION);
+    }
+    // A gap, so that a copy renumbering the rows shows.
+    await sql(log, "DELETE FROM admin_audit WHERE seq = 3");
+    let listed = (await log.list({ limit: 50 }, RETENTION)).records;
+    let [seeded, rebuilt, restarted] = await runInDurableObject(log, (instance, state) => {
+      let db = state.storage.sql;
+      let start = snapshot(db);
+      replant(db, THREE_KIND_SCHEMA);
+      expect(storedRows(db)).toEqual(start.rows);
+      expect(() => db.exec(WRITE_ROW)).toThrow("CHECK constraint failed");
+      construct(instance, state);
+      let afterRebuild = snapshot(db);
+      construct(instance, state);
+      return [start, afterRebuild, snapshot(db)];
+    });
+
+    expect(seeded.rows.map(row => [row.seq, row.kind])).toEqual(
+        [[1, "workspace"], [2, "user"], [4, "user"], [5, "workspace"], [6, "setting"]]);
+    expect(rebuilt.rows).toEqual(seeded.rows);
+    expect(restarted).toEqual(rebuilt);
+    expect(schemaNames(rebuilt.schema)).toEqual(schemaNames(seeded.schema));
+    expect(tableDefinition(rebuilt.schema)).toBe(tableDefinition(seeded.schema));
+    expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual(listed);
+
+    let added = write();
+    await log.append(added, RETENTION);
+    expect((await log.list({ limit: 50 }, RETENTION)).records).toEqual([added, ...listed]);
+    expect(await sql(log, "SELECT seq FROM admin_audit WHERE kind = 'write'"))
+        .toEqual([{ seq: 7 }]);
+  });
+
   it("leaves a table of the current definition alone", async () => {
     let { log, listed } = await seededLog();
     let [seeded, constructed] = await runInDurableObject(log, (instance, state) => {
@@ -710,7 +895,8 @@ describe("AdminAuditDurableObject's table rebuild", () => {
     let { planted, constructed, events } = await runInDurableObject(log, (instance, state) => {
       let db = state.storage.sql;
       let current = tableDefinition(snapshot(db).schema);
-      let later = current.replace("'user', 'setting')", "'user', 'setting', 'later')");
+      let later = current.replace(
+          "'user', 'setting', 'write')", "'user', 'setting', 'write', 'later')");
       expect(later).not.toBe(current);
       db.exec("DROP TABLE admin_audit");
       db.exec(`CREATE TABLE admin_audit ${later}`);

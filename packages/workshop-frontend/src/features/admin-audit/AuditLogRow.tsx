@@ -136,13 +136,8 @@ const AccessDetails = ({ record, onFilterBy }: {
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, kind, target user),
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
- * changes or an access record's workspace or account, reason, level and arguments. An access
- * record's target user is the user the call reached: its workspace's owner, or the user whose
- * account it was made into. The admin's name and the target user, and in a workspace record's
- * details its workspace, filter the log by `onFilterBy`. Names are never cut: an action too long
- * for the space left is, whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a
- * table's even rows: Kumo counts the details row below each one, hidden or not, so every summary
- * row is an odd row to it and would never be striped.
+ * changes, an access record's workspace or account, reason, level and arguments, or a write
+ * record's
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
@@ -189,7 +184,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
         <Table.Cell>
           <span className="flex flex-wrap items-center gap-1.5">
             <KindBadge kind={record.kind} />
-            {record.kind !== 'setting' && record.refused && (
+            {(record.kind === 'workspace' || record.kind === 'user') && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}
           </span>
@@ -216,14 +211,15 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
       </Table.Row>
       <Table.Row id={detailsId} hidden={!expanded}>
         <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="bg-kumo-recessed">
-          {expanded && (record.kind !== 'setting'
+          {expanded && (record.kind === 'workspace' || record.kind === 'user'
             ? <AccessDetails record={record} onFilterBy={onFilterBy} />
-            : (
-              <div className="space-y-4">
-                <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
-                <SettingChanges changes={record.changes} />
-              </div>
-            ))}
+            : record.kind === 'write'
+              : (
+                <div className="space-y-4">
+                  <dl><Detail term="Via">{VIA_NAMES[record.via]}</Detail></dl>
+                  <SettingChanges changes={record.changes} />
+                </div>
+              ))}
         </Table.Cell>
       </Table.Row>
     </>
