@@ -1,0 +1,31 @@
+packages/workshop-frontend/src/ChatInterface.agents.test.tsx
+  s_b18e9953d241be::t_6b5d2e9fc4607d 8,290-372
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_2b3f2ed31e2828::t_11ac0f96ac6700 116-117,2686-2690,2822,3019-3021,3222-3223,3239-3246,3250-3256,3258,3821
+packages/workshop-frontend/src/features/chat/agents/agentList.ts
+  s_b18e9953d241be::t_4d86e5b0136961 90,101,108-110
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "bcf358c0ef0bfa0adc43081ab33ec39eb6ea554d",
+  "prompts": {},
+  "sessions": {
+    "s_2b3f2ed31e2828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f9b8f47-71bf-42a2-94d1-feb3e5a6228a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b18e9953d241be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ef47a32-7265-4f66-8033-f1149c1af883",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
