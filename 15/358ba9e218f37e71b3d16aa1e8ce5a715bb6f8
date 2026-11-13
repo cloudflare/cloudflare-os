@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/features/approvals/useBulkResolve.ts
+  s_14755fcaf13644::t_d4dbaf4110022d 155-171
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "15358ba9e218f37e71b3d16aa1e8ce5a715bb6f8",
+  "prompts": {},
+  "sessions": {
+    "s_14755fcaf13644": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "28d07d2b-ca66-4d9e-8ea6-c0d73bd946b9",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
