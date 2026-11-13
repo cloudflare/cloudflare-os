@@ -20,6 +20,11 @@ describe("attachmentKind", () => {
     expect(attachmentKind("application/octet-stream", "main.rs")).toBe("code");
   });
 
+  it("takes a .ts file for TypeScript, though browsers call it video", () => {
+    expect(attachmentKind("video/mp2t", "server.ts")).toBe("code");
+    expect(attachmentKind("video/mp2t", "capture")).toBe("video");
+  });
+
   it("does not read inherited object properties as extensions", () => {
     for (const extension of ["constructor", "__proto__", "toString", "hasOwnProperty"]) {
       expect(attachmentKind("application/octet-stream", `file.${extension}`)).toBe("file");

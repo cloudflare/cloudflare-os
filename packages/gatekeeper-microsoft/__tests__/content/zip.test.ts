@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildZip, deflateRaw } from "./test-fixtures";
-import { ZipError, crc32, openZip, type ZipErrorCode } from "../../src/content/zip";
+import { buildZip, deflateRaw } from "@gadgets/office-content/test-fixtures";
+import { ZipError, crc32, openZip, type ZipErrorCode } from "@gadgets/office-content/zip";
 import { writeZip } from "../../src/content/zip-write";
 
 async function expectZipError(promise: Promise<unknown> | (() => unknown), code: ZipErrorCode): Promise<void> {

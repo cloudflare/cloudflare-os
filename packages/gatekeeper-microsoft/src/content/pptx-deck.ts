@@ -6,9 +6,9 @@
 
 import { addNotesMaster, defaultPackage, SLIDE_HEIGHT, SLIDE_WIDTH, BODY_SIZES } from "./pptx-default";
 import { CONTENT_TYPE, OpcPackage, PackageError, REL, relativeTarget, type PackageRelationship } from "./pptx-package";
-import { escapeText, isoSeconds, parsePart, XML_DECLARATION } from "./ooxml";
+import { escapeText, isoSeconds, parsePart, XML_DECLARATION } from "@gadgets/office-content/ooxml";
 import { parseRaw, rawChild, rawChildren, RawXmlError, type RawElement } from "./raw-xml";
-import { attribute, childAt, childElements, descendants, firstChild, textContent, type XmlElement } from "./xml";
+import { attribute, childAt, childElements, descendants, firstChild, textContent, type XmlElement } from "@gadgets/office-content/xml";
 
 /** A shape's position and size, in EMU. */
 export interface Box {

@@ -9,6 +9,13 @@ import type { ComposerAttachment } from "./useComposerAttachments";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// jsdom has no IntersectionObserver, which a card waits on before reading a file for its thumbnail
+// (ComposerAttachmentTray.browser.test.tsx covers thumbnails). This one never reports a card as seen.
+vi.stubGlobal("IntersectionObserver", class {
+  observe() {}
+  disconnect() {}
+});
+
 const attachment = (overrides: Partial<ComposerAttachment>): ComposerAttachment => ({
   id: "a",
   blob: new Blob([]),
@@ -65,7 +72,7 @@ describe("ComposerAttachmentTray", () => {
     const onRemove = vi.fn<(id: string) => void>();
     const view = render([attachment({})], { disabled: true, onRemove });
 
-    const button = view.querySelector<HTMLButtonElement>("button")!;
+    const button = view.querySelector<HTMLButtonElement>('button[aria-label="Remove report.pdf"]')!;
     act(() => button.click());
 
     expect(button.disabled).toBe(true);

@@ -4,10 +4,10 @@
 // relationships and content-type parts are edited as text, adding to or removing from what is there.
 
 import { REL_TYPE } from "./docx-xml";
-import { attribute, childElements } from "./xml";
-import { escapeAttribute, parsePart, readPartText, relationshipsPartName, XML_DECLARATION } from "./ooxml";
+import { attribute, childElements } from "@gadgets/office-content/xml";
+import { escapeAttribute, parsePart, readPartText, relationshipsPartName, XML_DECLARATION } from "@gadgets/office-content/ooxml";
 import { writeZip, type ZipWriteEntry } from "./zip-write";
-import type { ZipArchive } from "./zip";
+import type { ZipArchive } from "@gadgets/office-content/zip";
 
 /** The content types of the Word parts this module writes. */
 export const CONTENT_TYPES = {

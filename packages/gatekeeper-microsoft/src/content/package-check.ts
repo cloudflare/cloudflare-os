@@ -10,10 +10,10 @@
 // read with the namespace-aware parser, so a field or formula is found whatever prefix binds it and
 // however its text is written.
 
-import { readPartText, resolvePartName } from "./ooxml";
+import { readPartText, resolvePartName } from "@gadgets/office-content/ooxml";
 import { checkFormula, FormulaError } from "./xlsx-write";
-import { attribute, childElements, parseXml, textContent, XmlError, type XmlElement, type XmlOptions } from "./xml";
-import { openZip, ZipError, type ZipArchive } from "./zip";
+import { attribute, childElements, parseXml, textContent, XmlError, type XmlElement, type XmlOptions } from "@gadgets/office-content/xml";
+import { openZip, ZipError, type ZipArchive } from "@gadgets/office-content/zip";
 
 /** Extensions of Office packages this checks; any other bytes pass through. */
 const OFFICE_PACKAGES = new Set(["docx", "xlsx", "pptx", "ppsx", "dotx", "potx", "xltx"]);

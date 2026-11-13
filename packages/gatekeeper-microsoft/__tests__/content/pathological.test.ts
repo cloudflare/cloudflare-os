@@ -5,21 +5,21 @@
 
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { docxToMarkdown } from "../../src/content/docx";
+import { docxToMarkdown } from "@gadgets/office-content/docx";
 import { docxFeatures } from "../../src/content/docx-features";
 import { checkOfficePackage } from "../../src/content/package-check";
 import { editPptx, PresentationEditError } from "../../src/content/pptx-edit";
 import { pptxFeatures } from "../../src/content/pptx-features";
-import { pptxToMarkdown } from "../../src/content/pptx";
+import { pptxToMarkdown } from "@gadgets/office-content/pptx";
 import { describePptx } from "../../src/content/pptx-describe";
 import { OpcPackage } from "../../src/content/pptx-package";
 import { parseRaw, RawXmlError } from "../../src/content/raw-xml";
-import { parseXml, XmlError } from "../../src/content/xml";
+import { parseXml, XmlError } from "@gadgets/office-content/xml";
 import { writeZip } from "../../src/content/zip-write";
 import { htmlToMarkdown } from "../../src/html-markdown";
 import { featuresLost } from "../../src/office-write";
 import { mailToMarkdown } from "../../src/outlook-content";
-import { buildDocx, buildPptx, paragraph, run, shape, slideParagraph } from "./test-fixtures";
+import { buildDocx, buildPptx, paragraph, run, shape, slideParagraph } from "@gadgets/office-content/test-fixtures";
 
 const fixture = (name: string) => new Uint8Array(readFileSync(new URL(`../fixtures/${name}`, import.meta.url).pathname));
 const DECK = fixture("python-pptx-deck.pptx");

@@ -320,7 +320,8 @@ async function inflateRaw(data: Uint8Array, limit: number, limitError: () => Zip
 async function feed(writer: WritableStreamDefaultWriter<BufferSource>, data: Uint8Array): Promise<void> {
   for (let at = 0; at < data.length; at += INFLATE_INPUT_CHUNK) {
     await writer.ready;
-    await writer.write(data.subarray(at, at + INFLATE_INPUT_CHUNK));
+    // The DOM typings accept only views of a plain ArrayBuffer; Workers' accept any, as here.
+    await writer.write(data.subarray(at, at + INFLATE_INPUT_CHUNK) as BufferSource);
   }
   await writer.close();
 }

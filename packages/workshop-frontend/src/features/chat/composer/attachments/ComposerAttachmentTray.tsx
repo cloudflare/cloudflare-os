@@ -1,6 +1,11 @@
+import { lazy, Suspense, useState } from "react";
 import { AnimatePresence, MotionConfig, motion } from "motion/react";
+import { useAttachmentContents } from "../../attachments/useAttachmentContents";
 import { ComposerAttachmentCard } from "./ComposerAttachmentCard";
 import type { ComposerAttachment } from "./useComposerAttachments";
+
+const AttachmentViewer = lazy(() =>
+  import("../../attachments/AttachmentViewer").then(m => ({ default: m.AttachmentViewer })));
 
 // Everything animates with one transition: a card scaling in or out about its own center, the
 // neighbours then sliding into the space it leaves, and the whole tray opening or closing.
@@ -22,6 +27,14 @@ export const ComposerAttachmentTray = ({
   onRemove: (attachmentId: string) => void;
 }) => {
   const open = attachments.length > 0;
+  const [viewedId, setViewedId] = useState<string | null>(null);
+  // The files are still on this device, so they are read from there, uploaded or not.
+  const { content, forgetFailures } = useAttachmentContents(async (id) => {
+    const attachment = attachments.find((candidate) => candidate.id === id);
+    if (!attachment) throw new Error("The attachment was removed.");
+    return new Uint8Array(await attachment.blob.arrayBuffer());
+  });
+  const viewed = attachments.some((attachment) => attachment.id === viewedId);
 
   return (
     <MotionConfig reducedMotion="user" transition={TRANSITION}>
@@ -53,6 +66,11 @@ export const ComposerAttachmentTray = ({
                 <ComposerAttachmentCard
                   attachment={attachment}
                   disabled={disabled}
+                  loadContent={() => content(attachment.id)}
+                  onOpen={() => {
+                    forgetFailures();
+                    setViewedId(attachment.id);
+                  }}
                   onRemove={() => onRemove(attachment.id)}
                 />
               </motion.li>
@@ -60,6 +78,22 @@ export const ComposerAttachmentTray = ({
           </AnimatePresence>
         </ul>
       </motion.div>
+      {viewed && viewedId !== null && (
+        <Suspense fallback={null}>
+          <AttachmentViewer
+            attachments={attachments.map((attachment) => ({
+              id: attachment.id,
+              name: attachment.name,
+              mimeType: attachment.mimeType,
+              size: attachment.blob.size,
+            }))}
+            openId={viewedId}
+            onOpenChange={setViewedId}
+            loadContent={content}
+            onRetry={forgetFailures}
+          />
+        </Suspense>
+      )}
     </MotionConfig>
   );
 };

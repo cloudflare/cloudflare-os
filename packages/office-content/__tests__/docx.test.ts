@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { docxToMarkdown } from "../../src/content/docx";
+import { docxToMarkdown } from "../src/docx";
 import { buildDocx, paragraph, run, type DocxFixture } from "./test-fixtures";
 
 async function convert(fixture: DocxFixture, maxChars?: number) {

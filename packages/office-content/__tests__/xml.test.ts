@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   XmlError, attribute, childElements, decodeEntities, parseXml, streamElements, textContent, type XmlElement, type XmlErrorCode,
   type XmlOptions,
-} from "../../src/content/xml";
+} from "../src/xml";
 
 const W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 const options: XmlOptions = { namespaces: { [W]: "w" } };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DocumentConversionError, convertToText, documentKind, type ConversionFailureReason } from "../../src/content/index";
+import { DocumentConversionError, convertToText, documentKind, type ConversionFailureReason } from "../src/index";
 import { buildDocx, buildZip, paragraph, run } from "./test-fixtures";
 
 const encode = (text: string) => new TextEncoder().encode(text);

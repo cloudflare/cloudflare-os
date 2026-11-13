@@ -1,4 +1,4 @@
-// Readable text for the files a SharePoint or OneDrive `readFile()` returns: Word and PowerPoint
+// Readable text for a file, whether an agent reads it or a person previews it: Word and PowerPoint
 // as Markdown, the plain-text family as text. Anything else (PDF, images, legacy binary Office
 // formats) is reported as unsupported so the caller can use another route.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pptxToMarkdown } from "../../src/content/pptx";
+import { pptxToMarkdown } from "../src/pptx";
 import { buildPptx, shape, slideParagraph, type SlideFixture } from "./test-fixtures";
 
 async function markdownOf(slides: readonly SlideFixture[], order?: readonly number[]): Promise<string> {

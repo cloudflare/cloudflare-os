@@ -14,10 +14,10 @@ import { CONTENT_TYPES, ContentTypesEditor, PackageEditor, RelationshipsEditor }
 import { StyleCatalog } from "./docx-styles";
 import { requireTransitional, textWidth } from "./docx-write";
 import { parseMarkdown } from "./markdown-parse";
-import { escapeText, findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName, withRelationshipsNs } from "./ooxml";
+import { escapeText, findMainPart, findRelationship, parsePart, readRelationships, relationshipsPartName, withRelationshipsNs } from "@gadgets/office-content/ooxml";
 import { applySplices, elementText, parseRaw, rawChild, rawChildren, RawXmlError, type RawElement, type Splice } from "./raw-xml";
-import { childElements, firstChild } from "./xml";
-import { openZip } from "./zip";
+import { childElements, firstChild } from "@gadgets/office-content/xml";
+import { openZip } from "@gadgets/office-content/zip";
 
 /** One change to a Word document. */
 export type DocumentEdit =

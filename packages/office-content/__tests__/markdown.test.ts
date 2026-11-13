@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MarkdownWriter, escapeMarkdownText, renderTable, safeLinkTarget } from "../../src/content/markdown";
+import { MarkdownWriter, escapeMarkdownText, renderTable, safeLinkTarget } from "../src/markdown";
 
 describe("escapeMarkdownText", () => {
   it.each([

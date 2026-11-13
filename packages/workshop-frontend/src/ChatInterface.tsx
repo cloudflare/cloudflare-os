@@ -86,7 +86,6 @@ import {
   SlashCommandId,
   SlashCommandRequest,
   ChatAttachmentHandle,
-  ChatAttachmentRef,
   ChatCodeBase,
   WorkpieceId,
   BlueprintMerge,
@@ -123,7 +122,7 @@ import OutOfCreditsModal from "./components/billing/OutOfCreditsModal";
 import { formatFullTimestamp } from "./utils/formatTimestamp";
 import { copyToClipboard } from "./clipboard";
 import { isImeComposing } from "./keyboardEvent";
-import { formatAttachmentSize } from "./features/chat/attachmentFormatting";
+import { ChatAttachmentGrid } from "./features/chat/attachments/ChatAttachmentGrid";
 import { ChatComposer } from "./features/chat/composer/ChatComposer";
 import { composerDraftStorageKey } from "./features/chat/composer/draft/composerDraft";
 import {
@@ -1315,230 +1314,6 @@ const AgentAnswer = (
     }
   });
 };
-
-// Build a temporary object URL for inlined attachment bytes, revoking it when no longer needed.
-function useAttachmentObjectUrl(content: Uint8Array | undefined, mimeType: string): string | null {
-  const [objectUrl, setObjectUrl] = useState<string | null>(null);
-  useEffect(() => {
-    if (!content) {
-      setObjectUrl(null);
-      return;
-    }
-
-    const url = URL.createObjectURL(
-      new Blob([content as BlobPart], {type: mimeType || "application/octet-stream"}));
-    setObjectUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [content, mimeType]);
-  return objectUrl;
-}
-
-type AttachmentDownloadHandler = (attachment: ChatAttachmentRef) => void;
-
-type AttachmentPreviewModalProps = {
-  attachment: ChatAttachmentRef | null;
-  onClose: () => void;
-  onDownload?: AttachmentDownloadHandler;
-};
-
-const AttachmentPreviewModal = memo(function AttachmentPreviewModal(
-  {
-    attachment,
-    onClose,
-    onDownload,
-  }: AttachmentPreviewModalProps,
-) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const isImage = (attachment?.mimeType ?? "").startsWith("image/");
-  const objectUrl = useAttachmentObjectUrl(
-    isImage ? attachment?.content : undefined, attachment?.mimeType ?? "");
-
-  // Dialog keyboard handling: Escape closes, Tab stays trapped, focus restores on close.
-  useEffect(() => {
-    if (!attachment) return;
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (event.key === "Tab" && containerRef.current) {
-        const focusable = containerRef.current.querySelectorAll<HTMLElement>(
-          'button, [href], iframe, [tabindex]:not([tabindex="-1"])');
-        if (focusable.length === 0) return;
-        const first = focusable[0];
-        const last = focusable[focusable.length - 1];
-        if (event.shiftKey && document.activeElement === first) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && document.activeElement === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    // Defer to after paint so the close button exists.
-    const raf = requestAnimationFrame(() => {
-      containerRef.current?.querySelector<HTMLElement>("button")?.focus();
-    });
-    return () => {
-      window.removeEventListener("keydown", onKeyDown);
-      cancelAnimationFrame(raf);
-      previouslyFocused?.focus?.();
-    };
-  }, [attachment, onClose]);
-
-  if (!attachment) return null;
-
-  const sizeLabel = formatAttachmentSize(attachment.size);
-  const title = attachment.name ?? "Attached file";
-  const modalWidthClass = isImage
-    ? "w-[min(1120px,calc(100vw-32px))]"
-    : "w-[min(520px,calc(100vw-32px))]";
-  const modalSurfaceClass = "rounded-2xl border border-kumo-line/70 bg-kumo-base";
-  const modalPaddingClass = "p-3 sm:p-4";
-
-  return (
-    <div
-      className="fixed inset-0 z-[2000] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[1px]"
-      role="dialog"
-      aria-modal="true"
-      aria-label={`Preview ${title}`}
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div ref={containerRef} className={`relative max-h-[calc(var(--app-height)-32px)] ${modalWidthClass} overflow-hidden ${modalSurfaceClass} p-0 shadow-[0_24px_80px_rgba(0,0,0,0.28)]`}>
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-3 top-3 z-10 flex h-8 w-8 cursor-pointer items-center justify-center rounded-full border border-kumo-line bg-kumo-base/90 text-kumo-subtle shadow-[0_1px_2px_rgba(0,0,0,0.05)] backdrop-blur-sm transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-base hover:text-kumo-default active:scale-[0.96]"
-          aria-label="Close preview"
-        >
-          <X size={18} />
-        </button>
-
-        <div className={modalPaddingClass}>
-          {isImage && objectUrl ? (
-            <img
-              src={objectUrl}
-              alt={title}
-              className="max-h-[calc(var(--app-height)-96px)] w-full rounded-xl object-contain"
-            />
-          ) : (
-            <div className="grid min-h-56 place-items-center rounded-xl border border-kumo-line/70 bg-kumo-elevated/40 p-6 py-10 text-center">
-              <div className="max-w-sm space-y-2">
-                <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-kumo-line/70 bg-kumo-base text-kumo-inactive">
-                  <FileIcon size={26} />
-                </div>
-                <div className="text-[14px] font-medium text-kumo-default">{title}</div>
-                <div className="text-[12px] leading-5 text-kumo-subtle">
-                  {attachment.mimeType || "Unknown file type"}{sizeLabel ? ` · ${sizeLabel}` : ""}
-                </div>
-                <div className="text-[12px] leading-5 text-kumo-inactive">This file can’t be previewed here.</div>
-                {onDownload && (
-                  <button
-                    type="button"
-                    onClick={() => onDownload(attachment)}
-                    className="mt-1 inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-kumo-line/70 bg-kumo-base px-3 py-1.5 text-[12px] font-medium text-kumo-default transition-colors hover:bg-kumo-tint/40"
-                  >
-                    Download
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-type ChatAttachmentThumbnailProps = {
-  attachment: ChatAttachmentRef;
-  onPreview: (id: string) => void;
-};
-
-const ChatAttachmentThumbnail = memo(function ChatAttachmentThumbnail(
-  {
-    attachment,
-    onPreview,
-  }: ChatAttachmentThumbnailProps,
-) {
-  const isImage = attachment.mimeType.startsWith("image/");
-  const objectUrl = useAttachmentObjectUrl(isImage ? attachment.content : undefined, attachment.mimeType);
-  const [imageState, setImageState] = useState<"loading" | "loaded" | "error">("loading");
-
-  return (
-    <button
-      type="button"
-      onClick={() => onPreview(attachment.id)}
-      className="relative h-28 w-36 shrink-0 cursor-pointer overflow-hidden rounded-xl border border-kumo-line/70 bg-kumo-elevated text-left transition-[border-color,background-color,transform] duration-150 ease-out hover:border-kumo-line hover:bg-kumo-tint/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-brand/40 active:scale-[0.98]"
-      aria-label={`Preview ${attachment.name ?? "attached file"}`}
-    >
-      {isImage && objectUrl && imageState !== "error" ? (
-        <>
-          {/* Kept in layout (not display:none) so lazy-loading actually triggers. */}
-          <img
-            src={objectUrl}
-            alt={attachment.name ?? "Attached image"}
-            loading="lazy"
-            className="block h-full w-full object-cover"
-            onLoad={() => setImageState("loaded")}
-            onError={() => setImageState("error")}
-          />
-          {imageState !== "loaded" && (
-            <div className="absolute inset-0 grid place-items-center bg-kumo-elevated text-[11px] text-kumo-inactive">Loading image…</div>
-          )}
-        </>
-      ) : (
-        <div className="flex h-full w-full min-w-0 items-center justify-center gap-2 p-3 text-[12px] leading-4 text-kumo-subtle">
-          <FileIcon size={20} className="shrink-0 text-kumo-inactive" />
-          <span className="min-w-0 truncate">{attachment.name ?? "Attached file"}</span>
-        </div>
-      )}
-    </button>
-  );
-});
-
-type ChatAttachmentGridProps = {
-  attachments: ChatAttachmentRef[];
-  onDownload?: AttachmentDownloadHandler;
-};
-
-const ChatAttachmentGrid = memo(function ChatAttachmentGrid(
-  {
-    attachments,
-    onDownload,
-  }: ChatAttachmentGridProps,
-) {
-  const [previewAttachmentId, setPreviewAttachmentId] = useState<string | null>(null);
-  const previewAttachment = previewAttachmentId === null
-    ? null
-    : attachments.find((attachment) => attachment.id === previewAttachmentId) ?? null;
-  const handlePreview = useCallback((id: string) => setPreviewAttachmentId(id), []);
-  const handleClose = useCallback(() => setPreviewAttachmentId(null), []);
-
-  return (
-    <>
-      <div className="mb-2 flex flex-wrap gap-2">
-        {attachments.map((attachment) => (
-          <ChatAttachmentThumbnail
-            key={attachment.id}
-            attachment={attachment}
-            onPreview={handlePreview}
-          />
-        ))}
-      </div>
-      <AttachmentPreviewModal
-        attachment={previewAttachment}
-        onClose={handleClose}
-        onDownload={onDownload}
-      />
-    </>
-  );
-});
 
 const ToolCallDetails = memo(function ToolCallDetails(
   { toolCall: tc }: { toolCall: AiToolCall },
@@ -3329,32 +3104,6 @@ function ChatInterface({
       setUsageModalOpen(true);
     }
   }, [lastMessage]);
-
-  // Download a committed chat attachment. Image bytes are already inlined on the message; other
-  // attachments are fetched on demand over the authenticated RPC connection.
-  const downloadChatAttachment = useCallback(async (chatId: number, attachment: ChatAttachmentRef) => {
-    try {
-      let bytes = attachment.content;
-      const mimeType = attachment.mimeType;
-      const name = attachment.name;
-      if (!bytes) {
-        bytes = await overseer.getChatAttachmentContent(chatId, attachment.id);
-      }
-      const url = URL.createObjectURL(
-        new Blob([bytes as BlobPart], {type: mimeType || "application/octet-stream"}));
-      try {
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = name ?? "attachment";
-        a.click();
-      } finally {
-        setTimeout(() => URL.revokeObjectURL(url), 0);
-      }
-    } catch (err: any) {
-      console.error("Failed to download chat attachment:", err);
-      toasts.add({ title: err?.message || "Failed to download attachment", variant: "error" });
-    }
-  }, [overseer, toasts]);
 
   const onSelectedChatProposedChangesChangeRef = useRef(onSelectedChatProposedChangesChange);
   onSelectedChatProposedChangesChangeRef.current = onSelectedChatProposedChangesChange;
@@ -6202,35 +5951,39 @@ function ChatInterface({
                         {msg.type === "message" && (
                           msg.author.type === "user" ? (
                             <div className="group/message relative flex flex-col items-end">
-                              <div className={userBubbleClassName}>
-                                {msg.attachments && msg.attachments.length > 0 && (
-                                  <ChatAttachmentGrid
-                                    attachments={msg.attachments}
-                                    onDownload={(attachment) => { void downloadChatAttachment(msg.chatId, attachment); }}
-                                  />
-                                )}
-                                {entry.slashCommand ? (
-                                  // What the command expanded into is the agent's context, not
-                                  // something to re-read here.
-                                  <div className="whitespace-pre-wrap">
-                                    <SlashCommandMention
-                                      name={entry.slashCommand.skillName}
-                                      args={entry.slashCommand.request.args}
-                                      id={entry.slashCommand.request.id}
-                                      commandPosition={entry.slashCommand.request.commandPosition}
+                              {msg.attachments && msg.attachments.length > 0 && (
+                                <ChatAttachmentGrid
+                                  attachments={msg.attachments}
+                                  loadContent={(attachment) =>
+                                    overseer.getChatAttachmentContent(msg.chatId, attachment.id)}
+                                />
+                              )}
+                              {/* A message that is only attachments has no bubble. */}
+                              {(entry.slashCommand || msg.message.trim()) && (
+                                <div className={userBubbleClassName}>
+                                  {entry.slashCommand ? (
+                                    // What the command expanded into is the agent's context, not
+                                    // something to re-read here.
+                                    <div className="whitespace-pre-wrap">
+                                      <SlashCommandMention
+                                        name={entry.slashCommand.skillName}
+                                        args={entry.slashCommand.request.args}
+                                        id={entry.slashCommand.request.id}
+                                        commandPosition={entry.slashCommand.request.commandPosition}
+                                        formats={msg.formats}
+                                        getOverseer={getOverseer}
+                                      />
+                                    </div>
+                                  ) : msg.message.trim() && (
+                                    <MarkdownMessage
+                                      message={msg.message}
+                                      capsules={msg.capsules}
                                       formats={msg.formats}
-                                      getOverseer={getOverseer}
+                                      preserveLineBreaks
                                     />
-                                  </div>
-                                ) : msg.message.trim() && (
-                                  <MarkdownMessage
-                                    message={msg.message}
-                                    capsules={msg.capsules}
-                                    formats={msg.formats}
-                                    preserveLineBreaks
-                                  />
-                                )}
-                              </div>
+                                  )}
+                                </div>
+                              )}
                               {endsUserGroup && (
                                 <div className="mt-0.5 flex items-center justify-end gap-2 pr-1 text-[11px] leading-4 text-kumo-inactive opacity-100 transition-opacity duration-150 ease-out sm:opacity-0 sm:group-hover/message:opacity-100 sm:group-focus-within/message:opacity-100">
                                   {/* hideOwnUserName implies currentUser is non-null (see memo). */}

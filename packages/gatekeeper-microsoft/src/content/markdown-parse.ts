@@ -3,7 +3,7 @@
 // to execute. Raw HTML is kept as text, except `<br>`. Links are kept only when their target is
 // http(s) or mailto, so a written document never carries a script or file link the agent made up.
 
-import type { TextStyle } from "./markdown";
+import type { TextStyle } from "@gadgets/office-content/markdown";
 
 /** A run of text, a line break, or a link around runs. */
 export type MdInline =
