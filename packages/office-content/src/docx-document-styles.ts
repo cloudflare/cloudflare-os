@@ -307,7 +307,7 @@ export function readParagraphFormat(properties: XmlElement | undefined, theme: T
     shading: readShading(firstChild(properties, "w:shd"), theme),
     tabs: tabs.length > 0 ? tabs : undefined,
     numId: attribute(firstChild(numbering, "w:numId"), "w:val"),
-    level: numeric(attribute(firstChild(numbering, "w:ilvl"), "w:val")),
+    level: listLevel(attribute(firstChild(numbering, "w:ilvl"), "w:val")),
     contextualSpacing: toggle(properties, "w:contextualSpacing"),
     pageBreakBefore: toggle(properties, "w:pageBreakBefore"),
     outlineLevel: numeric(attribute(firstChild(properties, "w:outlineLvl"), "w:val")),
@@ -608,6 +608,15 @@ export interface ListItem {
 }
 
 /**
+ * A list level, 0 to 8 as Word has nine, or undefined for anything else. Levels index the
+ * counters of a list, so one a file made up would size that array.
+ */
+function listLevel(value: string | undefined): number | undefined {
+  const level = numeric(value);
+  return level !== undefined && Number.isInteger(level) && level >= 0 && level <= 8 ? level : undefined;
+}
+
+/**
  * numbering.xml, and the running count of every list. Numbering instances (`w:num`) that share an
  * abstract definition share its counters, as in Word, until one overrides a level's start.
  */
@@ -627,7 +636,7 @@ export class Numbering {
       const levels = new Map<number, ListLevel>();
       const styleLevels = new Map<string, number>();
       for (const element of childElements(abstract, "w:lvl")) {
-        const index = numeric(attribute(element, "w:ilvl"));
+        const index = listLevel(attribute(element, "w:ilvl"));
         if (index === undefined) continue;
         levels.set(index, readLevel(element, theme));
         const style = attribute(firstChild(element, "w:pStyle"), "w:val");
@@ -644,7 +653,7 @@ export class Numbering {
       if (numId === undefined || abstractId === undefined) continue;
       const overrides = new Map<number, { start: number | undefined; level: ListLevel | undefined }>();
       for (const override of childElements(instance, "w:lvlOverride")) {
-        const index = numeric(attribute(override, "w:ilvl"));
+        const index = listLevel(attribute(override, "w:ilvl"));
         const redefined = firstChild(override, "w:lvl");
         if (index === undefined) continue;
         overrides.set(index, {

@@ -106,6 +106,20 @@ describe("readDocxDocument", () => {
     expect(blocks[6]!.marker!.run.font).not.toBe("Symbol");
   });
 
+  it("ignores list levels Word does not have, which would otherwise size a list's counters", async () => {
+    const numbered = (ilvl: number) => paragraph(run("x"), `<w:numPr><w:ilvl w:val="${ilvl}"/><w:numId w:val="1"/></w:numPr>`);
+    const started = Date.now();
+    const document = await readDocxDocument(await buildLayoutDocx({
+      numbering:
+        '<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>' +
+        '<w:num w:numId="1"><w:abstractNumId w:val="0"/><w:lvlOverride w:ilvl="999999999"><w:startOverride w:val="5"/></w:lvlOverride></w:num>',
+      body: numbered(0) + numbered(0) + numbered(999999999),
+    }));
+
+    expect(paragraphs(document.body).map(block => block.marker?.text)).toEqual(["1.", "2.", "3."]);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
   it("applies a table style's conditional formats as the table's look asks", async () => {
     const border = (side: string, size: number) => `<w:${side} w:val="single" w:sz="${size}" w:color="0000FF"/>`;
     const cell = (label: string) => `<w:tc><w:tcPr><w:tcW w:w="1440" w:type="dxa"/></w:tcPr>${paragraph(run(label))}</w:tc>`;
