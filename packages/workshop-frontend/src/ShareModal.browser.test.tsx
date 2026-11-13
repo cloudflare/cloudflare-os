@@ -143,7 +143,8 @@ it('puts a warning card exactly the size of the link row in its place once links
   const card = page.getByRole('note', { name: 'Share links are off' })
   await expect.element(card).toBeVisible()
   expect(page.getByText('Anyone with your link').query()).toBeNull()
-  expect(card.element().getBoundingClientRect().height).toBe(rowHeight)
+  // To the nearest pixel: fractional heights can round apart, but a second line added 4px.
+  expect(card.element().getBoundingClientRect().height).toBeCloseTo(rowHeight, 0)
 })
 
 it("shows a link's gadgets above the dialog when its label is hovered", async () => {
