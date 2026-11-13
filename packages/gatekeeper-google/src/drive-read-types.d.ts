@@ -163,17 +163,18 @@ export type DrivePdfText = {
    * failure partway through errors the stream.
    *
    * A page without text of its own is read by a vision model (every page of a scan, and such
-   * pages of a PDF that has text), and only when you have read the text up to it. The model's
-   * calls are billed: up to four for a page that is drawn, more when a part of it is asked for
-   * again, and one for a page read as the file stores it. So stop reading, and cancel, to stop
-   * paying for pages you do not need. Read the text straight away and without long pauses: one
-   * whose reading may read the file again is ended with an error after a minute with nothing
-   * moving, because it was left unread or the model stopped answering. It also errors when the
-   * file has changed since `readPdf()` read it, as its pages are read from Drive again while the
-   * text is; when the model fails on a page of a scanned PDF; and when a scanned PDF's pages
-   * have to be drawn and cannot be: at all, as for a file that does not open or has more than
-   * 2,000 pages, or just now. A text that errors did not give the whole PDF, whatever its error
-   * says: read the PDF again, a minute later when it had given nothing.
+   * pages of a PDF that has text), and only as you read the text, one page ahead of you at
+   * most: the first may be begun as soon as the text is returned. The model's calls are billed:
+   * up to four for a page that is drawn, more when a part of it is asked for again, and one for
+   * a page read as the file stores it. So stop reading, and cancel, to stop paying for pages you
+   * do not need. Read the text straight away and without long pauses: one whose reading may
+   * read the file again is ended with an error after a minute with nothing moving, because it
+   * was left unread or the model stopped answering. It also errors when the file has changed
+   * since `readPdf()` read it, as its pages are read from Drive again while the text is; when
+   * the model fails on a page of a scanned PDF; and when a scanned PDF's pages have to be drawn
+   * and cannot be: at all, as for a file that does not open or has more than 2,000 pages, or
+   * just now. A text that errors did not give the whole PDF, whatever its error says: read the
+   * PDF again, a minute later when it had given nothing.
    *
    * Each line quoted here is a note on its page, not the document's text. A page the model
    * read may end with "[The transcription of this page was cut off.]" or "[This page was read

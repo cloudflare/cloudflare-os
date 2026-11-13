@@ -222,6 +222,111 @@ queued before that upgrade keep their unprefixed fingerprints and still apply, i
 whose response was lost, which is reconciled rather than sent again. See
 `plans/gmail-simulation.md` for how they are verified.
 
+### Gmail PDF attachments
+
+Every `GmailAttachment` has `readPdf()`: a message's, a pending message's, a draft's, and those
+of the message a hook delivers. It takes no argument and returns `{text, hasText, transcribed}`
+as Drive's `readPdf(fileId)` does, from the same reader (`pdfToText()` in `src/drive-pdf.ts`,
+built by `pdfConverter(env, GMAIL_PDF)`). What [Google Drive bindings](#google-drive-bindings)
+says of that reader holds here: the conversion, pages drawn and read in bands, page images sent
+as stored, the notes on a page, the idle minute, what is billed, the `AI` and `PDF_RENDERER`
+bindings and `PDF_OCR`. Its failures are in Gmail's words (`The Gmail attachment could not be
+converted from PDF.`, `The Gmail attachment's PDF could not be transcribed.`, `The Gmail
+attachment changed while it was being read; read it again.`), and its log lines are
+`google.gmail.pdf.*` under the component `gatekeeper.google.gmail.pdf`. A part is read when its
+MIME type is `application/pdf`, parameters and case aside, or its filename ends in `.pdf` in any
+case; any other is refused with `This attachment is not a PDF.` before anything is fetched. What
+differs from Drive is how the bytes are had.
+
+Gmail gives an attachment only whole, as a JSON object whose `data` member holds the bytes in
+base64url (`users.messages.attachments.get`), and has no ranged read.
+`GmailApi.openAttachmentContent()` asks for it with `?fields=data` and resolves once Gmail has
+begun its answer, having read none of it. `gmailAttachmentBytes()` (both in `src/google-api.ts`)
+decodes `data` as it arrives: a chunk of the answer is read only when the stream is, decoded and
+handed on, and nothing is kept of it but the parser's place and the bits of an unfinished
+quartet. It takes whitespace, other members around `data` (strings, numbers, `true`, `false`,
+`null`), either base64 alphabet, padding or none, and a base64 character written as a JSON
+escape. Any other answer, one with a nested member, a second `data` or an early end included,
+errors the stream with `Gmail returned an invalid attachment response.`, and one without `data`
+with `Attachment content is no longer available.` The bytes must number the `size` the message's
+listing gave: the stream errors with `Attachment content no longer matches the authorized
+snapshot.` at the end of the chunk that takes it past `size`, and at the string's end when there
+are fewer. Cancelling the stream cancels Gmail's answer. A part whose data came inside the
+listing is decoded from that string, 65,535 bytes at a time, once its length has been checked.
+Only the wait for an answer to begin is timed, at 60 seconds over all of `fetchWithAuthRetry`'s
+attempts together (a backoff sleep in progress, of up to 10 seconds, is not interrupted), so a
+long attachment is not cut off. Its body is timed by what reads it: the pass described below,
+the idle minute while it streams into the renderer, and during `readPdf()` itself, while it
+streams into the conversion, a minute for each read of it that is outstanding (the conversion
+takes the bytes at the pace of its own upload, which is not counted). An attachment that stops
+arriving then fails `readPdf()` with `The attachment stopped arriving while it was being read;
+read it again.`, having reported nothing and let its approval queue go.
+
+`readPdf()` has no size limit of its own for bytes Gmail holds (a message's attachment, and a
+draft's part that Gmail stores) and does not go by `readable`; `getContent()` and its 10 MiB
+limit are unchanged. Bytes this binding stores (a pending message's part, and a draft's uploaded
+file, inline part or forward source) are read whole at each open, one copy, and handed on 64 KiB
+at a time. A forward copies its source's parts under the whole message's 25 MiB limit alone, so
+such a part can be over 10 MiB: it is then refused before it is read, with `This attachment
+exceeds the 10485760-byte safe limit for a PDF read from a pending message or a draft.`, and can
+be read from the forwarded message instead.
+
+A text with pages to transcribe reads the attachment again as it is read. A PDF whose pages are
+drawn is fetched whole once more, for the first page drawn, and streamed into the renderer, as
+Drive's second download is. Page images sent as stored are what Drive reads by range;
+`forwardRangeReader()` (`src/pdf-forward-reader.ts`) serves them from one pass over a single
+open answer instead. The bytes before an image are read and dropped, each chunk of them moving
+the idle clock; the image's own are read only as the model's request takes them; and the pass
+then stays open, unread, for the next image, with nothing of the file kept but the rest of the
+chunk the last image ended in. So a scan read as stored costs one more fetch of the attachment,
+as far as its last page image, however many pages it has. A pass breaks when a read of it fails
+or it ends before the image does, and stalls when a read of it has waited 15 seconds for a
+chunk; the time between two images, while the model answers, is not counted. Either way the pass
+is let go and the attachment opened again from its start, once for each image, which goes on
+from where it had got to. A second break or stall under the same image fails the text: with what
+the read failed with, as a changed attachment when it ended short, or with `The PDF stopped
+arriving while a page was being read; read it again.` An open that fails is not tried again. An
+image that a later update to the file defined again lies after the images of later pages, so its
+range starts before the pass's place and a new pass is opened for it: four times for one text,
+after which the text fails as a failed transcription.
+
+`readPdf()` reports one observation, `Read Gmail attachment text`, after the conversion and
+before anything is returned or a refusal to transcribe thrown, since such a refusal says what
+the content is like. A conversion that answers before the bytes have ended is refused: they are
+known to be the listed ones only at their end. Every later open (the whole read for the
+renderer, a pass, a pass opened again) is an observation of its own under the same title, its
+description saying which read it is, authorized once the attachment is open and before any of
+it is used; a refusal lets what was opened go and fails the text. A text that may read the
+attachment again keeps its approval queue and its pass until it ends, whether by its end, a
+cancel, an error or the idle minute; any other lets both go before it is returned. A draft
+attachment's capability is checked for staleness when `readPdf()` starts and at each open, not
+while a pass already open is read, so the text of a draft that has changed fails at its next
+open. In the workerd tests a text returned over RPC was pulled before its reader read anything,
+so the first later read, and its observation, can follow `readPdf()` at once.
+
+The tests fake Gmail at the fetch layer (`__tests__/workerd/gmail-pdf.test.ts`) and test the
+decoder on answers built for it. What they assume of Gmail was checked once against the real
+API, on four generated PDFs of 362,648 to 20,897,581 bytes inserted into a mailbox as
+attachments, over HTTP/1.1 from a workstation and not from a Worker:
+
+- `attachments.get?fields=data` answers with one pretty-printed object, `{"data": "…"}`, sent
+  chunked, its `data` in the base64url alphabet with `=` padding and no whitespace inside it.
+- The `size` a message's listing gives for a part was the count of the decoded bytes, and the
+  bytes were the file's, for all four.
+- An answer left unread was still good after 30 and 45 seconds and had been reset by Google
+  after 60, 75, 90 and 240. A pass is left unread while the model reads a page, so it can break
+  under a slow page, at about the moment the text's own idle minute ends it; opening again is
+  what covers it.
+- A message read twice lists a different attachment id each time. An id went on working 25
+  minutes after it was listed, which is as long as it was tried, so opening again with the id a
+  listing gave holds over the time a text is read.
+
+Not checked: the same from a Worker's `fetch`, which may hold more of an answer before it stops
+taking it; that the runtime does not draw in an answer nobody reads, seen only against a faked
+fetch; and the decode's cost as a Worker's CPU (about 50 ms for 10 MiB in Node). A pass stops at
+the last page image, short of the answer's end where the byte count is checked, so on a pass an
+attachment that ends short of an image fails as changed and no other change of size is noticed.
+
 ## Google Chat and Gmail new-message hooks (optional)
 
 Gadgets can watch a Chat conversation for new messages (see `docs/google-chat-capabilities.md`),
@@ -716,7 +821,7 @@ Every Drive session offers `readPdf(fileId)`, which downloads an in-scope PDF an
 
 A rendered PDF's pages are drawn by [PDFium](https://pdfium.googlesource.com/pdfium/) in a Worker of its own, `pdf-renderer`, which this one reaches over the `PDF_RENDERER` service binding, taking only the types and limits of its `src/api.ts`; [its README](../pdf-renderer/README.md) says what it holds and the limits it draws under. Drawing reads what sending stored images cannot: pages stored as fax, JBIG2 or JPEG 2000, with a palette or in CMYK, in layers, tiles or strips, or turned, and pages that the file stores in another order than its page tree lists them. At the first read of `text` the file is downloaded a second time, as one content read of the whole file: checked against the binding's scope, re-proved on a folder binding, reported as `drive/content/<fileId>`, and failed if the file is no longer the size it was converted at, or, on a folder binding, if its modification time has moved. The download streams into the renderer's `open()`, which keeps the file in its own isolate; what this Worker holds is a stub to the open document, and the bands of one page while they are read. Each page is asked for when the text has been read up to it, with `renderPage(index, { bands: 4 })`: the renderer draws it in 8-bit grey at 150 dpi (fewer for a page that would pass 3,000,000 pixels or 4,000 on a side) and cuts it across, at its least inked rows, into at most four bands, fewer for a short page and for one set in columns. A band with no ink is sent to no model. Every other band is wrapped as a PNG (`pngFromSamples` in `src/pdf-png.ts`, deflated a step at a time as the request takes it) and sent with the prompt a whole page is and one sentence more, against writing a stamp or a logo as an image or a link (a prompt that said the image is a band, which may begin or end inside a table, made the model stop short of a long band's end); up to four of a page's calls are in flight at once (`src/pdf-bands.ts`). The bands' texts come under the page's one heading, each on a line of its own after the last, so a table or a paragraph that a cut falls in comes back in two parts, the second part of a table at times under an empty header row. The page is given whole, in one read, and a cancel sent while it is being read is acted on once it has been. Pages are numbered by the page tree.
 
-A band is asked for twice at most, by the same request: no seed is sent, since on the band it was tried on the model gave one answer whatever seed it was sent. It is asked again when its call failed with HTTP 429 or a 5xx, or its response broke off or reported an error partway; a second such failure fails the text, as any other failure does at once. It is asked again when its answer was stopped at the model's output limit, or ran away repeating itself and was stopped by the gatekeeper: a unit of 12 or more characters said 12 times on end, or 2,000 characters on end of a shorter unit or of one with no letter or digit in it, so that a table's rule and a contents page's dot leaders are not taken for one. A band's second answer is stopped only at the 2,000 characters, whatever its unit: a table may hold twelve equal rows, and its first answer is stopped in them. A second answer that ended whole then replaces the first; otherwise the first is kept, a runaway as far as the first of what it repeated, and the page is followed by `[The transcription of this page was cut off.]`. And once every band of the page has an answer, a band whose answer is short for its ink is asked again and the longer of its two answers kept. Short is under a third of the characters for each unit of ink that the page's other bands with text have at their median, of which there must be at least two, unless the band's own ink is under a tenth of their median; the three numbers are a first setting.
+A band costs three model calls at most, all with the same prompt and settings: no seed is sent, since on the band it was tried on the model gave one answer whatever seed it was sent. A call is made again as it was, once, when it failed with HTTP 429 or a 5xx, when it failed under any status with Workers AI's code 3040, which says the model has no room just now, or when its response broke off or reported an error partway; a second such failure fails the text, as any other failure does at once, and the answer of a call made again is the band's however it ended. The code is the first `internalCode` or `code` in the first 1,024 bytes of the failed answer (`src/workers-ai-vision.ts`), and is 3040 when any code there is, or when those bytes hold `3040: Capacity temporarily exceeded`. Before a call is made again there is a pause of 250 ms and up to 250 ms more at random (`RETRY_PAUSE` in `src/pdf-bands.ts`), so that the calls a model had no room for do not all come back at once; it ends at once when the page is given up, by another band's failure or by the text's ending. An answer did not end whole when it was stopped at the model's output limit, or ran away repeating itself and was stopped by the gatekeeper: a unit of 12 or more characters said 12 times on end, or 2,000 characters on end of a shorter unit or of one with no letter or digit in it, so that a table's rule and a contents page's dot leaders are not taken for one. A band whose first answer did not end whole is not asked again as it was, since the model would answer the same. It is cut in two at the least inked row of its middle third (a row's ink measured from the row's own ground, as the renderer measures it, so that a page of light writing on dark is cut between its lines too), of rows equally inked the one nearest the middle, and each half that has ink is asked for, the top and then the bottom, with no pause; the halves are views of the band's rows, not copies. A half's answer is stopped only at the 2,000 characters, whatever its unit: a table may hold twelve equal rows, and the first answer is stopped in them. The halves' texts, the bottom's on the line after the top's, are then the band's, and when either did not end whole the page is followed by `[The transcription of this page was cut off.]`. When a half's call fails, which is not made again and after which a bottom half is not asked, or when neither half has ink, the first answer is kept, a runaway as far as the first of what it repeated, and the page is followed by the same line. And once every band of the page has an answer, a band whose one answer is short for its ink is cut in two likewise, and its halves' texts are kept when together they are longer. Short is under a third of the characters for each unit of ink that the page's other bands with text have at their median, of which there must be at least two, unless the band's own ink is under a tenth of their median; the three numbers are a first setting. A band of fewer than 64 rows is not cut but asked again as it is: a second answer that ended whole replaces a first that did not, and of a short band's two answers the longer is kept. Against the real model and through the real renderer, on generated pages, the cut has been seen only for a short answer (five bands of a page that is mostly a figure, each read better in halves); no call there failed, was stopped at the output limit or ran away, so the capacity retry, the pause and the cut after an answer that did not end whole are tested with a fake model only.
 
 A page the renderer could not draw within its limits has its heading and `[This page could not be drawn within the memory and work a page is allowed, so it was not read.]`, and the text goes on. A page that comes out with no ink is sent to no model: it has its heading and, when it draws an image, `[This page came out blank: it has nothing on it, or its image could not be read.]`. A page drawn on a second try, at half the resolution, is followed by `[This page was read from a drawing at half the usual resolution, which is what its size allowed, so its text may be less exact.]`.
 
