@@ -56,6 +56,14 @@ export type GatekeeperRecord = {
   creationSpec?: GatekeeperCreationSpec;
 
   /**
+   * Who created the connection: the member whose session made it, or the initiator of the agent
+   * turn that created its resource. Absent on an ambient capsule, which no person creates, and on
+   * a record whose creator was not recorded: one written before creators were recorded, or a
+   * resource created in a turn that has no record.
+   */
+  createdBy?: AiChatAuthorInfo;
+
+  /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
    * by binding name. Seeded from the AgentSpawnerConfig.env the spawner was created with, then
    * edited like a gadget's (see GadgetRecord.bindings), and read when an agent is spawned.
