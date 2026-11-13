@@ -220,9 +220,16 @@ const MAX_TABLE_DEPTH = 8;
 const MAX_GRID_SPAN = 64;
 /** The most rows read from one table; a table can hold rows with no cells, which the block limit does not count. */
 const MAX_TABLE_ROWS = 5_000;
+/** The most table cells read from one document, which the block limit does not count either: a cell may be empty. */
+const MAX_TABLE_CELLS = 50_000;
+/**
+ * The most fields one may sit inside. Each run looks through the fields it is in, so a run inside
+ * thousands of fields never closed would cost runs times fields; real documents nest a few.
+ */
+const MAX_FIELD_NESTING = 32;
 
 /** Reads a Word document into a layout model. Throws `DocumentConversionError`, `ZipError` or `XmlError`. */
-export async function readDocxDocument(bytes: Uint8Array): Promise<DocxDocument> {
+export async function readDocxDocument(bytes: Uint8Array, options: { readonly maxBlocks?: number } = {}): Promise<DocxDocument> {
   const zip = openZip(bytes);
   const mainPart = await findMainPart(zip, "word/document.xml");
   const relationships = await readRelationships(zip, mainPart);
@@ -243,7 +250,8 @@ export async function readDocxDocument(bytes: Uint8Array): Promise<DocxDocument>
     // Before Word 2013 a table hung into the margin by its cell padding, so that its text, not
     // its border, lined up with the paragraphs around it. A file says which behaviour it expects.
     outdentTables: (numeric(attribute(compatibilityMode, "w:val")) ?? 12) < 15,
-    blocksLeft: MAX_BLOCKS,
+    blocksLeft: Math.min(MAX_BLOCKS, options.maxBlocks ?? MAX_BLOCKS),
+    cellsLeft: MAX_TABLE_CELLS,
     truncated: false,
     omitted: new Set(),
     notes: 0,
@@ -309,6 +317,7 @@ interface DocumentContext {
   readonly theme: Theme;
   readonly outdentTables: boolean;
   blocksLeft: number;
+  cellsLeft: number;
   truncated: boolean;
   readonly omitted: Set<DocxUnsupportedKind | "notes">;
   /** Foot- and endnote references seen so far, which number them. */
@@ -500,7 +509,7 @@ function readParagraph(paragraph: XmlElement, part: PartContext, cell: CellConte
   const resolved = resolveParagraph(properties, part, cell);
   const markFormat = layered(resolved.runBase, readRunFormat(firstChild(properties, "w:rPr"), document.theme));
 
-  const walk: InlineWalk = { part, resolved, inlines: [], fields: [] };
+  const walk: InlineWalk = { part, resolved, inlines: [], fields: [], unnested: 0 };
   walkInlines(paragraph, walk, undefined);
 
   // The marker is counted even for a paragraph that ends up split or empty, as Word numbers it.
@@ -522,6 +531,8 @@ function readParagraph(paragraph: XmlElement, part: PartContext, cell: CellConte
   if (!cell && format.pageBreakBefore) blocks.push({ kind: "pageBreak" });
   let marked = false;
   flow.forEach((inlines, index) => {
+    // Each page break makes a paragraph two blocks more, which the document's budget pays for.
+    if (index > 0 && !(takeBlock(document) && takeBlock(document))) return;
     if (index > 0) blocks.push({ kind: "pageBreak" });
     // A break at either end of a paragraph leaves no empty paragraph beside it.
     if (inlines.length === 0 && flow.length > 1) return;
@@ -612,6 +623,8 @@ interface InlineWalk {
   readonly resolved: ResolvedParagraph;
   readonly inlines: WalkedInline[];
   readonly fields: FieldFrame[];
+  /** Fields opened past `MAX_FIELD_NESTING`, which are not followed but still have to close. */
+  unnested: number;
 }
 
 /**
@@ -666,14 +679,14 @@ function walkRun(element: XmlElement, walk: InlineWalk, href: string | undefined
   if (format.hidden) {
     // A hidden run still opens and closes fields: missing one would leave the rest of the
     // paragraph read as field code.
-    for (const child of childElements(element, "w:fldChar")) advanceField(walk.fields, attribute(child, "w:fldCharType"));
+    for (const child of childElements(element, "w:fldChar")) advanceField(walk, attribute(child, "w:fldCharType"));
     return;
   }
   const run = runProperties(format, walk.resolved.background);
 
   for (const child of childElements(element)) {
     if (child.name === "w:fldChar") {
-      advanceField(walk.fields, attribute(child, "w:fldCharType"));
+      advanceField(walk, attribute(child, "w:fldCharType"));
       continue;
     }
     const field = walk.fields[walk.fields.length - 1];
@@ -729,9 +742,14 @@ function walkRunContent(child: XmlElement, walk: InlineWalk, run: DocxRunPropert
   }
 }
 
-function advanceField(fields: FieldFrame[], type: string | undefined): void {
-  if (type === "begin") {
-    fields.push({ instruction: "", inResult: false, href: undefined });
+function advanceField(walk: InlineWalk, type: string | undefined): void {
+  const { fields } = walk;
+  if (walk.unnested > 0) {
+    if (type === "begin") walk.unnested++;
+    else if (type === "end") walk.unnested--;
+  } else if (type === "begin") {
+    if (fields.length < MAX_FIELD_NESTING) fields.push({ instruction: "", inResult: false, href: undefined });
+    else walk.unnested++;
   } else if (type === "separate") {
     const field = fields[fields.length - 1];
     if (field) {
@@ -889,6 +907,11 @@ function readTable(table: XmlElement, part: PartContext, depth: number): DocxTab
         merge: !merge ? undefined : attribute(merge, "w:val") === "restart" ? "restart" : "continue",
       });
       column += span;
+    }
+    document.cellsLeft -= cells.length;
+    if (document.cellsLeft < 0) {
+      document.truncated = true;
+      break;
     }
     grid.push({ properties: rowProperties, cells, byColumn: new Map(cells.map(cell => [cell.column, cell])) });
   }

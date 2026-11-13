@@ -411,12 +411,36 @@ function cellContent(cell: XmlElement, format: WorkbookStyles["formats"][number]
       return { text: raw === "1" ? "TRUE" : "FALSE", kind: "boolean" };
     case "e":
       return { text: raw, kind: "error" };
-    case "d":
-      return { text: raw, kind: "date" };
+    case "d": {
+      const date = isoDate(raw, context.date1904);
+      if (!date) return { text: raw, kind: "date" };
+      return format.numberFormat.isDate
+        ? { kind: "date", ...format.numberFormat.format(date.serial, context.date1904) }
+        : { text: date.text, kind: "date" };
+    }
   }
   const number = Number(raw);
   if (raw === "" || Number.isNaN(number)) return { text: raw, kind: "text" };
   return { kind: format.numberFormat.isDate ? "date" : "number", ...format.numberFormat.format(number, context.date1904) };
+}
+
+const DAY_MS = 86_400_000;
+
+/**
+ * A cell stored as an ISO 8601 date (`t="d"`) as the serial number a date format takes, and as
+ * the text shown when the cell has no date format: its date, and its time when it has one.
+ */
+function isoDate(raw: string, date1904: boolean): { serial: number; text: string } | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}(?:\.\d{1,9})?))?)?Z?$/.exec(raw.trim());
+  if (!match) return undefined;
+  const [year, month, day, hours, minutes, seconds] = match.slice(1).map(part => Number(part ?? 0)) as [number, number, number, number, number, number];
+  const midnight = Date.UTC(year, month - 1, day);
+  const time = (hours * 3600 + minutes * 60 + seconds) / 86_400;
+  if (Number.isNaN(midnight) || time >= 1) return undefined;
+  // The 1900 system counts a 29 February 1900 that never was, so days before March 1900 are one fewer.
+  const epoch = date1904 ? Date.UTC(1904, 0, 1) : Date.UTC(1899, 11, midnight < Date.UTC(1900, 2, 1) ? 31 : 30);
+  const clock = time > 0 ? ` ${match[4]}:${match[5]}${match[6] ? `:${match[6].slice(0, 2)}` : ""}` : "";
+  return { serial: Math.round((midnight - epoch) / DAY_MS) + time, text: `${match[1]}-${match[2]}-${match[3]}${clock}` };
 }
 
 type SheetLink = SheetSettings["links"][number];
@@ -473,6 +497,7 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
     const rowStyle = rowFormat?.style;
     const cells: SheetCell[] = [];
     const rowLinks = linksByRow.get(rowIndex);
+    const seen = new Set<number>();
     let nextColumn = 0;
     let tallest = 0;
     for (const cell of childElements(row, "s:c")) {
@@ -480,6 +505,13 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
       const column = reference ? columnIndex(reference) : nextColumn;
       if (column < 0) continue;
       nextColumn = column + 1;
+      // A row naming one cell many times shows its first; each repeat would be formatted and kept.
+      if (seen.has(column)) continue;
+      seen.add(column);
+      if (column >= maxColumns) {
+        if (firstChild(cell, "s:v") || firstChild(cell, "s:is")) truncated = true;
+        continue;
+      }
       const styleId = attribute(cell, "s");
       // A cell that names no style takes its row's, then its column's: how its value is formatted
       // as well as how it looks.
@@ -490,10 +522,6 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
       // A formula's text result may truly be empty; any other formula with nothing stored was never calculated.
       if (content.text === "" && attribute(cell, "t") !== "str" && firstChild(cell, "s:f")) uncalculated = true;
       if (content.text === "" && styleId === undefined) continue;
-      if (column >= maxColumns) {
-        if (content.text !== "") truncated = true;
-        continue;
-      }
       const style = format.style;
       const hyperlink = linkAt(rowLinks, column);
       cells.push({ column, ...content, style, ...(hyperlink ? { hyperlink } : {}) });

@@ -79,9 +79,9 @@ it("draws a PDF's pages with selectable text", async () => {
   await userEvent.click(page.getByRole("button", { name: "Preview report.pdf" }));
 
   await expect.element(page.getByRole("dialog")).toBeVisible();
-  await expect.element(page.getByRole("img", { name: "Page 1" })).toBeVisible();
+  await expect.element(page.getByRole("group", { name: "Page 1" })).toBeVisible();
   await expect.element(page.getByText("Quarterly report")).toBeInTheDocument();
-  const canvas = document.querySelector<HTMLCanvasElement>("[role=img] canvas")!;
+  const canvas = document.querySelector<HTMLCanvasElement>("[role=group] canvas")!;
   const pixels = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
   // The page is white paper with dark text on it: drawn, not a blank canvas.
   expect(pixels.some((value, index) => index % 4 === 0 && value < 128)).toBe(true);
@@ -92,7 +92,7 @@ it("draws a page of an absurd shape within what a browser's canvas can hold", as
   await mount([ref("tall.pdf", "application/pdf")], { "tall.pdf": buildPdf("x", "0 0 1 100000") });
   await userEvent.click(page.getByRole("button", { name: "Preview tall.pdf" }));
 
-  const sheet = page.getByRole("img", { name: "Page 1" });
+  const sheet = page.getByRole("group", { name: "Page 1" });
   await expect.poll(() => sheet.element().querySelector("canvas")?.height ?? 0).toBeGreaterThan(0);
   const canvas = sheet.element().querySelector("canvas")!;
   expect(canvas.height).toBeLessThanOrEqual(8192);
@@ -167,6 +167,25 @@ it("steps through a message's attachments with the arrow keys and closes on Esca
   await userEvent.keyboard("{Escape}");
   await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
   await expect.element(card).toHaveFocus();
+});
+
+it("shows an SVG from a data URL, which has no origin to run its script as if opened on its own", async () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>';
+  await mount([ref("logo.svg", "image/svg+xml")], { "logo.svg": encoder.encode(svg) });
+  await userEvent.click(page.getByRole("button", { name: "Preview logo.svg" }));
+  const image = page.getByRole("dialog").getByRole("img", { name: "logo.svg" });
+  await expect.poll(() => image.element().getAttribute("src") ?? "").toMatch(/^data:image\/svg\+xml;base64,/);
+});
+
+it("keeps focus in the viewer when its next button reaches the last attachment", async () => {
+  await mount(
+    [ref("a.txt", "text/plain"), ref("b.txt", "text/plain")],
+    { "a.txt": encoder.encode("first"), "b.txt": encoder.encode("second") },
+  );
+  await userEvent.click(page.getByRole("button", { name: "Preview a.txt" }));
+  await userEvent.click(page.getByRole("button", { name: "Next attachment" }));
+  await expect.element(page.getByText("second")).toBeVisible();
+  await expect.element(page.getByRole("button", { name: "Previous attachment" })).toHaveFocus();
 });
 
 it("offers a download, without fetching the file, when its type has no preview", async () => {

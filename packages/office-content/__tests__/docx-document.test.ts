@@ -137,6 +137,39 @@ describe("readDocxDocument", () => {
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
+  it("counts the pages a paragraph's breaks make against the document's blocks", async () => {
+    const breaks = '<w:r><w:t>x</w:t><w:br w:type="page"/></w:r>'.repeat(20_000);
+    const document = await readDocxDocument(await buildLayoutDocx({ body: `<w:p>${breaks}<w:r><w:t>end</w:t></w:r></w:p>` }));
+    expect(document.body.length).toBeLessThanOrEqual(5_000);
+    expect(document.truncated).toBe(true);
+  });
+
+  it("stops reading tables once the document holds as many cells as it may, empty ones included", async () => {
+    const row = `<w:tr>${"<w:tc/>".repeat(100)}</w:tr>`;
+    const document = await readDocxDocument(await buildLayoutDocx({ body: `<w:tbl>${row.repeat(1_000)}</w:tbl>` }));
+    const [table] = document.body;
+    expect(table!.kind === "table" && table.rows.length).toBe(500);
+    expect(document.truncated).toBe(true);
+  });
+
+  it("reads only as many blocks as asked, for a glimpse of the start", async () => {
+    const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x")).repeat(100) }), { maxBlocks: 3 });
+    expect(document.body).toHaveLength(3);
+    expect(document.truncated).toBe(true);
+  });
+
+  it("follows fields only a few deep, however many a run is inside", async () => {
+    const begin = '<w:r><w:fldChar w:fldCharType="begin"/></w:r>';
+    const separate = '<w:r><w:fldChar w:fldCharType="separate"/></w:r>';
+    const end = '<w:r><w:fldChar w:fldCharType="end"/></w:r>';
+    const nested = (begin + separate).repeat(10_000) + run("x").repeat(2_000) + end.repeat(10_000);
+    const started = Date.now();
+    const document = await readDocxDocument(await buildLayoutDocx({ body: `<w:p>${nested}${run("after")}</w:p>` }));
+    expect(Date.now() - started).toBeLessThan(2_000);
+    const [block] = paragraphs(document.body);
+    expect(block!.inlines.at(-1)).toMatchObject({ kind: "text", text: "after" });
+  });
+
   it("keeps no more tab stops for a paragraph than Word allows", async () => {
     const tabs = Array.from({ length: 1_000 }, (_, index) => `<w:tab w:val="left" w:pos="${(index + 1) * 20}"/>`).join("");
     const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x"), `<w:tabs>${tabs}</w:tabs>`) }));

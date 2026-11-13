@@ -99,10 +99,25 @@ export const AttachmentViewer = ({
   const index = Math.max(0, attachments.findIndex((attachment) => attachment.id === openId));
   const attachment = attachments[index];
 
+  const navigationRef = useRef<HTMLDivElement>(null);
+  /** The button to focus once the step is drawn, when the one used gets disabled by it. */
+  const refocusRef = useRef<string | undefined>(undefined);
   const step = (offset: number) => {
     const next = attachments[index + offset];
-    if (next) onOpenChange(next.id);
+    if (!next) return;
+    onOpenChange(next.id);
+    // Reaching either end disables the button that got there, which would drop focus out of the
+    // dialog: it moves to the button that goes back.
+    const atEnd = index + offset === 0 || index + offset === attachments.length - 1;
+    if (atEnd && navigationRef.current?.contains(document.activeElement)) {
+      refocusRef.current = `${offset > 0 ? "Previous" : "Next"} attachment`;
+    }
   };
+  useEffect(() => {
+    const label = refocusRef.current;
+    refocusRef.current = undefined;
+    if (label) navigationRef.current?.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)?.focus();
+  }, [index]);
   const stepRef = useRef(step);
   stepRef.current = step;
 
@@ -157,7 +172,7 @@ export const AttachmentViewer = ({
               </Dialog.Description>
             </div>
             {attachments.length > 1 && (
-              <div className="flex shrink-0 items-center gap-0.5">
+              <div ref={navigationRef} className="flex shrink-0 items-center gap-0.5">
                 <WorkshopIconButton
                   aria-label="Previous attachment"
                   disabled={index === 0}

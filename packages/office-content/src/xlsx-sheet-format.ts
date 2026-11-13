@@ -383,13 +383,16 @@ function renderNumber(tokens: readonly Token[], magnitude: number): string {
     if (token.kind === "digit") lastDigit = index;
   });
   const firstDigit = tokens.findIndex(token => token.kind === "digit");
+  // The commas straight after the last digit placeholder, each of which scales by a thousand.
+  let scalingEnd = lastDigit + 1;
+  while (tokens[scalingEnd]?.kind === "comma") scalingEnd++;
   let grouping = false;
   const kept: Token[] = [];
   tokens.forEach((token, index) => {
     if (token.kind !== "comma") kept.push(token);
     else if (firstDigit < 0 || index < firstDigit) kept.push({ kind: "literal", text: "," });
     else if (index < lastDigit) grouping = true;
-    else if (tokens.slice(lastDigit + 1, index).every(between => between.kind === "comma")) value /= 1000;
+    else if (index < scalingEnd) value /= 1000;
     else kept.push({ kind: "literal", text: "," });
   });
 

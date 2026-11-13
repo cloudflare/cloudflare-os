@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, readdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, sep } from 'node:path'
 import type { Plugin } from 'vite'
 
 /**
@@ -24,9 +24,10 @@ export function pdfjsAssets(): Plugin {
       server.middlewares.use('/pdfjs', (request, response, next) => {
         const [directory, file, ...rest] = (request.url ?? '').split('?')[0].split('/').filter(Boolean)
         const path = join(packageRoot, directory ?? '', file ?? '')
-        // Exactly a file of one listed directory: nothing else in the package is reachable.
-        if (!DIRECTORIES.includes(directory) || !file || rest.length > 0 || file.startsWith('.') ||
-            !existsSync(path)) {
+        // Exactly a file of one listed directory: nothing else in the package is reachable. A
+        // backslash is a separator to Windows, so a name holding one could climb out.
+        if (!DIRECTORIES.includes(directory) || !file || rest.length > 0 || /^\.|[\\:]/.test(file) ||
+            relative(join(packageRoot, directory), path).includes(sep) || !existsSync(path)) {
           next()
           return
         }

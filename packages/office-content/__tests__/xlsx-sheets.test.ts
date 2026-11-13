@@ -277,6 +277,29 @@ describe("readWorkbookSheets", () => {
     expect(sheet.rows[1]!.cells.map(cell => cell.text)).toEqual(["25%"]);
   });
 
+  it("puts a date stored as ISO text through the cell's date format", async () => {
+    const workbook = await read({
+      styles: `<fonts>${DEFAULT_FONT}</fonts><cellXfs><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="22"/></cellXfs>`,
+      sheets: [{
+        name: "Dates",
+        rows:
+          '<row r="1"><c r="A1" t="d" s="1"><v>2023-03-15T00:00:00Z</v></c><c r="B1" t="d" s="2"><v>2023-03-15T18:00:00</v></c>' +
+          '<c r="C1" t="d"><v>2023-03-15</v></c><c r="D1" t="d"><v>2023-03-15T18:00:00Z</v></c><c r="E1" t="d" s="1"><v>1900-02-28</v></c>' +
+          '<c r="F1" t="d" s="1"><v>soon</v></c></row>',
+      }],
+    });
+    expect(workbook.sheets[0]!.rows[0]!.cells.map(cell => cell.text)).toEqual([
+      "3/15/2023", "3/15/2023 18:00", "2023-03-15", "2023-03-15 18:00:00", "2/28/1900", "soon",
+    ]);
+  });
+
+  it("shows the first of a row's cells that name one place, without formatting the rest", async () => {
+    const workbook = await read({
+      sheets: [{ name: "Repeats", rows: `<row r="1">${'<c r="A1"><v>1</v></c>'.repeat(1_000)}<c r="A1"><v>2</v></c><c r="B1"><v>3</v></c></row>` }],
+    });
+    expect(workbook.sheets[0]!.rows[0]!.cells.map(cell => `${cell.column}:${cell.text}`)).toEqual(["0:1", "1:3"]);
+  });
+
   it("gives cells with no style of their own their row's, then their column's", async () => {
     const workbook = await read({
       styles:

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { MAX_DECK_CONTENT, MAX_SLIDES, readPptxSlides, type SlideDeck, type SlideDrawnShape, type SlideShape } from "../src/pptx-slides";
 import { buildDeck, drawnShape, slideParagraph, transform, type DeckFixture } from "./test-fixtures";
 
-async function deckOf(fixture: DeckFixture): Promise<SlideDeck> {
-  return readPptxSlides(await buildDeck(fixture));
+async function deckOf(fixture: DeckFixture, options?: { maxSlides?: number }): Promise<SlideDeck> {
+  return readPptxSlides(await buildDeck(fixture), options);
 }
 
 /** The shapes of the deck's first slide. */
@@ -58,6 +58,25 @@ describe("readPptxSlides", () => {
     const [shape] = deck.slides[0]!.shapes as SlideDrawnShape[];
     expect(shape!.fill).toMatchObject({ kind: "gradient" });
     expect(shape!.fill?.kind === "gradient" && shape!.fill.stops.length).toBe(64);
+  });
+
+  it("reads only as many slides as asked", async () => {
+    const deck = await deckOf({ slides: [{ shapes: "" }, { shapes: "" }, { shapes: "" }] }, { maxSlides: 1 });
+    expect(deck.slides.map(slide => slide.number)).toEqual([1]);
+    expect(deck.truncated).toBe(true);
+  });
+
+  it("finds a layout placeholder for each of thousands of slide placeholders without searching for each", async () => {
+    const placeholder = (index: number, properties: string, body: string) =>
+      drawnShape({ placeholder: `<p:ph type="body" idx="${index}"/>`, properties, body });
+    const indexes = Array.from({ length: 4_000 }, (_, index) => index);
+    const layout = indexes.map(index => placeholder(index, transform(index * INCH, 0, INCH, INCH), "")).join("");
+    const slide = indexes.map(index => placeholder(index, "", slideParagraph("x"))).join("");
+    const started = Date.now();
+    const deck = await deckOf({ layoutShapes: layout, slides: [{ shapes: slide }] });
+    expect(Date.now() - started).toBeLessThan(3_000);
+    // Each takes its position from the layout placeholder of its own index.
+    expect(deck.slides[0]!.shapes.slice(0, 3).map(shape => shape.bounds.x)).toEqual([0, 72, 144]);
   });
 
   it("caps the slides it returns and says so", async () => {

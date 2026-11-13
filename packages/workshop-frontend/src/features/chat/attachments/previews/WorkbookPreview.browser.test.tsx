@@ -140,6 +140,25 @@ it("draws only the rows near the viewport and keeps headers and frozen rows in v
   expect([header.top - top, frozen.top - top]).toEqual([0, 20]);
 });
 
+it("keeps a frozen column's letter over its cells as the sheet scrolls sideways", async () => {
+  await mount({
+    sheets: [{
+      name: "Wide",
+      before: '<sheetViews><sheetView workbookViewId="0"><pane xSplit="1" topLeftCell="B1" state="frozen"/></sheetView></sheetViews>',
+      rows: `<row r="1">${text("A1", "Key")}${Array.from({ length: 40 }, (_, index) => number(`${String.fromCharCode(66 + (index % 25))}${index < 25 ? "" : "A"}1`, index)).join("")}</row>`,
+    }],
+  });
+  await expect.element(cell("Key")).toBeVisible();
+  const view = scroller();
+  await act(async () => {
+    view.scrollLeft = 280;
+    view.dispatchEvent(new Event("scroll"));
+  });
+  const header = page.getByRole("columnheader", { name: "A", exact: true }).element().getBoundingClientRect();
+  const frozen = cell("Key").element().getBoundingClientRect();
+  expect(header.left).toBe(frozen.left);
+});
+
 it("opens only web and mail links, and says what it does not draw", async () => {
   await mount({
     styles: FONTS + '<cellXfs><xf/></cellXfs>',

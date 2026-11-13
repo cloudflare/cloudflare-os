@@ -1,4 +1,4 @@
-import { getDocument, GlobalWorkerOptions, type PDFDocumentLoadingTask } from "pdfjs-dist";
+import { getDocument, GlobalWorkerOptions, PDFWorker, type PDFDocumentLoadingTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 
 GlobalWorkerOptions.workerSrc = workerUrl;
@@ -24,8 +24,15 @@ export const canvasDensity = (width: number, height: number): number => Math.min
   Math.sqrt(MAX_CANVAS_PIXELS / (width * height)),
 );
 
-/** Starts opening a PDF. The caller destroys the task when done with the document. */
+let worker: PDFWorker | undefined;
+
+/**
+ * Starts opening a PDF. The caller destroys the task when done with the document. Every PDF is
+ * read by one worker, started with the first: without one given, pdf.js starts a worker per file,
+ * so a chat's PDF cards would each start their own. A task does not stop a worker it was given.
+ */
 export const openPdf = (bytes: Uint8Array): PDFDocumentLoadingTask => getDocument({
+  worker: worker ??= new PDFWorker(),
   // A copy: pdf.js hands the buffer it is given to its worker, which would empty the caller's.
   data: bytes.slice(),
   cMapUrl: `${PDFJS_ASSETS}cmaps/`,

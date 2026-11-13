@@ -85,12 +85,21 @@ export const SheetGrid = ({ sheet, styles }: { sheet: SheetModel; styles: readon
         </colgroup>
         <thead>
           <tr style={{ height: SHEET_HEADER_HEIGHT }}>
-            <th className={`sticky left-0 top-0 z-10 ${SHEET_HEADER_CLASS}`} />
-            {columns.map((column) => (
-              <th key={column} scope="col" className={`sticky top-0 z-[9] ${SHEET_HEADER_CLASS}`}>
-                {columnLetter(column)}
-              </th>
-            ))}
+            <th className={`sticky left-0 top-0 z-[11] ${SHEET_HEADER_CLASS}`} />
+            {columns.map((column, position) => {
+              // A frozen column's letter stays over its cells, above the letters that scroll under it.
+              const frozen = position < layout.frozenColumns;
+              return (
+                <th
+                  key={column}
+                  scope="col"
+                  className={`sticky top-0 ${frozen ? "z-10" : "z-[9]"} ${SHEET_HEADER_CLASS}`}
+                  style={frozen ? { left: SHEET_ROW_HEADER_WIDTH + layout.columnLefts[position] } : undefined}
+                >
+                  {columnLetter(column)}
+                </th>
+              );
+            })}
           </tr>
         </thead>
         <tbody>

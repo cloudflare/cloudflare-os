@@ -50,7 +50,8 @@ const MAX_SIDE = 56 * 72;
  * `XmlError` for a file that cannot be read at all; content it does not interpret is listed in
  * the result's `unsupported`.
  */
-export async function readPptxSlides(bytes: Uint8Array): Promise<SlideDeck> {
+export async function readPptxSlides(bytes: Uint8Array, options: { readonly maxSlides?: number } = {}): Promise<SlideDeck> {
+  const maxSlides = Math.min(MAX_SLIDES, options.maxSlides ?? MAX_SLIDES);
   const zip = openZip(bytes);
   const mainPart = await findMainPart(zip, "ppt/presentation.xml");
   const presentation = await readPart(zip, mainPart);
@@ -68,7 +69,7 @@ export async function readPptxSlides(bytes: Uint8Array): Promise<SlideDeck> {
     const relationship = relationships.get(attribute(slideId, "r:id") ?? "");
     if (!relationship || relationship.external || relationship.type !== "slide" || !zip.has(relationship.target)) continue;
     if (seen.has(relationship.target)) continue;
-    if (slides.length >= MAX_SLIDES || reader.content >= MAX_DECK_CONTENT) {
+    if (slides.length >= maxSlides || reader.content >= MAX_DECK_CONTENT) {
       truncated = true;
       break;
     }
@@ -140,8 +141,8 @@ interface Scope {
   readonly relationships: Relationships;
   readonly context: TextContext;
   /** The layout's and master's placeholder shapes a slide's placeholders inherit from; empty for the layout's and master's own shapes. */
-  readonly layoutPlaceholders: readonly XmlElement[];
-  readonly masterPlaceholders: readonly XmlElement[];
+  readonly layoutPlaceholders: PlaceholderIndex;
+  readonly masterPlaceholders: PlaceholderIndex;
   /** Placeholders on a layout or master are templates for slides, not content. */
   readonly skipPlaceholders: boolean;
   /** The presentation's and master's styles for a category, lowest priority first. */
@@ -205,8 +206,8 @@ class DeckReader {
       return {
         relationships,
         context,
-        layoutPlaceholders: inherits ? placeholderShapes(layout?.root) : [],
-        masterPlaceholders: inherits ? placeholderShapes(master?.root) : [],
+        layoutPlaceholders: inherits ? placeholderIndex(layout?.root) : NO_PLACEHOLDERS,
+        masterPlaceholders: inherits ? placeholderIndex(master?.root) : NO_PLACEHOLDERS,
         skipPlaceholders: !inherits,
         baseStyles: category => {
           let found = styles.get(category);
@@ -359,11 +360,11 @@ class DeckReader {
     if (!placeholder) return { layers: [shape], category: "other" };
     const type = attribute(placeholder, "type");
     const index = attribute(placeholder, "idx");
-    const inLayout = (index !== undefined ? scope.layoutPlaceholders.find(candidate => attribute(placeholderOf(candidate), "idx") === index) : undefined)
-      ?? (type !== undefined ? scope.layoutPlaceholders.find(candidate => placeholderType(candidate) === type)
-        ?? scope.layoutPlaceholders.find(candidate => masterKind(placeholderType(candidate)) === masterKind(type)) : undefined);
+    const layout = scope.layoutPlaceholders;
+    const inLayout = (index !== undefined ? layout.byIndex.get(index) : undefined)
+      ?? (type !== undefined ? layout.byType.get(type) ?? layout.byKind.get(masterKind(type)) : undefined);
     const kind = masterKind(type ?? (inLayout ? placeholderType(inLayout) : "obj"));
-    const inMaster = scope.masterPlaceholders.find(candidate => masterKind(placeholderType(candidate)) === kind);
+    const inMaster = scope.masterPlaceholders.byKind.get(kind);
     return {
       layers: [shape, inLayout, inMaster].filter((layer): layer is XmlElement => layer !== undefined),
       category: kind === "title" ? "title" : kind === "body" ? "body" : "other",
@@ -491,8 +492,39 @@ function placeholderType(shape: XmlElement): string {
   return attribute(placeholderOf(shape), "type") ?? "obj";
 }
 
-function placeholderShapes(root: XmlElement | undefined): XmlElement[] {
-  return childElements(shapeTree(root)).filter(shape => placeholderOf(shape) !== undefined);
+/** A layout's or master's placeholders, each lookup finding the first in the part that matches. */
+interface PlaceholderIndex {
+  readonly byIndex: ReadonlyMap<string, XmlElement>;
+  readonly byType: ReadonlyMap<string, XmlElement>;
+  readonly byKind: ReadonlyMap<string, XmlElement>;
+}
+
+const NO_PLACEHOLDERS: PlaceholderIndex = { byIndex: new Map(), byType: new Map(), byKind: new Map() };
+const placeholderIndexes = new WeakMap<XmlElement, PlaceholderIndex>();
+
+/**
+ * The placeholders of a layout or master, indexed once per part: every slide's shapes look their
+ * placeholders up here, and searching the part's list for each would cost shapes times placeholders.
+ */
+function placeholderIndex(root: XmlElement | undefined): PlaceholderIndex {
+  if (!root) return NO_PLACEHOLDERS;
+  let index = placeholderIndexes.get(root);
+  if (index) return index;
+  const byIndex = new Map<string, XmlElement>();
+  const byType = new Map<string, XmlElement>();
+  const byKind = new Map<string, XmlElement>();
+  const first = (map: Map<string, XmlElement>, key: string | undefined, shape: XmlElement) => {
+    if (key !== undefined && !map.has(key)) map.set(key, shape);
+  };
+  for (const shape of childElements(shapeTree(root))) {
+    const placeholder = placeholderOf(shape);
+    if (!placeholder) continue;
+    first(byIndex, attribute(placeholder, "idx"), shape);
+    first(byType, placeholderType(shape), shape);
+    first(byKind, masterKind(placeholderType(shape)), shape);
+  }
+  placeholderIndexes.set(root, index = { byIndex, byType, byKind });
+  return index;
 }
 
 /**
