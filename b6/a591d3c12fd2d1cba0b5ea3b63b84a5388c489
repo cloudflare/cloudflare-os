@@ -1,0 +1,19 @@
+packages/workshop-frontend/src/Activity.autoApproval.test.tsx
+  s_6ee79f00a32984::t_02706da8ab2aa3 96
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b6a591d3c12fd2d1cba0b5ea3b63b84a5388c489",
+  "prompts": {},
+  "sessions": {
+    "s_6ee79f00a32984": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f5b4e7c-b983-45ef-89cc-c2571fc41ba5",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
