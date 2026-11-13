@@ -212,6 +212,17 @@ describe("awaitingDecision on a chat's metadata", () => {
     expect(heard).toEqual([{awaiting: undefined, responding: false}]);
   });
 
+  it("is not sent again when a turn ends with no decision", async () => {
+    const s = await scenario("connection");
+    await s.visit(impl => {
+      // As an ordinary turn's teardown leaves the chat, before it checks for a decision to resume.
+      impl.storage.activeAgents.delete(CHAT);
+      const heard = listen(impl);
+      impl.resumeAgentAfterDecision(CHAT);
+      expect(heard).toEqual([]);
+    });
+  });
+
   it("is cleared when an approval resumes the turn", async () => {
     const requests = inference(), s = await scenario("action");
     let heard: ReturnType<typeof listen> = [];

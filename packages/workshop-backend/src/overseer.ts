@@ -10030,15 +10030,19 @@ class OverseerImpl implements AgentHooks {
 
   // No await: the decision, its model-visible note, busy state, execution row and alarm all
   // precede model lookup. Live resumption and restart recovery then use the same #resumeAgent.
-  // Every decision a turn waits on comes through here, and that keeps `awaitingDecision` current:
-  // it is derived as metadata is sent, so when such a decision leaves the agent stopped, this
-  // re-sends the metadata (a resume writes it anyway).
+  // Every decision a turn waits on comes through here with its id, and that keeps
+  // `awaitingDecision` current: it is derived as metadata is sent, so when such a decision leaves
+  // the agent stopped, this re-sends the metadata (a resume writes it anyway). The callers that
+  // pass no decision are only checking whether a turn can go on, which changes no metadata.
   resumeAgentAfterDecision(chatId: number, decisionId?: number | string): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (meta?.activeAgent) return; // Teardown rechecks after releasing this execution.
+    let staysStopped = () => {
+      if (decisionId !== undefined) this.#rebroadcastChatMeta([chatId]);
+    };
     let record = this.storage.activeAgents.get(chatId);
     if (!record) {
-      this.#rebroadcastChatMeta([chatId]);
+      staysStopped();
       return;
     }
     let wait = this.#decisionWait(chatId);
@@ -10046,12 +10050,12 @@ class OverseerImpl implements AgentHooks {
         ? wait.actionIds.includes(decisionId) : wait.requestIds.includes(decisionId))) return;
     if (!meta || !wait || wait.denied) {
       this.storage.activeAgents.delete(chatId);
-      this.#rebroadcastChatMeta([chatId]);
+      staysStopped();
       return;
     }
     if (wait.pending) return; // Still waiting, as the metadata already says.
     if (this.isPreparingChatMessage(chatId)) {
-      this.#rebroadcastChatMeta([chatId]);
+      staysStopped();
       return;
     }
     let text = wait.titles.length
