@@ -353,6 +353,8 @@ function applyBackend(
   config.vars = {
     ...config.vars,
     PUBLIC_BASE_URL: baseUrl,
+    // On, so that admin writes and their passkeys can be tried on a preview (docs/admin-access.md).
+    ADMIN_WORKSPACE_WRITES: "on",
   };
   config.previews = {
     observability: previewObservability(config),
