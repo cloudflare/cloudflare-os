@@ -1,4 +1,4 @@
-import { attachmentKind } from '@/blocks/attachmentKind'
+import { attachmentKind } from '@/files/attachmentKind'
 
 /**
  * How a file is shown: by the browser, from its bytes with the type given here (`url`), as text,

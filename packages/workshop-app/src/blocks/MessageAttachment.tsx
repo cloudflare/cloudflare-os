@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
-import { attachmentKind } from './attachmentKind'
+import { attachmentKind } from '@/files/attachmentKind'
 import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 
 export type MessageAttachmentProps = {

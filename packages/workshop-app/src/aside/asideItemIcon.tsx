@@ -1,5 +1,5 @@
 import { GitBranchIcon } from '@phosphor-icons/react'
-import { attachmentKind } from '@/blocks/attachmentKind'
+import { attachmentKind } from '@/files/attachmentKind'
 import { ATTACHMENT_KIND_ICONS } from '@/blocks/attachmentKindIcons'
 import { FormatIcon } from '@/components/FormatIcon'
 import type { AsideItem } from './asideItems'

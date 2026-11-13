@@ -2,7 +2,7 @@ import {
   FileAudioIcon, FileCodeIcon, FileDocIcon, FileIcon, FileImageIcon, FilePdfIcon,
   FilePptIcon, FileTextIcon, FileVideoIcon, FileXlsIcon, FileZipIcon, type Icon,
 } from '@phosphor-icons/react'
-import type { AttachmentKind } from './attachmentKind'
+import type { AttachmentKind } from '@/files/attachmentKind'
 
 /** The glyph shown for a file that has no picture of its own. */
 export const ATTACHMENT_KIND_ICONS: Record<AttachmentKind, Icon> = {
