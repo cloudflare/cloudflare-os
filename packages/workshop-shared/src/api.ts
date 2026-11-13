@@ -5725,6 +5725,133 @@ export type ConsoleLogEvent = {
 }
 
 /**
+ * The most characters of `text` a GadgetErrorEntry keeps: a longer text is cut to this length, its
+ * last character replaced with "…".
+ */
+export const MAX_GADGET_ERROR_TEXT_LENGTH = 2000;
+
+/**
+ * The most characters of an error's text that are read to make an entry's `text`: twice what is
+ * kept, so that redaction sees the whole of a token that straddles the cut. The Workshop sends no
+ * more than this per error.
+ */
+export const MAX_REPORTED_GADGET_ERROR_TEXT_LENGTH = 2 * MAX_GADGET_ERROR_TEXT_LENGTH;
+
+/**
+ * The most errors one Overseer.reportGadgetErrors() call records: the ones after them are
+ * dropped.
+ */
+export const MAX_GADGET_ERRORS_PER_CALL = 10;
+
+/**
+ * One entry of a workspace's gadget error log, as the Workshop keeps it: bounded, with
+ * token-shaped strings redacted. An entry is an error of a gadget's code that nothing in the
+ * gadget caught, as far as the Workshop sees one (Overseer.listGadgetErrors() says which it sees
+ * and which it does not), or a marker standing for errors that were dropped instead of kept. A
+ * marker is an entry like any other, told apart only by its `text`, which a gadget or a browser
+ * can imitate. Console calls are not kept, at any level: they reach only the subscribers of
+ * Overseer.subscribeToConsoleLogs(), while they happen.
+ *
+ * Entries are kept in the workspace's gadget error log, which Overseer.listGadgetErrors() reads
+ * (see docs/gadget-error-log.md).
+ */
+export type GadgetErrorEntry = {
+  /**
+   * When, by the Workshop's clock: when the exception happened for a "server" entry, when the
+   * report arrived for a "client" one, which is after the error by as long as the browser took
+   * to report it. A marker has the time it was written.
+   */
+  time: Date;
+
+  /**
+   * The gadget the error is kept for: the one whose code threw or that was being called, as far
+   * as the Workshop knows it (Overseer.listGadgetErrors() says where it does not).
+   */
+  gadgetId: WorkpieceId;
+
+  /**
+   * The chat whose draft of the gadget the code ran as, or null for the gadget's mainline. A chat
+   * that proposes no change to the gadget runs its mainline, so its exceptions are kept with
+   * null.
+   */
+  chatId: number | null;
+
+  /**
+   * Where the exception was caught: "server" by the Workshop, running the gadget's worker,
+   * "client" by a browser showing the gadget's UI. It does not say who chose the `text`, nor that
+   * the gadget's code threw it. A "server" entry can be the Workshop's own failure of a call
+   * (see Overseer.listGadgetErrors()), and it can hold what a caller sent: the error of a failed
+   * call names the method that was called, and a gadget's error can repeat its arguments. A
+   * "client" entry is unverified: its `text` is whatever that browser reported (see
+   * Overseer.reportGadgetErrors()), so nothing vouches for it.
+   */
+  source: "server" | "client";
+
+  /**
+   * On a "client" entry, the `AiChatAuthorInfo.id` of the user whose session reported it, as the
+   * Workshop knows that session and not as the browser said: the user whose browser ran the
+   * gadget's code, which says nothing of who wrote the text. Absent on a "server" entry.
+   */
+  userId?: string;
+
+  /**
+   * What was thrown, as text. For an exception the runtime reported for the gadget's worker, its
+   * name and message, with its stack where the runtime gives one. For a call to the gadget that
+   * failed, the error as text ("Error: message") and, on a line of its own, the method that was
+   * called ("    at method()"). When what the call threw was neither an Error nor a string, only
+   * its kind is kept: "[object Object]" for a thrown object, whose members are not read. For a
+   * "client" entry, what the browser reported: a label and the error's stack or message. For a
+   * marker, "1 error dropped" or "<n> errors dropped".
+   *
+   * It is kept with token-shaped strings (bearer and basic credentials, `sk-` keys, JSON Web
+   * Tokens, PEM private keys, the password in a URL, and the values of URL parameters and JSON
+   * members named like a secret) replaced by "[redacted]", then cut to
+   * MAX_GADGET_ERROR_TEXT_LENGTH characters, the last of them "…" when anything was cut. The
+   * redaction is a backstop against a credential in an error message: the text may hold anything
+   * else the gadget handles.
+   */
+  text: string;
+};
+
+/**
+ * One uncaught error of a gadget's UI as Overseer.reportGadgetErrors() takes it: its text and
+ * nothing else. The Workshop keeps it with source "client", adding the gadget, the chat, the
+ * session's user and the time the report arrived itself, so that a browser chooses none of them.
+ */
+export type ReportedGadgetError = {
+  /**
+   * The error's message, with its stack where there is one. Neither redacted nor cut: the
+   * Workshop does both when it keeps the entry, reading the first
+   * MAX_REPORTED_GADGET_ERROR_TEXT_LENGTH characters.
+   */
+  text: string;
+};
+
+/** Which entries Overseer.listGadgetErrors() returns. The filters combine. */
+export type GadgetErrorQuery = {
+  /** Only this gadget's entries. An id that names no gadget, or a deleted one, is not an error. */
+  gadgetId?: WorkpieceId;
+  /**
+   * Only entries kept under this chat, or with null only those kept under no chat: a gadget's
+   * mainline (see GadgetErrorEntry.chatId). Absent, entries are listed whatever their chat. An id
+   * that names no chat, or a deleted one, is not an error.
+   */
+  chatId?: number | null;
+  /** Only entries from this source. */
+  source?: GadgetErrorEntry["source"];
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor?: string;
+};
+
+/** One page of Overseer.listGadgetErrors(). */
+export type GadgetErrorPage = {
+  /** The page's entries, newest first by the order they were kept in. */
+  entries: GadgetErrorEntry[];
+  /** Pass as `cursor` for the next-older page; absent once there is none. */
+  nextCursor?: string;
+};
+
+/**
  * Summary of one workpiece, delivered via Overseer.subscribeToWorkpieces(), discriminated by
  * `type`. Gadgets and worktrees are published (gatekeeper workpieces -- chat capsules, ambient
  * singletons, connections -- are not listed). Worktrees are published only to subscriptions that
