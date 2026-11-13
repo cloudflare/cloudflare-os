@@ -30,7 +30,6 @@ export const HookCard = ({ title, description, resource, enabled, onEnabledChang
       {onEnabledChange ? (
         <Switch
           size="sm"
-          variant="neutral"
           aria-label={`Hook: ${title}`}
           checked={enabled}
           // Not `disabled`, which would take focus from a keyboard user mid-change.
