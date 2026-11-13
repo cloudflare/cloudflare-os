@@ -189,6 +189,27 @@ page (`/`, which the sidebar's logo goes to) starts one in a new workspace: unti
 is sent it greets the user over the composer in the middle of the page (`ChatStart`), and is then
 drawn as the conversation it becomes.
 
+## The Workspaces page
+
+`/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the
+rest by when they were last active, grouped as the chat settings page groups its files. Starring is
+the server's `pinned`; the starred ones' order is this device's (`prefs/starOrder.ts`), the latest
+starred first until they are dragged, or moved with Alt and an arrow key.
+
+The groups are drawn by `GroupedList`: one flat list of rows, so a row that changes group is the
+same row and keeps its focus, with each group's padding and the gap before it as margins. Its
+motion (`groupedListMotion.ts`) lays the rows out again as they move and draws the surface under
+them, both from pure, tested functions. `groupedPlan.ts` says what a change does: rows that keep
+their order stay where they are, and the room between two opens or closes as the groups fold
+differently, so groups split and merge around them with their corners rounding and squaring. A
+row that moves past others into another group (starred, unstarred) does not travel: it shrinks
+out of its old group, as a copy left there, and grows into its new one. A row reordered within its
+group slides over a surface that stays still. `groupedLayout.ts` draws the surface: rows whose
+padding meets share one rounded run, so groups never notch where they meet.
+
+Pages other than a chat (`PageLayout`) float their header over the content, unfilled, with the
+content fading under it as a conversation's does (`.chat-fade`).
+
 ## Beside the page
 
 Files and outputs open in a second card beside the page (`SplitLayout`, which `AppShell` lays the

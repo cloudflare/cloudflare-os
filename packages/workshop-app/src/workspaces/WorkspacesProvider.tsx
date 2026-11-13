@@ -33,5 +33,21 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [api, reconnecting, version])
 
-  return <WorkspacesContext value={{ state, refresh }}>{children}</WorkspacesContext>
+  const markPinned = (id: string, pinned: boolean) =>
+    setState((current) =>
+      current.status === 'ready'
+        ? { ...current, workspaces: current.workspaces.map((workspace) => (workspace.id === id ? { ...workspace, pinned } : workspace)) }
+        : current,
+    )
+  const setPinned = async (id: string, pinned: boolean) => {
+    markPinned(id, pinned)
+    try {
+      await api.setWorkspacePinned(id, pinned)
+    } catch (error) {
+      markPinned(id, !pinned)
+      throw error
+    }
+  }
+
+  return <WorkspacesContext value={{ state, refresh, setPinned }}>{children}</WorkspacesContext>
 }

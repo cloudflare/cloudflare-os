@@ -21,6 +21,8 @@ export type SidebarProps = {
   connections?: ReactNode
   /** The library's page, and whether it is the one showing. */
   library?: { current: boolean; onOpen: () => void }
+  /** The page listing every workspace, and whether it is the one showing. */
+  workspacesPage?: { current: boolean; onOpen: () => void }
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
 }
@@ -37,10 +39,19 @@ export const Sidebar = ({
   notice,
   connections,
   library,
+  workspacesPage,
   collapsed = false,
 }: SidebarProps) => {
   const home = <Button icon={<LogoIcon />} aria-label="Home" onClick={onGoHome} className="[&>svg]:size-[1.5em]" />
-  const workspacesButton = <Button icon={FolderIcon} aria-label="Workspaces" />
+  const workspacesButton = (
+    <Button
+      icon={FolderIcon}
+      aria-label="Workspaces"
+      aria-current={workspacesPage?.current ? 'page' : undefined}
+      onClick={workspacesPage?.onOpen}
+      className="aria-[current=page]:bg-kumo-tint"
+    />
+  )
   const libraryButton = (
     <Button
       icon={CirclesFourIcon}

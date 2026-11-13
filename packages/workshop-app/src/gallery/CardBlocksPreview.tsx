@@ -8,6 +8,10 @@ import { FileListItem } from '@/blocks/FileListItem'
 import { FileView } from '@/blocks/FileView'
 import { ListGroup } from '@/blocks/ListGroup'
 import { OutputListItem } from '@/blocks/OutputListItem'
+import { WorkspaceRow } from '@/blocks/WorkspaceRow'
+import { groupByTime } from '@/chat/timeGroups'
+import { GroupedList, type GroupedListGroup } from '@/components/GroupedList'
+import { formatActivity } from '@/workspaces/formatActivity'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
 import { fields } from './ToolBlocksPreview'
@@ -31,6 +35,56 @@ const request = {
   description: 'Creates a new **Bug** in the Platform project.',
   resource: { title: 'Jira · Platform board', url: 'https://jira.example.com/projects/PLAT' },
   fields: fields.slice(0, 5),
+}
+
+// Hours before now that each was last active: today's, yesterday's, and older ones, so that starring
+// one can fold a day too quiet to stand alone into the one before it.
+const previewWorkspaces = [
+  { id: 'engineering', title: 'Engineering', label: 'EN', hoursAgo: 1 },
+  { id: 'design', title: 'Design', label: 'DE', hoursAgo: 26 },
+  { id: 'one', title: 'Workspace 1', label: 'W1', hoursAgo: 2 },
+  { id: 'two', title: 'Workspace 2 with a title long enough that it has to be cut off somewhere in the row', label: 'W2', hoursAgo: 3 },
+  { id: 'three', title: 'Workspace 3', label: 'W3', hoursAgo: 30 },
+  { id: 'four', title: 'Workspace 4', label: 'W4', hoursAgo: 50 },
+  { id: 'five', title: 'Workspace 5', label: 'W5', hoursAgo: 75 },
+]
+
+const WorkspaceRowsPreview = () => {
+  const { say } = useReport()
+  const [now] = useState(() => Date.now())
+  const [starred, setStarred] = useState(['engineering', 'design'])
+  const rowOf = (workspace: (typeof previewWorkspaces)[number], time?: string) => ({
+    key: workspace.id,
+    content: (
+      <WorkspaceRow
+        workspaceLabel={workspace.label}
+        title={workspace.title}
+        time={time}
+        starred={starred.includes(workspace.id)}
+        onStarredChange={(on) => setStarred((current) => (on ? [workspace.id, ...current] : current.filter((other) => other !== workspace.id)))}
+        href={`#${workspace.id}`}
+        onSelect={() => say(`open ${workspace.title}`)}
+      />
+    ),
+  })
+  const at = (workspace: (typeof previewWorkspaces)[number]) => new Date(now - workspace.hoursAgo * 60 * 60 * 1000)
+  const rest = groupByTime(previewWorkspaces.filter(({ id }) => !starred.includes(id)).map((workspace) => ({ value: workspace, at: at(workspace) })))
+  const groups: GroupedListGroup[] = [
+    ...(starred.length > 0
+      ? [{
+          key: 'starred',
+          label: 'Starred',
+          rows: starred.map((id) => {
+            const workspace = previewWorkspaces.find((candidate) => candidate.id === id)!
+            return rowOf(workspace, formatActivity(at(workspace)))
+          }),
+          onReorder: setStarred,
+        }]
+      : []),
+    ...rest.map(({ key, label, entries }) => ({ key: `time:${key}`, label, rows: entries.map(({ value, time }) => rowOf(value, time)) })),
+  ]
+
+  return <GroupedList groups={groups} />
 }
 
 /** What an answer produces or asks for: the cards kept under it. */
@@ -65,6 +119,11 @@ export const CardBlocksPreview = () => {
             <FileListItem title="my-song-with-a-name-long-enough-that-it-has-to-be-cut-off-somewhere-in-the-row.wav" icon={<WaveformIcon aria-hidden="true" />} time="Tuesday" onSelect={() => say('open the song')} />
             <FileListItem title="Launch checklist" icon={<FileTextIcon aria-hidden="true" />} time="Monday" onSelect={() => say('open the checklist')} />
           </ListGroup>
+        </Column>
+      </Section>
+      <Section title="GroupedList, WorkspaceRow (the Workspaces page: the starred group, dragged or moved with Alt and an arrow key to reorder, then stretches of time; star or unstar one to see it shrink out of its group and grow into the other, and the groups fold again around it, splitting and merging; the star and more slide out when pointed at, and a starred one keeps its star)">
+        <Column>
+          <WorkspaceRowsPreview />
         </Column>
       </Section>
       <Section title="FileView (a file in the aside or on its own page: an image, Markdown, text or code as it was written, and one that cannot be shown here, which offers the download)">
