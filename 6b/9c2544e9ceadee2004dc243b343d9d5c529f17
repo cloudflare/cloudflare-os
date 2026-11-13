@@ -1,0 +1,86 @@
+packages/workshop-frontend/src/features/chat/agents/RunApprovalPopover.tsx
+  s_1ecc0303fce4fa::t_b82a35dc702a27 1-75
+packages/workshop-frontend/src/features/chat/agents/ChatListTabs.tsx
+  s_99c049c8391965::t_e195f92327cb88 1-42
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_1ecc0303fce4fa::t_8c518ec394353d 2973-2977,2987-2993,2997,3000-3003,3007
+  s_2b3f2ed31e2828::t_718b70631f2bb3 113-116,119-120,2856-2864,2978-2979,3141,3143-3157,3162-3164,3167-3182,3184,3194,3196,3203-3205,3207-3217,3229-3233,3248-3250,3258,3260-3277,5595-5604,5616-5644,5653-5654,5662-5663,5666,5670,5673,5755-5784,5904-5921
+  s_2b3f2ed31e2828::t_6328d2e737ef74 3218-3222,3225-3228,3234-3239
+  s_2b3f2ed31e2828::t_11ac0f96ac6700 117-118,2687-2691,2823,3020-3022,3223-3224,3240-3247,3251-3257,3259,3822
+  s_2b3f2ed31e2828::t_0a139fc2226b40 110,3142,5645-5652
+packages/workshop-frontend/src/ChatInterface.agents.test.tsx
+  s_99c049c8391965::t_737828ffe998ef 1-6,8,10-59,63,66-70,83-177,191-247,291-303
+  s_99c049c8391965::t_4698ab8f360b25 60-62,64-65,71-82,248-290
+  s_b18e9953d241be::t_7ed071f5494426 7,178-190
+  s_b18e9953d241be::t_6b5d2e9fc4607d 9,304-386
+packages/workshop-frontend/src/features/chat/agents/agentList.test.ts
+  s_99c049c8391965::t_4fd49cd7c0e8ee 1-189
+packages/workshop-frontend/src/features/chat/agents/RunApprovalPopover.browser.test.tsx
+  s_99c049c8391965::t_eb7e7ab673a7c0 1-107
+packages/workshop-frontend/src/features/chat/agents/agentList.ts
+  s_b18e9953d241be::t_4d86e5b0136961 90,101,108-110
+  s_2b3f2ed31e2828::t_8f8e4a1227f8fa 1-89,91-100,102-107,111-161
+packages/workshop-frontend/src/features/chat/agents/PendingApprovalCard.test.tsx
+  s_99c049c8391965::t_1afdefea33e11b 1-110
+packages/workshop-frontend/src/features/chat/agents/PendingApprovalCard.tsx
+  s_2b3f2ed31e2828::t_f163f8ec994cf9 1-106
+packages/workshop-frontend/src/features/chat/agents/AgentListRow.test.tsx
+  s_99c049c8391965::t_1d2c464c4df0cb 1-125
+packages/workshop-frontend/src/features/chat/agents/AgentRunsPane.tsx
+  s_6ee79f00a32984::t_00520ba8585381 56-58
+  s_2b3f2ed31e2828::t_76840fae1cc363 99-102
+  s_1ecc0303fce4fa::t_c5c947c4e956d0 1-55,59-98,103-141
+packages/workshop-frontend/src/features/chat/agents/AgentListRow.tsx
+  s_6ee79f00a32984::t_d5aefea9411a98 1-194
+packages/workshop-frontend/src/features/chat/agents/AgentRunsPane.test.tsx
+  s_b18e9953d241be::t_32bc5760cac072 85-95
+  s_99c049c8391965::t_6a831c34a14979 1-84
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "6b9c2544e9ceadee2004dc243b343d9d5c529f17",
+  "prompts": {},
+  "sessions": {
+    "s_1ecc0303fce4fa": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ba8cdb65-1849-4cc2-aad1-1b9665f743d4",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_2b3f2ed31e2828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f9b8f47-71bf-42a2-94d1-feb3e5a6228a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_6ee79f00a32984": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "2f5b4e7c-b983-45ef-89cc-c2571fc41ba5",
+        "model": "unknown"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_99c049c8391965": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "573f2bc7-b51c-4af7-bebf-d6b935794c8a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    },
+    "s_b18e9953d241be": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ef47a32-7265-4f66-8033-f1149c1af883",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
