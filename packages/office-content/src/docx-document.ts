@@ -253,6 +253,7 @@ export async function readDocxDocument(bytes: Uint8Array, options: { readonly ma
     outdentTables: (numeric(attribute(compatibilityMode, "w:val")) ?? 12) < 15,
     blocksLeft: Math.min(MAX_BLOCKS, options.maxBlocks ?? MAX_BLOCKS),
     cellsLeft: MAX_TABLE_CELLS,
+    atPageStart: true,
     truncated: false,
     omitted: new Set(),
     notes: 0,
@@ -285,6 +286,7 @@ export async function readDocxDocument(bytes: Uint8Array, options: { readonly ma
       document.truncated = true;
       continue;
     }
+    document.atPageStart = body.length === 0 || body.at(-1)!.kind === "pageBreak";
     body.push(...readBlock(element, part, undefined, 0));
     const section = element.name === "w:p" ? firstChild(firstChild(element, "w:pPr"), "w:sectPr") : undefined;
     if (section) {
@@ -299,6 +301,8 @@ export async function readDocxDocument(bytes: Uint8Array, options: { readonly ma
   // has them, and their length says nothing about whether the body was cut short.
   const truncated = document.truncated;
   document.blocksLeft = MAX_MARGIN_BLOCKS;
+  // A header or footer is on every page and starts none.
+  document.atPageStart = true;
 
   return {
     page: readPageSetup(firstSection),
@@ -319,6 +323,8 @@ interface DocumentContext {
   readonly outdentTables: boolean;
   blocksLeft: number;
   cellsLeft: number;
+  /** Whether the body block being read is the first on its page. */
+  atPageStart: boolean;
   truncated: boolean;
   readonly omitted: Set<DocxUnsupportedKind | "notes">;
   /** Foot- and endnote references seen so far, which number them. */
@@ -530,7 +536,8 @@ function readParagraph(paragraph: XmlElement, part: PartContext, cell: CellConte
   const line = format.line ?? 240;
   const rule = format.lineRule ?? "auto";
   const blocks: DocxBlock[] = [];
-  if (!cell && format.pageBreakBefore) blocks.push({ kind: "pageBreak" });
+  // Page break before starts the paragraph on a page of its own, which one already starting a page does.
+  if (!cell && format.pageBreakBefore && !document.atPageStart) blocks.push({ kind: "pageBreak" });
   let marked = false;
   flow.forEach((inlines, index) => {
     // Each page break makes a paragraph two blocks more, which the document's budget pays for.

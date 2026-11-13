@@ -16,6 +16,12 @@ const UNSUPPORTED_LABELS: Readonly<Record<DocxUnsupportedKind, string>> = {
 /** How far Word carries a paragraph's top and bottom borders past its text when it has no side borders. */
 const BORDER_OVERHANG = 1.5;
 
+/**
+ * The most tabs in one paragraph sized to their stops. Sizing one reads the layout that sizing the
+ * one before changed, so each costs a layout of the paragraph; the rest are a default stop wide.
+ */
+const MAX_MEASURED_TABS = 64;
+
 // Zero-sized and inline-block, so that it sits on the text's baseline and can be measured and widened.
 const TAB_STYLE: CSSProperties = { display: "inline-block", textIndent: 0 };
 
@@ -26,7 +32,8 @@ const TAB_STYLE: CSSProperties = { display: "inline-block", textIndent: 0 };
 const layoutTabs = (host: HTMLElement, paragraph: DocxParagraph, paddingLeft: number, defaultTabStop: number) => {
   const tabs = Array.from(host.querySelectorAll<HTMLElement>("[data-tab]"));
   const end = host.querySelector<HTMLElement>("[data-tab-end]");
-  for (const tab of tabs) tab.style.width = "0";
+  // Written before anything is read, so the browser lays the paragraph out once for all of them.
+  for (const [index, tab] of tabs.entries()) tab.style.width = index < MAX_MEASURED_TABS ? "0" : pt(defaultTabStop);
   const stops: DocxTabStop[] = [...paragraph.tabStops];
   // A hanging indent is itself a stop: it is where a list's text starts after its marker.
   if (paragraph.indentFirstLine < 0) stops.push({ position: paragraph.indentLeft, alignment: "left" });
@@ -34,7 +41,7 @@ const layoutTabs = (host: HTMLElement, paragraph: DocxParagraph, paddingLeft: nu
   // Stops are measured from the page margin; `offsetLeft` from this paragraph's padding edge.
   const origin = paragraph.indentLeft - paddingLeft;
 
-  tabs.forEach((tab, index) => {
+  tabs.slice(0, MAX_MEASURED_TABS).forEach((tab, index) => {
     const at = origin + tab.offsetLeft / PX_PER_PT;
     const stop = stops.find(candidate => candidate.position > at + 0.5)
       ?? { position: (Math.floor((at + 0.5) / defaultTabStop) + 1) * defaultTabStop, alignment: "left" };

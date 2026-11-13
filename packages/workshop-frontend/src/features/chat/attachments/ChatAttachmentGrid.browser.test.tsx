@@ -156,6 +156,10 @@ it("steps through a message's attachments with the arrow keys and closes on Esca
   await expect.element(page.getByRole("cell", { name: "Doe, Jane" })).toBeVisible();
   await expect.element(page.getByText("1 of 3")).toBeVisible();
 
+  // Alt+Right is the browser's forward, not the next attachment.
+  await userEvent.keyboard("{Alt>}{ArrowRight}{/Alt}");
+  await expect.element(page.getByText("1 of 3")).toBeVisible();
+
   await userEvent.keyboard("{ArrowRight}");
   await expect.element(page.getByRole("heading", { name: "Launch plan" })).toBeVisible();
 

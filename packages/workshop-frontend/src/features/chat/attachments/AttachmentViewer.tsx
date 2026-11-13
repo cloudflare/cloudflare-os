@@ -127,6 +127,8 @@ export const AttachmentViewer = ({
     const onKeyDown = (event: KeyboardEvent) => {
       // Inside a preview the arrow keys belong to it: a text cursor, a grid's scrolling.
       if ((event.target as Element).closest("[data-attachment-preview]")) return;
+      // With a modifier the arrows are someone else's: Alt+Left and Alt+Right are back and forward.
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (event.key === "ArrowLeft") stepRef.current(-1);
       if (event.key === "ArrowRight") stepRef.current(1);
     };

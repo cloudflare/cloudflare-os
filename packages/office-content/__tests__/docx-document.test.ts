@@ -190,6 +190,15 @@ describe("readDocxDocument", () => {
     expect(paragraphs(document.body).map(block => block.headingLevel)).toEqual([1, undefined]);
   });
 
+  it("breaks before a paragraph that asks to start a page only when it does not already", async () => {
+    const heading = (text: string) => paragraph(run(text), "<w:pageBreakBefore/>");
+    const document = await readDocxDocument(await buildLayoutDocx({
+      body: heading("First") + paragraph(run("Body")) + heading("Second") + paragraph('<w:r><w:br w:type="page"/></w:r>') + heading("Third"),
+    }));
+    expect(document.body.map(block => block.kind === "paragraph" ? (block.inlines[0] as { text?: string } | undefined)?.text : block.kind))
+      .toEqual(["First", "Body", "pageBreak", "Second", "pageBreak", "Third"]);
+  });
+
   it("keeps no more tab stops for a paragraph than Word allows", async () => {
     const tabs = Array.from({ length: 1_000 }, (_, index) => `<w:tab w:val="left" w:pos="${(index + 1) * 20}"/>`).join("");
     const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x"), `<w:tabs>${tabs}</w:tabs>`) }));
