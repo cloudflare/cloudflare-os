@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react'
+import { springCurve } from './springCurve'
 
 /** How far, in pixels, the surface overshoots past the trigger when the menu closes. */
 const RECOIL = 5
@@ -52,18 +53,8 @@ const surfaceCentre = ({ insets, side, inPlace, drift }: Geometry, p: number) =>
  * on past the trigger along its own path and returns, rather than adding a separate bounce.
  */
 const springEasing = (overshoot: number) => {
-  const logOvershoot = Math.log(Math.min(Math.max(overshoot, 0.002), 0.2))
-  const damping = -logOvershoot / Math.sqrt(Math.PI ** 2 + logOvershoot ** 2)
-  // Peak at the same point of the transition whatever the overshoot, so a deeper recoil reads as a
-  // bigger bounce rather than a stiffer, quicker one.
-  const damped = Math.PI / SPRING_PEAK
-  const frequency = damped / Math.sqrt(1 - damping ** 2)
-  const samples = Array.from({ length: 49 }, (_, i) => {
-    const t = i / 48
-    const envelope = Math.exp(-damping * frequency * t)
-    const value = 1 - envelope * (Math.cos(damped * t) + (damping / Math.sqrt(1 - damping ** 2)) * Math.sin(damped * t))
-    return i === 48 ? 1 : Number(value.toFixed(4))
-  })
+  const curve = springCurve(overshoot, SPRING_PEAK)
+  const samples = Array.from({ length: 49 }, (_, i) => Number(curve(i / 48).toFixed(4)))
   return `linear(${samples.join(', ')})`
 }
 
