@@ -1,4 +1,4 @@
-import { SPACING, boundaryOf, layOut, surfaceRuns, type LayoutItem } from './groupedLayout'
+import { SPACING, boundaryOf, dragPlace, layOut, surfaceRuns, type LayoutItem } from './groupedLayout'
 import { planList, type PlanItem, type PlannedItem } from './groupedPlan'
 import { springCurve } from './springCurve'
 
@@ -374,17 +374,17 @@ export class GroupedListMotion {
     }
     const group = this.groups.find(({ rows }) => rows.includes(drag.key))
     if (!group) return
-    // Within its group's rows, which it is put among by where its middle is.
+    // Within its group's rows, which it is put among by where it is drawn (`dragPlace`).
     const { tops } = this.layoutAt(performance.now())
     const places = group.rows.map((key) => this.items.findIndex((item) => !item.ghost && item.key === key))
-    const self = this.items[places[group.rows.indexOf(drag.key)]]
+    const index = group.rows.indexOf(drag.key)
+    const self = this.items[places[index]]
     const first = tops[Math.min(...places)]
     const last = Math.max(...places)
     const lowest = tops[last] + this.items[last].height - self.height
     drag.top = Math.min(lowest, Math.max(first, event.clientY - this.list.getBoundingClientRect().top - drag.grab))
-    const middle = drag.top + self.height / 2
-    const to = group.rows.filter((key, index) => key !== drag.key && tops[places[index]] + this.items[places[index]].height / 2 < middle).length
-    if (to !== group.rows.indexOf(drag.key)) this.move(group, drag.key, to)
+    const to = dragPlace(places.map((place) => ({ top: tops[place], height: this.items[place].height })), index, drag.top)
+    if (to !== index) this.move(group, drag.key, to)
     this.schedule()
   }
 
