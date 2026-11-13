@@ -8,7 +8,9 @@ import {
   GMAIL_PDF, pdfConverter, pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
   type PdfRangeReader,
 } from "../src/drive-pdf";
+import { REFUSED_PAUSE } from "../src/pdf-bands";
 import { forwardRangeReader, type PdfOpener } from "../src/pdf-forward-reader";
+import { READ_AHEAD } from "../src/pdf-read-ahead";
 import type { AiFetcher } from "../src/workers-ai-markdown";
 import { imagePdf, scanPage, type BuiltPdf } from "./pdf-fixture";
 import {
@@ -67,6 +69,10 @@ async function convert(response: Response) {
 beforeEach(() => {
   vi.spyOn(console, "info").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
+  // The pause before a refused call is made again is off.
+  Object.assign(REFUSED_PAUSE, { ms: [0, 0, 0, 0, 0], jitter: 0 });
+  // A text's calls are held to four at once, the number these tests were written to.
+  READ_AHEAD.calls = 4;
 });
 
 afterEach(() => {

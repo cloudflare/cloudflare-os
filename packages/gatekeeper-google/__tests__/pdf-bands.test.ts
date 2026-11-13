@@ -1,6 +1,7 @@
 import type { RenderedPage } from "@gadgets/pdf-renderer/api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readBands, RETRY_PAUSE, type BandCall, type BandEvent } from "../src/pdf-bands";
+import { readBands, REFUSED_PAUSE, RETRY_PAUSE, type BandCall, type BandEvent } from "../src/pdf-bands";
+import { callSlots, READ_AHEAD, type PageSlots } from "../src/pdf-read-ahead";
 import { TranscriptionError, type Transcription } from "../src/workers-ai-vision";
 
 /** Bytes every fake answer says were sent of its band's image. */
@@ -10,6 +11,8 @@ const WIDTH = 1275;
 const ROWS = 40;
 /** The width of a page of {@link tall} bands. */
 const NARROW = 4;
+/** The pauses before a refused call is made again, as the reader has them before any test sets them. */
+const REFUSED = { ms: [...REFUSED_PAUSE.ms], jitter: REFUSED_PAUSE.jitter };
 
 /**
  * A page whose bands hold as much ink as `inks` says; one with `undefined` has no pixels. Its
@@ -132,6 +135,11 @@ function fails(error: unknown): Reply {
   return async () => { throw error; };
 }
 
+/** Fails the call with HTTP 429, as the service does when it is asked too often. */
+function tooOften(): Reply {
+  return fails(refusal({ httpStatus: 429 }));
+}
+
 /** `reply`, once `gate` has opened. */
 function after(gate: { promise: Promise<void> }, reply: Reply): Reply {
   return async signal => {
@@ -200,12 +208,37 @@ function fakeModel(sheet: RenderedPage, script: Reply[][]) {
   return { call, asks, flight };
 }
 
-/** Reads `sheet` with a fake model following `script`, keeping what was logged and how often text moved. */
-function reading(sheet: RenderedPage, script: Reply[][], signal = new AbortController().signal) {
+/**
+ * Reads `sheet` with a fake model following `script`, keeping what was logged and how often text
+ * moved. Its calls are made in `slots`: unless given, those of a limiter with room for every band.
+ */
+function reading(
+  sheet: RenderedPage, script: Reply[][], signal = new AbortController().signal,
+  slots: PageSlots = callSlots(READ_AHEAD.calls).of(0),
+) {
   let model = fakeModel(sheet, script);
   let seen = { events: [] as BandEvent[], moved: 0 };
-  let done = readBands(sheet, model.call, signal, () => { seen.moved++; }, event => { seen.events.push(event); });
+  let done = readBands(sheet, model.call, signal, () => { seen.moved++; }, event => { seen.events.push(event); }, slots);
   return { ...model, seen, done };
+}
+
+/** The slots of a limiter of `capacity` calls, and how often it was told of a refusal and of an answer. */
+function told(capacity = READ_AHEAD.calls) {
+  let limiter = callSlots(capacity);
+  let inner = limiter.of(0);
+  let count = { refused: 0, answered: 0 };
+  let slots: PageSlots = {
+    run: inner.run,
+    refused() {
+      count.refused++;
+      inner.refused();
+    },
+    answered() {
+      count.answered++;
+      inner.answered();
+    },
+  };
+  return { limiter, slots, count };
 }
 
 /** The text of a page of one band whose first answer is `pieces`, and how the model was asked. */
@@ -220,9 +253,11 @@ function partsAsked(run: { asks: { top: number; rows: number }[] }): { top: numb
   return run.asks.map(({ top, rows }) => ({ top, rows }));
 }
 
-// The pause before a failed call is made again is off, but where it is what is tested.
+// The pauses before a failed call and a refused one are made again are off, but where they are
+// what is tested.
 beforeEach(() => {
   Object.assign(RETRY_PAUSE, { ms: 0, jitterMs: 0 });
+  Object.assign(REFUSED_PAUSE, { ms: [0, 0, 0, 0, 0], jitter: 0 });
 });
 
 afterEach(() => {
@@ -253,49 +288,69 @@ describe("readBands", () => {
     expect(run.seen.events).toEqual([]);
   });
 
-  it("has four calls in flight and no more, and keeps the page's order whatever order they end in", async () => {
+  it("begins every band's first ask at once when the limiter has room, and keeps the page's order whatever order they end in", async () => {
     let sheet = page([5, 5, 5, 5, 5, 5, 5, 5, 5]);
     let gates = sheet.bands.map(() => deferred());
     let run = reading(sheet, sheet.bands.map((_, index) => [after(gates[index]!, says(`band ${index + 1}`))]));
     await tick();
-    expect(run.asks.map(ask => ask.band)).toEqual([1, 2, 3, 4]);
-    expect(run.flight.now).toBe(4);
-    // The fourth ends first, and only then is a fifth begun.
-    gates[3]!.resolve();
-    await tick();
-    expect(run.asks.map(ask => ask.band)).toEqual([1, 2, 3, 4, 5]);
-    expect(run.flight.now).toBe(4);
-    for (let index of [8, 7, 6, 5, 4, 2, 1, 0]) {
+    expect(run.asks.map(ask => ask.band)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(run.flight.now).toBe(9);
+    for (let index of [3, 8, 7, 6, 5, 4, 2, 1, 0]) {
       gates[index]!.resolve();
       await tick();
-      expect(run.flight.now).toBeLessThanOrEqual(4);
     }
     expect((await run.done).text).toBe(sheet.bands.map((_, index) => `band ${index + 1}`).join("\n"));
-    expect(run.flight.most).toBe(4);
+    expect(run.flight.most).toBe(9);
     expect(run.asks).toHaveLength(9);
   });
 
-  it("counts a second ask among the four in flight", async () => {
+  it("has one call in flight at a time under a limit of 1, each begun when the one before has been read to its end", async () => {
+    let sheet = page([5, 5, 5, 5]);
+    let gates = sheet.bands.map(() => deferred());
+    let limiter = callSlots(1);
+    let run = reading(
+      sheet, sheet.bands.map((_, index) => [after(gates[index]!, says(`band ${index + 1}`))]), undefined, limiter.of(0));
+    // A later band's answer being ready does not begin its call.
+    gates[3]!.resolve();
+    for (let index of [0, 1, 2]) {
+      await tick();
+      expect(run.asks.map(ask => ask.band)).toEqual([1, 2, 3, 4].slice(0, index + 1));
+      expect(run.flight.now).toBe(1);
+      expect(limiter.inFlight).toBe(1);
+      gates[index]!.resolve();
+    }
+    expect((await run.done).text).toBe("band 1\nband 2\nband 3\nband 4");
+    expect(run.flight.most).toBe(1);
+    expect(limiter.inFlight).toBe(0);
+  });
+
+  it("makes a second ask in a slot, as a first is", async () => {
     let sheet = page([5, 5, 5, 5, 5, 5]);
     let gate = deferred();
+    let limiter = callSlots(4);
     let run = reading(sheet, sheet.bands.map((_, index) => [
       fails(refusal({ httpStatus: 503 })), after(gate, says(`band ${index + 1}`)),
-    ]));
+    ]), undefined, limiter.of(0));
     await tick();
-    expect(run.asks.map(({ band, retry }) => `${band}${retry ? " again" : ""}`))
-      .toEqual(["1", "2", "3", "4", "1 again", "2 again", "3 again", "4 again"]);
+    // Every first ask has failed, and four of the six second asks have a slot.
+    expect(run.asks.filter(ask => !ask.retry).map(ask => ask.band)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(run.asks.filter(ask => ask.retry)).toHaveLength(4);
     expect(run.flight.now).toBe(4);
     gate.resolve();
     expect((await run.done).text).toBe("band 1\nband 2\nband 3\nband 4\nband 5\nband 6");
     expect(run.flight.most).toBe(4);
+    expect(limiter.inFlight).toBe(0);
   });
 
   describe("a call that fails", () => {
-    it.each([429, 500, 503, 599])("is made again after HTTP %i", async status => {
+    it.each([500, 503, 599])("is made again, once, after HTTP %i", async status => {
+      let { slots, count } = told();
       let run = reading(page([5, 5]), [
-        [fails(refusal({ httpStatus: status, providerCode: 3040 }, 40)), says("the second answer")], [says("below")],
-      ]);
+        [fails(refusal({ httpStatus: status, providerCode: 8006 }, 40)), says("the second answer")], [says("below")],
+      ], undefined, slots);
       expect(await run.done).toEqual({ text: "the second answer\nbelow", cutOff: false });
+      // Not a refusal for rate or capacity: the limiter is told of the two answers alone.
+      expect(count).toEqual({ refused: 0, answered: 2 });
       expect(run.asks.map(({ band, retry }) => ({ band, retry }))).toEqual([
         { band: 1, retry: false }, { band: 2, retry: false }, { band: 1, retry: true },
       ]);
@@ -344,11 +399,114 @@ describe("readBands", () => {
 
     it("keeps a second answer that does not end whole, cut off, since there is no first", async () => {
       let run = reading(page([5]), [[
-        fails(refusal({ httpStatus: 429 })), says("as far as the limit", { truncated: true }), says("never asked for"),
+        fails(refusal({ httpStatus: 503 })), says("as far as the limit", { truncated: true }), says("never asked for"),
       ]]);
       expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });
       expect(run.asks).toHaveLength(2);
     });
+  });
+
+  describe("a call the service refuses for rate or capacity", () => {
+    it.each([
+      ["HTTP 429", { httpStatus: 429 }],
+      ["HTTP 429 and a code of its own", { httpStatus: 429, providerCode: 8006 }],
+      ["the code for a model with no room, under HTTP 400", { httpStatus: 400, providerCode: 3040 }],
+      ["that code under HTTP 503", { httpStatus: 503, providerCode: 3040 }],
+    ])("with %s is made again within its ask, which is one ask still, and is counted as refused", async (_label, failure) => {
+      let { limiter, slots, count } = told(8);
+      let run = reading(page([5]), [[
+        fails(refusal(failure, 40)), fails(refusal(failure, 30)), says("the answer"), says("never asked for"),
+      ]], undefined, slots);
+      expect(await run.done).toEqual({ text: "the answer", cutOff: false });
+      expect(run.asks).toHaveLength(3);
+      // Every attempt's bytes are counted.
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: 40 + 30 + SENT, asks: 1, refused: 2 }]);
+      // The limiter was told of each refusal, which halved it, and of the answer, which added one.
+      expect(count).toEqual({ refused: 2, answered: 1 });
+      expect(limiter.limit).toBe(3);
+      expect(limiter.inFlight).toBe(0);
+    });
+
+    it("is not one of the three calls a band may cost", async () => {
+      // Refused at its first ask and at each of its halves.
+      let run = reading(tall([rowsOf(90, 9)]), [[
+        tooOften(), says("as far as the limit", { truncated: true }), tooOften(), says("top"), tooOften(), tooOften(),
+        says("bottom"),
+      ]]);
+      expect(await run.done).toEqual({ text: "top\nbottom", cutOff: false });
+      expect(partsAsked(run)).toEqual([
+        { top: 0, rows: 90 }, { top: 0, rows: 90 }, { top: 0, rows: 45 }, { top: 0, rows: 45 },
+        { top: 45, rows: 45 }, { top: 45, rows: 45 }, { top: 45, rows: 45 },
+      ]);
+      expect(run.seen.events).toEqual([
+        { band: 1, bands: 1, imageBytes: 7 * SENT, asks: 3, refused: 4, askedAgain: "truncated" },
+      ]);
+    });
+
+    it("fails the page when it is refused once more than there are pauses, and is not made again after", async () => {
+      let { slots, count } = told();
+      let refusals = Array.from({ length: 6 }, () => refusal({ httpStatus: 429 }, 20));
+      let run = reading(page([5, 5]), [
+        [...refusals.map(fails), says("never asked for")], [says("below")],
+      ], undefined, slots);
+      await expect(run.done).rejects.toBe(refusals[5]);
+      expect(run.asks.filter(ask => ask.band === 1)).toHaveLength(6);
+      expect(run.seen.events).toEqual([
+        { band: 1, bands: 2, imageBytes: 6 * 20, asks: 1, refused: 6 }, { band: 2, bands: 2, imageBytes: SENT, asks: 1 },
+      ]);
+      expect(count).toEqual({ refused: 6, answered: 1 });
+    });
+
+    it("fails its ask at the first refusal when there are no pauses", async () => {
+      REFUSED_PAUSE.ms = [];
+      let refused = refusal({ httpStatus: 400, providerCode: 3040 });
+      let run = reading(page([5]), [[fails(refused), says("never asked for")]]);
+      await expect(run.done).rejects.toBe(refused);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: SENT, asks: 1, refused: 1 }]);
+    });
+
+    it("counts as the text moving each time, so that a band being refused is not a text that sits idle", async () => {
+      let refusals = Array.from({ length: 6 }, () => refusal({ httpStatus: 429 }));
+      let run = reading(page([5]), [refusals.map(fails)]);
+      await expect(run.done).rejects.toBe(refusals[5]);
+      // Nothing was answered: every one of these is a refusal.
+      expect(run.seen.moved).toBe(6);
+    });
+
+    it("is handled at a half and at a second ask as their failures are, once it is not made again", async () => {
+      REFUSED_PAUSE.ms = [];
+      let cut = says("as far as the limit", { truncated: true });
+      // A half: the first answer is kept, and the other half is not asked for.
+      let halved = reading(tall([rowsOf(90, 9)]), [[cut, tooOften(), says("never asked for")]]);
+      expect(await halved.done).toEqual({ text: "as far as the limit", cutOff: true });
+      expect(halved.seen.events).toEqual([
+        { band: 1, bands: 1, imageBytes: 2 * SENT, asks: 2, refused: 1, askedAgain: "truncated" },
+      ]);
+      // A second ask after an answer that did not end whole: the first answer is kept.
+      let second = reading(page([5]), [[cut, tooOften(), says("never asked for")]]);
+      expect(await second.done).toEqual({ text: "as far as the limit", cutOff: true });
+      // A second ask after a call that failed: there is no answer to keep, and it is thrown.
+      let refused = refusal({ httpStatus: 429 });
+      let failed = reading(page([5]), [[fails(refusal({ httpStatus: 503 })), fails(refused), says("never asked for")]]);
+      await expect(failed.done).rejects.toBe(refused);
+      expect(failed.seen.events).toEqual([
+        { band: 1, bands: 1, imageBytes: 2 * SENT, asks: 2, refused: 1, askedAgain: "failed" },
+      ]);
+    });
+  });
+
+  it("tells the limiter of each ask that ended with an answer, however the answer ended, and of no other", async () => {
+    let { slots, count } = told();
+    // Pages of one band, read with one limiter.
+    for (let script of [
+      [says("whole")],
+      [says("as far as the limit", { truncated: true }), says("as far as the limit, again", { truncated: true })],
+      [says(endless("| Lot 55-0193-G | 18,442.07 |\n")), fails(refusal({ httpStatus: 400 }))],
+      [says(["half"], { breaks: broken() }), says("the whole band")],
+    ]) await reading(page([5]), [script], undefined, slots).done;
+    // One for the first page, two for the second, and one each for the runaway and for the
+    // answer after the response that broke.
+    expect(count).toEqual({ refused: 0, answered: 5 });
   });
 
   describe("an answer stopped at the output limit", () => {
@@ -598,17 +756,20 @@ describe("readBands", () => {
       expect(run.asks.at(-1)).toMatchObject({ band: 1, retry: true });
     });
 
-    it("has four second asks in flight at most", async () => {
-      let gate = deferred();
+    it("has every band's second ask begun at once when the limiter has room, and as many as it has slots for when not", async () => {
       // Six bands with nothing read of them among three with text.
       let texts = ["", "", "", prose(768, 2), "", prose(768, 3), "", prose(768, 4), ""];
-      let run = reading(page(texts.map(() => 1024)), texts.map(text => [says(text), after(gate, says("found"))]));
-      await tick();
-      expect(run.asks.filter(ask => ask.retry).map(ask => ask.band)).toEqual([1, 2, 3, 5]);
-      expect(run.flight.now).toBe(4);
-      gate.resolve();
-      expect((await run.done).text.split("\n").filter(line => line === "found")).toHaveLength(6);
-      expect(run.flight.most).toBe(4);
+      for (let [capacity, begun] of [[READ_AHEAD.calls, [1, 2, 3, 5, 7, 9]], [4, [1, 2, 3, 5]]] as const) {
+        let gate = deferred();
+        let run = reading(
+          page(texts.map(() => 1024)), texts.map(text => [says(text), after(gate, says("found"))]), undefined,
+          callSlots(capacity).of(0));
+        await tick();
+        expect(run.asks.filter(ask => ask.retry).map(ask => ask.band)).toEqual(begun);
+        expect(run.flight.now).toBe(begun.length);
+        gate.resolve();
+        expect((await run.done).text.split("\n").filter(line => line === "found")).toHaveLength(6);
+      }
     });
 
     it("is never a third ask of a band already asked for twice", async () => {
@@ -817,12 +978,10 @@ describe("readBands", () => {
       }
     });
 
-    it.each([400, 503])("comes before a call that failed for want of room, under HTTP %i, is made again, and never a third time", async status => {
+    it("comes before a call that failed with a 5xx is made again, and never a third time", async () => {
       vi.spyOn(Math, "random").mockReturnValue(0);
-      let again = refusal({ httpStatus: status, providerCode: 3040 }, 60);
-      let run = reading(page([5]), [[
-        fails(refusal({ httpStatus: status, providerCode: 3040 })), fails(again), says("never asked for"),
-      ]]);
+      let again = refusal({ httpStatus: 503 }, 60);
+      let run = reading(page([5]), [[fails(refusal({ httpStatus: 503 })), fails(again), says("never asked for")]]);
       let failed = expect(run.done).rejects.toBe(again);
       await vi.advanceTimersByTimeAsync(249);
       await settle();
@@ -878,6 +1037,91 @@ describe("readBands", () => {
     });
   });
 
+  describe("the pause before a refused call is made again", () => {
+    const PAUSES = [1000, 2000, 4000, 8000, 16000];
+
+    beforeEach(() => {
+      Object.assign(REFUSED_PAUSE, { ms: [...REFUSED.ms], jitter: REFUSED.jitter });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+
+    it.each([[0, 1], [0.5, 1.125], [0.996, 1.249]])("grows from one second to sixteen, each with up to a quarter more at random: %f makes %f of each", async (random, part) => {
+      vi.spyOn(Math, "random").mockReturnValue(random);
+      let failure = { httpStatus: 400, providerCode: 3040 };
+      let run = reading(page([5]), [[...PAUSES.map(() => fails(refusal(failure))), says("the answer")]]);
+      for (let [index, ms] of PAUSES.entries()) {
+        await vi.advanceTimersByTimeAsync(ms * part - 1);
+        await settle();
+        expect(run.asks).toHaveLength(index + 1);
+        await vi.advanceTimersByTimeAsync(1);
+        await settle();
+        expect(run.asks).toHaveLength(index + 2);
+      }
+      expect(await run.done).toEqual({ text: "the answer", cutOff: false });
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: 6 * SENT, asks: 1, refused: 5 }]);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("is under a minute in all, so that a band being refused is not what ends a text that sits idle", () => {
+      expect(REFUSED.ms.reduce((sum, pause) => sum + pause, 0) * (1 + REFUSED.jitter)).toBeLessThan(60_000);
+    });
+
+    it("is not waited out in a slot: another band's call is made meanwhile under a limit of 1", async () => {
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      let limiter = callSlots(1);
+      let run = reading(page([5, 5]), [
+        [fails(refusal({ httpStatus: 429 })), says("the answer")], [says("below")],
+      ], undefined, limiter.of(0));
+      await settle();
+      // The first band is pausing, and the second has been asked for and has answered.
+      expect(vi.getTimerCount()).toBe(1);
+      expect(run.asks.map(({ band, retry }) => ({ band, retry }))).toEqual([
+        { band: 1, retry: false }, { band: 2, retry: false },
+      ]);
+      expect(limiter.inFlight).toBe(0);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(await run.done).toEqual({ text: "the answer\nbelow", cutOff: false });
+      expect(run.flight.most).toBe(1);
+      expect(run.seen.events).toEqual([
+        { band: 1, bands: 2, imageBytes: 2 * SENT, asks: 1, refused: 1 }, { band: 2, bands: 2, imageBytes: SENT, asks: 1 },
+      ]);
+    });
+
+    it("is ended at once when the signal aborts, and leaves no timer", async () => {
+      let request = new AbortController();
+      let reason = new Error("The text was cancelled.");
+      let limiter = callSlots(2);
+      let run = reading(
+        page([5]), [[fails(refusal({ httpStatus: 429 })), says("never asked for")]], request.signal, limiter.of(0));
+      let failed = expect(run.done).rejects.toBe(reason);
+      await settle();
+      expect(vi.getTimerCount()).toBe(1);
+      request.abort(reason);
+      expect(vi.getTimerCount()).toBe(0);
+      // No time has passed.
+      await failed;
+      expect(run.asks).toHaveLength(1);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: SENT, asks: 1, refused: 1 }]);
+      expect(limiter.inFlight).toBe(0);
+    });
+
+    it("is ended at once when another band fails the page, which does not wait it out", async () => {
+      let gate = deferred();
+      let refused = refusal({ httpStatus: 400 });
+      let run = reading(page([5, 5]), [
+        [fails(refusal({ httpStatus: 429 })), says("never asked for")], [after(gate, fails(refused))],
+      ]);
+      let failed = expect(run.done).rejects.toBe(refused);
+      await settle();
+      expect(vi.getTimerCount()).toBe(1);
+      gate.resolve();
+      await settle();
+      expect(vi.getTimerCount()).toBe(0);
+      await failed;
+      expect(run.asks).toHaveLength(2);
+    });
+  });
+
   describe("ending early", () => {
     /** How many of the fake calls and answers below have ended. */
     type Ended = { count: number };
@@ -924,11 +1168,13 @@ describe("readBands", () => {
       let ended = { count: 0 };
       let states = [{ reads: 0, cancelled: false }, { reads: 0, cancelled: false }];
       let request = new AbortController();
+      // Four slots, so that the last two bands wait for one.
+      let limiter = callSlots(4);
       let run = reading(page([5, 5, 5, 5, 5, 5]), [
         [unanswered(ended, 20), says("never asked for")], [stalled(ended, 40, states[0]!), says("never asked for")],
         [unanswered(ended, 5), says("never asked for")], [stalled(ended, 30, states[1]!), says("never asked for")],
         [says("never asked for")], [says("never asked for")],
-      ], request.signal);
+      ], request.signal, limiter.of(0));
       let settled = false;
       void run.done.catch(() => undefined).finally(() => { settled = true; });
       await tick();
@@ -945,6 +1191,7 @@ describe("readBands", () => {
       expect(run.flight.now).toBe(0);
       // No band was asked for again, and none after the four.
       expect(run.asks).toHaveLength(4);
+      expect(limiter.inFlight).toBe(0);
       expect(run.seen.events.map(({ band, asks }) => ({ band, asks }))).toEqual([
         { band: 1, asks: 1 }, { band: 2, asks: 1 }, { band: 3, asks: 1 }, { band: 4, asks: 1 },
       ]);
@@ -958,6 +1205,20 @@ describe("readBands", () => {
       expect(run.seen.events).toEqual([]);
     });
 
+    it("makes no call for a signal that aborts once its bands have their slots, before a call is made", async () => {
+      let request = new AbortController();
+      let reason = new Error("The text was cancelled.");
+      let limiter = callSlots(2);
+      let run = reading(page([5, 5]), [[says("never asked for")], [says("never asked for")]], request.signal, limiter.of(0));
+      // Both bands have a slot by now, and neither call has been made.
+      expect(limiter.inFlight).toBe(2);
+      request.abort(reason);
+      await expect(run.done).rejects.toBe(reason);
+      expect(run.asks).toEqual([]);
+      expect(run.seen.events).toEqual([]);
+      expect(limiter.inFlight).toBe(0);
+    });
+
     it("gives up the other calls when a band fails for good, and waits for them before failing with it", async () => {
       let ended = { count: 0 };
       let state = { reads: 0, cancelled: false };
@@ -965,7 +1226,7 @@ describe("readBands", () => {
       let refused = refusal({ httpStatus: 400 }, 70);
       let run = reading(page([5, 5, 5, 5, 5, 5]), [
         [unanswered(ended, 30)], [after(gate, fails(refused))], [stalled(ended, 20, state)], [unanswered(ended, 10)],
-        [says("never asked for")], [says("never asked for")],
+        [says("below")], [says("at the foot")],
       ]);
       let settled = false;
       void run.done.catch(() => undefined).finally(() => { settled = true; });
@@ -977,10 +1238,12 @@ describe("readBands", () => {
       expect(state.cancelled).toBe(true);
       await expect(run.done).rejects.toBe(refused);
       expect(ended.count).toBe(3);
-      expect(run.asks.map(ask => ask.band)).toEqual([1, 2, 3, 4]);
+      // Every band was asked for at once, and the last two had answered.
+      expect(run.asks.map(ask => ask.band)).toEqual([1, 2, 3, 4, 5, 6]);
       expect(run.seen.events).toEqual([
         { band: 1, bands: 6, imageBytes: 10, asks: 1 }, { band: 2, bands: 6, imageBytes: 70, asks: 1 },
         { band: 3, bands: 6, imageBytes: SENT, asks: 1 }, { band: 4, bands: 6, imageBytes: 10, asks: 1 },
+        { band: 5, bands: 6, imageBytes: SENT, asks: 1 }, { band: 6, bands: 6, imageBytes: SENT, asks: 1 },
       ]);
     });
 

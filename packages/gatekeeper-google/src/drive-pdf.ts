@@ -20,6 +20,7 @@ import { obsContext, type GoogleObservabilityFields } from "./observability";
 import { readBands, type BandCall } from "./pdf-bands";
 import { MAX_PAGE_IMAGES, PdfImageScan, type PdfImages, type PdfPageImage } from "./pdf-images";
 import { ImageDataError, pngFromDeflated, pngFromSamples } from "./pdf-png";
+import { callSlots, READ_AHEAD } from "./pdf-read-ahead";
 import {
   convertToMarkdown, MarkdownConversionError, type AiFetcher, type MarkdownConversion,
 } from "./workers-ai-markdown";
@@ -45,6 +46,8 @@ type RenderLogFields = {
   asks: number;
   /** Why a band was asked for again, as a word. */
   askedAgain: string;
+  /** How many times the service refused a band's call for rate or capacity. */
+  refused: number;
   /** Whether a rendered page has no ink. */
   blank: boolean;
   /** How many images a rendered page draws. */
@@ -629,6 +632,8 @@ function renderedPdf(
   /** What is being done with the PDF, or was last, settled either way. */
   let turn: Promise<void> = Promise.resolve();
   let options = { bands: BANDS, denseLines: DENSE_LINES };
+  /** The text's limiter of model calls. */
+  let slots = callSlots(READ_AHEAD.calls);
   let dispose = () => {
     document?.[Symbol.dispose]();
     document = undefined;
@@ -770,7 +775,7 @@ function renderedPdf(
       log(source).info("transcribed a band of a Drive PDF page", {
         event: "google.drive.pdf.band_transcribed", page: index + 1, ...event,
       });
-    }),
+    }, slots.of(index)),
     during(work) {
       turn = work.then(() => undefined, () => undefined);
       return work;
