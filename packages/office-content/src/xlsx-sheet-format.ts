@@ -336,8 +336,13 @@ function fixed(value: number, places: number): string {
   // Excel keeps 15 significant digits and `toFixed` refuses more than 100 places: the places a
   // format asks for past this are zeros.
   const decimals = Math.min(places, MAX_DECIMALS);
+  if (!Number.isFinite(value)) return String(value);
+  if (value >= 1e21) {
+    // `toFixed` writes a number this large with an exponent: its 15 digits are written out instead.
+    const [digits, exponent] = value.toExponential(14).split("e");
+    return digits!.replace(".", "").padEnd(Number(exponent) + 1, "0") + (places > 0 ? `.${"0".repeat(places)}` : "");
+  }
   if (decimals < places) return fixed(value, decimals) + "0".repeat(places - decimals);
-  if (value >= 1e21) return value.toFixed(0);
   const scaled = Number(`${Number(value.toPrecision(15))}e${decimals}`);
   const rounded = Number(`${Math.round(scaled)}e-${decimals}`);
   return Number.isFinite(rounded) ? rounded.toFixed(decimals) : value.toFixed(decimals);
@@ -529,15 +534,25 @@ function renderFraction(tokens: readonly Token[], slashAt: number, value: number
   let denominatorTokens = tokens.slice(slashAt + 1, denominatorEnd);
   let suffix = tokens.slice(denominatorEnd);
 
-  // `# ?/8` fixes the denominator: its digits arrive as literal text after the slash.
+  // `# ?/8` fixes the denominator: its digits arrive as literal text after the slash, except its
+  // zeros (`?/10`), which arrive as digit placeholders.
   let fixedDenominator: number | undefined;
   const after = tokens[slashAt + 1];
   if (denominatorTokens.length === 0 && after?.kind === "literal") {
-    const digits = /^\d+/.exec(after.text)?.[0];
+    let digits = /^\d+/.exec(after.text)?.[0];
     if (digits) {
-      fixedDenominator = Number(digits);
+      let rest = slashAt + 2;
+      const literalRest = after.text.slice(digits.length);
+      // Digits only continue the denominator when nothing else followed its first ones.
+      for (const token of literalRest ? [] : tokens.slice(rest)) {
+        if (token?.kind === "digit" && token.char === "0") digits += "0";
+        else if (token?.kind === "literal" && /^\d+$/.test(token.text)) digits += token.text;
+        else break;
+        rest++;
+      }
+      fixedDenominator = Number(digits.slice(0, 7));
       denominatorTokens = [];
-      suffix = [{ kind: "literal", text: after.text.slice(digits.length) }, ...tokens.slice(slashAt + 2)];
+      suffix = [{ kind: "literal", text: literalRest }, ...tokens.slice(rest)];
     }
   }
 

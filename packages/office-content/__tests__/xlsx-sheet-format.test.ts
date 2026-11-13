@@ -96,6 +96,10 @@ describe("parseNumberFormat", () => {
     ["# ?/8", 2.375, "2 3/8"],
     ["?/?", 1.5, "3/2"],
     ["# ?/?", 2.999, "3    "],
+    // A fixed denominator's zeros are part of it.
+    ["# ?/10", 1.2, "1 2/10"],
+    ["# ??/100", 2.35, "2 35/100"],
+    ["# ?/20", 1.6, "1 12/20"],
   ])("formats %s of %d as %j", (code, value, expected) => {
     expect(show(code, value)).toBe(expected);
   });
@@ -220,6 +224,8 @@ describe("formats a file can make costly", () => {
     const text = show(`0.${"0".repeat(150)}`, 1.5);
     expect(text).toHaveLength(152);
     expect(text.startsWith("1.5000")).toBe(true);
+    expect(show("0.00", 1.5e21)).toBe("1500000000000000000000.00");
+    expect(show(`0.${"0".repeat(40)}`, 1e21)).toBe(`1${"0".repeat(21)}.${"0".repeat(40)}`);
   });
 
   it("gives `@` alone the cell's own text and bounds what any other text format builds", () => {

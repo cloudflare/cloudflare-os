@@ -137,6 +137,18 @@ describe("readDocxDocument", () => {
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
+  it("keeps only the start of a marker pattern, which every numbered paragraph repeats", async () => {
+    const numbered = paragraph(run("x"), '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>');
+    const document = await readDocxDocument(await buildLayoutDocx({
+      numbering:
+        `<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="${"%1".repeat(100_000)}"/></w:lvl></w:abstractNum>` +
+        '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>',
+      body: numbered.repeat(3),
+    }));
+
+    expect(paragraphs(document.body).map(block => block.marker?.text)).toEqual(["1".repeat(50), "2".repeat(50), "3".repeat(50)]);
+  });
+
   it("applies a table style's conditional formats as the table's look asks", async () => {
     const border = (side: string, size: number) => `<w:${side} w:val="single" w:sz="${size}" w:color="0000FF"/>`;
     const cell = (label: string) => `<w:tc><w:tcPr><w:tcW w:w="1440" w:type="dxa"/></w:tcPr>${paragraph(run(label))}</w:tc>`;

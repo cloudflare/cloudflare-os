@@ -721,11 +721,17 @@ export class Numbering {
   }
 }
 
+/**
+ * The most of a level's marker pattern that is kept. Every numbered paragraph gets its own copy
+ * with the counts filled in, so a long pattern would be repeated once per paragraph.
+ */
+const MAX_MARKER_PATTERN = 100;
+
 function readLevel(element: XmlElement, theme: Theme): ListLevel {
   const suffix = attribute(firstChild(element, "w:suff"), "w:val");
   return {
     format: attribute(firstChild(element, "w:numFmt"), "w:val") ?? "decimal",
-    text: attribute(firstChild(element, "w:lvlText"), "w:val") ?? "",
+    text: (attribute(firstChild(element, "w:lvlText"), "w:val") ?? "").slice(0, MAX_MARKER_PATTERN),
     start: numeric(attribute(firstChild(element, "w:start"), "w:val")) ?? 1,
     restart: numeric(attribute(firstChild(element, "w:lvlRestart"), "w:val")),
     suffix: suffix === "space" || suffix === "nothing" ? suffix : "tab",

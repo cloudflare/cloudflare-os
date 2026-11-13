@@ -33,6 +33,14 @@ describe("readPptxSlides", () => {
     expect(deck.unsupported).toEqual([]);
   });
 
+  it("leaves out the shapes PowerPoint hides, and everything in a hidden group", async () => {
+    const text = (value: string) => drawnShape({ properties: transform(0, 0, INCH, INCH), body: slideParagraph(value) });
+    const hide = (shape: string) => shape.replace("<p:cNvPr ", '<p:cNvPr hidden="1" ');
+    const group = `<p:grpSp><p:nvGrpSpPr><p:cNvPr id="9" name="Group" hidden="true"/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>${text("Grouped")}</p:grpSp>`;
+    const deck = await deckOf({ slides: [{ shapes: text("Shown") + hide(text("Draft")) + group }] });
+    expect(deck.slides[0]!.shapes).toHaveLength(1);
+  });
+
   it("caps the slides it returns and says so", async () => {
     const deck = await deckOf({ slides: Array.from({ length: MAX_SLIDES + 1 }, () => ({ shapes: "" })) });
     expect(deck.slides).toHaveLength(MAX_SLIDES);

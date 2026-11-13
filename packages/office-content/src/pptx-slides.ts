@@ -92,6 +92,16 @@ export async function readPptxSlides(bytes: Uint8Array): Promise<SlideDeck> {
   };
 }
 
+/** Whether a shape, picture, frame or group is one PowerPoint hides (`hidden` on its `p:cNvPr`). */
+function isHidden(element: XmlElement): boolean {
+  for (const child of childElements(element)) {
+    if (!child.name.startsWith("p:nv")) continue;
+    const hidden = attribute(firstChild(child, "p:cNvPr"), "hidden");
+    return hidden === "1" || hidden === "true";
+  }
+  return false;
+}
+
 /** What a shape counts towards `MAX_DECK_CONTENT`: itself, its cells, and its paragraphs and their runs. */
 function contentOf(shape: SlideShape): number {
   const text = (body: SlideTextBody | undefined) =>
@@ -318,6 +328,7 @@ class DeckReader {
   async #readTree(tree: XmlElement | undefined, scope: Scope, frame: GroupFrame | undefined, out: SlideShape[]): Promise<void> {
     for (const element of childElements(tree)) {
       if (scope.skipPlaceholders && placeholderOf(element)) continue;
+      if (isHidden(element)) continue;
       let shape: SlideShape | undefined;
       switch (element.name) {
         case "p:sp":
