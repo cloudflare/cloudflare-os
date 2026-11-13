@@ -2044,7 +2044,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
 
   // The overseer marks a record approved only after applyAction() returns, so a second approval of
   // one action can arrive while the first is mid-write. It must not reach the provider at all.
-  // Holds a Docs request from the test, which hangs a Drive binding's apply (see the report).
+  // Not run through Drive: holding a Docs request from the test hangs a Drive binding's apply in
+  // this harness, for a reason not yet found; the direct run covers the engine both share.
   it.skipIf(r.drive)("holds a second approval of one action behind the first", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -2066,7 +2067,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
 
   // Between the handoff and the marker cleanup the edit is committed and its action is gone, so
   // nothing is left to overlay the snapshot the submission cached: it must not be served.
-  // Holds a Docs request from the test, which hangs a Drive binding's apply (see the report).
+  // Not run through Drive: holding a Docs request from the test hangs a Drive binding's apply in
+  // this harness, for a reason not yet found; the direct run covers the engine both share.
   it.skipIf(r.drive)("stops serving the pre-write snapshot once the write is committed", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -2084,7 +2086,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
 
   // A read that asked Google before the write landed gets the old document back after the handoff
   // removed the edit from the queue: replayed over, it would show the approved edit missing.
-  // Holds a Docs request from the test, which hangs a Drive binding's apply (see the report).
+  // Not run through Drive: holding a Docs request from the test hangs a Drive binding's apply in
+  // this harness, for a reason not yet found; the direct run covers the engine both share.
   it.skipIf(r.drive)("refetches a read that Google answered before a write landed", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -3632,18 +3635,18 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     expect(docs.text()).toContain("second");
   });
 
-  it("drops a receipt at a new session once no edit of its Doc can be approved", async () => {
+  // A receipt left behind names a marker whose deletion failed: the next edit of the Doc deletes it.
+  it("keeps a receipt across sessions with no edit of its Doc, for the next edit to settle", async () => {
     draft();
     let facet = "drive-receipt-sweep";
-    let id = await hooks().submitAppend(facet, "kept");
     let receipt = JSON.stringify({ actionId: 999, markerId: "marker-old" });
     await rawHooks().writeDriveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT, receipt);
     await hooks().readContent(facet);
-    // An edit of the Doc can still be approved, so its marker may still be wanted.
+    await hooks().readContent(facet);
     expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBe(receipt);
 
-    await hooks().rejectAction(facet, id);
-    await hooks().readContent(facet);
+    let id = await hooks().submitAppend(facet, "next");
+    expect(await hooks().applyAction(facet, id)).toBeNull();
     expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
   });
 

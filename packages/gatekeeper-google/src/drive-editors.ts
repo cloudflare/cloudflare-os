@@ -524,7 +524,8 @@ export class DriveFileEditors {
   /**
    * Drops what no change can still need: a spreadsheet's state once the journal holds none of the
    * numbers noted in it and no marker it keeps can still land, and past those, all but the
-   * spreadsheets written most recently.
+   * spreadsheets written most recently. A Doc's receipt is kept: it outlives its edit only while
+   * the marker it names is still in the document, which the next edit to that Doc deletes.
    */
   sweep(): void {
     let { kv, journal } = this.#options;
@@ -543,15 +544,6 @@ export class DriveFileEditors {
     // Its markers' later deletion and its applied numbers serve no change still queued.
     for (let [key] of idle.toSorted((a, b) => b[1].at - a[1].at).slice(MAX_IDLE_SHEETS)) {
       kv.delete(key);
-    }
-    // A receipt still matters while an edit to its document can be approved: until the action
-    // set retires the record it names, and to settle a marker the next edit then deletes.
-    let editing = new Set(journal.listPending().flatMap(({ action }) => {
-      let edited = editedFile(action);
-      return edited?.editor === "docs" ? [edited.target.fileId] : [];
-    }));
-    for (let [key] of kv.list<unknown>({ prefix: DOC_RECEIPT_PREFIX })) {
-      if (!editing.has(key.slice(DOC_RECEIPT_PREFIX.length))) kv.delete(key);
     }
   }
 
