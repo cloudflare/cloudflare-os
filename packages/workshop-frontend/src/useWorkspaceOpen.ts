@@ -80,6 +80,9 @@ export function useWorkspaceOpen({
   onInvalidShareKey,
 }: Options) {
   const [overseer, setOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
+  // Whether `overseer` has opened: its stub is published pipelined, before the open (which can
+  // wait on the user's choice of accounts) completes, so a call made through it waits too.
+  const [overseerOpened, setOverseerOpened] = useState(false)
   const [metadata, setMetadata] = useState<WorkspaceMetadata | null>(null)
   const [error, setError] = useState<WorkspaceLoadError | null>(null)
   const [connectionLost, setConnectionLost] = useState(false)
@@ -148,6 +151,7 @@ export function useWorkspaceOpen({
       disposeAttempt()
       openWorkspaceIdRef.current = undefined
       setOverseer(null)
+      setOverseerOpened(false)
       setMetadata(null)
       setConnectionLost(false)
       setError(nextError)
@@ -170,6 +174,7 @@ export function useWorkspaceOpen({
         overseerStub = authenticatedApi.openWorkspace(id, shareKey, configureObservers)
         linkActionLog(overseerStub, id)
         setOverseer({ stub: overseerStub })
+        setOverseerOpened(false)
 
         const resolvedSubscription = await overseerStub.subscribeToMetadata((nextMetadata) => {
           if (cancelled) return
@@ -184,6 +189,7 @@ export function useWorkspaceOpen({
 
         openWorkspaceIdRef.current = id
         reopenFailuresRef.current = 0
+        setOverseerOpened(true)
         setError(null)
         if (connectionLost) setConnectionLost(false)
       } catch (caught) {
@@ -236,6 +242,7 @@ export function useWorkspaceOpen({
 
   return {
     overseer,
+    overseerOpened,
     metadata,
     error,
     connectionLost,

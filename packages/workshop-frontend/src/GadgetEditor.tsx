@@ -502,6 +502,8 @@ export default function GadgetEditor() {
   // subscribeToWorkpieces(). `workpiecesReady` flips once the initial listing has arrived.
   const [workpieces, setWorkpieces] = useState<Map<WorkpieceId, WorkpieceSummary>>(new Map())
   const [workpiecesReady, setWorkpiecesReady] = useState(false)
+  // The subscriber that list is being read through, for the reset on a move to another workspace.
+  const workpiecesSubscriberRef = useRef<WorkpiecesSubscriberImpl | null>(null)
   const knownWorkpieceIdsRef = useRef<Set<WorkpieceId> | null>(null)
   // GadgetClient stub for the currently-selected gadget workpiece. Per-gadget operations (UI
   // bundle, RPC connection, bindings, blueprints) go through this stub. Null while the workspace
@@ -523,6 +525,7 @@ export default function GadgetEditor() {
   const rpcConnectionLost = useConnectionLost()
   const {
     overseer,
+    overseerOpened,
     metadata,
     error,
     connectionLost,
@@ -880,6 +883,10 @@ export default function GadgetEditor() {
       : undefined
 
   const overseerStub = overseer?.stub ?? null
+  // Where gadget views report their uncaught errors: the workspace once it has opened. Its stub is
+  // published before the open completes, and a report sent through it then would wait on the
+  // open and land late, after the reporter had given it up.
+  const errorsTo = overseerOpened ? overseerStub : null
   const { pending: pendingActions } = useActions(overseerStub)
   // Hook bindings change once in a while; fold the entry stream into a signature over just the
   // bindHook enable states, in state only when it changes, so the refetch below isn't driven at
@@ -1212,6 +1219,11 @@ export default function GadgetEditor() {
     setWorkspaceTransitionEnabled(false)
     setWorkpieces(new Map())
     setWorkpiecesReady(false)
+    // The list is subscribed to through the workspace being left until the next one's stub
+    // arrives, one commit after this reset. An answer in between would bring that list back, and
+    // with it keep its gadget views mounted, under the next workspace's stub, where a view
+    // reports the uncaught errors it holds (useGadgetErrorReporter).
+    workpiecesSubscriberRef.current?.cancel()
     knownWorkpieceIdsRef.current = null
     turnOutputRef.current = null
     setUserNavigatedToList(false)
@@ -1450,6 +1462,7 @@ export default function GadgetEditor() {
         setWorkpiecesReady(true)
       },
     )
+    workpiecesSubscriberRef.current = subscriber
     overseer.stub
       .subscribeToWorkpieces(subscriber)
       .then(s => {
@@ -1818,6 +1831,7 @@ export default function GadgetEditor() {
       <>
         <GadgetUseView
           overseer={overseer.stub}
+          errorsTo={errorsTo}
           gadget={selectedGadget?.stub ?? null}
           snapshot={selectedGadget?.kind === 'snapshot'
             ? { refreshedAt: selectedGadget.refreshedAt, onRefresh: refreshSnapshot }
@@ -2423,10 +2437,12 @@ export default function GadgetEditor() {
                     : 'h-full'
               }
             >
-              {selectedGadgetStub ? (
+              {selectedGadget?.kind === 'live' ? (
                 <GadgetUI
                   key={selectedGadgetId}
-                  gadget={selectedGadgetStub}
+                  gadget={selectedGadget.stub}
+                  gadgetId={selectedGadget.id}
+                  overseer={errorsTo}
                   height="100%"
                   reloadTrigger={uiReloadTrigger}
                   isVisible={activeTab === 'app'}

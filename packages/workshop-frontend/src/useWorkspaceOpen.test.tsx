@@ -104,6 +104,38 @@ describe('useWorkspaceOpen', () => {
     vi.clearAllMocks()
   })
 
+  // The stub is published before the open completes, which can wait on the user's choice of
+  // accounts: a call through it waits too, so what is sent only to an opened workspace waits.
+  it('says the workspace has opened only once its open completes, though its stub is out before', async () => {
+    const pendingSubscription = deferred<RpcStub<{}>>()
+    const overseer = disposableStub({
+      subscribeToMetadata: vi.fn<() => Promise<RpcStub<{}>>>(() => pendingSubscription.promise),
+    }) as unknown as RpcStub<Overseer>
+    const authenticatedApi = api(overseer)
+    const seen: { stub: unknown; opened: boolean }[] = []
+
+    function Probe() {
+      const state = useWorkspaceOpen({
+        id: 'workspace-1',
+        authenticatedApi,
+        onInvalidShareKey: () => {},
+        onMetadata: () => {},
+        onShareKeyConsumed: () => {},
+      })
+      seen.push({ stub: state.overseer?.stub, opened: state.overseerOpened })
+      return null
+    }
+
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+    await act(async () => root!.render(<Probe />))
+    expect(seen.at(-1)).toStrictEqual({ stub: overseer, opened: false })
+
+    await act(async () => { pendingSubscription.resolve(disposableStub({}) as RpcStub<{}>) })
+    expect(seen.at(-1)).toStrictEqual({ stub: overseer, opened: true })
+  })
+
   it('disposes a metadata subscription that resolves after its load attempt is cleaned up', async () => {
     const pendingSubscription = deferred<RpcStub<{}>>()
     const overseerDispose = vi.fn<() => void>()

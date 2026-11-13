@@ -2,9 +2,12 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
+import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent, Overseer, WorkpieceId, type GadgetHost } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
+import { useGadgetErrorReporter } from './features/gadget-errors/useGadgetErrorReporter'
+import { normalizePageLocation } from '@gadgets/error-reporting'
+import { withoutDataUrls } from './features/gadget-errors/dataUrls'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -94,19 +97,39 @@ window.addEventListener('click', (event) => {
 // Capture unhandled exceptions and promise rejections. The error listener captures because a
 // module graph that fails to fetch fires a non-bubbling error only on its <script> element. An
 // ErrorEvent's location is sent on its own because a SyntaxError's stack carries none; the parent
-// names the file.
+// names the file. What these listeners catch is sent as uncaught, which the Workshop reports to the
+// workspace's error log beside showing it in the live console like a console call.
 let reportError = (message, at) => notify(root.reportConsole('error', message, at));
+let reportUncaught = (message, at) => notify(root.reportUncaught(message, at));
+// A thrown value as it is reported, in parts: its name and message, then its stack's frames on
+// lines of their own, or its text when it has no stack. Apart, so that the parent can elide a
+// data: URL the message names, to the end of its part, and keep where the error was thrown.
+// Reading neither the stack nor the text may throw out of the listener, whatever was thrown: a
+// value whose toString is not callable is reported by its stack, or by the fallback.
+let described = (thrown, fallback) => {
+  // An ErrorEvent with no thrown value (a worker's, say) has its diagnostic in the message alone.
+  if (thrown === null || thrown === undefined) return [fallback];
+  let stack, head = '';
+  try { stack = thrown.stack; } catch {}
+  try { head = String(thrown); } catch {}
+  if (typeof stack !== 'string' || !stack) return [head || fallback];
+  if (!head) return [stack];
+  // Chromium's stack starts with the name and message, Firefox's leaves them out.
+  if (stack.startsWith(head)) return [head, stack.slice(head.length)];
+  return stack.includes(head) ? [stack] : [head, '\n' + stack];
+};
 window.addEventListener('error', (event) => {
   if (event instanceof ErrorEvent) {
-    reportError(['Uncaught', event.error?.stack || event.message],
+    reportUncaught(['Uncaught', ...described(event.error, event.message)],
         { url: event.filename, line: event.lineno, column: event.colno });
   } else if (event.target instanceof HTMLScriptElement) {
-    reportError(['Failed to load script'], { url: event.target.src });
+    reportUncaught(['Failed to load script'], { url: event.target.src });
   }
 }, true);
 window.addEventListener('unhandledrejection', (event) => {
   let reason = event.reason;
-  reportError(['Unhandled promise rejection:', reason?.stack || String(reason)]);
+  reportUncaught(['Unhandled promise rejection:',
+      ...described(reason, reason === null ? 'null' : reason === undefined ? 'undefined' : '(unprintable)')]);
 });
 ${callsMain ? `
 // The same module instance the entry's <script> loads. A main() that throws or rejects is reported
@@ -156,9 +179,15 @@ class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
 // Where a console call or uncaught error happened in the frame, as the browser reported it.
 type ConsoleLocation = { url?: string; line?: number; column?: number }
 
+// The longest URL a location names: one longer is a frame's doing, not a module's.
+const MAX_SHOWN_URL = 2_048
+
+
 // What the frame's runtime reports to the page, apart from anything gadget code calls.
 type FrameEvents = {
   reportConsole(level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation): void
+  // An error the frame's code did not catch, which is shown as an "error" console call is.
+  reportUncaught(message: string[], at?: ConsoleLocation): void
   escape(): void
 }
 
@@ -189,6 +218,10 @@ class GadgetFrameRoot extends RpcTarget {
     this.#events.reportConsole(level, message, at)
   }
 
+  reportUncaught(message: string[], at?: ConsoleLocation) {
+    this.#events.reportUncaught(message, at)
+  }
+
   escape() {
     this.#events.escape()
   }
@@ -211,6 +244,12 @@ const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefi
 
 interface GadgetUIProps {
   gadget: RpcStub<GadgetClient> | RpcStub<GadgetSnapshotClient>
+  // Where the UI's uncaught errors are reported: the gadget's workspace, and its id there.
+  // `overseer` is null only where the workspace has no connection at all (it has not opened, or
+  // failed to), which holds the errors back. A snapshot's are never reported: they are a
+  // viewer's, not the gadget's.
+  overseer: RpcStub<Overseer> | null
+  gadgetId: WorkpieceId
   height: string
   reloadTrigger?: number
   isVisible?: boolean
@@ -239,7 +278,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
+function GadgetUISession({ gadget, overseer, gadgetId, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
@@ -270,6 +309,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const rpcSessionAbortRef = useRef<AbortController | null>(null)
   // Each module's path by its data: URL, for naming the file in errors the iframe forwards.
   const pathsByUrlRef = useRef(new Map<string, string>())
+  // The same paths, by data: URL and by import map specifier, which Chromium names an imported
+  // module by: withoutDataUrls()'s names.
+  const modulePathsRef = useRef(new Map<string, string>())
   // Keep latest callbacks in refs so the message-handler effect never tears down the RPC session.
   const onIframeEscapeRef = useRef(onIframeEscape)
   const onConsoleLogRef = useRef(onConsoleLog)
@@ -279,6 +321,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onNoUiChangeRef.current = onNoUiChange
   const onOpenAgentChatRef = useRef(onOpenAgentChat)
   onOpenAgentChatRef.current = onOpenAgentChat
+  const reportError = useGadgetErrorReporter(overseer, gadgetId, chatId)
+  const reportErrorRef = useRef(reportError)
+  reportErrorRef.current = reportError
+  const renderModeRef = useRef(renderMode)
+  renderModeRef.current = renderMode
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -425,6 +472,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (bundle) {
           const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
           pathsByUrlRef.current = page.pathsByUrl
+          modulePathsRef.current = new Map([...page.pathsByUrl,
+            ...[...page.pathsByUrl.values()].map(path => [uiModuleKey(path), path] as const)])
           setSandboxedHtml(createSandboxedHtml(page, renderMode))
         } else {
           setSandboxedHtml(null)
@@ -458,21 +507,53 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, renderMode, retryNonce])
 
   // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
+  // `path` with the position the browser gave, when it gave whole numbers: the frame's RPC is
+  // typed only at compile time, so a frame can send anything in their place.
+  const positioned = (path: string, at: ConsoleLocation): string =>
+    Number.isInteger(at.line) && (at.line as number) > 0 && Number.isInteger(at.column)
+      ? `${path}:${at.line}:${at.column}` : path
+  // Where something happened in the frame, as the live console shows it. Chrome names a module
+  // by its sourceURL; other browsers may give its data: URL. One not in the bundle, like the
+  // runtime's, can embed hundreds of KB, so it isn't echoed whole.
+  const where = (at?: ConsoleLocation): string | undefined => {
+    if (typeof at?.url !== 'string' || !at.url) return undefined
+    const path = pathsByUrlRef.current.get(at.url) ??
+      (at.url.startsWith('data:') ? `${at.url.slice(0, 40)}…` : at.url.slice(0, MAX_SHOWN_URL))
+    return positioned(path, at)
+  }
+  // Where it happened, as the error log keeps it: the gadget's file, named by its data: URL
+  // (which holds the whole module, however long) or by its bare sourceURL as Chrome gives it; or
+  // else an external script's origin and path alone, since a URL's user, query and fragment can
+  // hold a credential (see normalizePageLocation()). Nothing for a data: URL the bundle does not
+  // name, or for an external one past MAX_SHOWN_URL.
+  const reportedWhere = (at?: ConsoleLocation): string | undefined => {
+    if (typeof at?.url !== 'string' || !at.url) return undefined
+    const paths = pathsByUrlRef.current
+    const path = paths.get(at.url) ??
+      ([...paths.values()].includes(at.url) ? at.url : undefined) ??
+      (at.url.length > MAX_SHOWN_URL ? undefined : normalizePageLocation(at.url))
+    return path === undefined ? undefined : positioned(path, at)
+  }
+  // A part of a reported error with every data: URL in it (a stack names a module by one) named
+  // as the bundle names it, or elided: the URL holds the module's whole source, which the error
+  // log has no need of. The live console keeps them as they are.
+  const withoutBundleSources = (text: string, clipped: boolean): string =>
+    withoutDataUrls(text, modulePathsRef.current, clipped)
+  // `message` as the live console shows it, built only when something listens: the frame's
+  // `message` is unvalidated, and copying it costs whatever the frame chose.
+  const showConsole = (level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation) => {
+    const onConsoleLog = onConsoleLogRef.current
+    if (!onConsoleLog) return
+    const location = where(at)
+    onConsoleLog({ timestamp: new Date(), level, message: location ? [...message, `at ${location}`] : message })
+  }
   const frameEvents: FrameEvents = {
-    reportConsole: (level, message, at) => {
-      let location: string | undefined
-      if (at?.url) {
-        // Chrome names a module by its sourceURL; other browsers may give its data: URL. One not
-        // in the bundle, like the runtime's, can embed hundreds of KB, so it isn't echoed whole.
-        const path = pathsByUrlRef.current.get(at.url) ??
-          (at.url.startsWith('data:') ? `${at.url.slice(0, 40)}…` : at.url)
-        location = at.line ? `${path}:${at.line}:${at.column}` : path
-      }
-      onConsoleLogRef.current?.({
-        timestamp: new Date(),
-        level,
-        message: location ? [...message, `at ${location}`] : message,
-      })
+    reportConsole: showConsole,
+    reportUncaught: (message, at) => {
+      // The reporter bounds what it reads of `message`, and works out the location only for an
+      // error it queues, with room left in its text.
+      if (!renderModeRef.current) reportErrorRef.current(message, () => reportedWhere(at), withoutBundleSources)
+      showConsole('error', message, at)
     },
     escape: () => onIframeEscapeRef.current?.(),
   }
