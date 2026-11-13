@@ -5,6 +5,8 @@
 // the model to read; a larger one has its page images sent as they are stored. A PDF that has
 // text keeps it, and the pages of it that have none are rendered and read the same way, each
 // under a line that says so. A deployment can turn the model's reading off: see pdfConverter().
+// A Gmail attachment's PDF is read the same way, in words and under log names of its own: see
+// PdfSource.
 
 import type { Logger } from "@gadgets/observability/logger";
 import {
@@ -65,8 +67,28 @@ type RenderLogFields = {
   strips: number;
 };
 
-const logger: Logger<GoogleObservabilityFields & RenderLogFields> =
-  obsContext.createLogger({ component: "gatekeeper.google.drive.pdf", vendorId: "google" });
+/** What a PDF's lines are logged by. */
+type PdfLogger = Logger<GoogleObservabilityFields & RenderLogFields>;
+
+/** Each source's logger, under a component of its own. */
+const loggers: Record<PdfSource["name"], PdfLogger> = {
+  drive: obsContext.createLogger({ component: "gatekeeper.google.drive.pdf", vendorId: "google" }),
+  gmail: obsContext.createLogger({ component: "gatekeeper.google.gmail.pdf", vendorId: "google" }),
+};
+
+/**
+ * What logs `source`'s lines. Every line is written in this file as Drive's, which is how Drive's
+ * is logged; Gmail's has its event under `google.gmail.pdf.` and says "Gmail PDF attachment"
+ * where Drive's says "Drive PDF".
+ */
+function log(source: PdfSource): Pick<PdfLogger, "info" | "warn"> {
+  if (source.name === "drive") return loggers.drive;
+  let named = (level: "info" | "warn"): PdfLogger["info"] => (message, details) =>
+    loggers.gmail[level](message.replace("Drive PDF", "Gmail PDF attachment"), {
+      ...details, event: details.event.replace("google.drive.pdf.", "google.gmail.pdf."),
+    });
+  return { info: named("info"), warn: named("warn") };
+}
 
 /**
  * One part of a PDF: `length` bytes from `offset`, in a file of `fileSize` bytes. `page` is the
@@ -76,9 +98,13 @@ export type PdfPageRange = { page?: number; offset: number; length: number; file
 
 /**
  * Reads one part of the PDF a conversion was given, some time after it. The file may have changed
- * since, so the reader refuses a file that is no longer `fileSize` bytes long.
+ * since, so the reader refuses a file that is no longer `fileSize` bytes long. A reader that has
+ * bytes to pass over on its way to a page image calls `moved`, when given it, for each piece it
+ * passes, so that a long way there is not taken for a text that sits idle.
  */
-export type PdfRangeReader = (range: PdfPageRange) => Promise<ReadableStream<Uint8Array>>;
+export type PdfRangeReader = (
+  range: PdfPageRange, moved?: () => void,
+) => Promise<ReadableStream<Uint8Array>>;
 
 /**
  * A PDF's text as a conversion gives it. `rereads` says whether reading `text` may read the file
@@ -114,16 +140,16 @@ export type PdfEnv = {
  * The converter a Worker with this environment reads PDFs with ({@link pdfToText}), or `undefined`
  * when it has no `AI` binding to convert with. Under `PDF_OCR=false` it never reads a file again,
  * whatever it is given to do so with: no vision model is called, so a PDF without text comes back
- * with none, and one with text as that text alone.
+ * with none, and one with text as that text alone. `source` is where the PDFs are read from.
  */
-export function pdfConverter(env: PdfEnv): PdfConverter | undefined {
+export function pdfConverter(env: PdfEnv, source: PdfSource = DRIVE_PDF): PdfConverter | undefined {
   // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can
   // stream. The generated type of a service binding names no method of the entrypoint behind it.
   let ai = env.AI as AiFetcher | undefined;
   let renderer = env.PDF_RENDERER as PdfRendering | undefined;
   let transcribes = env.PDF_OCR?.trim().toLowerCase() !== "false";
   return ai && ((pdf, readRange) =>
-    pdfToText(ai, env.CF_AI_GATEWAY, pdf, transcribes ? readRange : undefined, renderer));
+    pdfToText(ai, env.CF_AI_GATEWAY, pdf, transcribes ? readRange : undefined, renderer, source));
 }
 
 /**
@@ -140,6 +166,33 @@ const MAX_HEADING_CHARS = 32;
 export const CONVERSION_FAILED = "Google Drive's file could not be converted from PDF.";
 /** The one error a failed transcription is reported with, whatever the service said. */
 export const TRANSCRIPTION_FAILED = "Google Drive's PDF could not be transcribed.";
+
+/** Where a PDF is read from: the words its failures are given in, and what its log lines are named. */
+export type PdfSource = {
+  /** `drive` or `gmail`: events are `google.<name>.pdf.*`, the logger's component `gatekeeper.google.<name>.pdf`. */
+  name: "drive" | "gmail";
+  /** What a failed conversion is reported with. */
+  conversionFailed: string;
+  /** What a failed transcription is reported with. */
+  transcriptionFailed: string;
+  /** What a file that is not what it was when converted is reported with. */
+  changed: string;
+};
+
+/** A PDF read from Google Drive. */
+export const DRIVE_PDF: PdfSource = {
+  name: "drive", conversionFailed: CONVERSION_FAILED, transcriptionFailed: TRANSCRIPTION_FAILED,
+  changed: FILE_CHANGED,
+};
+
+/** A PDF read from a Gmail attachment. */
+export const GMAIL_PDF: PdfSource = {
+  name: "gmail",
+  conversionFailed: "The Gmail attachment could not be converted from PDF.",
+  transcriptionFailed: "The Gmail attachment's PDF could not be transcribed.",
+  changed: "The Gmail attachment changed while it was being read; read it again.",
+};
+
 /**
  * How long a transcription's text may go with nothing moving, whether the model has stopped
  * answering or the reader has stopped reading, before it is ended and what it holds let go.
@@ -261,10 +314,13 @@ type PageSource = {
  * images the scan found in it: see {@link mixedPages}. Its text then keeps the heading of every
  * page from the first, is still the document's own (`transcribed` is false), and may read the
  * file again. For any other PDF with text no model is called and nothing is read again.
+ *
+ * `source` is where the PDF is read from: its failures are given in that source's words, and its
+ * log lines go under that source's names.
  */
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
-  readRange?: PdfRangeReader, renderer?: PdfRendering,
+  readRange?: PdfRangeReader, renderer?: PdfRendering, source: PdfSource = DRIVE_PDF,
 ): Promise<PdfRead> {
   let scan = readRange && new PdfImageScan();
   /** Whether the scan was shown the PDF to its end. */
@@ -288,11 +344,11 @@ export async function pdfToText(
       start.feed(data);
     }
   } catch (error) {
-    throw reported(error);
+    throw reported(error, source);
   }
   let first = start.text;
   let hasText = first !== undefined;
-  logger.info("converted a Drive PDF", {
+  log(source).info("converted a Drive PDF", {
     event: "google.drive.pdf.converted", pdfBytes: conversion.sentBytes, hasText,
   });
   if (!hasText) {
@@ -300,10 +356,10 @@ export async function pdfToText(
     // PDF still open.
     if (scan && !scanned) {
       await conversion.cancel();
-      throw new Error(CONVERSION_FAILED);
+      throw new Error(source.conversionFailed);
     }
     let found = scan?.end();
-    if (found?.encrypted) throw refusal(found, "it is encrypted");
+    if (found?.encrypted) throw refusal(source, found, "it is encrypted");
     let rendered = renderer !== undefined && found !== undefined && found.bytes <= RENDER_LIMITS.fileBytes;
     // The scan sees the images a file stores as objects of their own, a tile or strip of a page
     // and a mask as large as one among them: a file with none has nothing to send as it is
@@ -320,24 +376,25 @@ export async function pdfToText(
     let stored = !unread && found.images.length > 0;
     let pages: PageSource;
     if (renderer && rendered) {
-      pages = renderedPages(renderedPdf(ai, gatewayId, found, readRange!, renderer), found, readRange!, stored);
-      logger.info("transcribing a scanned Drive PDF", {
+      pages = renderedPages(
+        renderedPdf(ai, gatewayId, found, readRange!, renderer, source), found, readRange!, stored, source);
+      log(source).info("transcribing a scanned Drive PDF", {
         event: "google.drive.pdf.transcribing", pdfBytes: found.bytes, route: "rendered",
       });
     } else {
-      if (unread) throw refusal(found, unread.why, unread.encoding);
+      if (unread) throw refusal(source, found, unread.why, unread.encoding);
       if (!stored) {
-        throw refusal(found, "its pages have to be rendered to be read, which is " + (renderer
+        throw refusal(source, found, "its pages have to be rendered to be read, which is " + (renderer
           ? `done only for a PDF of up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`
           : "not available on this deployment"));
       }
       pages = storedPages(found, readRange!);
-      logger.info("transcribing a scanned Drive PDF", {
+      log(source).info("transcribing a scanned Drive PDF", {
         event: "google.drive.pdf.transcribing", pdfBytes: found.bytes, ocrPages: found.images.length,
         route: "stored",
       });
     }
-    return { text: transcription(ai, gatewayId, pages), hasText, transcribed: true, rereads: true };
+    return { text: transcription(ai, gatewayId, pages, source), hasText, transcribed: true, rereads: true };
   }
 
   // Pages are read into the text only when the scan saw the whole file, and so knows its
@@ -349,8 +406,8 @@ export async function pdfToText(
   if (found && found.bytes <= RENDER_LIMITS.fileBytes && start.passedEmpty &&
       first!.startsWith(`### Page ${start.passed + 1}\n`)) {
     let pages = mixedPages(
-      conversion, start.passed, first!, renderedPdf(ai, gatewayId, found, readRange!, renderer!));
-    return { text: transcription(ai, gatewayId, pages), hasText, transcribed: false, rereads: true };
+      conversion, start.passed, first!, renderedPdf(ai, gatewayId, found, readRange!, renderer!, source), source);
+    return { text: transcription(ai, gatewayId, pages, source), hasText, transcribed: false, rereads: true };
   }
 
   let encoder = new TextEncoder();
@@ -362,7 +419,7 @@ export async function pdfToText(
         chunk = first ?? await conversion.next();
       } catch (error) {
         // Cancelling ends a read in progress as if the response had broken off.
-        if (!cancelled) controller.error(reported(error));
+        if (!cancelled) controller.error(reported(error, source));
         return;
       }
       first = undefined;
@@ -454,9 +511,9 @@ function unreadAsStored(
  * size, how many page images it holds and the `encoding` at fault, when one is.
  */
 function refusal(
-  found: PdfImages, why: string, encoding?: PdfPageImage["encoding"],
+  source: PdfSource, found: PdfImages, why: string, encoding?: PdfPageImage["encoding"],
 ): TranscriptionRefusal {
-  logger.info("a scanned Drive PDF cannot be transcribed", {
+  log(source).info("a scanned Drive PDF cannot be transcribed", {
     event: "google.drive.pdf.untranscribable", pdfBytes: found.bytes,
     ocrPages: found.images.length, ...(encoding ? { imageEncoding: encoding } : {}),
   });
@@ -469,7 +526,7 @@ function refusal(
  * A page's image is read from the file through `readRange` when the text has been read up to
  * it: a JPEG is sent as it stands, and deflated rows wrapped as a PNG without being inflated.
  * Nothing is held between pages, and each piece of an image that arrives counts as the text
- * moving.
+ * moving, as does each piece `readRange` says it passed over on its way to one.
  */
 function storedPages({ images, bytes: fileSize }: PdfImages, readRange: PdfRangeReader): PageSource {
   return {
@@ -477,7 +534,7 @@ function storedPages({ images, bytes: fileSize }: PdfImages, readRange: PdfRange
       let image = images[index];
       if (!image) return undefined;
       let { offset, length } = image;
-      let read = await readRange({ page: index + 1, offset, length, fileSize });
+      let read = await readRange({ page: index + 1, offset, length, fileSize }, moved);
       if (signal.aborted) {
         await read.cancel().catch(() => undefined);
         throw new Error("cancelled");
@@ -557,7 +614,7 @@ type RenderedPdf = {
  */
 function renderedPdf(
   ai: AiFetcher, gatewayId: string | undefined, found: PdfImages, readRange: PdfRangeReader,
-  renderer: PdfRendering,
+  renderer: PdfRendering, source: PdfSource,
 ): RenderedPdf {
   /** The PDF open in the renderer, while it is, and how many pages it has once it was opened. */
   let document: PdfDocument | undefined;
@@ -649,9 +706,9 @@ function renderedPdf(
     }
     if (failure) throw failure.error;
     signal.throwIfAborted();
-    if (unopened?.reason === "size-mismatch") throw new Error(FILE_CHANGED);
+    if (unopened?.reason === "size-mismatch") throw new Error(source.changed);
     if (!unopened) {
-      logger.info("rendering a Drive PDF's pages", {
+      log(source).info("rendering a Drive PDF's pages", {
         event: "google.drive.pdf.rendering", pdfBytes: found.bytes, ocrPages: count,
         ...(again ? { reason: again } : {}),
       });
@@ -681,14 +738,14 @@ function renderedPdf(
           if (page === count) dispose();
           if ("refused" in answer) {
             let { refused: reason, heapBytes, work } = answer;
-            logger.warn("a Drive PDF page could not be drawn", {
+            log(source).warn("a Drive PDF page could not be drawn", {
               event: "google.drive.pdf.page_undrawn", page, reason, heapBytes, work,
             });
             return answer;
           }
           rendered++;
           let { width, height, bands, blank, images, dpi, reduced, cost } = answer;
-          logger.info("rendered a Drive PDF page", {
+          log(source).info("rendered a Drive PDF page", {
             event: "google.drive.pdf.page_rendered", page, width, height, bands: bands.length, blank,
             images, dpi, reduced, ...cost,
           });
@@ -705,7 +762,7 @@ function renderedPdf(
       }
     },
     read: (page, index, signal, moved) => readBands(page, call, signal, moved, event => {
-      logger.info("transcribed a band of a Drive PDF page", {
+      log(source).info("transcribed a band of a Drive PDF page", {
         event: "google.drive.pdf.band_transcribed", page: index + 1, ...event,
       });
     }),
@@ -718,8 +775,8 @@ function renderedPdf(
 }
 
 /** Logs why a PDF's pages are not rendered, or not rendered any further, by the reason word. */
-function renderFailed(unrendered: Unrendered): void {
-  logger.warn("a Drive PDF could not be rendered", {
+function renderFailed(unrendered: Unrendered, source: PdfSource): void {
+  log(source).warn("a Drive PDF could not be rendered", {
     event: "google.drive.pdf.render_failed", ...unrendered,
   });
 }
@@ -740,17 +797,17 @@ function renderFailed(unrendered: Unrendered): void {
  * further partway.
  */
 function renderedPages(
-  pdf: RenderedPdf, found: PdfImages, readRange: PdfRangeReader, stored: boolean,
+  pdf: RenderedPdf, found: PdfImages, readRange: PdfRangeReader, stored: boolean, source: PdfSource,
 ): PageSource {
   /** The stored page images, once they are what the text is read from. */
   let fallback: PageSource | undefined;
   /** What the text fails with when the PDF is not rendered, logged by the reason word. */
   let failed = (unrendered: Unrendered, first: boolean): Error => {
     let { reason } = unrendered;
-    if (reason === "encrypted") return refusal(found, "it is encrypted");
-    renderFailed(unrendered);
+    if (reason === "encrypted") return refusal(source, found, "it is encrypted");
+    renderFailed(unrendered, source);
     let busy = reason === "room" || (first && reason === "call");
-    return new Error(busy ? RENDERER_BUSY : TRANSCRIPTION_FAILED);
+    return new Error(busy ? RENDERER_BUSY : source.transcriptionFailed);
   };
   let read = async (
     index: number, signal: AbortSignal, moved: () => void,
@@ -759,7 +816,7 @@ function renderedPages(
     if (pdf.pages === undefined) {
       let unopened = await pdf.open(signal, moved);
       if (unopened && stored && unopened.reason !== "encrypted") {
-        logger.warn("a Drive PDF is transcribed as stored, for want of the renderer", {
+        log(source).warn("a Drive PDF is transcribed as stored, for want of the renderer", {
           event: "google.drive.pdf.renderer_fallback", route: "stored", ...unopened,
         });
         fallback = storedPages(found, readRange);
@@ -894,6 +951,7 @@ class PageSections {
  */
 function mixedPages(
   conversion: MarkdownConversion, passed: number, first: string | undefined, pdf: RenderedPdf,
+  source: PdfSource,
 ): PageSource {
   let sections = new PageSections();
   /** What was read of the text and is yet to be given, and whether that was the end of it. */
@@ -925,7 +983,7 @@ function mixedPages(
         data = await conversion.next();
       } catch (error) {
         // Ending the text ends a read in progress as if the response had broken off.
-        throw signal.aborted ? error : reported(error);
+        throw signal.aborted ? error : reported(error, source);
       }
       moved();
     }
@@ -940,14 +998,14 @@ function mixedPages(
     if (pdf.pages === undefined) {
       let unopened = await pdf.open(signal, moved);
       if (unopened) {
-        renderFailed(unopened);
+        renderFailed(unopened, source);
         return giveUp();
       }
     }
     if (index >= pdf.pages!) return undefined;
     let drawn = await pdf.render(index, signal, moved);
     if ("reason" in drawn) {
-      renderFailed(drawn);
+      renderFailed(drawn, source);
       return giveUp();
     }
     // A page with ink is read whatever it draws: a scan, an image written into its content, or
@@ -957,7 +1015,7 @@ function mixedPages(
     try {
       ({ text, cutOff } = await pdf.read(drawn, index, signal, moved));
     } catch (error) {
-      if (signal.aborted || !transcriptionFailed(error, { page: index + 1 })) throw error;
+      if (signal.aborted || !transcriptionFailed(error, { page: index + 1 }, source)) throw error;
       return giveUp();
     }
     if (text === "") return undefined;
@@ -1031,7 +1089,7 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  * file, is passed on as it is.
  */
 function transcription(
-  ai: AiFetcher, gatewayId: string | undefined, pages: PageSource,
+  ai: AiFetcher, gatewayId: string | undefined, pages: PageSource, source: PdfSource,
 ): ReadableStream<Uint8Array> {
   let encoder = new TextEncoder();
   /**
@@ -1074,7 +1132,7 @@ function transcription(
         controller.error(new Error(TRANSCRIPTION_IDLE));
         void end().catch(() => undefined);
         // No page is in progress once the last has been transcribed and only its end is unread.
-        logger.warn("a Drive PDF's transcription sat idle", {
+        log(source).warn("a Drive PDF's transcription sat idle", {
           event: "google.drive.pdf.transcription_idle", ...pages.fields(index),
         });
       };
@@ -1117,7 +1175,7 @@ function transcription(
           // Ended while the page's answer was being let go: no further page is begun.
           if (ended) return;
           if (piece !== undefined) return give(piece);
-          logger.info("transcribed a Drive PDF page", {
+          log(source).info("transcribed a Drive PDF page", {
             event: "google.drive.pdf.page_transcribed", imageBytes: current.sentBytes,
             ...pages.fields(index),
           });
@@ -1130,8 +1188,8 @@ function transcription(
         // Ending the text ends a read in progress as if the response had broken off.
         if (ended) return;
         letGo();
-        if (!transcriptionFailed(error, pages.fields(index))) return controller.error(error);
-        controller.error(new Error(TRANSCRIPTION_FAILED));
+        if (!transcriptionFailed(error, pages.fields(index), source)) return controller.error(error);
+        controller.error(new Error(source.transcriptionFailed));
       }
     },
     cancel: end,
@@ -1142,12 +1200,14 @@ function transcription(
  * Whether `error` is a page's transcription failing: the model's failure, or a page image whose
  * data is not what was said of it. It is then logged by `fields`, size and status only.
  */
-function transcriptionFailed(error: unknown, fields: { page?: number; imageEncoding?: string }): boolean {
+function transcriptionFailed(
+  error: unknown, fields: { page?: number; imageEncoding?: string }, source: PdfSource,
+): boolean {
   let failure = error instanceof TranscriptionError
     ? { imageBytes: error.sentBytes, ...error.failure }
     : error instanceof ImageDataError ? { error } : undefined;
   if (!failure) return false;
-  logger.warn("a Drive PDF page could not be transcribed", {
+  log(source).warn("a Drive PDF page could not be transcribed", {
     event: "google.drive.pdf.transcription_failed", ...fields, ...failure,
   });
   return true;
@@ -1181,14 +1241,14 @@ export function releasedAtEnd(
 
 /**
  * `error` as a PDF read reports it: a failed conversion is logged by why it failed and replaced by
- * {@link CONVERSION_FAILED}; anything else, such as the PDF stream's own failure, is kept as it is.
+ * `source`'s words for it; anything else, such as the PDF stream's own failure, is kept as it is.
  */
-function reported(error: unknown): unknown {
+function reported(error: unknown, source: PdfSource): unknown {
   if (!(error instanceof MarkdownConversionError)) return error;
-  logger.warn("Workers AI failed to convert a PDF", {
+  log(source).warn("Workers AI failed to convert a PDF", {
     event: "google.drive.pdf.failed", pdfBytes: error.sentBytes, ...error.failure,
   });
-  return new Error(CONVERSION_FAILED);
+  return new Error(source.conversionFailed);
 }
 
 /**

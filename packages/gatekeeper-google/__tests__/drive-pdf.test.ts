@@ -5,11 +5,12 @@ import {
   type RenderRefusalReason, type RenderRefused,
 } from "@gadgets/pdf-renderer/api";
 import {
-  pdfConverter, pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
+  GMAIL_PDF, pdfConverter, pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
   type PdfRangeReader,
 } from "../src/drive-pdf";
+import { forwardRangeReader, type PdfOpener } from "../src/pdf-forward-reader";
 import type { AiFetcher } from "../src/workers-ai-markdown";
-import { imagePdf, type BuiltPdf, type PdfImage } from "./pdf-fixture";
+import { imagePdf, scanPage, type BuiltPdf } from "./pdf-fixture";
 import {
   BYTES, byteStream, conversionJson, eventResponse, fakeAi, formatLastJson, markdownJson,
   sentImage, splitResponse, streamedResponse, tokenEvents, type VisionJson,
@@ -425,11 +426,6 @@ const TRANSCRIPTION_FAILED = "Google Drive's PDF could not be transcribed.";
 const PAGES = [["Harbour Ledger", " Review"], ["Lot 55-0193-G", "\n\n18,442.07 florins"], ["Signatories"]];
 const TRANSCRIBED =
   "### Page 1\nHarbour Ledger Review\n\n### Page 2\nLot 55-0193-G\n\n18,442.07 florins\n\n### Page 3\nSignatories";
-
-function scanPage(seed: number, overrides: Partial<PdfImage> = {}): PdfImage {
-  let data = Uint8Array.from({ length: 700 + seed }, (_, i) => (i * 7 + seed) % 256);
-  return { data, width: 1275, height: 1650, ...overrides };
-}
 
 /** A three-page scan, each page one JPEG. */
 const SCAN = imagePdf([scanPage(1), scanPage(2), scanPage(3)]);
@@ -2854,5 +2850,225 @@ describe("pdfConverter", () => {
       byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
     expect(await read(result)).toBe("### Page 1\nband 11");
     expect(state.events).toEqual(["open", "render 1", "disposed"]);
+  });
+});
+
+const GMAIL_CONVERSION_FAILED = "The Gmail attachment could not be converted from PDF.";
+const GMAIL_TRANSCRIPTION_FAILED = "The Gmail attachment's PDF could not be transcribed.";
+const GMAIL_CHANGED = "The Gmail attachment changed while it was being read; read it again.";
+/** What every line logged of a Gmail attachment's PDF carries. */
+const GMAIL_COMPONENT = { component: "gatekeeper.google.gmail.pdf", vendorId: "google" };
+
+/** `pdf` converted as a Gmail attachment, with `renderer` there to render it when one is given. */
+function gmailPdf(ai: AiFetcher, pdf = SCAN, renderer?: PdfRendering) {
+  return pdfToText(
+    ai, undefined, byteStream(pdf.bytes, [65_536]).stream, ranges(pdf).readRange, renderer, GMAIL_PDF);
+}
+
+describe("pdfToText reading a Gmail attachment", () => {
+  it("fails a conversion in Gmail's words, logged under Gmail's names", async () => {
+    let { ai } = fakeAi(streamedResponse(conversionJson({ format: "error", error: PROVIDER_ERROR })));
+    await expect(pdfToText(ai, undefined, byteStream(BYTES).stream, undefined, undefined, GMAIL_PDF))
+      .rejects.toThrow(new Error(GMAIL_CONVERSION_FAILED));
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({
+      ...GMAIL_COMPONENT, event: "google.gmail.pdf.failed", message: "Workers AI failed to convert a PDF",
+      pdfBytes: BYTES.byteLength,
+    })]]);
+  });
+
+  it("refuses in Gmail's words a conversion that answered before the PDF had all been sent", async () => {
+    let ai = {
+      fetch: async () => streamedResponse(markdownJson(SCANNED_PDF)),
+    } as unknown as AiFetcher;
+    let pdf = byteStream(SCAN.bytes, [100]);
+    await expect(pdfToText(ai, undefined, pdf.stream, ranges(SCAN).readRange, undefined, GMAIL_PDF))
+      .rejects.toThrow(new Error(GMAIL_CONVERSION_FAILED));
+    expect(pdf.state.cancelled).toBe(true);
+  });
+
+  it.each([
+    ["given as the conversion gives it, with no renderer there", false],
+    ["read page by page, with a renderer there for its pages without text", true],
+  ])("fails in Gmail's words a text whose conversion breaks off once it began: %s", async (_label, rendered) => {
+    let json = markdownJson(TEXT_PDF);
+    let { ai } = fakeAi(streamedResponse(json.slice(0, json.indexOf("Page 2")), 16));
+    let result = await gmailPdf(ai, SCAN, rendered ? fakeRenderer([TEXT_PAGE, TEXT_PAGE]).renderer : undefined);
+    // Only a text that is read page by page may read the file again.
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: rendered });
+    expect((await readToFailure(result)).error).toEqual(new Error(GMAIL_CONVERSION_FAILED));
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({
+      ...GMAIL_COMPONENT, event: "google.gmail.pdf.failed", message: "Workers AI failed to convert a PDF",
+    })]]);
+  });
+
+  it("fails a transcription in Gmail's words, logged under Gmail's names", async () => {
+    let refused = new Response(JSON.stringify({ internalCode: 8006 }), { status: 400 });
+    let result = await gmailPdf(ocrAi([PAGES[0]!, refused]).ai);
+    expect(await readToFailure(result)).toEqual({
+      text: "### Page 1\nHarbour Ledger Review", error: new Error(GMAIL_TRANSCRIPTION_FAILED),
+    });
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({
+      ...GMAIL_COMPONENT, event: "google.gmail.pdf.transcription_failed",
+      message: "a Gmail PDF attachment page could not be transcribed", page: 2, httpStatus: 400,
+    })]]);
+  });
+
+  it("fails the text as a changed attachment when the renderer was sent other than the file's size", async () => {
+    let { renderer } = fakeRenderer([drawn([11])], ["size-mismatch"]);
+    let result = await gmailPdf(bandAi().ai, SCAN, renderer);
+    expect(await readToFailure(result)).toEqual({ text: "", error: new Error(GMAIL_CHANGED) });
+  });
+
+  it("logs a conversion, a transcription and its pages under Gmail's names", async () => {
+    expect(await read(await gmailPdf(ocrAi().ai))).toBe(TRANSCRIBED);
+    expect(vi.mocked(console.info).mock.calls.map(([line]) => line)).toEqual([
+      expect.objectContaining({
+        ...GMAIL_COMPONENT, event: "google.gmail.pdf.converted", message: "converted a Gmail PDF attachment",
+        pdfBytes: SCAN.bytes.byteLength, hasText: false,
+      }),
+      expect.objectContaining({
+        ...GMAIL_COMPONENT, event: "google.gmail.pdf.transcribing",
+        message: "transcribing a scanned Gmail PDF attachment", ocrPages: 3, route: "stored",
+      }),
+      ...[1, 2, 3].map(page => expect.objectContaining({
+        ...GMAIL_COMPONENT, event: "google.gmail.pdf.page_transcribed",
+        message: "transcribed a Gmail PDF attachment page", page,
+      })),
+    ]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("converts as a Gmail attachment's the PDFs of a converter made for Gmail", async () => {
+    let { ai } = fakeAi(() => streamedResponse(conversionJson({ format: "error", error: PROVIDER_ERROR })));
+    await expect(pdfConverter({ AI: ai }, GMAIL_PDF)!(byteStream(BYTES).stream))
+      .rejects.toThrow(new Error(GMAIL_CONVERSION_FAILED));
+    await expect(pdfConverter({ AI: ai })!(byteStream(BYTES).stream)).rejects.toThrow(new Error(CONVERSION_FAILED));
+  });
+
+  it("names Drive in nothing it logs or fails with", async () => {
+    /** What each text failed with, or was refused with. */
+    let said: unknown[] = [];
+    let failure = async (result: Promise<{ text: ReadableStream<Uint8Array> }>) => {
+      said.push(await result.then(async given => (await readToFailure(given)).error, (error: unknown) => error));
+    };
+    let refused = new Response(JSON.stringify({ internalCode: 8006 }), { status: 400 });
+    let failing = fakeAi(streamedResponse('{"errors":[{"code":6006}],"success":false}', 7, 400)).ai;
+
+    // A conversion that fails; a scan sent as stored, whose last page the model fails on; an
+    // encrypted one; a scan whose second page cannot be drawn, lost at its third and of another
+    // size when opened again; one the renderer has no room for, read as stored; and one it
+    // cannot read, whose pages are not read as stored.
+    await failure(pdfToText(failing, undefined, byteStream(BYTES).stream, undefined, undefined, GMAIL_PDF));
+    await failure(gmailPdf(ocrAi([PAGES[0]!, PAGES[1]!, refused]).ai));
+    await failure(gmailPdf(ocrAi().ai, imagePdf([scanPage(1)], { trailer: "/Encrypt 9 0 R" })));
+    await failure(gmailPdf(bandAi().ai, SCAN, fakeRenderer(
+      [drawn([11, 12]), refusedAs("memory", true), refusedAs("released")], [undefined, "size-mismatch"]).renderer));
+    await failure(gmailPdf(bandAi().ai, SCAN, fakeRenderer([drawn([11])], ["room"]).renderer));
+    await failure(gmailPdf(bandAi().ai, FAX_SCAN, fakeRenderer([drawn([11])], ["unreadable"]).renderer));
+    // Scans refused for what they are: stored as fax, and with no page image, where there is no
+    // renderer; and one the renderer finds encrypted.
+    await failure(gmailPdf(ocrAi().ai, FAX_SCAN));
+    await failure(gmailPdf(ocrAi().ai, imagePdf([scanPage(1, { width: 64, height: 64 })])));
+    await failure(gmailPdf(bandAi().ai, SCAN, fakeRenderer([], ["encrypted"]).renderer));
+
+    let pages = [drawn([11]), TEXT_PAGE, drawn([31, 32]), TEXT_PAGE, drawn([51])];
+    /** A PDF with text and pages without any, read with a renderer there. */
+    let withText = (renderer = fakeRenderer(pages).renderer, answer?: Parameters<typeof bandAi>[0]) =>
+      gmailPdf(bandAi(answer, IMAGE_FIRST_MIDDLE_LAST).ai, SCAN, renderer);
+    // A PDF whose pages without text are read from their images: to its end; the renderer with
+    // no room for it; a page's render refusing the PDF as a whole; and the model failing on a
+    // band. None of them fails: the last three keep the document's own text.
+    await failure(withText());
+    await failure(withText(fakeRenderer([], ["room"]).renderer));
+    await failure(withText(fakeRenderer([drawn([11]), TEXT_PAGE, refusedAs("empty-work")]).renderer));
+    await failure(withText(undefined, ({ shade }) =>
+      shade === 32 ? new Response(JSON.stringify({ internalCode: 8006 }), { status: 400 }) : [`band ${shade}`]));
+    // And a scan's text, and such a PDF's, that sit unread for a minute.
+    vi.useFakeTimers();
+    let idle = [await gmailPdf(ocrAi().ai), await withText()];
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+    for (let text of idle) await failure(Promise.resolve(text));
+
+    expect(said.map(error => (error as Error | undefined)?.message)).toEqual([
+      GMAIL_CONVERSION_FAILED, GMAIL_TRANSCRIPTION_FAILED, ENCRYPTED, GMAIL_CHANGED, undefined,
+      GMAIL_TRANSCRIPTION_FAILED,
+      expect.stringContaining(unread("fax (CCITT)")),
+      expect.stringContaining("which is not available on this deployment"), ENCRYPTED,
+      undefined, undefined, undefined, undefined,
+      IDLE, IDLE,
+    ]);
+    let lines = [console.info, console.warn].flatMap(log => vi.mocked(log).mock.calls)
+      .map(([line]) => line as Record<string, string>);
+    // Every kind of line the reader logs is among them, each under Gmail's component.
+    expect([...new Set(lines.map(({ event }) => event))].toSorted()).toEqual([
+      "band_transcribed", "converted", "failed", "page_rendered", "page_transcribed", "page_undrawn",
+      "render_failed", "renderer_fallback", "rendering", "transcribing", "transcription_failed",
+      "transcription_idle", "untranscribable",
+    ].map(kind => `google.gmail.pdf.${kind}`));
+    expect(lines.every(({ component }) => component === GMAIL_COMPONENT.component)).toBe(true);
+    // A line that carries an error carries its stack, whose frames name the files of this
+    // package, the reader's own among them: none of these lines does.
+    expect(lines.some(line => "errorStack" in line)).toBe(false);
+    expect(JSON.stringify([lines, said.map(String)])).not.toMatch(/drive/i);
+  });
+});
+
+/** A file that is only read from its start: `pdf`, handed out by `pull`, and what each open was for. */
+function forwardOnly(pdf: BuiltPdf, pull: (at: number) => Uint8Array | Promise<Uint8Array>) {
+  let opens: { purpose: Parameters<PdfOpener>[0]; cancelled: boolean }[] = [];
+  let open: PdfOpener = async purpose => {
+    let opened = { purpose, cancelled: false };
+    opens.push(opened);
+    let at = 0;
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (at >= pdf.bytes.byteLength) return controller.close();
+        let chunk = await pull(at);
+        at += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() { opened.cancelled = true; },
+    }, { highWaterMark: 0 });
+  };
+  return { open, opens };
+}
+
+describe("pdfToText reading a file that is only read from its start", () => {
+  it("transcribes a scan sent as stored through one pass over the file", async () => {
+    let { ai, images } = ocrAi();
+    let { open, opens } = forwardOnly(SCAN, at => SCAN.bytes.slice(at, at + 100));
+    let { readRange, release } = forwardRangeReader(open, GMAIL_PDF);
+
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes, [333]).stream, readRange, undefined, GMAIL_PDF);
+    expect(result).toMatchObject({ hasText: false, transcribed: true, rereads: true });
+    // The file is not opened until the text is read.
+    expect(opens).toEqual([]);
+    expect(await read(result)).toBe(TRANSCRIBED);
+
+    expect(images().map(request => sentImage(request))).toEqual(SCAN.images.map(({ offset, length }) => ({
+      mimeType: "image/jpeg", bytes: SCAN.bytes.slice(offset, offset + length),
+    })));
+    expect(opens).toEqual([{ purpose: { page: 1, again: false }, cancelled: false }]);
+    release();
+    expect(opens[0]!.cancelled).toBe(true);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("does not take a long way to a page image for a text that sits idle", async () => {
+    vi.useFakeTimers();
+    let { ai } = ocrAi();
+    // Thirteen seconds a piece, under what a pass is taken to have stalled at: the first page
+    // image is five pieces in, which is more than the minute a text may sit idle.
+    let { open, opens } = forwardOnly(SCAN, async at => {
+      await new Promise(resolve => setTimeout(resolve, 13_000));
+      return SCAN.bytes.slice(at, at + 100);
+    });
+    expect(SCAN.images[0]!.offset).toBeGreaterThan(400);
+    let { readRange } = forwardRangeReader(open, GMAIL_PDF);
+
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange, undefined, GMAIL_PDF);
+    expect(await pumped(read(result), { step: 1000, realMs: 1 })).toBe(TRANSCRIBED);
+    expect(opens).toHaveLength(1);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
   });
 });
