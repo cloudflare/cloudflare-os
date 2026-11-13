@@ -5399,13 +5399,21 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
-  // Claims the decision on a pending action until disposed, refusing one that is no longer pending
-  // or that another decision already holds. A decision lands -- the record turns approved or
-  // rejected -- only once its gatekeeper call returns, and the input gate is open across that
-  // call, so until then the record still reads as pending: without a claim, a second decision
-  // (another tab, a retry after a dropped connection, or the drain) is admitted in that window and
-  // reaches the gatekeeper too. Synchronous, so nothing is admitted between the check and the
-  // claim; take it after the caller's last await before the gatekeeper call.
+  // Marks a pending action as "being decided", so that only one approval or rejection of it can be
+  // in progress at a time. Throws "Action is not pending" if the action was already approved or
+  // rejected, or if another approval or rejection of it is still in progress. The mark is removed
+  // when the returned handle is disposed, so callers hold it with `using`.
+  //
+  // Why this is needed: approving or rejecting an action first calls its gatekeeper, and only
+  // records the action as approved or rejected after that call returns. While the call is being
+  // awaited, this Durable Object keeps handling other incoming requests, and to them the action
+  // still looks pending. Without this mark, a second decision arriving in that window -- from
+  // another tab, a retry after a dropped connection, or the auto-approval drain -- would also pass
+  // the "is it pending?" check and reach the gatekeeper a second time.
+  //
+  // This method is synchronous, so no other request can run between the check and setting the
+  // mark. Callers should call it after their last other `await` and right before the gatekeeper
+  // call.
   claimDecision(id: number): Disposable {
     if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
       throw new Error(`Action is not pending: ${id}`);
