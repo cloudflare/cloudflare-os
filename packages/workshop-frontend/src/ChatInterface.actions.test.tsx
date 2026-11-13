@@ -76,6 +76,9 @@ function withChatApi(
     getChatHistory: async () => ({ messages: [] }),
     listChats: async () => chats,
     listModels: async () => [],
+    // Read by the pending-changes tray, which gates its auto-approval labels on real rules.
+    listPreApprovableActions: async () => [],
+    listAutoApprovedActionKinds: async () => [],
     onRpcBroken: () => {},
     subscribeToChat: (next: AiChatSubscriber) => {
       subscriber = next
@@ -197,6 +200,23 @@ async function renderPendingCard(log: ActionLogEntry, props: { restricted?: bool
 
 const clampedDescription = () => document.querySelector('[class*="max-h-[200px]"]')
 
+/**
+ * Opens a disclosure by the text on its button.
+ *
+ * A non-blocking request is decided in the tray above the composer rather than in the
+ * transcript, so its review text sits behind the resource group's disclosure, and (unless the
+ * workspace is restricted) its fields behind the request's own.
+ */
+async function openDisclosure(text: string): Promise<void> {
+  const button = [...document.querySelectorAll('button[aria-expanded]')]
+    .find(candidate => (candidate.textContent ?? '').includes(text))
+  if (!button) throw new Error(`No disclosure labelled "${text}"`)
+  await act(async () => (button as HTMLButtonElement).click())
+}
+
+/** Opens the tray group holding the chat's single pending request. */
+const openTray = () => openDisclosure('1 request')
+
 // The text a screen reader announces as the Approve button's description.
 function approveDescribedBy(): string | null {
   const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
@@ -210,9 +230,203 @@ function approveDescribedBy(): string | null {
   }).join('\n')
 }
 
+describe('pending queue failure', () => {
+  it('keeps the decision in the transcript when the tray never loaded its queue', async () => {
+    // The store holds an empty pending set for the life of the connection after a failed load,
+    // so the tray has nothing to show. Leaving the request as "Waiting for review" would leave
+    // no way to answer it at all.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.rejectPendingQuery(new Error('The queue could not be read.'))
+    chat.emitMessage({ ...actionMessage, actionLog: pendingLog() } as AiChatMessage)
+
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent)
+    expect(labels).toContain('Approve')
+    expect(labels).toContain('Deny')
+    expect(document.body.textContent).not.toContain('Waiting for review')
+  })
+
+  it('keeps the decision in the transcript while the queue is still loading', async () => {
+    // The queue pages in, so until it settles the tray may not have this request yet. A card
+    // that said "Waiting for review" meanwhile would be pointing at a surface that cannot
+    // show it.
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    chat.emitMessage({ ...actionMessage, actionLog: pendingLog() } as AiChatMessage)
+
+    expect([...document.querySelectorAll('button')].map(b => b.textContent)).toContain('Approve')
+
+    // And hands it over once the queue has settled and the tray can show it.
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+    expect([...document.querySelectorAll('button')].map(b => b.textContent))
+      .not.toContain('Approve')
+  })
+
+  it('keeps the decision in the transcript when the loaded queue omits this request', async () => {
+    // A settled queue is not the same as a queue holding this request: `pendingChangeGroups`
+    // drops anything with no gatekeeperId, and the subscription can land after the message that
+    // announced the request. Deferring on "the queue loaded" alone left the card saying
+    // "Waiting for review" while the tray showed nothing for it -- no surface offering it.
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [] })
+    chat.emitMessage({ ...actionMessage, actionLog: pendingLog() } as AiChatMessage)
+
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent)
+    expect(labels).toContain('Approve')
+    expect(document.body.textContent).not.toContain('Waiting for review')
+    // And it is answerable without first expanding it: a card carrying Approve in its header
+    // while showing none of what it would approve is the one shape this must not take.
+    // Markdown reflows the paragraphs, so this checks the last of them is on screen.
+    expect(document.body.textContent).toContain('Regards, the workspace.')
+  })
+
+  it('locks the blocking callout while a bulk run is sending its own decisions', async () => {
+    // `pendingChangeGroups` does not filter out awaitDecision, so a blocking request is in the
+    // tray's queue as well as in this callout. The run owns the view it is shown in, and the
+    // tray locks its rows for the length of a run; this callout sits in the same view, so a
+    // click here would race the run just as a click on its row would.
+    const blocking = pendingLog({ awaitDecision: true })
+    // The tray only offers a bulk run over more than one request, and a sibling on the same
+    // connection is what a run would be working through when the callout is clicked.
+    const sibling = entry(2, {
+      description: {
+        title: 'Send another email', description: 'Second', implementsRevert: false,
+        autoApprovable: false,
+      },
+    })
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [blocking, sibling] })
+    chat.emitMessage({ ...actionMessage, actionLog: blocking } as AiChatMessage)
+
+    const approve = () =>
+      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!
+    expect(approve().disabled).toBe(false)
+
+    const applyAll = [...document.querySelectorAll('button')]
+      .find(b => (b.textContent ?? '').startsWith('Apply all'))!
+    await act(async () => { applyAll.click() })
+
+    // The run has sent its first decision and is awaiting the provider. The callout must not
+    // decide anything out of the run's order meanwhile.
+    expect(server.decisionCalls).toEqual(['approve:1'])
+    expect(approve().disabled).toBe(true)
+  })
+
+  it('keeps the workspace queue on screen after going back to the conversation list', async () => {
+    // The queue is the workspace's, not the open conversation's. A request from a hook or a
+    // scheduled task belongs to no conversation at all, so if the tray went away with the
+    // transcript, this screen would reach it only through Activity -- and going Back would hide
+    // an outstanding queue entirely.
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog()] })
+
+    expect(document.body.textContent).toContain('1 request')
+
+    // Back to the conversation list, with the request still pending.
+    await renderChat(server.overseer, {})
+    expect(document.body.textContent).toContain('1 request')
+  })
+
+  it('keeps bulk apply when the vendor catalog fails, since a run reads only the rules', async () => {
+    // The catalog starts every gatekeeper a gadget binds and fails whole if any one of them does.
+    // All it gives the tray is logos, so losing it must not take Apply all away with it.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    Object.assign(server.overseer as object, {
+      listPreApprovableActions: async () => { throw new Error('One connection is unreachable.') },
+    })
+    const sibling = entry(2, {
+      description: {
+        title: 'Send another email', description: 'Second', implementsRevert: false,
+        autoApprovable: false,
+      },
+    })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [pendingLog(), sibling] })
+    await act(async () => {})
+
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent ?? '')
+    expect(labels.some(label => label.startsWith('Apply all'))).toBe(true)
+  })
+
+  it("keeps a stopped run's message on screen after the queue empties", async () => {
+    // The request a run stops at is often the last one left, and it can land a moment later --
+    // a discard whose last request was applied first. The message saying so must not leave
+    // with the queue.
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    const first = pendingLog()
+    const second = entry(2, {
+      description: {
+        title: 'Send another email', description: 'Second', implementsRevert: false,
+        autoApprovable: false,
+      },
+    })
+    await renderChat(server.overseer, { selectedChatId: 1 })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [first, second] })
+
+    const applyAll = [...document.querySelectorAll('button')]
+      .find(b => (b.textContent ?? '').startsWith('Apply all'))!
+    await act(async () => { applyAll.click() })
+    await server.failDecision(new Error('The provider failed.'))
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)) })
+    expect(document.querySelector('[role="alert"]')?.textContent)
+      .toContain('"Send email" failed: The provider failed.')
+
+    // Both are then resolved elsewhere, which empties the queue.
+    await server.emit({ ...first, state: 'approved' } as typeof first)
+    await server.emit({ ...second, state: 'rejected' } as typeof second)
+    flushFrames()
+    expect(document.body.textContent).not.toContain('requests waiting')
+    expect(document.querySelector('[role="alert"]')?.textContent)
+      .toContain('"Send email" failed: The provider failed.')
+  })
+
+  it('leaves the decision to the tray once the queue has loaded', async () => {
+    await renderPendingCard(pendingLog())
+
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent)
+    expect(labels).not.toContain('Approve')
+    expect(document.body.textContent).toContain('Waiting for review')
+  })
+})
+
 describe('restricted approval', () => {
-  it('shows the notice and the full request on a pending card while restricted', async () => {
+  it('shows the notice and the full request in the tray while restricted', async () => {
     await renderPendingCard(pendingLog(), { restricted: true })
+    await openTray()
 
     expect(document.body.textContent).toContain(RESTRICTED_APPROVAL_COPY)
     expect(document.body.textContent).toContain('Regards, the workspace.')
@@ -226,6 +440,7 @@ describe('restricted approval', () => {
 
   it('names only the restricted notice and request for a complete description', async () => {
     await renderPendingCard(pendingLog({ descriptionIsComplete: true }), { restricted: true })
+    await openTray()
 
     const described = approveDescribedBy()
     expect(described).toContain(RESTRICTED_APPROVAL_COPY)
@@ -245,14 +460,16 @@ describe('restricted approval', () => {
   it('names the fields as part of the request while restricted', async () => {
     const fields = [{ label: 'To', kind: 'list', items: ['a@example.com'] }]
     await renderPendingCard(pendingLog({ descriptionIsComplete: true, fields }), { restricted: true })
+    await openTray()
 
     expect(approveDescribedBy()).toContain('a@example.com')
   })
 
   for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
-    it(`shows a ${name} card's long fields without a scroll cap while restricted`, async () => {
+    it(`shows a ${name} request's long fields without a scroll cap while restricted`, async () => {
       const fields = [{ label: 'Body', kind: 'text', value: 'Full body text' }]
       await renderPendingCard(pendingLog({ ...over, fields }), { restricted: true })
+      if (name === 'pending') await openTray()
 
       const body = [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
       expect(body?.className).not.toContain('max-h-56')
@@ -260,11 +477,21 @@ describe('restricted approval', () => {
     })
   }
 
-  it('keeps the scrolling description and no notice when not restricted', async () => {
-    await renderPendingCard(pendingLog())
+  it('keeps the blocking card scrolling, with no notice, when not restricted', async () => {
+    await renderPendingCard(pendingLog({ awaitDecision: true }))
 
     expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
     expect(clampedDescription()).not.toBeNull()
+    expect(approveDescribedBy()).toBeNull()
+  })
+
+  it('summarises a tray request, and names nothing, when not restricted', async () => {
+    await renderPendingCard(pendingLog())
+    await openTray()
+
+    expect(document.body.textContent).not.toContain(RESTRICTED_APPROVAL_COPY)
+    // Clamped rather than scrolled: the tray shows a preview and opens the request for the rest.
+    expect(document.querySelector('[class*="line-clamp-2"]')).not.toBeNull()
     expect(approveDescribedBy()).toBeNull()
   })
 })
@@ -272,6 +499,7 @@ describe('restricted approval', () => {
 describe('incomplete description notice', () => {
   it('flags a pending action whose description is not marked complete', async () => {
     await renderPendingCard(pendingLog())
+    await openTray()
 
     expect(document.body.textContent).toContain(INCOMPLETE_DESCRIPTION_COPY)
   })
@@ -284,6 +512,8 @@ describe('incomplete description notice', () => {
 
   it('shows no notice when the description is complete', async () => {
     await renderPendingCard(pendingLog({ descriptionIsComplete: true }))
+    await openTray()
+    await openDisclosure('Send email')
 
     expect(document.body.textContent).toContain('Regards, the workspace.')
     expect(document.body.textContent).not.toContain(INCOMPLETE_DESCRIPTION_COPY)
@@ -297,6 +527,10 @@ describe('action fields', () => {
   for (const [name, over] of [['pending', {}], ['blocking', { awaitDecision: true }]] as const) {
     it(`shows a ${name} action's fields as literal text after the description`, async () => {
       await renderPendingCard(pendingLog({ ...over, fields }))
+      if (name === 'pending') {
+        await openTray()
+        await openDisclosure('Send email')
+      }
 
       const pre = [...document.body.querySelectorAll('pre')].find(el => el.textContent === body)
       expect(pre).toBeDefined()

@@ -30,6 +30,9 @@ export function flushFrames() {
 export function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
   return {
     id,
+    // Every real action is queued against a connection; only an observation from a built-in
+    // agent tool reaches the client without one. Surfaces that group by resource depend on it.
+    gatekeeperId: 1,
     resourceTitle: `Resource ${id}`,
     createdAt: new Date(1700000000000 + id * 60_000),
     state: 'pending',
@@ -81,6 +84,11 @@ export function makeOverseer() {
   const pendingSubscribes: Array<Parked<RpcStub<{}>>> = []
   const historyQueue = parkedQueue()
   const pendingQueue = parkedQueue()
+  // Decisions park until the test settles them, so a run can be observed mid-flight -- which is
+  // when the surfaces that must not decide alongside it are worth asserting on.
+  const decisions: Array<{ call: string, settle: Parked<void> }> = []
+  const decide = (call: string) => new Promise<void>((resolve, reject) =>
+    decisions.push({ call, settle: { resolve, reject } }))
   const subscriptionDispose = vi.fn<() => void>()
   let subscriber: ActionsSubscriber | undefined
   const overseer = {
@@ -91,6 +99,8 @@ export function makeOverseer() {
       return new Promise<RpcStub<{}>>((resolve, reject) =>
         pendingSubscribes.push({ resolve, reject }))
     },
+    approveAction: (id: number) => decide(`approve:${id}`),
+    rejectAction: (id: number) => decide(`reject:${id}`),
     listActions: (options?: ListOptions) => {
       if (options?.filter === 'pending') {
         ops.push('listPending')
@@ -116,6 +126,16 @@ export function makeOverseer() {
     },
     async rejectSubscription(err: unknown) {
       await act(async () => { pendingSubscribes.shift()!.reject(err) })
+    },
+    /** The decisions sent so far, as `approve:<id>` / `reject:<id>`, oldest first. */
+    get decisionCalls() { return decisions.map(decision => decision.call) },
+    /** Settles the oldest decision still in flight. */
+    async settleDecision() {
+      await act(async () => { decisions.shift()!.settle.resolve() })
+    },
+    /** Fails the oldest parked decision, as a provider refusing it would. */
+    async failDecision(error: unknown) {
+      await act(async () => { decisions.shift()!.settle.reject(error) })
     },
     resolvePage: historyQueue.resolveNext,
     rejectPage: historyQueue.rejectNext,

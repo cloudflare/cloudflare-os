@@ -797,6 +797,9 @@ class OverseerImpl implements AgentHooks {
 
   #autoApprovalDrainer: AutoApprovalDrainer;
 
+  // Actions with a decision in flight (see claimDecision).
+  #deciding = new Set<number>();
+
   #preparingChatMessages = new Map<number, Promise<void>>();
 
   // Set of chatIds that currently have a running agent turn. Feeds the alarm (see
@@ -1634,7 +1637,8 @@ class OverseerImpl implements AgentHooks {
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved));
+            this.applyPendingAction(record, resolvedBy, autoApproved),
+        id => this.#deciding.has(id));
     this.cacheWarmer = new ChatCacheWarmer(ctx.id.toString(), (chatId, resent) =>
         this.#addRequestCost(
             chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
@@ -5406,10 +5410,33 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Marks a pending action as "being decided", so that only one approval or rejection of it can be
+  // in progress at a time. Throws "Action is not pending" if the action was already approved or
+  // rejected, or if another approval or rejection of it is still in progress. The mark is removed
+  // when the returned handle is disposed, so callers hold it with `using`.
+  //
+  // Why this is needed: approving or rejecting an action first calls its gatekeeper, and only
+  // records the action as approved or rejected after that call returns. While the call is being
+  // awaited, this Durable Object keeps handling other incoming requests, and to them the action
+  // still looks pending. Without this mark, a second decision arriving in that window -- from
+  // another tab, a retry after a dropped connection, or the auto-approval drain -- would also pass
+  // the "is it pending?" check and reach the gatekeeper a second time.
+  //
+  // This method is synchronous, so no other request can run between the check and setting the
+  // mark. Callers must call it before they contact the gatekeeper. Since it checks the action's
+  // state itself, it can come earlier than that, as in applyPendingAction.
+  claimDecision(id: number): Disposable {
+    if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
+      throw new Error(`Action is not pending: ${id}`);
+    }
+    this.#deciding.add(id);
+    return {[Symbol.dispose]: () => { this.#deciding.delete(id); }};
+  }
+
   // Apply a single pending action: invoke the gatekeeper, mark it approved, and persist (the put
   // auto-notifies subscribeToActions). Shared by manual approval (`approveAction`) and the
-  // auto-approval drain (`drainAutoApprovals`). The caller is responsible for validating that the
-  // record is still pending before calling.
+  // auto-approval drain (`drainAutoApprovals`). Refuses, as not pending, an action decided since
+  // the caller read it or whose decision is still in flight (see claimDecision).
   //
   // `resolvedBy`/`autoApproved` are required (not defaulted) so that no apply path can omit how the
   // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
@@ -5421,6 +5448,7 @@ class OverseerImpl implements AgentHooks {
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
                                        configuration: string | null}): Promise<void> {
+    using _decision = this.claimDecision(record.id);
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.creationPending(id)) {
@@ -12748,6 +12776,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
       // is called.
       let profile = await this.#getClientProfile();
+      using _decision = this.impl.claimDecision(id);
       let queued = Array.from(
           this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
       this.impl.removeGatekeeper(action.gatekeeperId);
@@ -12771,6 +12800,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
 
+    using _decision = this.impl.claimDecision(id);
     await gatekeeper.rejectAction(action.action);
 
     action.state = "rejected";

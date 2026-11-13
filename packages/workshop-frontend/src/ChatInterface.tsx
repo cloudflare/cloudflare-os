@@ -113,6 +113,15 @@ import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice"
 import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
+import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
+import {
+  chatRequestIds, pendingChangeGroups, type PendingChange,
+} from "./features/approvals/pendingChangeGroups";
+import {
+  canOfferAlwaysApprove, type AutoApprovalRules,
+} from "./features/approvals/autoApprovalRules";
+import { useBulkResolve } from "./features/approvals/useBulkResolve";
+import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
 import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
 import { ChatListTabs, type ChatListTab } from "./features/chat/agents/ChatListTabs";
@@ -121,7 +130,10 @@ import {
 } from "./features/chat/agents/agentList";
 import { actionLogResumed, useActionEntries, useActions } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
+import { useStandingRules } from "./features/approvals/useStandingRules";
 import { useResolveAction } from "./useResolveAction";
+import type { ActivityView } from "./Activity";
+import type { AutoApprovalChannel } from "./features/approvals/autoApprovalChannel";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
 import { useAuthenticatedApi } from "./AuthContext";
 import { useVendorBranding } from "./useVendorBranding";
@@ -2597,9 +2609,12 @@ interface ChatInterfaceProps {
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
   // With no selected chat, report whether any chat in the workspace is running.
   onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
-  // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
-  // Auto-approval list reflects it without a reload.
-  onAutoApproveChange?: () => void;
+  // Shared with the Activity pane, which is the other surface that changes these rules. Rules
+  // are not subscribable (listAutoApprovedActionKinds is a one-shot read), so without this a
+  // rule changed there would stay stale here until the chat remounts.
+  autoApproval?: AutoApprovalChannel;
+  // Opens the Activity pane, which is where a standing auto-approval rule is turned off again.
+  onViewActivity?: (view: ActivityView) => void;
   sidebarMode?: boolean;
   sidebarWidth?: number;
   onSidebarResize?: (width: number) => void;
@@ -2799,7 +2814,8 @@ function ChatInterface({
   onDiscardConsoleLogs,
   onChatCountChange,
   onAgentActiveChange,
-  onAutoApproveChange,
+  autoApproval,
+  onViewActivity,
   sidebarMode,
   sidebarWidth = 280,
   onSidebarResize,
@@ -4720,13 +4736,173 @@ function ChatInterface({
   // Enable auto-approval of an action tag on its connection (gated by the confirm dialog). The
   // server applies the now-eligible pending action(s) via its drain, and the action state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, onAutoApproveChange);
+  const { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags } =
+    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed);
 
   const { resolveAction, creationAccountModal } =
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
       if (applyOptimisticActionState(actionId, state)) forceUpdate();
     });
+
+  // Everything the workspace is waiting on, grouped by the resource it touches, for the tray
+  // above the composer. Workspace-scoped rather than chat-scoped: a hook firing, a scheduled
+  // task, or another conversation queues requests that wait on a decision just as much, and the
+  // chat surfaces never showed them at all. The open chat's action messages mark which ones this
+  // conversation asked for -- `ActionLogEntry` carries no caller, so that is the only record.
+  const { pending: workspacePending, status: workspacePendingStatus } = useActions(overseer);
+  const openChatRequestIds = useMemo(() => chatRequestIds(currentMessages), [currentMessages]);
+  const trayGroups = useMemo(
+    () => pendingChangeGroups(workspacePending, openChatRequestIds, !hasEarlierMessages),
+    [workspacePending, openChatRequestIds, hasEarlierMessages],
+  );
+  // Which requests the tray can actually show. Having loaded a queue is not the same as holding
+  // this request: `pendingChangeGroups` drops anything that is not an action or has no
+  // gatekeeperId, and the workspace subscription can lag the chat message that announced it.
+  // Deferring to the tray in either case leaves the card saying "Waiting for review" while no
+  // surface offers the decision at all.
+  const trayActionIds = useMemo(
+    () => new Set(trayGroups.flatMap(group => group.entries.map(entry => entry.id))),
+    [trayGroups],
+  );
+
+  // The real rule list, not an inference from a request still being pending: the drain stops at
+  // the first manual gate and never skips ahead, so a covered request can sit behind an uncovered
+  // one indefinitely.
+  const {
+    enabledRuleKeys,
+    vendorIdByGatekeeper,
+    isLoading: autoApprovalLoading,
+    loadError: autoApprovalLoadError,
+    refresh: refreshAutoApproval,
+  } = useStandingRules(overseer, trayGroups.length > 0);
+  const autoApproveReload = autoApproval?.reloadTrigger;
+  // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
+  // including about a rule someone has just turned off, so the optimistic overlay has nothing left
+  // to add and must stop outranking it -- unless the read was overtaken or failed, which set
+  // nothing: retiring the overlay against a list that never landed would read a just-enabled rule
+  // as off.
+  const rulesReadFor = useRef(autoApproveReload);
+  useEffect(() => {
+    if (autoApproveReload === rulesReadFor.current) return;
+    rulesReadFor.current = autoApproveReload;
+    void refreshAutoApproval().then(applied => {
+      if (applied) forgetOptimisticTags();
+    });
+  }, [autoApproveReload, refreshAutoApproval, forgetOptimisticTags]);
+
+  const autoApprovalRules: AutoApprovalRules = useMemo(() => ({
+    // A rule enabled in this session counts before the catalog is re-read, so the affordance
+    // disappears on the click rather than a round trip later.
+    isEnabled: (gatekeeperId, tag) =>
+      enabledRuleKeys.has(`${gatekeeperId}:${tag}`) || isTagAutoApproved(gatekeeperId, tag),
+    restricted: restricted === true,
+  }), [enabledRuleKeys, isTagAutoApproved, restricted]);
+
+  // The pending snapshot pages in, and a run that trusted a partial one could apply a later
+  // request while earlier ones on the same connection were still out of sight.
+  const pendingSnapshotReady = workspacePendingStatus === "ready";
+  // A queue that has not finished loading -- or failed, which leaves the store empty for the life
+  // of the connection -- gives the tray nothing to show and nothing to decide with. The
+  // transcript takes its own requests back until the queue is settled, rather than leaving them
+  // reading "Waiting for review" with no way to answer them.
+  const trayUnavailable = workspacePendingStatus !== "ready";
+  // Bulk needs the rule list too. Half-loaded it reports every request as a manual gate, and a
+  // run reading it that way races the drain to the requests it is about to take. The run reads
+  // this as it goes, not only at the click, since a refresh that fails mid-run clears the list.
+  // Only the rule list: the vendor catalog beside it is for logos and gates nothing.
+  const autoApprovalRulesReady = !autoApprovalLoading && !autoApprovalLoadError;
+  const bulkReady = pendingSnapshotReady && autoApprovalRulesReady;
+  const actionOutcome = useActionOutcomes(overseer);
+  const bulkResolve = useBulkResolve(overseer, {
+    pending: workspacePending,
+    pendingReady: pendingSnapshotReady,
+    rules: autoApprovalRules,
+    rulesReady: autoApprovalRulesReady,
+    outcome: actionOutcome,
+  });
+
+  // Vendor logos for the tray's group rows; a connection with no known vendor falls back to its
+  // resource title's initial.
+  const vendorBranding = useVendorBranding(authenticatedApi);
+
+  const trayActions = useMemo(() => ({
+    processing: processingActions,
+    onApprove: (entry: PendingChange) => void resolveAction(entry, "approve"),
+    onReject: (entry: PendingChange) => void resolveAction(entry, "deny"),
+    onAlwaysApprove: (entry: PendingChange) => {
+      if (!entry.description.actionKind) return;
+      setAutoApproveConfirm({
+        actionId: entry.id,
+        gatekeeperId: entry.gatekeeperId,
+        resourceTitle: entry.resourceTitle,
+        actionKind: entry.description.actionKind,
+        actionLabel: entry.description.title,
+      });
+    },
+    onManageRules: () => onViewActivity?.("auto"),
+  }), [processingActions, resolveAction, onViewActivity]);
+
+  // The queue belongs to the workspace, not to whichever conversation happens to be open, so it
+  // docks above the new-chat composer as well as the in-chat one. Going back to the conversation
+  // list otherwise hid an outstanding queue, and a request from a hook or a scheduled task --
+  // which belongs to no conversation at all -- reached that screen only through Activity. A
+  // stopped run's message keeps it mounted after the queue empties (see `PendingChangesTray`).
+  const workspaceTray = trayGroups.length === 0 && bulkResolve.failure === null ? null : (
+    <PendingChangesTray
+      groups={trayGroups}
+      rules={autoApprovalRules}
+      ready={bulkReady}
+      vendorIdByGatekeeper={vendorIdByGatekeeper}
+      vendorBranding={vendorBranding}
+      actions={trayActions}
+      bulk={bulkResolve}
+    />
+  );
+
+  // The gadget's own code draft, docked under the tray. Accepting always merges everything the
+  // chat proposes (drafts swept in, no partial accepts -- see Overseer.mergeChanges()), so the
+  // bar needs no accept cut of its own. Discard-all still uses sequence zero, which covers every
+  // batch including the compacted prefix's.
+  //
+  // `isTop` rather than a `first:` variant: the composer card renders its attachment-drag overlay
+  // ahead of this slot, so :first-child is not ours to claim whenever a file is being dragged.
+  const renderCodeDraftBar = (chat: AiChatMetadata, isTop: boolean) => {
+    const isDiscardingChanges = discardingChangesChatIds.has(chat.id);
+    const changesActionsDisabled = isAgentActive || isDiscardingChanges;
+    return (
+      <div className={`themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2 ${isTop ? "rounded-t-[calc(1rem-1px)]" : ""}`}>
+        <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
+          Pending changes
+        </span>
+        <DiscardPendingChangesPopover
+          open={discardChangesTarget?.chatId === chat.id}
+          disabled={changesActionsDisabled}
+          isDiscarding={isDiscardingChanges}
+          onOpenChange={(open) => {
+            if (isDiscardingChanges) return;
+            setDiscardChangesTarget(open ? { chatId: chat.id } : null);
+          }}
+          onConfirm={handleDiscardPendingChanges}
+        />
+        <Tooltip content={isAgentActive
+          ? "Wait for the agent to finish before accepting changes."
+          : isDiscardingChanges
+            ? "Wait for pending changes to finish discarding."
+            : "Keep this draft and make it the gadget's current version."} asChild>
+          <WorkshopButton
+            disabled={changesActionsDisabled}
+            onClick={() => { void handleAcceptChanges(); }}
+            tone="primary"
+            className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
+          >
+            <Check size={11} weight="bold" />
+            Accept changes
+          </WorkshopButton>
+        </Tooltip>
+      </div>
+    );
+  };
 
   // Handle enabling/disabling a bound hook from the chat thread.
   const handleToggleHook = async (actionId: number, hookId: number, enabled: boolean) => {
@@ -5204,6 +5380,11 @@ function ChatInterface({
     const state = log.state;
     const open = expandedActions.has(msg.actionId);
     const isProc = processingActions.has(msg.actionId);
+    // A blocking request reaches the tray's queue too -- `pendingChangeGroups` does not filter
+    // out `awaitDecision` -- so a bulk run may be about to decide it. The run owns the view it is
+    // shown in, and this callout is in that view: locked for the same reason as the tray's rows
+    // (see `PendingChangesTray`).
+    const decisionLocked = isProc || bulkResolve.progress !== null;
     const safeResourceUrl = safeExternalUrl(log.resourceUrl);
 
     if (log.type === "bindHook") {
@@ -5323,28 +5504,41 @@ function ChatInterface({
     // A blocking (awaitDecision) pending action suspends the agent turn and blocks the composer, so
     // present it as a prominent callout with its details expanded by default.
     const isBlocking = isPending && log.description.awaitDecision === true;
-    // A pending request is never collapsed: its description is the thing the user has to read in
-    // order to answer it, so hiding it behind a disclosure would just add a step before every
-    // decision. Resolved actions are history, and collapse so a long thread stays scannable.
-    const showDescription = isPending || open;
+    // Every other pending request is decided in the tray above the composer, which groups them by
+    // resource and can resolve them together. The transcript keeps a quiet trace of where the
+    // request was made, so the conversation still reads correctly, but repeating the decision here
+    // would split the queue across two surfaces with no way to see it whole in either. Unless the
+    // tray never loaded its queue, or does not hold this request, in which case the transcript is
+    // the only surface left.
+    const decidedInTray = isPending && !isBlocking && !trayUnavailable && trayActionIds.has(log.id);
+    // Where the decision is taken: the blocking callout, or any pending request the tray cannot
+    // show.
+    const decideHere = isPending && !decidedInTray;
+    // A request answered here is never collapsed: its description is the thing the user has to
+    // read in order to answer it, so hiding it behind a disclosure would just add a step before
+    // the decision -- and leave Approve in the header of a card showing nothing. That covers the
+    // blocking callout and every fallback the tray cannot show. Everything else is history or a
+    // trace, and collapses so a long thread stays scannable.
+    const showDescription = decideHere || open;
     const metadata = log.resourceTitle;
     const stateLabel = isApproved
       ? "Approved"
       : isRejected
         ? "Denied"
-        : null;
+        : decidedInTray
+          ? "Waiting for review"
+          : null;
     const stateLabelCls = isRejected
       ? "text-kumo-danger"
       : "text-kumo-inactive";
     // Auto-approval target: offer "Always approve this type" only when enabling a rule would
-    // actually apply this action -- a tagged action on a connection that the gatekeeper marked
-    // auto-approvable. (A non-auto-approvable action stays a manual gate even with a rule; an
-    // auto-approvable action with an existing rule wouldn't still be pending.) Not offered while
-    // restricted.
+    // actually apply this action. Same check the tray makes, against the same rule list -- a
+    // request a rule already covers can still be pending, queued behind a manual gate the drain
+    // stops at, and offering a rule that exists would do nothing.
     const autoApproveTarget =
-      !restricted &&
       log.gatekeeperId !== undefined && log.description.actionKind !== undefined &&
-      log.description.autoApprovable === true
+      canOfferAlwaysApprove(
+        { gatekeeperId: log.gatekeeperId, description: log.description }, autoApprovalRules)
         ? {
             actionId: msg.actionId,
             gatekeeperId: log.gatekeeperId,
@@ -5357,7 +5551,7 @@ function ChatInterface({
     // While restricted the notices and the request follow the controls in DOM order, so the
     // approve/deny buttons name them as their description. Ids derive from the action id: this is
     // a render closure, not a component, so useId is unavailable, and one card renders per action.
-    const restrictedReview = restricted && isPending;
+    const restrictedReview = restricted && decideHere;
     const noticeId = `action-${msg.actionId}-restricted-notice`;
     const requestId = `action-${msg.actionId}-request`;
     const fieldsId = `action-${msg.actionId}-fields`;
@@ -5373,15 +5567,17 @@ function ChatInterface({
       ].join(" ")
       : undefined;
 
-    const actionControls = isPending ? (
+    // Only a request the tray is not going to show still decides itself inline; everything else
+    // is decided there, where the whole queue is visible at once. That covers both a tray whose
+    // queue never loaded and one whose queue loaded without this request in it.
+    const actionControls = decideHere ? (
       <>
-        {autoApproveTarget &&
-          !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag) && (
+        {autoApproveTarget && (
           <Tooltip content="Always approve this type of action on this connection, without future prompts." asChild>
             <span className="flex">
               <AlwaysApproveButton
                 onClick={() => setAutoApproveConfirm(autoApproveTarget)}
-                disabled={isProc}
+                disabled={decisionLocked}
               />
             </span>
           </Tooltip>
@@ -5389,14 +5585,14 @@ function ChatInterface({
         <ResolveButton
           tone="deny"
           onClick={() => void resolveAction(log, "deny")}
-          disabled={isProc}
+          disabled={decisionLocked}
           describedBy={describedBy}
         />
         <ResolveButton
           tone="approve"
           variant={isBlocking ? "filled" : "quiet"}
           onClick={() => void resolveAction(log, "approve")}
-          disabled={isProc}
+          disabled={decisionLocked}
           describedBy={describedBy}
         />
       </>
@@ -5476,21 +5672,11 @@ function ChatInterface({
 
     return (
       <div className="group/work max-w-[860px] text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-        {isPending ? (
-          <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 px-1.5 py-1">
-            <div className="flex min-w-[8rem] flex-1 items-center gap-3">
-              {titleIcon}
-              <span className="min-w-0 flex-1 truncate text-kumo-default">
-                {log.description.title}
-              </span>
-            </div>
-            <div className="ml-auto flex flex-shrink-0 items-center gap-0.5">{actionControls}</div>
-          </div>
-        ) : (
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => toggleActionExpansion(msg.actionId)}
-            className="flex w-full cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
+            className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-xl px-1.5 py-1 text-left transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
             aria-expanded={open}
           >
             {titleIcon}
@@ -5508,7 +5694,12 @@ function ChatInterface({
               />
             </span>
           </button>
-        )}
+          {/* Only reached when the tray could not load its queue, or loaded it without this
+              request: the cases a non-blocking request still has to be answered here. */}
+          {actionControls && (
+            <div className="flex flex-shrink-0 items-center gap-1">{actionControls}</div>
+          )}
+        </div>
         {showDescription && (
           <div className="themed-surface-inset ml-8 mt-1 space-y-1.5 rounded-2xl border border-kumo-line/70 bg-kumo-elevated/45 p-3 text-[13px] leading-[19px] tracking-[-0.25px] text-kumo-subtle">
             {restrictedReview && <RestrictedApprovalNotice id={noticeId} />}
@@ -5796,6 +5987,7 @@ function ChatInterface({
             onToggleThinkingTraces={toggleShowThinkingTraces}
             minRows={2}
             newChat
+            draftUpdateBanner={workspaceTray}
             draftStorageKey={currentUser && workspaceId
               ? composerDraftStorageKey(currentUser.id, `workspace:${workspaceId}:new`)
               : undefined}
@@ -6895,52 +7087,23 @@ function ChatInterface({
                       : undefined}
                     blockedReason={sendBlockedReason}
                     draftUpdateBanner={(() => {
-                      if (!currentChatMetadata ||
-                          !(chatHasProposedChanges(currentChatMetadata) ||
-                            hasPendingBlueprintProposal)) return null;
+                      // Two unrelated things dock here, and both are "changes" in plain English:
+                      // the gadget's own code draft, and requests waiting on someone else's
+                      // service. They are kept apart by language ("Pending changes" against "N
+                      // requests waiting") and by weight -- only the local, reversible accept
+                      // carries a filled primary. The tray sits above, nearer the transcript the
+                      // requests came from.
+                      const codeDraft = currentChatMetadata &&
+                        (chatHasProposedChanges(currentChatMetadata) ||
+                          hasPendingBlueprintProposal);
+                      if (!workspaceTray && !codeDraft) return null;
 
-                      // Accepting always merges everything the chat proposes (drafts swept in,
-                      // no partial accepts -- see Overseer.mergeChanges()), so the banner needs
-                      // no accept cut of its own. Discard-all still uses sequence zero, which
-                      // covers every batch including the compacted prefix's.
-                      const isDiscardingChanges = discardingChangesChatIds.has(
-                        currentChatMetadata.id,
-                      );
-                      const changesActionsDisabled = isAgentActive || isDiscardingChanges;
                       return (
-                        <div className="themed-surface-inset relative flex items-center gap-2 overflow-hidden rounded-t-[calc(1rem-1px)] border-b border-kumo-line bg-kumo-elevated px-3.5 py-2">
-                          <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
-                          <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
-                            Pending changes
-                          </span>
-                          <DiscardPendingChangesPopover
-                            open={discardChangesTarget?.chatId === currentChatMetadata.id}
-                            disabled={changesActionsDisabled}
-                            isDiscarding={isDiscardingChanges}
-                            onOpenChange={(open) => {
-                              if (isDiscardingChanges) return;
-                              setDiscardChangesTarget(open ? {
-                                chatId: currentChatMetadata.id,
-                              } : null);
-                            }}
-                            onConfirm={handleDiscardPendingChanges}
-                          />
-                          <Tooltip content={isAgentActive
-                            ? "Wait for the agent to finish before accepting changes."
-                            : isDiscardingChanges
-                              ? "Wait for pending changes to finish discarding."
-                              : "Keep this draft and make it the gadget's current version."} asChild>
-                            <WorkshopButton
-                              disabled={changesActionsDisabled}
-                              onClick={() => { void handleAcceptChanges(); }}
-                              tone="primary"
-                              className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
-                            >
-                              <Check size={11} weight="bold" />
-                              Accept changes
-                            </WorkshopButton>
-                          </Tooltip>
-                        </div>
+                        <>
+                          {workspaceTray}
+                          {codeDraft && currentChatMetadata &&
+                            renderCodeDraftBar(currentChatMetadata, !workspaceTray)}
+                        </>
                       );
                     })()}
                   />
