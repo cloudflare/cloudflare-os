@@ -3209,6 +3209,8 @@ describe("Google Doc stored layout", () => {
       type: "appendText", tabId: MAIN_TAB, submittedAt: expect.any(Number),
       markdownVersion: MARKDOWN_RENDERING_VERSION, baseRevisionId: expect.any(String),
       writeId: expect.any(String), markdown: "first",
+      // Display only: what the card names the tab by, as the card is built from the record.
+      display: { tab: `"Main" (${MAIN_TAB})` },
     });
     expect((await stored(facet, "docMetadataRevision")).kv)
       .toEqual({ revisionId: expect.any(String), observedAt: expect.any(Number) });

@@ -9,7 +9,9 @@ import {
   GatekeeperUserVerifier, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription,
   ActionKind, GitCache,
 } from '@gadgets/workshop-shared/gatekeeper';
-import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
+import {
+  ActionApplyError, ActionJournal, type ActionDefinition, type ActionPresentation,
+} from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, plainInline } from "@gadgets/gatekeeper-kit/action-description";
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
@@ -83,6 +85,20 @@ type GoogleDocActionBase = {
   markdownVersion?: number;
 }
 
+/** What an edit's card shows beyond the edit itself, recorded with it since a card is built from the record. */
+type GoogleDocEditDisplay = {
+  /** The tab's label, as the card names it. */
+  tab: string;
+  /** The replacement's text as it is written, where it differs from the text asked for. */
+  rendered?: string;
+};
+
+/** What a tab add's card says beyond its title. */
+type GoogleDocAddTabDisplay = {
+  /** Where the tab goes, as the card's description says it. */
+  placement: string;
+};
+
 /** A change to the text of one tab. */
 type GoogleDocEditBase = GoogleDocActionBase & {
   /**
@@ -90,6 +106,8 @@ type GoogleDocEditBase = GoogleDocActionBase & {
    * invalidated rather than retargeted: the first tab is not necessarily the one they meant.
    */
   tabId?: string;
+  /** Absent on records stored before cards were built from records. */
+  display?: GoogleDocEditDisplay;
 }
 
 type GoogleDocReplaceAction = GoogleDocEditBase & {
@@ -117,6 +135,8 @@ type GoogleDocAddTabAction = GoogleDocActionBase & DocTabPlacement & {
    * retry that finds no marker checks it for any tab that has appeared since.
    */
   knownTabIds?: string[];
+  /** Absent on records stored before cards were built from records. */
+  display?: GoogleDocAddTabDisplay;
 }
 
 type GoogleDocEditAction = GoogleDocReplaceAction | GoogleDocAppendAction;
@@ -766,6 +786,232 @@ const ADD_DOCUMENT_TAB_ACTION: ActionKind = {
   label: "New document tabs",
 };
 
+/** A write's marker, found with the tab it is in, which deleting it must name. */
+type GoogleDocWriteMarker = { id: string; tabId: string };
+
+/** What applying a Doc edit needs of the connection it was queued on. */
+export type DocHost = {
+  api: GoogleDocsApi;
+  documentId: string;
+  /** The MIME type Drive gives the file, asked only to explain a write Google refused. */
+  mimeType(): Promise<string | undefined>;
+  /** The write whose marker is still to be deleted, if there is one. */
+  receipt(): GoogleDocWriteReceipt | undefined;
+  /** Forgets the receipt of marker `markerId`, which is gone from the document. */
+  clearReceipt(markerId: string): void;
+  /** Stores `action`, edit `id`, as it now stands: an add records the tabs it is sent over. */
+  saved(id: number, action: GoogleDocAction): void;
+  /**
+   * Records that edit `id` landed, with the marker its write left, or none for an edit that sent
+   * no request, the document as read before it landed, and for an add, the tab it made.
+   */
+  landed(
+    id: number, marker: GoogleDocWriteMarker | undefined, snapshot: GoogleDocSnapshot,
+    addedTab?: { provisionalTabId: string; tabId: string },
+  ): void;
+  /**
+   * Records that `action`, edit `id`, can no longer be applied, for `reason`, read over
+   * `snapshot`.
+   */
+  unapplyable(
+    id: number, action: GoogleDocAction, reason: string, snapshot: GoogleDocSnapshot,
+  ): Promise<void>;
+};
+
+/**
+ * Deletes the marker of a write a receipt still names, if it is in `document`, and answers the
+ * document read again without it.
+ */
+async function reconcileDocWriteReceipt(
+  host: DocHost, document: GoogleDocsDocument,
+): Promise<GoogleDocsDocument> {
+  let receipt = host.receipt();
+  if (!receipt) return document;
+
+  // The marker ID is exact, but its tab is not recorded, so every tab is searched for it.
+  let markerTab = document.tabs.find(
+    tab => googleDocNamedRanges(tab).some(({ id }) => id === receipt.markerId),
+  );
+  if (!markerTab) {
+    host.clearReceipt(receipt.markerId);
+    return document;
+  }
+
+  await host.api.deleteNamedRange(host.documentId, receipt.markerId, markerTab.tabId);
+  host.clearReceipt(receipt.markerId);
+  return host.api.getDocument(host.documentId);
+}
+
+/**
+ * Writes `action`, edit `id`, unless its write already landed: one `batchUpdate` built against a
+ * fresh read, pinned to that read's revision, carrying a named range that marks the write. A
+ * retry that finds its own marker, or a receipt naming this edit, settles without writing again;
+ * a retry of an add that landed without its reply is refused. The caller has given the edit a
+ * write ID.
+ */
+async function applyDocEdit(action: GoogleDocAction, host: DocHost, id: number): Promise<void> {
+  let { api, documentId } = host;
+  if (!action.writeId) throw new Error(`Google Doc action ${id} has no write ID`);
+  let writeMarkerName = googleDocWriteMarkerName(action.writeId);
+  let doc = await api.getDocument(documentId);
+  // A receipt names this edit when its write landed and its record outlived the receipt: settled
+  // from it, before any cleanup could delete the marker that proves it. Its tab is not recorded,
+  // so the marker is looked for.
+  let receipt = host.receipt();
+  if (receipt?.actionId === id) {
+    let markerTab = doc.tabs.find(
+      tab => googleDocNamedRanges(tab).some(({ id: marker }) => marker === receipt.markerId));
+    host.landed(id, markerTab && { id: receipt.markerId, tabId: markerTab.tabId },
+      googleDocSnapshot(doc));
+    return;
+  }
+  doc = await reconcileDocWriteReceipt(host, doc);
+  let snapshot = googleDocSnapshot(doc);
+  let markers = googleDocActionTabs(doc.tabs, action).flatMap(tab =>
+    googleDocNamedRangeIds(tab, writeMarkerName).map(marker => ({ id: marker, tabId: tab.tabId })));
+  if (new Set(markers.map(marker => marker.id)).size > 1) {
+    throw new Error(`Google Docs returned multiple write markers for action ${id}`);
+  }
+  let [writeMarker] = markers;
+  /** The ID of the tab an add made, which only Google's reply to it names. */
+  let addedTabId: string | undefined;
+  // A retry of an add that landed without its reply is refused, and one whose earlier send has
+  // no known outcome and whose marker is gone (a top-level add's marker is in another tab, which
+  // a collaborator may have deleted) is checked before it is sent again.
+  if (action.type === "addTab" && (writeMarker || action.knownTabIds !== undefined)) {
+    try {
+      if (writeMarker) throw googleDocLostAddError(action);
+      assertGoogleDocAddUnsent(snapshot.tabs, action);
+    } catch (error) {
+      await host.unapplyable(id, action,
+        `Pending Google Doc tab add was refused: ${errorMessage(error)} ` +
+        "Edits queued for it must be queued again for a tab listTabs() shows.", snapshot);
+      throw new ActionApplyError(errorMessage(error), { cause: error });
+    }
+  }
+  if (!writeMarker) {
+    let materialized: { tab: GoogleDocTabSnapshot; requests: any[] };
+    try {
+      materialized = materializeGoogleDocAction(snapshot, action);
+    } catch (error) {
+      // Recorded, not removed: later edits stop waiting behind it, and approving it again
+      // repeats the reason rather than reporting success for a write that never happened.
+      logger.error("Google Doc action cannot be applied", {
+        event: "google.doc.action.apply.unapplyable",
+        actionId: id, error,
+      });
+      await host.unapplyable(
+        id, action, `Pending Google Doc edit could not be applied: ${errorMessage(error)}`, snapshot);
+      throw new ActionApplyError(errorMessage(error), { cause: error });
+    }
+    let { tab, requests } = materialized;
+    if (action.type === "addTab") {
+      action.knownTabIds = doc.tabs.map(({ tabId }) => tabId);
+      host.saved(id, action);
+    }
+    if (requests.length > 0) {
+      let result = await api.batchUpdate(documentId, requests, snapshot.revisionId, {
+        name: writeMarkerName,
+        rangeStart: tab.bodyEndIndex - 1,
+        tabId: tab.tabId,
+      }).catch(async (error: unknown) => {
+        if (action.type === "addTab" && docsWriteFailure(error) !== "unknown") {
+          // Refused whole, so no tab was added, and a retry has nothing to look for.
+          delete action.knownTabIds;
+          host.saved(id, action);
+        }
+        throw await explainUnopenedFile("doc", error, () => host.mimeType());
+      });
+      if (!result.writeMarkerId) {
+        throw new Error(`Google Docs did not return a write marker for action ${id}`);
+      }
+      writeMarker = { id: result.writeMarkerId, tabId: tab.tabId };
+      if (action.type === "addTab") {
+        // Applied, but unnamed: a retry finds the marker and refuses.
+        addedTabId = googleDocReplyTabId(result.replies[0]);
+        if (!addedTabId) {
+          throw new Error(`Google Docs did not return the new tab's ID for action ${id}`);
+        }
+      }
+    }
+  }
+  host.landed(id, writeMarker, snapshot, action.type === "addTab" && addedTabId
+    ? { provisionalTabId: action.provisionalTabId, tabId: addedTabId } : undefined);
+}
+
+/** An edit's card, built from what the edit and its display fields hold. */
+function describeDocEdit(action: GoogleDocAction): ActionPresentation {
+  switch (action.type) {
+    case "replaceText": {
+      let display = requireDocDisplay(action.display);
+      let rendered = display.rendered ?? action.newMarkdown;
+      let description = buildDescription(`Replace text in tab ${display.tab}.`)
+        .verbatim("Old", action.oldMarkdown, "markdown");
+      if (rendered !== action.newMarkdown) {
+        description.verbatim("Requested New", action.newMarkdown, "markdown");
+      }
+      description.verbatim("New", rendered, "markdown");
+      return { title: "Edit Google Doc", ...description.finish(), implementsRevert: false };
+    }
+    case "appendText": {
+      let display = requireDocDisplay(action.display);
+      let renderedMarkdown = canonicalizeMarkdownForWrite(action.markdown);
+      let description =
+        buildDescription(`Append content to the end of tab ${display.tab}.`);
+      if (action.markdown === renderedMarkdown) {
+        description.verbatim("Content", renderedMarkdown, "markdown");
+      } else {
+        description
+          .verbatim("Requested", action.markdown, "markdown")
+          .verbatim("Resulting", renderedMarkdown, "markdown");
+      }
+      return { title: "Append to Google Doc", ...description.finish(), implementsRevert: false };
+    }
+    case "addTab": {
+      let display = requireDocDisplay(action.display);
+      let description = buildDescription(display.placement).inline("Title", action.title);
+      return { title: "Add tab to Google Doc", ...description.finish(), implementsRevert: false };
+    }
+  }
+}
+
+function requireDocDisplay<D>(display: D | undefined): D {
+  if (!display) throw new Error("This Google Doc edit has no card to show.");
+  return display;
+}
+
+/** The definitions of the Doc edits, by the type each stored edit names. */
+export type GoogleDocEdits = { [T in GoogleDocAction["type"]]: Extract<GoogleDocAction, { type: T }> };
+
+/**
+ * One Doc edit's definition. No claim is taken: a write's marker goes up with its content, so an
+ * approval cut off mid-write and tried again finds its own marker and settles without writing.
+ */
+function docEdit<A extends GoogleDocAction>(kind: ActionKind): ActionDefinition<A, DocHost> {
+  return {
+    kind,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    describe: action => describeDocEdit(action),
+    apply: (action, host, ctx) => applyDocEdit(action, host, ctx.id),
+  };
+}
+
+/**
+ * Each Doc edit's definition. Text edits are "Document edits", and new tabs "New document tabs";
+ * a user may let both apply without asking.
+ */
+export const DOC_DEFINITIONS: { [T in keyof GoogleDocEdits]: ActionDefinition<GoogleDocEdits[T], DocHost> } = {
+  replaceText: docEdit(EDIT_DOCUMENT_ACTION),
+  appendText: docEdit(EDIT_DOCUMENT_ACTION),
+  addTab: docEdit(ADD_DOCUMENT_TAB_ACTION),
+};
+
+/** The definition `action` is applied and described by. */
+function docDefinition(action: GoogleDocAction): ActionDefinition<GoogleDocAction, DocHost> {
+  return DOC_DEFINITIONS[action.type] as ActionDefinition<GoogleDocAction, DocHost>;
+}
+
 @validateRpc()
 export class GoogleDocGatekeeperImpl
     extends DurableObject<Env, GoogleDocGatekeeperImplProps>
@@ -832,27 +1078,6 @@ export class GoogleDocGatekeeperImpl
     }
   }
 
-  async #reconcileDocWriteReceipt(
-    api: GoogleDocsApi,
-    document: GoogleDocsDocument,
-  ): Promise<GoogleDocsDocument> {
-    let receipt = this.#readDocWriteReceipt();
-    if (!receipt) return document;
-
-    // The marker ID is exact, but its tab is not recorded, so every tab is searched for it.
-    let markerTab = document.tabs.find(
-      tab => googleDocNamedRanges(tab).some(({ id }) => id === receipt.markerId),
-    );
-    if (!markerTab) {
-      this.#clearDocWriteReceipt(receipt.markerId);
-      return document;
-    }
-
-    let { documentId } = this.#bound;
-    await api.deleteNamedRange(documentId, receipt.markerId, markerTab.tabId);
-    this.#clearDocWriteReceipt(receipt.markerId);
-    return api.getDocument(documentId);
-  }
 
   /**
    * Hands one proven write from its pending action to a cleanup receipt, atomically.
@@ -1030,90 +1255,29 @@ export class GoogleDocGatekeeperImpl
       action.writeId = crypto.randomUUID();
       pendingActions.put(actionId, action);
     }
-    let writeMarkerName = googleDocWriteMarkerName(action.writeId);
     let api = new GoogleDocsApi(opts => this.#getAccessToken(opts));
-    let doc = await api.getDocument(documentId);
-    doc = await this.#reconcileDocWriteReceipt(api, doc);
-    let snapshot = googleDocSnapshot(doc);
-    // A marker is found with its tab, which deleting it must name.
-    let markers = googleDocActionTabs(doc.tabs, action).flatMap(tab =>
-      googleDocNamedRangeIds(tab, writeMarkerName).map(id => ({ id, tabId: tab.tabId })));
-    if (new Set(markers.map(({ id }) => id)).size > 1) {
-      throw new Error(`Google Docs returned multiple write markers for action ${actionId}`);
-    }
-    let [writeMarker] = markers;
-    /** The ID of the tab an add made, which only Google's reply to it names. */
-    let addedTabId: string | undefined;
-    // A retry of an add that landed without its reply is refused, and one whose earlier send has
-    // no known outcome and whose marker is gone (a top-level add's marker is in another tab, which
-    // a collaborator may have deleted) is checked before it is sent again.
-    if (action.type === "addTab" && (writeMarker || action.knownTabIds !== undefined)) {
-      try {
-        if (writeMarker) throw googleDocLostAddError(action);
-        assertGoogleDocAddUnsent(snapshot.tabs, action);
-      } catch (error) {
-        invalidateGoogleDocAction(pendingActions, pending[pendingIndex],
-          `Pending Google Doc tab add was refused: ${errorMessage(error)} ` +
-          "Edits queued for it must be queued again for a tab listTabs() shows.");
-        this.#simulationCache.current = undefined;
-        throw error;
-      }
-    }
-    if (!writeMarker) {
-      let materialized: { tab: GoogleDocTabSnapshot; requests: any[] };
-      try {
-        materialized = materializeGoogleDocAction(snapshot, action);
-      } catch (error) {
-        // Invalidated, not removed: later edits stop waiting behind it, and approving it again
-        // repeats the reason rather than reporting success for a write that never happened.
-        logger.error("Google Doc action cannot be applied", {
-          event: "google.doc.action.apply.unapplyable",
-          actionId, error,
-        });
-        invalidateGoogleDocAction(
-            pendingActions,
-            pending[pendingIndex],
-            `Pending Google Doc edit could not be applied: ${errorMessage(error)}`);
+    let landed: { writeMarker?: GoogleDocWriteMarker; snapshot: GoogleDocSnapshot } | undefined;
+    await docDefinition(action).apply(action, {
+      api,
+      documentId,
+      mimeType: async () =>
+        (await new DriveApi(opts => this.#getAccessToken(opts)).getFile(documentId)).mimeType,
+      receipt: () => this.#readDocWriteReceipt(),
+      clearReceipt: markerId => this.#clearDocWriteReceipt(markerId),
+      saved: (id, saved) => pendingActions.put(id, saved),
+      landed: (id, writeMarker, snapshot, addedTab) => {
+        landed = { writeMarker, snapshot };
+        if (writeMarker) this.#handoffDocWriteReceipt(id, writeMarker.id, pendingActions, addedTab);
+        else pendingActions.remove(id);
+      },
+      unapplyable: async (id, unapplied, reason, snapshot) => {
+        invalidateGoogleDocAction(pendingActions, { id, action: unapplied }, reason);
         this.#simulationCache.current = undefined;
         await this.ctx.storage.put(DOC_SNAPSHOT_KEY, snapshot);
-        throw error;
-      }
-      let { tab, requests } = materialized;
-      if (action.type === "addTab") {
-        action.knownTabIds = doc.tabs.map(({ tabId }) => tabId);
-        pendingActions.put(actionId, action);
-      }
-      if (requests.length > 0) {
-        let result = await api.batchUpdate(documentId, requests, snapshot.revisionId, {
-          name: writeMarkerName,
-          rangeStart: tab.bodyEndIndex - 1,
-          tabId: tab.tabId,
-        }).catch(async (error: unknown) => {
-          if (action.type === "addTab" && docsWriteFailure(error) !== "unknown") {
-            // Refused whole, so no tab was added, and a retry has nothing to look for.
-            delete action.knownTabIds;
-            pendingActions.put(actionId, action);
-          }
-          throw await explainUnopenedFile("doc", error, async () =>
-            (await new DriveApi(opts => this.#getAccessToken(opts)).getFile(documentId)).mimeType);
-        });
-        if (!result.writeMarkerId) {
-          throw new Error(`Google Docs did not return a write marker for action ${actionId}`);
-        }
-        writeMarker = { id: result.writeMarkerId, tabId: tab.tabId };
-        if (action.type === "addTab") {
-          // Applied, but unnamed: a retry finds the marker and refuses.
-          addedTabId = googleDocReplyTabId(result.replies[0]);
-          if (!addedTabId) {
-            throw new Error(`Google Docs did not return the new tab's ID for action ${actionId}`);
-          }
-        }
-      }
-    }
+      },
+    }, { id: actionId });
+    let { writeMarker, snapshot } = landed!;
     if (writeMarker) {
-      this.#handoffDocWriteReceipt(actionId, writeMarker.id, pendingActions,
-        action.type === "addTab" && addedTabId
-          ? { provisionalTabId: action.provisionalTabId, tabId: addedTabId } : undefined);
       try {
         await api.deleteNamedRange(documentId, writeMarker.id, writeMarker.tabId);
         this.#clearDocWriteReceipt(writeMarker.id);
@@ -1122,8 +1286,6 @@ export class GoogleDocGatekeeperImpl
           event: "google.doc.write-marker.cleanup.failed", actionId, error,
         });
       }
-    } else {
-      pendingActions.remove(actionId);
     }
     this.#simulationCache.current = undefined;
 
@@ -1494,28 +1656,37 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
 
     let parent = simulation.tabs.find(tab => tab.tabId === simulatedParent);
     let siblings = tabs.filter(tab => tab.parentTabId === simulatedParent).length;
-    let description = buildDescription(
-      `Add a new, empty tab ${parent ? `under tab ${googleDocTabLabel(parent)}` : "at the top level"}` +
-      (index === undefined ? ", after the tabs already there." :
-        `, at position ${index + 1} of ${siblings}.`))
-      .inline("Title", title);
+    action.display = {
+      placement:
+        `Add a new, empty tab ${parent ? `under tab ${googleDocTabLabel(parent)}` : "at the top level"}` +
+        (index === undefined ? ", after the tabs already there." :
+          `, at position ${index + 1} of ${siblings}.`),
+    };
+    await this.#submit(action);
+    return provisionalTabId;
+  }
+
+  /**
+   * Stores `action` and submits it for approval with the card its definition builds, removing it
+   * again if the submission fails. Nothing is awaited between the store and the submission.
+   */
+  async #submit(action: GoogleDocAction): Promise<void> {
+    let definition = docDefinition(action);
+    let presentation = describeDocEdit(action);
     let actionId = this.#pendingActions.submit(action);
     this.#simulationCache.current = undefined;
 
     try {
       await this.#approvalQueue.submitAction(actionId, {
-        title: "Add tab to Google Doc",
-        ...description.finish(),
-        implementsRevert: false,
-        actionKind: ADD_DOCUMENT_TAB_ACTION,
-        autoApprovable: true,
+        ...presentation,
+        actionKind: definition.kind,
+        autoApprovable: definition.autoApprovable,
       });
     } catch (error) {
       this.#pendingActions.remove(actionId);
       this.#simulationCache.current = undefined;
       throw error;
     }
-    return provisionalTabId;
   }
 
   async getContent(tabId?: string): Promise<string> {
@@ -1579,31 +1750,12 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       writeId: crypto.randomUUID(),
       oldMarkdown,
       newMarkdown,
+      display: {
+        tab: googleDocTabLabel(tab),
+        ...(renderedNewMarkdown === newMarkdown ? {} : { rendered: renderedNewMarkdown }),
+      },
     };
-
-    let description = buildDescription(`Replace text in tab ${googleDocTabLabel(tab)}.`)
-      .verbatim("Old", oldMarkdown, "markdown");
-    if (newMarkdown !== renderedNewMarkdown) {
-      description.verbatim("Requested New", newMarkdown, "markdown");
-    }
-    description.verbatim("New", renderedNewMarkdown, "markdown");
-    let actionId = this.#pendingActions.submit(action);
-    this.#simulationCache.current = undefined;
-
-    try {
-      await this.#approvalQueue.submitAction(actionId, {
-        title: "Edit Google Doc",
-        ...description.finish(),
-        implementsRevert: false,
-        // Group all document edits under one tag
-        actionKind: EDIT_DOCUMENT_ACTION,
-        autoApprovable: true,
-      });
-    } catch (error) {
-      this.#pendingActions.remove(actionId);
-      this.#simulationCache.current = undefined;
-      throw error;
-    }
+    await this.#submit(action);
   }
 
   async appendText(markdown: string, tabId?: string): Promise<void> {
@@ -1621,7 +1773,6 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       throw error;
     }
     let {snapshot, tab} = selected;
-    let renderedMarkdown = canonicalizeMarkdownForWrite(markdown);
 
     let action: GoogleDocAction = {
       type: "appendText",
@@ -1632,34 +1783,9 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       baseRevisionId: snapshot.revisionId,
       writeId: crypto.randomUUID(),
       markdown,
+      display: { tab: googleDocTabLabel(tab) },
     };
-
-    let description =
-      buildDescription(`Append content to the end of tab ${googleDocTabLabel(tab)}.`);
-    if (markdown === renderedMarkdown) {
-      description.verbatim("Content", renderedMarkdown, "markdown");
-    } else {
-      description
-        .verbatim("Requested", markdown, "markdown")
-        .verbatim("Resulting", renderedMarkdown, "markdown");
-    }
-    let actionId = this.#pendingActions.submit(action);
-    this.#simulationCache.current = undefined;
-
-    try {
-      await this.#approvalQueue.submitAction(actionId, {
-        title: "Append to Google Doc",
-        ...description.finish(),
-        implementsRevert: false,
-        // Same "editDocument" tag as replaceText
-        actionKind: EDIT_DOCUMENT_ACTION,
-        autoApprovable: true,
-      });
-    } catch (error) {
-      this.#pendingActions.remove(actionId);
-      this.#simulationCache.current = undefined;
-      throw error;
-    }
+    await this.#submit(action);
   }
 }
 
