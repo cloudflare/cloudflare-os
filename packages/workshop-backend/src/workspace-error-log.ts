@@ -337,7 +337,9 @@ export class WorkspaceErrorLogDurableObject extends DurableObject<Cloudflare.Env
   }
 
   // When the alarm should next run: at once while expired rows remain, else when the oldest row
-  // expires and no sooner than in an hour, or null when there is no row.
+  // expires and no sooner than in an hour, or null when there is no row. The hour is a floor on
+  // how often the alarm runs, so entries kept seconds apart cost one alarm and not one each: an
+  // expired row can stay in storage up to an hour past its retention, listed by no read.
   #nextExpiry(now: number): number | null {
     let { oldest } = this.ctx.storage.sql.exec<{ oldest: number | null }>(
       "SELECT MIN(kept_at) AS oldest FROM gadget_errors").one();
