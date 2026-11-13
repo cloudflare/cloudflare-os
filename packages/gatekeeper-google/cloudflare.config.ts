@@ -5,7 +5,8 @@ import {
 
 /**
  * No `vars`: `GOOGLE_DRIVE_ACCESS` (`write`, the default, or `read`) has an in-code default. A
- * deployment sets it to `read` to keep every Google Drive connection read-only.
+ * deployment sets it to `read` to keep every Google Drive connection read-only. So has `PDF_OCR`,
+ * which a deployment sets to `false` to have no PDF page read by a vision model.
  */
 export default defineGadgetsWorker({
   name: "gatekeeper-google",
@@ -16,6 +17,8 @@ export default defineGadgetsWorker({
     // Workers AI's `toMarkdown()`, which converts Drive PDFs to text. It always runs remotely, so
     // `pnpm dev-server` keeps it only with --use-workers-ai-binding.
     AI: bindings.ai(),
+    // The Worker that renders the pages of a scanned PDF for readPdf() to have them transcribed.
+    PDF_RENDERER: bindings.worker({ worker: "pdf-renderer", exportName: "PdfRenderer" }),
   },
 });
 

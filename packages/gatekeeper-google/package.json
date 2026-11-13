@@ -14,6 +14,7 @@
     "@gadgets/configurator-ui": "workspace:*",
     "@gadgets/gatekeeper-kit": "workspace:*",
     "@gadgets/observability": "workspace:*",
+    "@gadgets/pdf-renderer": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",

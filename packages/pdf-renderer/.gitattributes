@@ -1,0 +1,6 @@
+*.wasm binary
+vendor/pdfium/LICENSE -text
+vendor/pdfium/VERSION -text
+vendor/pdfium/args.gn -text
+vendor/pdfium/NOTICES.txt -text
+vendor/pdfium/licenses/* -text

@@ -30,6 +30,8 @@ export {
 };
 export default GoogleWorker;
 export { CalendarTestHooks, GoogleCalendarGatekeeperImpl } from "./calendar-hooks";
+// The PDF renderer's entrypoint, which the pool binds as a deployment binds the renderer Worker.
+export { PdfRenderer } from "@gadgets/pdf-renderer";
 
 /** The Drive gatekeeper as a deployment that keeps Google Drive read-only runs it. */
 export class ReadOnlyDriveGatekeeper extends GoogleDriveGatekeeperImpl {

@@ -30,7 +30,7 @@ import { createHash } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
-  gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
+  INTERNAL_WORKERS, gatekeeperShortName, isGatekeeperPackage, readDeployablePackages,
   type BindingDecl, type DeployablePackage, type ObservabilityConfig, type ServiceBinding,
   type WranglerConfig,
 } from "../release/manifest-lib.ts";
@@ -136,6 +136,52 @@ const PREVIEW_NAME_HASH_LENGTH = 8;
  */
 export function gatekeeperBindingName(pkgName: string): string {
   return pkgName.toUpperCase().replaceAll("-", "_");
+}
+
+// The tiers a preview's workers deploy in, first to last. A worker binds only workers of the tiers
+// before its own, because a binding can name a sibling preview only once that preview exists.
+const PREVIEW_TIERS = ["internal", "gatekeeper", "backend", "router"] as const;
+
+/** The tier a deployable package's preview is deployed in. */
+export function previewTier(pkgName: string): (typeof PREVIEW_TIERS)[number] {
+  if (INTERNAL_WORKERS.has(pkgName)) return "internal";
+  if (isGatekeeperPackage(pkgName)) return "gatekeeper";
+  if (pkgName === "workshop-backend") return "backend";
+  if (pkgName === "router") return "router";
+  throw new Error(`cannot build a preview config for package: ${pkgName}`);
+}
+
+/**
+ * The workers a preview is deleted from, in the groups they are deleted in, first group first: the
+ * tiers last to first, so that no worker is left bound to a preview that is gone. `workers` is
+ * whichever of the deployable packages carry the preview, which need not be all of them.
+ */
+export function previewDeletionOrder<T extends { name: string }>(workers: readonly T[]): T[][] {
+  return PREVIEW_TIERS.toReversed()
+      .map((tier) => workers.filter((pkg) => previewTier(pkg.name) === tier))
+      .filter((group) => group.length > 0);
+}
+
+/**
+ * A gatekeeper's preview config with every `previews.services` entry pointed at the preview of the
+ * internal worker it names. `previewIds` maps each internal worker that was deployed to its
+ * preview's id. An entry left without an id would bind the baseline worker and say nothing, so one
+ * that names a worker with no preview is refused.
+ */
+export function bindInternalPreviews(
+  pkgName: string,
+  config: StagingConfig,
+  previewIds: Readonly<Record<string, string>>,
+): StagingConfig {
+  const services = config.previews?.services?.map((service) => {
+    const id = Object.hasOwn(previewIds, service.service) ? previewIds[service.service] : undefined;
+    if (!id) {
+      throw new Error(`${pkgName}'s ${service.binding} names ${service.service}, which has no ` +
+          "preview for the binding to name");
+    }
+    return { ...service, preview_id: id };
+  });
+  return services ? { ...config, previews: { ...config.previews, services } } : config;
 }
 
 /**
@@ -310,6 +356,12 @@ function routerGatekeeperServices(gatekeepers: string[]): PreviewService[] {
   }));
 }
 
+function applyInternal(config: StagingConfig): void {
+  // Reached only through the bindings of the workers deployed after it, so it is told nothing of
+  // the instance: no origin, no mount, no resources.
+  config.previews = { observability: previewObservability(config) };
+}
+
 function applyGatekeeper(
   pkgName: string,
   config: StagingConfig,
@@ -336,6 +388,18 @@ function applyGatekeeper(
   if (kvNamespaces) config.previews.kv_namespaces = kvNamespaces;
   const r2Buckets = previewResourceBindings(config.r2_buckets);
   if (r2Buckets) config.previews.r2_buckets = r2Buckets;
+
+  // The few gatekeepers that bind a worker bind an internal one: bindInternalPreviews gives each
+  // entry its preview_id once the internal previews exist. No other worker has a preview when the
+  // gatekeepers deploy, so a binding to one would resolve to its baseline.
+  if (config.services) {
+    const stray = config.services.find(({ service }) => !INTERNAL_WORKERS.has(service));
+    if (stray) {
+      throw new Error(`${pkgName} binds ${stray.service}, which is not deployed before the ` +
+          "gatekeepers, so no preview of it exists for the binding to name");
+    }
+    config.previews.services = structuredClone(config.services);
+  }
 }
 
 function applyBackend(
@@ -432,10 +496,11 @@ export function buildPreviewConfigs({
     delete config.routes;
     stripBaselineResources(config);
 
-    if (isGatekeeperPackage(pkg.name)) applyGatekeeper(pkg.name, config, context);
-    else if (pkg.name === "workshop-backend") applyBackend(config, context);
-    else if (pkg.name === "router") applyRouter(config, context);
-    else throw new Error(`cannot build a preview config for package: ${pkg.name}`);
+    const tier = previewTier(pkg.name);
+    if (tier === "gatekeeper") applyGatekeeper(pkg.name, config, context);
+    else if (tier === "backend") applyBackend(config, context);
+    else if (tier === "router") applyRouter(config, context);
+    else applyInternal(config);
 
     configs.set(pkg.name, config);
   }

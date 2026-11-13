@@ -399,6 +399,12 @@
           "type": "ai"
         },
         {
+          "entrypoint": "PdfRenderer",
+          "name": "PDF_RENDERER",
+          "service": "$WORKER_NAME(pdf-renderer)",
+          "type": "service"
+        },
+        {
           "name": "CLIENT_ID",
           "text": "$SECRET(CLIENT_ID)",
           "type": "secret_text"
@@ -1370,6 +1376,39 @@
       "vars": {
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/zoominfo"
       }
+    },
+    "pdf-renderer": {
+      "bindings": [],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [],
+      "installable": false,
+      "kind": "internal",
+      "mainModule": "worker.js",
+      "migrations": [],
+      "modules": [
+        {
+          "name": "abc123-pdfium.wasm",
+          "r2Key": "blobs/modules/93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476",
+          "sha256": "93a44bbb96c751218e4c00d479e4c14358122a389acca16205b1e4d0dc5f9476",
+          "size": 8,
+          "type": "wasm"
+        },
+        {
+          "name": "worker.js",
+          "r2Key": "blobs/modules/3da4a61df7cd784a0f3749f2be1058473caf78f55a42b0759a55d6df6b28c751",
+          "sha256": "3da4a61df7cd784a0f3749f2be1058473caf78f55a42b0759a55d6df6b28c751",
+          "size": 54,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "vars": {}
     },
     "router": {
       "assetsConfig": {

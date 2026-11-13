@@ -1024,7 +1024,9 @@ describe("what CI reads disclose to observers", () => {
     const { props, name } = await setup(gateFake(), Object.fromEntries(names.map(member => [member, 20])));
     for (const member of names.slice(0, 50)) await observer(name, props, member);
     await expect(observer(name, props, names[50]!)).rejects.toThrow(/already answers for 50 collaborators/);
-  });
+    // Fifty-one admissions, one after another: 3 to 4 seconds on a CI runner, against the 5 a
+    // test is given unless it says otherwise.
+  }, 30_000);
 
   describe("after CI data an earlier version marked", () => {
     // Those versions marked the binding when it read job logs or test reports, and checked every

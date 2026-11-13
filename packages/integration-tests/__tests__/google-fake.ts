@@ -45,6 +45,9 @@ function configure(config: WorkerConfig): void {
   // Workers AI has no local simulator, so wrangler would open a remote session that needs Cloudflare
   // credentials; run-dev-server.ts drops it the same way, and nothing here reads a PDF.
   delete config.ai;
+  // The Worker that draws PDF pages is not booted here, and the runtime does not start with a
+  // binding to a Worker outside the session. The gatekeeper takes a missing binding for no renderer.
+  config.services = config.services?.filter(service => service.binding !== "PDF_RENDERER");
   config.vars = {
     ...config.vars, BASE_URL: GOOGLE_BASE_URL, CLIENT_ID: "test-client", CLIENT_SECRET: "test-secret",
     PUBSUB_TOPIC, PUBSUB_CHAT_TOPIC: PUBSUB_TOPIC, PUBSUB_GMAIL_TOPIC: PUBSUB_TOPIC,
