@@ -1284,11 +1284,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                       render={(
                         <button
                           type="button"
-                          aria-label={`Anyone with your link: ${myDefaultLink ? linkAccessLabel : 'No access'}`}
+                          aria-label={`Anyone with your link: ${myDefaultLink ? linkAccessLabel : 'Requires invite'}`}
                           className={ACCESS_MENU_TRIGGER}
                           disabled={creatingDefaultLink || confirmationBusy}
                         >
-                          {myDefaultLink ? linkAccessLabel : 'No access'} <CaretDown size={13} />
+                          {myDefaultLink ? linkAccessLabel : 'Requires invite'} <CaretDown size={13} />
                         </button>
                       )}
                     />
@@ -1305,7 +1305,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                           <DropdownMenu.RadioItemIndicator />
                         </DropdownMenu.RadioItem>
                         <DropdownMenu.RadioItem value="none" closeOnClick>
-                          No access
+                          Requires invite
                           <DropdownMenu.RadioItemIndicator />
                         </DropdownMenu.RadioItem>
                       </DropdownMenu.RadioGroup>

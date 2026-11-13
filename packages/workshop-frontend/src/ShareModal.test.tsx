@@ -1600,8 +1600,8 @@ describe('ShareModal', () => {
       const newShareLinkKey = vi.fn<Overseer['newShareLinkKey']>(async () => ({ key: 'fresh' }))
       const rendered = await renderGadget(fakeOverseer({ shareLinks, createShareLink, newShareLinkKey }))
 
-      expect(linkAccess(rendered)).toBe('No access')
-      expect(linkAccessChoices(rendered)).toEqual(['Can use', 'No access'])
+      expect(linkAccess(rendered)).toBe('Requires invite')
+      expect(linkAccessChoices(rendered)).toEqual(['Can use', 'Requires invite'])
       // Nobody else can open the gadget and there is no link to hand out, so there's nothing to copy.
       expect(footerCopyLink(rendered).disabled).toBe(true)
 
@@ -1653,7 +1653,7 @@ describe('ShareModal', () => {
       const people = sectionFor(rendered, 'people-heading')
       expect(personRow(people, 'Jo')?.textContent).toContain('Joined with your link')
 
-      await chooseLinkAccess(rendered, 'No access')
+      await chooseLinkAccess(rendered, 'Requires invite')
       expect(previewRevokeShareLink).toHaveBeenCalledWith(MY_DEFAULT.linkId)
       expect(revokeShareLink).not.toHaveBeenCalled()
       expect(people.textContent).toContain('1 person loses access through your link. Keep anyone?')
