@@ -19,6 +19,7 @@ import { UserDurableObject } from './user.js';
 import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
+import { type AdminSettingActor, type AdminViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
 import { isDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
@@ -108,6 +109,22 @@ function refusePasskey(error: unknown): never {
   throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.passkeyRefused);
 }
 
+// How long a write request stays stored, and readable, after it is resolved.
+const RESOLVED_WRITE_KEPT_MS = 24 * 60 * 60 * 1000;
+
+// The soonest the write requests' alarm is set, from now: an alarm whose sweep keeps failing comes
+// back this often rather than at once.
+const MIN_WRITE_ALARM_DELAY_MS = 30_000;
+
+// When the sweep next has something to do for a stored write request: a pending one at its
+function writeDueAt(request: StoredAdminWrite): number {
+}
+
+// The admin who made a write request, as the actor of the steps recorded in their name.
+function writeRequester(request: StoredAdminWrite): AdminWriteActor {
+  return { admin: request.requestedBy, sessionId: request.sessionId, via: request.via };
+}
+
 /**
  * Deployment-wide admin settings singleton.
  *
@@ -134,6 +151,11 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // read/record/write so a concurrent call can never act on a bit another has since changed, which
   // would make its change unrecorded.
   private featuredMutationTail = Promise.resolve();
+  // Every transition of a write request reads the request, records the step in the audit log,
+  // which awaits, and then stores the new state. Serialize them, so that two never interleave
+  // across that await and both record: a denial racing an expiry would otherwise leave one
+  // request recorded as denied and as expired.
+  private adminWriteTail = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
@@ -781,6 +803,130 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
     // so the removal and the signer's use are stored together.
     if (this.#ownPasskey(id, actor.admin)) this.storage.adminPasskeys.delete(id);
     if (signer.id !== id) this.#usedPasskey(signer.id, actor.admin, signCount);
+  }
+
+  // --- Write requests ---
+  //
+
+  // Runs `run` once everything queued before it has finished, whether that succeeded or threw
+  // (see adminWriteTail). Every method below is one such run, and nothing inside one queues
+  // another.
+  #serializeWrites<T>(run: () => Promise<T>): Promise<T> {
+    let result = this.adminWriteTail.then(run);
+    this.adminWriteTail = result.then(() => {}, () => {});
+    return result;
+  }
+
+  // The request stored under `id`. Ids are crypto.randomUUID()s, so a string of any other length
+  // names none, and is never used as a storage key.
+  #storedWrite(id: string): StoredAdminWrite {
+    let request = id.length === 36 ? this.storage.adminWrites.get(id) : undefined;
+    if (!request) throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotFound);
+    return request;
+  }
+
+  // Append the step `event` of `request`, taken by `actor`, to the deployment-wide audit log, with
+  // the event's own fields in `extra`. Throws when it cannot be appended, which refuses the step.
+  async #recordWrite(request: StoredAdminWrite, event: AdminWriteRecord["event"],
+      : Promise<void> {
+    let { workspaceId, workspaceOwner, workspaceTitle, reason, requestedBy } = request;
+    await this.audits.getByName("").append({
+      kind: "write", at: new Date(), ...actor, requestId: request.id, event, workspaceId,
+      workspaceOwner, workspaceTitle, method: request.action,
+      args: redactAdminAuditArgs(request.args), reason, requestedBy, ...extra,
+    }, adminAccessPolicy(await this.committedAdminConfig(), this.env).retentionDays);
+  }
+
+  //
+  async #sweepWrites(): Promise<void> {
+    let now = Date.now();
+    let requests = [...this.storage.adminWrites.list()].toSorted(
+        (a, b) => a.requestedAt.getTime() - b.requestedAt.getTime());
+    for (let request of requests) {
+      if (request.state !== "pending") {
+        continue;
+      }
+      let overdue = writeDueAt(request) <= now;
+      let demoted = !overdue && !isDeploymentAdmin(this.env, request.requestedBy);
+      if (!overdue && !demoted) continue;
+      let ended = demoted ? { error: "Its requester is no longer a deployment admin." } : undefined;
+      await this.#recordWrite(request, "expired", writeRequester(request), ended);
+      this.storage.adminWrites.put({
+        ...request, ...ended, state: "expired",
+        resolvedAt: new Date(Math.min(now, request.expiresAt.getTime())),
+      });
+    }
+    for (let challenge of this.storage.adminPasskeyChallenges.list()) {
+      if (challenge.expiresAt <= now) this.storage.adminPasskeyChallenges.delete(challenge.key);
+    }
+  }
+
+  async #scheduleWriteAlarm(): Promise<void> {
+    if (due.length === 0) {
+      await this.ctx.storage.deleteAlarm();
+    } else {
+      await this.ctx.storage.setAlarm(
+          Math.max(Math.min(...due), Date.now() + MIN_WRITE_ALARM_DELAY_MS));
+    }
+  }
+
+  /**
+   * Sweeps the write requests (see #sweepWrites()), then sets the next alarm. Never throws: the
+   * platform gives up on an alarm that keeps throwing, and this one has to keep coming back until
+   */
+  async alarm(): Promise<void> {
+    try {
+      await this.#serializeWrites(() => this.#sweepWrites());
+    } catch (error) {
+      logger.error("failed to sweep the admin write requests", {
+        event: "admin.write.sweep.failed", error,
+      });
+    } finally {
+      await this.#scheduleWriteAlarm();
+    }
+  }
+
+  /** Records "requested", then stores `request` (state "pending"). Refused `tooManyRequests`,
+   * recording nothing, while MAX_PENDING_ADMIN_WRITES are pending. */
+  requestWorkspaceWrite(request: StoredAdminWrite): Promise<void> {
+    return this.#serializeWrites(async () => {
+      await this.#sweepWrites();
+      let pending = [...this.storage.adminWrites.list()].filter(
+          stored => stored.state === "pending");
+      if (pending.length >= MAX_PENDING_ADMIN_WRITES) {
+        throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.tooManyRequests);
+      }
+      await this.#recordWrite(request, "requested", writeRequester(request));
+      this.storage.adminWrites.put(request);
+      await this.#scheduleWriteAlarm();
+    });
+  }
+
+  /** The request stored under `id`. Sweeps first, so a request past its expiry is never read as
+   * pending. */
+  getWorkspaceWrite(id: string): Promise<StoredAdminWrite> {
+    return this.#serializeWrites(async () => {
+      await this.#sweepWrites();
+      return this.#storedWrite(id);
+    });
+  }
+
+  /** Records that `actor` denied the pending request `id`, then stores it as denied. Refused
+   * `requestNotPending` for a request that has left "pending", an overdue one included. */
+  denyWorkspaceWrite(id: string, actor: AdminWriteActor): Promise<void> {
+    return this.#serializeWrites(async () => {
+      await this.#sweepWrites();
+      let request = this.#storedWrite(id);
+      if (request.state !== "pending") {
+        throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
+      }
+      await this.#recordWrite(request, "denied", actor);
+      // Under the tail nothing else can have moved the request while its record was appended, so
+      // it is not read again.
+      this.storage.adminWrites.put(
+          { ...request, state: "denied", resolvedBy: actor.admin, resolvedAt: new Date() });
+      await this.#scheduleWriteAlarm();
+    });
   }
 
   // --- Standard output formats ---
@@ -1732,8 +1878,9 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
   }
 
   // The title (clamped there to MAX_DIRECTORY_TEXT_LENGTH) and owner the directory lists for a
-  // workspace, for the record of an open refused before it reaches the workspace: "" for each when
-  // the directory lists none or cannot be asked, since the refusal is recorded either way.
+  // workspace, for the record of an open refused before it reaches the workspace, and for a write
+  // request, which never reaches it: "" for each when the directory lists none or cannot be asked.
+  // The refused open is recorded either way; the write request is refused.
   async #directoryListing(workspaceId: string): Promise<{ title: string; ownerId: string }> {
     try {
       return await this.directories.getByName("").workspaceListing(workspaceId) ??
@@ -1782,6 +1929,63 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
 
   // Refuses that caller too, and every caller while the environment leaves writes off.
   #requireWrites(): void {
+  }
+
+  // Who takes a step in a write request through this capability, as its audit record says.
+  #writeActor(): AdminWriteActor {
+    return { admin: this.adminUserId, sessionId: this.#sessionId, via: this.via };
+  }
+
+  // A stored request as the API returns it: without what only the server keeps, and with the page
+  // of this deployment that approves it.
+  #writeView(stored: StoredAdminWrite): AdminWriteRequest {
+    let approvalUrl = `${adminPasskeyRelyingParty(this.env).origin}/admin/approve/${stored.id}`;
+    return { ...request, approvalUrl };
+  }
+
+  async requestWorkspaceWrite(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
+                              reason: string): Promise<AdminWriteRequest> {
+    this.#requireWrites();
+    reason = validateAdminAccessReason(reason);
+    let clean = adminWriteArgs(action, args);
+    let id: DurableObjectId;
+    try {
+      id = this.overseers.idFromString(workspaceId);
+    } catch {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    // Before anything is stored: without an origin the request would have no page to approve it.
+    adminPasskeyRelyingParty(this.env);
+
+    // The workspace is never reached: its title and owner are the directory's, as for an open
+    // refused before it reaches one. A request with no owner is not stored, since its approval
+    // must show whose workspace it changes. That refuses a workspace nobody has opened since the
+    // directory began listing them, one the directory cannot be asked about, and one that does
+    // not exist, all alike.
+    let listing = await this.#directoryListing(id.toString());
+    if (!listing.ownerId) throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.workspaceUnlisted);
+    let requestedAt = new Date();
+    let stored: StoredAdminWrite = {
+      id: crypto.randomUUID(), workspaceId: id.toString(),
+      workspaceTitle: cutAdminAuditText(listing.title, MAX_ADMIN_AUDIT_ARG_LENGTH),
+      workspaceOwner: auditOwnerId(listing.ownerId),
+      action, args: clean, reason, requestedBy: this.adminUserId, via: this.via,
+      sessionId: this.#sessionId, requestedAt,
+      expiresAt: new Date(requestedAt.getTime() + ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000),
+      state: "pending",
+    };
+    await this.admin.requestWorkspaceWrite(stored);
+    return this.#writeView(stored);
+  }
+
+  async getWorkspaceWrite(requestId: string): Promise<AdminWriteRequest> {
+    this.#requireWrites();
+    return this.#writeView(await this.admin.getWorkspaceWrite(requestId));
+  }
+
+  async denyWorkspaceWrite(requestId: string): Promise<void> {
+    this.#requireWrites();
+    await this.admin.denyWorkspaceWrite(requestId, this.#writeActor());
   }
 
   /** Listing and removal ask only for an admin: while writes are off a passkey approves nothing,
