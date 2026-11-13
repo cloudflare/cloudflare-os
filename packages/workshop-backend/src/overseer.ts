@@ -112,8 +112,9 @@ import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
-import type {
-  CreationApproval, GadgetErrorEntry, GadgetErrorPage, GadgetErrorQuery, GadgetExportFormat,
+import {
+  MAX_GADGET_ERRORS_PER_CALL, type CreationApproval, type GadgetErrorEntry, type GadgetErrorPage,
+  type GadgetErrorQuery, type GadgetExportFormat, type ReportedGadgetError,
 } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
@@ -124,7 +125,7 @@ import {
 import { renderGadgetInBrowser } from "./browser-export";
 import { buildUiBundle } from "./ui-bundle";
 import {
-  GadgetErrorLimiter, droppedGadgetErrorsText, serverGadgetErrorEntry,
+  GadgetErrorLimiter, clientGadgetErrorEntry, droppedGadgetErrorsText, serverGadgetErrorEntry,
 } from "./gadget-error-log";
 import {
   validateGadgetErrorQuery, type WorkspaceErrorLogDurableObject,
@@ -10966,6 +10967,10 @@ class OverseerImpl implements AgentHooks {
   #tailErrorLimiter = new GadgetErrorLimiter();
   #callErrorLimiter = new GadgetErrorLimiter();
 
+  // What browsers may still keep of each gadget's UI errors this minute: a budget of their own,
+  // so that reports and the server's exceptions are limited apart.
+  #clientErrorLimiter = new GadgetErrorLimiter();
+
   // The appends to this workspace's log object that have not settled, which deleting the
   // workspace waits for (#deleteGadgetErrors).
   #gadgetErrorAppends = new Set<Promise<void>>();
@@ -11133,6 +11138,48 @@ class OverseerImpl implements AgentHooks {
     let name = this.storage.errorLogId.get();
     if (name === undefined) return {entries: []};
     return await this.workspaceErrorLogs.getByName(name).list(query);
+  }
+
+  // Keeps what `userId`'s browser reported for a gadget's UI in the workspace's log object. The
+  // session has checked that it may report for the gadget and the chat. `chatId` is kept as the
+  // browser sent it, the chat whose draft the view was showing (null for the mainline), and not
+  // narrowed as the server's entries are: a view's queue is sent as it goes away, which can be
+  // after its chat stopped proposing a change to the gadget, and its errors are still the draft's.
+  // Every entry of the call has the time the call arrived: a browser sends a
+  // text and nothing else. Nothing is told to console subscribers. The write is awaited, so that
+  // a client learns of a failure and can keep one report in flight at a time, and a failure is
+  // logged here because the client that learns of it is a browser.
+  //
+  // The call then throws an error of this object's own, which holds nothing of the one it caught,
+  // not even as its cause. A client slows down only when its report is refused for a reason a
+  // retry would not cure. A log object that was reset fails with an error that reads to a client
+  // as this object's own reset, which a retry does cure, so relaying it would have every browser
+  // report at its full pace to a log object that cannot be written.
+  async reportGadgetErrors(gadgetId: WorkpieceId, chatId: number | null, userId: string,
+                           entries: ReportedGadgetError[]): Promise<void> {
+    let {admitted, dropped} = this.#clientErrorLimiter.admit(
+        gadgetId, entries.length, Date.now(), MAX_GADGET_ERRORS_PER_CALL);
+    if (admitted === 0 && dropped === 0) return;
+    try {
+      let kept = chatId;
+      let receivedAt = new Date();
+      let batch = entries.slice(0, admitted)
+          .map(entry => clientGadgetErrorEntry(gadgetId, kept, userId, entry, receivedAt));
+      // What was dropped is said first, as an entry of its own, under the user and the chat of
+      // the call that brings it.
+      if (dropped > 0) {
+        batch.unshift({ time: receivedAt, gadgetId, chatId: kept, source: "client", userId,
+                        text: droppedGadgetErrorsText(dropped) });
+      }
+      await this.#appendGadgetErrors(batch);
+    } catch (error) {
+      // Whatever marker this brought was not written, so its count waits for the gadget's next.
+      this.#clientErrorLimiter.unmark(gadgetId, dropped);
+      this.logger.warn("failed to keep reported gadget errors",
+          { event: "gadget.error.record.failed", error });
+      // oxlint-disable-next-line eslint/preserve-caught-error -- a cause is sent with its error.
+      throw new Error("Gadget errors could not be recorded.");
+    }
   }
 
   async subscribeToConsoleLogs(subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>> {
@@ -14096,6 +14143,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return this.impl.readGadgetErrors(query);
   }
 
+  async reportGadgetErrors(gadgetId: WorkpieceId, chatId: number | null,
+                           entries: ReportedGadgetError[]): Promise<void> {
+    this.impl.getGadgetRecord(gadgetId);  // validate it exists
+    if (chatId !== null) this.impl.getChatMetaOrThrow(chatId);
+    await this.impl.reportGadgetErrors(gadgetId, chatId, this.clientProfileId, entries);
+  }
+
   // --- Blueprint management ---
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
@@ -14297,8 +14351,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // id/title/owner), a restricted subscribeToMetadata(), subscribeToPresence(),
 // subscribeToWorkpieces() (listing only those gadgets), getGadget() (for a gadget they may open
 // live, verifying them for it, then returning a restricted, mainline-only
-// UseGadgetClientInterface), isViewOnly(), and getGadgetSnapshot() (verifying nothing; see
-// GadgetSnapshotClientImpl). Presence includes
+// UseGadgetClientInterface), isViewOnly(), getGadgetSnapshot() (verifying nothing; see
+// GadgetSnapshotClientImpl), and reportGadgetErrors() (mainline only, for a gadget they may open
+// live). Presence includes
 // active viewers' names, profile IDs, and roles. Every other
 // method throws "Unauthorized", with a few exceptions: subscribeToConsoleLogs() and
 // subscribeToActions() return inert subscriptions (they never deliver data), and
@@ -14308,8 +14363,9 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 // as spurious client-side errors, while still revealing nothing to the "use" collaborator.
 //
 // Opening this verifies nothing: none of what it exposes is anything a gadget has read. `access`
-// is the collaborator's effective access as of then, which only decides what is listed (getGadget
-// re-reads it); narrowing anyone's access restarts the workspace, ending this session.
+// is the collaborator's effective access as of then, which only decides what is listed
+// (getGadget() and reportGadgetErrors() re-read it); narrowing anyone's access restarts the
+// workspace, ending this session.
 //
 // Default-deny is enforced at compile time: because this class `implements Overseer`, adding any
 // new method to the interface will fail to compile here until a developer consciously decides
@@ -14474,6 +14530,20 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
     //     type system doesn't know this.
     return new GadgetSnapshotClientImpl(
         this.impl, mayOpen, this.impl.createGadgetSnapshot(id));
+  }
+
+  // What the deployed UI of a gadget they may open live did not catch in the collaborator's
+  // browser. Access is re-read, as getGadget() does, so a gadget granted since the session opened
+  // is accepted. Observers are not verified, since reporting reads nothing. A gadget they may not
+  // open live is refused exactly like one that doesn't exist: a snapshot's errors are a viewer's,
+  // not the gadget's, as getSnapshotFacet() keeps them from its console.
+  async reportGadgetErrors(gadgetId: WorkpieceId, chatId: number | null,
+                           entries: ReportedGadgetError[]): Promise<void> {
+    if (chatId !== null) this.#deny();
+    if (await this.impl.gadgetOpenMode(this.clientProfileId, gadgetId) !== "live") {
+      throw new Error(`No such gadget: ${gadgetId}`);
+    }
+    await this.impl.reportGadgetErrors(gadgetId, null, this.clientProfileId, entries);
   }
 
   // --- Denied methods (build-only) ---

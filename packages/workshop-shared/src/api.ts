@@ -5176,6 +5176,27 @@ export interface Overseer extends RpcTarget {
    */
   readGadgetErrors(query?: GadgetErrorQuery): Promise<GadgetErrorPage>;
 
+  /**
+   * Report errors that a gadget's UI did not catch in this session's browser. `gadgetId` is the
+   * gadget, and `chatId` the chat whose draft of it the UI was showing, or null for its mainline.
+   * Each is kept in the workspace's gadget error log (readGadgetErrors()) with source "client",
+   * under this session's user and the time the call arrived. The texts are whatever the browser
+   * sent, so they prove nothing about the gadget.
+   *
+   * A call records at most MAX_GADGET_ERRORS_PER_CALL errors, and at most 30 a minute are kept
+   * for one gadget across everyone reporting for it. Errors over either limit are dropped, with
+   * the marker readGadgetErrors() describes, kept under the user and the chat of the call that
+   * brought it. Reported errors are not delivered to subscribeToConsoleLogs() subscribers.
+   *
+   * The call returns once its errors are kept. It throws when the log could not be written: the
+   * call's errors are then lost, and a client waits before it reports again.
+   *
+   * Throws if there is no such gadget or chat. A collaborator who may only use gadgets may report
+   * for a gadget they may open live, with `chatId` null: a snapshot's errors are a viewer's.
+   */
+  reportGadgetErrors(gadgetId: WorkpieceId, chatId: number | null,
+                     entries: ReportedGadgetError[]): Promise<void>;
+
   // --- Blueprint management ---
   //
   // Blueprint listing and maintenance are workspace-level (each blueprint record remembers which
@@ -7949,9 +7970,10 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  * - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
  * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
- *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
- *   metadata. Which gadgets is part of the grant, as is whether each may be opened live or only
- *   viewed as a static snapshot (see CollaboratorGrant, CollaboratorAccess).
+ *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()) and report the errors
+ *   those UIs did not catch (Overseer.reportGadgetErrors()), plus read basic metadata. Which
+ *   gadgets is part of the grant, as is whether each may be opened live or only viewed as a
+ *   static snapshot (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
 

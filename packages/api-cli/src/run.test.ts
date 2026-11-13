@@ -532,6 +532,7 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
     ["gadget console logs", / subscribe-to-console-logs$/, 1],
     ["gadget errors", /^cf-os api open-workspace <id> read-gadget-errors$/, 1],
     ["read a gadget's errors", /^cf-os api open-workspace <id> read-gadget-errors$/, 1],
+    ["report gadget errors", / report-gadget-errors </, 1],
     ["call a method on a gadget", / get-gadget <id> connect-to-gadget$/, 1],
     ["import gadget data", / connect-to-gadget$/, 2],
     ["export gadget data", / get-gadget <id> export <id>$/, 5],
