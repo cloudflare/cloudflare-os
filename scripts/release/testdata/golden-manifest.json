@@ -1569,6 +1569,12 @@
             "AdminAuditDurableObject"
           ],
           "tag": "v4"
+        },
+        {
+          "new_sqlite_classes": [
+            "WorkspaceErrorLogDurableObject"
+          ],
+          "tag": "v5"
         }
       ],
       "modules": [

@@ -25,6 +25,7 @@ import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, nor
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { AdminAuditDurableObject } from "./admin-audit.js";
+import { WorkspaceErrorLogDurableObject } from "./workspace-error-log.js";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
@@ -71,6 +72,9 @@ export { UserDirectoryDurableObject };
 
 // Re-export the deployment-wide admin audit log Durable Object.
 export { AdminAuditDurableObject };
+
+// Re-export the per-workspace gadget error log Durable Object.
+export { WorkspaceErrorLogDurableObject };
 
 // Re-export entrypoint types from user.ts.
 export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl };
