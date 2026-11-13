@@ -20,7 +20,7 @@ export const ChatAttachmentGrid = ({
     const attachment = attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("The attachment is no longer part of this message.");
     return attachment.content ?? loadContent(attachment);
-  });
+  }, attachments.map((attachment) => attachment.id));
 
   return (
     <>

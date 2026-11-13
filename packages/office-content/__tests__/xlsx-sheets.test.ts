@@ -259,6 +259,24 @@ describe("readWorkbookSheets", () => {
     expect(workbook.sheets[0]!.showGridlines).toBe(true);
   });
 
+  it("formats an unstyled cell's value with its row's or column's number format", async () => {
+    const workbook = await read({
+      styles: `<fonts>${DEFAULT_FONT}</fonts><cellXfs><xf numFmtId="0"/><xf numFmtId="14"/><xf numFmtId="9"/></cellXfs>`,
+      sheets: [{
+        name: "Formats",
+        before: '<cols><col min="1" max="1" width="12" style="1"/></cols>',
+        rows:
+          '<row r="1"><c r="A1"><v>45000</v></c><c r="B1"><v>45000</v></c></row>' +
+          '<row r="2" s="2" customFormat="1"><c r="A2"><v>0.25</v></c></row>',
+      }],
+    });
+    const sheet = workbook.sheets[0]!;
+
+    expect(sheet.rows[0]!.cells.map(cell => cell.text)).toEqual(["3/15/2023", "45000"]);
+    // The row's format comes before the column's.
+    expect(sheet.rows[1]!.cells.map(cell => cell.text)).toEqual(["25%"]);
+  });
+
   it("gives cells with no style of their own their row's, then their column's", async () => {
     const workbook = await read({
       styles:

@@ -129,13 +129,19 @@ export async function readWorkbookSheets(bytes: Uint8Array, limits: SheetLimits)
   };
 
   const sheets: SheetModel[] = [];
+  // Read once per part: a workbook may name one worksheet many times, and reading it again for
+  // each would let a small file cost as much as many large sheets.
+  const read = new Map<string, SheetModel>();
   for (const sheet of childElements(firstChild(workbook, "s:sheets"), "s:sheet")) {
     const state = attribute(sheet, "state");
     if (state === "hidden" || state === "veryHidden") continue;
     const part = relationships.get(attribute(sheet, "r:id") ?? "")?.target;
     // A chart sheet or a macro sheet has no cells.
     if (!part || !zip.has(part) || !/worksheets\//i.test(part)) continue;
-    sheets.push(await readSheet(attribute(sheet, "name") ?? "", part, context));
+    const name = attribute(sheet, "name") ?? "";
+    let model = read.get(part);
+    if (!model) read.set(part, model = await readSheet(name, part, context));
+    sheets.push(model.name === name ? model : { ...model, name });
   }
   return { sheets, styles: styles.styles };
 }
@@ -226,6 +232,8 @@ interface SheetSettings {
   defaultColumnWidth: number;
   /** By column index, so a file that describes a column twice cannot grow the list. */
   columns: Map<number, SheetColumn>;
+  /** Each styled column's cell format, an index into the workbook's formats, for its number format. */
+  columnFormats: Map<number, number>;
   merges: SheetMerge[];
   /** Hyperlink targets by range. */
   links: { range: SheetMerge; target: string }[];
@@ -244,6 +252,7 @@ async function readSettings(sheetXml: string, part: string, context: SheetContex
     defaultRowHeight: clampSize(DEFAULT_ROW_POINTS * PIXELS_PER_POINT, MAX_ROW_PIXELS),
     defaultColumnWidth: defaultColumnWidthPixels(8, context.digitWidth),
     columns: new Map(),
+    columnFormats: new Map(),
     merges: [],
     links: [],
     undrawn: new Set(),
@@ -284,8 +293,10 @@ async function readSettings(sheetXml: string, part: string, context: SheetContex
           const first = Math.max(1, Number(attribute(column, "min")) || 1);
           const last = Math.min(maxColumns, Number(attribute(column, "max")) || first);
           const width = Number(attribute(column, "width"));
-          const style = context.styles.formats[Number(attribute(column, "style") ?? 0)]?.style;
+          const formatId = Number(attribute(column, "style") ?? 0);
+          const style = context.styles.formats[formatId]?.style;
           for (let index = first - 1; index < last; index++) {
+            if (context.styles.formats[formatId]) settings.columnFormats.set(index, formatId);
             settings.columns.set(index, {
               index,
               width: width >= 0 && attribute(column, "width") !== undefined
@@ -456,7 +467,8 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
       truncated = true;
       break;
     }
-    const rowStyle = isTrue(attribute(row, "customFormat")) ? formats[Number(attribute(row, "s") ?? 0)]?.style : undefined;
+    const rowFormat = isTrue(attribute(row, "customFormat")) ? formats[Number(attribute(row, "s") ?? 0)] : undefined;
+    const rowStyle = rowFormat?.style;
     const cells: SheetCell[] = [];
     const rowLinks = linksByRow.get(rowIndex);
     let nextColumn = 0;
@@ -467,7 +479,11 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
       if (column < 0) continue;
       nextColumn = column + 1;
       const styleId = attribute(cell, "s");
-      const format = formats[Number(styleId ?? 0)] ?? formats[0]!;
+      // A cell that names no style takes its row's, then its column's: how its value is formatted
+      // as well as how it looks.
+      const format = (styleId !== undefined
+        ? formats[Number(styleId)]
+        : rowFormat ?? formats[settings.columnFormats.get(column) ?? 0]) ?? formats[0]!;
       const content = cellContent(cell, format, context);
       // A formula's text result may truly be empty; any other formula with nothing stored was never calculated.
       if (content.text === "" && attribute(cell, "t") !== "str" && firstChild(cell, "s:f")) uncalculated = true;
@@ -476,8 +492,7 @@ async function readSheet(name: string, part: string, context: SheetContext): Pro
         if (content.text !== "") truncated = true;
         continue;
       }
-      // A cell that names no style takes its row's, then its column's.
-      const style = styleId !== undefined ? format.style : rowStyle ?? settings.columns.get(column)?.style ?? format.style;
+      const style = format.style;
       const hyperlink = linkAt(rowLinks, column);
       cells.push({ column, ...content, style, ...(hyperlink ? { hyperlink } : {}) });
       columnCount = Math.max(columnCount, column + 1);

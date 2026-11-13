@@ -7,7 +7,6 @@ GlobalWorkerOptions.workerSrc = workerUrl;
 // because the worker that fetches them resolves a relative URL against its own script.
 const PDFJS_ASSETS = new URL(`${import.meta.env.BASE_URL}pdfjs/`, location.href).href;
 
-/** Starts opening a PDF. The caller destroys the task when done with the document. */
 // Past these a browser draws nothing (Chrome stops at 32,767 pixels a side, iOS Safari at about
 // 16.7 million in all) or spends the tab's memory trying.
 const MAX_CANVAS_SIDE = 8192;
@@ -25,6 +24,7 @@ export const canvasDensity = (width: number, height: number): number => Math.min
   Math.sqrt(MAX_CANVAS_PIXELS / (width * height)),
 );
 
+/** Starts opening a PDF. The caller destroys the task when done with the document. */
 export const openPdf = (bytes: Uint8Array): PDFDocumentLoadingTask => getDocument({
   // A copy: pdf.js hands the buffer it is given to its worker, which would empty the caller's.
   data: bytes.slice(),

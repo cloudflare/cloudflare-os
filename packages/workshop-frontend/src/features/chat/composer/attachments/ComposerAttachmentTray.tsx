@@ -33,7 +33,7 @@ export const ComposerAttachmentTray = ({
     const attachment = attachments.find((candidate) => candidate.id === id);
     if (!attachment) throw new Error("The attachment was removed.");
     return new Uint8Array(await attachment.blob.arrayBuffer());
-  });
+  }, attachments.map((attachment) => attachment.id));
   const viewed = attachments.some((attachment) => attachment.id === viewedId);
 
   return (
