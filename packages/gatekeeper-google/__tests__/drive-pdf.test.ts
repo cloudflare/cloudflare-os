@@ -1427,7 +1427,7 @@ describe("pdfToText reading a scan's stored page images ahead of its reader", ()
     // Cancelled, with the calls of three pages unanswered.
     let cancelled = await begin(() => new Promise<Response>(() => {}));
     await cancelled.reader.cancel();
-    await vi.advanceTimersByTimeAsync(20);
+    await tickedUntil(() => cancelled.givenUp.length === 2 && vi.getTimerCount() === 0);
     expect([cancelled.givenUp, cancelled.calls, cancelled.events]).toEqual([[3, 4], [1, 2, 3, 4], fourRanges]);
     expect(vi.getTimerCount()).toBe(0);
 
@@ -1507,12 +1507,14 @@ describe("pdfToText reading a scan's stored page images ahead of its reader", ()
     let result = await pdfToText(ocrAi([response]).ai, undefined, byteStream(scan.bytes).stream, ranges(scan).readRange);
     let reader = result.text.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("### Page 1\n");
+    await tickedUntil(() => state.pulls >= 64);
     await vi.advanceTimersByTimeAsync(20);
     // 256 KiB of characters are held, in 64 pieces, and no more of the answer is read.
     expect(state.pulls).toBe(64);
 
     // As much more is read as the reader takes.
     for (let taken = 0; taken < 10; taken++) expect((await reader.read()).value).toHaveLength(4096);
+    await tickedUntil(() => state.pulls >= 74);
     await vi.advanceTimersByTimeAsync(20);
     expect(state.pulls).toBe(74);
 
@@ -2499,7 +2501,7 @@ describe("a rendered PDF's idle minute", () => {
     while (bands.length < 3) await vi.advanceTimersByTimeAsync(1);
     expect(pixelsHeld()).toBeGreaterThan(0);
     await reader.cancel();
-    await vi.advanceTimersByTimeAsync(20);
+    await tickedUntil(() => pixelsHeld() === 0 && vi.getTimerCount() === 0);
     expect(state.events.filter(event => event === "band given up")).toHaveLength(2);
     expect(left(state)).toEqual([[1], 0, 0]);
   });
@@ -2507,20 +2509,24 @@ describe("a rendered PDF's idle minute", () => {
   it("ends a text left unread for a minute though pages read ahead of it moved meanwhile, and gives those up", async () => {
     let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31])]);
     // The second page's band is answered half a minute on, and the third's never.
-    let { ai } = bandAi(async band => {
+    let { ai, bands } = bandAi(async band => {
       if (band.shade === 31) return unanswered(state.events)(band);
       if (band.shade === 21) await wait();
       return eventResponse(tokenEvents([`band ${band.shade}`]));
     });
     let reader = (await rendering(FAX_SCAN, renderer, ai)).result.text.getReader();
     await pumped(reader.read());
+    // Both later pages' bands are before the model: making their images takes real time.
+    await tickedUntil(() => bands.length === 3);
 
     // What is read ahead meanwhile, the second page here, is not the text being read.
-    await vi.advanceTimersByTimeAsync(WAIT_MS + 20);
-    expect(linesOf("info", "google.drive.pdf.band_transcribed").map(({ page }) => page)).toEqual([1, 2]);
-    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - WAIT_MS - 20);
+    let pagesRead = () => linesOf("info", "google.drive.pdf.band_transcribed").map(({ page }) => page);
+    await vi.advanceTimersByTimeAsync(WAIT_MS);
+    await tickedUntil(() => pagesRead().length === 2);
+    expect(pagesRead()).toEqual([1, 2]);
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - WAIT_MS);
     await expect(reader.read()).rejects.toThrow(IDLE);
-    await vi.advanceTimersByTimeAsync(20);
+    await tickedUntil(() => pixelsHeld() === 0 && vi.getTimerCount() === 0);
     expect(state.events.filter(event => event === "band given up")).toHaveLength(1);
     expect([state.documents.map(({ disposed }) => disposed), pixelsHeld(), vi.getTimerCount()]).toEqual([[1], 0, 0]);
   });
@@ -3549,7 +3555,7 @@ describe("a PDF with text whose pages without any are read, however its text end
         await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
         await expect(reader.read()).rejects.toThrow(IDLE);
       }
-      await vi.advanceTimersByTimeAsync(20);
+      await tickedUntil(() => pixelsHeld() === 0 && vi.getTimerCount() === 0);
       expect(state.events.filter(event => event === "band given up"), end).toHaveLength(2);
       expect(left(state), end).toEqual([[1], 0, 0]);
     }
