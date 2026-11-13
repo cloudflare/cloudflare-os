@@ -137,8 +137,10 @@ export interface BulkInputs {
  * Everything in `inputs` is read live rather than captured, because all of it can change under a
  * run that takes a provider call per request:
  *
- * - Enabling a rule mid-run hands its requests to the drain, so the run gives the drain their turn
- *   rather than racing it to them.
+ * - Enabling a rule mid-run hands its requests to the drain, so once the rule list has been
+ *   re-read the run gives the drain their turn rather than racing it to them. Until then it can
+ *   still race the drain to one, and a refusal it is not waiting long for stops the run; that is
+ *   the price of not holding every run back while a rule change settles.
  * - Losing the rule list — a refresh that fails clears it — is not the same as reading "no rule
  *   covers this". While it is unreadable, anything a rule *could* cover is waited for, which also
  *   covers a rule a collaborator enabled that this client never managed to read.

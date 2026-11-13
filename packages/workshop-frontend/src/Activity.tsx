@@ -34,8 +34,7 @@ interface ActivityProps {
   restricted?: boolean
   view: ActivityView
   onViewChange: (view: ActivityView) => void
-  // Shared with the chat: a rule changed here has to reach the tray's own list, and the window
-  // while the change is in flight has to reach its bulk run.
+  // Shared with the chat: a rule changed here has to reach the tray's own list.
   autoApproval?: AutoApprovalChannel
 }
 
@@ -203,7 +202,7 @@ export default function Activity({
   }
 
   const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.begin)
+    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed)
 
   const toggleExpanded = (id: number) => {
     setExpandedActionId(previous => (previous === id ? null : id))
@@ -429,7 +428,7 @@ export default function Activity({
             overseer={overseer}
             restricted={restricted}
             reloadTrigger={autoApproval?.reloadTrigger}
-            beginChange={autoApproval?.begin}
+            onChanged={autoApproval?.changed}
           />
         )
     }
@@ -464,13 +463,13 @@ function AutoApprovalPanel({
   overseer,
   restricted,
   reloadTrigger,
-  beginChange,
+  onChanged,
 }: {
   overseer: RpcStub<Overseer>
   restricted?: boolean
   reloadTrigger?: number
-  /** Marks a change in flight; see `AutoApprovalChannel`. */
-  beginChange?: () => () => void
+  /** Reports that a change made here has settled; see `AutoApprovalChannel`. */
+  onChanged?: () => void
 }) {
   const { entries, isLoading, loadError, pending, refresh, setEnabled } = useAutoApproval(overseer)
   const { authenticatedApi } = useAuthenticatedApi()
@@ -617,16 +616,10 @@ function AutoApprovalPanel({
                     // Toggling here is the only way to turn a rule off, and the chat tray
                     // labels its requests from this same list, so it has to be told.
                     onCheckedChange={enabled =>
-                      {
-                        // Marked before the call, not after: the kernel starts its drain the
-                        // moment it accepts the rule, and until this settles no list here --
-                        // including the tray's -- says what that drain is applying.
-                        const endChange = beginChange?.()
-                        void setEnabled(entry, enabled).finally(() => {
-                          changedHere.current += 1
-                          endChange?.()
-                        })
-                      }}
+                      void setEnabled(entry, enabled).finally(() => {
+                        changedHere.current += 1
+                        onChanged?.()
+                      })}
                   />
                 </div>
               )

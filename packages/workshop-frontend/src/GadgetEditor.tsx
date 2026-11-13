@@ -671,7 +671,7 @@ export default function GadgetEditor() {
   // ── code / chat state ────────────────────────────────────────────────────────
   const [uiReloadTrigger, setUiReloadTrigger] = useState(0)
   // Shared by the chat and the Activity rule list, which can each change a rule the other is
-  // reading -- and, while one is in flight, nothing here knows what the kernel's drain is doing.
+  // reading.
   const autoApproval = useAutoApprovalChannel()
   // The selected chat's code-branch snapshot (see ChatCodeChanges in ChatInterface): its code
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the

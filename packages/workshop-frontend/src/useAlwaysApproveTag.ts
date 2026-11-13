@@ -12,10 +12,9 @@ import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 export function useAlwaysApproveTag(
     overseer: RpcStub<Overseer>,
     setProcessingActions: Dispatch<SetStateAction<Set<number>>>,
-    // Marks a rule change in flight for the whole workspace view, and on settling tells the other
-    // surfaces to re-read. The window matters on its own: the kernel starts a drain the moment it
-    // accepts the rule, so until this ends no surface's rule list says what the kernel is doing.
-    beginChange?: () => () => void) {
+    // Told once the change settles, whichever way it went, so other surfaces re-read the rules;
+    // see `AutoApprovalChannel`.
+    onChanged?: () => void) {
   const toasts = useKumoToastManager()
   const [enabledTags, setEnabledTags] = useState<Set<string>>(new Set())
 
@@ -25,7 +24,6 @@ export function useAlwaysApproveTag(
       async (actionId: number, gatekeeperId: number,
              actionKind: ActionKind): Promise<boolean> => {
     setProcessingActions(prev => new Set(prev).add(actionId))
-    const endChange = beginChange?.()
     try {
       await overseer.setAutoApprovedActionKind(gatekeeperId, actionKind)
       setEnabledTags(prev => new Set(prev).add(`${gatekeeperId}:${actionKind.tag}`))
@@ -35,14 +33,14 @@ export function useAlwaysApproveTag(
       toasts.add({ title: 'Failed to enable auto-approval', variant: 'error' })
       return false
     } finally {
-      endChange?.()
+      onChanged?.()
       setProcessingActions(prev => {
         const next = new Set(prev)
         next.delete(actionId)
         return next
       })
     }
-  }, [overseer, setProcessingActions, toasts, beginChange])
+  }, [overseer, setProcessingActions, toasts, onChanged])
 
   const isTagAutoApproved = useCallback(
       (gatekeeperId: number, tag: string) => enabledTags.has(`${gatekeeperId}:${tag}`),

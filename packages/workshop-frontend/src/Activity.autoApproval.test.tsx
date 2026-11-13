@@ -54,12 +54,12 @@ async function mount() {
     [Symbol.dispose]: () => {},
   } as unknown as RpcStub<Overseer>
 
-  let outside: (() => () => void) | undefined
+  let outside: (() => void) | undefined
   let rerender: (() => void) | undefined
   const Host = () => {
     const [, tick] = useState(0)
     const channel = useAutoApprovalChannel()
-    outside = channel.begin
+    outside = channel.changed
     rerender = () => tick(n => n + 1)
     return (
       <Activity
@@ -81,8 +81,7 @@ async function mount() {
     get ruleReads() { return ruleReads },
     /** A change made by another surface, which this panel has no other way to hear about. */
     async changeElsewhere() {
-      const end = outside!()
-      await act(async () => end())
+      await act(async () => outside!())
     },
     async toggle() {
       // Through the checkbox the switch forwards its clicks to, since jsdom has no PointerEvent
@@ -91,13 +90,11 @@ async function mount() {
       if (!(checkbox instanceof HTMLInputElement)) throw new Error('No rule switch')
       await act(async () => checkbox.click())
     },
-    /** Marks another surface's change as started, returning its completion. */
-    beginElsewhere() { return outside!() },
-    /** Starts this panel's change and finishes another surface's within one act; the two still flush separately. */
-    async toggleWith(endElsewhere: () => void) {
+    /** Starts this panel's change and settles another surface's within one act; the two still flush separately. */
+    async toggleWithChangeElsewhere() {
       const checkbox = document.querySelector('[role="switch"]')?.nextElementSibling
       if (!(checkbox instanceof HTMLInputElement)) throw new Error('No rule switch')
-      await act(async () => { checkbox.click(); endElsewhere() })
+      await act(async () => { checkbox.click(); outside!() })
     },
   }
 }
@@ -108,7 +105,7 @@ describe('Activity auto-approval rules', () => {
     const atMount = panel.ruleReads
     expect(atMount).toBeGreaterThan(0)
 
-    // `setEnabled` re-reads the list on its way out, and its end of the channel then bumps the
+    // `setEnabled` re-reads the list on its way out, and its report to the channel then bumps the
     // trigger for the other surfaces. Reacting to that bump here would read it again for no new
     // answer.
     await panel.toggle()
@@ -124,8 +121,7 @@ describe('Activity auto-approval rules', () => {
     const panel = await mount()
     const atMount = panel.ruleReads
 
-    const endElsewhere = panel.beginElsewhere()
-    await panel.toggleWith(endElsewhere)
+    await panel.toggleWithChangeElsewhere()
 
     // An interleaved completion, not a coalesced one: `act()` flushes each separately, so the
     // two land in different renders and a boolean flag in place of the counter would pass this

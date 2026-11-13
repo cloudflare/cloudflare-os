@@ -2613,8 +2613,7 @@ interface ChatInterfaceProps {
   onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
   // Shared with the Activity pane, which is the other surface that changes these rules. Rules
   // are not subscribable (listAutoApprovedActionKinds is a one-shot read), so without this a
-  // rule changed there would stay stale here until the chat remounts -- and the tray's bulk run
-  // would not know that a change is in flight at all.
+  // rule changed there would stay stale here until the chat remounts.
   autoApproval?: AutoApprovalChannel;
   // Opens the Activity pane, which is where a standing auto-approval rule is turned off again.
   onViewActivity?: (view: ActivityView) => void;
@@ -4684,7 +4683,7 @@ function ChatInterface({
   // server applies the now-eligible pending action(s) via its drain, and the action state flips to
   // "approved" through the actions subscription -- so we don't optimistically mutate it here.
   const { alwaysApproveTag, isTagAutoApproved, forgetOptimisticTags } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.begin);
+    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed);
 
   const { resolveAction, creationAccountModal } =
     useResolveAction(overseer, setProcessingActions, (actionId, state) => {
@@ -4723,30 +4722,19 @@ function ChatInterface({
     refresh: refreshAutoApproval,
   } = useStandingRules(overseer, trayGroups.length > 0);
   const autoApproveReload = autoApproval?.reloadTrigger;
-  // Which change this component's rule list was read for. Anything newer means the list predates
-  // a change that has already landed on the server -- and the drain the kernel started with it --
-  // so the list is not something a run may act on. State rather than an effect's bookkeeping,
-  // because it has to be stale in the very render the trigger changes: the surface that made the
-  // change clears its own in-flight mark at the same moment, and an effect scheduled afterwards
-  // would leave a commit where the stale list reads as current.
-  const [rulesReadFor, setRulesReadFor] = useState(autoApproveReload);
+  // Re-read whenever a change settles anywhere in this view. The refreshed list is authoritative,
+  // including about a rule someone has just turned off, so the optimistic overlay has nothing left
+  // to add and must stop outranking it -- unless the read was overtaken or failed, which set
+  // nothing: retiring the overlay against a list that never landed would read a just-enabled rule
+  // as off.
+  const rulesReadFor = useRef(autoApproveReload);
   useEffect(() => {
-    if (autoApproveReload === rulesReadFor) return;
-    // The refreshed list is authoritative, including about a rule someone has just turned off,
-    // so the optimistic overlay has nothing left to add and must stop outranking it. Unless this
-    // refresh was overtaken by a later one, which set nothing: retiring the overlay against a
-    // list that never landed would read a just-enabled rule as off.
+    if (autoApproveReload === rulesReadFor.current) return;
+    rulesReadFor.current = autoApproveReload;
     void refreshAutoApproval().then(applied => {
-      // Only a read that actually set the list has read this change. A superseded one set
-      // nothing, and marking its change read would call the list current while the read that
-      // overtook it is still out -- with the pre-change list still on screen. A failed one sets
-      // nothing either, and leaves the rules unready until a read succeeds, which is the side
-      // to fail on.
-      if (!applied) return;
-      forgetOptimisticTags();
-      setRulesReadFor(autoApproveReload);
+      if (applied) forgetOptimisticTags();
     });
-  }, [autoApproveReload, rulesReadFor, refreshAutoApproval, forgetOptimisticTags]);
+  }, [autoApproveReload, refreshAutoApproval, forgetOptimisticTags]);
 
   const autoApprovalRules: AutoApprovalRules = useMemo(() => ({
     // A rule enabled in this session counts before the catalog is re-read, so the affordance
@@ -4766,11 +4754,9 @@ function ChatInterface({
   const trayUnavailable = workspacePendingStatus !== "ready";
   // Bulk needs the rule list too. Half-loaded it reports every request as a manual gate, and a
   // run reading it that way races the drain to the requests it is about to take. The run reads
-  // this as it goes, not only at the click: a refresh that fails mid-run clears the list, and a
-  // rule change made anywhere in this view puts the kernel's drain ahead of every list here until
-  // it settles. Only the rule list: the vendor catalog beside it is for logos and gates nothing.
-  const autoApprovalRulesReady = !autoApprovalLoading && !autoApprovalLoadError &&
-    autoApproval?.changing !== true && rulesReadFor === autoApproveReload;
+  // this as it goes, not only at the click, since a refresh that fails mid-run clears the list.
+  // Only the rule list: the vendor catalog beside it is for logos and gates nothing.
+  const autoApprovalRulesReady = !autoApprovalLoading && !autoApprovalLoadError;
   const bulkReady = pendingSnapshotReady && autoApprovalRulesReady;
   const actionOutcome = useActionOutcomes(overseer);
   const bulkResolve = useBulkResolve(overseer, {
