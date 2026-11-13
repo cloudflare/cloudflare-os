@@ -29,11 +29,14 @@ const OUTLINE_CLASS =
 export const ChatAttachmentCard = ({
   attachment,
   prominent,
+  inlineImages = false,
   loadContent,
   onOpen,
 }: {
   attachment: ChatAttachmentRef;
   prominent: boolean;
+  /** Keep generated images whole and readable even when an answer contains several. */
+  inlineImages?: boolean;
   loadContent: () => Promise<Uint8Array>;
   onOpen: () => void;
 }) => {
@@ -50,7 +53,7 @@ export const ChatAttachmentCard = ({
     <Tooltip content={name} side="top" asChild>
       <div
         ref={ref}
-        className={`${CARD_CLASS} ${showsImage && prominent ? "max-w-full" : SQUARE_CLASS}`}
+        className={`${CARD_CLASS} ${showsImage && (prominent || inlineImages) ? "max-w-full" : SQUARE_CLASS}`}
       >
         {showsImage ? (
           <img
@@ -58,7 +61,9 @@ export const ChatAttachmentCard = ({
             alt=""
             loading="lazy"
             onError={() => setImageFailed(true)}
-            className={prominent
+            className={inlineImages
+              ? "block max-h-[512px] w-auto max-w-full object-contain sm:max-w-[512px]"
+              : prominent
               ? "block max-h-[220px] min-h-[90px] w-auto min-w-[90px] max-w-full object-cover sm:max-w-[320px]"
               : "block h-full w-full object-cover"}
           />
