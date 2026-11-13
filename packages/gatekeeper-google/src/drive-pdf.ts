@@ -243,11 +243,16 @@ const UNREAD_ENCODINGS = {
 /** How many bands a rendered page is asked for in: each is one image for the model to read. */
 const BANDS = 4;
 /**
- * The lines of writing past which the renderer is asked to cut a band once more, or `undefined`
- * to ask for no such cut. The renderer counts lines only on a page that is upright (see
- * `RenderOptions.denseLines`), so a number here is to be measured on scans, which seldom are.
+ * The lines of writing past which the renderer is asked to cut a band once more, so that a
+ * closely written page is read in up to `RENDER_LIMITS.bands` smaller images. Measured on a
+ * generated page of small print (1,236 words): in four bands the model got 5 to 8 words wrong
+ * and, in two reads of six, left a whole clause out of the tallest band; cut past 14 lines, into
+ * six bands, 2 to 4, and no clause, for two calls more. 14 is the largest number that cuts that
+ * page; of seven other test pages it cuts only a table's, once. The renderer counts lines only
+ * on a page that is upright (see `RenderOptions.denseLines`), so a scan that is turned a degree
+ * keeps its four bands.
  */
-const DENSE_LINES = undefined as number | undefined;
+const DENSE_LINES = 14;
 /** Bytes of a rendered band's rows handed to its PNG at a time. */
 const BAND_STEP_BYTES = 64 * 1024;
 
@@ -623,7 +628,7 @@ function renderedPdf(
   let rendered = 0;
   /** What is being done with the PDF, or was last, settled either way. */
   let turn: Promise<void> = Promise.resolve();
-  let options = { bands: BANDS, ...(DENSE_LINES === undefined ? {} : { denseLines: DENSE_LINES }) };
+  let options = { bands: BANDS, denseLines: DENSE_LINES };
   let dispose = () => {
     document?.[Symbol.dispose]();
     document = undefined;

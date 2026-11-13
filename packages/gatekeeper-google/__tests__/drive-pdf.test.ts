@@ -1394,7 +1394,7 @@ describe("pdfToText routing a PDF without text", () => {
     expect(asked).toEqual([whole(SCAN)]);
     expect(state.opens).toEqual([{ bytes: SCAN.bytes, size: SCAN.bytes.byteLength }]);
     expect(state.documents[0]!.asked).toStrictEqual([
-      { index: 0, options: { bands: 4 } }, { index: 1, options: { bands: 4 } },
+      { index: 0, options: { bands: 4, denseLines: 14 } }, { index: 1, options: { bands: 4, denseLines: 14 } },
     ]);
     // Each band is a grey PNG of its own rows, asked for as a band, and no page image is sent.
     expect(bands.map(({ shade }) => shade).toSorted()).toEqual([11, 12, 21]);
