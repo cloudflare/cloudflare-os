@@ -1037,7 +1037,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.15px] text-kumo-subtle">
               {target.kind === 'gadget'
-                ? 'People you add can use this gadget on its own, without seeing anything else in the workspace.'
+                ? 'People you add can use this gadget without seeing anything else in the workspace.'
                 : ownerInvitesOnly
                   ? 'People you add can create chats and edit gadgets.'
                   : 'People you add can create chats, edit gadgets, and invite other users.'}
