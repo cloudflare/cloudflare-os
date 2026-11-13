@@ -624,7 +624,8 @@ function allowChanges({ ensureResources, setValues, ui }: Context, known: DriveW
 
 const WRITE_PROMPT = "Read and write needs one more permission from Google. Google will ask to " +
   "let this app \"See, edit, create, and delete all your Google Drive files\". It is used only " +
-  "for changes you approve: a connection still reaches only what you choose.";
+  "for changes you approve: a connection still reaches only what you choose. To connect without " +
+  "it, choose Read only under Access, below the list.";
 
 /**
  * Follows the prompt on a card that lacks an editable type. The consent asks again for everything
@@ -634,35 +635,38 @@ const RESTART_HINT = "Allowing it can reset what you chose here: if it does, cho
 
 const PRESET_READY = "Read and write access is chosen for this connection. To change it, see " +
   "Access, below the list.";
-const PRESET_PENDING = "Read and write access is chosen for this connection, and needs one more " +
-  "step. See Access, below the list.";
 
 const PRESET_CAPPED =
   "Your organization keeps Google Drive read only, so this connection will be read only.";
 
 /**
- * Says, as the form's first line, a level the resource URL chose and the user has not: the choice
- * itself, and what it still needs of the account, sit below the list. Where the deployment does not
- * offer that level, it says that the connection will be read only.
+ * Says, as the form's first line, a level the resource URL chose and the user has not, once the
+ * account allows it: the choice itself sits below the list. Until then {@link writeNotice}, just
+ * under this line, says what it still needs. Where the deployment does not offer that level, it
+ * says that the connection will be read only.
  */
 function presetNotice(context: Context) {
   const { values, acceptedResourceUrlPatterns: accepted } = context;
   if (presetCapped && bindsDrive(values.target, accepted)) return <Notice>{PRESET_CAPPED}</Notice>;
-  if (!presetWrite || !writing(values, accepted)) return null;
-  return <Notice>{writes.known?.held ? PRESET_READY : PRESET_PENDING}</Notice>;
+  if (!presetWrite || !writing(values, accepted) || !writes.known?.held) return null;
+  return <Notice>{PRESET_READY}</Notice>;
 }
 
 /**
- * The access choice, for a target that connects as a Drive type, where the deployment offers one.
  * Read and write is the default, so the account is asked whether it allows changes once a Drive
- * target is first chosen with it.
+ * target is first chosen with it. Asked before anything is drawn, so no notice reads `writes` as
+ * a check that never ran.
  */
-function accessField(context: Context) {
-  const { values, acceptedResourceUrlPatterns: accepted, ui, setValues } = context;
-  if (offer.known !== true || !bindsDrive(values.target, accepted)) return null;
+function startWriteCheck({ values, acceptedResourceUrlPatterns: accepted, ui, setValues }: Context) {
   if (writing(values, accepted) && !writes.known && writes.busy === undefined && !writes.error) {
     void checkWrites(ui, () => setValues({}));
   }
+}
+
+/** The access choice, for a target that connects as a Drive type, where the deployment offers one. */
+function accessField(context: Context) {
+  const { values, acceptedResourceUrlPatterns: accepted } = context;
+  if (offer.known !== true || !bindsDrive(values.target, accepted)) return null;
   return <Field label="Access">
     <RadioCards
       value={values.access === "write" ? "write" : "read"}
@@ -675,7 +679,10 @@ function accessField(context: Context) {
   </Field>;
 }
 
-/** What a read and write choice still needs of the account, with the one step that gets it. */
+/**
+ * What a read and write choice still needs of the account, with the one step that gets it. Shown
+ * above the list, since until the account allows changes nothing can be connected.
+ */
 function writeNotice(context: Context) {
   if (!writing(context.values, context.acceptedResourceUrlPatterns)) return null;
   const { known, busy, slow, error, allowed } = writes;
@@ -805,9 +812,11 @@ export default {
   render(context) {
     const { values: { target = null }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
     void askOffer(ui, () => setValues({}));
+    startWriteCheck(context);
     const pending = access;
     return <Section>
       {presetNotice(context)}
+      {writeNotice(context)}
       <Field label="What to connect">
         <HierarchyPicker
           name="target"
@@ -842,7 +851,6 @@ export default {
       </Field>
       {officeNotices(context)}
       {accessField(context)}
-      {writeNotice(context)}
       {pending && <Notice tone={pending.note?.tone} action={{ label: "Allow access", onClick: () => void allow(context, pending.grant) }}>
         {pending.note?.text ?? "Google will ask to let this app \"View and download all your Drive files\". It is used " +
           "only to list your shared drives: a connection still reaches only what you choose."}

@@ -266,12 +266,11 @@ describe("the Drive picker's access choice", () => {
   ];
   const WRITE_PROMPT = "Read and write needs one more permission from Google. Google will ask to " +
     "let this app \"See, edit, create, and delete all your Google Drive files\". It is used only " +
-    "for changes you approve: a connection still reaches only what you choose.";
+    "for changes you approve: a connection still reaches only what you choose. To connect without " +
+    "it, choose Read only under Access, below the list.";
   const RESTART_HINT = "Allowing it can reset what you chose here: if it does, choose again.";
   const PRESET_READY = "Read and write access is chosen for this connection. To change it, see " +
     "Access, below the list.";
-  const PRESET_PENDING = "Read and write access is chosen for this connection, and needs one more " +
-    "step. See Access, below the list.";
   const WAITING = "Waiting for permission in Google's window…";
   const CHECKING = "Checking whether changes are allowed…";
   const ALLOWED = "Changes are allowed.";
@@ -296,7 +295,7 @@ describe("the Drive picker's access choice", () => {
 
     for (const target of ["drive", "folder:F", "file:F"]) {
       frame.choose(target);
-      expect(frame.order(), target).toEqual(["HierarchyPicker", "RadioCards"]);
+      expect(frame.order().slice(-2), target).toEqual(["HierarchyPicker", "RadioCards"]);
       expect(frame.access(), target).toEqual({ value: "write", options: OPTIONS, onChange: expect.any(Function) });
     }
 
@@ -356,6 +355,17 @@ describe("the Drive picker's access choice", () => {
     expect(frame.url()).toBe(WRITE_URL);
     expect(frame.notices()).toEqual([]);
     expect(frame.ensureResources).not.toHaveBeenCalled();
+  });
+
+  it("puts what Read and write still needs above the list, where the choice is made", async () => {
+    for (const target of ["drive", "folder:F", "file:F"]) {
+      const frame = await open();
+      frame.choose(target);
+      await settle();
+      expect(frame.order(), target).toEqual([WRITE_PROMPT, "HierarchyPicker", "RadioCards"]);
+      expect(frame.action(), target).toMatchObject({ label: "Allow changes" });
+      expect(frame.ready(), target).toBe(false);
+    }
   });
 
   // A grant no code holds, so a picker that kept its own copy of the writes grant would ask for another.
@@ -662,16 +672,16 @@ describe("the Drive picker's access choice", () => {
     await chooseWrite(frame);
     expect(frame.notices()).toEqual([...info(WRITE_PROMPT), GRANT_NOTICE]);
 
-    // A file's own notice comes before what its access choice needs.
+    // What its access choice needs comes first, above the list; a file's own notice stays below it.
     const asFile = await open([FILE]);
     asFile.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [NATIVE_DOC] });
     await asFile.list("folder:A");
     asFile.choose("doc:D");
     asFile.chooseAccess("write");
     await settle();
-    expect(asFile.notices()).toEqual(info(AS_DRIVE_FILE, WRITE_PROMPT));
-    // And before the cards: the Access field sits below the picker and the file's notice.
-    expect(asFile.order()).toEqual(["HierarchyPicker", AS_DRIVE_FILE, "RadioCards", WRITE_PROMPT]);
+    expect(asFile.notices()).toEqual(info(WRITE_PROMPT, AS_DRIVE_FILE));
+    // The Access field sits below the picker and the file's notice.
+    expect(asFile.order()).toEqual([WRITE_PROMPT, "HierarchyPicker", AS_DRIVE_FILE, "RadioCards"]);
 
     // The confirmation stays when the shared-drives notice then appears after it.
     const allowed = await open();
@@ -699,7 +709,7 @@ describe("the Drive picker's access choice", () => {
 
     const missing = await open();
     await missing.prefill(WRITE_URL);
-    expect(missing.notices()).toEqual(info(PRESET_PENDING, WRITE_PROMPT));
+    expect(missing.notices()).toEqual(info(WRITE_PROMPT));
     expect(missing.action()).toMatchObject({ label: "Allow changes" });
     expect(missing.ready()).toBe(false);
 
@@ -707,8 +717,7 @@ describe("the Drive picker's access choice", () => {
     failing.ui.getWriteAccess.mockRejectedValueOnce(new Error("Drive is unavailable."));
     await failing.prefill(WRITE_URL);
     expect(failing.values()).toEqual({ target: "folder:F", access: "write" });
-    expect(failing.notices()).toEqual(
-      [...info(PRESET_PENDING), { tone: "error", text: "Drive is unavailable." }]);
+    expect(failing.notices()).toEqual([{ tone: "error", text: "Drive is unavailable." }]);
     expect(failing.action()).toMatchObject({ label: "Check again" });
     expect(failing.ready()).toBe(false);
 
@@ -724,7 +733,7 @@ describe("the Drive picker's access choice", () => {
   it("waits for the deployment's answer when the form opens on a read and write URL", async () => {
     const frame = await open(undefined, { openOn: WRITE_URL });
     expect(frame.prefilled).toEqual({ target: "folder:F", access: "write" });
-    expect(frame.order()).toEqual([PRESET_PENDING, "HierarchyPicker", "RadioCards", WRITE_PROMPT]);
+    expect(frame.order()).toEqual([WRITE_PROMPT, "HierarchyPicker", "RadioCards"]);
     expect(frame.ready()).toBe(false);
     // The first render finds the answer the pre-fill waited for.
     expect(frame.ui.offersWriteAccess).toHaveBeenCalledTimes(1);
@@ -762,7 +771,7 @@ describe("the Drive picker's access choice", () => {
     await expect(asked.prefill("https://docs.google.com/spreadsheets/d/S1/edit?access=write"))
       .resolves.toEqual({ target: "sheets:S1", access: "write" });
     expect(asked.ui.getWriteAccess).toHaveBeenCalledTimes(1);
-    expect(asked.notices()).toEqual(info(PRESET_PENDING, AS_DRIVE_FILE, WRITE_PROMPT));
+    expect(asked.notices()).toEqual(info(WRITE_PROMPT, AS_DRIVE_FILE));
   });
 
   it("says the choice may have to be made again on a card that lacks an editable type", async () => {
@@ -827,20 +836,20 @@ describe("the Drive picker's access choice", () => {
 
     const missing = await open();
     await missing.prefill(WRITE_URL);
-    expect(missing.order()).toEqual([PRESET_PENDING, "HierarchyPicker", "RadioCards", WRITE_PROMPT]);
+    // Until the account allows it, the first line is the step it still needs.
+    expect(missing.order()).toEqual([WRITE_PROMPT, "HierarchyPicker", "RadioCards"]);
     expect(missing.ready()).toBe(false);
-    // Allowing changes is not a choice of level: the line stays, and says the form is ready.
+    // Allowing changes is not a choice of level: the line then says the form is ready.
     missing.action().onClick();
     missing.ui.getWriteAccess.mockResolvedValue(held());
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(missing.order()).toEqual([PRESET_READY, "HierarchyPicker", "RadioCards", ALLOWED]);
+    expect(missing.order()).toEqual([PRESET_READY, ALLOWED, "HierarchyPicker", "RadioCards"]);
     expect(missing.ready()).toBe(true);
 
     const failing = await open();
     failing.ui.getWriteAccess.mockRejectedValueOnce(new Error("Drive is unavailable."));
     await failing.prefill(WRITE_URL);
-    expect(failing.notices()).toEqual(
-      [...info(PRESET_PENDING), { tone: "error", text: "Drive is unavailable." }]);
+    expect(failing.notices()).toEqual([{ tone: "error", text: "Drive is unavailable." }]);
   });
 
   // Each call changes the value, as a real card's does: the cards report nothing for the one already selected.
@@ -927,8 +936,8 @@ describe("the Drive picker where the deployment keeps Drive read-only", () => {
 
     answer.resolve(true);
     await answered();
-    // Read and write is the default once offered, so what it needs of the account follows the choice.
-    expect(frame.order().slice(0, 2)).toEqual(["HierarchyPicker", "RadioCards"]);
+    // Read and write is the default once offered, so what it needs of the account comes above the list.
+    expect(frame.order().slice(-2)).toEqual(["HierarchyPicker", "RadioCards"]);
     expect(frame.access()).toMatchObject({ value: "write" });
     expect(frame.ui.offersWriteAccess).toHaveBeenCalledTimes(1);
 
@@ -947,7 +956,7 @@ describe("the Drive picker where the deployment keeps Drive read-only", () => {
     failing.choose("folder:G");
     expect(failing.ui.offersWriteAccess).toHaveBeenCalledTimes(2);
     await answered();
-    expect(failing.order().slice(0, 2)).toEqual(["HierarchyPicker", "RadioCards"]);
+    expect(failing.order().slice(-2)).toEqual(["HierarchyPicker", "RadioCards"]);
   });
 
   it("opens read-only, and says why, when a resource URL asks for Read and write", async () => {
