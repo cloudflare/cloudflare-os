@@ -3,8 +3,8 @@ export type ConnectionNoticeSnapshot =
   | {
       status: 'reconnecting'
       /**
-       * Bumped each time it comes up, and each time something asked for could not be done
-       * meanwhile: whoever shows it takes each as a fresh alarm.
+       * How many times, since the connection was lost, something asked for could not be done:
+       * whoever shows it takes each as a fresh alarm. Coming up on its own is not one.
        */
       alarms: number
       /** It has been a while: the server may be down rather than the connection dropped. */
@@ -67,11 +67,12 @@ export class ConnectionNotice {
     this.#dismissed = false
     this.#waited = false
     this.#long = false
+    this.#alarms = 0
     this.#clearTimers()
     // Lost again while saying it was back, it carries straight on.
-    if (this.#snapshot.status === 'reconnected') this.#raise()
+    if (this.#snapshot.status === 'reconnected') this.#publish(this.#reconnecting())
     else this.#after(SHOW_AFTER, () => {
-      if (this.#snapshot.status === 'hidden' && !this.#dismissed) this.#raise()
+      if (this.#snapshot.status === 'hidden' && !this.#dismissed) this.#publish(this.#reconnecting())
     })
     this.#after(LONG_AFTER, () => {
       this.#long = true
@@ -109,14 +110,10 @@ export class ConnectionNotice {
   blocked = (): boolean => {
     if (!this.#down) return false
     this.#waited = true
-    this.#raise()
-    return true
-  }
-
-  #raise() {
     this.#alarms++
     this.#dismissed = false
     this.#publish(this.#reconnecting())
+    return true
   }
 
   /** Publishes what changed, while it is showing that it is reconnecting. */

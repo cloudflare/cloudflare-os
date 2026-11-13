@@ -38,15 +38,18 @@ export const ConnectionIslandPreview = () => {
   const [offline, setOffline] = useState(false)
   const [blocked, setBlocked] = useState<string>()
   const [shown, setShown] = useState<Shown>('reconnecting')
-  // Bumped for a fresh alarm, as something that could not be done would.
-  const [alarms, setAlarms] = useState(1)
+  // Bumped for a fresh alarm, as something that could not be done would; none yet in each tab.
+  const [alarms, setAlarms] = useState(0)
   const island = stateOf(shown, alarms)
 
   return (
     <>
-      <Section title="ConnectionIsland (each state, from the tabs: shaken by an alarm, then thinking while it reconnects or sad once it can’t, and happy once back; from Hidden it opens out of the top edge of the box, and goes back into it)">
+      <Section title="ConnectionIsland (each state, from the tabs: thinking from the start while it reconnects or sad once it can’t, shaken by an alarm, and happy once back; from Hidden it opens out of the top edge of the box, and goes back into it)">
         <div className="flex flex-wrap items-center gap-4">
-          <Tabs size="sm" value={shown} onValueChange={(value) => setShown(value as Shown)} tabs={TABS} />
+          <Tabs size="sm" value={shown} onValueChange={(value) => {
+              setShown(value as Shown)
+              setAlarms(0)
+            }} tabs={TABS} />
           <Button disabled={island?.status !== 'reconnecting'} onClick={() => setAlarms((current) => current + 1)}>Raise an alarm</Button>
         </div>
         {/* It opens out of a point this far above it, which is the box's top edge. */}

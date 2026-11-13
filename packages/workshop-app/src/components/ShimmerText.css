@@ -1,0 +1,20 @@
+/* A band of the text's own colour sweeping across it, over and over, with the rest of it dimmed:
+   drawn as a background clipped to the glyphs, so it takes whatever colour the text is given. The
+   fill, not `color`, is made transparent, so `currentColor` is still the text's. Still for whoever
+   asks for reduced motion, and then simply the text. */
+@media (prefers-reduced-motion: no-preference) {
+  .shimmer-text[data-active] {
+    --shimmer-dim: color-mix(in oklab, currentColor 50%, transparent);
+    background-image: linear-gradient(90deg, var(--shimmer-dim) 40%, currentColor 50%, var(--shimmer-dim) 60%);
+    /* Three times as wide as the text, so the band starts and ends off it. */
+    background-size: 300% 100%;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmer-text 2s linear infinite;
+  }
+}
+
+@keyframes shimmer-text {
+  from { background-position: 100% 0; }
+  to { background-position: 0 0; }
+}

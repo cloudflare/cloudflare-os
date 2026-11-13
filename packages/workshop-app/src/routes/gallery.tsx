@@ -13,6 +13,7 @@ import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
+import { ShimmerText } from '@/components/ShimmerText'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
@@ -48,6 +49,20 @@ const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
   { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
 ]
+
+const ShimmerTextPreview = () => {
+  const [active, setActive] = useState(true)
+  return (
+    <div className="flex flex-wrap items-center gap-6">
+      <ShimmerText active={active} className="text-base text-kumo-default">Reconnecting…</ShimmerText>
+      <ShimmerText active={active} className="text-sm text-kumo-subtle">Running code…</ShimmerText>
+      <span className="rounded-full bg-kumo-contrast px-4 py-2 text-kumo-inverse">
+        <ShimmerText active={active}>Reconnecting…</ShimmerText>
+      </span>
+      <Switch label="Active" checked={active} onCheckedChange={setActive} />
+    </div>
+  )
+}
 
 const AttachmentPreview = () => {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => [
@@ -176,6 +191,9 @@ function Gallery() {
         <Button icon={MagnifyingGlassIcon} aria-label="Search" />
         <Button variant="ghost">Ghost</Button>
         <Button variant="primary">Primary</Button>
+      </Section>
+      <Section title="ShimmerText (something under way, in the colour of what it is in; still with reduced motion, or not active)">
+        <ShimmerTextPreview />
       </Section>
       <Section title="DropdownMenu (side, align, trigger, in-place and keep-trigger toggles)">
         <DropdownMenuPlayground />

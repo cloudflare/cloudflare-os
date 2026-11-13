@@ -60,8 +60,8 @@ says it is loading until the new `api` is there.
 What the user is told is `RpcGate`'s `ConnectionNotice` (plain, tested), shown by
 `ConnectionIsland` at the top of the window: only once a drop has lasted a moment, opening out of
 the window's top edge the way a menu opens (its CSS keeps to `DropdownMenu.css`'s formulas), with
-the mascot shaken by each alarm, then thinking while it reconnects or sad once it is offline or
-cannot reach the server, and happy once it is back. A swipe up puts it away. What the user asks for
+the mascot thinking from the start while it reconnects, or sad once it is offline or cannot reach
+the server, shaken (and the island with it) by each thing that could not be done, and happy once it is back. A swipe up puts it away. What the user asks for
 meanwhile (send, stop, approve, rename, start a chat) is not tried and fails nothing: ask the
 notice first (`useConnectionNotice().blocked()`), which brings the island back with a shake, and
 leave everything as it was, a draft included. Do the same for anything new the user can ask for.

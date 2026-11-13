@@ -30,6 +30,11 @@ export type MascotProps = {
    * told otherwise). Nearer than that it leans in more the closer the pointer is.
    */
   reach?: number
+  /**
+   * Called just before its sparkle starts shaking in error, at each burst: for whatever it is on to
+   * be shaken with it.
+   */
+  onShake?: () => void
   /** Give it a width; its height follows. Its motion scales with it. */
   className?: string
 }
@@ -60,7 +65,7 @@ const describe = (emotion: MascotEmotion) =>
  * reduced motion, and rests while off screen. It is drawn in the colours of the viewer's own
  * messages: their fill for the body, their text colour for the sparkle and the face.
  */
-export const Mascot = ({ emotion, shown = true, interactive, color = 'contrast', reach = DEFAULT_REACH, className }: MascotProps) => {
+export const Mascot = ({ emotion, shown = true, interactive, color = 'contrast', reach = DEFAULT_REACH, onShake, className }: MascotProps) => {
   const frame = useRef<HTMLDivElement>(null)
   const motion = useRef<MascotMotion>(undefined)
   const interior = useId()
@@ -75,6 +80,7 @@ export const Mascot = ({ emotion, shown = true, interactive, color = 'contrast',
   useLayoutEffect(() => motion.current?.setShown(shown), [shown, interactive])
   useEffect(() => motion.current?.setEmotion(emotion), [emotion, interactive])
   useEffect(() => motion.current?.setReach(reach), [reach, interactive])
+  useEffect(() => motion.current?.setOnShake(onShake), [onShake, interactive])
 
   const colors = COLORS[color]
   const drawing = (

@@ -47,6 +47,9 @@
   /* What is drawn in the page's opposite (the viewer's own messages, the primary button, the
      mascot): in light a near black that is softer than Kumo's, which is all but black. */
   --color-kumo-contrast: light-dark(#222, oklch(98.5% 0 0));
+  /* The connection island is the window's own, as a phone's is: in light all black, and flipped
+     in dark with the rest of what is in contrast. */
+  --color-island: light-dark(#000, oklch(98.5% 0 0));
 
   /* The primary colour is the logo's orange (#FF5C2E). Kumo ships blue for the fill and hover and a
      different orange for brand text, so all three are set. It is the same in dark, where Kumo would

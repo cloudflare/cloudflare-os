@@ -232,12 +232,12 @@ describe('scenarios', () => {
     // Said only once it has lasted a moment.
     expect(notice.getSnapshot().status).toBe('hidden')
     await vi.advanceTimersByTimeAsync(SHOW_AFTER)
-    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 1 })
+    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 0 })
 
     // Put away, it comes back when a message cannot be sent, which is kept to send again.
     notice.dismiss()
     expect(await session.send('Thanks!', AGENT.id)).toBe(false)
-    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 2 })
+    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 1 })
     expect(ready().sendError).toBeUndefined()
 
     // The agent finishes meanwhile, unheard.

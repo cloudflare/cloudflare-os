@@ -1,13 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { animate, AnimatePresence, motion, useMotionValue, usePresence, useReducedMotion, type MotionStyle, type PanInfo } from 'motion/react'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
+import { ShimmerText } from '@/components/ShimmerText'
 import { springCurve } from '@/components/springCurve'
 import './ConnectionIsland.css'
 
 export type ConnectionIslandState =
   | {
       status: 'reconnecting'
-      /** Bumped for each fresh alarm: it coming up, or something that could not be done meanwhile. */
+      /** Bumped for each fresh alarm, something that could not be done meanwhile; 0 for none yet. */
       alarms: number
       /** It has been a while: the server may be down rather than the connection dropped. */
       long: boolean
@@ -53,6 +54,11 @@ const CLOSE = { duration: 0.31, ease: [0.4, 0, 0.2, 1] } as const
 const ARRIVAL_SPEED = (HEIGHT + ORIGIN_ABOVE * 2) / 2 + ORIGIN_ABOVE
 /** Swiped away, it carries on up at least this fast, in pixels a second, out of the window. */
 const FLING = 900
+/**
+ * Knocked sideways as the mascot's sparkle starts shaking: a spring kicked from rest, which goes
+ * some 4px and rocks back and forth about three times, a little less each time, as it settles.
+ */
+const KNOCK = { type: 'spring', velocity: 125, stiffness: 600, damping: 7.5 } as const
 // Pulled any way but up, it gives this much of the way, and springs back.
 const GIVE = 0.15
 // A wording's width is sprung to the way the menus' surfaces settle.
@@ -79,7 +85,9 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
   // The clock `ConnectionIsland.css` moves everything by: 0 closed, 1 open.
   const open = useMotionValue(reduced ? 1 : 0)
   // Dragged, and swiped away: then it goes the way it was flung, not back into the edge.
+  const x = useMotionValue(0)
   const y = useMotionValue(0)
+  const dragging = useRef(false)
   const flung = useRef<Promise<unknown>>(undefined)
 
   useLayoutEffect(() => {
@@ -87,6 +95,12 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
     const opening = animate(open, 1, { duration: OPEN.duration, ease: springCurve(RECOIL.down / ARRIVAL_SPEED, OPEN.peak) })
     return () => opening.stop()
   }, [open, reduced])
+
+  // Knocked either way with each shake of the mascot, unless it is being held.
+  const knock = () => {
+    if (reduced || dragging.current) return
+    animate(x, 0, { ...KNOCK, velocity: KNOCK.velocity * (Math.random() < 0.5 ? -1 : 1) })
+  }
 
   // Gone, it closes back into the edge before it is removed, unless it was swiped away.
   useEffect(() => {
@@ -134,7 +148,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
     '--island-origin-y': `${HEIGHT / 2}px`,
   } as CSSProperties
 
-  const endSwipe = (_event: PointerEvent, { offset, velocity }: PanInfo) => {
+  const endSwipe = ({ offset, velocity }: PanInfo) => {
     if (offset.y >= -SWIPE.distance && velocity.y >= -SWIPE.velocity) return
     // Out of the window, shadow and all, rather than back to where it was held.
     flung.current = animate(y, -(ORIGIN_ABOVE + HEIGHT) * 3, {
@@ -156,14 +170,20 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
       dragConstraints={{ top: 0, right: 0, bottom: 0, left: 0 }}
       // Up it follows the finger, to be flung away; any other way it only gives a little.
       dragElastic={{ top: 1, right: GIVE, bottom: GIVE, left: GIVE }}
-      onDragEnd={endSwipe}
+      onDragStart={() => {
+        dragging.current = true
+      }}
+      onDragEnd={(_event, info) => {
+        dragging.current = false
+        endSwipe(info)
+      }}
       onKeyDown={(event) => {
         if (event.key === 'Escape') onDismiss()
       }}
-      style={{ width, y, '--island-open': open, ...geometry } as MotionStyle}
+      style={{ width, x, y, '--island-open': open, ...geometry } as MotionStyle}
       className="connection-island group pointer-events-auto relative isolate h-11 cursor-grab touch-none outline-none select-none active:cursor-grabbing"
     >
-      <div aria-hidden="true" className="connection-island-surface pointer-events-none absolute -z-10 bg-kumo-contrast group-focus-visible:ring-2 group-focus-visible:ring-kumo-focus">
+      <div aria-hidden="true" className="connection-island-surface pointer-events-none absolute -z-10 bg-(--color-island) group-focus-visible:ring-2 group-focus-visible:ring-kumo-focus">
         <div className="connection-island-shadow absolute inset-0 rounded-[inherit] shadow-2xl" />
       </div>
       <div className="connection-island-content absolute inset-0 text-kumo-inverse">
@@ -174,7 +194,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
         */}
         <div ref={content} className="connection-island-items absolute top-0 left-0 flex h-11 w-max items-center gap-2 ps-2.5 pe-5 text-base font-medium">
           {/* Its drawing has room around it: at 32px wide the cloud itself is some 25px tall. */}
-          <Mascot emotion={emotion} color="inverse" className="w-8 shrink-0" />
+          <Mascot emotion={emotion} color="inverse" onShake={knock} className="w-8 shrink-0" />
           {/* Each wording blurs in over the last, in the same place, which leaves out of the way. */}
           <AnimatePresence initial={false} mode="popLayout">
             <motion.span
@@ -185,7 +205,8 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
               transition={reduced ? INSTANT : { duration: 0.2 }}
               className="whitespace-nowrap"
             >
-              {label}
+              {/* Swept while it is trying, as the mascot thinks; still once it cannot. */}
+              <ShimmerText active={state.status === 'reconnecting' && !state.long && !state.offline}>{label}</ShimmerText>
             </motion.span>
           </AnimatePresence>
         </div>
@@ -195,19 +216,21 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
 }
 
 /**
- * Shaken by each alarm, then thinking while it reconnects, or sad once it is offline or cannot
- * reach the server; happy once the connection is back.
+ * Thinking from the start while it reconnects, or sad once it is offline or cannot reach the
+ * server, and shaken by each alarm meanwhile; happy once the connection is back.
  */
 const useEmotion = (state: ConnectionIslandState): MascotEmotion => {
-  const alarms = state.status === 'reconnecting' ? state.alarms : undefined
-  // The alarm it has settled down after.
-  const [settled, setSettled] = useState<number>()
+  const alarms = state.status === 'reconnecting' ? state.alarms : 0
+  // The alarm it has settled down after; none once there are none, so that the next drop's first
+  // alarm is a fresh one.
+  const [settled, setSettled] = useState(0)
+  if (alarms === 0 && settled !== 0) setSettled(0)
   useEffect(() => {
-    if (alarms === undefined) return
+    if (alarms === 0) return
     const timer = setTimeout(() => setSettled(alarms), SHAKE_FOR)
     return () => clearTimeout(timer)
   }, [alarms])
   if (state.status === 'reconnected') return 'happy'
-  if (settled !== alarms) return 'error'
+  if (alarms !== settled) return 'error'
   return state.offline || state.long ? 'sad' : 'thinking'
 }
