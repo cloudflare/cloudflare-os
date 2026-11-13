@@ -5423,8 +5423,8 @@ class OverseerImpl implements AgentHooks {
   // the "is it pending?" check and reach the gatekeeper a second time.
   //
   // This method is synchronous, so no other request can run between the check and setting the
-  // mark. Callers should call it after their last other `await` and right before the gatekeeper
-  // call.
+  // mark. Callers must call it before they contact the gatekeeper. Since it checks the action's
+  // state itself, it can come earlier than that, as in applyPendingAction.
   claimDecision(id: number): Disposable {
     if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
       throw new Error(`Action is not pending: ${id}`);
