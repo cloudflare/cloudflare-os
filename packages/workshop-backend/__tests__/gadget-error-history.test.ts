@@ -569,7 +569,7 @@ describe("the tail of a gadget's Worker", () => {
 
   it("sends the workspace everything live and only the exceptions to keep", async () => {
     let overseer = fakeOverseer();
-    let props = { chatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
+    let props = { chatId: 2, keptChatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
                   errorLogId: ERROR_LOG_ID };
     await loopback(props, overseer).tail([traceItem()]);
 
@@ -602,6 +602,18 @@ describe("the tail of a gadget's Worker", () => {
     await loopback(props, overseer).tail([traceItem()]);
 
     expect(overseer.deliverGadgetLogs.mock.calls[0][0]).toBeNull();
+    expect(overseer.deliverGadgetExceptions.mock.calls[0][0]).toBeNull();
+  });
+
+  it("hands the exceptions over under the chat whose draft was loaded, not the one it was " +
+      "loaded for", async () => {
+    let overseer = fakeOverseer();
+    // A Worker of the mainline, loaded for a chat that proposed no change to the gadget.
+    let props = { chatId: 1, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
+                  errorLogId: ERROR_LOG_ID };
+    await loopback(props, overseer).tail([traceItem()]);
+
+    expect(overseer.deliverGadgetLogs.mock.calls[0][0]).toBe(1);
     expect(overseer.deliverGadgetExceptions.mock.calls[0][0]).toBeNull();
   });
 
@@ -656,7 +668,7 @@ describe("the tail of a gadget's Worker", () => {
 
   it("splits a streamed trace the same way", async () => {
     let overseer = fakeOverseer();
-    let props = { chatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
+    let props = { chatId: 2, keptChatId: 2, gadgetId: GADGET_ID, overseerId: OVERSEER_ID,
                   errorLogId: ERROR_LOG_ID };
     let handlers: any = await loopback(props, overseer).tailStream({} as never);
 
@@ -677,10 +689,13 @@ describe("the tail of a gadget's Worker", () => {
 });
 
 // Gives the synthetic trace to the loopback the workspace mints for a Worker it loads for
-// `chatId`, which carries `name` as the name of the log object.
-function tail(ws: Workspace, chatId: number | undefined, name: string): Promise<void> {
+// `chatId`, which carries `name` as the name of the log object, and `keptChatId` when the Worker
+// runs that chat's draft of the gadget.
+function tail(ws: Workspace, chatId: number | undefined, name: string, keptChatId?: number)
+    : Promise<void> {
   return ws.impl.ctx.exports.GadgetTailLoopback({
-    props: { chatId, gadgetId: GADGET_ID, overseerId: ws.state.id.toString(), errorLogId: name },
+    props: { chatId, keptChatId, gadgetId: GADGET_ID, overseerId: ws.state.id.toString(),
+             errorLogId: name },
   }).tail([traceItem()]);
 }
 
@@ -697,7 +712,7 @@ describe("a trace through the workspace's own tail", () => {
     // The mainline's Worker, the Worker of a chat that pins the gadget, and one loaded for a
     // chat that proposes no change to it (an export asked for under that chat).
     await tail(ws, undefined, name);
-    await tail(ws, 2, name);
+    await tail(ws, 2, name, 2);
     await tail(ws, 1, name);
 
     // Subscribers are told each batch whole, under the chat its tail carries.
@@ -1799,6 +1814,34 @@ describe("a gadget Worker's trace", () => {
     expect(live("hello")).toStrictEqual([null]);
     expect(texts({ entries: await kept(ws) }).join("\n")).not.toContain("hello");
     expect(await kept(ws)).toHaveLength(4);
+  }), GADGET_TEST_MS);
+
+  it("is kept under no chat from a Worker of the mainline, though the chat it was loaded for " +
+      "proposes a change before the exception arrives", () => withWorkspace(async ws => {
+    initialise(ws);
+    // An export handler that leaves a task which fails a while after it answered.
+    let slowJs = (prefix = "") => exportServerJs({ getExportFormats: `
+    this.ctx.waitUntil(new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("${prefix}slow formats failed")), 1500)));
+    return [${CSV_FORMAT}];` });
+    let commit = await addGadget(ws, GADGET_ID, { "server.js": slowJs() });
+    addChat(ws, 1);
+
+    // Chat 1 proposes nothing, so its export formats are read from the mainline's Worker.
+    expect(await ws.impl.getGadgetExportFormats(GADGET_ID, 1)).toMatchObject([{ id: "csv" }]);
+    // Its first change to the gadget lands while that Worker's task is still running.
+    await addDraft(ws, 1, commit, slowJs);
+    expect(await reported(ws, "slow formats failed")).toStrictEqual([]);
+
+    await vi.waitFor(async () => expect(await reported(ws, "slow formats failed"))
+        .toHaveLength(1), KEPT_SOON);
+    expect((await reported(ws, "slow formats failed"))[0]).toMatchObject({ chatId: null });
+
+    // The draft's Worker, loaded since, keeps its own under the chat.
+    expect(await ws.impl.getGadgetExportFormats(GADGET_ID, 1)).toMatchObject([{ id: "csv" }]);
+    await vi.waitFor(async () => expect(await reported(ws, "draft slow formats failed"))
+        .toHaveLength(1), KEPT_SOON);
+    expect((await reported(ws, "draft slow formats failed"))[0]).toMatchObject({ chatId: 1 });
   }), GADGET_TEST_MS);
 
   it("is not kept by the workspace its id names once the one that loaded its Worker is deleted",

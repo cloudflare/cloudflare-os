@@ -131,7 +131,7 @@ An entry is a `GadgetErrorEntry`:
 | --- | --- |
 | `time` | By the Workshop's clock: when the exception happened for a `"server"` entry, when the report arrived for a `"client"` one. |
 | `gadgetId` | The gadget the error is kept for. |
-| `chatId` | The chat whose draft of the gadget the code ran as, or null for the gadget's mainline. A chat that proposes no change to the gadget runs its mainline, so its errors are kept with null. |
+| `chatId` | The chat whose draft of the gadget the code ran as, or null for the gadget's mainline. A chat that proposes no change to the gadget runs its mainline, so its errors are kept with null, and stay so for code that was already running when the chat proposes its first. |
 | `source` | `"server"` or `"client"`: where the error was caught, not who chose its text. |
 | `userId` | On a `"client"` entry only: the user whose session reported it. |
 | `text` | What was thrown, redacted and then cut (see [Shaping and redaction](#shaping-and-redaction)). |
