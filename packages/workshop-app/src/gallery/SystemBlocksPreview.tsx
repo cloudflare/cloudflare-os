@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { ConnectionStatus } from '@/blocks/ConnectionStatus'
-import { Button } from '@/components/Button'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { SystemRow } from '@/blocks/SystemRow'
+import { Button } from '@/components/Button'
 import { useReport } from './previewState'
 import { Section } from './Section'
 

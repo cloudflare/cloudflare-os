@@ -1,9 +1,18 @@
 import { defineConfig } from 'vite-plus'
 
+/**
+ * workshop-app: imports of these folders of `src/`, whether by the `@/` alias or by a relative
+ * path from as deep as the app's folders go, which the alias alone would let through.
+ */
+const appFolders = (...folders: string[]) =>
+  folders.flatMap((folder) => [`@/${folder}/*`, `../${folder}/*`, `../../${folder}/*`, `../../../${folder}/*`])
+
 // workshop-app: the folders that talk to the backend. UI layers must not import them.
-const DATA_LAYERS = ['@/rpc/*', '@/chat/*', '@/workspaces/*', '@/aside/*', '@/library/*']
+const DATA_LAYERS = appFolders('rpc', 'chat', 'workspaces', 'aside', 'library')
 const DATA_LAYERS_MESSAGE =
   'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/, workspaces/, aside/ and library/, and routes connect it.'
+// workshop-app: the development-only gallery, which nothing that ships may import.
+const GALLERY = { group: appFolders('gallery'), message: 'The gallery is for development only.' }
 
 /**
  * Repo-wide toolchain config. Today this is the lint ruleset, moved here from `.oxlintrc.json` so
@@ -124,7 +133,8 @@ export default defineConfig({
         // workshop-app layering: components <- blocks <- layouts <- routes. Imports point down
         // only. An override replaces the base `no-restricted-imports` entry, so the `typescript`
         // restriction is repeated.
-        files: ['packages/workshop-app/src/components/**/*.{ts,tsx}'],
+        // `hooks/` holds feature-independent hooks, at the level of components.
+        files: ['packages/workshop-app/src/{components,hooks}/**/*.{ts,tsx}'],
         rules: {
           'no-restricted-imports': [
             'error',
@@ -132,10 +142,11 @@ export default defineConfig({
               paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
               patterns: [
                 {
-                  group: ['@/blocks/*', '@/layouts/*', '@/routes/*'],
+                  group: appFolders('blocks', 'layouts', 'routes'),
                   message: 'Components are the lowest layer; they cannot import blocks, layouts or routes.',
                 },
                 { group: DATA_LAYERS, message: DATA_LAYERS_MESSAGE },
+                GALLERY,
               ],
             },
           ],
@@ -150,10 +161,11 @@ export default defineConfig({
               paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
               patterns: [
                 {
-                  group: ['@/layouts/*', '@/routes/*'],
+                  group: appFolders('layouts', 'routes'),
                   message: 'Blocks compose components; they cannot import layouts or routes.',
                 },
                 { group: DATA_LAYERS, message: DATA_LAYERS_MESSAGE },
+                GALLERY,
               ],
             },
           ],
@@ -167,8 +179,9 @@ export default defineConfig({
             {
               paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
               patterns: [
-                { group: ['@/routes/*'], message: 'Layouts are composed by routes, not the reverse.' },
+                { group: appFolders('routes'), message: 'Layouts are composed by routes, not the reverse.' },
                 { group: DATA_LAYERS, message: DATA_LAYERS_MESSAGE },
+                GALLERY,
               ],
             },
           ],
@@ -182,7 +195,27 @@ export default defineConfig({
             'error',
             {
               paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
-              patterns: [{ group: ['@/routes/*'], message: 'Data code cannot import routes.' }],
+              patterns: [{ group: appFolders('routes'), message: 'Data code cannot import routes.' }, GALLERY],
+            },
+          ],
+        },
+      },
+      {
+        // Plain modules any layer may use: what a file is (`files/`) and what is kept on this
+        // device (`prefs/`). They know no UI and no backend.
+        files: ['packages/workshop-app/src/{files,prefs}/**/*.{ts,tsx}'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [{ name: 'typescript', allowTypeImports: true, message: 'Import `typescript6` instead.' }],
+              patterns: [
+                {
+                  group: appFolders('components', 'hooks', 'blocks', 'layouts', 'routes', 'gallery'),
+                  message: 'files/ and prefs/ are plain modules beneath every layer; they cannot import UI.',
+                },
+                { group: DATA_LAYERS, message: 'files/ and prefs/ are plain modules beneath every layer; they cannot import data code.' },
+              ],
             },
           ],
         },

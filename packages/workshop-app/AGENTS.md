@@ -12,6 +12,8 @@ Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old fronte
 ```text
 src/
   components/   Kumo wrappers and primitives; no product knowledge, no data
+  hooks/        Hooks any UI layer may use, at the level of components (the tab's title, an
+                object URL); no product knowledge, no data
   blocks/       Compositions of components for one purpose (a message, a composer, a list row)
   layouts/      Page structure: shell, sidebar, aside, toolbar pages. Arrange slots, know no content
   routes/       Route declarations; they connect the data folders below to the UI layers above
@@ -22,11 +24,18 @@ src/
                 messages to what is rendered, and `ChatPane`, which wires them to the UI blocks
   chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
   aside/        What is open beside the page (a file, an output), and the ways to open it
+  library/      Everything the user's workspaces have made (`useLibrary`), and the Library page
+
+  files/        What a file is, from its name and type; plain functions any layer may use
+  prefs/        What is kept on this device between visits (layout); plain, any layer may use
+  gallery/      The component gallery's previews, at `/gallery`. Development only
 ```
 
-UI imports point down only: components, then blocks, then layouts, then routes. The data folders
-(`rpc/`, `workspaces/`, `chat/`, `aside/`) are the only code that talks to the backend: UI layers cannot import
-them, and they cannot import routes. Lint enforces both (`vite.config.ts` at the repo root). Blocks
+UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`) are the only code that talks to the
+backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
+beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
+enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
 and layouts take plain typed props and callbacks.
 
 Put protocol logic in plain classes and functions with no React (like `ChatSession`), so it can be
