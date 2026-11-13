@@ -2112,3 +2112,669 @@ describe("a rendered PDF's text, however it ends", () => {
     expect(state.events).toEqual([]);
   });
 });
+
+// What Workers AI's toMarkdown returned for generated PDFs some of whose pages have text and some
+// none. A page that is an image alone, or blank, is its heading and line breaks.
+/** One page's text in those PDFs, and another's. */
+const SHEET_A = "Harbour ledger sheet A\nBerth A was let to the schooner Marrowfen for 14 days at 22.50 florins a day.\n" +
+  "The pilot's fee of 31.75 florins was entered against docket DK-5510-AB.\n";
+const SHEET_B = SHEET_A.replace("sheet A", "sheet B").replace("Berth A", "Berth B");
+/** Five pages: an image, text, an image, text, an image. */
+const IMAGE_FIRST_MIDDLE_LAST = `${PREAMBLE}### Page 1\n\n\n\n\n### Page 2\n${SHEET_A}\n\n\n### Page 3\n\n\n\n\n` +
+  `### Page 4\n${SHEET_B}\n\n\n### Page 5\n\n\n`;
+/** Two images, then text. */
+const LEADING_IMAGES = `${PREAMBLE}### Page 1\n\n\n\n\n### Page 2\n\n\n\n\n### Page 3\n${SHEET_A}\n`;
+/** Text, then three images. */
+const TRAILING_IMAGES = `${PREAMBLE}### Page 1\n${SHEET_A}\n\n\n### Page 2\n\n\n\n\n### Page 3\n\n\n\n\n### Page 4\n\n\n`;
+/** Text holding the lines "### Page 2" and "### Page 7", an image, then text. */
+const HEADING_IN_TEXT = `${PREAMBLE}### Page 1\nFirst sheet\n### Page 2\na line after a line that looks like a heading\n` +
+  "### Page 7\n\n\n\n### Page 2\n\n\n\n\n### Page 3\nindented first line of sheet three\nlast line after two empty lines\n\n";
+/** Text, text ending in the line "### Page 3", an image, then text beginning with the line "### Page 4". */
+const GAPS_IN_TEXT = `${PREAMBLE}### Page 1\nTop line of sheet one\nsecond line, 120 points lower\n` +
+  "third line, 120 points lower again\n\n\n\n### Page 2\nA sheet whose next line is only spaces\n" +
+  "and whose last line looks like a heading\n### Page 3\n\n\n\n### Page 3\n\n\n\n\n### Page 4\n### Page 4\n" +
+  "a sheet that begins with its own heading-like line\n\n";
+
+const READ_FROM_IMAGE =
+  "[This page has no text of its own: what follows was read from its image by a vision model, which can misread.]";
+const UNREAD_PAGES = "[Pages of this PDF that have no text of their own could not be read just now.]";
+/** A page that has text of its own, in a fake renderer: it is never asked for. */
+const TEXT_PAGE = drawn([99]);
+
+/** A conversion's text from its first page heading on. */
+function ownText(markdown: string): string {
+  return markdown.slice(PREAMBLE.length);
+}
+
+/** What stands under the heading of a page whose image the model read as `text`. */
+function fromImage(text: string): string {
+  return `${READ_FROM_IMAGE}\n\n${text}\n\n`;
+}
+
+/**
+ * The text of {@link IMAGE_FIRST_MIDDLE_LAST} with these under the headings of its pages 1, 3
+ * and 5: the line breaks the conversion gave, unless given.
+ */
+function sheets(first = "\n\n\n\n", middle = "\n\n\n\n", last = "\n\n"): string {
+  return `### Page 1\n${first}### Page 2\n${SHEET_A}\n\n\n### Page 3\n${middle}### Page 4\n${SHEET_B}\n\n\n### Page 5\n${last}`;
+}
+
+/** A response that streams `markdown` as a conversion's, 64 bytes at a time, and whether it was cancelled. */
+function conversionOf(markdown: string) {
+  let { stream, state } = byteStream(new TextEncoder().encode(markdownJson(markdown)), [64]);
+  return { response: new Response(stream), state };
+}
+
+/**
+ * `pdf`, which is {@link SCAN} unless given and holds images, read with `renderer` there when its
+ * conversion is `markdown` or answers with the response given, and the model answers its bands
+ * with `answer`.
+ */
+async function mixed(
+  markdown: string | Response, renderer: PdfRendering, answer?: Parameters<typeof bandAi>[0], pdf = SCAN,
+) {
+  let { ai, bands, images } = bandAi(answer, markdown);
+  let { asked, readRange } = ranges(pdf);
+  let result = await pdfToText(ai, undefined, byteStream(pdf.bytes, [65_536]).stream, readRange, renderer);
+  return { result, asked, bands, images };
+}
+
+describe("pdfToText reading a PDF that has text, and pages without any", () => {
+  it.each([
+    ["an image first, in the middle and last", IMAGE_FIRST_MIDDLE_LAST, [1, 3, 5]],
+    ["images before its text", LEADING_IMAGES, [1, 2]],
+    ["images after its text", TRAILING_IMAGES, [2, 3, 4]],
+    ["lines of its own that read as page headings", HEADING_IN_TEXT, [2]],
+    ["a line of its own that reads as the next page's heading, last on a page and first on one", GAPS_IN_TEXT, [3]],
+  ])("gives the conversion's text to the byte when no page is read from its image, in a PDF with %s", async (_label, markdown, empty) => {
+    // Every way a page is left as it was: blank, drawing no image, not drawn, read as nothing,
+    // and said to be blank whatever its bands hold.
+    let left = [
+      drawn([null]), drawn([11], { images: 0 }), refusedAs("memory", true), drawn([12]), drawn([13], { blank: true }),
+    ];
+    let { renderer, state } = fakeRenderer(Array.from({ length: 5 }, (_, i) => left[i % left.length]!));
+    let { result, asked, bands } = await mixed(markdown, renderer, () => []);
+
+    expect(result).toEqual({ text: expect.any(ReadableStream), hasText: true, transcribed: false, rereads: true });
+    expect(await read(result)).toBe(ownText(markdown));
+    // Only the pages without text were rendered, from the file read whole once.
+    expect(state.documents.map(document => document.asked.map(({ index }) => index + 1))).toEqual([empty]);
+    expect(asked).toEqual([whole(SCAN)]);
+    // A page that draws no image, or is blank, is not shown to the model, whatever its bands hold.
+    expect(bands.every(({ shade }) => shade === 12)).toBe(true);
+    expect(state.documents[0]!.disposed).toBe(1);
+  });
+
+  it("reads a page that may draw an image that was not counted: one whose objects were not all looked at", async () => {
+    let { renderer } = fakeRenderer([TEXT_PAGE, drawn([11], { images: 0, surveyed: false }), TEXT_PAGE]);
+    let { result, bands } = await mixed(HEADING_IN_TEXT, renderer);
+    expect(await read(result)).toBe(
+      ownText(HEADING_IN_TEXT).replace("### Page 2\n\n\n\n\n", `### Page 2\n${fromImage("band 11")}`));
+    expect(bands.map(({ shade }) => shade)).toEqual([11]);
+  });
+
+  it("finds the pages without text wherever the response is split", async () => {
+    for (let [markdown, empty] of [[HEADING_IN_TEXT, 2], [GAPS_IN_TEXT, 3]] as const) {
+      let json = markdownJson(markdown);
+      let expected = ownText(markdown).replace(`### Page ${empty}\n\n\n\n\n`, `### Page ${empty}\n${fromImage("band 11")}`);
+      expect(expected).toContain(READ_FROM_IMAGE);
+      let length = new TextEncoder().encode(json).byteLength;
+      for (let cut = 1; cut < length; cut++) {
+        let { renderer, state } = fakeRenderer([drawn([11]), drawn([11]), drawn([11]), drawn([11])]);
+        let { result } = await mixed(splitResponse(json, cut), renderer);
+        expect(await read(result), `cut at ${cut}`).toBe(expected);
+        expect(state.documents[0]!.asked.map(({ index }) => index + 1)).toEqual([empty]);
+      }
+    }
+  });
+
+  it("finds them in a response that arrives a few bytes at a time", async () => {
+    for (let size = 1; size <= 9; size++) {
+      let { renderer, state } = fakeRenderer([drawn([null]), TEXT_PAGE, drawn([null]), TEXT_PAGE, drawn([null])]);
+      let { result } = await mixed(streamedResponse(markdownJson(IMAGE_FIRST_MIDDLE_LAST), size), renderer);
+      expect(await read(result), `${size} bytes at a time`).toBe(sheets());
+      expect(state.documents[0]!.asked.map(({ index }) => index + 1)).toEqual([1, 3, 5]);
+    }
+  });
+
+  it("reads a first, a middle and a last page without text from their images, each once the text is read up to it", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31, 32]), TEXT_PAGE, drawn([51])]);
+    let { result, asked, bands, images } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
+    expect(result).toEqual({ text: expect.any(ReadableStream), hasText: true, transcribed: false, rereads: true });
+    let reader = result.text.getReader();
+
+    // A heading is given as soon as it is known for one, before anything is rendered.
+    expect(await readThrough(reader, "\n")).toBe("### Page 1\n");
+    await settled();
+    expect(asked).toEqual([]);
+    expect(state.events).toEqual([]);
+    let text = await readThrough(reader, "### Page 3\n", "### Page 1\n");
+    expect(text).toBe(`### Page 1\n${fromImage("band 11")}### Page 2\n${SHEET_A}\n\n\n### Page 3\n`);
+    await settled();
+    expect(state.events).toEqual(["open", "render 1"]);
+
+    text += await new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        let piece = await reader.read();
+        if (piece.done) controller.close();
+        else controller.enqueue(piece.value);
+      },
+    })).text();
+    expect(text).toBe(sheets(fromImage("band 11"), fromImage("band 31\nband 32"), fromImage("band 51")));
+    // The file is read whole once, and the document let go when its last page has answered.
+    expect(asked).toEqual([whole(SCAN)]);
+    expect(state.events).toEqual(["open", "render 1", "render 3", "render 5", "disposed"]);
+    expect(bands.map(({ shade }) => shade).toSorted()).toEqual([11, 31, 32, 51]);
+    for (let band of bands) expect(band.prompt).toContain("Never write an image or a link");
+    expect(images()).toEqual([]);
+    expect(linesOf("info", "google.drive.pdf.rendering")).toEqual([expect.objectContaining({
+      pdfBytes: SCAN.bytes.byteLength, ocrPages: 5,
+    })]);
+    expect(linesOf("info", "google.drive.pdf.page_rendered").map(({ page }) => page)).toEqual([1, 3, 5]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    for (let word of ["Harbour", "Marrowfen", "band 11", "no text of its own"]) expect(everythingLogged()).not.toContain(word);
+  });
+
+  it("gives a page read from its image as the line that says so, its text, what is to be said of it, and an empty line", async () => {
+    // The document has three pages, of which the second was drawn at a lower resolution.
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, drawn([21, 22], { reduced: true, dpi: 75 }), drawn([31])]);
+    // A band stopped at the output limit both times it is asked for is kept as far as it went.
+    let { result } = await mixed(TRAILING_IMAGES, renderer, ({ shade }) =>
+      shade === 22 ? eventResponse(tokenEvents(["row | row"], "length")) : [`band ${shade}`]);
+
+    expect(await read(result)).toBe(
+      `### Page 1\n${SHEET_A}\n\n\n` +
+      `### Page 2\n${READ_FROM_IMAGE}\n\nband 21\nrow | row${CUT_OFF}${REDUCED_PAGE}\n\n` +
+      `### Page 3\n${READ_FROM_IMAGE}\n\nband 31\n\n` +
+      // A page the document does not have is left as the conversion gave it.
+      "### Page 4\n\n\n");
+    expect(state.events).toEqual(["open", "render 2", "render 3", "disposed"]);
+  });
+
+  it("gives back the headings of the pages before the first with text, and reads those pages", async () => {
+    let { renderer } = fakeRenderer([drawn([11]), drawn([21]), TEXT_PAGE]);
+    let { result } = await mixed(LEADING_IMAGES, renderer);
+    expect(await read(result)).toBe(
+      `### Page 1\n${fromImage("band 11")}### Page 2\n${fromImage("band 21")}### Page 3\n${SHEET_A}\n`);
+  });
+
+  it("takes a line of the document's own that reads as a page heading for its text", async () => {
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, drawn([21]), drawn([31]), TEXT_PAGE]);
+    expect(await read((await mixed(HEADING_IN_TEXT, renderer)).result)).toBe(
+      "### Page 1\nFirst sheet\n### Page 2\na line after a line that looks like a heading\n### Page 7\n\n\n\n" +
+      `### Page 2\n${fromImage("band 21")}### Page 3\nindented first line of sheet three\nlast line after two empty lines\n\n`);
+    expect(state.documents[0]!.asked.map(({ index }) => index)).toEqual([1]);
+
+    let gaps = fakeRenderer([TEXT_PAGE, TEXT_PAGE, drawn([31]), TEXT_PAGE]);
+    expect(await read((await mixed(GAPS_IN_TEXT, gaps.renderer)).result)).toBe(
+      ownText(GAPS_IN_TEXT).replace("### Page 3\n\n\n\n\n", `### Page 3\n${fromImage("band 31")}`));
+    expect(gaps.state.documents[0]!.asked.map(({ index }) => index)).toEqual([2]);
+  });
+
+  it.each([
+    ["line breaks and then text under a heading", "### Page 1\nText\n\n\n\n### Page 2\n\n\nlate text\n\n"],
+    ["a line that reads as the heading of a page other than the next, after line breaks alone",
+      "### Page 1\nText\n\n\n\n### Page 2\n\n\n\n\n### Page 9\nmore\n\n"],
+    ["a line that reads as the next page's heading after one line break fewer than part two pages",
+      "### Page 1\nText\n\n\n### Page 2\n\n\n\n\n### Page 3\nmore\n\n"],
+    ["a line that reads as the next page's heading and is not ended", "### Page 1\nText\n\n\n\n### Page 2\n\n\n\n\n### Page 3"],
+    ["a line that only begins as the next page's heading does", "### Page 1\nText\n\n\n\n### Page 21\n\n\n\n\n### Pag\n"],
+  ])("passes on %s as the document's own text, rendering nothing", async (_label, text) => {
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31])]);
+    let { result } = await mixed(PREAMBLE + text, renderer);
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: true });
+    expect(await read(result)).toBe(text);
+    expect(state.events).toEqual([]);
+  });
+
+  it("gives no empty piece for a last page that has no line break to give back", async () => {
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, drawn([null])]);
+    let { result } = await mixed(`${PREAMBLE}### Page 1\nText\n\n\n\n### Page 2\n`, renderer);
+    let reader = result.text.getReader();
+    let sizes: number[] = [];
+    for (let piece = await reader.read(); !piece.done; piece = await reader.read()) sizes.push(piece.value.byteLength);
+    expect(sizes.reduce((sum, size) => sum + size)).toBe("### Page 1\nText\n\n\n\n### Page 2\n".length);
+    expect(sizes.every(size => size > 0)).toBe(true);
+    expect(state.events).toEqual(["open", "render 2", "disposed"]);
+  });
+
+  it.each<[string, PageAnswer[], Opening[], string, string[], object]>([
+    ["the renderer has no room for the PDF", [], ["room"], sheets(`${UNREAD_PAGES}\n\n`), ["open"],
+      { event: "google.drive.pdf.render_failed", reason: "room" }],
+    ["the renderer cannot be reached", [], [LOST], sheets(`${UNREAD_PAGES}\n\n`), ["open"],
+      { event: "google.drive.pdf.render_failed", reason: "call", error: String(LOST) }],
+    ["the renderer cannot read the file", [], ["unreadable"], sheets(`${UNREAD_PAGES}\n\n`), ["open"],
+      { event: "google.drive.pdf.render_failed", reason: "unreadable" }],
+    ["the renderer finds the file encrypted", [], ["encrypted"], sheets(`${UNREAD_PAGES}\n\n`), ["open"],
+      { event: "google.drive.pdf.render_failed", reason: "encrypted" }],
+    ["a page's render refuses the PDF as a whole", [drawn([11]), TEXT_PAGE, refusedAs("empty-work"), TEXT_PAGE, drawn([51])],
+      [], sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`), ["open", "render 1", "render 3", "disposed"],
+      { event: "google.drive.pdf.render_failed", reason: "empty-work", page: 3, heapBytes: 18_939_904, work: 1000 }],
+    ["the document is lost before it rendered a page", [LOST, TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])],
+      [], sheets(`${UNREAD_PAGES}\n\n`), ["open", "render 1", "disposed"],
+      { event: "google.drive.pdf.render_failed", reason: "call", page: 1, error: String(LOST) }],
+    ["the document is lost and the renderer has no room to open it again",
+      [drawn([11]), TEXT_PAGE, refusedAs("released"), TEXT_PAGE, drawn([51])], [undefined, "room"],
+      sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`), ["open", "render 1", "render 3", "disposed", "open"],
+      { event: "google.drive.pdf.render_failed", reason: "room" }],
+    ["the page is lost again by the document opened for it", [drawn([11]), TEXT_PAGE, LOST, TEXT_PAGE, drawn([51])],
+      [], sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`),
+      ["open", "render 1", "render 3", "disposed", "open", "render 3", "disposed"],
+      { event: "google.drive.pdf.render_failed", reason: "call", page: 3 }],
+    ["the model cannot read a band", [drawn([11]), TEXT_PAGE, drawn([31, 32]), TEXT_PAGE, drawn([51])],
+      [], sheets(fromImage("band 11"), `${UNREAD_PAGES}\n\n`), ["open", "render 1", "render 3", "disposed"],
+      { event: "google.drive.pdf.transcription_failed", page: 3, httpStatus: 400, providerCode: 8006 }],
+  ])("keeps the document's own text when %s: that page gets a line, and no page after it is rendered", async (_label, pages, openings, text, events, line) => {
+    let { renderer, state } = fakeRenderer(pages, openings);
+    let { result, bands } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, ({ shade }) => shade === 32
+      ? new Response(JSON.stringify({ internalCode: 8006, message: "secret" }), { status: 400 }) : [`band ${shade}`]);
+
+    expect(await readToFailure(result)).toEqual({ text, error: undefined });
+    expect(state.events).toEqual(events);
+    // Each document that was opened is let go once, and no band of a later page is sent.
+    expect(state.documents.every(({ disposed }) => disposed === 1)).toBe(true);
+    expect(bands.every(({ shade }) => shade < 50)).toBe(true);
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining(line)]]);
+    expect(everythingLogged()).not.toContain("secret");
+  });
+
+  it("reads and opens the file again when the document is lost between two pages without text", async () => {
+    let { renderer, state } = fakeRenderer(nth => nth === 0
+      ? [drawn([11]), TEXT_PAGE, refusedAs("released"), TEXT_PAGE, drawn([99])]
+      : [drawn([98]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let { result, asked } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
+    expect(await read(result)).toBe(sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51")));
+    expect(asked).toEqual([whole(SCAN), whole(SCAN)]);
+    expect(state.events).toEqual([
+      "open", "render 1", "render 3", "disposed", "open", "render 3", "render 5", "disposed",
+    ]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("fails the text with what reading the file again for a lost document failed with, a changed file included", async () => {
+    let pages = [drawn([11]), TEXT_PAGE, refusedAs("released"), TEXT_PAGE, drawn([51])];
+    let given = `### Page 1\n${fromImage("band 11")}### Page 2\n${SHEET_A}\n\n\n### Page 3\n`;
+    let broke = new Error("The download broke off.");
+    let lost = fakeRenderer(pages);
+    let { ai } = bandAi(undefined, IMAGE_FIRST_MIDDLE_LAST);
+    let reads = 0;
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, async () => {
+      if (reads++ > 0) throw broke;
+      return byteStream(SCAN.bytes).stream;
+    }, lost.renderer);
+    let failed = await readToFailure(result);
+    expect(failed.error).toBe(broke);
+    expect(failed.text).toBe(given);
+    // The lost document is let go once, nothing is opened for it, and no later page is rendered.
+    expect(lost.state.events).toEqual(["open", "render 1", "render 3", "disposed"]);
+
+    let changed = fakeRenderer(pages, [undefined, "size-mismatch"]);
+    expect(await readToFailure((await mixed(IMAGE_FIRST_MIDDLE_LAST, changed.renderer)).result))
+      .toEqual({ text: given, error: new Error(FILE_CHANGED) });
+    expect(changed.state.events).toEqual(["open", "render 1", "render 3", "disposed", "open"]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("lets the document go as soon as no further page is rendered", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, () => new Response("{}", { status: 400 }));
+    let reader = result.text.getReader();
+    expect(await readThrough(reader, `${UNREAD_PAGES}\n\n`)).toBe(`### Page 1\n${UNREAD_PAGES}\n\n`);
+    await settled();
+    expect(state.events).toEqual(["open", "render 1", "disposed"]);
+    await reader.cancel();
+  });
+
+  it("fails the text with what its own read of the file failed with, and lets the conversion go", async () => {
+    let broke = new Error("The download broke off.");
+    let { renderer, state } = fakeRenderer([drawn([11])], [async pdf => {
+      await new Response(pdf).arrayBuffer().catch(() => undefined);
+      throw new Error("ReadableStream received over RPC disconnected prematurely.");
+    }]);
+    let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
+    let { ai, bands } = bandAi(undefined, conversion.response);
+    let sent = 0;
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, async () =>
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent++ === 0) controller.enqueue(SCAN.bytes.slice(0, 100));
+          else controller.error(broke);
+        },
+      }, { highWaterMark: 0 }), renderer);
+
+    let { text, error } = await readToFailure(result);
+    expect(error).toBe(broke);
+    expect(text).toBe("### Page 1\n");
+    expect(conversion.state.cancelled).toBe(true);
+    expect(state.documents).toEqual([]);
+    expect(bands).toEqual([]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("fails the text as a changed file when the file read again is refused as one, or is not the size it was", async () => {
+    let changed = new Error(FILE_CHANGED);
+    let refused = fakeRenderer([drawn([11])]);
+    let { ai } = bandAi(undefined, IMAGE_FIRST_MIDDLE_LAST);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, () => Promise.reject(changed), refused.renderer);
+    expect((await readToFailure(result)).error).toBe(changed);
+    expect(refused.state.events).toEqual([]);
+
+    let other = fakeRenderer([drawn([11])], ["size-mismatch"]);
+    expect(await readToFailure((await mixed(IMAGE_FIRST_MIDDLE_LAST, other.renderer)).result))
+      .toEqual({ text: "### Page 1\n", error: new Error(FILE_CHANGED) });
+    expect(other.state.events).toEqual(["open"]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("fails the text in its own words when the conversion breaks off, letting the document go", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let json = markdownJson(IMAGE_FIRST_MIDDLE_LAST);
+    let { result } = await mixed(streamedResponse(json.slice(0, json.indexOf("### Page 4")), 16), renderer);
+
+    let { text, error } = await readToFailure(result);
+    expect(error).toEqual(new Error(CONVERSION_FAILED));
+    expect(text.startsWith(`### Page 1\n${fromImage("band 11")}### Page 2\n`)).toBe(true);
+    await settled();
+    expect(state.events).toEqual(["open", "render 1", "disposed"]);
+    expect(vi.mocked(console.warn).mock.calls).toEqual([[expect.objectContaining({ event: "google.drive.pdf.failed" })]]);
+  });
+
+  it.each<[string, BuiltPdf, number]>([
+    ["whose one image is too small to be a page", imagePdf([scanPage(1, { width: 64, height: 64 })]), RENDER_LIMITS.fileBytes],
+    ["whose one image is a mask as large as a page",
+      imagePdf([scanPage(1, { filter: "/FlateDecode", bitsPerComponent: 1, extra: "/ImageMask true" })]), RENDER_LIMITS.fileBytes],
+    ["of exactly the largest size that is rendered", SCAN, SCAN.bytes.byteLength],
+  ])("reads the pages without text of a PDF with text %s", async (_label, pdf, fileBytes) => {
+    let { renderer, state } = fakeRenderer([TEXT_PAGE, drawn([21]), drawn([null]), drawn([null])]);
+    let limit = RENDER_LIMITS.fileBytes;
+    RENDER_LIMITS.fileBytes = fileBytes;
+    try {
+      let { result } = await mixed(TRAILING_IMAGES, renderer, undefined, pdf);
+      expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: true });
+      expect(await read(result)).toBe(
+        ownText(TRAILING_IMAGES).replace("### Page 2\n\n\n\n\n", `### Page 2\n${fromImage("band 21")}`));
+    } finally {
+      RENDER_LIMITS.fileBytes = limit;
+    }
+    expect(state.opens).toEqual([{ bytes: pdf.bytes, size: pdf.bytes.byteLength }]);
+  });
+
+  it("leaves a PDF with text as it is without a renderer, an image of any kind, or a size that is rendered", async () => {
+    vi.useFakeTimers();
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    // The text without the page before its first with text, as it is given unless pages are read into it.
+    let text = sheets().slice("### Page 1\n\n\n\n\n".length);
+    let unchanged = async (pdf: BuiltPdf, given?: PdfRendering) => {
+      let { ai, images } = bandAi(undefined, IMAGE_FIRST_MIDDLE_LAST);
+      let { asked, readRange } = ranges(pdf);
+      let result = await pdfToText(ai, undefined, byteStream(pdf.bytes).stream, readRange, given);
+      expect(result).toEqual({ text: expect.any(ReadableStream), hasText: true, transcribed: false, rereads: false });
+      // Nothing is kept for such a text: no timer runs while it is unread.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(await read(result)).toBe(text);
+      expect([asked, images()]).toEqual([[], []]);
+    };
+
+    await unchanged(SCAN);
+    await unchanged(imagePdf([]), renderer);
+    let limit = RENDER_LIMITS.fileBytes;
+    RENDER_LIMITS.fileBytes = SCAN.bytes.byteLength - 1;
+    try {
+      await unchanged(SCAN, renderer);
+    } finally {
+      RENDER_LIMITS.fileBytes = limit;
+    }
+    expect(state.events).toEqual([]);
+  });
+
+  it("leaves a PDF with text as it is when the conversion answered before the scan saw the whole file", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let sent = 0;
+    // Gives the PDF as far as its first page image and the next one's dictionary, then nothing more.
+    let pdf = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 0) controller.enqueue(SCAN.bytes.slice(0, sent = SCAN.images[1]!.offset));
+      },
+    }, { highWaterMark: 0 });
+    // Reads what there is of the upload, drops the rest, and answers with the PDF's text.
+    let ai = {
+      fetch: async (_url: string, init: RequestInit) => {
+        let body = (init.body as ReadableStream<Uint8Array>).getReader();
+        await body.read();
+        await body.read();
+        void body.read();
+        await settled();
+        await body.cancel();
+        return streamedResponse(markdownJson(IMAGE_FIRST_MIDDLE_LAST));
+      },
+    } as unknown as AiFetcher;
+    let result = await pdfToText(ai, undefined, pdf, ranges(SCAN).readRange, renderer);
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: false });
+    expect(await read(result)).toBe(sheets().slice("### Page 1\n\n\n\n\n".length));
+    expect(state.events).toEqual([]);
+  });
+
+  it.each([
+    ["is not the one after those before it", "### Page 1\n\n\n\n\n### Page 5\n\n\n\n\n", "### Page 2\nText of its own\n\n"],
+    // The first page has text, whose first line reads as the heading of the page after it.
+    ["follows the one before it directly", "### Page 1\n", "### Page 2\nhello\n\n\n\n### Page 2\n\n\n\n\n### Page 3\nmore\n\n"],
+    ["follows the one before it after one line break fewer than a page without text has",
+      "### Page 1\n\n\n\n", "### Page 2\nText of its own\n\n"],
+    ["follows the one before it after one line break more than a page without text has",
+      "### Page 1\n\n\n\n\n\n", "### Page 2\nText of its own\n\n"],
+  ])("leaves a PDF with text as it is when its text begins under a heading that %s", async (_label, before, text) => {
+    let { renderer, state } = fakeRenderer([drawn([11]), drawn([21]), drawn([31])]);
+    let { result } = await mixed(PREAMBLE + before + text, renderer);
+    expect(result).toMatchObject({ hasText: true, transcribed: false, rereads: false });
+    expect(await read(result)).toBe(text);
+    expect(state.events).toEqual([]);
+  });
+});
+
+describe("a PDF with text whose pages without any are read, however its text ends", () => {
+  /** Long enough that two on end are more than the minute a text may sit idle. */
+  const WAIT_MS = 35_000;
+  let wait = () => new Promise<void>(resolve => setTimeout(resolve, WAIT_MS));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  it("ends a text nobody reads after a minute, counted from when it was returned, and lets the conversion go", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
+    let { result, asked } = await mixed(conversion.response, renderer);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+    await expect(result.text.getReader().read()).rejects.toThrow(IDLE);
+    expect(conversion.state.cancelled).toBe(true);
+    expect([asked, state.events]).toEqual([[], []]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toEqual([expect.not.objectContaining({ page: expect.anything() })]);
+  });
+
+  it("ends a text left unread after a page was read from its image, naming no page, and lets the document go", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer);
+    let reader = result.text.getReader();
+    await pumped(readThrough(reader, fromImage("band 11")));
+    expect(state.documents[0]!.disposed).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS);
+    await expect(reader.read()).rejects.toThrow(IDLE);
+    expect(state.events).toEqual(["open", "render 1", "disposed"]);
+    expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toEqual([expect.not.objectContaining({ page: expect.anything() })]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("is not taken for idle while the conversion's text keeps arriving, though none of it is yet given", async () => {
+    // From the second page's heading to the text's end, the response arrives two bytes at a time,
+    // each after a wait: line breaks that are only counted, and headings held until their lines end.
+    let json = markdownJson(TRAILING_IMAGES);
+    let slow = json.indexOf("### Page 2"), textEnd = json.lastIndexOf('"}]');
+    let at = 0;
+    let response = new Response(new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (at === json.length) return controller.close();
+        let end = at < slow ? slow : at < textEnd ? at + 2 : json.length;
+        if (end === at + 2) await new Promise(resolve => setTimeout(resolve, WAIT_MS / 2));
+        controller.enqueue(new TextEncoder().encode(json.slice(at, end)));
+        at = end;
+      },
+    }, { highWaterMark: 0 }));
+    let { renderer } = fakeRenderer([TEXT_PAGE, drawn([null]), drawn([null]), drawn([null])]);
+    let { result } = await mixed(response, renderer);
+
+    let began = Date.now();
+    expect(await pumped(read(result), PACE)).toBe(ownText(TRAILING_IMAGES));
+    expect(Date.now() - began).toBeGreaterThan(10 * WAIT_MS);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("is not taken for idle over a file, a renderer and a band that each take their time", async () => {
+    let { renderer } = fakeRenderer([async () => {
+      await wait();
+      return drawn([11]);
+    }, TEXT_PAGE, drawn([null]), TEXT_PAGE, drawn([null])], [async (pdf, document) => {
+      await new Response(pdf).arrayBuffer();
+      await wait();
+      return document();
+    }]);
+    let { result } = await mixed(IMAGE_FIRST_MIDDLE_LAST, renderer, async () => {
+      await wait();
+      return eventResponse(tokenEvents(["slow text"]));
+    });
+
+    let began = Date.now();
+    expect(await pumped(read(result), PACE)).toBe(sheets(fromImage("slow text")));
+    expect(Date.now() - began).toBeGreaterThan(3 * WAIT_MS);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("ends a text whose page the renderer does not answer for a minute, saying which, and lets the document go once it has", async () => {
+    let page = deferred<RenderedPage>();
+    let { renderer, state } = fakeRenderer([drawn([11]), TEXT_PAGE, () => page.promise, TEXT_PAGE, drawn([51])]);
+    let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
+    let { result, bands } = await mixed(conversion.response, renderer);
+    let reader = result.text.getReader();
+    await pumped(readThrough(reader, "### Page 3\n"));
+
+    let outcome: unknown = "waiting";
+    reader.read().then(() => { outcome = "read"; }, (error: unknown) => { outcome = error; });
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - 1);
+    expect(outcome).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(outcome).toEqual(new Error(IDLE));
+    expect(linesOf("warn", "google.drive.pdf.transcription_idle")).toEqual([expect.objectContaining({ page: 3 })]);
+    // The page being rendered is left to finish, and its document let go only then.
+    expect(state.documents[0]!.disposed).toBe(0);
+    page.resolve(drawn([31]));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(state.documents[0]!.disposed).toBe(1);
+    expect(bands.map(({ shade }) => shade)).toEqual([11]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("gives up the band calls in flight when cancelled, then lets the document go, and the conversion at once", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11, 12, 13, 14, 15]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
+    let { result, bands } = await mixed(conversion.response, renderer, unanswered(state.events));
+    let reader = result.text.getReader();
+    await pumped(readThrough(reader, "### Page 1\n"));
+    let pending = reader.read();
+    while (bands.length < 4) await vi.advanceTimersByTimeAsync(1);
+
+    await reader.cancel("stopped");
+    expect((await pending).done).toBe(true);
+    expect(conversion.state.cancelled).toBe(true);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(state.events).toEqual([
+      "open", "render 1", "band given up", "band given up", "band given up", "band given up", "disposed",
+    ]);
+    expect(bands).toHaveLength(4);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("logs no failure when cancelled while the conversion's text is being waited for", async () => {
+    let sent = false;
+    let json = markdownJson(IMAGE_FIRST_MIDDLE_LAST);
+    // The text begins, then the response stalls until it is cancelled.
+    let response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) return new Promise<void>(() => {});
+        sent = true;
+        controller.enqueue(new TextEncoder().encode(json.slice(0, json.indexOf("Berth A"))));
+      },
+    }, { highWaterMark: 0 }));
+    let { renderer, state } = fakeRenderer([drawn([null]), TEXT_PAGE]);
+    let { result } = await mixed(response, renderer);
+    let reader = result.text.getReader();
+    await pumped(readThrough(reader, "sheet A\n"));
+
+    let pending = reader.read();
+    await vi.advanceTimersByTimeAsync(1);
+    await reader.cancel();
+    expect((await pending).done).toBe(true);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(state.events).toEqual(["open", "render 1", "disposed"]);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each<[string, string, PageAnswer[], string, string[]]>([
+    ["with a document open", IMAGE_FIRST_MIDDLE_LAST, [drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])],
+      "### Page 5\n", ["open", "render 1", "render 3", "disposed"]],
+    ["with none opened yet", `${PREAMBLE}### Page 1\nText\n\n\n\n### Page 2\n\n\n`, [TEXT_PAGE, drawn([21])], "### Page 2\n", []],
+  ])("begins nothing for a last page without text when cancelled once the response has arrived whole but not ended, %s", async (_label, markdown, pages, heading, events) => {
+    let sent = false;
+    // The whole response arrives at once, and then does not end until it is cancelled.
+    let response = new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) return new Promise<void>(() => {});
+        sent = true;
+        controller.enqueue(new TextEncoder().encode(markdownJson(markdown)));
+      },
+    }, { highWaterMark: 0 }));
+    let { renderer, state } = fakeRenderer(pages);
+    let { result, asked } = await mixed(response, renderer);
+    let reader = result.text.getReader();
+    await pumped(readThrough(reader, heading));
+
+    let pending = reader.read();
+    await vi.advanceTimersByTimeAsync(1);
+    await reader.cancel();
+    expect((await pending).done).toBe(true);
+    await vi.advanceTimersByTimeAsync(20);
+    // The last page is neither rendered nor is the file read for it.
+    expect(state.events).toEqual(events);
+    expect(asked).toEqual(events.length > 0 ? [whole(SCAN)] : []);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("opens nothing for a text that is cancelled unread, and lets the conversion go", async () => {
+    let { renderer, state } = fakeRenderer([drawn([11])]);
+    let conversion = conversionOf(IMAGE_FIRST_MIDDLE_LAST);
+    let { result, asked } = await mixed(conversion.response, renderer);
+    await result.text.cancel();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(conversion.state.cancelled).toBe(true);
+    expect([asked, state.events]).toEqual([[], []]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("leaves no timer behind when read to its end or failed", async () => {
+    let ended = await mixed(IMAGE_FIRST_MIDDLE_LAST, fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]).renderer);
+    expect(await pumped(read(ended.result))).toBe(sheets(fromImage("band 11"), fromImage("band 31"), fromImage("band 51")));
+    expect(vi.getTimerCount()).toBe(0);
+
+    let failed = await mixed(IMAGE_FIRST_MIDDLE_LAST, fakeRenderer([drawn([11])], ["size-mismatch"]).renderer);
+    expect((await pumped(readToFailure(failed.result))).error).toEqual(new Error(FILE_CHANGED));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
