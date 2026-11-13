@@ -412,6 +412,22 @@ const errors: Scenario = {
   ],
 }
 
+const sendRefused: Scenario = {
+  id: 'send-refused',
+  title: 'Incident summary',
+  description:
+    'Messages take a moment to go, and the workspace refuses the first. Reply to the answer, with a file ' +
+    'attached, and send: the draft stays, dimmed, while it goes, then the refusal shows over the composer ' +
+    'with the text, the file and the quote all still there. Send again and it goes.',
+  history: history([
+    user('Summarise yesterday’s incidents.'),
+    agent({ text: 'Two incidents: a 14-minute API slowdown at 09:40, and a failed deploy at 16:05 that was rolled back.' }),
+  ]),
+  refusals: ['The workspace is busy saving the last changes. Try again in a moment.'],
+  sendDelay: 700,
+  script: when('onSend', turn(say(agent({ text: 'Got it, and the file too. The slowdown was the cache warming after the deploy at 09:30.' })))),
+}
+
 const steerSlash: Scenario = {
   id: 'steer-slash',
   title: 'Release notes',
@@ -495,6 +511,7 @@ export const SCENARIOS: Scenario[] = [
   connection,
   output,
   errors,
+  sendRefused,
   steerSlash,
   longHistory,
 ]

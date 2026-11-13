@@ -51,7 +51,7 @@ const previewWorkspaces: SidebarWorkspace[] = [
 
 const AttachmentPreview = () => {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => [
-    { id: 'image', file: new File([], 'Cloudflare.svg', { type: 'image/svg+xml' }), previewUrl: '/favicon.svg' },
+    { id: 'image', file: new File([PIXELS], 'Pixels.png', { type: 'image/png' }) },
     { id: 'pdf', file: new File([], 'Project brief.pdf', { type: 'application/pdf' }) },
     { id: 'csv', file: new File([], 'Quarterly results.csv', { type: 'text/csv' }) },
     { id: 'code', file: new File([], 'dashboard.tsx') },
@@ -64,6 +64,16 @@ const AttachmentPreview = () => {
     </div>
   )
 }
+
+// A 2×2 PNG, so the gallery has a picture to preview.
+const PIXELS = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4H6P3rUmeAYiBLAAvHgZBFoNqxwAAAABJRU5ErkJggg=='), (char) => char.charCodeAt(0))
+
+/** Takes a moment over each send, as one over the network does, then has it fail or go. */
+const slowly = (went: boolean, then: () => void) => () =>
+  new Promise<boolean>((resolve) => setTimeout(() => {
+    then()
+    resolve(went)
+  }, 1200))
 
 const NewItems = ({ onSelect }: { onSelect: (item: string) => void }) => (
   <>
@@ -147,9 +157,10 @@ function Gallery() {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
     skills: { items: previewSkills, onSelect: (skill: ComposerSkill) => setMenuAction(`Preview: ${skill.name} selected.`) },
   }
-  const previewSend = (text: string, files: File[]) => setMenuAction(
-    `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`,
-  )
+  const previewSend = (text: string, files: File[]) => {
+    setMenuAction(`Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
+    return true
+  }
   const [replying, setReplying] = useState(true)
   const [sendFailed, setSendFailed] = useState(true)
   const [working, setWorking] = useState(true)
@@ -281,8 +292,8 @@ function Gallery() {
         <div className="flex w-full flex-col gap-3">
           <Composer
             onSend={(text, files) => {
-              previewSend(text, files)
               setReplying(false)
+              return previewSend(text, files)
             }}
             reply={replying
               ? { quote: 'The chart now covers 12 weeks (148 tickets). One edit to src/worker.ts failed because the limit is named maxResults there; I left it alone since 50 per page is enough.', onCancel: () => setReplying(false) }
@@ -300,14 +311,22 @@ function Gallery() {
           <div><Button disabled={working} onClick={() => setWorking(true)}>Start working</Button></div>
         </div>
       </Section>
-      <Section title="Composer (a message that did not go: why, in a bar over the composer, until it is dismissed or the next send; a long one wraps)">
+      <Section title="Composer (a message that did not go: why, in a bar over the composer, until it is dismissed or the next send; a long one wraps. While a message is going its draft stays, dimmed and unsendable, and is kept if it does not go: the first composer fails every other send, the second takes a moment over a reply that fails, keeping the quote and the files)">
         <div className="flex w-full flex-col gap-3">
           <Composer
             onSend={(text, files) => {
-              previewSend(text, files)
+              if (!sendFailed) {
+                setSendFailed(true)
+                return false
+              }
               setSendFailed(false)
+              return previewSend(text, files)
             }}
             problem={sendFailed ? { message: 'Files can be sent once the agent has finished.', onDismiss: () => setSendFailed(false) } : undefined}
+          />
+          <Composer
+            onSend={slowly(false, () => setMenuAction('Preview: the reply did not go, and its draft is kept.'))}
+            reply={{ quote: 'The chart now covers 12 weeks (148 tickets).', onCancel: () => {} }}
           />
           <div><Button disabled={sendFailed} onClick={() => setSendFailed(true)}>Fail a send</Button></div>
           <div className="w-80 max-w-full">

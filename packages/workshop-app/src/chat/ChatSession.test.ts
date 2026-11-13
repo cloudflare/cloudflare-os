@@ -950,7 +950,7 @@ describe('ChatSession', () => {
       const fake = fakeOverseer(Promise.resolve([chat(2, 'Other', 1), chat(4, 'Chat', 1)]))
       const session = await started(fake, 4)
 
-      await session.send('hello', 'model-1')
+      expect(await session.send('hello', 'model-1')).toBe(true)
 
       expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, 'hello', 'model-1', undefined, undefined)
       expect(fake.uploadBlob).not.toHaveBeenCalled()
@@ -981,7 +981,8 @@ describe('ChatSession', () => {
       fake.uploadBlob.mockRejectedValueOnce(new Error('Blob too large'))
       const session = await started(fake)
 
-      await session.send('see this', 'model-1', [new File(['x'], 'x.txt')])
+      // The draft is kept for a message that did not go.
+      expect(await session.send('see this', 'model-1', [new File(['x'], 'x.txt')])).toBe(false)
 
       expect(fake.sendChatMessage).not.toHaveBeenCalled()
       expect(ready(session).sendError).toBe('Blob too large')
@@ -991,7 +992,7 @@ describe('ChatSession', () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
       const session = await started(fake)
 
-      await session.send('', 'model-1', [new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'huge.bin')])
+      expect(await session.send('', 'model-1', [new File([new Uint8Array(4 * 1024 * 1024 + 1)], 'huge.bin')])).toBe(false)
       expect(ready(session).sendError).toBe('huge.bin is larger than 4 MB, the most a file can be.')
 
       await session.send('', 'model-1', Array.from({ length: 6 }, (_, index) => new File(['x'], `${index}.txt`)))
@@ -1005,7 +1006,7 @@ describe('ChatSession', () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
       const session = await started(fake)
 
-      await session.send('and this', 'model-1', [new File(['x'], 'x.txt')])
+      expect(await session.send('and this', 'model-1', [new File(['x'], 'x.txt')])).toBe(false)
 
       expect(fake.uploadBlob).not.toHaveBeenCalled()
       expect(fake.sendChatMessage).not.toHaveBeenCalled()
@@ -1017,10 +1018,10 @@ describe('ChatSession', () => {
       fake.sendChatMessage.mockRejectedValueOnce(new Error('The agent is still running.'))
       const session = await started(fake)
 
-      await session.send('one', 'model-1')
+      expect(await session.send('one', 'model-1')).toBe(false)
       expect(ready(session).sendError).toBe('The agent is still running.')
 
-      await session.send('two', 'model-1')
+      expect(await session.send('two', 'model-1')).toBe(true)
       expect(ready(session).sendError).toBeUndefined()
     })
 
@@ -1041,7 +1042,7 @@ describe('ChatSession', () => {
       const session = new ChatSession(() => fake.overseer, 0)
       session.start()
 
-      await session.send('too early', 'model-1')
+      expect(await session.send('too early', 'model-1')).toBe(false)
 
       expect(fake.sendChatMessage).not.toHaveBeenCalled()
     })

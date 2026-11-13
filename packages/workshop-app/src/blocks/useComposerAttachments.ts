@@ -1,50 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 
 export type ComposerAttachment = {
   id: string
   file: File
-  previewUrl?: string
 }
 
-/** Local draft files. Object URLs live only as long as their attachment does. */
-export const useComposerAttachments = () => {
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([])
-  const current = useRef<ComposerAttachment[]>([])
+const attach = (file: File): ComposerAttachment => ({ id: crypto.randomUUID(), file })
 
-  const update = (next: ComposerAttachment[]) => {
-    current.current = next
-    setAttachments(next)
-  }
-
-  useEffect(() => () => {
-    for (const attachment of current.current) {
-      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
-    }
-  }, [])
+/** Local draft files, starting with `initial`. Each card makes its own preview of its file. */
+export const useComposerAttachments = (initial: readonly File[] = []) => {
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => initial.map(attach))
 
   const addFiles = (files: FileList | File[]) => {
-    update([
-      ...current.current,
-      ...Array.from(files, (file) => ({
-        id: crypto.randomUUID(),
-        file,
-        previewUrl: file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined,
-      })),
-    ])
+    const added = Array.from(files, attach)
+    setAttachments((current) => [...current, ...added])
   }
 
-  const removeAttachment = (id: string) => {
-    const attachment = current.current.find((item) => item.id === id)
-    if (attachment?.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
-    update(current.current.filter((item) => item.id !== id))
-  }
+  const removeAttachment = (id: string) => setAttachments((current) => current.filter((item) => item.id !== id))
 
-  const clearAttachments = () => {
-    for (const attachment of current.current) {
-      if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
-    }
-    update([])
-  }
+  const clearAttachments = () => setAttachments([])
 
   return { attachments, addFiles, removeAttachment, clearAttachments }
 }

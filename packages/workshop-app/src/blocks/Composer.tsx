@@ -16,8 +16,14 @@ export type ComposerHandle = {
 }
 
 export type ComposerProps = {
-  /** Files are local draft attachments; uploading is the caller's responsibility. */
-  onSend: (text: string, files: File[]) => void
+  /**
+   * Files are local draft attachments; uploading is the caller's responsibility. Resolves to
+   * whether the message went: the draft is cleared only once it has, and is kept, unsendable,
+   * while it is going.
+   */
+  onSend: (text: string, files: File[]) => boolean | Promise<boolean>
+  /** What the draft starts with, such as a message that did not go from a composer that has since gone. */
+  initialDraft?: { text: string; files: readonly File[] }
   /**
    * The draft is a reply: a line of the message it answers, shown above the draft, the way to
    * that message, and the way to make the draft an ordinary message again. Whoever sends the
@@ -44,14 +50,19 @@ export type ComposerProps = {
 const MAX_ROWS = 6
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
-  const [text, setText] = useState('')
+export const Composer = ({ onSend, initialDraft, reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+  const [text, setText] = useState(initialDraft?.text ?? '')
+  // The draft has been sent and it is not known yet whether it went: it stays as it is meanwhile.
+  const [sending, setSending] = useState(false)
   const [expanded, setExpanded] = useState(false)
   // Asked to stop and not yet stopped: steering would be refused, and asking again is no use.
   const [stopping, setStopping] = useState(false)
   if (stopping && !stop) setStopping(false)
-  const { attachments, addFiles, removeAttachment, clearAttachments } = useComposerAttachments()
-  const { isActive: isFileDragActive, ...dropHandlers } = useComposerAttachmentDrop(addFiles)
+  const { attachments, addFiles, removeAttachment, clearAttachments } = useComposerAttachments(initialDraft?.files)
+  const addDraftFiles = (files: FileList | File[]) => {
+    if (!sending) addFiles(files)
+  }
+  const { isActive: isFileDragActive, ...dropHandlers } = useComposerAttachmentDrop(addDraftFiles)
   const formRef = useRef<HTMLFormElement>(null)
   const editorRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -60,9 +71,16 @@ export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPl
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const trimmed = text.trim()
   const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0
-  const canSend = stop ? canSteer : !!trimmed || attachments.length > 0
+  const canSend = !sending && (stop ? canSteer : !!trimmed || attachments.length > 0)
   const showSend = !stop || canSteer
   useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), [])
+
+  // The message went, so its draft is done with: unless stopping the agent has put what was
+  // waiting for it in the draft meanwhile.
+  const clearSent = (sentText: string) => {
+    setText((current) => (current === sentText ? '' : current))
+    clearAttachments()
+  }
 
   useLayoutEffect(() => {
     const editor = editorRef.current!
@@ -101,13 +119,24 @@ export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPl
         data-file-drag={isFileDragActive || undefined}
         className="relative overflow-clip rounded-[21px] bg-kumo-elevated ring-1 ring-kumo-line transition-shadow duration-100 hover:ring-kumo-focus/8 has-focus-visible:ring-kumo-focus/8 data-file-drag:ring-kumo-focus/8 motion-reduce:transition-none"
         {...dropHandlers}
+        aria-busy={sending || undefined}
         onSubmit={(event) => {
           event.preventDefault()
           if (!canSend) return
-          onSend(trimmed, attachments.map(({ file }) => file))
-          setText('')
-          clearAttachments()
           inputRef.current?.focus()
+          const sent = onSend(trimmed, attachments.map(({ file }) => file))
+          if (typeof sent === 'boolean') {
+            if (sent) clearSent(text)
+            return
+          }
+          setSending(true)
+          void sent.then(
+            (went) => {
+              setSending(false)
+              if (went) clearSent(text)
+            },
+            () => setSending(false),
+          )
         }}
       >
         <input
@@ -119,24 +148,27 @@ export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPl
           onChange={(event) => {
             const files = Array.from(event.currentTarget.files ?? [])
             event.currentTarget.value = ''
-            if (files.length) addFiles(files)
+            if (files.length) addDraftFiles(files)
           }}
         />
-        <ComposerReply
-          quote={reply?.quote}
-          onShow={reply?.onShow}
-          onCancel={() => {
-            reply?.onCancel()
-            inputRef.current?.focus()
-          }}
-        />
-        <ComposerAttachmentTray
-          attachments={attachments}
-          onRemove={(id) => {
-            removeAttachment(id)
-            inputRef.current?.focus()
-          }}
-        />
+        {/* What is being sent goes as it is: its reply and files cannot be taken off meanwhile. */}
+        <div inert={sending}>
+          <ComposerReply
+            quote={reply?.quote}
+            onShow={reply?.onShow}
+            onCancel={() => {
+              reply?.onCancel()
+              inputRef.current?.focus()
+            }}
+          />
+          <ComposerAttachmentTray
+            attachments={attachments}
+            onRemove={(id) => {
+              removeAttachment(id)
+              inputRef.current?.focus()
+            }}
+          />
+        </div>
         <span className="sr-only" role="status">
           {attachments.length > 0 ? `${attachments.length} ${attachments.length === 1 ? 'file' : 'files'} attached` : ''}
         </span>
@@ -154,7 +186,9 @@ export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPl
               minRows={1}
               maxRows={MAX_ROWS}
               data-expanded={expanded || undefined}
-              className="composer-input block min-w-0 resize-none rounded-none border-0 bg-transparent p-0 text-base/5 wrap-anywhere shadow-none ring-0 focus:ring-0 data-expanded:[scrollbar-gutter:stable]"
+              data-sending={sending || undefined}
+              readOnly={sending}
+              className="composer-input block min-w-0 resize-none rounded-none border-0 bg-transparent p-0 text-base/5 wrap-anywhere shadow-none ring-0 focus:ring-0 data-expanded:[scrollbar-gutter:stable] data-sending:text-kumo-subtle"
               placeholder="Ask anything…"
               aria-label="Message"
               value={text}
@@ -162,10 +196,10 @@ export const Composer = ({ onSend, reply, problem, stop, addActions, addMenuInPl
               onPaste={(event) => {
                 if (!event.clipboardData.files.length) return
                 event.preventDefault()
-                addFiles(event.clipboardData.files)
+                addDraftFiles(event.clipboardData.files)
               }}
               onKeyDown={(event) => {
-                if (event.key === 'Escape' && reply) return reply.onCancel()
+                if (event.key === 'Escape' && reply && !sending) return reply.onCancel()
                 if (
                   event.key !== 'Enter' ||
                   event.shiftKey ||

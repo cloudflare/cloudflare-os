@@ -28,20 +28,30 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
   // The message being sent, shown until the conversation opens; or why it could not be sent.
   const [pending, setPending] = useState<{ text: string; files: File[] }>()
   const [problem, setProblem] = useState<string>()
+  // A message that did not go, for the greeting's composer, which is gone while it is sent, to
+  // start from when it comes back.
+  const [unsent, setUnsent] = useState<{ text: string; files: File[] }>()
   useDocumentTitle('New chat')
 
+  // Resolves to whether the conversation was started; the composer keeps the draft until it has.
   const send = async (text: string, files: File[]) => {
-    if (pending) return
-    if (model.status !== 'ready') return setProblem(describeModelProblem(model))
+    if (pending) return false
+    if (model.status !== 'ready') {
+      setProblem(describeModelProblem(model))
+      return false
+    }
     setProblem(undefined)
     setPending({ text, files })
     try {
       const started = await start(text, files, model.id)
       refreshWorkspaces()
       await onStarted(started)
+      return true
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error))
       setPending(undefined)
+      setUnsent({ text, files })
+      return false
     }
   }
 
@@ -49,7 +59,7 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
 
   // Once something is said, it is shown as the conversation it becomes; if it could not be sent,
   // nothing was, and the page is as it was.
-  if (greeting !== undefined && !pending) return <ChatStart greeting={greeting} onSend={send} problem={composerProblem} autoFocus />
+  if (greeting !== undefined && !pending) return <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} problem={composerProblem} autoFocus />
 
   return (
     <ChatLayout header={header} composer={<Composer onSend={send} problem={composerProblem} />}>

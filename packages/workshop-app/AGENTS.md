@@ -108,6 +108,10 @@ The view follows the end of the conversation only for a reader who is at it; one
 up is left where they are, with a button to the latest. Sending a message is the exception: it
 takes whoever sent it to the end, and follows from there.
 
+A draft is only let go of once its message has gone: `Composer`'s `onSend` resolves to whether it
+did, and until then the draft, its files and what it replies to stay, dimmed and unsendable. One
+that did not go stays as it was, under why.
+
 Consecutive messages from one sender are drawn as a run (closer together, with smaller corners
 where they meet). `MessageBubble` does that itself between sibling bubbles; the message list wraps
 each row, so `ChatPane` tells the rows about their neighbours (`continuesRun`). A message that

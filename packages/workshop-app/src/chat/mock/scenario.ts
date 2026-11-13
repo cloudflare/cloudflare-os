@@ -255,6 +255,10 @@ export type Scenario = {
   restricted?: boolean
   /** The bytes of files sent in the chat that are fetched when opened, rather than sent inline, by id. */
   files?: Record<string, Uint8Array>
+  /** What the workspace says to the first messages sent, which it refuses, in order. */
+  refusals?: string[]
+  /** How long a message takes to be sent, in milliseconds, so that one on its way can be seen. */
+  sendDelay?: number
 }
 
 const CHUNK_DELAY = 45

@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { XIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Tooltip } from '@/components/Tooltip'
+import { useObjectUrl } from '@/hooks/useObjectUrl'
 import { attachmentKind } from './attachmentKind'
 import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 import type { ComposerAttachment } from './useComposerAttachments'
@@ -10,16 +11,18 @@ export const ComposerAttachmentCard = ({ attachment, onRemove }: {
   attachment: ComposerAttachment
   onRemove: () => void
 }) => {
+  const { file } = attachment
   const [previewFailed, setPreviewFailed] = useState(false)
-  const name = attachment.file.name || 'Attached file'
-  const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(attachment.file)]
+  const previewUrl = useObjectUrl(file.type.startsWith('image/') ? file : undefined, file.type)
+  const name = file.name || 'Attached file'
+  const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(file)]
 
   return (
     <Tooltip content={name}>
       <div className="group relative size-22 overflow-hidden rounded-2xl bg-kumo-base sm:size-26">
-        {attachment.previewUrl && !previewFailed ? (
+        {previewUrl && !previewFailed ? (
           <img
-            src={attachment.previewUrl}
+            src={previewUrl}
             alt={name}
             className="size-full object-contain"
             onError={() => setPreviewFailed(true)}

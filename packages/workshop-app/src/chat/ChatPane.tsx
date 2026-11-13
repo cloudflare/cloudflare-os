@@ -117,17 +117,27 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     }) ?? []
   }, [items, disclosure, handlers, restricted])
 
-  const sendMessage = (text: string, files: File[]) => {
+  // Resolves to whether the message went; until it has, the draft and what it replies to stay.
+  const sendMessage = async (text: string, files: File[]) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
     list.current?.scrollToLatest()
-    if (chat.status !== 'ready') return setProblem('The conversation is still loading. Try again in a moment.')
-    if (model.status !== 'ready') return setProblem(describeModelProblem(model))
+    if (chat.status !== 'ready') {
+      setProblem('The conversation is still loading. Try again in a moment.')
+      return false
+    }
+    if (model.status !== 'ready') {
+      setProblem(describeModelProblem(model))
+      return false
+    }
     setProblem(undefined)
     setNotice(undefined)
-    setReply(undefined)
-    void actions.send(reply ? withQuote(reply.quote, text) : text, model.id, files)
+    const replied = reply
+    const sent = await actions.send(replied ? withQuote(replied.quote, text) : text, model.id, files)
+    // Unless another message has been chosen to reply to meanwhile.
+    if (sent) setReply((current) => (current === replied ? undefined : current))
+    return sent
   }
 
   return (

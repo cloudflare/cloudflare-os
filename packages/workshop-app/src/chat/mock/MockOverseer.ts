@@ -48,9 +48,13 @@ export class MockOverseer {
   #gadgets = new Map<number, MockGadget>()
   #files: Record<string, Uint8Array>
   #blobs = new Map<GitOid, Uint8Array>()
+  #refusals: string[]
+  #sendDelay: number
 
   constructor(scenario: Scenario) {
     this.#messages = [...scenario.history]
+    this.#refusals = [...(scenario.refusals ?? [])]
+    this.#sendDelay = scenario.sendDelay ?? 0
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#metadata = {
@@ -119,6 +123,9 @@ export class MockOverseer {
     _capsules?: unknown,
     handles?: ChatAttachmentHandle[],
   ) {
+    if (this.#sendDelay) await new Promise((resolve) => setTimeout(resolve, this.#sendDelay))
+    const refusal = this.#refusals.shift()
+    if (refusal !== undefined) throw new Error(refusal)
     const attachments = handles?.map((handle): ChatAttachmentRef => {
       const content = 'oid' in handle ? this.#blobs.get(handle.oid) : undefined
       if (!('oid' in handle) || !content) throw new Error('Chat attachment not found.')
