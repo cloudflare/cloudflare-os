@@ -8,12 +8,14 @@ import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
+import { MemberListItem } from '@/blocks/MemberListItem'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ShimmerText } from '@/components/ShimmerText'
+import { Tabs as PageTabs } from '@/components/Tabs'
 import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
@@ -61,6 +63,25 @@ const ShimmerTextPreview = () => {
       </span>
       <Switch label="Active" checked={active} onCheckedChange={setActive} />
     </div>
+  )
+}
+
+const PAGE_TABS = [
+  { value: 'chats', label: 'Chats' },
+  { value: 'library', label: 'Library' },
+  { value: 'members', label: 'Members' },
+] as const
+
+const TabsPreview = () => {
+  const [tab, setTab] = useState<(typeof PAGE_TABS)[number]['value']>('chats')
+  return (
+    <Section title="Tabs (a workspace's page: the chosen one on a pill; arrow keys move between them)">
+      <PageTabs value={tab} onValueChange={setTab} tabs={[...PAGE_TABS]} aria-label="Workspace" className="w-full gap-4">
+        {PAGE_TABS.map(({ value, label }) => (
+          <PageTabs.Panel key={value} value={value} className="text-center text-base text-kumo-subtle">{label} go here.</PageTabs.Panel>
+        ))}
+      </PageTabs>
+    </Section>
   )
 }
 
@@ -243,12 +264,21 @@ function Gallery() {
         </div>
       </Section>
       <Section title="ChatListItem (with activity, long title, title only)">
-        <div className="flex w-80 flex-col">
-          <ChatListItem title="Jira dashboard" subtitle="4 hours ago" onSelect={() => {}} />
-          <ChatListItem title="Create a new slideshow about the history of Paris" subtitle="Oct 27" onSelect={() => {}} />
-          <ChatListItem title="Title only, no subtitle" onSelect={() => {}} />
+        <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
+          <ChatListItem title="Jira dashboard" time="4 hours ago" onSelect={() => {}} />
+          <ChatListItem title="Create a new slideshow about the history of Paris" time="Oct 27" onSelect={() => {}} />
+          <ChatListItem title="Title only, no time" onSelect={() => {}} />
         </div>
       </Section>
+      <Section title="MemberListItem (the owner, the viewer, a collaborator who can only use it, one with no picture)">
+        <div className="flex w-96 flex-col rounded-3xl bg-kumo-tint p-1.5">
+          <MemberListItem name="Ada Lovelace" role="Owner" />
+          <MemberListItem name="Grace Hopper" you role="Can edit" />
+          <MemberListItem name="Alan Turing" role="Can use" />
+          <MemberListItem name="A collaborator with a much longer name than fits" role="Can edit" />
+        </div>
+      </Section>
+      <TabsPreview />
       <HeaderPreview />
       <ShellPreview />
       <Section title="Sidebar, expanded and collapsed to a rail (approach a neighbour from the active row or a distant row; on the rail, point at a workspace for its title)">

@@ -12,6 +12,8 @@ export type WorkspacesContextValue = {
   refresh: () => void
   /** Stars or unstars a workspace, shown at once and undone if the server refuses. */
   setPinned: (id: string, pinned: boolean) => Promise<void>
+  /** Renames a workspace, shown at once and undone if the server refuses. */
+  rename: (id: string, title: string) => Promise<void>
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -30,3 +32,6 @@ export const useRefreshWorkspaces = (): (() => void) => useWorkspacesContext().r
 
 /** Stars or unstars a workspace (`pinned`, to the server). Rejects with why, once it is undone. */
 export const useSetWorkspacePinned = (): WorkspacesContextValue['setPinned'] => useWorkspacesContext().setPinned
+
+/** Renames a workspace (`setTitle`, to the server). Rejects with why, once it is undone. */
+export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWorkspacesContext().rename
