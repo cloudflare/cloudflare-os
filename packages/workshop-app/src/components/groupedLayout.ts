@@ -39,6 +39,21 @@ export const layOut = (items: LayoutItem[], { pad }: Spacing) => {
 }
 
 /**
+ * Where a row being dragged within its group goes, as how many of the group's other rows come before
+ * it. `rows` are the group's rows in order, each at its place, with the dragged one at `index`, and
+ * `top` is where the dragged one is drawn. It passes another row once its edge reaches that row's
+ * middle, so half a row's travel either way moves it, and it can pass the last row before being held
+ * at the group's end.
+ */
+export const dragPlace = (rows: { top: number; height: number }[], index: number, top: number) => {
+  const bottom = top + rows[index].height
+  return rows.filter((row, other) => {
+    const middle = row.top + row.height / 2
+    return other < index ? top >= middle : other > index && bottom > middle
+  }).length
+}
+
+/**
  * The surface under items laid out at `tops`. Each item's reaches past it, towards a neighbour, as
  * far as half the room between them, up to the padding: so rows of a group, with no room between,
  * share theirs, and as a boundary opens between two rows, the padding comes first and then the

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { SPACING, boundaryOf, layOut, surfaceRuns, type LayoutItem } from './groupedLayout'
+import { SPACING, boundaryOf, dragPlace, layOut, surfaceRuns, type LayoutItem } from './groupedLayout'
 
 const { pad, radius } = SPACING
 const ROW = 48
@@ -57,5 +57,33 @@ describe('surfaceRuns', () => {
       expect(today.top).toBeCloseTo(pad + ROW + BOUNDARY - pad)
       expect(today.topRadius).toBe(radius)
     }
+  })
+})
+
+// A group's rows at their places, with no room between them.
+const group = (count: number) => Array.from({ length: count }, (_, index) => ({ top: pad + index * ROW, height: ROW }))
+
+describe('dragPlace', () => {
+  it('keeps a row where it is until it has gone half a row', () => {
+    expect(dragPlace(group(3), 1, pad + ROW)).toBe(1)
+    expect(dragPlace(group(3), 1, pad + ROW + ROW / 2 - 1)).toBe(1)
+    expect(dragPlace(group(3), 1, pad + ROW / 2 + 1)).toBe(1)
+  })
+
+  it('moves the first of two below the other, as far as it can be dragged and short of it', () => {
+    // Held at the group's end, which is the other row's place.
+    expect(dragPlace(group(2), 0, pad + ROW)).toBe(1)
+    expect(dragPlace(group(2), 0, pad + ROW / 2 + 1)).toBe(1)
+  })
+
+  it('moves the last of two above the other as readily', () => {
+    expect(dragPlace(group(2), 1, pad)).toBe(0)
+    expect(dragPlace(group(2), 1, pad + ROW / 2 - 1)).toBe(0)
+  })
+
+  it('passes as many rows as it covers the middles of', () => {
+    expect(dragPlace(group(4), 0, pad + 2 * ROW + 1)).toBe(2)
+    expect(dragPlace(group(4), 0, pad + 2 * ROW + ROW / 2 + 1)).toBe(3)
+    expect(dragPlace(group(4), 3, pad + ROW / 2 - 1)).toBe(0)
   })
 })
