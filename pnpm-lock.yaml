@@ -592,6 +592,9 @@ importers:
       '@gadgets/observability':
         specifier: workspace:*
         version: link:../observability
+      '@gadgets/pdf-renderer':
+        specifier: workspace:*
+        version: link:../pdf-renderer
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared

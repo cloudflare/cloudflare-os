@@ -177,8 +177,12 @@ export type ManifestBinding = { type: string; name: string } & Record<string, un
 
 /** Everything the manifest says about one worker in the release. */
 export interface WorkerEntry {
-  /** Which role this worker plays in a deployment. */
-  kind: "backend" | "router" | "gatekeeper";
+  /**
+   * Which role this worker plays in a deployment. The backend, the router and every `internal`
+   * worker are the core, deployed with every instance. An `internal` worker has no public route:
+   * it is reached only through the service bindings of the workers that name it.
+   */
+  kind: "backend" | "router" | "gatekeeper" | "internal";
   /** Gatekeepers only: the path segment the router routes `/gatekeeper/<shortName>/*` on. */
   shortName?: string;
   /** Whether the deploy wizard offers this worker for installation. */
@@ -334,6 +338,15 @@ export const DEFAULT_CRED_INPUTS: DeployInput[] = [
 
 const GATEKEEPER_PREFIX = "gatekeeper-";
 
+/**
+ * Workers that other workers bind to and nothing routes to. Listed by name, never recognized by a
+ * prefix, so a package becomes one only by a decision made here: an internal worker ships to
+ * every instance with no install step, no URL of its own and nothing for the wizard to collect.
+ */
+export const INTERNAL_WORKERS: ReadonlySet<string> = new Set([
+  "pdf-renderer", // draws PDF pages for gatekeeper-google's Drive PDF reading
+]);
+
 /** Read every deployable package and its Wrangler configuration, sorted by package name. */
 export function readDeployablePackages(packagesDir: string): DeployablePackage[] {
   return readdirSync(packagesDir)
@@ -407,6 +420,7 @@ export function readDeployInputs(pkgDir: string): DeployInput[] | undefined {
 function workerKind(pkgName: string): WorkerEntry["kind"] {
   if (pkgName === "workshop-backend") return "backend";
   if (pkgName === "router") return "router";
+  if (INTERNAL_WORKERS.has(pkgName)) return "internal";
   if (isGatekeeperPackage(pkgName)) return "gatekeeper";
   throw new Error(`cannot classify deployable package: ${pkgName}`);
 }
@@ -519,6 +533,10 @@ export function buildWorkerEntry(
     // The router routes /gatekeeper/<short>/* by scanning its own GATEKEEPER_* bindings
     // (default entrypoint — it forwards whole HTTP requests, not vendor RPC).
     gatekeeperBindingExpansion = { propsByPackage: {} };
+  } else if (kind === "internal") {
+    // Deployed with every instance, so the wizard neither offers it nor collects anything for it,
+    // and it serves no URL to template a BASE_URL from.
+    installable = false;
   } else {
     vars.BASE_URL = `$PUBLIC_BASE_URL/gatekeeper/${releaseShortName(pkgName)}`;
     installable = !NOT_INSTALLABLE.has(pkgName);
