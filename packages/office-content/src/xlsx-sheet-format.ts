@@ -305,16 +305,38 @@ function formatNumberValue(value: number, sections: readonly Section[], date1904
   return section.color ? { text, color: section.color } : { text };
 }
 
+/**
+ * The longest text a format that adds to its cell's text may produce. Such a result is a new
+ * string for every cell, where unformatted cells share their text, so without a limit a format of
+ * many `@` over one long shared string would cost its length times the cells that use it. A grid
+ * cell shows far less than this.
+ */
+const MAX_FORMATTED_TEXT = 1024;
+
 function renderText(section: Section, text: string): string {
-  return section.tokens.map(token => token.kind === "literal" ? token.text : token.kind === "text" ? text : "").join("");
+  // The usual text format is `@` alone, which is the text itself.
+  if (section.tokens.length === 1 && section.tokens[0]!.kind === "text") return text;
+  let out = "";
+  for (const token of section.tokens) {
+    if (out.length >= MAX_FORMATTED_TEXT) break;
+    if (token.kind === "literal") out += token.text;
+    else if (token.kind === "text") out += text.slice(0, MAX_FORMATTED_TEXT - out.length);
+  }
+  return out.slice(0, MAX_FORMATTED_TEXT);
 }
+
+const MAX_DECIMALS = 30;
 
 /**
  * `value` as decimal digits rounded half away from zero to `decimals` places. Rounds the number's
  * 15 significant digits, as Excel does, so 1.005 gives 1.01 rather than the 1.00 its binary value
  * would.
  */
-function fixed(value: number, decimals: number): string {
+function fixed(value: number, places: number): string {
+  // Excel keeps 15 significant digits and `toFixed` refuses more than 100 places: the places a
+  // format asks for past this are zeros.
+  const decimals = Math.min(places, MAX_DECIMALS);
+  if (decimals < places) return fixed(value, decimals) + "0".repeat(places - decimals);
   if (value >= 1e21) return value.toFixed(0);
   const scaled = Number(`${Number(value.toPrecision(15))}e${decimals}`);
   const rounded = Number(`${Math.round(scaled)}e-${decimals}`);
@@ -479,7 +501,14 @@ function nearestFraction(value: number, maxDenominator: number): [number, number
     const whole = Math.floor(rest);
     const nextNumerator = whole * numerator + previousNumerator;
     const nextDenominator = whole * denominator + previousDenominator;
-    if (nextDenominator > maxDenominator) break;
+    if (nextDenominator > maxDenominator) {
+      // The next convergent is out of reach, but a fraction between it and this one may be nearer
+      // than this one: the one with the largest denominator allowed.
+      const steps = denominator === 0 ? 0 : Math.floor((maxDenominator - previousDenominator) / denominator);
+      const between: [number, number] = [steps * numerator + previousNumerator, steps * denominator + previousDenominator];
+      if (steps > 0 && Math.abs(value - between[0] / between[1]) < Math.abs(value - numerator / denominator)) return between;
+      break;
+    }
     [previousNumerator, numerator] = [numerator, nextNumerator];
     [previousDenominator, denominator] = [denominator, nextDenominator];
     if (Math.abs(rest - whole) < 1e-12) break;

@@ -210,3 +210,26 @@ describe("builtInFormatCode", () => {
     expect(parseNumberFormat(builtInFormatCode(40)).format(-2)).toEqual({ text: "(2.00)", color: "#FF0000" });
   });
 });
+
+describe("formats a file can make costly", () => {
+  it("pads more decimal places than a number has digits with zeros, however many are asked for", () => {
+    const text = show(`0.${"0".repeat(150)}`, 1.5);
+    expect(text).toHaveLength(152);
+    expect(text.startsWith("1.5000")).toBe(true);
+  });
+
+  it("gives `@` alone the cell's own text and bounds what any other text format builds", () => {
+    const long = "x".repeat(32_767);
+    expect(parseNumberFormat("@").formatText(long).text).toBe(long);
+    expect(parseNumberFormat("@".repeat(250)).formatText(long).text).toHaveLength(1024);
+    expect(parseNumberFormat('"ID "@').formatText("x7").text).toBe("ID x7");
+  });
+
+  it("shows the nearest fraction its denominator's digits allow", () => {
+    expect(show("# ?/?", 0.1)).toContain("1/9");
+    expect(show("# ?/?", 1.1)).toContain("1/9");
+    expect(show("# ?/?", 0.5)).toContain("1/2");
+    expect(show("# ??/??", 0.3333)).toContain("1/3");
+  });
+});
+

@@ -1055,10 +1055,15 @@ function gridValue(properties: XmlElement | undefined, name: string, fallback: n
 /** Child elements with one of `names`, looking through content controls and custom XML wrappers. */
 function unwrapped(parent: XmlElement, ...names: readonly string[]): XmlElement[] {
   const found: XmlElement[] = [];
-  for (const child of childElements(parent)) {
-    if (names.includes(child.name)) found.push(child);
-    else if (child.name === "w:sdt") found.push(...unwrapped(firstChild(child, "w:sdtContent") ?? child, ...names));
-    else if (child.name === "w:customXml" || child.name === "w:sdtContent") found.push(...unwrapped(child, ...names));
-  }
+  // Collected into one array: spreading a wrapper's children into `push` fails past the number
+  // of arguments a call may take.
+  const collect = (from: XmlElement): void => {
+    for (const child of childElements(from)) {
+      if (names.includes(child.name)) found.push(child);
+      else if (child.name === "w:sdt") collect(firstChild(child, "w:sdtContent") ?? child);
+      else if (child.name === "w:customXml" || child.name === "w:sdtContent") collect(child);
+    }
+  };
+  collect(parent);
   return found;
 }
