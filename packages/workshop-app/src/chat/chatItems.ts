@@ -1,5 +1,6 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import { webUrl } from '@/components/webUrl'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
 
@@ -242,14 +243,6 @@ const emitterFor = <Base extends { key: string }>(previous: readonly Base[]): Em
 
 const sameItems = <T,>(a: readonly T[] | undefined, b: readonly T[]) =>
   a !== undefined && a.length === b.length && a.every((item, index) => item === b[index])
-
-const webUrl = (url: string | undefined): string | undefined => {
-  try {
-    return url && ['http:', 'https:'].includes(new URL(url).protocol) ? url : undefined
-  } catch {
-    return undefined
-  }
-}
 
 const resourceOf = ({ resourceTitle, resourceUrl }: ActionLogEntry): ResourceLink | undefined =>
   resourceTitle ? { title: resourceTitle, url: webUrl(resourceUrl) } : undefined

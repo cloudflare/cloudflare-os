@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
+import { webUrl } from './webUrl'
 
 export type ChipProps = {
   children: ReactNode
   /** An icon element, shown before the text. */
   icon?: ReactNode
-  /** Makes the chip a link that opens in a new tab. */
+  /** Makes the chip a link that opens in a new tab, when it is a web address. */
   href?: string
 }
 
@@ -14,7 +15,8 @@ export type ChipProps = {
 const CHIP = 'mx-0.5 rounded-full bg-current/12 box-decoration-clone px-2 py-0.5 text-[0.9em] font-medium [&>svg]:me-1 [&>svg]:inline [&>svg]:size-[1em] [&>svg]:align-[-0.125em]'
 
 /** Something named inside running text: a resource, a format, a command. */
-export const Chip = ({ children, icon, href }: ChipProps) => {
+export const Chip = ({ children, icon, href: given }: ChipProps) => {
+  const href = webUrl(given)
   const content = (
     <>
       {icon}

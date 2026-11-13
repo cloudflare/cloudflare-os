@@ -115,6 +115,11 @@ spacer. A sent reply finds its message by the line, since that is all it carries
 history until it turns up (`ChatSession.findQuoted`). A reply that named its message would need
 neither, which is for the backend to support.
 
+What the agent writes can say anything, so `Markdown` renders no HTML, links only web and mail
+addresses, and links an image from elsewhere instead of loading it, which would tell whoever is
+there what was read (one carried in the text, `data:` or `blob:`, is shown). Every link the app
+draws passes `components/webUrl.ts`, so none can be `javascript:`.
+
 Points in the conversation that nobody said are lines across it (`FeedDivider`): what people did
 to the changes, and a compaction. A compaction asked for with `/compact` is announced under the
 command; one that ran on its own, at the cut. Another model taking over is not one: each message's

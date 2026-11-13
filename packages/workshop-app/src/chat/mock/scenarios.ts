@@ -435,9 +435,9 @@ const LOGO_SVG = new TextEncoder().encode(
   '  <script>alert(document.domain)</script>\n' +
   '</svg>\n',
 )
-// A 2×2 PNG, in two oranges.
+// A 32×32 PNG, a check of two oranges.
 const SWATCH_PNG = Uint8Array.from(
-  atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4H6P3rUmeAYiBLAAvHgZBFoNqxwAAAABJRU5ErkJggg=='),
+  atob('iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOUlEQVR42mP41iSPFf2P0cOKSFXPMGrBqAVDwAJqGYRL/agFoxYMBQtGi4pRC0YtGK0PRi0YtQCIAJTHQFs8p2wmAAAAAElFTkSuQmCC'),
   (char) => char.charCodeAt(0),
 )
 
@@ -447,7 +447,8 @@ const untrustedContent: Scenario = {
   description:
     'Files and replies that could run or fetch something are shown as what they are. The SVG sent ' +
     'has a script in it: it is a tile rather than a picture, and opens beside the chat as its text. ' +
-    'The PNG is pixels, so it is shown as a picture.',
+    'The PNG is pixels, so it is shown as a picture. The reply links an image from elsewhere rather than ' +
+    'loading it, shows the one it carries, keeps the text of a link that would run script, and shows no HTML.',
   history: history([
     user('Here are the logo and the swatch for the brand page.', {
       attachments: [
@@ -455,7 +456,15 @@ const untrustedContent: Scenario = {
         { id: 'swatch', name: 'swatch.png', mimeType: 'image/png', size: SWATCH_PNG.length, content: SWATCH_PNG },
       ],
     }),
-    agent({ text: 'Thanks. The logo has a script in it, which I’ve left out of the page; the swatch is the brand orange.' }),
+    agent({
+      text:
+        'Thanks. The logo has a script in it, which I’ve left out of the page; the swatch is the brand orange:\n\n' +
+        '![The swatch](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAOUlEQVR42mP41iSPFf2P0cOKSFXPMGrBqAVDwAJqGYRL/agFoxYMBQtGi4pRC0YtGK0PRi0YtQCIAJTHQFs8p2wmAAAAAElFTkSuQmCC)\n\n' +
+        'The page will look like the mock-up: ![Brand page mock-up](https://assets.example.com/brand-page.png?viewer=ada)\n\n' +
+        '- [Check the colours](javascript:alert(document.domain)) before it goes out\n' +
+        '- Ask <b onmouseover="alert(1)">design</b> at [design@example.com](mailto:design@example.com) about the logo\n' +
+        '- The style guide is at [brand.example.com](https://brand.example.com)',
+    }),
   ]),
   script: when('onSend', turn(say(agent({ text: 'Noted.' })))),
 }
