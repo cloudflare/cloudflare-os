@@ -21,10 +21,12 @@ export const describeModelProblem = (model: Exclude<DefaultModel, { status: 'rea
 
 /** The model the user's messages are answered by: the first of their models, which is the default. */
 export const useDefaultModel = (): DefaultModel => {
-  const { api } = useApi()
+  const { api, reconnecting } = useApi()
   const [model, setModel] = useState<DefaultModel>({ status: 'loading' })
 
   useEffect(() => {
+    // Over a lost connection it could only fail; the new connection's `api` loads it.
+    if (reconnecting) return
     let cancelled = false
     api.listModels().then(
       ([first]) => {
@@ -37,7 +39,7 @@ export const useDefaultModel = (): DefaultModel => {
     return () => {
       cancelled = true
     }
-  }, [api])
+  }, [api, reconnecting])
 
   return model
 }

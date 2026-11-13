@@ -1,16 +1,17 @@
 import { useState } from 'react'
+import { cn } from '@cloudflare/kumo/utils'
 import { Switch, Tabs } from '@cloudflare/kumo'
-import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
+import { Mascot, type MascotColor, type MascotEmotion } from '@/components/mascot/Mascot'
 import { Section } from './Section'
 
 const EMOTIONS: MascotEmotion[] = ['idle', 'thinking', 'happy', 'sad', 'error', 'loading']
+const COLORS: MascotColor[] = ['contrast', 'inverse', 'brand']
 
 /** Every emotion at several sizes, coming and going. The large one can be played with; the others only show the state. */
 export const MascotPreview = () => {
   const [emotion, setEmotion] = useState<MascotEmotion>('idle')
   const [shown, setShown] = useState(true)
-  const [brand, setBrand] = useState(false)
-  const color = brand ? 'brand' : 'contrast'
+  const [color, setColor] = useState<MascotColor>('contrast')
 
   return (
     <Section title="Mascot (each emotion at several sizes, coming and going; click the large one, or hold it while sad)">
@@ -22,11 +23,16 @@ export const MascotPreview = () => {
             onValueChange={(value) => setEmotion(value as MascotEmotion)}
             tabs={EMOTIONS.map((value) => ({ value, label: value }))}
           />
+          <Tabs
+            size="sm"
+            value={color}
+            onValueChange={(value) => setColor(value as MascotColor)}
+            tabs={COLORS.map((value) => ({ value, label: value }))}
+          />
           <Switch label="Shown" checked={shown} onCheckedChange={setShown} />
-          <Switch label="Brand colour" checked={brand} onCheckedChange={setBrand} />
         </div>
-        {/* Room below for the rain. */}
-        <div className="flex items-end gap-12 rounded-3xl px-12 pt-12 pb-20 ring-1 ring-kumo-line">
+        {/* Room below for the rain. Inverse is for on top of something drawn in contrast. */}
+        <div className={cn('flex items-end gap-12 rounded-3xl px-12 pt-12 pb-20 ring-1 ring-kumo-line', color === 'inverse' && 'bg-kumo-contrast')}>
           <Mascot emotion={emotion} shown={shown} color={color} interactive className="w-40" />
           <Mascot emotion={emotion} shown={shown} color={color} className="w-16" />
           <Mascot emotion={emotion} shown={shown} color={color} className="w-8" />

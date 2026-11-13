@@ -11,7 +11,7 @@ import type {
   SlashCommandRequest,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
-import { MockGadget, RESTARTED, type Handle } from './MockGadget'
+import { DISCONNECTED, MockGadget, RESTARTED, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
 import { AGENT, stamp, VIEWER, type MessageSource, type Scenario, type ScriptStep } from './scenario'
 
@@ -57,6 +57,15 @@ export class MockOverseer {
   #generation = 1
   // While the workspace is restarting, until this time, calls wait for it to be back.
   #downUntil = 0
+  // While the app's connection is down: how to have it back at once.
+  #offline: { reconnect: () => void } | undefined
+
+  /**
+   * Told when the app's connection to the backend drops, and when it is back, as for a
+   * `disconnect` step. Whoever plays the scenario stands in for the app's connection, making a new
+   * API and connecting what holds stubs again.
+   */
+  onConnection?: (connected: boolean) => void
 
   constructor(scenario: Scenario) {
     this.#messages = [...scenario.history]
@@ -79,20 +88,22 @@ export class MockOverseer {
    * new one wait until it is back.
    */
   open(): this {
-    const handle: Handle = { broken: false, onBroken: new Set() }
+    // Over a dropped connection, a stub is broken from the start.
+    const handle: Handle = { broken: this.#offline && DISCONNECTED, onBroken: new Set() }
     this.#handles.add(handle)
     return new Proxy(this, {
       get: (target, name) => {
         if (name === Symbol.dispose) return () => void this.#handles.delete(handle)
         if (name === 'onRpcBroken') {
-          return (callback: (error: unknown) => void) => (handle.broken ? callback(RESTARTED) : handle.onBroken.add(callback))
+          return (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : handle.onBroken.add(callback))
         }
         if (name === 'getGadget') return (id: number) => this.#gadget(id).open(handle)
         const value: unknown = Reflect.get(target, name, target)
         if (typeof value !== 'function' || typeof name === 'symbol' || name === 'then') return value
         return async (...args: unknown[]) => {
+          if (handle.broken) throw handle.broken
           await this.#backUp()
-          if (handle.broken) throw RESTARTED
+          if (handle.broken) throw handle.broken
           return (value as (...args: unknown[]) => unknown).apply(target, args)
         }
       },
@@ -242,6 +253,7 @@ export class MockOverseer {
 
   #run(step: ScriptStep) {
     if ('restart' in step) this.#restart(step.restart)
+    else if ('disconnect' in step) this.#disconnect(step.disconnect)
     else if ('stream' in step) this.#chatSubscribers.forEach((subscriber) => subscriber.stream(CHAT_ID, step.stream))
     else if ('message' in step) this.#append(step.message)
     else if ('metadata' in step) this.#setMetadata(step.metadata)
@@ -257,13 +269,41 @@ export class MockOverseer {
   #restart(downFor: number) {
     this.#generation++
     this.#downUntil = Date.now() + downFor
+    this.#breakHandles(RESTARTED)
+  }
+
+  /**
+   * Drops the app's connection, which is back after `downFor` milliseconds or when asked
+   * (`reconnectNow`). The workspace carries on meanwhile, as the server does, unheard: whoever was
+   * subscribed went with the connection, and every handle out breaks, as does any made meanwhile.
+   */
+  #disconnect(downFor: number) {
+    if (this.#offline) return
+    const timer = setTimeout(() => this.reconnectNow(), downFor)
+    this.#offline = {
+      reconnect: () => {
+        clearTimeout(timer)
+        this.#offline = undefined
+        this.onConnection?.(true)
+      },
+    }
+    this.onConnection?.(false)
+    this.#breakHandles(DISCONNECTED)
+  }
+
+  /** Has a dropped connection back now. */
+  reconnectNow() {
+    this.#offline?.reconnect()
+  }
+
+  #breakHandles(error: Error) {
     this.#chatSubscribers.clear()
     this.#actionSubscribers.clear()
     const handles = [...this.#handles]
     this.#handles.clear()
     for (const handle of handles) {
-      handle.broken = true
-      handle.onBroken.forEach((callback) => callback(RESTARTED))
+      handle.broken = error
+      handle.onBroken.forEach((callback) => callback(error))
     }
   }
 

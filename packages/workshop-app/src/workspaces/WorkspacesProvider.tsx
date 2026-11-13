@@ -7,7 +7,7 @@ import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
  * to subscribe to, so whoever changes it asks for a reload.
  */
 export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
-  const { api } = useApi()
+  const { api, reconnecting } = useApi()
   const [state, setState] = useState<WorkspacesState>({ status: 'loading' })
   // Bumped by refresh() to run the loading effect again.
   const [version, setVersion] = useState(0)
@@ -15,6 +15,8 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   const [refresh] = useState(() => () => setVersion((v) => v + 1))
 
   useEffect(() => {
+    // Over a lost connection it could only fail; the new connection's `api` loads it.
+    if (reconnecting) return
     let cancelled = false
     api.listWorkspaces().then(
       (workspaces) => {
@@ -29,7 +31,7 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     return () => {
       cancelled = true
     }
-  }, [api, version])
+  }, [api, reconnecting, version])
 
   return <WorkspacesContext value={{ state, refresh }}>{children}</WorkspacesContext>
 }

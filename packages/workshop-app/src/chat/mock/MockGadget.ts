@@ -7,8 +7,14 @@ const LOAD_TIME = 500
 /** What a handle's calls fail with once the workspace has restarted under it. */
 export const RESTARTED = new Error('The workspace restarted.')
 
-/** One `openWorkspace`, which the workspace restarting breaks, as it does an RPC stub. */
-export type Handle = { broken: boolean; onBroken: Set<(error: unknown) => void> }
+/** What a handle's calls fail with once the app's connection has dropped, as a disposed stub's do. */
+export const DISCONNECTED = new Error('Attempted to use RPC stub after it has been disposed.')
+
+/**
+ * One `openWorkspace`, which the workspace restarting or the connection dropping breaks, as it
+ * does an RPC stub: `broken` is then what its calls fail with.
+ */
+export type Handle = { broken?: Error; onBroken: Set<(error: unknown) => void> }
 
 type Task = { text: string; done: boolean }
 
@@ -89,7 +95,7 @@ export class MockGadget {
   open(handle: Handle) {
     const reachable = async () => {
       await this.backUp()
-      if (handle.broken) throw RESTARTED
+      if (handle.broken) throw handle.broken
     }
     return {
       getUiBundle: async (): Promise<UiBundle | null> => {
@@ -102,7 +108,7 @@ export class MockGadget {
         const server = new MockGadgetServer(this.#document)
         return Object.assign(server, { onRpcBroken: (callback: (error: unknown) => void) => void handle.onBroken.add(callback) })
       },
-      onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(RESTARTED) : void handle.onBroken.add(callback)),
+      onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : void handle.onBroken.add(callback)),
       // Nothing to release: the fake workspace keeps its gadgets.
       [Symbol.dispose]: () => {},
     }

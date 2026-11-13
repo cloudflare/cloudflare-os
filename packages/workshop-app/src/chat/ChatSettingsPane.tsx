@@ -12,6 +12,7 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { PageLayout } from '@/layouts/PageLayout'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { groupByTime } from './timeGroups'
@@ -42,8 +43,10 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
+  const connection = useConnectionNotice()
   const rename = (next: string) => {
     setRenameProblem(undefined)
+    if (connection?.blocked()) return
     actions.rename(next).catch((error: unknown) => {
       setRenameProblem(`Couldn’t rename the chat: ${error instanceof Error ? error.message : String(error)}`)
     })

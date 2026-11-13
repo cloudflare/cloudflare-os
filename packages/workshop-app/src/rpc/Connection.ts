@@ -11,8 +11,6 @@ const MAX_BACKOFF_MS = 10_000
 // Generous, so a slow but alive backend settles instead of being torn down and retried in a loop.
 const PROBE_TIMEOUT_MS = 20_000
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
-
 const withTimeout = <T,>(promise: Promise<T>, ms: number): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
@@ -41,10 +39,15 @@ export class Connection {
   #snapshot: ConnectionSnapshot = { publicApi: null }
   #listeners = new Set<() => void>()
   #disposed = false
+  // Ends the wait before the next attempt, while there is one.
+  #wake: (() => void) | undefined
 
   constructor(private readonly url: string) {
     void this.#connect()
   }
+
+  /** Tries again now, rather than when the next attempt is due. Nothing while one is under way. */
+  retryNow = () => this.#wake?.()
 
   subscribe = (listener: () => void) => {
     this.#listeners.add(listener)
@@ -57,6 +60,7 @@ export class Connection {
 
   dispose() {
     this.#disposed = true
+    this.#wake?.()
     const { publicApi } = this.#snapshot
     if (publicApi) disposeQuietly(publicApi)
     this.#publish(null)
@@ -67,12 +71,25 @@ export class Connection {
     this.#listeners.forEach((listener) => listener())
   }
 
+  #wait(ms: number) {
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, ms)
+      this.#wake = () => {
+        clearTimeout(timer)
+        resolve()
+      }
+    }).finally(() => {
+      this.#wake = undefined
+    })
+  }
+
   // Resolves only with a candidate that answered a ping: capnweb queues sends while a socket is
   // still connecting, so an unproven stub looks healthy until everything pipelined onto it fails.
   async #connect() {
     let backoff = 0
     while (!this.#disposed) {
-      if (backoff) await sleep(backoff * (0.85 + 0.3 * Math.random()))
+      if (backoff) await this.#wait(backoff * (0.85 + 0.3 * Math.random()))
+      if (this.#disposed) return
       const candidate = newWebSocketRpcSession<PublicApi>(this.url)
       try {
         await withTimeout(candidate.ping(), PROBE_TIMEOUT_MS)

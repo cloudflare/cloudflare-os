@@ -1,19 +1,16 @@
-import { useState, type ReactNode } from 'react'
-import { ConnectionStatus } from '@/blocks/ConnectionStatus'
+import type { ReactNode } from 'react'
 import { ErrorMessage } from '@/blocks/ErrorMessage'
 import { FeedDivider } from '@/blocks/FeedDivider'
 import { SystemRow } from '@/blocks/SystemRow'
-import { Button } from '@/components/Button'
+import { ConnectionIslandPreview } from './ConnectionIslandPreview'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
 const Column = ({ children }: { children: ReactNode }) => <div className="flex w-full flex-col gap-2">{children}</div>
 
-/** The quiet rows for what nobody said, and the ways a turn can fail. */
+/** The quiet rows for what nobody said, the ways a turn can fail, and what is said while the connection is made again. */
 export const SystemBlocksPreview = () => {
   const { report, after } = useReport()
-  // Bumped to show the status arriving again.
-  const [drop, setDrop] = useState(0)
 
   return (
     <>
@@ -34,10 +31,7 @@ export const SystemBlocksPreview = () => {
           <ErrorMessage variant="usageLimit" onContinue={after('continue')}>You’ve used all of this month’s credits.</ErrorMessage>
         </Column>
       </Section>
-      <Section title="ConnectionStatus (over the top of the app while a lost connection is made again, with everything left as it was; held back a moment, as most drops are soon over)">
-        <ConnectionStatus key={drop} />
-        <Button onClick={() => setDrop((current) => current + 1)}>Lose the connection again</Button>
-      </Section>
+      <ConnectionIslandPreview />
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
     </>
   )

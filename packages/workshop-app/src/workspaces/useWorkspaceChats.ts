@@ -12,10 +12,12 @@ export type WorkspaceChatsState =
  * not reset when `workspaceId` changes, so give the calling component a `key` of the id.
  */
 export const useWorkspaceChats = (workspaceId: string): WorkspaceChatsState => {
-  const { api } = useApi()
+  const { api, reconnecting } = useApi()
   const [state, setState] = useState<WorkspaceChatsState>({ status: 'loading' })
 
   useEffect(() => {
+    // Over a lost connection it could only fail; the new connection's `api` loads it.
+    if (reconnecting) return
     let cancelled = false
     const overseer = api.openWorkspace(workspaceId)
     overseer.listChats().then(
@@ -32,7 +34,7 @@ export const useWorkspaceChats = (workspaceId: string): WorkspaceChatsState => {
       cancelled = true
       overseer[Symbol.dispose]()
     }
-  }, [api, workspaceId])
+  }, [api, reconnecting, workspaceId])
 
   return state
 }

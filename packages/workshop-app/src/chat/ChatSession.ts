@@ -113,6 +113,12 @@ export type ChatSessionOptions = {
   viewerId?: string
   /** Called when an assistant turn ends, e.g. to refresh lists that show the workspace. */
   onTurnEnded?: () => void
+  /**
+   * The app's connection to the backend, which may be `down` while it is made again. Meanwhile
+   * nothing asked of the session is sent, and `blocked()`, which says so, tells the user; and the
+   * workspace is not tried again over the lost connection, as `reconnect()` follows once it is back.
+   */
+  connection?: { readonly down: boolean; blocked: () => boolean }
 }
 
 /** A tool call as far as it has streamed. Nothing of it is durable until its message arrives. */
@@ -288,6 +294,8 @@ export class ChatSession {
    */
   #lost(run: number, error: unknown) {
     if (run !== this.#run) return
+    // What is shown, or that it is loading, stays until the connection is back.
+    if (this.options.connection?.down) return
     if (this.#snapshot.status !== 'ready') return this.#fail(messageOf(error))
     const delay = this.#retryDelay
     this.#retryDelay = Math.min(delay ? delay * 2 : RETRY_DELAY.first, RETRY_DELAY.most)
@@ -312,6 +320,7 @@ export class ChatSession {
    * `sendError`.
    */
   send = async (text: string, modelId: string, files: readonly File[] = []): Promise<boolean> => {
+    if (this.options.connection?.blocked()) return false
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) {
       // Shown but not loaded: what is shown is from before a reconnect, which is under way.
@@ -406,6 +415,7 @@ export class ChatSession {
    * subscriptions, not from here; a failure is reported in the snapshot's `actionError`.
    */
   async #ask(call: (overseer: ChatOverseer) => Promise<unknown>) {
+    if (this.options.connection?.blocked()) return
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) return
     const run = this.#run

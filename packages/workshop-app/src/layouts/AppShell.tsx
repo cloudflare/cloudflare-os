@@ -229,7 +229,7 @@ export const AppShell = ({
       >
         {children}
       </SplitLayout>
-      {status && <div className="pointer-events-none fixed inset-x-0 top-3 z-50 flex justify-center">{status}</div>}
+      {status && <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">{status}</div>}
     </div>
   )
 }

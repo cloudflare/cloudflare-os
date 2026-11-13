@@ -35,9 +35,10 @@ export type ComposerProps = {
   /**
    * The agent is working and can be stopped. Meanwhile only words can be sent, to steer it.
    * Stopping drops what is `waiting` for it, which is put in the draft so it can still be sent.
-   * `onStop` rejects when the agent could not be stopped, so it can be asked again.
+   * `onStop` rejects when the agent could not be stopped, so it can be asked again; it is `false`
+   * at once when it cannot be asked now, which leaves everything as it was.
    */
-  stop?: { waiting: readonly string[]; onStop: () => Promise<void> }
+  stop?: { waiting: readonly string[]; onStop: () => Promise<void> | false }
   addActions?: Omit<ComposerAddActions, 'onUpload'>
   /** Expand the add menu in place over its button. */
   addMenuInPlace?: boolean
@@ -248,10 +249,12 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
                 title="Stop"
                 disabled={stopping}
                 onClick={() => {
+                  const stopped = stop.onStop()
+                  if (stopped === false) return
                   setStopping(true)
                   // A failed stop may still have dropped them on the server, so they stay in the draft.
                   if (stop.waiting.length) setText([text.trimEnd(), ...stop.waiting].filter(Boolean).join('\n\n'))
-                  stop.onStop().catch(() => setStopping(false))
+                  stopped.catch(() => setStopping(false))
                   // The button goes once the agent has stopped; the draft is where to carry on.
                   inputRef.current?.focus()
                 }}
