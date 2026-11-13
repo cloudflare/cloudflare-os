@@ -338,18 +338,7 @@ function facetRpcStub(facet: Fetcher<DurableObject>, onDispose?: () => void,
         let result: Promise<unknown> = Reflect.apply(method, target, args);
         if (!onError) return result;
         return result.catch((err: unknown) => {
-          let msg = err;
-          if (err instanceof Error) {
-            // Sadly the caught errors are missing any useful stack at the moment. Perhaps if
-            // we at least specify the method that was called it's somewhat useful to the agent.
-            msg = `${err}\n    at ${prop}()`;
-          }
-
-          onError({
-            timestamp: new Date(),
-            level: "error",
-            message: [msg],
-          });
+          onError(failedGadgetCall(err, prop));
           throw err;
         });
       }
@@ -944,6 +933,19 @@ export function sanitizeMessageFormatRefs(
 
   if (accepted.length === 0) return undefined;
   return accepted.toSorted((a, b) => a.position - b.position);
+}
+
+// The errors a switch of a gadget's facet between its versions aborts the running one with.
+const FACET_SWITCH_TO_MAIN = "Gadget restarted to switch back to main version.";
+const FACET_SWITCH_TO_DRAFT = "Gadget restarted to test proposed changes.";
+
+// What a call to a gadget that failed is told and kept as: an Error as text, with the method
+// that was called on a line of its own when there is one, since the stack that crosses RPC is
+// not the gadget's; anything else as it was thrown.
+function failedGadgetCall(err: unknown, method?: string): ConsoleLogEvent {
+  let msg = err;
+  if (err instanceof Error) msg = method === undefined ? `${err}` : `${err}\n    at ${method}()`;
+  return {timestamp: new Date(), level: "error", message: [msg]};
 }
 
 // Whose session OverseerImpl.joinSession() counts: a collaborator holding a role's access. The
@@ -3464,6 +3466,11 @@ class OverseerImpl implements AgentHooks {
   // Which chat ID is each gadget's facet currently running from? Keyed by gadget ID; a gadget
   // with no entry has never had its facet loaded this session.
   #runningChatIds = new Map<WorkpieceId, number | null>();
+  // For each gadget, the last switch of its facet between versions: its number (#facetSwitches
+  // counts every switch), the chat whose version it ended (null for the mainline), which is what
+  // a call it aborted ran, and the reason it aborted that call with.
+  #lastFacetSwitch = new Map<WorkpieceId, {seq: number, ended: number | null, reason: string}>();
+  #facetSwitches = 0;
 
   proposedChangesChanged(chatId: number) {
     for (let [gadgetId, runningChatId] of this.#runningChatIds) {
@@ -5486,10 +5493,13 @@ class OverseerImpl implements AgentHooks {
     let oldChat = this.#runningChatIds.get(gadgetId);
     let newChat = chatId ?? null;
     if (newChat !== oldChat) {
-      this.ctx.facets.abort(facetName, new Error(
-          newChat === null
-            ? "Gadget restarted to switch back to main version."
-            : "Gadget restarted to test proposed changes."));
+      let reason = newChat === null ? FACET_SWITCH_TO_MAIN : FACET_SWITCH_TO_DRAFT;
+      this.ctx.facets.abort(facetName, new Error(reason));
+      // What the abort ended, for a call it failed (recordHookException()).
+      if (oldChat !== undefined) {
+        this.#lastFacetSwitch.set(
+            gadgetId, {seq: ++this.#facetSwitches, ended: oldChat, reason});
+      }
       this.#runningChatIds.set(gadgetId, newChat);
     }
 
@@ -11048,6 +11058,39 @@ class OverseerImpl implements AgentHooks {
         () => this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [event]));
   }
 
+  // Keeps the error of a call that a firing of `hook` made to its stored callback and that
+  // failed, as #recordGadgetException() keeps one made through getGadgetFacet(): the runtime
+  // takes such a call from the firing to the gadget with none of that proxy in between
+  // (restore()). What the callback restores to is sealed in the stub, so the entry is kept for
+  // the gadget the hook is recorded as waking (bindHook()), and under the chat whose version of
+  // it is running, which the restore of this very call chose unless another call has switched
+  // it since. A call that failed because such a switch aborted it ran the version the switch
+  // ended, so it is kept under that one, not under the draft that replaced it, which never ran
+  // the callback: one is taken to be so aborted when a switch happened while it was in flight
+  // (`startedAt`, from hookCallStarted()) and it failed with exactly that switch's reason. The
+  // reason alone does not tell: the abort reaches the firing across RPC, as remote as an error
+  // the gadget's code throws with the same text. The callback can be an agent's and not a gadget's (AgentSelfLoopback: `self`, a
+  // spawnCallable() stub), and nothing here can tell: the failure of a call on one
+  // (deliverAgentCallback(), once its chat is deleted) is kept for the hook's gadget as well,
+  // though none of that gadget's code ran. Nothing is told to console subscribers. Called
+  // inside a catch ahead of its rethrow, so it never throws.
+  recordHookException(hook: BoundHookRecord, startedAt: number, method: string | undefined,
+                      err: unknown): void {
+    let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
+    if (gadgetId === undefined) return;
+    let last = this.#lastFacetSwitch.get(gadgetId);
+    let aborted = last !== undefined && last.seq > startedAt && err instanceof Error &&
+        err.message === last.reason;
+    let chatId = aborted ? last!.ended : this.#runningChatIds.get(gadgetId);
+    this.#recordGadgetException(gadgetId, chatId ?? undefined, failedGadgetCall(err, method));
+  }
+
+  // The number of the last switch of any gadget's facet, which a firing reads as it makes a
+  // call, for recordHookException() to tell whether a switch happened while the call ran.
+  hookCallStarted(): number {
+    return this.#facetSwitches;
+  }
+
   // One page of the workspace's gadget error log (see Overseer.readGadgetErrors()). The query is
   // checked here, so a malformed one throws whether or not anything was kept, and a workspace that
   // has named no log object has none to ask.
@@ -15556,6 +15599,11 @@ function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
 // firing as independent stubs (the bindHook contract permits hooks to pass and return them) and
 // are not re-checked per call. That is deliberate: the holder is a gatekeeper bound by the session
 // contract, and this is a guard against a stale firing by mistake, not a revocable membrane.
+//
+// A call to the root callback that fails is kept in the workspace's gadget error log
+// (recordHookException()), since a firing is the one caller of a stored callback whose call
+// passes this object. A refusal by requireLiveHook() is not such a call, and keeps nothing. Calls
+// on what a callback returned do not pass here either, so their errors are not kept.
 function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcStub<RpcTarget> {
   // The proxy target must be callable for the `apply` trap to ever fire (a Proxy over a
   // non-callable target is itself non-callable), and the bindHook contract allows the bound
@@ -15566,10 +15614,17 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
   return new NativeRpcStub(new Proxy((() => {}) as unknown as RpcTarget, {
     // Both traps are async so a refusal is a rejection of that call, not a synchronous throw
     // escaping into the RPC machinery that invokes the function (workerd reports that as
-    // uncaught, too).
+    // uncaught, too). The call to the stored callback is awaited inside the try, which also
+    // catches one that throws before it returns a promise.
     async apply(_target, _thisArg, args: unknown[]) {
       let record = requireLiveHook(impl, hookId);
-      return Reflect.apply(record.callback as any, undefined, args);
+      let startedAt = impl.hookCallStarted();
+      try {
+        return await Reflect.apply(record.callback as any, undefined, args);
+      } catch (err) {
+        impl.recordHookException(record, startedAt, undefined, err);
+        throw err;
+      }
     },
     get(_target, prop) {
       // All wildcard properties of a stub appear as functions, so `then` must come back
@@ -15578,7 +15633,13 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
       if (typeof prop === "symbol" || prop === "then") return undefined;
       return async (...args: unknown[]) => {
         let record = requireLiveHook(impl, hookId);
-        return Reflect.apply((record.callback as any)[prop], record.callback, args);
+        let startedAt = impl.hookCallStarted();
+        try {
+          return await Reflect.apply((record.callback as any)[prop], record.callback, args);
+        } catch (err) {
+          impl.recordHookException(record, startedAt, prop, err);
+          throw err;
+        }
       };
     },
     getPrototypeOf() {
