@@ -163,8 +163,10 @@ export type DrivePdfText = {
    * failure partway through errors the stream.
    *
    * A page without text of its own is read by a vision model (every page of a scan, and such
-   * pages of a PDF that has text), and only as you read the text, one page ahead of you at
-   * most: the first may be begun as soon as the text is returned. The model's calls are billed:
+   * pages of a PDF that has text), and only once you read the text, then ahead of you: up to
+   * 16 pages that are drawn, and up to 4 of a scan read as the file stores it. They may be
+   * begun as soon as the text is returned. The model's calls are billed, for a page begun
+   * ahead of you also when you never read it:
    * four for most pages that are drawn and up to eight for a closely written one, more when a
    * part of it is asked for again, and one for a page read as the file stores it. So stop reading, and cancel, to stop paying for pages you
    * do not need. Read the text straight away and without long pauses: one whose reading may
@@ -329,8 +331,8 @@ export interface GoogleDriveReadSession {
    * an image that had a mask.
    *
    * A PDF that has text is returned as that text. One of up to 16 MiB also has each page
-   * without text drawn as `text` is read up to it, and a page that shows anything read by the
-   * model as a scan's page is, into the text under its heading (see `DrivePdfText.text`).
+   * without text drawn before `text` is read up to it, and a page that shows anything read by
+   * the model as a scan's page is, into the text under its heading (see `DrivePdfText.text`).
    * `hasText` is still true and `transcribed` false, the text keeps every page's heading from
    * the first, and a page that cannot be read does not fail it.
    *
