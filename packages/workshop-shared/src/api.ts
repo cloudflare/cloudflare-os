@@ -3984,23 +3984,32 @@ export interface Overseer extends RpcTarget {
    * included. A firing's error is kept for the gadget that listHooks() names for the hook, under
    * the chat whose version of that gadget was running, whether the callback is that gadget's or
    * an agent's: the Workshop cannot tell which, so the failure of an agent's callback (its chat
-   * was deleted, say) reads as the error of a gadget whose code did not run. A call on an object
-   * that one of those calls returned is not one of them, and is not kept (see below). The error
-   * is kept whoever raised it, so it can be the Workshop's own and not the gadget's, such as
-   * that of a call to a method the gadget does not have, or of a call in flight when the gadget
-   * was restarted to run other code, which starts "Gadget restarted" ("Gadget restarted to test
-   * proposed changes.", "Gadget restarted due to code update."). A throw of the gadget's
-   * constructor is both things: it fails the call and the runtime reports it, so a call that
-   * starts such a gadget keeps two entries. A later call on the same stub fails the same way
-   * with no constructor run, and keeps one.
+   * was deleted, say) reads as the error of a gadget whose code did not run. The Workshop's own
+   * two calls to the gadget's ExportHandler, getExportFormats() and export(), are kept the same
+   * way when they fail, their method written "at ExportHandler.export()": what the handler
+   * threw, the Workshop's refusal of formats it returned, a timeout, or a worker that did not
+   * start. The last fails the call whether or not the gadget has an ExportHandler, so a gadget
+   * whose server fails to load keeps one entry for each read of its export formats (each
+   * opening of its export menu, each export) with no method of it called. A failure that the
+   * handler lets escape from a call it made on the gadget is kept twice, as that call's and as
+   * the handler's. A gadget whose worker starts and that has no ExportHandler keeps nothing for
+   * it. A call on an object that one of those calls returned is not one of them, and is not
+   * kept (see below). The error is kept whoever raised it, so it can be the Workshop's own and
+   * not the gadget's, such as that of a call to a method the gadget does not have, or of a call
+   * in flight when the gadget was restarted to run other code, which starts "Gadget restarted"
+   * ("Gadget restarted to test proposed changes.", "Gadget restarted due to code update."). A
+   * throw of the gadget's constructor is both things: it fails the call and the runtime reports
+   * it, so a call that starts such a gadget keeps two entries. A later call on the same stub
+   * fails the same way with no constructor run, and keeps one.
    *
    * Not kept: a promise rejection that nothing in the gadget's worker handles, which the runtime
-   * reports nowhere; what the gadget's ExportHandler itself throws from getExportFormats() or
-   * export(), which fails the export and is told to its caller alone; and the error of a call
-   * that does not pass the Workshop: one made on an object that a method of the gadget returned
-   * (a session or a handle, whose methods its holder then calls; likewise a stream that fails
-   * after it was returned), on an object that the gadget passed as an argument of a call it made
-   * (a subscriber or a callback handed to a binding), on a stored callback (a stub from the
+   * reports nowhere; what a stream that the ExportHandler's export() returned fails with after
+   * the call returned it; the errors of the gadget's UI while the Workshop renders it for an
+   * export, which no session's browser runs; and the error of a call that does not pass the
+   * Workshop: one made on an object that a method of the gadget returned (a session or a
+   * handle, whose methods its holder then calls; likewise a stream that fails after it was
+   * returned), on an object that the gadget passed as an argument of a call it made (a
+   * subscriber or a callback handed to a binding), on a stored callback (a stub from the
    * gadget's `ctx.restore()`) by anything but a hook's firing, such as an agent that was handed
    * the stub, or on a capability that a callback returned. The caller of such a call still gets
    * the error.

@@ -5307,8 +5307,14 @@ class OverseerImpl implements AgentHooks {
 
     if (format.mode === "server") {
       if (!handler) throw new Error("The Gadget export handler is unavailable.");
-      return await exportServerFormat(() =>
-        handler.export(exportGadget, format.id));
+      try {
+        return await exportServerFormat(() =>
+          handler.export(exportGadget, format.id));
+      } catch (error) {
+        this.#recordGadgetException(gadgetId, chatId,
+            failedGadgetCall(error, `${GADGET_EXPORT_ENTRYPOINT}.export`));
+        throw error;
+      }
     } else {
       let browser = this.env.BROWSER;
       if (!browser) throw new Error("Gadget export is not configured for this deployment.");
@@ -5349,6 +5355,12 @@ class OverseerImpl implements AgentHooks {
         }
         : {formats, handler, gadget};
     } catch (error) {
+      // A failure of the call to the gadget's ExportHandler (what it threw, the refusal of what
+      // it answered, a Worker that did not start): kept as an error of the gadget. A gadget
+      // whose Worker starts and that has no ExportHandler does not come here
+      // (readCustomExportFormats() answers null for it).
+      this.#recordGadgetException(gadgetId, chatId,
+          failedGadgetCall(error, `${GADGET_EXPORT_ENTRYPOINT}.getExportFormats`));
       gadget[Symbol.dispose]();
       throw error;
     }
@@ -10624,15 +10636,20 @@ class OverseerImpl implements AgentHooks {
         () => this.#resolveGadgetChatId(gadgetId, chatId ?? undefined) ?? null, events);
   }
 
-  // Keeps the error of a call the facet proxy caught. The tail keeps the rest, and most of these
-  // exceptions never reach it. One that does, because the runtime reports it for the gadget's
-  // request as well (a constructor's throw), is kept by both, as live subscribers are sent both.
-  // `chatId` is the chat whose proposed changes the stub's facet was loaded with, so a stub of
-  // the mainline keeps its errors under no chat even once the chat it was asked under proposes
-  // a change to the gadget. It is resolved again when the call fails, so a stub whose draft was
-  // merged since keeps its error under no chat too, and only for an error that is kept. The
-  // proxy calls this inside its catch, ahead of its rethrow, so nothing here may throw, or the
-  // gadget's caller would get that in place of the gadget's own error.
+  // Keeps the error of a call that failed: one the facet proxy caught, or one of the Workshop's
+  // two calls to a gadget's ExportHandler (#resolveGadgetExportFormats(), exportGadget()). The
+  // tail keeps the rest, and most of these exceptions never reach it. One that does, because the
+  // runtime reports it for the gadget's request as well (a constructor's throw), is kept by both,
+  // as live subscribers are sent both.
+  //
+  // From the proxy, `chatId` is the chat whose proposed changes the stub's facet was loaded with,
+  // so a stub of the mainline keeps its errors under no chat even once the chat it was asked
+  // under proposes a change to the gadget. From the two ExportHandler calls it is the chat the
+  // export was asked under, whether or not that chat proposes a change to the gadget. Either is
+  // resolved here when the call fails, and only for an error that is kept, so a stub whose draft
+  // was merged since, and an export of the mainline, keep their errors under no chat too. Each
+  // caller calls this inside its catch, ahead of its rethrow, so nothing here may throw, or the
+  // gadget's caller would get that in place of the call's own error.
   //
   // A gadget is held to a limit of these, with a marker for the rest. The text of one is its
   // caller's choice (the error names the method that was called), every session that may call
