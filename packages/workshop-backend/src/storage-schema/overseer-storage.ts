@@ -1157,6 +1157,13 @@ export type ShareLinkRecord = {
   gadgetIds?: WorkpieceId[];
 
   /**
+   * Set on its creator's default link for what it grants (see Overseer.createShareLink). Each
+   * creator has at most one non-revoked default link per grant; links created before default
+   * links existed have none.
+   */
+  isDefault?: true;
+
+  /**
    * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the
    * permission graph keeps its `shareKey` edges intact (no dangling references) and access could
    * be restored in the future. A revoked link contributes nothing to the permission graph and its

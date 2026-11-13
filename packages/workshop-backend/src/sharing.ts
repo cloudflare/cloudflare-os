@@ -484,23 +484,52 @@ export class SharingManager {
     return link;
   }
 
-  async createShareLink(
-      opts: { caller: SharingCaller; grant: CollaboratorGrant; note?: string })
-      : Promise<{ key: string; linkId: string }> {
+  async createShareLink(opts: {
+    caller: SharingCaller;
+    grant: CollaboratorGrant;
+    note?: string;
+    isDefault?: boolean;
+  }): Promise<{ key: string; linkId: string }> {
+    if (opts.isDefault && opts.note !== undefined) {
+      throw new Error("A default share link has no note.");
+    }
     let fields = this.#grantFields(opts.grant);
     this.#requireCanShare(opts.caller);
 
-    // The link is stored as its first key: the record is keyed by that key's hash.
     let { key, hash } = await this.#mintKey();
     this.#requireShareLinksAllowed();
+
+    // Looked up after the await, right before the write, so that concurrent calls cannot both
+    // create the caller's default link: the later one becomes a copy of the earlier.
+    let existing = opts.isDefault
+        ? this.#findDefaultLink(opts.caller.profileId, fields) : undefined;
+    if (existing) {
+      this.storage.shareKeys.put({ id: hash, alias: existing.id });
+      return { key, linkId: existing.id };
+    }
+
+    // The link is stored as its first key: the record is keyed by that key's hash.
     this.storage.shareKeys.put({
       id: hash,
       note: opts.note,
       created: new Date(),
       createdBy: opts.caller.profileId,
       ...fields,
+      ...(opts.isDefault ? { isDefault: true } : {}),
     });
     return { key, linkId: hash };
+  }
+
+  // `creator`'s live default link for the grant `fields` records, if they have one.
+  #findDefaultLink(creator: string, fields: GrantFields): ShareLinkRecord | undefined {
+    let grant = grantKey(fields);
+    for (let link of this.#listLinks()) {
+      if (link.isDefault && !link.revoked && link.createdBy === creator &&
+          grantKey(link) === grant) {
+        return link;
+      }
+    }
+    return undefined;
   }
 
   /** Mints another key for an existing link. */
