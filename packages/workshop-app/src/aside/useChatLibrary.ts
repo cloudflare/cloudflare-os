@@ -1,40 +1,50 @@
-import { useCallback, useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 import { useChatBeside } from '@/chat/useChatSession'
-import { chatAsideItems, type AsideItem } from './asideItems'
+import { useLibrary } from '@/library/useLibrary'
+import { chatAsideItems, workspaceAsideItems, type AsideItem } from './asideItems'
 import type { ChatRef } from './useAsideNavigation'
 
 export type ChatLibrary = {
-  /** What the chat has to show, most recent first, of what has been read of it. */
+  /** What the chat's workspace has made, most recent first (see `workspaceAsideItems`). */
   items: AsideItem[]
-  /** More of the chat is being read for what it has, as asked. */
+  /**
+   * What is known of anything that can be shown from the chat, to describe the one shown: the
+   * items, and the files sent in what has been loaded of the chat, which are not listed.
+   */
+  known: AsideItem[]
+  /** The library is being read. */
   reading: boolean
-  /** Why the chat, or the last page of it, could not be read. */
+  /** Why the library could not be read. */
   problem: string | undefined
-  /** Reads on after a page could not be read. */
+  /** Reads it again after it could not be. */
   retry: (() => void) | undefined
 }
 
 /**
- * What a chat has to show beside it: what was sent and made in it. Only what has been loaded of
- * the conversation is known, so while `readAll` is asked for, the rest is read, a page at a time,
- * back to its start.
+ * What can be shown beside a chat: what its workspace has made, from the library, which is read
+ * again for each chat. What the chat has made that the library does not have yet is taken from
+ * what has been loaded of the conversation.
  */
-export const useChatLibrary = (chat: ChatRef | undefined, readAll: boolean): ChatLibrary => {
-  const { chat: snapshot, actions } = useChatBeside(chat)
+export const useChatLibrary = (chat: ChatRef | undefined): ChatLibrary => {
+  const { chat: snapshot } = useChatBeside(chat)
   const workspaceId = chat?.workspaceId
   const chatId = chat?.chatId
-  const items = useMemo(
+  const library = useLibrary(chat ? `${chat.workspaceId}/${chat.chatId}` : null)
+  const outputs = library.status === 'ready' ? library.outputs : undefined
+  const fromChat = useMemo(
     () => (workspaceId === undefined || chatId === undefined ? [] : chatAsideItems(workspaceId, chatId, snapshot)),
     [workspaceId, chatId, snapshot],
   )
-  const problem = snapshot.status === 'failed' ? snapshot.message : snapshot.status === 'ready' ? snapshot.historyError : undefined
-  const more = snapshot.status === 'ready' && snapshot.hasEarlier && !snapshot.historyError
-  const reading = readAll && chat !== undefined && (snapshot.status === 'loading' || more)
-
-  useEffect(() => {
-    if (readAll && more && snapshot.status === 'ready' && !snapshot.loadingEarlier) void actions?.loadEarlier()
-  }, [readAll, more, snapshot, actions])
-
-  const readOn = useCallback(() => void actions?.loadEarlier(), [actions])
-  return { items, reading, problem, retry: snapshot.status === 'ready' && snapshot.historyError ? readOn : undefined }
+  const items = useMemo(
+    () => (workspaceId === undefined ? [] : workspaceAsideItems(workspaceId, chatId, outputs ?? [], fromChat)),
+    [workspaceId, chatId, outputs, fromChat],
+  )
+  const known = useMemo(() => [...items, ...fromChat.filter(({ kind }) => kind === 'file')], [items, fromChat])
+  return {
+    items,
+    known,
+    reading: chat !== undefined && library.status === 'loading',
+    problem: library.status === 'failed' ? library.message : undefined,
+    retry: library.status === 'failed' ? library.retry : undefined,
+  }
 }

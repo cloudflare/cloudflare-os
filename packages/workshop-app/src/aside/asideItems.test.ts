@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatItem, OutputItem, UserItem } from '@/chat/chatItems'
-import { asideItemFor, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam } from './asideItems'
+import type { OutputSummary } from '@gadgets/workshop-shared/api'
+import { asideItemFor, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
 
 const output = (id: number, workpieceId: number, title: string): OutputItem => ({
   kind: 'output', id, key: `output:${id}`, workpieceId, title, type: 'gadget', draft: false,
@@ -68,6 +69,36 @@ describe('chatAsideItems', () => {
 
   it('has nothing until the chat is loaded', () => {
     expect(chatAsideItems('w', 3, { status: 'loading' })).toEqual([])
+  })
+})
+
+const summary = (workspaceId: string, workpieceId: number, title: string, created: Date, noun?: string): OutputSummary => ({
+  workspaceId, workpieceId, title, created, workspaceTitle: '', lastActive: created,
+  output: noun === undefined ? undefined : { id: noun, noun, plural: `${noun}s`, icon: 'fileText' },
+})
+
+describe('workspaceAsideItems', () => {
+  const [monday, tuesday, wednesday] = [new Date('2026-11-09T10:00'), new Date('2026-11-10T10:00'), new Date('2026-11-11T10:00')]
+
+  it('lists what the workspace made, most recent first, shown with the chat’s changes, and nothing of other workspaces', () => {
+    const library = [summary('w', 7, 'Report', monday, 'Document'), summary('other', 8, 'Elsewhere', wednesday), summary('w', 9, '', tuesday)]
+    expect(workspaceAsideItems('w', 3, library, []).map(({ key, title, at }) => [key, title, at])).toEqual([
+      ['9', 'Untitled', tuesday],
+      ['7', 'Report', monday],
+    ])
+    expect(workspaceAsideItems('w', 3, library, [])[1]).toMatchObject({
+      kind: 'output', output: { workspaceId: 'w', workpieceId: 7, type: 'gadget', format: { noun: 'Document', icon: 'fileText' }, chatId: 3 },
+    })
+  })
+
+  it('adds what the chat made that the library does not have yet, and dates by the chat’s latest work, but not its files', () => {
+    const chat = chatAsideItems('w', 3, ready([user(1, ['notes.txt'], wednesday), output(2, 7, 'Old title'), output(3, 10, 'Pending')]))
+    const items = workspaceAsideItems('w', 3, [summary('w', 7, 'Report', monday), summary('w', 9, 'App', tuesday)], chat)
+    expect(items.map(({ key, title, at }) => [key, title, at])).toEqual([
+      ['10', 'Pending', wednesday],
+      ['7', 'Report', wednesday],
+      ['9', 'App', tuesday],
+    ])
   })
 })
 

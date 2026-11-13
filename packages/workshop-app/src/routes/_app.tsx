@@ -67,15 +67,15 @@ const AppFrame = () => {
   const shownFrom = chatRef ?? (pageItem && pageChatId !== undefined ? { workspaceId: pageItem.workspaceId, chatId: pageChatId } : undefined)
   const named = besideOf && parseAsideRef(besideOf.search.open)
   // The aside, had back beside a chat that has shown nothing of what it has: open with nothing in
-  // it while the rest of the chat is read, until something turns up. Kept for that chat alone.
+  // it while the library is read, until something turns up. Kept for that chat alone.
   const chatKey = chatRef && `${chatRef.workspaceId}/${chatRef.chatId}`
   const [openedEmptyAt, setOpenedEmptyAt] = useState<string>()
   if (openedEmptyAt !== undefined && (named || openedEmptyAt !== chatKey)) setOpenedEmptyAt(undefined)
   const openedEmpty = chatRef !== undefined && !named && openedEmptyAt === chatKey
-  const library = useChatLibrary(shownFrom, openedEmpty)
-  const { items } = library
+  const library = useChatLibrary(shownFrom)
+  const { items, known } = library
 
-  // The first thing found is the latest the chat has, as what was read is older than what was there.
+  // What was made last, once the library has been read.
   const firstFound = openedEmpty ? items[0]?.key : undefined
   const chatWorkspaceId = chatPage?.params.workspaceId
   useEffect(() => {
@@ -100,7 +100,7 @@ const AppFrame = () => {
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
     const { chat: fromChat } = itemPage.search
-    const item = asideItemFor(pageWorkspaceId, ref, fromChat, items)
+    const item = asideItemFor(pageWorkspaceId, ref, fromChat, known)
     const open = formatAsideRef(ref)
     const expandedHere = router.state.location.state.fromChat === true
     asideElement = (
@@ -120,7 +120,7 @@ const AppFrame = () => {
       />
     )
   } else if (besideOf && named) {
-    const item = asideItemFor(besideOf.params.workspaceId, named, chatId, items)
+    const item = asideItemFor(besideOf.params.workspaceId, named, chatId, known)
     const { workspaceId: besideWorkspaceId } = besideOf.params
     asideElement = (
       <AsidePane
@@ -178,8 +178,8 @@ const AppFrame = () => {
       aside={asideElement}
       asideAlone={pageItem !== undefined}
       asideFullScreen={fullScreen}
-      // Had back from the edge: what was last shown beside the chat, or what it made last. Before
-      // anything it has is known, the pane opens empty, and the chat is read for it.
+      // Had back from the edge: what was last shown beside the chat, or what was made last. Before
+      // the library has been read, the pane opens empty until it has.
       onOpenAside={chatRef && chatKey && !named && !openedEmpty
         ? () => {
             const open = lastShown(chatRef.workspaceId, chatRef.chatId) ?? items[0]?.key

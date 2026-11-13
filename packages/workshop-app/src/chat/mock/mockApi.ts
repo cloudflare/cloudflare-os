@@ -24,6 +24,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     openWorkspace: () => overseer,
     listModels: async () => [AGENT],
     listWorkspaces: async () => [workspace],
+    // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.
+    listOutputs: async () => ({ outputs: [], catchingUp: false }),
   }
   const api = new Proxy(implemented, {
     get: (target, name) => {

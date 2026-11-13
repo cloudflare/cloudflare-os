@@ -160,9 +160,15 @@ the page stops a little short of the edge and the handle stays out there for a m
 where the pane went, then both slide away. A pointer that reaches the edge brings them out again:
 clicking the handle shows the pane, and so does pulling it out, which opens room as far as it is
 pulled. Only reaching the edge does it, not being near, because the page's scrollbar is there.
-Beside a chat it shows what was last shown there, or what the chat made last. When nothing the
-chat has is known yet (only what is loaded of the conversation is), it opens empty and the rest of
-the chat is read (`useChatLibrary`), showing the first thing found, or that there is nothing.
+Beside a chat it shows what was last shown there, or what was made last. Until the library has
+been read, it opens empty, then shows the first thing found, or that there is nothing.
+
+What is listed beside a chat, and on its settings page, is everything its workspace has made
+(`useChatLibrary`): the library (`listOutputs()`), read again for each chat, and what the chat has
+made that the library does not have yet (a gadget still to be accepted, a worktree), from what is
+loaded of the conversation. The backend says nothing of which chat made what, so it is not just
+the chat's own. Files sent in the chat are not listed for now, though one opened from its message
+is shown as before.
 
 The card (`SidePane`) is a header, then what is shown on a tinted surface that fills the rest of the
 card out to its sides and bottom, with rounded top corners and a line along its top only. With more
