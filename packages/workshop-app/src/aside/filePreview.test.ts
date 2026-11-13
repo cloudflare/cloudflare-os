@@ -24,11 +24,16 @@ describe('previewOf', () => {
     expect(previewOf({ name: 'a.html', mimeType: 'text/html' }, text('<script>1</script>'))).toEqual({ kind: 'text', text: '<script>1</script>' })
   })
 
-  it('shows an SVG as what it is written in, never as an image, which could run its script', () => {
+  it('shows an SVG as an image, typed as one whatever it said, and as its text when it is not one', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(document.domain)</script></svg>'
-    expect(previewOf({ name: 'logo.svg', mimeType: 'image/svg+xml' }, text(svg))).toEqual({ kind: 'text', text: svg })
-    expect(previewOf({ name: 'logo.svg', mimeType: '' }, text(svg))).toEqual({ kind: 'text', text: svg })
-    expect(previewOf({ name: 'logo.svg', mimeType: 'IMAGE/SVG+XML' }, text(svg))).toEqual({ kind: 'text', text: svg })
+    const image = { kind: 'image', type: 'image/svg+xml' }
+    expect(previewOf({ name: 'logo.svg', mimeType: 'image/svg+xml' }, text(svg))).toEqual(image)
+    expect(previewOf({ name: 'logo.svg', mimeType: '' }, text(svg))).toEqual(image)
+    expect(previewOf({ name: 'logo', mimeType: 'IMAGE/SVG+XML; charset=utf-8' }, text(svg))).toEqual(image)
+    expect(previewOf({ name: 'logo.svg', mimeType: 'application/xml' }, text(svg))).toEqual(image)
+    // Not an SVG, whatever it says: a page is never typed as an image.
+    expect(previewOf({ name: 'logo.svg', mimeType: 'image/svg+xml' }, text('<html><script>1</script></html>'))).toEqual({ kind: 'text', text: '<html><script>1</script></html>' })
+    expect(previewOf({ name: 'logo.svg', mimeType: 'image/svg+xml' }, PNG)).toEqual({ kind: 'image', type: 'image/png' })
   })
 
   it('shows only raster images as images, going by the bytes for any other kind of image', () => {

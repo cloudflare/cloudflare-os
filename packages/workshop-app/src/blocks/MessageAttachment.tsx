@@ -1,7 +1,7 @@
+import { useState } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { attachmentKind } from '@/files/attachmentKind'
-import { isRasterImage } from '@/files/rasterImage'
-import { useObjectUrl } from '@/hooks/useObjectUrl'
+import { useImageUrl } from '@/hooks/useImageUrl'
 import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
 
 export type MessageAttachmentProps = {
@@ -14,8 +14,10 @@ export type MessageAttachmentProps = {
 
 /** A file sent with a message: its picture when there is one, otherwise a tile naming its kind. */
 export const MessageAttachment = ({ name, mimeType, content, onOpen }: MessageAttachmentProps) => {
-  // Only pixels: the picture can be opened in a tab of its own, as the app's origin.
-  const preview = useObjectUrl(isRasterImage(mimeType) ? content : undefined, mimeType)
+  const url = useImageUrl(content, { name, type: mimeType })
+  // What says it is an image may not draw as one, and is then a tile.
+  const [failed, setFailed] = useState<string>()
+  const preview = url !== failed ? url : undefined
   const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind({ name, type: mimeType })]
 
   return (
@@ -31,7 +33,7 @@ export const MessageAttachment = ({ name, mimeType, content, onOpen }: MessageAt
       )}
     >
       {preview ? (
-        <img src={preview} alt="" className="size-full object-cover" />
+        <img src={preview} alt="" className="size-full object-cover" onError={() => setFailed(preview)} />
       ) : (
         <span className="flex h-full flex-col justify-between gap-2 p-3">
           <KindIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-subtle" />

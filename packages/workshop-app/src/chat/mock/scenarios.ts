@@ -445,9 +445,9 @@ const untrustedContent: Scenario = {
   id: 'untrusted-content',
   title: 'Brand assets',
   description:
-    'Files and replies that could run or fetch something are shown as what they are. The SVG sent ' +
-    'has a script in it: it is a tile rather than a picture, and opens beside the chat as its text. ' +
-    'The PNG is pixels, so it is shown as a picture. The reply links an image from elsewhere rather than ' +
+    'Files and replies that could run or fetch something are shown without running or fetching it. The SVG ' +
+    'sent has a script in it, and is shown as a picture, which never runs it, here and beside the chat; ' +
+    'opened in a tab of its own it has no origin, so it would not run as the app. The PNG is pixels. The reply links an image from elsewhere rather than ' +
     'loading it, shows the one it carries, keeps the text of a link that would run script, and shows no HTML.',
   history: history([
     user('Here are the logo and the swatch for the brand page.', {
