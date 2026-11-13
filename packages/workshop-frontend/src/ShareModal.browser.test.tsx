@@ -32,7 +32,7 @@ const countButton = (count = 2) => page.getByRole('button', { name: new RegExp(`
 // Every test works on the dialog's Advanced page, where links other than the viewer's default
 // link live, so the dialog is named for it.
 const dialog = () => page.getByRole('dialog', { name: 'Advanced' })
-const openAdvanced = () => userEvent.click(page.getByRole('button', { name: 'Advanced', exact: true }))
+const openAdvanced = () => userEvent.click(page.getByRole('button', { name: 'Advanced settings', exact: true }))
 
 // Importing Playwright's CDP augmentation would add Node globals to the browser TS project.
 const sendCdp = async (method: string, params: object) => {

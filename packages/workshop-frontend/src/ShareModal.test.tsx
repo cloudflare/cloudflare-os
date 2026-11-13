@@ -276,7 +276,7 @@ async function invite(rendered: HTMLElement, username: string) {
 // Share links live on the dialog's Advanced page; the sharing view stays in the DOM, hidden.
 async function openAdvanced(rendered: HTMLElement) {
   if (rendered.querySelector('h2')?.textContent === 'Advanced') return
-  await click(button(rendered, 'Advanced'))
+  await click(button(rendered, 'Advanced settings'))
 }
 
 async function createLink(rendered: HTMLElement) {

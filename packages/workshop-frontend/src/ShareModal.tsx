@@ -1568,7 +1568,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
           <div className="flex shrink-0 items-center gap-2">
           {showAdvancedButton && (
             <WorkshopButton className="!h-9 !rounded-xl !border-0 !bg-kumo-tint enabled:hover:!bg-kumo-elevated" onClick={() => setSubpage('advanced')}>
-              Advanced
+              Advanced settings
             </WorkshopButton>
           )}
           <WorkshopButton
