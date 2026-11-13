@@ -465,7 +465,6 @@ function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition
   };
 }
 
-/** The Sheets change set, bound once per spreadsheet's journal. */
 /** Each Sheets change's definition, which a Drive connection reuses for the files it reaches. */
 export const SHEETS_DEFINITIONS: { [K in keyof SheetsActions]: ActionDefinition<SheetsActions[K], SheetsHost> } = {
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),

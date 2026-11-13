@@ -589,7 +589,6 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
   };
 }
 
-/** The Slides change set, bound once per presentation's journal. */
 /** Each Slides change's definition, which a Drive connection reuses for the files it reaches. */
 export const SLIDES_DEFINITIONS: { [K in keyof SlidesActions]: ActionDefinition<SlidesActions[K], SlidesHost> } = {
   editText: designBatch(EDIT_SLIDES_TEXT, true),
