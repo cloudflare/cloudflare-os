@@ -1,0 +1,37 @@
+packages/workshop-frontend/src/ChatInterface.agents.test.tsx
+  s_2b3f2ed31e2828::t_e1ad1e9626626d 6,12-16,27-32,397-426
+packages/workshop-frontend/src/ChatInterface.unread.test.tsx
+  s_2b3f2ed31e2828::t_272746923cc4fe 11-14
+packages/workshop-frontend/src/features/chat/agents/AgentListRow.test.tsx
+  s_2b3f2ed31e2828::t_b0d1b9ebc0415a 61-62
+packages/workshop-frontend/src/features/chat/agents/AgentListRow.tsx
+  s_2b3f2ed31e2828::t_eb87581c8f5f74 7,11-13,21,34,73-87,99,107,188
+packages/workshop-frontend/src/features/chat/agents/AgentRunsPane.test.tsx
+  s_2b3f2ed31e2828::t_6d555a2e4a6e35 49-50
+packages/workshop-frontend/src/features/chat/agents/AgentRunsPane.tsx
+  s_2b3f2ed31e2828::t_2f0e0f9ec5cc2d 9,11,17-18,21-27,29-39,41-52,54-56,67,72,140-141
+packages/workshop-frontend/src/features/chat/agents/RunUnreadMenu.tsx
+  s_2b3f2ed31e2828::t_8aaa22808d73e9 1-66
+packages/workshop-frontend/src/features/notifications/UnreadStateBridge.tsx
+  s_2b3f2ed31e2828::t_0b3301a32ddd6b 58-69
+packages/workshop-frontend/src/ChatInterface.tsx
+  s_2b3f2ed31e2828::t_b0d16ff743ab03 2,5637,5688,5909
+packages/workshop-frontend/src/features/chat/agents/RunApprovalPopover.browser.test.tsx
+  s_2b3f2ed31e2828::t_f2baf5852787eb 62-63
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.10",
+  "base_commit_sha": "b2eb38633e374d18160c4702faafec877cbaf0ec",
+  "prompts": {},
+  "sessions": {
+    "s_2b3f2ed31e2828": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4f9b8f47-71bf-42a2-94d1-feb3e5a6228a",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Dan Carter <dancarter@cloudflare.com>"
+    }
+  }
+}
