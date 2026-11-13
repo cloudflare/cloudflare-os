@@ -247,12 +247,22 @@ const toAncestor = (
 const natives = new Set<string>();
 
 /**
+ * Docs, Sheets and Slides IDs the latest listing or lookup showed to be Office uploads, which share
+ * the native kinds' IDs: Drive writes no upload's content, so one connected as a Drive file is read.
+ */
+const uploads = new Set<string>();
+
+/**
  * A folder whose children this account cannot list cannot be opened or bound, only seen. Records in
  * {@link natives} whether a Docs, Sheets or Slides file is native.
  */
 const toItem = (node: DriveNode, accepted: readonly string[] | undefined): ConfiguratorUIHierarchyItem => {
   const editor = editorOf(node.id);
-  if (editor) natives[node.mimeType === EDITORS[editor].mimeType ? "add" : "delete"](node.id);
+  if (editor) {
+    const native = node.mimeType === EDITORS[editor].mimeType;
+    natives[native ? "add" : "delete"](node.id);
+    uploads[native ? "delete" : "add"](node.id);
+  }
   const container = node.kind !== "file" && (node.kind !== "folder" || node.listable === true);
   return {
     id: node.id,
@@ -565,10 +575,16 @@ const EDITED_AS_DRIVE_FILES: ReadonlySet<OfficeKind> = new Set(["doc", "sheets",
 
 /**
  * What a file of `editor` connected as a Drive file can have done to its content: edited when the
- * connection is read and write, which the deployment may not offer.
+ * connection is read and write, which the deployment may not offer, and never for a file shown to
+ * be an Office upload (see {@link uploads}).
  */
-function asDriveFile(editor: OfficeKind, values: DriveConfiguratorValues, accepted: readonly string[] | undefined) {
-  if (!EDITED_AS_DRIVE_FILES.has(editor) || offer.known !== true) return AS_DRIVE_FILE;
+function asDriveFile(
+  editor: OfficeKind, target: string, values: DriveConfiguratorValues,
+  accepted: readonly string[] | undefined,
+) {
+  if (!EDITED_AS_DRIVE_FILES.has(editor) || uploads.has(target) || offer.known !== true) {
+    return AS_DRIVE_FILE;
+  }
   return writing(values, accepted)
     ? "Connects as a Drive file, whose content can be edited, each change with your approval."
     : "Connects as a Drive file, whose content can be read but not edited: editing it takes Read and write access.";
@@ -584,7 +600,7 @@ function driveFileNotice(context: Context) {
   const editor = editorOf(target ?? "");
   if (!editor || patternOf(target!, accepted) !== FILE_PATTERN) return null;
   const ungranted = ungrantedEditors(accepted);
-  const notice = asDriveFile(editor, values, accepted);
+  const notice = asDriveFile(editor, target!, values, accepted);
   if (editAccess.unavailable) {
     return <Notice>
       {notice === AS_DRIVE_FILE

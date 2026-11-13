@@ -658,6 +658,21 @@ describe("the Drive picker's access choice", () => {
     expect(frame.notices()).toEqual([]);
   });
 
+  // An Office upload's ID has the same kind as a native file's, and Drive writes no upload's content.
+  it("says an Office file connected as a Drive file cannot be edited, even with read and write access", async () => {
+    const frame = await open([FILE]);
+    frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{
+      id: "sheets:X", title: "Budget.xlsx", kind: "file",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }] });
+    await frame.list("folder:A");
+    frame.choose("sheets:X");
+    frame.chooseAccess("write");
+    await settle();
+    expect(frame.notices()).toEqual(
+      info("Connects as a Drive file, whose content can be read but not edited.", WRITE_PROMPT));
+  });
+
   it("says a presentation connected as a Drive file can be edited with read and write access", async () => {
     const frame = await open([FILE]);
     frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [NATIVE_SLIDES] });
