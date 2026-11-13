@@ -899,12 +899,11 @@ column holds `'metadata'` for every access record, of either kind, and nothing f
 write record. SQLite cannot alter a CHECK, so
 a table whose stored definition differs from the current one is rebuilt once, when the log's
 Durable Object next starts: its rows are copied into a table of the current definition, each
-keeping its `seq`. AUTOINCREMENT's high-water mark is not carried, so a `seq` above the highest row
-copied (one whose row has since been deleted) can be handed out again, which only a list cursor
-held across the rebuild could notice. A rebuild that fails, as it does on a table of a later
-definition holding rows of a kind this CHECK refuses, rolls back whole: it leaves the stored table
-with its rows, is logged (`admin.audit.table.rebuild.failed`), and the log goes on appending the
-kinds that table admits.
+keeping its `seq`, and the table goes on numbering from the highest `seq` it ever issued, a pruned
+record's included, so a list cursor held across the rebuild stays valid. A rebuild that fails, as
+it does on a table of a later definition holding rows of a kind this CHECK refuses, rolls back
+whole: it leaves the stored table with its rows, is logged (`admin.audit.table.rebuild.failed`),
+and the log goes on appending the kinds that table admits.
 
 ### What the metadata level withholds
 
@@ -1219,16 +1218,15 @@ Writes add these, in the same directory. The passkey suites sign with a software
   cannot be written; settling, with a closing record owed the same way; and a workspace that
   never answers.
 - `admin-write-apply.test.ts`: `applyAdminWrite()` on a real workspace. The refusals that write
-  nothing, each action running its one operation, a stop that keeps the queued messages, a retry
-  as the owner, a collaborator granted as the owner (where only the owner may add people too,
-  still verified as an observer, and not into a workspace deleted meanwhile), the record before
-  the effect, and the action log entry as the owner reads it and as a `use` session does not.
+  nothing, each action running its one operation, a stop that keeps the queued messages, the
+  record before the effect, a workspace deleted while its write runs, and the action log entry
+  as the owner reads it and as a `use` session does not.
 - `admin-api-impl.test.ts` also covers `AdminApiImpl`'s write and passkey methods: the checks
   before anything is touched, the directory's title and owner, and an approval that has the
   workspace run the write once and settles it.
 - `admin-audit.test.ts` also covers write records in the log's listing, filters and statistics,
   and the rebuild of a table that knows no write records, which keeps every row, kind and
-  sequence number.
+  sequence number and numbers on from the highest one issued, whatever was pruned.
 
 Integration suites, in `packages/integration-tests/__tests__/`:
 
@@ -1264,9 +1262,8 @@ Integration suites, in `packages/integration-tests/__tests__/`:
   and entered in the workspace's action log, where its owner reads who did it and why; nothing
   changing when the record cannot be written; a replayed and a falsified approval refused, each
   recorded; a denial; a passkey removed only by its own admin; every other action as its
-  operation, a collaborator added where only the owner may add people among them; a workspace
-  that is gone; and passkeys kept through writes being turned off, and a former admin's, which do
-  nothing.
+  operation, and a request for anything else refused; a workspace that is gone; and passkeys kept
+  through writes being turned off, and a former admin's, which do nothing.
 
 The integration suite reaches Durable Object storage directly (see
 [integration-testing.md](integration-testing.md#reaching-a-durable-objects-storage-from-a-test)): it
