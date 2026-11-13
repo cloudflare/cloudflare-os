@@ -92,7 +92,9 @@ import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
-import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import type {
+  CreationApproval, GadgetErrorEntry, GadgetErrorPage, GadgetErrorQuery, GadgetExportFormat,
+} from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
   decodeChatAttachmentText,
@@ -100,6 +102,12 @@ import {
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
+import {
+  GadgetErrorLimiter, droppedGadgetErrorsText, serverGadgetErrorEntry,
+} from "./gadget-error-log";
+import {
+  validateGadgetErrorQuery, type WorkspaceErrorLogDurableObject,
+} from "./workspace-error-log";
 import {
   defaultExportFormats,
   exportServerFormat,
@@ -129,13 +137,18 @@ function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFan
     firstVisibleSequence: visible === Infinity ? undefined : visible};
 }
 
-async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
+/** `request`, rejecting with `${what} timed out.` when it has not settled after two seconds. */
+async function boundedWait<T>(request: Promise<T>, what: string): Promise<T> {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([request, new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("User DO handoff timed out.")), 2_000);
+      timeout = setTimeout(() => reject(new Error(`${what} timed out.`)), 2_000);
     })]);
   } finally { clearTimeout(timeout); }
+}
+
+function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
+  return boundedWait(request, "User DO handoff");
 }
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
@@ -779,6 +792,10 @@ class OverseerImpl implements AgentHooks {
 
   users: DurableObjectNamespace<UserDurableObject>;
 
+  /** The objects that keep gadget errors, one per workspace (workspace-error-log.ts); a field,
+   * like `users`, so tests can replace it. */
+  workspaceErrorLogs: DurableObjectNamespace<WorkspaceErrorLogDurableObject>;
+
   // The workspace's git store (see git-cache.ts): all gadgets' committed code and every other
   // history the workspace holds, with the gatekeeper-facing provenance metadata, the pull driver,
   // and push authorization over it. Per-gatekeeper GitCache stubs are minted from this via
@@ -1156,6 +1173,13 @@ class OverseerImpl implements AgentHooks {
   #userUpdatesRetryAt = 0;
   #userUpdateDrain?: Promise<void>;
 
+  // Whether this instance began the workspace's deletion. The tombstone goes with the storage,
+  // while this instance's sessions last until the restart that follows (deleteSelf()). An id
+  // initialised again in between would keep, for its next owner, the error of every gadget
+  // call of theirs that fails from then on (#recordGadgetException), so this instance initialises
+  // nothing (receiveExternalMessage()).
+  deletionBegun = false;
+
   // The tombstone fences every new open before callbacks cross an async boundary. Content is
   // retained only until all user listings/accepted notifications have been removed durably.
   beginDeletion(userIds: Set<string>): void {
@@ -1164,6 +1188,7 @@ class OverseerImpl implements AgentHooks {
       for (let pending of this.storage.pendingUserUpdates.list()) userIds.add(pending.userId);
       for (let userId of userIds) this.storage.pendingUserUpdates.put({userId, role: null});
     });
+    this.deletionBegun = true;
     this.ownerId = undefined;
     this.#userUpdatesRetryAt = 0;
     this.#updateAlarm();
@@ -1209,6 +1234,17 @@ class OverseerImpl implements AgentHooks {
         }
       }));
       if (this.storage.deleting.get() && ![...this.storage.pendingUserUpdates.list({limit: 1})].length) {
+        // The log object goes first: deleteAll() takes the name it is stored under, which a retry
+        // needs. A failure is deferred and not thrown, as a failed user handoff is above, because
+        // this drain's callers go on to restart the workspace's sessions (deleteSelf()). The
+        // tombstone stands, so the alarm runs the drain again.
+        try {
+          await this.#deleteGadgetErrors();
+        } catch (error) {
+          this.logger.warn("gadget error log deletion deferred",
+              { event: "gadget.error.delete.failed", error });
+          return;
+        }
         await this.ctx.storage.deleteAll();
         this.#scheduledAlarm = undefined;
       }
@@ -1619,6 +1655,7 @@ class OverseerImpl implements AgentHooks {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
     });
     this.users = this.ctx.exports.UserDurableObject;
+    this.workspaceErrorLogs = this.ctx.exports.WorkspaceErrorLogDurableObject;
     this.ownerId = this.storage.deleting.get() ? undefined : this.storage.ownerId.get();
     this.observerLedger = new ObserverLedger(this);
 
@@ -5041,6 +5078,7 @@ class OverseerImpl implements AgentHooks {
         chatId,
         gadgetId,
         overseerId: this.ctx.id.toString(),
+        errorLogId: this.errorLogName(),
       };
 
       return {
@@ -5154,6 +5192,9 @@ class OverseerImpl implements AgentHooks {
   // look like an RpcTarget instead.
   async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder)
       : Promise<RpcStub<any>> {
+    // The chat whose proposed changes the stub's facet runs, which getGadgetFacetFetcher() finds
+    // in this same step: undefined for a stub of the mainline, whatever chat it was asked under.
+    let loadedChatId = this.#resolveGadgetChatId(gadgetId, chatId);
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
 
@@ -5205,6 +5246,7 @@ class OverseerImpl implements AgentHooks {
               message: [msg],
             };
             self.deliverGadgetLogs(chatId ?? null, [event]);
+            self.#recordGadgetException(gadgetId, loadedChatId, event);
             throw err;
           });
         }
@@ -10473,6 +10515,148 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // What may still be kept this minute of the exceptions the runtime reported for each gadget's
+  // Worker (the tail's), and of the calls to each gadget that failed. They are counted apart:
+  // the text of a failed call is its caller's choice and any session that may call the gadget
+  // can make one, a "use" session included, so counted together thirty calls a minute to a
+  // method the gadget does not have would leave, of what the gadget itself throws in that
+  // minute, nothing but a marker. This guards the minute only: both kinds are kept in the same
+  // part of the log's bounds, where enough failed calls still push out the older exceptions
+  // (workspace-error-log.ts). In memory, so a restart forgets at most one window.
+  #tailErrorLimiter = new GadgetErrorLimiter();
+  #callErrorLimiter = new GadgetErrorLimiter();
+
+  // The appends to this workspace's log object that have not settled, which deleting the
+  // workspace waits for (#deleteGadgetErrors).
+  #gadgetErrorAppends = new Set<Promise<void>>();
+
+  // The name of this workspace's log object, made the first time it is asked for: a random string
+  // of the object's own, and not the workspace's id (see `errorLogId` in overseer-storage.ts).
+  // Undefined for a workspace that is uninitialised or being deleted, which keeps nothing, so that
+  // no name is stored once a deletion has wiped the storage, for the id's next life to find.
+  errorLogName(): string | undefined {
+    if (!this.ownerId) return undefined;
+    let name = this.storage.errorLogId.get();
+    if (name === undefined) this.storage.errorLogId.put(name = crypto.randomUUID());
+    return name;
+  }
+
+  // Keeps `entries` in this workspace's log object, and rejects when that fails: each caller
+  // decides what a failure means. A workspace that is uninitialised or being deleted keeps
+  // nothing. The check, the name and the tracking are one synchronous step, so that a deletion
+  // that begins afterwards finds the append.
+  #appendGadgetErrors(entries: GadgetErrorEntry[]): Promise<void> {
+    let name = entries.length > 0 ? this.errorLogName() : undefined;
+    if (name === undefined) return Promise.resolve();
+
+    // An async function, so that a lookup that throws rejects the promise as a failed append does.
+    let append = (async () => { await this.workspaceErrorLogs.getByName(name).append(entries); })();
+    let settled = () => { this.#gadgetErrorAppends.delete(append); };
+    this.#gadgetErrorAppends.add(append);
+    append.then(settled, settled);
+    return append;
+  }
+
+  // Destroys this workspace's log object, for the workspace's deletion. Nothing to do while the
+  // workspace has named none. Rejects when the object was not destroyed inside the bound.
+  //
+  // The appends still in flight are awaited first, since one landing after destroy() would bring
+  // entries back; none joins them meanwhile, because #appendGadgetErrors keeps nothing once the
+  // workspace is being deleted. The wait is bounded because the drain that calls this is joined
+  // by every later caller, so one that never settled would hold the deletion for the life of this
+  // instance. destroy() is idempotent, so retryOnDoReset() may replay it.
+  //
+  // What the wait cannot cover is an append sent by an earlier instance of this object that was
+  // aborted before the append settled, which can land after destroy(). It lands in an object
+  // whose name went with this workspace's storage, so no workspace ever reads it, this id's next
+  // life included, and the object deletes itself when those entries expire.
+  async #deleteGadgetErrors(): Promise<void> {
+    let name = this.storage.errorLogId.get();
+    if (name === undefined) return;
+    await boundedWait((async () => {
+      await Promise.allSettled(this.#gadgetErrorAppends);
+      await retryOnDoReset(() => this.workspaceErrorLogs.getByName(name).destroy(), this.logger);
+    })(), "Gadget error log deletion");
+  }
+
+  // Keeps `events`, exceptions of gadget `gadgetId`'s server, as "server" entries under the chat
+  // that `chat()` answers. `limiter` is asked first, and `chat()` only for what is kept: the
+  // errors it admits, and ahead of them its marker for the ones it dropped. Never throws: a
+  // failure of `chat()` or of the append is logged, with nothing of an entry, and its entries are
+  // lost.
+  async #keepGadgetExceptions(limiter: GadgetErrorLimiter, gadgetId: WorkpieceId,
+                              chat: () => number | null, events: ConsoleLogEvent[]): Promise<void> {
+    let {admitted, dropped} = limiter.admit(gadgetId, events.length, Date.now());
+    if (admitted === 0 && dropped === 0) return;
+    try {
+      let chatId = chat();
+      let batch = events.slice(0, admitted)
+          .map(event => serverGadgetErrorEntry(gadgetId, chatId, event));
+      if (dropped > 0) {
+        batch.unshift({ time: new Date(), gadgetId, chatId, source: "server",
+                        text: droppedGadgetErrorsText(dropped) });
+      }
+      await this.#appendGadgetErrors(batch);
+    } catch (error) {
+      // Whatever marker this brought was not written, so its count waits for the gadget's next.
+      limiter.unmark(gadgetId, dropped);
+      this.logger.warn("failed to keep a gadget's exceptions",
+          { event: "gadget.error.record.failed", error });
+    }
+  }
+
+  // Keeps `events`, the exceptions the runtime reported for gadget `gadgetId`'s Worker, which its
+  // tail hands over apart from what it delivers live (GadgetTailLoopback).
+  //
+  // `chatId` is the chat the Worker was loaded for, which for an export handler's Worker is the
+  // chat the export was asked under, whether or not it proposes a change to the gadget. It is
+  // narrowed here, as a failed call's is, so an entry's chat is null whenever the code that ran
+  // was the mainline's.
+  //
+  // `errorLogId` names the log object of the workspace that loaded the gadget's Worker, which
+  // the Worker's tail carries, and nothing is kept unless it is this workspace's. A deleted
+  // workspace's gadget request can run on, and throw, after the id was initialised again for
+  // another owner (receiveExternalMessage), with gadget ids that start again at the same numbers.
+  // That workspace's log object has another name, so it keeps nothing of the earlier one's,
+  // whenever the request throws and whenever its trace is delivered.
+  async deliverGadgetExceptions(chatId: number | null, events: ConsoleLogEvent[],
+                                gadgetId: WorkpieceId, errorLogId: string): Promise<void> {
+    if (events.length === 0 || errorLogId !== this.storage.errorLogId.get()) return;
+    await this.#keepGadgetExceptions(this.#tailErrorLimiter, gadgetId,
+        () => this.#resolveGadgetChatId(gadgetId, chatId ?? undefined) ?? null, events);
+  }
+
+  // Keeps the error of a call the facet proxy caught. The tail keeps the rest, and most of these
+  // exceptions never reach it. One that does, because the runtime reports it for the gadget's
+  // request as well (a constructor's throw), is kept by both, as live subscribers are sent both.
+  // `chatId` is the chat whose proposed changes the stub's facet was loaded with, so a stub of
+  // the mainline keeps its errors under no chat even once the chat it was asked under proposes
+  // a change to the gadget. It is resolved again when the call fails, so a stub whose draft was
+  // merged since keeps its error under no chat too, and only for an error that is kept. The
+  // proxy calls this inside its catch, ahead of its rethrow, so nothing here may throw, or the
+  // gadget's caller would get that in place of the gadget's own error.
+  //
+  // A gadget is held to a limit of these, with a marker for the rest. The text of one is its
+  // caller's choice (the error names the method that was called), every session that may call
+  // the gadget can make calls fail, a "use" session included, and the entry names no user.
+  // Unlimited, such a session could turn over the gadget's "server" entries in seconds. Held to
+  // the limit it still can, in minutes (see #tailErrorLimiter).
+  #recordGadgetException(gadgetId: WorkpieceId, chatId: number | undefined, event: ConsoleLogEvent)
+      : void {
+    this.ctx.waitUntil(this.#keepGadgetExceptions(this.#callErrorLimiter, gadgetId,
+        () => this.#resolveGadgetChatId(gadgetId, chatId) ?? null, [event]));
+  }
+
+  // One page of the workspace's gadget error log (see Overseer.readGadgetErrors()). The query is
+  // checked here, so a malformed one throws whether or not anything was kept, and a workspace that
+  // has named no log object has none to ask.
+  async readGadgetErrors(query: GadgetErrorQuery = {}): Promise<GadgetErrorPage> {
+    validateGadgetErrorQuery(query);
+    let name = this.storage.errorLogId.get();
+    if (name === undefined) return {entries: []};
+    return await this.workspaceErrorLogs.getByName(name).list(query);
+  }
+
   async subscribeToConsoleLogs(subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>> {
     let sub = subscriber.dup();
     sub.onRpcBroken(_ => unsubscribe());
@@ -11492,7 +11676,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async receiveExternalMessage(
     input: ExternalMessageSubmitInput,
   ): Promise<SubmitExternalMessageResult> {
-    if (this.impl.storage.deleting.get()) return {accepted: false, message: "Workspace was deleted."};
+    if (this.impl.storage.deleting.get() || this.impl.deletionBegun) {
+      return {accepted: false, message: "Workspace was deleted."};
+    }
     if (!input.prompt.trim()) {
       return { accepted: false, message: "Please include a prompt." };
     }
@@ -11509,9 +11695,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       };
     }
 
-    // Create the Gadget if it doesn't exist yet.
+    // Create the Gadget if it doesn't exist yet, unless it was deleted while the caller was being
+    // resolved: the fence above was passed before that wait.
     let ownerId = this.impl.ownerId;
     if (!ownerId) {
+      if (this.impl.deletionBegun) return {accepted: false, message: "Workspace was deleted."};
       this.impl.ownerId = callerId;
       this.impl.ownerProfileId = callerProfile.id;
       this.impl.storage.ownerId.put(callerId);
@@ -11773,6 +11961,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return this.impl.deliverGadgetLogs(chatId, logs);
   }
 
+  async deliverGadgetExceptions(chatId: number | null, events: ConsoleLogEvent[],
+                                gadgetId: WorkpieceId, errorLogId: string) {
+    return this.impl.deliverGadgetExceptions(chatId, events, gadgetId, errorLogId);
+  }
+
   async deliverCodeModeTrace(executionId: string, trace: TraceItem) {
     return this.impl.deliverCodeModeTrace(executionId, trace);
   }
@@ -11954,14 +12147,43 @@ type GadgetTailLoopbackProps = {
   gadgetId: WorkpieceId;
 
   overseerId: string;
+
+  // The log object of the workspace that loaded the worker (OverseerImpl.errorLogName()), by
+  // which the workspace that is handed the worker's exceptions tells whether they are its own.
+  errorLogId?: string;
 };
 
+// A trace's exception as it is kept: its name and message, and on a second line the stack when
+// the trace has one. The live event carries the message alone. It has the shape of a console
+// event because that is what the error of a failed call is kept from; nothing reads its level,
+// since the log keeps none.
+function keptException(timestamp: Date, name: string, message: string, stack?: string)
+    : ConsoleLogEvent {
+  let text = `${name}: ${message}`;
+  return {timestamp, level: "error", message: [stack ? `${text}\n${stack}` : text]};
+}
+
 export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetTailLoopbackProps> {
-  async #deliver(logs: ConsoleLogEvent[]) {
+  // Sends `logs` to the workspace's live subscribers and then hands it `exceptions`, the trace's
+  // exceptions as they are kept, which `logs` also holds as live events.
+  async #deliver(logs: ConsoleLogEvent[], exceptions: ConsoleLogEvent[] = []) {
     let ns = this.ctx.exports.OverseerDurableObject;
     let stub: DurableObjectStub<OverseerDurableObject> =
         ns.get(ns.idFromString(this.ctx.props.overseerId));
     await stub.deliverGadgetLogs(this.ctx.props.chatId ?? null, logs);
+
+    // A worker whose props name no log object has nowhere to keep them.
+    let {chatId, gadgetId, errorLogId} = this.ctx.props;
+    if (exceptions.length === 0 || errorLogId === undefined) return;
+    try {
+      await stub.deliverGadgetExceptions(chatId ?? null, exceptions, gadgetId, errorLogId);
+    } catch (error) {
+      // This loopback and the Overseer can run different versions while a deployment is under
+      // way, and one that has no such method rejects the call. The logs were delivered live by
+      // then, so the tail is not reported as failed: that trace's exceptions are not kept.
+      logger.warn("failed to hand a gadget's exceptions to its workspace",
+          { event: "gadget.error.deliver.failed", error });
+    }
   }
 
   /**
@@ -11986,7 +12208,8 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
           level: "error",
           message: [event.event.message, event.event.stack]
         }
-        return this.#deliver([log]);
+        let {name, message, stack} = event.event;
+        return this.#deliver([log], [keptException(log.timestamp, name, message, stack)]);
       },
     };
   }
@@ -12021,6 +12244,7 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
       return result;
     });
 
+    let exceptions: ConsoleLogEvent[] = [];
     for (let err of event.exceptions) {
       // Pretend errors were logged using console.error().
       logs.push({
@@ -12028,9 +12252,10 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
         level: "error",
         message: [err.message],
       });
+      exceptions.push(keptException(new Date(err.timestamp), err.name, err.message, err.stack));
     }
 
-    await this.#deliver(logs);
+    await this.#deliver(logs, exceptions);
   }
 }
 
@@ -13419,6 +13644,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return this.#subscriptionLease(await this.impl.subscribeToConsoleLogs(subscriber));
   }
 
+  async readGadgetErrors(query?: GadgetErrorQuery): Promise<GadgetErrorPage> {
+    return this.impl.readGadgetErrors(query);
+  }
+
   // --- Blueprint management ---
 
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> {
@@ -13974,6 +14203,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       [Symbol.dispose]() {}
     }));
   }
+  async readGadgetErrors(_query?: GadgetErrorQuery): Promise<GadgetErrorPage> { this.#deny(); }
   async listBlueprints(): Promise<BlueprintGadgetSummary[]> { this.#deny(); }
   async updateBlueprint(_blueprintId: string, _options: {
     title?: string;

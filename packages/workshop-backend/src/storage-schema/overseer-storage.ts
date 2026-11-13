@@ -1449,6 +1449,14 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // project-specific part of the agent's system prompt, so nobody without that prompt can
       // probe a shared prompt cache for it (see runAgentPass).
       promptCacheSalt: <string | undefined>undefined,
+
+      // The name of the Durable Object that keeps this workspace's gadget errors
+      // (workspace-error-log.ts): random, made when the workspace first loads a gadget Worker or
+      // keeps an entry. It goes with the rest of this storage when the workspace is deleted, so a
+      // workspace initialised again under the same id starts with no log, nothing written late to
+      // the old one is ever read from the new, and no exception of a Worker that the old one
+      // loaded is kept in the new (OverseerImpl.deliverGadgetExceptions()).
+      errorLogId: <string | undefined>undefined,
     },
 
     collections: {
