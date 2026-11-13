@@ -186,8 +186,35 @@ describe("persisted visible positions", () => {
 });
 
 describe("chat notification preferences", () => {
+  it.each([
+    {missing: "source chat", error: "No such chatId"},
+    {missing: "user chat", error: "Chat has been deleted"},
+    {missing: "user workspace", error: "Workspace is not available"},
+  ])("rejects a preference change when its $missing is gone", async ({missing, error}) => {
+    const fixture = await setup();
+    await append(fixture, 0);
+    if (missing === "source chat") {
+      await withImpl(fixture.workspace, async impl => { impl.storage.chatMeta.delete(1); });
+    } else if (missing === "user chat") {
+      await fixture.user.messageArrived(fixture.workspaceId, 1, null);
+    } else {
+      await fixture.user.workspaceRemoved(fixture.workspaceId);
+    }
+    await expect(withImpl(fixture.workspace,
+      impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false))).rejects.toThrow(error);
+  });
+
+  it("accepts repeated preference changes when the chat still exists", async () => {
+    const fixture = await setup();
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    const before = await cursor(fixture);
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    expect(await cursor(fixture)).toEqual(before);
+  });
+
   it.each(["read", "alarm"] as const)("consumes legacy queued alerts for a muted chat on %s", async recovery => {
     const fixture = await setup(undefined, false);
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
     await append(fixture, 0);
     const alert = {...event(0), kind: "permissionRequested" as const};
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
@@ -195,7 +222,7 @@ describe("chat notification preferences", () => {
       // Seed through the live collections so the hydrated queue headers stay in sync.
       const storage = instance["storage"];
       const current = storage.chatReadCursors.get(`${fixture.workspaceId}:1`)!;
-      // A pre-upgrade delivery may still be queued when the current default becomes muted.
+      // Recover an older queued delivery after the user explicitly muted the chat.
       storage.chatReadCursors.put({...current, notifiedThroughSequence: -1});
       storage.notificationOutbox.put({...alert, workspaceId: fixture.workspaceId, chatId: 1,
         expiresAt: new Date(Date.now() + 60_000), failedSubscriptions: ["offline-device"]});
@@ -294,7 +321,7 @@ describe("chat notification preferences", () => {
     expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
   });
 
-  it.each([false, true])("defaults nonparticipants to muted badges, inbox and alerts across eviction (spawned: %s)", async spawned => {
+  it.each([false, true])("defaults nonparticipants to muted badges, inbox and completion alerts across eviction (spawned: %s)", async spawned => {
     const fixture = await setup(undefined, false);
     const {reader} = await addReader(fixture, false);
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
@@ -302,9 +329,8 @@ describe("chat notification preferences", () => {
       if (spawned) impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
       write(impl, 0, "Task");
       write(impl, 1, "Done");
-      // An outcome queued by the previous deployment must not produce an alert either.
       impl.storage.chatNotifications.put({id: crypto.randomUUID(), chatId: 1, sequence: 1,
-        userId: fixture.user.id.toString(), kind: "permissionRequested"});
+        userId: fixture.user.id.toString(), kind: "taskCompleted"});
       await impl.deliverDirtyChats();
       expect([...impl.storage.chats.list()]).toHaveLength(2);
     });
@@ -324,6 +350,47 @@ describe("chat notification preferences", () => {
     expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
     expect(await outbox(fixture)).toEqual([]);
     expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("delivers and recovers approvals for nonparticipants without subscribing them (spawned: %s)", async spawned => {
+    const original = await setup(undefined, false);
+    const {reader, owner} = await addReader(original, false);
+    const fixture = {...original, user: reader};
+    const approval = {...event(0), kind: "permissionRequested" as const};
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification")
+      .mockRejectedValue(new Error("Device offline"));
+    await withImpl(fixture.workspace, async impl => {
+      if (spawned) impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
+      write(impl, 0, "Waiting for approval");
+      for (const alert of [approval, event(0)]) impl.storage.chatNotifications.put({
+        ...alert, chatId: 1, userId: fixture.user.id.toString()});
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    expect(await outbox(fixture)).toMatchObject([{id: approval.id}]);
+    await setRead(fixture, 0);
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 1, "Another automated result");
+      impl.storage.chatNotifications.put({...event(1), chatId: 1, userId: fixture.user.id.toString()});
+      await impl.deliverDirtyChats();
+    });
+    await fixture.user.recordSharedWorkspaceOpen(fixture.workspaceId, "Workspace", owner, "build", await notificationBaselines(fixture));
+    expect(await outbox(fixture)).toMatchObject([{id: approval.id}]);
+    publish.mockResolvedValue(undefined);
+    await evictDurableObject(fixture.user);
+    await runDurableObjectAlarm(fixture.user);
+    await drained(fixture);
+    expect(publish.mock.calls.map(([alert]) => alert.id)).toEqual([approval.id, approval.id]);
+    await withImpl(fixture.workspace, async impl => {
+      impl.markChatDirty(1, 0, 1); await impl.deliverDirtyChats();
+    });
+    await drained(fixture);
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(await cursor(fixture)).toMatchObject({hasParticipated: false, readThroughSequence: 0, unreadCount: 1});
+    for (const user of [original.user, reader]) {
+      expect(await user.getUnreadThreads()).toEqual([]);
+      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    }
   });
 
   it.each([false, true])("preserves unread history with private overrides and only future alerts (spawned: %s)", async spawned => {
@@ -382,7 +449,7 @@ describe("chat notification preferences", () => {
   });
 
   it("clears a normal chat's queued permission alert when muted and never retries it after unmuting", async () => {
-    const fixture = await setup();
+    const fixture = await setup(undefined, false);
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification")
       .mockRejectedValue(new Error("Push unavailable"));
     await withImpl(fixture.workspace, async impl => {

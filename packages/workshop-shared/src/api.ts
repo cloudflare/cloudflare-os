@@ -255,7 +255,8 @@ export type ChatReadState = {
    */
   readThroughSequence: number;
   /**
-   * Whether this chat appears in the unread inbox and contributes badges and alerts for this user.
+   * Whether this chat appears in the unread inbox and contributes badges and completion alerts
+   * for this user. Approval alerts bypass the default-off state, but honor an explicit mute.
    * Absent on older servers.
    */
   notificationsEnabled?: boolean;
@@ -3668,10 +3669,11 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Enable or mute this chat's unread inbox entry, badges and alerts for the current user. Sending
-   * a first message or slash command enables notifications by default in new chats. Existing chats
-   * stay subscribed by default; an explicit preference always takes precedence. Read history and
-   * unread dividers are preserved. Changing
-   * the preference clears queued alerts, so enabling only alerts about future activity.
+   * a first message or slash command enables notifications by default in new chats. Approval alerts
+   * bypass that default-off state, but honor an explicit mute. Existing chats stay subscribed by
+   * default; an explicit preference always takes precedence. Read history and unread dividers
+   * are preserved. Changing the preference clears queued alerts, so enabling
+   * only alerts about future activity. Throws if the chat or workspace is no longer available.
    * Not available in use-only sessions.
    */
   setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void>;

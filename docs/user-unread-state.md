@@ -14,6 +14,11 @@ batch coalesces a user's message with a later agent response. Only new chats ini
 participant list; ordinary writes maintain it alongside the visible counter. An absent list keeps
 the existing-chat default enabled, including after later messages.
 
+Approval requests bypass the default-off state so an unattended agent can ask for help, without
+subscribing the user or adding the chat to the unread inbox or badge totals. An explicit chat mute
+suppresses approval alerts too. Approval alerts use the ordinary durable outbox and local retries;
+read commands, later automated messages and collaborator reopens do not discard them.
+
 Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,
 without advancing its read horizon or clearing its unread count. Muted chats keep their catch-up
 divider, ordinary reading receipts and explicit read/unread actions. Unmuting restores the inbox
@@ -238,7 +243,9 @@ catch-up RPC or background admission lifecycle.
 ## Consumers and verification
 
 Notification policy remains task completion and permission requests, not an alert for every
-visible message. Workspace mutes still suppress completion alerts only; chat mutes suppress all alerts and badges. Browser acknowledgement and native fallback are unchanged; see
+visible message. Workspace mutes still suppress completion alerts only; explicit chat mutes suppress
+all alerts and badges. Before first participation, permission requests still alert without enabling
+completion alerts, inbox entries or badges. Browser acknowledgement and native fallback are unchanged; see
 [notifications](notifications.md). Native/push badge consumers are added by the
 [stacked consumer PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 

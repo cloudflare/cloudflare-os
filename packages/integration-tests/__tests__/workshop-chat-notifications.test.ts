@@ -105,6 +105,50 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
   expect(model.remainingSteps()).toBe(0);
 });
 
+it("notifies a spawned chat's approval before participation without enabling completion alerts or its inbox entry", async () => {
+  const model = models.script([{toolCall: {id: "ask", name: "executeCode", arguments: {
+    code: "export default async function(self, env) { await env.TEST_AMBIENT.writeValue(7); }",
+  }}}, {text: "Approved write completed."}]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel,
+    ambientVendorIds: [TEST_VENDOR_ID], usernamePrefix: "defaultapproval",
+  });
+  using publicApi = connect(harness.url);
+  using api = await logIn(publicApi, session.username);
+  using ws = await api.newWorkspace();
+  const {id: workspaceId} = await ws.getMetadata();
+  const received = new Notifications();
+  using subscriber = stubFor(received);
+  using _subscription = await api.subscribeToNotifications(subscriber);
+  using connection = await ws.newGatekeeper(session.connectedAccount(TEST_VENDOR_ID).id,
+    "https://gadgets-test.example/things/defaultapproval");
+  if (!connection) throw new Error("Test connection was not created");
+  using spawner = await ws.newAgentSpawnerGatekeeper({displayName: "Approval", modelId: SCRIPTED_MODEL_ID,
+    env: {TEST_AMBIENT: await connection.getId()}});
+  using binding = await spawner.openSession() as RpcStub<Spawner>;
+  using callable = await binding.spawnCallable("Unattended approval", {
+    types: "interface Probe { run(): void; }", mainType: "Probe",
+  }) as RpcStub<Probe>;
+  const chatId = (await ws.listChats())[0]!.id;
+  await callable.run();
+  await waitForIdleChat(ws, chatId);
+  const pending = await waitFor("the blocked approval", async () =>
+    (await ws.listActions({filter: "pending"})).entries[0] ?? null);
+  await waitFor("the default-off approval alert", async () => received.events.length === 1 ? true : null);
+  expect(received.events).toEqual([expect.objectContaining({chatId, kind: "permissionRequested"})]);
+  expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId))
+    .toMatchObject({notificationsEnabled: false});
+  expect(await api.getUnreadThreads()).toEqual([]);
+  expect((await api.getUnreadSummary()).unreadMessageCount).toBe(0);
+  await ws.approveAction(pending.id);
+  await waitForIdleChat(ws, chatId);
+  expect((await ws.listActions({filter: "pending"})).entries).toEqual([]);
+  expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId))
+    .toMatchObject({notificationsEnabled: false, unreadMessageCount: 1});
+  expect(await api.getUnreadThreads()).toEqual([]);
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it("opts into a spawned chat on first human participation and preserves a later explicit mute", async () => {
   const model = models.script([{text: "Automated result."}, {text: "First human reply."}, {text: "Muted reply."}]);
   await using session = await openAgentSession(harness.url, {

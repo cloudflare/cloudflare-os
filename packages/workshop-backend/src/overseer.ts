@@ -1393,8 +1393,7 @@ class OverseerImpl implements AgentHooks {
 
   async setChatNotificationsEnabled(userId: string, chatId: number, enabled: boolean): Promise<void> {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
-    let meta = this.storage.chatMeta.get(chatId);
-    if (!meta) return;
+    this.getChatMetaOrThrow(chatId);
     let tail = this.nextChatSequencePeek(chatId) - 1;
     await this.wrapUserDo(this.users.get(this.users.idFromString(userId))).setChatNotificationsEnabled(
       this.ctx.id.toString(), chatId, enabled, {

@@ -777,6 +777,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         (!cursor.notifiedEventIds || cursor.notifiedEventIds.includes(event.id)));
   }
 
+  #acknowledgeNotification(cursor: ChatReadCursor, event: {sequence: number; id: string}): ChatReadCursor {
+    return this.#wasNotified(cursor, event) ? cursor : {...cursor, notifiedThroughSequence: event.sequence,
+      notifiedEventIds: [...(event.sequence === cursor.notifiedThroughSequence
+        ? cursor.notifiedEventIds ?? [] : []), event.id]};
+  }
+
   // Only alert delivery awaits under the mutex. Counts and read commands commit synchronously
   // so a slow notification provider cannot delay read horizons or badge updates.
   async #serialize(key: string, operation: () => Promise<void>) {
@@ -810,6 +816,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return cursor.notificationsEnabled ?? cursor.hasParticipated !== false;
   }
 
+  #chatAlertEnabled(cursor: ChatReadCursor, kind: UserNotification["kind"]): boolean {
+    // Approval requests bypass the participation default, but never an explicit mute.
+    return this.#chatNotificationsEnabled(cursor) ||
+      (kind === "permissionRequested" && cursor.notificationsEnabled !== false);
+  }
+
   // Consume alerts independently of read history, so unmuting cannot replay them.
   #skipChatNotifications(cursor: ChatReadCursor, through = cursor.head?.latestSequence ?? -1): ChatReadCursor {
     let events = this.#notificationChats.has(`${cursor.workspaceId}:${cursor.chatId}`)
@@ -825,9 +837,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** Store this user's per-chat override using an authorized workspace snapshot, without a callback. */
   async setChatNotificationsEnabled(workspaceId: string, chatId: number, enabled: boolean,
       baseline: Pick<ChatAdmissionBaseline, "hasParticipated" | "notifiedThroughSequence">): Promise<void> {
-    if (!this.#hasWorkspace(workspaceId)) return;
+    if (!this.#hasWorkspace(workspaceId)) throw new Error("Workspace is not available.");
     let current = this.#cursor(workspaceId, chatId);
-    if (current.deleted || current.notificationsEnabled === enabled) return;
+    if (current.deleted) throw new Error("Chat has been deleted.");
+    if (current.notificationsEnabled === enabled) return;
     this.ctx.storage.transactionSync(() => {
       // Preference changes leave read accounting and its paired head to ordinary fanout.
       let cursor = {...current, notificationsEnabled: enabled,
@@ -864,7 +877,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       latestVisibleSequence: latest, unreadCount: latest - visible,
       notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline};
     let changed = this.ctx.storage.transactionSync(() => this.#storeCursor(
-      this.#chatNotificationsEnabled(cursor) ? cursor : this.#skipChatNotifications(cursor)));
+      cursor.notificationsEnabled === false ? this.#skipChatNotifications(cursor) : cursor));
     if (changed) this.#unreadChanged(workspaceId, chatId);
     if (hadNotifications) await this.#armExpirySweep();
     return changed;
@@ -884,21 +897,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
           let cursor = this.#readCursors.get(key);
           if (!cursor || cursor.deleted) return;
-          if (!this.#chatNotificationsEnabled(cursor)) {
+          if (cursor.notificationsEnabled === false) {
             this.ctx.storage.transactionSync(() => this.#storeCursor(this.#skipChatNotifications(cursor)));
             return;
           }
           let expired = event.expiresAt.getTime() <= Date.now();
+          let skipped = !this.#chatAlertEnabled(cursor, event.kind);
           // Arrivals deliver new work; only alarm/restart recovery retries failed destinations.
-          if (!expired && event.failedSubscriptions !== undefined && !retryFailures) continue;
-          if (!expired) {
+          if (!expired && !skipped && event.failedSubscriptions !== undefined && !retryFailures) continue;
+          if (!expired && !skipped) {
             let {sequence: _, expiresAt, failedSubscriptions, ...notification} = event;
             try {
               await this.publishNotification(notification, expiresAt.getTime(), failedSubscriptions, event.sequence);
             } catch (error) {
               if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
               let current = this.#readCursors.get(key);
-              if (!current || current.deleted || !this.#chatNotificationsEnabled(current) ||
+              if (!current || current.deleted || !this.#chatAlertEnabled(current, event.kind) ||
                   !this.storage.notificationOutbox.get(`${workspaceId}:${chatKey(chatId, event.sequence)}:${event.id}`)) return;
               if (Date.now() < expiresAt.getTime()) {
                 let failed = error instanceof NotificationDeliveryError ? error.failedSubscriptions : failedSubscriptions;
@@ -914,18 +928,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           }
           if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
           let checkpoint = this.#readCursors.get(key);
-          if (!checkpoint || checkpoint.deleted || !this.#chatNotificationsEnabled(checkpoint)) return;
+          if (!checkpoint || checkpoint.deleted) return;
           if (expired) logger.warn("notification delivery expired", {
             event: "notification.delivery.expired", gadgetId: workspaceId, chatId, sequence: event.sequence,
           });
           this.ctx.storage.transactionSync(() => {
             this.storage.notificationOutbox.deleteRecord(event);
             // Lower positions can remain queued for failed devices after a later event completes.
-            if (!this.#wasNotified(checkpoint, event)) {
-              this.#storeCursor({...checkpoint, notifiedThroughSequence: event.sequence,
-                notifiedEventIds: [...(event.sequence === checkpoint.notifiedThroughSequence
-                  ? checkpoint.notifiedEventIds ?? [] : []), event.id]});
-            }
+            this.#storeCursor(this.#acknowledgeNotification(checkpoint, event));
           });
         }
         if (failures.length) throw failures[0];
@@ -1110,19 +1120,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       unreadCount: latest - readThroughVisibleSequence};
     let hadNotifications = this.#notificationChats.has(key);
     let changed = this.ctx.storage.transactionSync(() => {
-      if (!this.#chatNotificationsEnabled(cursor)) {
+      if (cursor.notificationsEnabled === false) {
         return this.#storeCursor(this.#skipChatNotifications(cursor,
           Math.max(progress.head.latestSequence, ...progress.notifications.map(event => event.sequence))));
       }
-      let stored = this.#storeCursor(cursor);
+      let updated = cursor;
       for (let event of progress.notifications) {
         let eventKey = `${workspaceId}:${chatKey(chatId, event.sequence)}:${event.id}`;
         if (!this.#wasNotified(cursor, event) && !this.storage.notificationOutbox.get(eventKey)) {
-          this.storage.notificationOutbox.put({...event, workspaceId, chatId,
-            expiresAt: new Date(Date.now() + NOTIFICATION_RETRY_LIFETIME_MS)});
+          if (this.#chatAlertEnabled(cursor, event.kind)) {
+            this.storage.notificationOutbox.put({...event, workspaceId, chatId,
+              expiresAt: new Date(Date.now() + NOTIFICATION_RETRY_LIFETIME_MS)});
+          } else {
+            updated = this.#acknowledgeNotification(updated, event);
+          }
         }
       }
-      return stored;
+      return this.#storeCursor(updated);
     });
     if (changed) this.#unreadChanged(workspaceId, chatId);
     if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
@@ -1199,7 +1213,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       retryUntil = Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS, retrySubscriptions?: string[], sequence?: number): Promise<void> {
     let chatEnabled = () => {
       let cursor = this.#readCursors.get(`${notification.workspaceId}:${notification.chatId}`);
-      if (cursor && (cursor.deleted || !this.#chatNotificationsEnabled(cursor))) return false;
+      if (cursor && (cursor.deleted || !this.#chatAlertEnabled(cursor, notification.kind))) return false;
       // A mute may have consumed this queued event while a browser was deciding whether to show it.
       return sequence === undefined || !!this.storage.notificationOutbox.get(
         `${notification.workspaceId}:${chatKey(notification.chatId, sequence)}:${notification.id}`);
@@ -1336,8 +1350,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
             let updated = {...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
               unreadCount: latest - cursor.readThroughVisibleSequence};
-            changed = this.#storeCursor(this.#chatNotificationsEnabled(updated) ? updated :
-              this.#skipChatNotifications(updated, baseline.notifiedThroughSequence)) || changed;
+            changed = this.#storeCursor(updated.notificationsEnabled === false ?
+              this.#skipChatNotifications(updated, baseline.notifiedThroughSequence) : updated) || changed;
           }
         }
       });

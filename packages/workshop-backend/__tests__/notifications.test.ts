@@ -800,6 +800,33 @@ describe("UserDurableObject notifications", () => {
     expect(await publish(() => new Promise<void>(() => {}))).toEqual([ONE]);
   });
 
+  it("delivers default-off chat approvals to browsers and push, while honoring an explicit mute", async () => {
+    const fetcher = stubService();
+    const offered: string[] = [];
+    const {workspaceId, chatId} = NOTIFICATION;
+    await inUser(async user => {
+      await user.newWorkspace(workspaceId, "Workspace");
+      await user.registerNotificationDevice("a".repeat(64));
+      using _subscription = await user.subscribeToNotifications(new RpcStub(new Subscriber(async notification => {
+        offered.push(notification.kind);
+        throw new Error("hidden");
+      })));
+      await user.messageArrived(workspaceId, chatId, {
+        hasParticipated: false, head: {chatTitle: "Chat", latestSequence: 0}, headUpdatedAt: new Date(),
+        firstMessageSequence: 0, firstVisibleSequence: 1, latestVisibleSequence: 1, notifications: [],
+      });
+      const approval = {...NOTIFICATION, kind: "permissionRequested" as const};
+      await user.publishNotification(NOTIFICATION);
+      await user.publishNotification(approval);
+      await user.setChatNotificationsEnabled(workspaceId, chatId, false, {notifiedThroughSequence: 0});
+      await user.publishNotification(approval);
+      expect(await user.getUnreadThreads()).toEqual([]);
+      expect((await user.getUnreadSummary()).unreadMessageCount).toBe(0);
+    });
+    expect(offered).toEqual(["permissionRequested"]);
+    expect(bodies(fetcher, "/v1/deliveries").map(({type}) => type)).toEqual(["permission_requested"]);
+  });
+
   // A muted workspace stays quiet about finished tasks, but a task stuck on the user still asks.
   it("sends a muted workspace's permission requests to tabs and devices, and its finished tasks once the mute ends",
       async () => {
