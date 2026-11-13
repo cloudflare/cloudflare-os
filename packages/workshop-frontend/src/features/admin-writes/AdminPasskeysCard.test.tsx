@@ -147,6 +147,12 @@ const when = (at: Date) => ({ at: at.toISOString(), shown: formatFullTimestamp(a
 
 const dialog = () => document.body.querySelector('[role="dialog"]')
 
+// A dialog takes focus a frame after it opens, from wherever focus is by then. A test that
+// follows focus through a dialog waits for that first, or the frame can land in the middle of it.
+const dialogTakesFocus = () => act(() => vi.waitFor(() => {
+  expect(dialog()?.contains(document.activeElement)).toBe(true)
+}, { interval: 5 }))
+
 describe('AdminPasskeysCard', () => {
   let container: HTMLDivElement
   let root: Root
@@ -518,6 +524,7 @@ describe('AdminPasskeysCard', () => {
       assertPasskey.mockReturnValue(ceremony.promise)
       await render([ALICES])
       await click(button('Remove passkey Work laptop'))
+      await dialogTakesFocus()
       const confirm = button('Remove')
 
       await focus(confirm)
