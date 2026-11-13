@@ -66,12 +66,12 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminAccessPolicy, adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText,
-  redactAdminAuditArgs, withholdActionContent,
-  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
-  withholdHookContent,
+  adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText, redactAdminAuditArgs,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
+  withholdCreationContent, withholdHookContent,
   type AdminViewTerms,
 } from "./admin-access";
+import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
@@ -14514,47 +14514,33 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     }
   }
 
-  // Runs one call: checks the view, reads the deployment's setting and checks again. While the
-  // setting is "off" the call is recorded and refused, having read nothing. Any other call reads
-  // its answer with `read` (never through a connection), is checked once more, and is recorded.
-  // Only then is it answered, so nothing it read leaves the server unrecorded, and a call whose
-  // record cannot be written fails and returns nothing. A read that fails is recorded as an
-  // attempt, and the call fails with the read's error.
+  // Runs one call through adminViewCall(): checks the view, reads the deployment's setting and
+  // checks again. While the setting is "off" the call is recorded and refused, having read
+  // nothing. Any other call reads its answer with `read` (never through a connection), is checked
+  // once more, and is recorded. Only then is it answered, so nothing it read leaves the server
+  // unrecorded, and a call whose record cannot be written fails and returns nothing. A read that
+  // fails is recorded as an attempt, and the call fails with the read's error. The host is built
+  // at each call, so its audit log and logger are the Overseer's at that call, and the environment
+  // is read at each use within it.
   async #call<T>(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
       read: () => T | Promise<T>): Promise<T> {
-    this.#assertLive();
-    let config = await readAdminConfig(this.#impl.env);
-    // Checked again, with nothing awaited from here to a refusal's record: the read may have
-    // spanned the expiry, a demotion or the workspace's deletion, and a deleted workspace's storage
-    // must stay empty, with nothing appended for it deployment-wide either.
-    this.#assertLive();
-
-    if (adminAccessPolicy(config, this.#impl.env).access === "off") {
-      await this.#record(method, args, ADMIN_ACCESS_ERROR_CODES.accessOff);
-      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.accessOff);
-    }
-
-    let answer: T;
-    try {
-      answer = await read();
-    } catch (err) {
-      this.#assertLive();
-      await this.#record(method, args);
-      throw err;
-    }
-    // Checked again, with nothing awaited before the record, for the same reasons: the read may
-    // have awaited.
-    this.#assertLive();
-    await this.#record(method, args);
-    return answer;
+    let impl = this.#impl;
+    return adminViewCall({
+      env: () => impl.env,
+      audits: impl.adminAudits,
+      logger: impl.logger,
+      assertLive: () => this.#assertLive(),
+      recordOf: refused => this.#recordOf(method, args, refused),
+    }, read);
   }
 
-  // Records one call in the deployment-wide log, as refused when `refused` names why. The record
-  // is built and sent before the first await, so that the caller's last check still holds.
-  async #record(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
-      refused?: AdminAccessRecord["refused"]): Promise<void> {
+  // The record of one call, as the deployment-wide log keeps it, as refused when `refused` names
+  // why. Synchronous: adminViewCall() builds and sends a record with nothing awaited since its
+  // last check.
+  #recordOf(method: AdminWorkspaceMethod, args: Record<string, string | number | undefined>,
+      refused?: AdminAccessRecord["refused"]): AdminAccessRecord {
     let impl = this.#impl;
-    let record: AdminAccessRecord = {
+    return {
       kind: "workspace",
       workspaceId: impl.ctx.id.toString(),
       workspaceOwner: this.#ownerId,
@@ -14571,15 +14557,6 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       access: refused ? "off" : "metadata",
       ...(refused ? {refused} : {}),
     };
-    try {
-      // No retention: the policy above comes from the KV mirror, and a stale one must not prune.
-      await impl.adminAudits.getByName("").append(record);
-    } catch (err) {
-      impl.logger.warn("failed to append to the admin audit log", {
-        event: "admin.audit.append.failed", operation: method, error: err,
-      });
-      throw err;
-    }
   }
 
   // The head commit of a permanent gadget, the only workpiece with committed code to read.
