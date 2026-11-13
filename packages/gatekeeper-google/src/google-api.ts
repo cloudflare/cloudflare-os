@@ -404,6 +404,10 @@ export const MAX_GMAIL_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_GMAIL_FORWARD_SOURCE_BYTES = 25 * 1024 * 1024;
 /** Gmail's per-call limit on message IDs for `users.messages.batchModify`. */
 export const GMAIL_BATCH_MODIFY_MAX_IDS = 1000;
+// How long Gmail is given to begin its answer to a streamed attachment read.
+const GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS = 60_000;
+// The base64 characters of 64 KiB of an inline attachment, less a byte so that they are whole quartets.
+const GMAIL_INLINE_ATTACHMENT_STEP_CHARS = Math.floor(64 * 1024 / 3) * 4;
 const MAX_GMAIL_MESSAGE_HEADERS = 256;
 const MAX_GMAIL_MESSAGE_HEADER_BYTES = 128 * 1024;
 
@@ -466,6 +470,184 @@ function base64UrlToBase64(data: string): string {
 export function decodeBase64UrlToBytes(data: string): Uint8Array {
   const binary = atob(base64UrlToBase64(data));
   return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+
+// The value of each base64 character, in the URL-safe alphabet and the standard one; -1 for the rest.
+const BASE64_SEXTETS = new Int8Array(256).fill(-1);
+for (const last of ["-_", "+/"]) {
+  const alphabet = `ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789${last}`;
+  for (let i = 0; i < 64; i++) BASE64_SEXTETS[alphabet.charCodeAt(i)] = i;
+}
+// What a JSON number, `true`, `false` or `null` is written with.
+const JSON_SCALAR_RE = /[-+.0-9A-Za-z]/;
+
+/**
+ * Decodes the `data` string of a Gmail `attachments.get` JSON answer as it arrives: the
+ * attachment's bytes, of which there must be exactly `size`. Nothing of `json` is read before the
+ * result is, each of its chunks is decoded as it comes and kept no longer, and cancelling the
+ * result cancels `json`.
+ *
+ * The answer is one object whose members are strings and numbers, around `data` in any order.
+ * `data` is base64 in either alphabet, padded or not, and any of its characters may be written
+ * as a JSON escape, as `=` is by some serializers. Any other answer errors the stream, with no
+ * text of the answer in the error. So does a count of bytes that is not `size`: as soon as there
+ * are more, and at the string's end when there are fewer.
+ */
+export function gmailAttachmentBytes(
+    json: ReadableStream<Uint8Array>, size: number): ReadableStream<Uint8Array> {
+  const reader = json.getReader();
+  const invalid = () => new Error("Gmail returned an invalid attachment response.");
+  const mismatch = () => new Error("Attachment content no longer matches the authorized snapshot.");
+  let state: "open" | "member" | "key" | "colon" | "value" | "string" | "scalar" | "data" |
+    "after" | "end" = "open";
+  let escaped = false;
+  // How much of `data` the member's key has matched so far; -1 once it is some other key.
+  let matched = 0;
+  let found = false;
+  // Where in an escape `data` stands: 0 outside one, 1 after its `\`, 2 to 5 at the hex digits
+  // of `\uXXXX`, whose value so far is `unit`.
+  let escapeAt = 0;
+  let unit = 0;
+  // The bits of the string not yet written out as a byte, and how many of them there are.
+  let pending = 0;
+  let bits = 0;
+  let padding = 0;
+  let total = 0;
+  const decode = (chunk: Uint8Array): Uint8Array => {
+    const bytes = new Uint8Array(Math.ceil(chunk.byteLength * 3 / 4) + 1);
+    let length = 0;
+    for (let i = 0; i < chunk.byteLength; i++) {
+      const byte = chunk[i];
+      if (state === "data") {
+        // The character this byte is, or the one that the escape it ends stands for.
+        let char = byte;
+        if (escapeAt === 1) {
+          // `\/` and `\uXXXX` are the escapes that can stand for a base64 character.
+          if (byte === 0x75) {
+            escapeAt = 2;
+            unit = 0;
+            continue;
+          }
+          if (byte !== 0x2f) throw invalid();
+          escapeAt = 0;
+        } else if (escapeAt > 1) {
+          const digit = parseInt(String.fromCharCode(byte), 16);
+          if (Number.isNaN(digit)) throw invalid();
+          unit = unit << 4 | digit;
+          if (escapeAt++ < 5) continue;
+          escapeAt = 0;
+          char = unit;
+        } else if (byte === 0x5c) {
+          escapeAt = 1;
+          continue;
+        } else if (byte === 0x22) {
+          if (bits === 6) throw invalid();
+          if (total + length !== size) throw mismatch();
+          state = "after";
+          continue;
+        }
+        // A character past the table has no sextet, and is refused as the rest are.
+        const sextet = BASE64_SEXTETS[char];
+        if (sextet >= 0 && padding === 0) {
+          pending = (pending << 6 | sextet) & 0xfff;
+          bits += 6;
+          if (bits >= 8) {
+            bits -= 8;
+            bytes[length++] = pending >> bits;
+          }
+        } else if (char === 0x3d && bits !== 6 && padding < bits / 2) {
+          // `=`, as many as the last quartet is short of: 4 bits are left after two characters.
+          padding++;
+        } else {
+          throw invalid();
+        }
+        continue;
+      }
+      const blank = byte === 0x20 || byte === 0x0a || byte === 0x0d || byte === 0x09;
+      switch (state) {
+        case "open":
+          if (byte === 0x7b) state = "member";
+          else if (!blank) throw invalid();
+          break;
+        case "member":
+          if (byte === 0x22) {
+            state = "key";
+            matched = 0;
+          } else if (byte === 0x7d) state = "end";
+          else if (!blank) throw invalid();
+          break;
+        case "key":
+        case "string":
+          if (escaped) escaped = false;
+          else if (byte === 0x5c) {
+            escaped = true;
+            matched = -1;
+          } else if (byte === 0x22) state = state === "key" ? "colon" : "after";
+          else if (state === "key") {
+            matched = matched >= 0 && byte === "data".charCodeAt(matched) ? matched + 1 : -1;
+          }
+          break;
+        case "colon":
+          if (byte === 0x3a) state = "value";
+          else if (!blank) throw invalid();
+          break;
+        case "value":
+          if (blank) break;
+          if (matched === 4) {
+            if (byte !== 0x22 || found) throw invalid();
+            found = true;
+            state = "data";
+          } else if (byte === 0x22) state = "string";
+          else if (JSON_SCALAR_RE.test(String.fromCharCode(byte))) state = "scalar";
+          else throw invalid();
+          break;
+        case "scalar":
+        case "after":
+          if (state === "scalar" && JSON_SCALAR_RE.test(String.fromCharCode(byte))) break;
+          if (byte === 0x2c) state = "member";
+          else if (byte === 0x7d) state = "end";
+          else if (blank) state = "after";
+          else throw invalid();
+          break;
+        case "end":
+          if (!blank) throw invalid();
+      }
+    }
+    total += length;
+    if (total > size) throw mismatch();
+    return bytes.subarray(0, length);
+  };
+  let cancelled = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        while (true) {
+          const chunk = await reader.read();
+          // Cancelling ends a read in progress the way the answer's own end does.
+          if (cancelled) return;
+          if (chunk.done) {
+            if (state !== "end") throw invalid();
+            if (!found) throw new Error("Attachment content is no longer available.");
+            controller.close();
+            return;
+          }
+          const bytes = decode(chunk.value);
+          if (bytes.byteLength > 0) {
+            controller.enqueue(bytes);
+            return;
+          }
+        }
+      } catch (error) {
+        // An answer that broke or was refused is let go, and the stream errors with the same.
+        reader.cancel(error).catch(() => {});
+        throw error;
+      }
+    },
+    cancel: reason => {
+      cancelled = true;
+      return reader.cancel(reason);
+    },
+  }, {highWaterMark: 0});
 }
 
 class UnsafeMimeReconstructionError extends Error {}
@@ -2593,6 +2775,54 @@ export class GmailApi {
       throw new Error("Attachment content no longer matches the authorized snapshot.");
     }
     return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  }
+
+  /**
+   * The attachment's bytes as a stream, read from Gmail as it is read: this resolves once Gmail
+   * has begun its answer, with nothing of the body read, and cancelling the stream stops the
+   * download. Unlike {@link getAttachmentContent} it has no size limit and does not look at
+   * `info.readable`; the bytes must still number `info.size`, or the stream errors.
+   *
+   * Only the wait for the answer to begin is timed. Its body is read at the caller's pace, for as
+   * long as an attachment of any size takes, so the caller times a body that stalls.
+   */
+  async openAttachmentContent(snapshot: GmailAttachmentSnapshot): Promise<ReadableStream<Uint8Array>> {
+    if (snapshot.attachmentId) {
+      validateGmailId(snapshot.messageId, "message ID");
+      validateGmailId(snapshot.attachmentId, "attachment ID");
+      const begin = new AbortController();
+      const timer = setTimeout(
+        () => begin.abort(new DOMException("Gmail did not answer in time.", "TimeoutError")),
+        GMAIL_ATTACHMENT_OPEN_TIMEOUT_MS);
+      let response: Response;
+      try {
+        response = await this.authedFetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${snapshot.messageId}/attachments/${snapshot.attachmentId}?fields=data`,
+          {signal: begin.signal});
+      } finally {
+        clearTimeout(timer);
+      }
+      if (!response.ok) await gmailApiFailure("attachments.get", response);
+      return gmailAttachmentBytes(
+        response.body ?? new ReadableStream({start: controller => controller.close()}),
+        snapshot.info.size);
+    }
+    const encoded = snapshot.inlineData;
+    if (encoded === undefined) throw new Error("Attachment content is no longer available.");
+    if (base64UrlDecodedByteLength(encoded) !== snapshot.info.size) {
+      throw new Error("Attachment content no longer matches the authorized snapshot.");
+    }
+    let offset = 0;
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset < encoded.length) {
+          controller.enqueue(decodeBase64UrlToBytes(
+            encoded.slice(offset, offset + GMAIL_INLINE_ATTACHMENT_STEP_CHARS)));
+          offset += GMAIL_INLINE_ATTACHMENT_STEP_CHARS;
+        }
+        if (offset >= encoded.length) controller.close();
+      },
+    }, {highWaterMark: 0});
   }
 
   /** Decode body alternatives, fetching detached text parts within the attachment safety limit. */

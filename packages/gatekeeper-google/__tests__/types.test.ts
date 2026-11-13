@@ -665,6 +665,42 @@ const unsaid: DrivePdfText = { text: new ReadableStream(), hasText: true };
     expect(driveTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
   });
 
+  it("streams a PDF's text from a Gmail attachment, a draft's too, and takes no argument", () => {
+    const types = source("types.txt");
+    expect(types).toContain("export type GmailPdfText = {");
+    expect(compileAgentTypes(types + `
+declare const attachment: GmailAttachment;
+declare const draftAttachment: GmailDraftAttachment;
+async function read(): Promise<string> {
+  const { text, hasText } = await attachment.readPdf();
+  const flag: boolean = hasText;
+  const reader = (await draftAttachment.readPdf()).text.getReader();
+  const first: Uint8Array | undefined = (await reader.read()).value;
+  await reader.cancel();
+  const scan = await attachment.readPdf();
+  const read: boolean = scan.transcribed && !scan.hasText;
+  return new Response(text).text();
+}
+// @ts-expect-error Pages without text are read without being asked for: there is no option.
+void attachment.readPdf({ ocr: true });
+// @ts-expect-error The text is a stream, not a string.
+const whole: GmailPdfText = { text: "", hasText: true, transcribed: false };
+// @ts-expect-error Nothing is cut, so there is no truncation flag.
+const cut: GmailPdfText = { text: new ReadableStream(), hasText: true, transcribed: false, truncated: false };
+// @ts-expect-error Whether the text was transcribed is always said.
+const unsaid: GmailPdfText = { text: new ReadableStream(), hasText: true };
+`).filter(message => !message.includes("'cloudflare:workers'"))).toEqual([]);
+  });
+
+  it("quotes the notes a PDF attachment's text can carry as they are given, and the size a PDF is drawn to", () => {
+    // The comments are wrapped, so a note they quote may run over two of their lines.
+    const gmailTypes = source("types.d.ts").replace(/\n\s*\* ?/g, " ");
+    const given = quotedNotes(source("drive-pdf.ts"));
+    expect(given).not.toEqual([]);
+    expect(quotedNotes(gmailTypes)).toEqual(given);
+    expect(gmailTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
+  });
+
   it("streams a file's bytes from both Drive sessions, whole or by range", () => {
     for (const [bundle, account, folder] of [
       [driveReadBundle, "GoogleDriveReadSession", "GoogleDriveFolderReadSession"],

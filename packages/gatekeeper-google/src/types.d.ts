@@ -235,6 +235,55 @@ export type GmailAttachmentInfo = {
   readable: boolean;
 }
 
+/** A Gmail PDF attachment's text, streamed. */
+export type GmailPdfText = {
+  /**
+   * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
+   * headings, and pages before the first with text left out, unless pages without text are read
+   * into it (see `GmailAttachment.readPdf()`). Read it with `await new Response(text).text()`,
+   * or a reader to stop early; cancel it if unread. Empty when `hasText` is false and
+   * `transcribed` is too. A failure partway through errors the stream.
+   *
+   * A page without text of its own is read by a vision model (every page of a scan, and such
+   * pages of a PDF that has text), and only as you read the text, one page ahead of you at
+   * most: the first may be begun as soon as the text is returned. The model's calls are billed:
+   * up to four for a page that is drawn, more when a part of it is asked for again, and one for
+   * a page read as the file stores it. So stop reading, and cancel, to stop paying for pages you
+   * do not need. Read the text straight away and without long pauses: one whose reading may
+   * read the attachment again is ended with an error after a minute with nothing moving,
+   * because it was left unread or the model stopped answering. It also errors when the
+   * attachment cannot be read again as `readPdf()` read it, as it is read from Gmail again
+   * while the text is, which a draft's attachment cannot be once its draft has changed; when
+   * the model fails on a page of a scanned PDF; and when a scanned PDF's pages have to be drawn
+   * and cannot be: at all, as for a file that does not open or has more than 2,000 pages, or
+   * just now. A text that errors did not give the whole PDF, whatever its error says: read the
+   * PDF again, a minute later when it had given nothing.
+   *
+   * Each line quoted here is a note on its page, not the document's text. A page the model
+   * read may end with "[The transcription of this page was cut off.]" or "[This page was read
+   * from a drawing at half the usual resolution, which is what its size allowed, so its text may
+   * be less exact.]". A page of a scanned PDF may have for its text "[This page could not be
+   * drawn within the memory and work a page is allowed, so it was not read.]" or "[This page
+   * came out blank: it has nothing on it, or its image could not be read.]"; a page with nothing
+   * on it has its heading alone. In a PDF with text of its own, what the model read of a page
+   * comes under "[This page has no text of its own: what follows was read from its image by a
+   * vision model, which can misread.]", and "[Pages of this PDF that have no text of their own
+   * could not be read just now.]" stands for the first page that could not be read: neither it
+   * nor the pages without text after it were, and the rest of the text is whole.
+   */
+  text: ReadableStream<Uint8Array>;
+  /** False for a scanned or image-only PDF, which has no text layer. */
+  hasText: boolean;
+  /**
+   * True when `text` is a vision model's reading of the page images of a PDF with no text of its
+   * own. It is not the document's own text: the model can misread, most often small print and
+   * the codes, numbers and names in it, so check anything that matters against the attachment.
+   * False for a PDF that has text, also when the model read the pages of it that have none: the
+   * text says which.
+   */
+  transcribed: boolean;
+};
+
 // ── Capability interfaces ───────────────────────────────────────────
 // These are RPC stubs — all methods are async. Capabilities can be
 // passed across Worker boundaries and retain their access rights.
@@ -674,6 +723,57 @@ export interface GmailAttachment {
    * part exceeds the 10 MiB safe-read limit.
    */
   getContent(): Promise<ArrayBuffer>;
+
+  /**
+   * Read this part's text when it is a PDF, converted to Markdown and streamed. Fails for a
+   * part whose MIME type is not `application/pdf` and whose filename does not end in ".pdf".
+   * Unlike `getContent()` it is not held to the 10 MiB limit and does not go by
+   * `GmailAttachmentInfo.readable`, with one exception: a part over 10 MiB that a forward made
+   * here copied from the message it forwards fails on the forward, while it is waiting to be
+   * sent or is a draft. Read it from the forwarded message instead. Reading `text` may read the
+   * attachment from Gmail again, whole or from its start as far as its page images go, and
+   * each such read is reported as the first is.
+   *
+   * A scanned PDF has no text of its own, so a vision model transcribes its pages as `text` is
+   * read: `hasText` is false and `transcribed` true (see `GmailPdfText.transcribed`). Where the
+   * deployment has turned that off, a scanned PDF comes back with both false and an empty
+   * `text`, and a PDF that has text as that text alone. An encrypted PDF fails.
+   *
+   * A PDF without text of up to 16 MiB has its pages drawn, so it is read however its images
+   * are stored: as fax, JBIG2 or JPEG 2000, with a palette or in CMYK, in layers, tiles or
+   * strips, or turned, and so is writing that is drawn as shapes and not kept as text.
+   * Each page is drawn in grey, at 150 dpi or fewer for a large one, and cut across where the
+   * least is written into up to four bands. Each band with anything on it is one model call,
+   * and up to two more when that call failed or its answer was cut off, kept repeating itself
+   * or is short for what the band holds. The bands' texts follow one another under the page's
+   * heading, so a table or a paragraph that a cut falls in comes back in two parts. Pages are
+   * numbered as the document orders them.
+   *
+   * A larger scan is read as the file stores it, and so is a smaller one whose pages cannot be
+   * drawn when `text` is first read, where it can be. Every image at least 200 pixels on each
+   * side that is not a mask is read as one page, in one model call, numbered in the order the
+   * file stores them, which is page order for a scanner's output; a page stored as several
+   * images comes back as several pages, less any piece smaller than that. Pages stored as JPEG
+   * are read so, and losslessly compressed (Flate) ones in plain grey or RGB. A larger PDF that
+   * holds no image comes back empty with `transcribed` false. For a larger scan `readPdf()`
+   * fails, before transcribing anything, for a page, or a mask the size of one
+   * (where a scan stored in layers keeps its text), stored as fax or JBIG2; for a page stored
+   * as JPEG 2000 or as any other kind of image, such as one with a palette or in CMYK; for a
+   * page image that is over 12 MiB as stored, that would have to be uncompressed to over 128
+   * MiB, or that is not where the file says it is; for more than 2,000 page images; for
+   * images that are all too small to be pages, or masks; and when an edit to the file replaced
+   * an image that had a mask.
+   *
+   * A PDF that has text is returned as that text. One of up to 16 MiB also has each page
+   * without text drawn as `text` is read up to it, and a page that shows anything read by the
+   * model as a scan's page is, into the text under its heading (see `GmailPdfText.text`).
+   * `hasText` is still true and `transcribed` false, the text keeps every page's heading from
+   * the first, and a page that cannot be read does not fail it.
+   *
+   * Where pages cannot be drawn at all, every scan is read as a larger one is, and a PDF that
+   * has text is returned as that text alone.
+   */
+  readPdf(): Promise<GmailPdfText>;
 }
 
 // ── Gmail labels ────────────────────────────────────────────────────

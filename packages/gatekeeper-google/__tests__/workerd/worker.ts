@@ -20,9 +20,9 @@ import type {
 } from "@gadgets/workshop-shared/gatekeeper";
 import {TestGitCache} from "../test-git-cache";
 import type {
-  GmailAttachmentInput, GmailComposeOptions, GmailDraftAttachment, GmailDraftAttachmentEntry,
+  GmailAttachmentEntry, GmailAttachmentInput, GmailComposeOptions, GmailDraftAttachment, GmailDraftAttachmentEntry,
   GmailDraftInput, GmailDraftPatch, GmailMessage, GmailMessageEntry,
-  GmailMessageInfo, GmailReplyOptions, GmailScopedSession, GmailSession, GmailThread,
+  GmailMessageInfo, GmailPdfText, GmailReplyOptions, GmailScopedSession, GmailSession, GmailThread,
 } from "../../src/types";
 import type { GoogleCalendarSession } from "../../src/calendar-types";
 import type {
@@ -132,6 +132,20 @@ function disposeRpc(value: unknown): void {
   (value as { [Symbol.dispose]?: () => void })[Symbol.dispose]?.();
 }
 
+/**
+ * The PDF text of the `index`th of `entries`, unread. Every capability among them is disposed
+ * as this returns, so what the text reads later it reads on its own hold of the approval queue.
+ */
+async function readPdfOf(entries: GmailAttachmentEntry[], index: number): Promise<GmailPdfText> {
+  try {
+    const entry = entries[index];
+    if (!entry) throw new Error("No such attachment index.");
+    return await entry.attachment.readPdf();
+  } finally {
+    for (const entry of entries) disposeRpc(entry.attachment);
+  }
+}
+
 class TestApprovalQueue extends RpcTarget {
   #submissions: Array<{actionId: number; description: unknown}> = [];
   #observations: unknown[] = [];
@@ -148,6 +162,8 @@ class TestApprovalQueue extends RpcTarget {
 
   #failTitle?: string;
   #activeObservers = new Set<string>();
+  /** How often a stub of this queue, with every copy made of it, has been let go. */
+  #disposals = 0;
 
   constructor(rejection?: string) {
     super();
@@ -197,7 +213,10 @@ class TestApprovalQueue extends RpcTarget {
   }
 
   read() {
-    return {submissions: [...this.#submissions], observations: [...this.#observations]};
+    return {
+      submissions: [...this.#submissions], observations: [...this.#observations],
+      disposals: this.#disposals,
+    };
   }
 
   async bindHook(_controller: unknown): Promise<void> {
@@ -245,7 +264,9 @@ class TestApprovalQueue extends RpcTarget {
     this.#releasePausedSubmission();
   }
 
-  [Symbol.dispose](): void {}
+  [Symbol.dispose](): void {
+    this.#disposals++;
+  }
 
   // The session never ends in this test.
   async requireLive(): Promise<void> {}
@@ -330,6 +351,27 @@ class GmailRecordingHook extends RpcTarget {
   }
 }
 
+/** A gadget's Gmail hook that reads the first attachment of the message it is given as a PDF. */
+class GmailPdfReadingHook extends RpcTarget {
+  constructor(private readonly read: { text?: string }) {
+    super();
+  }
+
+  async receiveMessage(entry: GmailMessageEntry): Promise<void> {
+    try {
+      const entries = await entry.message.attachments();
+      try {
+        const pdf = await entries[0]!.attachment.readPdf();
+        this.read.text = await new Response(pdf.text).text();
+      } finally {
+        for (const each of entries) disposeRpc(each.attachment);
+      }
+    } finally {
+      disposeRpc(entry.message);
+    }
+  }
+}
+
 type ChatFacet = { facetName: string; id: string; props: GoogleChatGatekeeperImplProps };
 type TestHookDeliveryProps = { hooks: string; facet: ChatFacet; params: ChatHookParams };
 type GmailFacet = { facetName: string; id: string; props: GmailGatekeeperImplProps };
@@ -349,20 +391,25 @@ function testHooks(exports: Cloudflare.Exports, id: string) {
 }
 
 /**
- * Stands for the Workers AI binding, which answers a `fetch`: it finds no text in any PDF it is
- * asked to convert, and reads the same two words on every image.
+ * Stands for the Workers AI binding, which answers a `fetch`: it reads the same two words on
+ * every image, and finds no text in a PDF it is asked to convert unless the PDF says what it
+ * converts to, in an object `<< /FakeAiMarkdown <…> >>` that holds the Markdown's characters in
+ * hexadecimal.
  */
 export class FakeAi extends WorkerEntrypoint<Cloudflare.Env> {
   async fetch(request: Request): Promise<Response> {
     // The request is read whole before it is answered, as the service reads it.
-    await request.arrayBuffer();
     if (request.url.includes("/markdown/")) {
+      const { files } = await request.json<{ files: { data: string }[] }>();
+      const said = /\/FakeAiMarkdown <([0-9a-f]*)>/.exec(atob(files[0]!.data))?.[1];
       return Response.json({
         result: [{ id: "conversion-1", name: "file.pdf", mimeType: "application/pdf", format: "markdown",
-          tokens: 9, data: "# file.pdf\n## Contents\n### Page 1\n\n\n" }],
+          tokens: 9, data: said?.replace(/../g, code => String.fromCharCode(parseInt(code, 16)))
+            ?? "# file.pdf\n## Contents\n### Page 1\n\n\n" }],
         success: true,
       });
     }
+    await request.arrayBuffer();
     return new Response('data: {"response":"Harbour Ledger"}\n\ndata: [DONE]\n\n',
       { headers: { "Content-Type": "text/event-stream" } });
   }
@@ -494,6 +541,7 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
   async readQueue(queueId: string): Promise<{
     submissions: Array<{actionId: number; description: unknown}>;
     observations: unknown[];
+    disposals: number;
   }> {
     const queue = this.#queues.get(queueId);
     if (!queue) throw new Error(`Unknown test approval queue: ${queueId}`);
@@ -925,6 +973,18 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
       .testGmailDeliver(params, callback, approvalQueue, messageId);
   }
 
+  /**
+   * Delivers `messageId` as a hook's firing does, to a hook that reads the message's first
+   * attachment as a PDF, and returns the text it read.
+   */
+  async gmailDeliverPdf(facet: GmailFacet, messageId: string): Promise<string | undefined> {
+    const read: { text?: string } = {};
+    using callback = new RpcStub(new GmailPdfReadingHook(read));
+    using approvalQueue = new RpcStub(this.#hookQueue);
+    await this.gmailDeliver(facet, {}, callback, approvalQueue, messageId);
+    return read.text;
+  }
+
   async chatDeliver(
       { facetName, id, props }: ChatFacet, params: ChatHookParams,
       callback: RpcStub<RpcTarget>, approvalQueue: RpcStub<RpcTarget>, message: ChatMessageRaw,
@@ -1237,6 +1297,18 @@ testGmailPrototype.runTestOperation = async function(
         for (const entry of entries) disposeRpc(entry.attachment);
       }
     });
+  case "message.readPdf":
+    return await withMessage(session, id as string, async message =>
+      readPdfOf(await message.attachments(), value as number));
+  case "message.cancelPdf":
+    // Cancelled here, and not by the test: the cancel of a stream sent over RPC does not reach
+    // the text while a piece of it is being waited for.
+    return await withMessage(session, id as string, async message => {
+      const reader = (await readPdfOf(await message.attachments(), value as number)).text.getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      await reader.cancel();
+      return first;
+    });
   case "message.readAcrossDecision":
     // One message capability, read before and after the action that sends it is decided.
     return await withMessage(session, id as string, async message => {
@@ -1481,6 +1553,35 @@ testGmailPrototype.runTestOperation = async function(
       }
     } finally {
       if (added) disposeRpc(added);
+      for (const entry of entries) disposeRpc(entry.attachment);
+      disposeRpc(draft);
+    }
+  }
+  case "draft.readPdf": {
+    const draft = await session.getDraft(id as string);
+    try {
+      return await readPdfOf(await draft.attachments(), value as number);
+    } finally {
+      disposeRpc(draft);
+    }
+  }
+  case "draft.readPdfAcrossRemoval": {
+    // A draft's attachment is removed from it before its PDF text is asked for, or, with `extra`,
+    // between asking for the text and reading it. The answer is what reading it failed with.
+    const draft = await session.getDraft(id as string);
+    let entries: GmailDraftAttachmentEntry[] = [];
+    try {
+      entries = await draft.attachments();
+      const attachment = entries[value as number]?.attachment;
+      if (!attachment) throw new Error("No such draft attachment index.");
+      const asked = extra ? await attachment.readPdf() : undefined;
+      await attachment.remove();
+      try {
+        return await new Response((asked ?? await attachment.readPdf()).text).text();
+      } catch (error) {
+        return {error: error instanceof Error ? error.message : String(error)};
+      }
+    } finally {
       for (const entry of entries) disposeRpc(entry.attachment);
       disposeRpc(draft);
     }
