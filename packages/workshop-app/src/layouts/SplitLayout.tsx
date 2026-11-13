@@ -12,9 +12,9 @@ export type SplitLayoutProps = {
   /** What is open beside the page, if anything. */
   aside?: ReactNode
   /**
-   * Said over the page, at the top of the window, without moving it: e.g. that the app is
-   * reconnecting. Centred over the page's card, or over the room while the aside is the page, and
-   * over the window while the aside fills it.
+   * Said over the content, at the top of the window, without moving it: e.g. that the app is
+   * reconnecting. Centred over all of the layout, the page and the aside together, and over the
+   * window while the aside fills it.
    */
   status?: ReactNode
   /**
@@ -220,23 +220,6 @@ export const SplitLayout = ({
     reopensAt.current = undefined
   }
 
-  // How wide what is said over the page is centred in: the page's card, going over to the whole
-  // room as the aside takes the page's place.
-  const statusWidth = useMotionValue<number | string>('100%')
-  const placeStatus = useEffectEvent(() => {
-    if (!page.current || !root.current) return
-    const card = page.current.offsetWidth
-    statusWidth.set(card + (root.current.offsetWidth - card) * alone.get())
-  })
-  useLayoutEffect(() => {
-    placeStatus()
-    const observer = new ResizeObserver(() => placeStatus())
-    observer.observe(page.current!)
-    observer.observe(root.current!)
-    return () => observer.disconnect()
-  }, [])
-  useMotionValueEvent(alone, 'change', () => placeStatus())
-
   const hinting = useEdgeHint(shown, asideAlone)
 
   /** The room the two cards have between them, and the aside's limits within it. */
@@ -384,18 +367,12 @@ export const SplitLayout = ({
       <AnimatePresence initial={false}>
         {shown ? <AsideCard key="aside" share={share} open={open} alone={alone} isPage={asideAlone} dim={dim} fullScreen={asideFullScreen} onGone={reopened}>{aside}</AsideCard> : null}
       </AnimatePresence>
-      {/* Over the page from where the layout starts, at the window's `top-4`; over the window when
-          the aside fills it. The same element either way, so that what is in it carries on. */}
+      {/* Over the whole layout, at the window's `top-4`; over the window when the aside fills it.
+          The same element either way, so that what is in it carries on. */}
       {status && (
-        <motion.div
-          style={asideFullScreen ? undefined : { width: statusWidth }}
-          className={cn(
-            'pointer-events-none z-50 flex justify-center',
-            asideFullScreen ? 'fixed inset-x-0 top-4' : 'absolute top-2 left-0',
-          )}
-        >
+        <div className={cn('pointer-events-none inset-x-0 z-50 flex justify-center', asideFullScreen ? 'fixed top-4' : 'absolute top-2')}>
           {status}
-        </motion.div>
+        </div>
       )}
     </div>
   )
