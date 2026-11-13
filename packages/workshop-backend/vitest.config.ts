@@ -108,6 +108,8 @@ export default defineConfig({
           TEST_ADMIN_SETTINGS: { className: 'AdminSettings', useSQLite: true },
           // AdminSettings also reaches it through `ctx.exports`.
           TEST_ADMIN_AUDIT: { className: 'AdminAuditDurableObject', useSQLite: true },
+          // The binding also puts the class in `ctx.exports`, as it does for the classes above.
+          TEST_WORKSPACE_ERROR_LOG: { className: 'WorkspaceErrorLogDurableObject', useSQLite: true },
           TEST_GATEKEEPER_USER_PICKER: { className: 'GatekeeperUserPickerTestHooks', useSQLite: true },
         },
       },

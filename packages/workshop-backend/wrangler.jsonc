@@ -82,6 +82,12 @@
       "new_sqlite_classes": [
         "AdminAuditDurableObject"
       ]
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": [
+        "WorkspaceErrorLogDurableObject"
+      ]
     }
   ]
 }
