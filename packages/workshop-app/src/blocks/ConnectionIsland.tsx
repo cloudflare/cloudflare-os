@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
 import { animate, AnimatePresence, motion, useMotionValue, usePresence, useReducedMotion, type MotionStyle, type PanInfo } from 'motion/react'
 import { Mascot, type MascotEmotion } from '@/components/mascot/Mascot'
+import { springCurve } from '@/components/springCurve'
 import './ConnectionIsland.css'
 
 export type ConnectionIslandState =
@@ -34,22 +35,22 @@ const SHAKE_FOR = 1800
 /** How far up, in pixels, or how fast, in pixels a second, a swipe has to go to put it away. */
 const SWIPE = { distance: 24, velocity: 300 }
 
-// The menus' timings (DropdownMenu.css, at their usual 360ms): the opening spring, overshooting a
-// little and settling, sampled as the CSS `linear()` it is there; and closing into a point, which
-// has nothing to recoil past.
-const OPEN_CURVE: Array<[at: number, value: number]> = [[0, 0], [0.08, 0.18], [0.18, 0.53], [0.3, 0.79], [0.43, 0.94], [0.6, 1.018], [0.74, 1.012], [1, 1]]
-const openEase = (t: number) => {
-  const next = OPEN_CURVE.findIndex(([at]) => at >= t)
-  if (next <= 0) return next === 0 ? 0 : 1
-  const [fromAt, from] = OPEN_CURVE[next - 1]
-  const [toAt, to] = OPEN_CURVE[next]
-  return from + ((to - from) * (t - fromAt)) / (toAt - fromAt)
-}
-const OPEN = { duration: 0.36, ease: openEase }
+/**
+ * How far, in pixels, it carries on down past its place as it arrives before settling back, and
+ * the most it stretches past its size meanwhile, at each side.
+ */
+const RECOIL = { down: 6, stretch: 2 }
+// The menus' spring (`useMenuMorph`), peaking at the same point of its time: it reaches its place
+// about when the menus' fixed curve does, and has the rest of its time to settle. Closing into a
+// point has nothing to recoil past.
+const OPEN = { duration: 0.5, peak: 0.45 }
 const CLOSE = { duration: 0.31, ease: [0.4, 0, 0.2, 1] } as const
-// Arriving, it carries on down past its place with the speed it came, and springs back up: kicked
-// down as the opening reaches its place, it sinks some 6px and settles, rising a little past.
-const SINK = { type: 'spring', delay: 0.15, velocity: 170, stiffness: 300, damping: 14 } as const
+/**
+ * How fast, in pixels per unit of the clock, its middle comes down as it reaches its place: the
+ * slope of `--island-offset-y` in ConnectionIsland.css at 1, which sets how deep the opening spring
+ * goes. Keep the two in step.
+ */
+const ARRIVAL_SPEED = (HEIGHT + ORIGIN_ABOVE * 2) / 2 + ORIGIN_ABOVE
 /** Swiped away, it carries on up at least this fast, in pixels a second, out of the window. */
 const FLING = 900
 // Pulled any way but up, it gives this much of the way, and springs back.
@@ -75,19 +76,17 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
   const reduced = useReducedMotion()
   const [present, safeToRemove] = usePresence()
   const emotion = useEmotion(state)
-  // The clock `ConnectionIsland.css` moves everything by, 0 closed and 1 open, and how far below
-  // its place it has sunk.
+  // The clock `ConnectionIsland.css` moves everything by: 0 closed, 1 open.
   const open = useMotionValue(reduced ? 1 : 0)
-  const sink = useMotionValue(0)
   // Dragged, and swiped away: then it goes the way it was flung, not back into the edge.
   const y = useMotionValue(0)
   const flung = useRef<Promise<unknown>>(undefined)
 
   useLayoutEffect(() => {
     if (reduced) return
-    const opening = [animate(open, 1, OPEN), animate(sink, 0, SINK)]
-    return () => opening.forEach((animation) => animation.stop())
-  }, [open, sink, reduced])
+    const opening = animate(open, 1, { duration: OPEN.duration, ease: springCurve(RECOIL.down / ARRIVAL_SPEED, OPEN.peak) })
+    return () => opening.stop()
+  }, [open, reduced])
 
   // Gone, it closes back into the edge before it is removed, unless it was swiped away.
   useEffect(() => {
@@ -126,6 +125,8 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
 
   const geometry = {
     '--island-from-x': `${target / 2}px`,
+    // Past full size each side moves `from-x` per unit of the clock.
+    '--island-stretch': RECOIL.stretch / Math.max(target / 2, 1),
     '--island-from-top': `${-ORIGIN_ABOVE}px`,
     '--island-from-bottom': `${HEIGHT + ORIGIN_ABOVE}px`,
     // The contents grow out of the mascot's middle.
@@ -159,7 +160,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
       onKeyDown={(event) => {
         if (event.key === 'Escape') onDismiss()
       }}
-      style={{ width, y, '--island-open': open, '--island-sink': sink, ...geometry } as MotionStyle}
+      style={{ width, y, '--island-open': open, ...geometry } as MotionStyle}
       className="connection-island group pointer-events-auto relative isolate h-11 cursor-grab touch-none outline-none select-none active:cursor-grabbing"
     >
       <div aria-hidden="true" className="connection-island-surface pointer-events-none absolute -z-10 bg-kumo-contrast group-focus-visible:ring-2 group-focus-visible:ring-kumo-focus">

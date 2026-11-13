@@ -2,9 +2,15 @@
    rather than a button: one clock, --island-open, which ConnectionIsland animates from 0 to 1 and
    back, moves its four edges along a curve out of that point, and the contents with them. The
    formulas are the menu's for one that opens below what it comes out of; keep the two in step.
-   --island-from-x, -top and -bottom place the point, inset from the island's own box. */
+   --island-from-x, -top and -bottom place the point, inset from the island's own box.
+   The clock is a spring that carries on past 1 and settles back, as the menu's closing one carries
+   on past its trigger. Position follows it unclamped, so the island carries on down its curve past
+   its place and comes back. Size follows it too, but past full size it eases into a stretch of a
+   few pixels (--island-stretch, measured per wording) instead of growing on; both move at the same
+   speed as they reach full size, so the motion stays continuous. */
 .connection-island {
-  --island-size: var(--island-open, 1);
+  --island-over: max(0, var(--island-open, 1) - 1);
+  --island-size: calc(min(1, var(--island-open, 1)) + var(--island-over) / (1 + var(--island-over) / var(--island-stretch, 0.03)));
   --island-ahead: max(0, var(--island-open, 1));
   --island-closed: calc(1 - var(--island-size));
   --island-shift: calc(1 - var(--island-open, 1));
@@ -12,9 +18,8 @@
   --island-bend: calc(var(--island-open, 1) * (1 - var(--island-ahead)));
   --island-span-y: calc(var(--island-from-top, 0px) + var(--island-from-bottom, 0px));
   --island-offset-y: calc(var(--island-shift) * (var(--island-from-top, 0px) - var(--island-from-bottom, 0px)) / 2 + var(--island-from-top, 0px) * var(--island-bend));
-  /* Arriving, it carries on down past its place by --island-sink pixels, and springs back up. */
-  --island-top: calc(var(--island-closed) * var(--island-span-y) / 2 + var(--island-offset-y) + var(--island-sink, 0) * 1px);
-  --island-bottom: calc(var(--island-closed) * var(--island-span-y) / 2 - var(--island-offset-y) - var(--island-sink, 0) * 1px);
+  --island-top: calc(var(--island-closed) * var(--island-span-y) / 2 + var(--island-offset-y));
+  --island-bottom: calc(var(--island-closed) * var(--island-span-y) / 2 - var(--island-offset-y));
   /* The point is in the middle, so both sides move alike. */
   --island-side: calc(var(--island-closed) * var(--island-from-x, 0px));
   /* Its corners keep their full radius at every size, rounding it off completely while small. */
