@@ -94,6 +94,22 @@ describe("readPptxSlides", () => {
       expect(paragraph.runs[1]).toMatchObject({ text: "Own", size: 20, font: "Arial", bold: false, italic: true });
     });
 
+    it("applies a paragraph's own default run properties, under each run's", async () => {
+      // PowerPoint draws such a paragraph with these defaults (checked against Microsoft 365).
+      const [box] = await shapesOf({
+        slides: [{
+          shapes: drawnShape({
+            properties: transform(0, 0, 3_000_000, 1_000_000),
+            body: `<a:p><a:pPr><a:defRPr sz="4000" b="1">${solid("FF0000")}</a:defRPr></a:pPr>` +
+              '<a:r><a:t>Default</a:t></a:r><a:r><a:rPr sz="1200"/><a:t>Own</a:t></a:r></a:p>',
+          }),
+        }],
+      });
+      const [first, second] = drawn(box).text!.paragraphs[0]!.runs;
+      expect(first).toMatchObject({ text: "Default", size: 40, bold: true, color: { hex: "FF0000", alpha: 1 } });
+      expect(second).toMatchObject({ text: "Own", size: 12, bold: true });
+    });
+
     it("gives body paragraphs their level's bullet, indent and spacing", async () => {
       const [body] = await shapesOf({
         masterShapes: drawnShape({ placeholder: '<p:ph type="body" idx="1"/>', properties: transform(INCH, 2 * INCH, 8 * INCH, 4 * INCH), body: "" }),

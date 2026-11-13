@@ -247,7 +247,8 @@ export function readParagraphs(body: XmlElement, styles: readonly ListStyle[], c
     const level = Math.min(LEVELS - 1, Math.max(0, integer(attribute(properties, "lvl")) ?? 0));
     let props: LevelProps = { run: {} };
     for (const style of styles) props = mergeLevel(props, style[level]);
-    if (properties) props = mergeLevel(props, { ...readLevelProps(properties, context), run: {} });
+    // Its `a:defRPr` included: PowerPoint applies a paragraph's own default run properties.
+    if (properties) props = mergeLevel(props, readLevelProps(properties, context));
 
     const runs: SlideRun[] = [];
     for (const child of childElements(paragraph)) {

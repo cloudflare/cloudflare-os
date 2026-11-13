@@ -139,8 +139,10 @@ export async function readWorkbookSheets(bytes: Uint8Array, limits: SheetLimits)
     // A chart sheet or a macro sheet has no cells.
     if (!part || !zip.has(part) || !/worksheets\//i.test(part)) continue;
     const name = attribute(sheet, "name") ?? "";
-    let model = read.get(part);
-    if (!model) read.set(part, model = await readSheet(name, part, context));
+    // Part names are matched without regard to case, so the same part can be spelled many ways.
+    const key = part.toLowerCase();
+    let model = read.get(key);
+    if (!model) read.set(key, model = await readSheet(name, part, context));
     sheets.push(model.name === name ? model : { ...model, name });
   }
   return { sheets, styles: styles.styles };
