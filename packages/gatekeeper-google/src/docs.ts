@@ -6,8 +6,7 @@
 import { DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
-  GatekeeperUserVerifier, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription,
-  ActionKind, GitCache,
+  GatekeeperUserVerifier, Gatekeeper, ResourceDescription, ApprovalQueue, ActionKind, GitCache,
 } from '@gadgets/workshop-shared/gatekeeper';
 import {
   ActionApplyError, ActionJournal, type ActionDefinition, type ActionPresentation,
@@ -632,8 +631,11 @@ export function googleDocActionTab(
  * replayed as pending, though the tab it made is in the snapshot too: its reply may yet arrive,
  * to an approval still running, and only applyAction() can tell it was lost.
  */
+/** Records that edit `record` can no longer be replayed, for `reason`. */
+type GoogleDocInvalidator = (record: GoogleDocPendingAction, reason: string) => void;
+
 function invalidateUnreplayableGoogleDocActions(
-  pendingActions: PendingActionStore<GoogleDocAction>,
+  invalidate: GoogleDocInvalidator,
   snapshot: GoogleDocSnapshot,
   pending: GoogleDocPendingAction[],
   context: string,
@@ -661,8 +663,7 @@ function invalidateUnreplayableGoogleDocActions(
         applyGoogleDocActionToContent(contentByTabId.get(tabId)!, action, tabId),
       );
     } catch (error) {
-      invalidateGoogleDocAction(
-        pendingActions,
+      invalidate(
         record,
         `${context}: ${errorMessage(error)} This edit was dropped from the document. ` +
         `Reject it and retry if it is still needed.`,
@@ -1156,17 +1157,41 @@ export class GoogleDocGatekeeperImpl
       undecided: read => this.#reads.read(() => read(this.#commentJournal.listUndecided())),
     };
     // A blank document always has a revision, so the session never reaches Drive for one.
-    return new GoogleDocSessionImpl(
-        isSimulated(props)
-          ? new BlankGoogleDoc(props.creation.title)
-          : new GoogleDocsApi(opts => this.#getAccessToken(opts)),
-        new DriveApi(opts => this.#getAccessToken(opts)),
-        isSimulated(props) ? UNCREATED_FILE_ID : props.documentId,
-        approvalQueue.dup(),
-        pendingActions,
-        this.ctx.storage,
-        this.#simulationCache,
-        comments);
+    let docsApi = isSimulated(props)
+      ? new BlankGoogleDoc(props.creation.title)
+      : new GoogleDocsApi(opts => this.#getAccessToken(opts));
+    let driveApi = new DriveApi(opts => this.#getAccessToken(opts));
+    let documentId = isSimulated(props) ? UNCREATED_FILE_ID : props.documentId;
+    let queue = approvalQueue.dup();
+    let cache = this.#simulationCache;
+    let { kv } = this.ctx.storage;
+    // What every read reports: the document, or nothing for one not created yet.
+    let subresources = documentId === UNCREATED_FILE_ID
+      ? [] : [fileSubresourceId({ kind: "document", fileId: documentId })];
+    return new GoogleDocSessionImpl({
+      docsApi, driveApi, documentId, approvalQueue: queue,
+      read: async (fetch, observe) => {
+        let value = await fetch();
+        await queue.authorizeObservation({ ...observe(value), subresources });
+        return value;
+      },
+      changes: {
+        pending: () => pendingActions.list(),
+        invalidate: (record, reason) => invalidateGoogleDocAction(pendingActions, record, reason),
+        cache,
+        queue: async prepare => {
+          let { action, result } = await prepare();
+          await submitGoogleDocEdit(queue, pendingActions, cache, action);
+          return result;
+        },
+        afterTurns: async () => {},
+        adoptedTabId: tabId => adoptedGoogleDocTabId(kv, tabId),
+        authorizesPreparation: false,
+        simulates: true,
+      },
+      source: storedDocSource(docsApi, driveApi, documentId, this.ctx.storage, cache),
+      comments,
+    });
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {
@@ -1303,7 +1328,7 @@ export class GoogleDocGatekeeperImpl
       }
       await this.ctx.storage.put(DOC_SNAPSHOT_KEY, refreshedSnapshot);
       invalidateUnreplayableGoogleDocActions(
-          pendingActions,
+          (record, reason) => invalidateGoogleDocAction(pendingActions, record, reason),
           refreshedSnapshot,
           later,
           `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
@@ -1374,218 +1399,485 @@ export class GoogleDocGatekeeperImpl
   }
 }
 
+/**
+ * Stores `action` in a directly bound Doc's store and submits it for approval with the card its
+ * definition builds, removing it again if the submission fails. Nothing is awaited between the
+ * store and the submission.
+ */
+async function submitGoogleDocEdit(
+  approvalQueue: RpcStub<ApprovalQueue>,
+  pendingActions: PendingActionStore<GoogleDocAction>,
+  cache: GoogleDocSimulationCacheHolder,
+  action: GoogleDocAction,
+): Promise<void> {
+  let definition = docDefinition(action);
+  let presentation = describeDocEdit(action);
+  let actionId = pendingActions.submit(action);
+  cache.current = undefined;
+
+  try {
+    await approvalQueue.submitAction(actionId, {
+      ...presentation,
+      actionKind: definition.kind,
+      autoApprovable: definition.autoApprovable,
+    });
+  } catch (error) {
+    pendingActions.remove(actionId);
+    cache.current = undefined;
+    throw error;
+  }
+}
+
+/** What a Doc session needs of its connection to show and queue edits. */
+export type DocChangeQueue = {
+  /**
+   * The edits a read replays, oldest first. A connection that records an unreplayable edit in the
+   * record itself lists it too, marked with `invalidatedReason`.
+   */
+  pending(): GoogleDocPendingAction[];
+  /** Records that edit `record` can no longer be replayed, for `reason`. */
+  invalidate(record: GoogleDocPendingAction, reason: string): void;
+  /** The replay last computed and the writes landed, which the connection keeps per document. */
+  cache: GoogleDocSimulationCacheHolder;
+  /**
+   * Runs `prepare` as a write's turn: after the writes called before it, and before those called
+   * after it, whether or not the caller awaits each. Then queues the edit it returns for approval
+   * before the next turn starts.
+   */
+  queue<T>(prepare: () => Promise<{ action: GoogleDocAction; result: T }>): Promise<T>;
+  /**
+   * Resolves once the writes called before this have had their turn, so that a read sent behind
+   * them shows them. Never awaited from inside a turn, which would wait for itself.
+   */
+  afterTurns(): Promise<void>;
+  /** `tabId`, or the ID Google gave the tab when it is the provisional ID of an applied add. */
+  adoptedTabId(tabId: string | undefined): string | undefined;
+  /**
+   * Whether the read that prepares an edit is authorized when it succeeds, as on a connection
+   * whose reads go through a scope check. A failed one always is, since it discloses something.
+   */
+  authorizesPreparation: boolean;
+  /** Whether reads replay pending edits at all, which a read-only session's never do. */
+  simulates: boolean;
+};
+
+/** The queue of a session nothing can be queued against: its reads see no pending edit. */
+function noDocChanges(): DocChangeQueue {
+  return {
+    pending: () => [],
+    invalidate: () => {},
+    cache: { writes: 0 },
+    queue: () => Promise.reject(new Error("This Google Doc is open read-only.")),
+    afterTurns: () => Promise.resolve(),
+    adoptedTabId: tabId => tabId,
+    authorizesPreparation: false,
+    simulates: false,
+  };
+}
+
+/** Where a Doc session's document comes from, and what its title and date are read from. */
+export type DocSource = {
+  /** The document to replay pending edits over. */
+  snapshot(): Promise<GoogleDocSnapshot>;
+  /** Called with the snapshot of every read once that read is authorized. */
+  approved(snapshot: GoogleDocSnapshot): void;
+  /** The document's title and modification time, before pending edits move the time. */
+  metadata(): Promise<{ title: string; modifiedAt: number }>;
+  /** What a metadata read says it read. */
+  metadataObservation: NativeObservation;
+};
+
+/** What a failed read says it read: the error says whether that tab, or that text, exists. */
+const DOC_CONTENT_OBSERVATION: NativeObservation = {
+  title: "Read Google Doc content",
+  description: "Read the content of one tab of the document.",
+};
+
+/** What a read of the tab list says it read. */
+const DOC_TABS_OBSERVATION: NativeObservation = {
+  title: "List Google Doc tabs",
+  description: "Read the document's tab names and hierarchy.",
+};
+
+/** A Doc session's construction. */
+export type GoogleDocSessionOptions = {
+  docsApi: GoogleDocReader;
+  driveApi: DriveApi;
+  documentId: string;
+  approvalQueue: RpcStub<ApprovalQueue>;
+  /** Every read goes through it, which reports what it read and proves the binding's scope. */
+  read: NativeRead;
+  changes: DocChangeQueue;
+  source: DocSource;
+  /** A directly bound Doc's comment writes; none for a Doc opened from Drive. */
+  comments?: DocCommentQueue;
+};
+
+/** A failure a read resolves with, so that the read is authorized before it is thrown. */
+class ReadFailure {
+  constructor(readonly error: unknown) {}
+}
+
+/** The selected tab of a replay, with the snapshot and tabs it was computed over. */
+type GoogleDocSelectedContent = GoogleDocSimulatedContent & {
+  snapshot: GoogleDocSnapshot;
+  tab: GoogleDocTabSnapshot;
+};
+
+/**
+ * A Google Doc session: its reads, its edits and, bound directly, its comments. A Doc opened from
+ * Drive read-only is handed out through a wrapper (see GoogleDocReadSessionImpl).
+ */
 @validateRpc()
-class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
+export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
   #docsApi: GoogleDocReader;
   #driveApi: DriveApi;
   #documentId: string;
   #approvalQueue: RpcStub<ApprovalQueue>;
-  #pendingActions: PendingActionStore<GoogleDocAction>;
-  #storage: DurableObjectStorage;
-  #simulationCache: GoogleDocSimulationCacheHolder;
-  /** What every read reports: the document, or nothing for one not created yet. */
-  #subresources: string[];
-  #comments: DocCommentSession;
+  #read: NativeRead;
+  #changes: DocChangeQueue;
+  #source: DocSource;
+  #comments: DocCommentSession | undefined;
 
-  constructor(
-    docsApi: GoogleDocReader,
-    driveApi: DriveApi,
-    documentId: string,
-    approvalQueue: RpcStub<ApprovalQueue>,
-    pendingActions: PendingActionStore<GoogleDocAction>,
-    storage: DurableObjectStorage,
-    simulationCache: GoogleDocSimulationCacheHolder,
-    comments: DocCommentQueue,
-  ) {
+  constructor(options: GoogleDocSessionOptions) {
     super();
-    this.#docsApi = docsApi;
-    this.#driveApi = driveApi;
-    this.#documentId = documentId;
-    this.#approvalQueue = approvalQueue;
-    this.#pendingActions = pendingActions;
-    this.#storage = storage;
-    this.#simulationCache = simulationCache;
-    this.#subresources = documentId === UNCREATED_FILE_ID
-      ? []
-      : [fileSubresourceId({kind: "document", fileId: documentId})];
-    this.#comments = new DocCommentSession({
-      documentId, docs: docsApi, drive: driveApi, comments, approvalQueue,
-      authorizeRead: description => this.#authorizeRead(description),
+    this.#docsApi = options.docsApi;
+    this.#driveApi = options.driveApi;
+    this.#documentId = options.documentId;
+    this.#approvalQueue = options.approvalQueue;
+    this.#read = options.read;
+    this.#changes = options.changes;
+    this.#source = options.source;
+    let { comments } = options;
+    this.#comments = comments && new DocCommentSession({
+      documentId: this.#documentId, docs: this.#docsApi, drive: this.#driveApi, comments,
+      approvalQueue: this.#approvalQueue,
+      authorizeRead: description => this.#read(async () => undefined, () => description),
       onlyInPendingEdits: async (tabId, quote) => {
-        if (this.#pendingActions.list().length === 0) return false;
+        if (this.#changes.pending().length === 0) return false;
         let { tab, markdown } = await this.#getSimulatedContent(tabId, "getContent");
         return !tab.markdown.includes(quote) && markdown.includes(quote);
       },
     });
   }
 
+  [Symbol.dispose](): void {
+    this.#approvalQueue[Symbol.dispose]();
+  }
+
+  #commentSession(): DocCommentSession {
+    if (!this.#comments) throw new Error("This Google Doc session takes no comments.");
+    return this.#comments;
+  }
+
   listComments(): Promise<DriveComment[]> {
-    return this.#comments.listComments();
+    return this.#commentSession().listComments();
   }
 
   comment(text: string, options: DocCommentOptions): Promise<DriveComment> {
-    return this.#comments.comment(text, { ...options, tabId: this.#adoptedTabId(options.tabId) });
+    return this.#commentSession().comment(
+      text, { ...options, tabId: this.#changes.adoptedTabId(options.tabId) });
   }
 
   suggestEdit(
     oldText: string, newText: string, options?: DocSuggestEditOptions,
   ): Promise<DocSuggestion> {
-    return this.#comments.suggestEdit(oldText, newText,
-      options && { ...options, tabId: this.#adoptedTabId(options.tabId) });
+    return this.#commentSession().suggestEdit(oldText, newText,
+      options && { ...options, tabId: this.#changes.adoptedTabId(options.tabId) });
   }
 
-  /** `tabId`, or the ID Google gave the tab when it is the provisional ID of an applied add. */
-  #adoptedTabId(tabId: string | undefined): string | undefined {
-    return adoptedGoogleDocTabId(this.#storage.kv, tabId);
+  reply(commentId: string, text: string): Promise<DriveCommentReply> {
+    return this.#commentSession().reply(commentId, text);
+  }
+
+  resolve(commentId: string, text?: string): Promise<DriveCommentReply> {
+    return this.#commentSession().resolve(commentId, text);
   }
 
   /**
    * The ID `tabId` names among `tabs`, a simulation's: `tabId` itself while the simulation lists
    * it, as it lists a provisional tab, edits replayed into it, until it sees the add's handoff
    * (even beside the tab Google made, which it lists once the add lands); otherwise Google's ID
-   * for an applied add. Whatever is stored from it is read through `#adoptedTabId()` again.
+   * for an applied add. Whatever is stored from it is read through `adoptedTabId()` again.
    */
   #simulatedTabId(tabs: GoogleDocTabSnapshot[], tabId: string | undefined): string | undefined {
     return tabId === undefined || tabs.some(tab => tab.tabId === tabId)
-      ? tabId : this.#adoptedTabId(tabId);
+      ? tabId : this.#changes.adoptedTabId(tabId);
   }
 
-  reply(commentId: string, text: string): Promise<DriveCommentReply> {
-    return this.#comments.reply(commentId, text);
+  /**
+   * Reads through the session's NativeRead with `fetch`, which reads the document from `source`,
+   * and tells `source` of the snapshot once the read is authorized. A failure `fetch` resolves
+   * with is authorized as `failed` and then thrown.
+   */
+  async #readDocument<T>(
+    fetch: (snapshot: () => Promise<GoogleDocSnapshot>) => Promise<T | ReadFailure>,
+    observe: (value: T) => NativeObservation,
+    failed = DOC_CONTENT_OBSERVATION,
+  ): Promise<T> {
+    let used: GoogleDocSnapshot | undefined;
+    let snapshot = async () => used = await this.#source.snapshot();
+    let value = await this.#read(() => fetch(snapshot), result =>
+      result instanceof ReadFailure ? failed : observe(result));
+    if (used) this.#source.approved(used);
+    if (value instanceof ReadFailure) throw value.error;
+    return value;
   }
 
-  resolve(commentId: string, text?: string): Promise<DriveCommentReply> {
-    return this.#comments.resolve(commentId, text);
-  }
-
-  // Every read authorizes through here, which reports the document it read as its subresource.
-  #authorizeRead(description: Omit<ObservationDescription, "subresources">): Promise<void> {
-    return this.#approvalQueue.authorizeObservation({
-      ...description, subresources: this.#subresources,
-    });
-  }
-
-  async #getSnapshot(): Promise<GoogleDocSnapshot> {
-    for (;;) {
-      let writes = this.#simulationCache.writes;
-      // A snapshot written before tabs existed has no tab list and is simply replaced.
-      let cached = await this.#storage.get<unknown>(DOC_SNAPSHOT_KEY);
-      if (isGoogleDocSnapshot(cached) && Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) {
-        return cached;
-      }
-      let snapshot = isGoogleDocSnapshot(cached) &&
-          await googleDocRevisionUnchanged(this.#docsApi, this.#documentId, cached)
-        ? { ...cached, fetchedAt: Date.now() }
-        : googleDocSnapshot(await this.#docsApi.getDocument(this.#documentId));
-      // What Google returned before a write landed is stale: the edit is no longer pending to be
-      // replayed over it, so it would read as missing, and edits queued after it could not replay.
-      if (writes !== this.#simulationCache.writes) continue;
-      await this.#storage.put(DOC_SNAPSHOT_KEY, snapshot);
-      return snapshot;
-    }
-  }
-
-  /** The document with every pending action replayed over it. */
-  async #simulate(): Promise<GoogleDocSimulation & { snapshot: GoogleDocSnapshot }> {
-    // The snapshot and the queue replayed over it must come from one side of a write landing:
-    // the handoff removes the write, and an added tab's handoff points the edits queued for it at
-    // a tab an older snapshot lacks, which would invalidate them.
-    let snapshot, writes;
-    do {
-      writes = this.#simulationCache.writes;
-      snapshot = await this.#getSnapshot();
-    } while (writes !== this.#simulationCache.writes);
-    let pending = this.#pendingActions.list();
-    let cached = this.#simulationCache.current;
+  /** `snapshot` with every pending edit replayed over it, or as it is for a read-only session. */
+  #replay(snapshot: GoogleDocSnapshot): GoogleDocSimulation {
+    if (!this.#changes.simulates) return { tabs: snapshot.tabs, contentByTabId: new Map() };
+    let { cache } = this.#changes;
+    let pending = this.#changes.pending();
+    let cached = cache.current;
     // An unknown revision cannot be shown to match, so the replay is recomputed.
     if (cached && cached.baseRevisionId !== undefined &&
         cached.baseRevisionId === snapshot.revisionId &&
         cached.pendingFingerprint === googleDocPendingFingerprint(pending)) {
-      return { snapshot, ...cached.simulation };
+      return cached.simulation;
     }
 
     let simulation = invalidateUnreplayableGoogleDocActions(
-        this.#pendingActions,
+        (record, reason) => this.#changes.invalidate(record, reason),
         snapshot,
         pending,
         "Pending Google Doc edit could not be replayed against the current document");
-    this.#simulationCache.current = {
+    cache.current = {
       baseRevisionId: snapshot.revisionId,
-      pendingFingerprint: googleDocPendingFingerprint(this.#pendingActions.list()),
+      pendingFingerprint: googleDocPendingFingerprint(this.#changes.pending()),
       simulation,
     };
-    return { snapshot, ...simulation };
-  }
-
-  /** The selected tab's content with every pending action replayed over it. */
-  async #getSimulatedContent(
-    tabId: string | undefined,
-    operation: "getContent" | "replaceText" | "appendText",
-  ): Promise<GoogleDocSimulatedContent & {
-    snapshot: GoogleDocSnapshot,
-    tab: GoogleDocTabSnapshot,
-  }> {
-    let simulation = await this.#simulate();
-    let { snapshot, tabs } = simulation;
-    let tab = resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
-    let content = simulation.contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab);
-    return {snapshot, tab, ...content};
+    return simulation;
   }
 
   /**
-   * Current title, and a modification time that only advances when something changed.
+   * The selected tab's content with every pending edit replayed over `snapshot`.
    *
-   * Google Docs exposes no modification time, so the moment this binding first saw the current
-   * revision stands in for it and is reused for as long as that revision holds — reading a
-   * document must not make it look freshly edited. Without edit access there is no revision to
-   * date, and Drive's own timestamp is used instead. Pending edits still move it forward, since
-   * `getContent()` already shows them.
+   * The selector is resolved before anything is replayed or cached, so naming a tab that does not
+   * exist cannot disturb the pending queue.
+   */
+  #simulate(
+    snapshot: GoogleDocSnapshot, tabId: string | undefined,
+    operation: "getContent" | "replaceText" | "appendText",
+  ): GoogleDocSelectedContent {
+    let { tabs, contentByTabId } = this.#replay(snapshot);
+    let tab = resolveGoogleDocTab({ ...snapshot, tabs }, this.#simulatedTabId(tabs, tabId), operation);
+    let content = contentByTabId.get(tab.tabId) ?? googleDocSimulatedContent(tab);
+    return { snapshot, tab, ...content };
+  }
+
+  /** {@link #simulate} over the snapshot the source holds, unauthorized: for a comment's check. */
+  async #getSimulatedContent(
+    tabId: string | undefined, operation: "getContent" | "replaceText" | "appendText",
+  ): Promise<GoogleDocSelectedContent> {
+    return this.#simulate(await this.#source.snapshot(), tabId, operation);
+  }
+
+  /**
+   * Runs `check` against the selected tab as it reads with every pending edit, to prepare an
+   * edit. The read is authorized when the connection asks for it, and always when it fails, since
+   * a refusal says something about the tab.
+   */
+  async #prepare<T>(
+    tabId: string | undefined, operation: "replaceText" | "appendText",
+    check: (selected: GoogleDocSelectedContent) => T,
+  ): Promise<{ selected: GoogleDocSelectedContent; value: T }> {
+    let fetch = async (snapshot: () => Promise<GoogleDocSnapshot>) => {
+      try {
+        let selected = this.#simulate(await snapshot(), tabId, operation);
+        return { selected, value: check(selected) };
+      } catch (error) {
+        return new ReadFailure(error);
+      }
+    };
+    if (this.#changes.authorizesPreparation) {
+      return this.#readDocument(fetch, ({ selected }) => ({
+        title: "Read Google Doc content",
+        description: `Read tab ${googleDocTabLabel(selected.tab)} to change it.`,
+      }));
+    }
+    let result = await fetch(() => this.#source.snapshot());
+    if (result instanceof ReadFailure) {
+      await this.#read(async () => undefined, () => DOC_CONTENT_OBSERVATION);
+      throw result.error;
+    }
+    return result;
+  }
+
+  /**
+   * Current title, and a modification time that moves forward with the edits still pending,
+   * since `getContent()` already shows them.
    */
   async getMetadata(): Promise<DocMetadata> {
-    let metadata = await this.#docsApi.getDocumentMetadata(this.#documentId);
-    let revisedAt = metadata.revisionId === undefined
-        ? await this.#modifiedWithoutRevision()
-        : this.#observeDocRevision(metadata.revisionId);
-    let pendingActions = this.#pendingActions.list()
+    await this.#changes.afterTurns();
+    return this.#read(async () => {
+      let { title, modifiedAt } = await this.#source.metadata();
+      let lastModified = this.#changes.pending()
         .map(({action}) => action)
-        .filter(action => !action.invalidatedReason);
-
-    await this.#authorizeRead({
-      title: "Read Google Doc metadata",
-      description: "Read the title and modification time of the document.",
-    });
-
-    let lastModified = pendingActions.reduce(
-        (latest, action) => Math.max(latest, action.submittedAt), revisedAt);
-    return {
+        .filter(action => !action.invalidatedReason)
+        .reduce((latest, action) => Math.max(latest, action.submittedAt), modifiedAt);
       // UNCREATED_FILE_ID, empty, until the document is created.
-      id: this.#documentId,
-      title: metadata.title,
-      lastModified: new Date(lastModified),
-    };
+      return { id: this.#documentId, title, lastModified: new Date(lastModified) };
+    }, () => this.#source.metadataObservation);
   }
 
-  /**
-   * The modification time of a document Google reports no revision for.
-   *
-   * Without edit access there is no revision to date, so Drive is asked instead. An account
-   * connected before per-resource grants may not hold the picker's metadata scope, leaving no
-   * signal at all; the first observation then stands rather than every read looking like an edit.
-   */
-  async #modifiedWithoutRevision(): Promise<number> {
-    try {
-      return driveModifiedTime(await this.#driveApi.getFile(this.#documentId)).valueOf();
-    } catch (error) {
-      // Only a refused grant means no signal will ever arrive. A quota 403 (also 403), an outage
-      // or a malformed body are transient or fixable, and dating the document from one would
-      // report a changed document as unchanged for as long as Drive stays unhealthy.
-      let refusedGrant = error instanceof DriveApiRequestError && error.status === 403 &&
-          !error.isAccountWide;
-      if (!refusedGrant) throw error;
-      logger.warn("no Drive grant to date a Google Doc that has no revision", {
-        event: "google.doc.metadata.drive.ungranted", error,
+  async listTabs(): Promise<GoogleDocTab[]> {
+    await this.#changes.afterTurns();
+    return this.#readDocument(
+      async snapshot => this.#replay(await snapshot()).tabs.map(googleDocTabMetadata),
+      () => DOC_TABS_OBSERVATION);
+  }
+
+  async addTab(title: string, options: { parentTabId?: string; index?: number } = {})
+      : Promise<string> {
+    checkDocTabTitle(title);
+    let { index } = options;
+    let provisionalTabId = `${PROVISIONAL_TAB_PREFIX}${crypto.randomUUID()}`;
+    return this.#changes.queue(async () => {
+      let snapshot, simulation, action: GoogleDocAddTabAction, tabs, simulatedParent;
+      try {
+        snapshot = await this.#source.snapshot();
+        simulation = this.#replay(snapshot);
+        simulatedParent = this.#simulatedTabId(simulation.tabs, options.parentTabId);
+        tabs = insertDocTab(simulation.tabs, newGoogleDocTab({ provisionalTabId, title }),
+          { parentTabId: simulatedParent, index });
+        let parentTabId = this.#changes.adoptedTabId(simulatedParent);
+        action = {
+          type: "addTab",
+          provisionalTabId,
+          title,
+          ...parentTabId === undefined ? {} : { parentTabId },
+          ...index === undefined ? {} : { index },
+          submittedAt: Date.now(),
+          baseRevisionId: snapshot.revisionId,
+          writeId: crypto.randomUUID(),
+        };
+      } catch (error) {
+        // The error says whether that parent exists, and how many tabs it holds.
+        await this.#read(async () => undefined, () => DOC_TABS_OBSERVATION);
+        throw error;
+      }
+
+      let parent = simulation.tabs.find(tab => tab.tabId === simulatedParent);
+      let siblings = tabs.filter(tab => tab.parentTabId === simulatedParent).length;
+      action.display = {
+        placement:
+          `Add a new, empty tab ${parent ? `under tab ${googleDocTabLabel(parent)}` : "at the top level"}` +
+          (index === undefined ? ", after the tabs already there." :
+            `, at position ${index + 1} of ${siblings}.`),
+      };
+      return { action, result: provisionalTabId };
+    });
+  }
+
+  async getContent(tabId?: string): Promise<string> {
+    await this.#changes.afterTurns();
+    let selected = await this.#readDocument(async snapshot => {
+      try {
+        return this.#simulate(await snapshot(), tabId, "getContent");
+      } catch (error) {
+        return new ReadFailure(error);
+      }
+    }, result => ({
+      title: "Read Google Doc content",
+      description: this.#changes.simulates
+        ? `Read the full simulated content of tab ${googleDocTabLabel(result.tab)} as Markdown.`
+        : `Read the current content of tab ${googleDocTabLabel(result.tab)} as Markdown.`,
+    }));
+    return selected.markdown;
+  }
+
+  async replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {
+    if (oldMarkdown === newMarkdown) {
+      return;
+    }
+    assertGoogleDocActionMarkdownSize(oldMarkdown, newMarkdown);
+
+    await this.#changes.queue(async () => {
+      let { selected, value: renderedNewMarkdown } = await this.#prepare(
+        tabId, "replaceText", selected => {
+          let start = findUniqueMarkdown(
+            selected.markdown, oldMarkdown, "replaceText", selected.tab.tabId,
+          );
+          let rendered = canonicalizeMarkdownReplacement(oldMarkdown, newMarkdown);
+          applyMarkdownEdit(selected, start, start + oldMarkdown.length, rendered);
+          // With no earlier edit to this tab, approval will build exactly these requests.
+          if (selected.markdown === selected.tab.markdown) {
+            computeReplaceOperations(selected.tab.sourceMap, selected.markdown, start,
+              start + oldMarkdown.length, rendered, selected.tab.tabId);
+          }
+          return rendered;
+        });
+      let { snapshot, tab } = selected;
+
+      let action: GoogleDocAction = {
+        type: "replaceText",
+        // Read again: the add of a tab selected before the await above may have applied since.
+        tabId: this.#changes.adoptedTabId(tab.tabId),
+        submittedAt: Date.now(),
+        markdownVersion: MARKDOWN_RENDERING_VERSION,
+        baseRevisionId: snapshot.revisionId,
+        writeId: crypto.randomUUID(),
+        oldMarkdown,
+        newMarkdown,
+        display: {
+          tab: googleDocTabLabel(tab),
+          ...(renderedNewMarkdown === newMarkdown ? {} : { rendered: renderedNewMarkdown }),
+        },
+      };
+      return { action, result: undefined };
+    });
+  }
+
+  async appendText(markdown: string, tabId?: string): Promise<void> {
+    assertGoogleDocActionMarkdownSize(markdown);
+    await this.#changes.queue(async () => {
+      let { selected } = await this.#prepare(tabId, "appendText", selected => {
+        requireGoogleDocAppendIndex(selected.appendIndex);
       });
-      return this.#observeDocRevision(undefined);
+      let { snapshot, tab } = selected;
+
+      let action: GoogleDocAction = {
+        type: "appendText",
+        // Read again: the add of a tab selected before the await above may have applied since.
+        tabId: this.#changes.adoptedTabId(tab.tabId),
+        submittedAt: Date.now(),
+        markdownVersion: MARKDOWN_RENDERING_VERSION,
+        baseRevisionId: snapshot.revisionId,
+        writeId: crypto.randomUUID(),
+        markdown,
+        display: { tab: googleDocTabLabel(tab) },
+      };
+      return { action, result: undefined };
+    });
+  }
+}
+
+/**
+ * A directly bound Doc's document: the snapshot it stores, reused for the TTL and then while its
+ * revision holds, and its title, dated by when this binding first saw the current revision.
+ */
+function storedDocSource(
+  docsApi: GoogleDocReader, driveApi: DriveApi, documentId: string, storage: DurableObjectStorage,
+  cache: GoogleDocSimulationCacheHolder,
+): DocSource {
+  async function fetchSnapshot(): Promise<GoogleDocSnapshot> {
+    for (;;) {
+      let writes = cache.writes;
+      // A snapshot written before tabs existed has no tab list and is simply replaced.
+      let cached = await storage.get<unknown>(DOC_SNAPSHOT_KEY);
+      if (isGoogleDocSnapshot(cached) && Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) {
+        return cached;
+      }
+      let snapshot = isGoogleDocSnapshot(cached) &&
+          await googleDocRevisionUnchanged(docsApi, documentId, cached)
+        ? { ...cached, fetchedAt: Date.now() }
+        : googleDocSnapshot(await docsApi.getDocument(documentId));
+      // What Google returned before a write landed is stale: the edit is no longer pending to be
+      // replayed over it, so it would read as missing, and edits queued after it could not replay.
+      if (writes !== cache.writes) continue;
+      await storage.put(DOC_SNAPSHOT_KEY, snapshot);
+      return snapshot;
     }
   }
 
@@ -1597,8 +1889,8 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
    * revisions count as the same: a document that offers no change token must not look edited by
    * every read, which is the opposite of what a cache needs from the same comparison.
    */
-  #observeDocRevision(revisionId?: string): number {
-    let stored = this.#storage.kv.get<unknown>(DOC_METADATA_REVISION_KEY);
+  function observeDocRevision(revisionId?: string): number {
+    let stored = storage.kv.get<unknown>(DOC_METADATA_REVISION_KEY);
     if (stored && typeof stored === "object") {
       let { revisionId: seen, observedAt } = stored as Partial<GoogleDocMetadataRevision>;
       if (seen === revisionId &&
@@ -1607,200 +1899,117 @@ class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession {
       }
     }
     let observedAt = Date.now();
-    this.#storage.kv.put<GoogleDocMetadataRevision>(
+    storage.kv.put<GoogleDocMetadataRevision>(
       DOC_METADATA_REVISION_KEY, { revisionId, observedAt });
     return observedAt;
   }
 
-  async listTabs(): Promise<GoogleDocTab[]> {
-    let { tabs } = await this.#simulate();
-
-    await this.#authorizeRead({
-      title: "List Google Doc tabs",
-      description: "Read the document's tab names and hierarchy.",
-    });
-
-    return tabs.map(googleDocTabMetadata);
-  }
-
-  async addTab(title: string, options: { parentTabId?: string; index?: number } = {})
-      : Promise<string> {
-    checkDocTabTitle(title);
-    let { index } = options;
-    let provisionalTabId = `${PROVISIONAL_TAB_PREFIX}${crypto.randomUUID()}`;
-    let simulation, action: GoogleDocAddTabAction, tabs, simulatedParent;
-    try {
-      simulation = await this.#simulate();
-      simulatedParent = this.#simulatedTabId(simulation.tabs, options.parentTabId);
-      tabs = insertDocTab(simulation.tabs, newGoogleDocTab({ provisionalTabId, title }),
-        { parentTabId: simulatedParent, index });
-      let parentTabId = this.#adoptedTabId(simulatedParent);
-      action = {
-        type: "addTab",
-        provisionalTabId,
-        title,
-        ...parentTabId === undefined ? {} : { parentTabId },
-        ...index === undefined ? {} : { index },
-        submittedAt: Date.now(),
-        baseRevisionId: simulation.snapshot.revisionId,
-        writeId: crypto.randomUUID(),
-      };
-    } catch (error) {
-      // The error says whether that parent exists, and how many tabs it holds.
-      await this.#authorizeRead({
-        title: "List Google Doc tabs",
-        description: "Read the document's tab names and hierarchy.",
-      });
-      throw error;
-    }
-
-    let parent = simulation.tabs.find(tab => tab.tabId === simulatedParent);
-    let siblings = tabs.filter(tab => tab.parentTabId === simulatedParent).length;
-    action.display = {
-      placement:
-        `Add a new, empty tab ${parent ? `under tab ${googleDocTabLabel(parent)}` : "at the top level"}` +
-        (index === undefined ? ", after the tabs already there." :
-          `, at position ${index + 1} of ${siblings}.`),
-    };
-    await this.#submit(action);
-    return provisionalTabId;
-  }
-
   /**
-   * Stores `action` and submits it for approval with the card its definition builds, removing it
-   * again if the submission fails. Nothing is awaited between the store and the submission.
+   * The modification time of a document Google reports no revision for.
+   *
+   * Without edit access there is no revision to date, so Drive is asked instead. An account
+   * connected before per-resource grants may not hold the picker's metadata scope, leaving no
+   * signal at all; the first observation then stands rather than every read looking like an edit.
    */
-  async #submit(action: GoogleDocAction): Promise<void> {
-    let definition = docDefinition(action);
-    let presentation = describeDocEdit(action);
-    let actionId = this.#pendingActions.submit(action);
-    this.#simulationCache.current = undefined;
-
+  async function modifiedWithoutRevision(): Promise<number> {
     try {
-      await this.#approvalQueue.submitAction(actionId, {
-        ...presentation,
-        actionKind: definition.kind,
-        autoApprovable: definition.autoApprovable,
-      });
+      return driveModifiedTime(await driveApi.getFile(documentId)).valueOf();
     } catch (error) {
-      this.#pendingActions.remove(actionId);
-      this.#simulationCache.current = undefined;
-      throw error;
+      // Only a refused grant means no signal will ever arrive. A quota 403 (also 403), an outage
+      // or a malformed body are transient or fixable, and dating the document from one would
+      // report a changed document as unchanged for as long as Drive stays unhealthy.
+      let refusedGrant = error instanceof DriveApiRequestError && error.status === 403 &&
+          !error.isAccountWide;
+      if (!refusedGrant) throw error;
+      logger.warn("no Drive grant to date a Google Doc that has no revision", {
+        event: "google.doc.metadata.drive.ungranted", error,
+      });
+      return observeDocRevision(undefined);
     }
   }
 
-  async getContent(tabId?: string): Promise<string> {
-    let selected;
-    try {
-      selected = await this.#getSimulatedContent(tabId, "getContent");
-    } catch (error) {
-      // The error says whether that tab exists, so the attempt discloses something too.
-      await this.#authorizeRead({
-        title: "Read Google Doc content",
-        description: "Read the content of one tab of the document.",
-      });
-      throw error;
-    }
-
-    await this.#authorizeRead({
-      title: "Read Google Doc content",
-      description:
-        `Read the full simulated content of tab ${googleDocTabLabel(selected.tab)} as Markdown.`,
-    });
-    return selected.markdown;
-  }
-
-  async replaceText(oldMarkdown: string, newMarkdown: string, tabId?: string): Promise<void> {
-    if (oldMarkdown === newMarkdown) {
-      return;
-    }
-    assertGoogleDocActionMarkdownSize(oldMarkdown, newMarkdown);
-
-    let selected;
-    let renderedNewMarkdown: string;
-    try {
-      selected = await this.#getSimulatedContent(tabId, "replaceText");
-      let start = findUniqueMarkdown(
-        selected.markdown, oldMarkdown, "replaceText", selected.tab.tabId,
-      );
-      renderedNewMarkdown = canonicalizeMarkdownReplacement(oldMarkdown, newMarkdown);
-      applyMarkdownEdit(selected, start, start + oldMarkdown.length, renderedNewMarkdown);
-      // With no earlier edit to this tab, approval will build exactly these requests.
-      if (selected.markdown === selected.tab.markdown) {
-        computeReplaceOperations(selected.tab.sourceMap, selected.markdown, start,
-          start + oldMarkdown.length, renderedNewMarkdown, selected.tab.tabId);
-      }
-    } catch (error) {
-      // The error says whether that tab, or that text, exists.
-      await this.#authorizeRead({
-        title: "Read Google Doc content",
-        description: "Read the content of one tab of the document.",
-      });
-      throw error;
-    }
-    let {snapshot, tab} = selected;
-
-    let action: GoogleDocAction = {
-      type: "replaceText",
-      // Read again: the add of a tab selected before the await above may have applied since.
-      tabId: this.#adoptedTabId(tab.tabId),
-      submittedAt: Date.now(),
-      markdownVersion: MARKDOWN_RENDERING_VERSION,
-      baseRevisionId: snapshot.revisionId,
-      writeId: crypto.randomUUID(),
-      oldMarkdown,
-      newMarkdown,
-      display: {
-        tab: googleDocTabLabel(tab),
-        ...(renderedNewMarkdown === newMarkdown ? {} : { rendered: renderedNewMarkdown }),
-      },
-    };
-    await this.#submit(action);
-  }
-
-  async appendText(markdown: string, tabId?: string): Promise<void> {
-    assertGoogleDocActionMarkdownSize(markdown);
-    let selected;
-    try {
-      selected = await this.#getSimulatedContent(tabId, "appendText");
-      requireGoogleDocAppendIndex(selected.appendIndex);
-    } catch (error) {
-      // The error says whether that tab exists, so the attempt discloses something too.
-      await this.#authorizeRead({
-        title: "Read Google Doc content",
-        description: "Read the content of one tab of the document.",
-      });
-      throw error;
-    }
-    let {snapshot, tab} = selected;
-
-    let action: GoogleDocAction = {
-      type: "appendText",
-      // Read again: the add of a tab selected before the await above may have applied since.
-      tabId: this.#adoptedTabId(tab.tabId),
-      submittedAt: Date.now(),
-      markdownVersion: MARKDOWN_RENDERING_VERSION,
-      baseRevisionId: snapshot.revisionId,
-      writeId: crypto.randomUUID(),
-      markdown,
-      display: { tab: googleDocTabLabel(tab) },
-    };
-    await this.#submit(action);
-  }
+  return {
+    // The snapshot and the queue replayed over it must come from one side of a write landing:
+    // the handoff removes the write, and an added tab's handoff points the edits queued for it at
+    // a tab an older snapshot lacks, which would invalidate them.
+    snapshot: async () => {
+      let snapshot, writes;
+      do {
+        writes = cache.writes;
+        snapshot = await fetchSnapshot();
+      } while (writes !== cache.writes);
+      return snapshot;
+    },
+    approved: () => {},
+    /**
+     * Google Docs exposes no modification time, so the moment this binding first saw the current
+     * revision stands in for it and is reused for as long as that revision holds: reading a
+     * document must not make it look freshly edited. Without edit access there is no revision to
+     * date, and Drive's own timestamp is used instead.
+     */
+    metadata: async () => {
+      let metadata = await docsApi.getDocumentMetadata(documentId);
+      let modifiedAt = metadata.revisionId === undefined
+        ? await modifiedWithoutRevision()
+        : observeDocRevision(metadata.revisionId);
+      return { title: metadata.title, modifiedAt };
+    },
+    metadataObservation: {
+      title: "Read Google Doc metadata",
+      description: "Read the title and modification time of the document.",
+    },
+  };
 }
 
+/**
+ * A Doc opened from a Drive binding: one snapshot per capability, reused for the TTL and then
+ * while its revision holds, and only once a completed scope check approved it. The scope check
+ * straddles the fetch, so a revision fetched while the document was outside must never reach a
+ * later read. Reads issued together still share one fetch: each brackets that fetch with its own
+ * checks, exactly as a lone read does. Its title and date are Drive's.
+ */
+export function driveDocSource(
+  docsApi: GoogleDocsApi, driveApi: DriveApi, documentId: string,
+): DocSource {
+  /** A fetch still in flight, so reads issued together observe one revision. */
+  let inFlight: Promise<GoogleDocSnapshot> | undefined;
+  /** The last revision a completed scope check approved, the only one a later read may reuse. */
+  let approved: GoogleDocSnapshot | undefined;
 
+  /** Reuse one revision for the TTL, then confirm it is still current before reusing it again. */
+  async function nextSnapshot(): Promise<GoogleDocSnapshot> {
+    let cached = approved;
+    if (cached) {
+      if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
+      if (await googleDocRevisionUnchanged(docsApi, documentId, cached)) {
+        cached.fetchedAt = Date.now();
+        return cached;
+      }
+    }
+    return googleDocSnapshot(await docsApi.getDocument(documentId));
+  }
+
+  return {
+    snapshot: () => inFlight ??= nextSnapshot().finally(() => { inFlight = undefined; }),
+    // A slow guard must not republish its older revision over a newer one already approved.
+    approved: snapshot => {
+      if (snapshot.fetchedAt >= (approved?.fetchedAt ?? 0)) approved = snapshot;
+    },
+    metadata: async () => {
+      let file = await driveApi.getFile(documentId);
+      return { title: file.name, modifiedAt: driveModifiedTime(file).valueOf() };
+    },
+    metadataObservation: {
+      title: "Read Google Doc metadata",
+      description: "Read the current title and modification time of the Drive document.",
+    },
+  };
+}
+
+/** The read-only session a Drive binding opens a Doc with: a Doc session with nothing queued. */
 @validateRpc()
 export class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocReadSession {
-  #docsApi: GoogleDocsApi;
-  #driveApi: DriveApi;
-  #documentId: string;
-  #approvalQueue: RpcStub<ApprovalQueue>;
-  /** A fetch still in flight, so reads issued together observe one revision. */
-  #inFlight?: Promise<GoogleDocSnapshot>;
-  /** The last revision a completed scope check approved, the only one a later read may reuse. */
-  #approved?: GoogleDocSnapshot;
-  #read: NativeRead;
+  #session: GoogleDocSessionImpl;
 
   constructor(
     docsApi: GoogleDocsApi,
@@ -1810,93 +2019,26 @@ export class GoogleDocReadSessionImpl extends RpcTarget implements GoogleDocRead
     read: NativeRead,
   ) {
     super();
-    this.#docsApi = docsApi;
-    this.#driveApi = driveApi;
-    this.#documentId = documentId;
-    this.#approvalQueue = approvalQueue;
-    this.#read = read;
+    this.#session = new GoogleDocSessionImpl({
+      docsApi, driveApi, documentId, approvalQueue, read,
+      changes: noDocChanges(),
+      source: driveDocSource(docsApi, driveApi, documentId),
+    });
   }
 
   [Symbol.dispose](): void {
-    this.#approvalQueue[Symbol.dispose]();
+    this.#session[Symbol.dispose]();
   }
 
-  async getMetadata(): Promise<DocMetadata> {
-    return this.#read(async () => {
-      let file = await this.#driveApi.getFile(this.#documentId);
-      return { id: this.#documentId, title: file.name, lastModified: driveModifiedTime(file) };
-    }, () => ({
-      title: "Read Google Doc metadata",
-      description: "Read the current title and modification time of the Drive document.",
-    }));
+  getMetadata(): Promise<DocMetadata> {
+    return this.#session.getMetadata();
   }
 
-  /**
-   * Reads one snapshot under the binding's scope guard.
-   *
-   * Only a revision a whole guard cycle approved becomes reusable. The scope check straddles the
-   * fetch, so a revision fetched while the document was outside must never reach a later read --
-   * and rolling it back after the refusal is too late, since a read that chained onto it meanwhile
-   * already holds it. Reads issued together still share one fetch: each brackets that fetch with
-   * its own checks, exactly as a lone read does.
-   */
-  async #readSnapshot<T>(
-    use: (snapshot: GoogleDocSnapshot) => T,
-    observe: (value: T) => NativeObservation,
-  ): Promise<T> {
-    let snapshot: GoogleDocSnapshot | undefined;
-    let value = await this.#read(async () => {
-      snapshot = await (this.#inFlight ??= this.#nextSnapshot()
-        .finally(() => { this.#inFlight = undefined; }));
-      return use(snapshot);
-    }, observe);
-    // A slow guard must not republish its older revision over a newer one already approved.
-    if (snapshot && snapshot.fetchedAt >= (this.#approved?.fetchedAt ?? 0)) {
-      this.#approved = snapshot;
-    }
-    return value;
+  listTabs(): Promise<GoogleDocTab[]> {
+    return this.#session.listTabs();
   }
 
-  /** Reuse one revision for the TTL, then confirm it is still current before reusing it again. */
-  async #nextSnapshot(): Promise<GoogleDocSnapshot> {
-    let cached = this.#approved;
-    if (cached) {
-      if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
-      if (await googleDocRevisionUnchanged(this.#docsApi, this.#documentId, cached)) {
-        cached.fetchedAt = Date.now();
-        return cached;
-      }
-    }
-    return googleDocSnapshot(await this.#docsApi.getDocument(this.#documentId));
-  }
-
-  async listTabs(): Promise<GoogleDocTab[]> {
-    return this.#readSnapshot(
-      snapshot => snapshot.tabs.map(googleDocTabMetadata),
-      () => ({
-        title: "List Google Doc tabs",
-        description: "Read the document's tab names and hierarchy.",
-      }));
-  }
-
-  async getContent(tabId?: string): Promise<string> {
-    // The selector error says whether a tab exists, so a failed attempt discloses something too
-    // and has to be authorized. It rides back as a value so one guarded read covers both outcomes.
-    let selection = await this.#readSnapshot(
-      (snapshot): { tab: GoogleDocTabSnapshot } | { error: unknown } => {
-        try {
-          return { tab: resolveGoogleDocTab(snapshot, tabId, "getContent") };
-        } catch (error) {
-          return { error };
-        }
-      },
-      result => ({
-        title: "Read Google Doc content",
-        description: "tab" in result
-          ? `Read the current content of tab ${googleDocTabLabel(result.tab)} as Markdown.`
-          : "Read the content of one tab of the document.",
-      }));
-    if (!("tab" in selection)) throw selection.error;
-    return selection.tab.markdown;
+  getContent(tabId?: string): Promise<string> {
+    return this.#session.getContent(tabId);
   }
 }
