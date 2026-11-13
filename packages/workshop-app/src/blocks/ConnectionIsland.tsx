@@ -23,6 +23,9 @@ export type ConnectionIslandProps = {
 
 /** Its size before it opens, and once it has closed: a dot at the top of the window. */
 const DOT = 44
+/** The mascot's width, and how far in from the surface's start it is (`w-8`, `ps-2.5`). */
+const MASCOT = 32
+const MASCOT_AT = 10
 /** How long each alarm shakes the mascot before it settles into being sad. */
 const SHAKE_FOR = 1800
 /** How far up, in pixels, or how fast, in pixels a second, a swipe has to go to put it away. */
@@ -86,25 +89,35 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
       style={{ borderRadius: DOT / 2 + 2 }}
       className="pointer-events-auto relative cursor-grab touch-none overflow-hidden bg-kumo-contrast text-kumo-inverse shadow-2xl outline-none select-none focus-visible:ring-2 focus-visible:ring-kumo-focus active:cursor-grabbing"
     >
-      {/* Laid out at its own size, in the middle, so the surface opens around it. */}
+      {/*
+        Laid out at its own size from the surface's start, with the mascot in the dot it opens out
+        of: as the surface springs to another wording's width, the mascot moves only with its edge,
+        and the wording is uncovered or covered by it.
+      */}
       <motion.div
         ref={content}
         initial={reduced ? false : { opacity: 0, scale: 0.5, filter: 'blur(3px)' }}
         animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
         transition={reduced ? INSTANT : { opacity: { duration: 0.16, delay: 0.07 }, filter: { duration: 0.2, delay: 0.05 }, scale: SPRING }}
-        className="absolute top-0 left-1/2 flex h-11 w-max -translate-x-1/2 items-center gap-2.5 ps-3 pe-5 text-base font-medium"
+        // It grows out of the mascot's middle.
+        style={{ originX: `${MASCOT_AT + MASCOT / 2}px`, originY: `${DOT / 2}px` }}
+        className="absolute top-0 left-0 flex h-11 w-max items-center gap-2 ps-2.5 pe-5 text-base font-medium"
       >
         {/* Its drawing has room around it: at 32px wide the cloud itself is some 25px tall. */}
-        <Mascot emotion={emotion} color="inverse" className="-mx-0.5 w-8" />
-        {/* Each wording blurs in over the last, as the surface grows or shrinks to it. */}
-        <motion.span
-          key={label}
-          initial={reduced ? false : { opacity: 0, filter: 'blur(3px)' }}
-          animate={{ opacity: 1, filter: 'blur(0px)' }}
-          transition={{ duration: 0.2 }}
-        >
-          {label}
-        </motion.span>
+        <Mascot emotion={emotion} color="inverse" className="w-8 shrink-0" />
+        {/* Each wording blurs in over the last, in the same place, which leaves out of the way. */}
+        <AnimatePresence initial={false} mode="popLayout">
+          <motion.span
+            key={label}
+            initial={reduced ? false : { opacity: 0, filter: 'blur(3px)' }}
+            animate={{ opacity: 1, filter: 'blur(0px)' }}
+            exit={{ opacity: 0, filter: 'blur(3px)' }}
+            transition={reduced ? INSTANT : { duration: 0.2 }}
+            className="whitespace-nowrap"
+          >
+            {label}
+          </motion.span>
+        </AnimatePresence>
       </motion.div>
     </motion.div>
   )
