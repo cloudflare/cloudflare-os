@@ -793,6 +793,9 @@ class OverseerImpl implements AgentHooks {
 
   #autoApprovalDrainer: AutoApprovalDrainer;
 
+  // Actions with a decision in flight (see claimDecision).
+  #deciding = new Set<number>();
+
   #preparingChatMessages = new Map<number, Promise<void>>();
 
   // Set of chatIds that currently have a running agent turn. Feeds the alarm (see
@@ -1630,7 +1633,8 @@ class OverseerImpl implements AgentHooks {
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
         this.storage,
         (record, resolvedBy, autoApproved) =>
-            this.applyPendingAction(record, resolvedBy, autoApproved));
+            this.applyPendingAction(record, resolvedBy, autoApproved),
+        id => this.#deciding.has(id));
     this.cacheWarmer = new ChatCacheWarmer(ctx.id.toString(), (chatId, resent) =>
         this.#addRequestCost(
             chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
@@ -5395,10 +5399,25 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Claims the decision on a pending action until disposed, refusing one that is no longer pending
+  // or that another decision already holds. A decision lands -- the record turns approved or
+  // rejected -- only once its gatekeeper call returns, and the input gate is open across that
+  // call, so until then the record still reads as pending: without a claim, a second decision
+  // (another tab, a retry after a dropped connection, or the drain) is admitted in that window and
+  // reaches the gatekeeper too. Synchronous, so nothing is admitted between the check and the
+  // claim; take it after the caller's last await before the gatekeeper call.
+  claimDecision(id: number): Disposable {
+    if (this.storage.actions.get(id)?.state !== "pending" || this.#deciding.has(id)) {
+      throw new Error(`Action is not pending: ${id}`);
+    }
+    this.#deciding.add(id);
+    return {[Symbol.dispose]: () => { this.#deciding.delete(id); }};
+  }
+
   // Apply a single pending action: invoke the gatekeeper, mark it approved, and persist (the put
   // auto-notifies subscribeToActions). Shared by manual approval (`approveAction`) and the
-  // auto-approval drain (`drainAutoApprovals`). The caller is responsible for validating that the
-  // record is still pending before calling.
+  // auto-approval drain (`drainAutoApprovals`). Refuses, as not pending, an action decided since
+  // the caller read it or whose decision is still in flight (see claimDecision).
   //
   // `resolvedBy`/`autoApproved` are required (not defaulted) so that no apply path can omit how the
   // gate was cleared: this is the single chokepoint where an action transitions to "approved", so
@@ -5410,6 +5429,7 @@ class OverseerImpl implements AgentHooks {
                            resolvedBy: AiChatAuthorInfo, autoApproved: boolean,
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
                                        configuration: string | null}): Promise<void> {
+    using _decision = this.claimDecision(record.id);
     let id = record.gatekeeperId;
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.creationPending(id)) {
@@ -12722,6 +12742,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
       // is called.
       let profile = await this.#getClientProfile();
+      using _decision = this.impl.claimDecision(id);
       let queued = Array.from(
           this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
       this.impl.removeGatekeeper(action.gatekeeperId);
@@ -12745,6 +12766,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
 
+    using _decision = this.impl.claimDecision(id);
     await gatekeeper.rejectAction(action.action);
 
     action.state = "rejected";
