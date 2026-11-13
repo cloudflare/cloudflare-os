@@ -2042,8 +2042,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
 
   // The overseer marks a record approved only after applyAction() returns, so a second approval of
   // one action can arrive while the first is mid-write. It must not reach the provider at all.
-  // Not run through Drive: holding a Docs request from the test hangs a Drive binding's apply in
-  // this harness, for a reason not yet found; the direct run covers the engine both share.
+  // Not run through Drive: a Docs request held by a promise the test releases hangs a Drive
+  // binding's apply in this harness, though a timer's does not (see the Drive block's run).
   it.skipIf(r.drive)("holds a second approval of one action behind the first", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -2065,8 +2065,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
 
   // Between the handoff and the marker cleanup the edit is committed and its action is gone, so
   // nothing is left to overlay the snapshot the submission cached: it must not be served.
-  // Not run through Drive: holding a Docs request from the test hangs a Drive binding's apply in
-  // this harness, for a reason not yet found; the direct run covers the engine both share.
+  // Not run through Drive: a Docs request held by a promise the test releases hangs a Drive
+  // binding's apply in this harness, though a timer's does not (see the Drive block's run).
   it.skipIf(r.drive)("stops serving the pre-write snapshot once the write is committed", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -2084,8 +2084,8 @@ describe.each(RUNS)("Google Doc write receipts, $name", r => {
 
   // A read that asked Google before the write landed gets the old document back after the handoff
   // removed the edit from the queue: replayed over, it would show the approved edit missing.
-  // Not run through Drive: holding a Docs request from the test hangs a Drive binding's apply in
-  // this harness, for a reason not yet found; the direct run covers the engine both share.
+  // Not run through Drive: a Docs request held by a promise the test releases hangs a Drive
+  // binding's apply in this harness, though a timer's does not (see the Drive block's run).
   it.skipIf(r.drive)("refetches a read that Google answered before a write landed", async () => {
     let docs = new DocsModel();
     docs.install();
@@ -3646,6 +3646,41 @@ describe("Google Doc edits through a read and write Drive binding", () => {
     let id = await hooks().submitAppend(facet, "next");
     expect(await hooks().applyAction(facet, id)).toBeNull();
     expect(await rawHooks().driveStored(`drive:${facet}`, DRIVE_DOC, RECEIPT)).toBeNull();
+  });
+
+  // The engine's run holds the write with a promise the test releases, which hangs a Drive binding's
+  // apply in this harness; a timer slows it here instead, with the second approval sent meanwhile.
+  it("holds a second approval of one edit behind the first, the write slowed", async () => {
+    let docs = draft();
+    let facet = "drive-overlap";
+    let id = await hooks().submitAppend(facet, "first");
+    let model = globalThis.fetch;
+    let write: "unsent" | "sending" | "sent" = "unsent";
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (new URL(new Request(input, init).url).pathname.endsWith(":batchUpdate") && write === "unsent") {
+        write = "sending";
+        await scheduler.wait(100);
+        let response = await model(input, init);
+        write = "sent";
+        return response;
+      }
+      return model(input, init);
+    });
+    let first = hooks().applyAction(facet, id);
+    let settled = false;
+    void first.then(() => { settled = true; });
+    await vi.waitUntil(() => write !== "unsent" || settled, { interval: 1, timeout: 5000 });
+    // An approval that failed before writing says why, rather than timing out.
+    if (write === "unsent") expect(await first).toBeNull();
+    let second = hooks().applyAction(facet, id);
+    // The second approval is sent while the first's write is in flight.
+    expect(write).toBe("sending");
+
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(docs.contentBatches).toBe(1);
+    expect(docs.text().match(/first/g)).toHaveLength(1);
+    expect(docs.markers.size).toBe(0);
   });
 
   // The first edit's check of the file is slowed: the second, sent behind it, still takes its turn
