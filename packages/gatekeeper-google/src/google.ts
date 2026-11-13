@@ -12,7 +12,6 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import type { PdfRendering } from "@gadgets/pdf-renderer/api";
 import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
 import {
   GoogleDocSession, DocMetadata, type DocCommentOptions, type DocSuggestEditOptions,
@@ -81,11 +80,10 @@ import {
   type DriveWriteTargetPayload, type QueuedWrite,
 } from "./drive-writes";
 import {
-  CONVERSION_FAILED, pdfToText, releasedAtEnd, TranscriptionRefusal, type PdfConverter,
+  CONVERSION_FAILED, pdfConverter, releasedAtEnd, TranscriptionRefusal, type PdfConverter,
   type PdfRangeReader, type PdfRead,
 } from "./drive-pdf";
 import { downloadableFile, exactRange, fileReadRange, FILE_CHANGED } from "./drive-file-read";
-import type { AiFetcher } from "./workers-ai-markdown";
 import { driveObserverTracker, type DriveObservation } from "./drive-observers";
 import {
   DOCS_SUBRESOURCE_NAMESPACE, DRIVE_SUBRESOURCE_NAMESPACE, fileSubresourceId, parseFileSubresource,
@@ -102,8 +100,7 @@ import {
 } from "./drive-session";
 import type {
   DocSuggestion, DriveAccess, DriveComment, DriveCommentOptions, DriveCommentReply, DriveEntry,
-  DriveFileBytes, DriveFileReadOptions, DriveGrantee, DriveListOptions, DrivePdfReadOptions,
-  DrivePdfText, DriveScope,
+  DriveFileBytes, DriveFileReadOptions, DriveGrantee, DriveListOptions, DrivePdfText, DriveScope,
   DriveSessionSearchQuery, DriveShareOptions, DriveShareRole,
   DriveSuggestEditOptions, GoogleDriveFolderSession, GoogleDriveSession,
 } from "./drive-types";
@@ -4030,15 +4027,7 @@ export class GoogleDriveGatekeeperImpl
     // Only an undecided or claimed write can be applied again, so no other marker is read again.
     this.#attempts.sweep(new Set(this.#journal.listPending().map(({ id }) => id)));
     let getDriveAccessToken = (opts?: AccessTokenRequest) => this.#getAccessToken(opts);
-    // `pnpm dev-server` drops the AI binding unless started with --use-workers-ai-binding.
-    // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can stream.
-    let ai = this.env.AI as unknown as AiFetcher | undefined;
-    let gatewayId = this.env.CF_AI_GATEWAY;
-    // The Worker that renders scanned PDFs, which a deployment may be without. The generated
-    // type of a service binding names no method of the entrypoint behind it.
-    let renderer = this.env.PDF_RENDERER as unknown as PdfRendering | undefined;
-    let convertPdf: PdfConverter | undefined =
-      ai && ((pdf, readRange) => pdfToText(ai, gatewayId, pdf, readRange, renderer));
+    let convertPdf = pdfConverter(this.env);
     let writes: DriveQueue = {
       access: this.#writes ? "write" : "read",
       writeRefusal: () => this.#writeRefusal(),
@@ -4435,17 +4424,12 @@ export class GoogleDriveSessionImpl extends RpcTarget
         new GooglePresentationReadSessionImpl(this.#slidesApi, presentationId, queue, read));
   }
 
-  async readPdf(fileId: string, options: DrivePdfReadOptions = {}): Promise<DrivePdfText> {
-    // A conversion's text needs no queue of its own, so that reads through the session's, as
-    // getEntry.
-    if (!options.ocr) {
-      let {text, hasText, transcribed} = await this.#readPdf(this.#core, fileId, false);
-      return {text, hasText, transcribed};
-    }
+  async readPdf(fileId: string): Promise<DrivePdfText> {
     // A text that reads the file again has those reads authorized as it is read, which may be
-    // after this session is disposed, so the text holds a queue of its own until it ends.
+    // after this session is disposed, so the text holds a queue of its own until it ends. Any
+    // other text needs none, and its queue is let go before it is returned.
     return this.#withQueue(async (queue, core) => {
-      let {text, hasText, transcribed, rereads} = await this.#readPdf(core, fileId, true);
+      let {text, hasText, transcribed, rereads} = await this.#readPdf(core, fileId);
       let release = () => queue[Symbol.dispose]();
       if (rereads) return {text: releasedAtEnd(text, release), hasText, transcribed};
       release();
@@ -4453,24 +4437,24 @@ export class GoogleDriveSessionImpl extends RpcTarget
     });
   }
 
-  async #readPdf(core: DriveCore, fileId: string, ocr: boolean): Promise<PdfRead> {
+  async #readPdf(core: DriveCore, fileId: string): Promise<PdfRead> {
     let id = await core.openNativeFile(fileId, PDF_MIME_TYPE, "PDF");
     let convert = this.#convertPdf;
     if (!convert) throw new Error("PDF reading is not available on this deployment.");
     let converted: PdfRead | undefined;
-    // A text read with `ocr` may read the file again: whole, to render its pages, or page by
-    // page, at places found in the bytes converted. So its reads must all be of that file as it
-    // was. A folder binding's re-proofs see the modification time, which must not move from the
-    // first one on; a file of another size is refused on any binding. As for readFile(), an
-    // account or exact-file binding does not detect a rewrite that kept the size.
+    // A text may read the file again: whole, to render its pages, or page by page, at places
+    // found in the bytes converted. So its reads must all be of that file as it was. A folder
+    // binding's re-proofs see the modification time, which must not move from the first one on;
+    // a file of another size is refused on any binding. As for readFile(), an account or
+    // exact-file binding does not detect a rewrite that kept the size.
     let modifiedTime: string | undefined;
-    let read: NativeReadOptions = ocr ? {
+    let read: NativeReadOptions = {
       content: true,
       unchanged: current => {
         modifiedTime ??= current.modifiedTime;
         if (current.modifiedTime !== modifiedTime) throw new Error(FILE_CHANGED);
       },
-    } : {content: true};
+    };
     // Each of those reads is a content read of its own, made as the text is read: checked against
     // the binding's scope, re-proved on a folder binding, and reported, like the first.
     let readRange: PdfRangeReader = async ({page, offset, length, fileSize}) => {
@@ -4516,7 +4500,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
           }
         },
         cancel: reason => download.cancel(reason),
-      }, { highWaterMark: 0 }), ocr ? readRange : undefined).catch((error: unknown) => {
+      }, { highWaterMark: 0 }), readRange).catch((error: unknown) => {
         if (error instanceof TranscriptionRefusal) return { refusal: error };
         throw error;
       });
@@ -4540,7 +4524,7 @@ export class GoogleDriveSessionImpl extends RpcTarget
 
   async readFile(fileId: string, options: DriveFileReadOptions = {}): Promise<DriveFileBytes> {
     let range = fileReadRange(options);
-    // The stream needs no queue of its own, so this reads through the session's, as readPdf.
+    // The stream needs no queue of its own, so this reads through the session's, as getEntry.
     let core = this.#core;
     let file = await core.openFile(fileId, "file");
     let {mimeType, size, modifiedTime} = downloadableFile(file);

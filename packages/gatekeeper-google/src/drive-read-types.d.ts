@@ -153,32 +153,22 @@ export type DriveFolderSearchQuery = Omit<DriveSearchQuery, "directParentId"> & 
 export type DriveSessionSearchQuery =
   DriveSearchQuery & Pick<DriveFolderSearchQuery, "childFolderIds">;
 
-/** How `readPdf()` reads a PDF. */
-export type DrivePdfReadOptions = {
-  /**
-   * Have a vision model read the pages that have no text of their own: every page of a scanned
-   * or image-only PDF, and the pages without text of a PDF that has text on others. Off by
-   * default, since the model's calls are billed: up to four for a page that is drawn, more when
-   * a part of it is asked for again, and one for a page read as the file stores it (see
-   * `readPdf()`). The text of the pages that have any is returned whether or not this is set.
-   */
-  ocr?: boolean;
-};
-
 /** A Drive PDF's text, streamed. */
 export type DrivePdfText = {
   /**
    * The PDF's text as UTF-8 Markdown, read as it is converted: pages separated by "### Page N"
    * headings, and pages before the first with text left out, unless pages without text are read
-   * into it with `ocr: true` (see `readPdf()`). Read it with
-   * `await new Response(text).text()`, or a reader to stop early; cancel it if unread. Empty when
-   * `hasText` is false and `transcribed` is too. A failure partway through errors the stream.
+   * into it (see `readPdf()`). Read it with `await new Response(text).text()`, or a reader to
+   * stop early; cancel it if unread. Empty when `hasText` is false and `transcribed` is too. A
+   * failure partway through errors the stream.
    *
-   * With `ocr: true`, a text whose pages the model reads (a scan's, or that of a PDF with text
-   * that holds an image) has them read only as you read it, a page at a time, so stop reading,
-   * and cancel, to stop paying for pages you do not need. Read any `ocr: true` text straight
-   * away and without long pauses: such a text with nothing moving for a minute, because it was
-   * left unread or the model stopped answering, is ended with an error. It also errors when the
+   * A page without text of its own is read by a vision model (every page of a scan, and such
+   * pages of a PDF that has text), and only when you have read the text up to it. The model's
+   * calls are billed: up to four for a page that is drawn, more when a part of it is asked for
+   * again, and one for a page read as the file stores it. So stop reading, and cancel, to stop
+   * paying for pages you do not need. Read the text straight away and without long pauses: one
+   * whose reading may read the file again is ended with an error after a minute with nothing
+   * moving, because it was left unread or the model stopped answering. It also errors when the
    * file has changed since `readPdf()` read it, as its pages are read from Drive again while the
    * text is; when the model fails on a page of a scanned PDF; and when a scanned PDF's pages
    * have to be drawn and cannot be: at all, as for a file that does not open or has more than
@@ -202,10 +192,10 @@ export type DrivePdfText = {
   hasText: boolean;
   /**
    * True when `text` is a vision model's reading of the page images of a PDF with no text of its
-   * own, which `readPdf()` gives only with `ocr: true`. It is not the document's own text: the
-   * model can misread, most often small print and the codes, numbers and names in it, so check
-   * anything that matters against the file. False for a PDF that has text, also when the model
-   * read the pages of it that have none: the text says which.
+   * own. It is not the document's own text: the model can misread, most often small print and
+   * the codes, numbers and names in it, so check anything that matters against the file. False
+   * for a PDF that has text, also when the model read the pages of it that have none: the text
+   * says which.
    */
   transcribed: boolean;
 };
@@ -306,8 +296,10 @@ export interface GoogleDriveReadSession {
    * Read an in-scope PDF's text, converted to Markdown and streamed. Fails asking to reconnect
    * when the Google account was connected before Drive bindings could read file content.
    *
-   * A scanned PDF has no text: `hasText` is false and `text` is empty. Pass `{ ocr: true }` to
-   * have its pages transcribed instead (see `DrivePdfText.transcribed`). An encrypted PDF fails.
+   * A scanned PDF has no text of its own, so a vision model transcribes its pages as `text` is
+   * read: `hasText` is false and `transcribed` true (see `DrivePdfText.transcribed`). Where the
+   * deployment has turned that off, a scanned PDF comes back with both false and an empty
+   * `text`, and a PDF that has text as that text alone. An encrypted PDF fails.
    *
    * A PDF without text of up to 16 MiB has its pages drawn, so it is read however its images
    * are stored: as fax, JBIG2 or JPEG 2000, with a palette or in CMYK, in layers, tiles or
@@ -334,17 +326,16 @@ export interface GoogleDriveReadSession {
    * images that are all too small to be pages, or masks; and when an edit to the file replaced
    * an image that had a mask.
    *
-   * A PDF that has text is returned as that text. With `{ ocr: true }`, one of up to 16 MiB
-   * that holds an image also has each page without text drawn as `text` is read up to it, and
-   * a page that shows an image read by the model as a scan's page is, into the text under its
-   * heading (see `DrivePdfText.text`). `hasText` is still true and `transcribed` false, the
-   * text keeps every page's heading from the first, and a page that cannot be read does not
-   * fail it.
+   * A PDF that has text is returned as that text. One of up to 16 MiB also has each page
+   * without text drawn as `text` is read up to it, and a page that shows anything read by the
+   * model as a scan's page is, into the text under its heading (see `DrivePdfText.text`).
+   * `hasText` is still true and `transcribed` false, the text keeps every page's heading from
+   * the first, and a page that cannot be read does not fail it.
    *
    * Where pages cannot be drawn at all, every scan is read as a larger one is, and a PDF that
    * has text is returned as that text alone.
    */
-  readPdf(fileId: string, options?: DrivePdfReadOptions): Promise<DrivePdfText>;
+  readPdf(fileId: string): Promise<DrivePdfText>;
 
   /**
    * Read an in-scope file's own content as a stream of bytes: a CSV, image, PDF, Office or any
@@ -405,7 +396,7 @@ export interface GoogleDriveFolderReadSession extends Pick<GoogleDriveReadSessio
    * `GoogleDriveReadSession.readPdf()` does. Fails asking to reconnect when the Google account
    * was connected before Drive bindings could read file content.
    */
-  readPdf(fileId: string, options?: DrivePdfReadOptions): Promise<DrivePdfText>;
+  readPdf(fileId: string): Promise<DrivePdfText>;
 
   /**
    * Read a live direct child's own content as a stream of bytes, as

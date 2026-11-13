@@ -1,10 +1,10 @@
 // A Drive PDF's text, from Workers AI's markdown conversion, streamed in both directions: neither
-// the PDF nor its text is ever held whole. A scanned PDF has no text to convert, so when asked its
-// pages are transcribed by a vision model instead, one at a time, as the text is read. A scan
-// small enough is read again, whole, into the PDF renderer, which draws each page and cuts it
-// into bands for the model to read; a larger one has its page images sent as they are stored.
-// A PDF that has text and images both keeps its text, and when asked the pages of it that have
-// none are rendered and read the same way, each under a line that says so.
+// the PDF nor its text is ever held whole. A scanned PDF has no text to convert, so its pages are
+// transcribed by a vision model instead, one at a time, as the text is read. A scan small enough
+// is read again, whole, into the PDF renderer, which draws each page and cuts it into bands for
+// the model to read; a larger one has its page images sent as they are stored. A PDF that has
+// text keeps it, and the pages of it that have none are rendered and read the same way, each
+// under a line that says so. A deployment can turn the model's reading off: see pdfConverter().
 
 import type { Logger } from "@gadgets/observability/logger";
 import {
@@ -97,6 +97,34 @@ export type PdfRead = DrivePdfText & { rereads: boolean };
 export type PdfConverter = (
   pdf: ReadableStream<Uint8Array>, readRange?: PdfRangeReader,
 ) => Promise<PdfRead>;
+
+/** What PDF reading goes by of the environment of the Worker it runs in. */
+export type PdfEnv = {
+  /** The Workers AI binding, which `pnpm dev-server` drops unless started with --use-workers-ai-binding. */
+  AI?: unknown;
+  /** The AI Gateway to go through, when set. */
+  CF_AI_GATEWAY?: string;
+  /** The Worker that renders the pages of a PDF, which a deployment may be without. */
+  PDF_RENDERER?: unknown;
+  /** `false` (trimmed, in any case) to have no page read by a vision model; anything else, or unset, reads them. */
+  PDF_OCR?: string;
+};
+
+/**
+ * The converter a Worker with this environment reads PDFs with ({@link pdfToText}), or `undefined`
+ * when it has no `AI` binding to convert with. Under `PDF_OCR=false` it never reads a file again,
+ * whatever it is given to do so with: no vision model is called, so a PDF without text comes back
+ * with none, and one with text as that text alone.
+ */
+export function pdfConverter(env: PdfEnv): PdfConverter | undefined {
+  // `Ai` declares no `fetch`, but the binding has one; conversion goes through it so it can
+  // stream. The generated type of a service binding names no method of the entrypoint behind it.
+  let ai = env.AI as AiFetcher | undefined;
+  let renderer = env.PDF_RENDERER as PdfRendering | undefined;
+  let transcribes = env.PDF_OCR?.trim().toLowerCase() !== "false";
+  return ai && ((pdf, readRange) =>
+    pdfToText(ai, env.CF_AI_GATEWAY, pdf, transcribes ? readRange : undefined, renderer));
+}
 
 /**
  * The name every PDF is converted under. The conversion heads its output with the input's name, so
@@ -229,10 +257,10 @@ type PageSource = {
  * refused either way.
  *
  * A PDF with text of its own is returned as that text. With `readRange` and `renderer`, one of
- * up to `fileBytes` that also holds an image of any kind has its pages without text rendered
- * and read as the text is: see {@link mixedPages}. Its text then keeps the heading of every
- * page from the first, is still the document's own (`transcribed` is false), and reads the file
- * again. For any other PDF with text no model is called and nothing is read again.
+ * up to `fileBytes` has its pages without text rendered and read as the text is, whatever
+ * images the scan found in it: see {@link mixedPages}. Its text then keeps the heading of every
+ * page from the first, is still the document's own (`transcribed` is false), and may read the
+ * file again. For any other PDF with text no model is called and nothing is read again.
  */
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
@@ -312,13 +340,13 @@ export async function pdfToText(
     return { text: transcription(ai, gatewayId, pages), hasText, transcribed: true, rereads: true };
   }
 
-  // Pages are read into the text only when the scan saw the whole file, and so knows what
-  // images it holds, and the text begins under the heading that follows those passed, each of
-  // them a page without text's: what came before it is then such pages, from the first, which
-  // are given back as a conversion gives them.
+  // Pages are read into the text only when the scan saw the whole file, and so knows its
+  // size, and the text begins under the heading that follows those passed, each of them a page
+  // without text's: what came before it is then such pages, from the first, which are given
+  // back as a conversion gives them. What images the scan found is not asked: the renderer
+  // draws what a page shows, as for a PDF without text.
   let found = renderer && scanned ? scan?.end() : undefined;
-  if (found && found.images.length + found.pieces + found.pageMasks > 0 &&
-      found.bytes <= RENDER_LIMITS.fileBytes && start.passedEmpty &&
+  if (found && found.bytes <= RENDER_LIMITS.fileBytes && start.passedEmpty &&
       first!.startsWith(`### Page ${start.passed + 1}\n`)) {
     let pages = mixedPages(
       conversion, start.passed, first!, renderedPdf(ai, gatewayId, found, readRange!, renderer!));
@@ -850,12 +878,12 @@ class PageSections {
  * its image has the conversion's text to the byte.
  *
  * A page whose section holds nothing but line breaks, and that `pdf` has, is rendered once the
- * text has been read up to it; `pdf` is opened for the first such page. When the page draws an
- * image and is not blank, the vision model reads it, and what it reads takes the place of the
- * line breaks: under {@link READ_FROM_IMAGE} and an empty line, followed by the lines that say
- * it was cut off or drawn at a lower resolution, and by an empty line. A page that draws no
- * image, is blank, could not be drawn within the renderer's limits, or reads as nothing is
- * left as the conversion gave it.
+ * text has been read up to it; `pdf` is opened for the first such page, so a PDF whose pages
+ * all have text is never read again. When the page is not blank, the vision model reads it,
+ * and what it reads takes the place of the line breaks: under {@link READ_FROM_IMAGE} and an
+ * empty line, followed by the lines that say it was cut off or drawn at a lower resolution,
+ * and by an empty line. A page that is blank, could not be drawn within the renderer's limits,
+ * or reads as nothing is left as the conversion gave it.
  *
  * The document's own text is worth more than the pages missing from it, so what keeps a page
  * from being read does not fail the text: a PDF the renderer does not open, or renders no
@@ -922,11 +950,9 @@ function mixedPages(
       renderFailed(drawn);
       return giveUp();
     }
-    // Only a page that draws an image and has ink is taken for one a model can read: a page
-    // without an image is a drawing. A page whose objects were not all looked at may draw an
-    // image that was not counted, so it is read. One that could not be drawn has nothing to
-    // show for itself either.
-    if ("refused" in drawn || drawn.blank || (drawn.images === 0 && drawn.surveyed)) return undefined;
+    // A page with ink is read whatever it draws: a scan, an image written into its content, or
+    // writing drawn as shapes. One that is blank, or could not be drawn, has nothing to show.
+    if ("refused" in drawn || drawn.blank) return undefined;
     let text: string, cutOff: boolean;
     try {
       ({ text, cutOff } = await pdf.read(drawn, index, signal, moved));

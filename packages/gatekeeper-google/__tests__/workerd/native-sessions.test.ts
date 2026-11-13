@@ -16,7 +16,7 @@ import {
 } from "../../src/drive-pdf";
 import { GoogleDriveSessionImpl } from "../../src/google";
 import type {
-  DriveComment, DrivePdfReadOptions, DrivePdfText, DriveSessionSearchQuery,
+  DriveComment, DrivePdfText, DriveSessionSearchQuery,
   GoogleDriveFolderSession,
 } from "../../src/drive-types";
 import {
@@ -133,6 +133,8 @@ function rangedDownload(
 const SCANNED_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\n\n\n";
 /** What it answers for a PDF whose first page has no text and whose second has some. */
 const MIXED_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\n\n\n\n\n### Page 2\nAppendix of the ledger\n\n";
+/** What it answers for a PDF whose pages all have text. */
+const TEXT_MARKDOWN = "# file.pdf\n## Contents\n### Page 1\nCover of the ledger\n\n\n\n### Page 2\nAppendix of the ledger\n\n";
 /** What the fake model reads on every image it is sent. */
 const MODEL_TEXT = "Harbour Ledger";
 /** A one-page scan stored as fax, which is rendered to be read. */
@@ -682,17 +684,37 @@ describe("Drive PDF reads", () => {
     expect(download.cancelled).toBe(true);
   });
 
-  it("lets the converter read page images only when asked to transcribe", async () => {
+  it("gives the converter the means to read the file again without being asked to, and takes no option", async () => {
+    providerDownload = rangedDownload;
     const converter = scanConverter();
     using session = newSession(converter.convert).session;
 
-    for (const options of [undefined, {}, { ocr: false }]) {
-      const result = await session.readPdf("pdf-1", options);
-      expect(result.transcribed).toBe(false);
-      expect(await readText(result)).toEqual({ text: "", hasText: false });
-    }
-    expect(converter.given).toEqual([undefined, undefined, undefined]);
-    expect(providerRanges).toEqual([null, null, null]);
+    const result = await session.readPdf("pdf-1");
+    expect(result).toMatchObject({ hasText: false, transcribed: true });
+    expect(converter.given).toEqual([expect.any(Function)]);
+    await result.text.cancel();
+
+    // Nothing but the file's ID is taken: a second argument is refused at the RPC boundary.
+    const withOption = session.readPdf as unknown as (fileId: string, options: object) => Promise<DrivePdfText>;
+    await expect(Promise.resolve(withOption.call(session, "pdf-1", { ocr: false }))).rejects.toThrow();
+    expect(converter.given).toHaveLength(1);
+  });
+
+  it("reads a scan as a PDF without text, holding no queue, under a converter that reads nothing again", async () => {
+    // What pdfConverter() gives where the deployment sets PDF_OCR=false: the means to read the
+    // file again are dropped before the conversion.
+    const converter = scanConverter();
+    const convert: PdfConverter = pdf => converter.convert(pdf);
+    const { queue, session } = newSession(convert);
+
+    const result = await session.readPdf("pdf-1");
+    expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
+    expect(result.transcribed).toBe(false);
+    expect(await readText(result)).toEqual({ text: "", hasText: false });
+    expect(converter.given).toEqual([undefined]);
+    expect(providerRanges).toEqual([null]);
+    session[Symbol.dispose]();
+    await vi.waitFor(() => expect(queue.released).toBe(true));
   });
 
   it("reads each page image as a content read of its own, as the text is read", async () => {
@@ -701,7 +723,7 @@ describe("Drive PDF reads", () => {
     const { queue, session } = newSession(converter.convert);
     using owned = session;
 
-    const result = await owned.readPdf("pdf-1", { ocr: true });
+    const result = await owned.readPdf("pdf-1");
     expect(result).toMatchObject({ hasText: false, transcribed: true });
     // RPC reads one piece ahead, so the first page is asked for; the second is not until the
     // text is read, however long that takes.
@@ -732,7 +754,7 @@ describe("Drive PDF reads", () => {
   it("authorizes a refusal to transcribe as it does the text, for what it says of the file", async () => {
     const allowed = newSession(refusingConverter);
     using owned = allowed.session;
-    await expect(Promise.resolve(owned.readPdf("pdf-1", { ocr: true }))).rejects.toThrow(UNTRANSCRIBABLE);
+    await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow(UNTRANSCRIBABLE);
     expect(allowed.queue.observations.map(o => [o.description, o.subresources])).toEqual([
       ["Check current metadata for Drive file pdf-1 and open it as a PDF.", ["drive/file/pdf-1"]],
       ["Read the text of Drive file pdf-1.", ["drive/content/pdf-1"]],
@@ -744,13 +766,13 @@ describe("Drive PDF reads", () => {
     const refused = newSession(refusingConverter);
     using other = refused.session;
     refused.queue.refuse.add("Read the text of Drive file pdf-1.");
-    await expect(Promise.resolve(other.readPdf("pdf-1", { ocr: true }))).rejects.toThrow("Observation refused");
+    await expect(Promise.resolve(other.readPdf("pdf-1"))).rejects.toThrow("Observation refused");
   });
 
   it("keeps a transcription reading after its session is disposed, holding a queue until it ends", async () => {
     providerDownload = rangedDownload;
     const { queue, session } = newSession(scanConverter().convert);
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     session[Symbol.dispose]();
 
     expect(await new Response(result.text).text()).toBe("-1.\n1 ");
@@ -770,7 +792,7 @@ describe("Drive PDF reads", () => {
     providerDownload = rangedDownload;
     const { queue, session } = newSession(scanConverter().convert);
     if (label !== "cancelled") queue.refuse.add("Read page image 2 of Drive file pdf-1, to transcribe it.");
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     session[Symbol.dispose]();
     // The session's own stub is gone by now; the text's keeps the queue.
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -783,7 +805,7 @@ describe("Drive PDF reads", () => {
   it("holds no queue for a PDF that is not transcribed, or whose read fails", async () => {
     providerDownload = rangedDownload;
     const text = newSession(fakeConverter().convert);
-    const converted = await text.session.readPdf("pdf-1", { ocr: true });
+    const converted = await text.session.readPdf("pdf-1");
     expect(converted.transcribed).toBe(false);
     text.session[Symbol.dispose]();
     await vi.waitFor(() => expect(text.queue.released).toBe(true));
@@ -791,7 +813,7 @@ describe("Drive PDF reads", () => {
 
     const refused = newSession(scanConverter().convert);
     refused.queue.refuse.add("Read the text of Drive file pdf-1.");
-    await expect(Promise.resolve(refused.session.readPdf("pdf-1", { ocr: true }))).rejects.toThrow();
+    await expect(Promise.resolve(refused.session.readPdf("pdf-1"))).rejects.toThrow();
     refused.session[Symbol.dispose]();
     await vi.waitFor(() => expect(refused.queue.released).toBe(true));
   });
@@ -806,7 +828,7 @@ describe("Drive PDF reads", () => {
     using owned = session;
     queue.refuse.add("Read page image 2 of Drive file pdf-1, to transcribe it.");
 
-    const result = await owned.readPdf("pdf-1", { ocr: true });
+    const result = await owned.readPdf("pdf-1");
     const reader = result.text.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("-1.");
     await expect(reader.read()).rejects.toThrow();
@@ -821,7 +843,7 @@ describe("Drive PDF reads", () => {
     const { queue, session } = newSession(converter.convert);
     using owned = session;
 
-    const result = await owned.readPdf("pdf-1", { ocr: true });
+    const result = await owned.readPdf("pdf-1");
     await expect(new Response(result.text).text()).rejects.toThrow();
     expect(queue.observations.map(o => o.description)).not.toContain(
       "Read page image 1 of Drive file pdf-1, to transcribe it.");
@@ -844,9 +866,7 @@ describe("Drive PDF reads", () => {
     };
     const { queue, session } = directSession(convert);
 
-    const plain = await session.readPdf("pdf-1");
-    expect(Object.keys(plain).toSorted()).toEqual(["hasText", "text", "transcribed"]);
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
     expect(result).toMatchObject({ hasText: true, transcribed: false });
     session[Symbol.dispose]();
@@ -870,7 +890,7 @@ describe("Drive PDF reads", () => {
     const { queue, session } = directSession(converter.convert);
     queue.onAuthorized = ({ description }) => events.push(description);
 
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     session[Symbol.dispose]();
     expect(result).toMatchObject({ hasText: false, transcribed: true });
     // Nothing more is read, authorized or sent until the text is read.
@@ -907,7 +927,7 @@ describe("Drive PDF reads", () => {
     const converter = renderingConverter();
     const { queue, session } = newSession(converter.convert);
 
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     session[Symbol.dispose]();
     expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
     const transcript = await new Response(result.text).text();
@@ -920,7 +940,7 @@ describe("Drive PDF reads", () => {
     providerDownload = range => rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN);
     const converter = renderingConverter();
     const unread = directSession(converter.convert);
-    const first = await unread.session.readPdf("pdf-1", { ocr: true });
+    const first = await unread.session.readPdf("pdf-1");
     unread.session[Symbol.dispose]();
     await new Promise(resolve => setTimeout(resolve, 0));
     expect(unread.queue.released).toBe(false);
@@ -944,7 +964,7 @@ describe("Drive PDF reads", () => {
         status: 206, headers: { "Content-Range": `bytes 0-${FAX_SCAN.byteLength - 1}/${FAX_SCAN.byteLength}` },
       });
     const partway = directSession(converter.convert);
-    const second = await partway.session.readPdf("pdf-1", { ocr: true });
+    const second = await partway.session.readPdf("pdf-1");
     partway.session[Symbol.dispose]();
     const reader = second.text.getReader();
     void reader.read().catch(() => undefined);
@@ -961,7 +981,7 @@ describe("Drive PDF reads", () => {
     const converter = renderingConverter();
     const { queue, session } = directSession(converter.convert);
 
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     session[Symbol.dispose]();
     await expect(new Response(result.text).text())
       .rejects.toThrow("The Drive file changed while it was being read; read it again.");
@@ -975,7 +995,7 @@ describe("Drive PDF reads", () => {
     const converter = renderingConverter(undefined, MIXED_MARKDOWN);
     const { queue, session } = directSession(converter.convert);
 
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     session[Symbol.dispose]();
     expect(Object.keys(result).toSorted()).toEqual(["hasText", "text", "transcribed"]);
     expect(result).toMatchObject({ hasText: true, transcribed: false });
@@ -996,28 +1016,21 @@ describe("Drive PDF reads", () => {
     await vi.waitFor(() => expect(queue.released).toBe(true));
   });
 
-  it("holds no queue for a PDF with text that holds no image, and reads nothing of it again", async () => {
-    const converter = renderingConverter(undefined, MIXED_MARKDOWN);
+  it("keeps a queue for a PDF whose pages all have text until its text ends, and reads nothing of it again", async () => {
+    providerDownload = range => rangedDownload(range, FAX_SCAN.byteLength, FAX_SCAN);
+    const converter = renderingConverter(undefined, TEXT_MARKDOWN);
     const { queue, session } = directSession(converter.convert);
 
-    const result = await session.readPdf("pdf-1", { ocr: true });
+    const result = await session.readPdf("pdf-1");
     expect(result).toMatchObject({ hasText: true, transcribed: false });
     session[Symbol.dispose]();
+    // A page without text may yet come, so the text keeps the queue such a page is read under.
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(queue.released).toBe(false);
+    expect(await new Response(result.text).text()).toBe(TEXT_MARKDOWN.slice("# file.pdf\n## Contents\n".length));
     await vi.waitFor(() => expect(queue.released).toBe(true));
-    expect(await new Response(result.text).text()).toBe("### Page 2\nAppendix of the ledger\n\n");
     expect(providerRanges).toEqual([null]);
     expect(converter.images()).toEqual([]);
-  });
-
-  it("refuses an option that is not a boolean at the RPC boundary", async () => {
-    const converter = scanConverter();
-    using session = newSession(converter.convert).session;
-
-    await expect(Promise.resolve(session.readPdf(
-      "pdf-1", { ocr: "yes" } as unknown as DrivePdfReadOptions,
-    ))).rejects.toThrow(/readPdf\[1\]/);
-    expect(converter.given).toEqual([]);
-    expect(providerUrls).toEqual([]);
   });
 });
 
@@ -2052,7 +2065,7 @@ describe("folder-scoped native sessions", () => {
     installFolderProvider(nodes);
     const kept = folderSession(nodes, refusingConverter);
     using owned = kept.session;
-    await expect(Promise.resolve(owned.readPdf("pdf-1", { ocr: true }))).rejects.toThrow(UNTRANSCRIBABLE);
+    await expect(Promise.resolve(owned.readPdf("pdf-1"))).rejects.toThrow(UNTRANSCRIBABLE);
     expect(kept.queue.observations.map(o => [o.description, o.subresources]).at(-1)).toEqual([
       "Read the text of Drive file pdf-1.",
       [`drive/folder/${ROOT}`, "drive/file/pdf-1", "drive/content/pdf-1"],
@@ -2063,7 +2076,7 @@ describe("folder-scoped native sessions", () => {
     });
     const moved = folderSession(nodes, refusingConverter);
     using other = moved.session;
-    await expect(Promise.resolve(other.readPdf("pdf-1", { ocr: true }))).rejects.toThrow(OUTSIDE);
+    await expect(Promise.resolve(other.readPdf("pdf-1"))).rejects.toThrow(OUTSIDE);
     expect(moved.queue.observations.map(o => o.title)).toEqual(["Open PDF from Google Drive"]);
   });
 
@@ -2074,7 +2087,7 @@ describe("folder-scoped native sessions", () => {
     const { queue, session } = folderSession(nodes, scanConverter().convert);
     using owned = session;
 
-    const result = await owned.readPdf("pdf-1", { ocr: true });
+    const result = await owned.readPdf("pdf-1");
     expect(await new Response(result.text).text()).toBe("-1.\n1 ");
     expect(nativeCalls).toEqual(["download", "download bytes=4-6", "download bytes=8-10"]);
     expect(queue.observations.map(o => [o.description, o.subresources]).slice(1)).toEqual([
@@ -2100,7 +2113,7 @@ describe("folder-scoped native sessions", () => {
     const { queue, session } = folderSession(nodes, scanConverter().convert);
     using owned = session;
 
-    const result = await owned.readPdf("pdf-1", { ocr: true });
+    const result = await owned.readPdf("pdf-1");
     const reader = result.text.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("-1.");
     await expect(reader.read()).rejects.toThrow();
@@ -2121,7 +2134,7 @@ describe("folder-scoped native sessions", () => {
     const { queue, session } = folderSession(nodes, converter.convert);
     using owned = session;
 
-    const result = await owned.readPdf("pdf-1", { ocr: true });
+    const result = await owned.readPdf("pdf-1");
     const reader = result.text.getReader();
     expect(new TextDecoder().decode((await reader.read()).value)).toBe("-1.");
     await expect(reader.read()).rejects.toThrow();
