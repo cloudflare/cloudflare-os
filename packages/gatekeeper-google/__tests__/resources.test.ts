@@ -9,7 +9,7 @@ import {
   driveResourceUrl, grantedResourceUrlPatterns, hasDriveResourceGrant, isPrivateGrant,
   nativeFileUrl, parseResourceUrl,
   recordedResourceUrlPatterns, resourceUrlPatternsToOAuthScopes, resourcesCoveredByScopes,
-  validateResourceUrlPatterns,
+  validateResourceUrlPatterns, withDriveWrites,
 } from "../src/resources";
 import type { DriveResourceTarget } from "../src/resources";
 
@@ -1036,12 +1036,24 @@ describe("Drive writes grant", () => {
       .toEqual([...IDENTITY_SCOPES, DRIVE]);
   });
 
-  // connectAccount requests every supported resource when the caller names none; full drive comes
-  // only from this grant, so a first connection is never asked for it.
-  it("is not part of a first connection's request-everything default", () => {
+  // Full drive belongs to this grant alone: no resource's own scopes ask for it, so declining it on
+  // Google's consent screen leaves every resource granted.
+  it("is in no resource's scopes", () => {
     let everything = resourceUrlPatternsToOAuthScopes(
       SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
     expect(everything).not.toContain(DRIVE);
+  });
+
+  it("is added to a consent's request by any Google Drive resource, once", () => {
+    for (let drive of DRIVE_RESOURCES) {
+      expect(withDriveWrites([GMAIL_RESOURCE.urlPattern, drive]))
+        .toEqual([GMAIL_RESOURCE.urlPattern, drive, DRIVE_WRITES_GRANT]);
+      expect(withDriveWrites([DRIVE_WRITES_GRANT, drive])).toEqual([DRIVE_WRITES_GRANT, drive]);
+    }
+    let others = [[], [GMAIL_RESOURCE.urlPattern], [GOOGLE_DOC_RESOURCE.urlPattern], [OFFICE_IMPORT_GRANT]];
+    for (let other of others) {
+      expect(withDriveWrites(other)).toEqual(other);
+    }
   });
 
   it("is covered only by full drive", () => {

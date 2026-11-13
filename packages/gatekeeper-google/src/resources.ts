@@ -372,7 +372,7 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
 
 /**
  * Wider Drive grants. `drive.readonly` is requested by the Drive resources, by
- * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` is requested only by
+ * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` belongs only to
  * {@link DRIVE_WRITES_GRANT}, and in {@link SCOPE_COVERED_BY} it truthfully subsumes the narrow
  * requirements.
  */
@@ -416,10 +416,12 @@ export const CREATED_FILES_GRANT = "https://drive.google.com/drive/created-files
  * The grant that lets a read and write Drive binding change files: full `drive`, because comment
  * writes, sharing and moves need it and `drive.file` does not reach a file picked in Drive.
  *
- * Private, as {@link OFFICE_IMPORT_GRANT} is, and first asked for only by the Drive connect
- * dialog's Allow changes action, so an account that never chooses read and write access is never
- * asked for it. Once that consent has completed the grant is recorded, granted or not, so every
- * later consent for the account asks for full `drive` again. One grant covers every Drive write.
+ * Private, as {@link OFFICE_IMPORT_GRANT} is. Every consent that asks for a Google Drive resource
+ * asks for it too ({@link withDriveWrites}); the Drive connect dialog's Allow changes action asks
+ * for it on an account whose consent left it out. Declining it leaves the Drive resources granted
+ * and read-only. Once a consent asking for it has completed the grant is recorded, granted or not,
+ * so every later consent for the account asks for full `drive` again. One grant covers every Drive
+ * write.
  * The token it yields reaches every file the account can, so a binding's scope and access level
  * stay enforced by the gatekeeper's code. Its scope also covers, through {@link SCOPE_COVERED_BY},
  * the `spreadsheets`, `drive.file` and `drive.readonly` requirements of grants the account has
@@ -471,6 +473,17 @@ const RENAMED_RESOURCE_PATTERNS: Record<string, string> = {
 /** Whether an account's recorded grant includes any Google Drive resource. */
 export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
   return resourceUrlPatterns.some(pattern => DRIVE_RESOURCE_PATTERNS.has(pattern));
+}
+
+/**
+ * What a consent asks for: `resourceUrlPatterns`, and with any Google Drive resource among them
+ * also {@link DRIVE_WRITES_GRANT}, so a Drive account can make read and write connections without a
+ * second consent. A read and write binding's scope and access level stay enforced in code.
+ */
+export function withDriveWrites(resourceUrlPatterns: readonly string[]): string[] {
+  return hasDriveResourceGrant(resourceUrlPatterns)
+    ? [...new Set([...resourceUrlPatterns, DRIVE_WRITES_GRANT])]
+    : [...resourceUrlPatterns];
 }
 
 /** Rejects any pattern that is not a known grantable resource or private grant. */

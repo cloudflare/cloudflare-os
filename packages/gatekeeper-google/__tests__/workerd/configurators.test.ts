@@ -1074,7 +1074,7 @@ describe("the Drive writes grant on a stored account", () => {
   const SHEETS = GOOGLE_SHEETS_RESOURCE.urlPattern;
 
   it("is asked for again by every later consent once it was asked for, granted or not", async () => {
-    // What a completed Allow changes consent leaves when Drive's line was left unchecked.
+    // What a completed consent leaves when Drive's line was left unchecked.
     let declined = await storedAccount([FILE, DRIVE_WRITES_GRANT], resourceUrlPatternsToOAuthScopes([FILE]));
     expect(await declined.account.getGrantedResourceUrlPatterns()).toEqual([FILE]);
 
@@ -1092,14 +1092,24 @@ describe("the Drive writes grant on a stored account", () => {
     expect(await requested(granted.account)).toContain(DRIVE_WRITES_GRANT);
   });
 
-  it("is asked for by no consent of an account that never asked for it", async () => {
+  it("is asked for by the next consent of a Drive account that never asked for it", async () => {
     let { account, user } = await storedAccount([FILE]);
 
     await user.ensureResources([SHEETS]);
+    expect((await requested(account))?.toSorted()).toEqual([FILE, SHEETS, DRIVE_WRITES_GRANT].toSorted());
+
+    await user.reconnect();
+    expect(await requested(account)).toEqual([FILE, DRIVE_WRITES_GRANT]);
+  });
+
+  it("is asked for by no consent of an account without a Drive resource", async () => {
+    let { account, user } = await storedAccount([SHEETS]);
+
+    await user.ensureResources([OFFICE_IMPORT_GRANT]);
     expect(await requested(account)).not.toContain(DRIVE_WRITES_GRANT);
 
     await user.reconnect();
-    expect(await requested(account)).toEqual([FILE]);
+    expect(await requested(account)).toEqual([SHEETS]);
   });
 
   it("is asked for by no consent where the deployment keeps Drive read-only, and stays recorded", async () => {
