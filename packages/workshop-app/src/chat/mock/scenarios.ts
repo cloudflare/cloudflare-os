@@ -429,6 +429,37 @@ const sendRefused: Scenario = {
   script: when('onSend', turn(say(agent({ text: 'Got it, and the file too. The slowdown was the cache warming after the deploy at 09:30.' })))),
 }
 
+const LOGO_SVG = new TextEncoder().encode(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8">\n' +
+  '  <circle cx="4" cy="4" r="3" fill="#f6821f"/>\n' +
+  '  <script>alert(document.domain)</script>\n' +
+  '</svg>\n',
+)
+// A 2×2 PNG, in two oranges.
+const SWATCH_PNG = Uint8Array.from(
+  atob('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAE0lEQVR4nGP4H6P3rUmeAYiBLAAvHgZBFoNqxwAAAABJRU5ErkJggg=='),
+  (char) => char.charCodeAt(0),
+)
+
+const untrustedContent: Scenario = {
+  id: 'untrusted-content',
+  title: 'Brand assets',
+  description:
+    'Files and replies that could run or fetch something are shown as what they are. The SVG sent ' +
+    'has a script in it: it is a tile rather than a picture, and opens beside the chat as its text. ' +
+    'The PNG is pixels, so it is shown as a picture.',
+  history: history([
+    user('Here are the logo and the swatch for the brand page.', {
+      attachments: [
+        { id: 'logo', name: 'logo.svg', mimeType: 'image/svg+xml', size: LOGO_SVG.length, content: LOGO_SVG },
+        { id: 'swatch', name: 'swatch.png', mimeType: 'image/png', size: SWATCH_PNG.length, content: SWATCH_PNG },
+      ],
+    }),
+    agent({ text: 'Thanks. The logo has a script in it, which I’ve left out of the page; the swatch is the brand orange.' }),
+  ]),
+  script: when('onSend', turn(say(agent({ text: 'Noted.' })))),
+}
+
 /** Has the first of `steps` wait `delay` milliseconds. */
 const after = (delay: number, [first, ...rest]: ScriptStep[]): ScriptStep[] => {
   if (!first) return []
@@ -551,6 +582,7 @@ export const SCENARIOS: Scenario[] = [
   errors,
   sendRefused,
   workspaceRestart,
+  untrustedContent,
   steerSlash,
   longHistory,
 ]

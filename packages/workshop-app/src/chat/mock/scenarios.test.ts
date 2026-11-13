@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { previewOf } from '@/aside/filePreview'
 import { ChatSession } from '../ChatSession'
 import type { ChatItem } from '../chatItems'
 import { createMockApi, MOCK_WORKSPACE_ID } from './mockApi'
@@ -201,6 +202,16 @@ describe('scenarios', () => {
     await playThrough(overseer)
     expect(ready()).toMatchObject({ activity: undefined, agentActive: false })
     expect(ready().items.at(-1)).toMatchObject({ kind: 'assistant', text: expect.stringContaining('hiring section') })
+  })
+
+  it('untrusted-content: the SVG sent is shown as its text, and only the PNG as a picture', async () => {
+    const { ready } = await open(scenario('untrusted-content'))
+    const [sent] = of(ready().items, 'user')
+
+    expect(sent.attachments.map(({ name, mimeType, content }) => previewOf({ name, mimeType: mimeType ?? '' }, content!))).toEqual([
+      { kind: 'text', text: expect.stringContaining('<script>') },
+      { kind: 'image', type: 'image/png' },
+    ])
   })
 
   it('steer-slash: a steer waits unread and is the same row once read; the compaction is marked', async () => {

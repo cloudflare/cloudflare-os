@@ -1,9 +1,11 @@
 import { attachmentKind } from '@/files/attachmentKind'
+import { isRasterImage } from '@/files/rasterImage'
 
 /**
  * How a file is shown: by the browser, from its bytes with the type given here (`url`), as text,
  * or not at all. The type is never the file's own word for itself unless it is one of the kinds
- * the browser only displays: a file that says it is a page is shown as text, and never run.
+ * the browser only displays: a file that says it is a page is shown as text, and never run, and
+ * so is an SVG, which is a page too. Only raster images are images (`isRasterImage`).
  */
 export type FilePreview =
   | { kind: 'image' | 'pdf' | 'audio' | 'video'; type: string }
@@ -18,6 +20,8 @@ const SIGNATURES: Array<[type: string, test: (bytes: Uint8Array) => boolean]> = 
   ['image/jpeg', (bytes) => startsWith(bytes, [0xff, 0xd8, 0xff])],
   ['image/gif', (bytes) => startsWith(bytes, [0x47, 0x49, 0x46, 0x38])],
   ['image/webp', (bytes) => startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) && startsWith(bytes, [0x57, 0x45, 0x42, 0x50], 8)],
+  // `ftypavif`, after the box's size.
+  ['image/avif', (bytes) => startsWith(bytes, [0x66, 0x74, 0x79, 0x70, 0x61, 0x76, 0x69, 0x66], 4)],
   ['application/pdf', (bytes) => startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])],
 ]
 const sniff = (bytes: Uint8Array) => SIGNATURES.find(([, test]) => test(bytes))?.[0]
@@ -46,8 +50,10 @@ export const previewOf = (file: { name: string; mimeType: string }, bytes: Uint8
   const sniffed = sniff(bytes)
   switch (attachmentKind({ name: file.name, type: mimeType })) {
     case 'image':
-      // An image element runs nothing, whatever the image is.
-      return { kind: 'image', type: mimeType.startsWith('image/') ? mimeType : sniffed ?? 'image/png' }
+      if (isRasterImage(mimeType)) return { kind: 'image', type: mimeType }
+      // Its bytes may still be pixels; otherwise it is shown as what it is written in, such as an SVG.
+      if (sniffed?.startsWith('image/')) return { kind: 'image', type: sniffed }
+      return asText(file.name, mimeType, bytes)
     case 'pdf':
       return sniffed === 'application/pdf' ? { kind: 'pdf', type: sniffed } : { kind: 'none' }
     case 'audio':
