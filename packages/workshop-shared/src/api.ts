@@ -3785,6 +3785,20 @@ export interface Overseer extends RpcTarget {
   setChatTitle(chatId: number, title: string): Promise<void>;
 
   /**
+   * Pins or unpins a chat, files it under a folder or takes it out of one, or both at once (see
+   * `ChatPlacement`). Unlike setChatTitle(), it leaves `lastActive` alone, so the chat keeps its
+   * place in recency order. Throws if the folder name is blank.
+   */
+  setChatPlacement(chatId: number, placement: ChatPlacement): Promise<void>;
+
+  /**
+   * Renames a folder by refiling every chat under `folder` as `newName`, which merges them into
+   * that folder if one by that name exists. A null `newName` takes them all out of folders, which
+   * deletes the folder. Leaves `lastActive` alone. Throws if `newName` is blank.
+   */
+  renameChatFolder(folder: string, newName: string | null): Promise<void>;
+
+  /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
    * mainline. Always merges *everything* the chat proposes -- changes not yet materialized into a
    * `changes` message are swept in first, and there is no way to accept only a subset.
@@ -4103,6 +4117,22 @@ export type AiChatMetadata = {
   lastActive: Date,
 
   /**
+   * Whether the chat is pinned to the top of the workspace's chat list (unrelated to the code
+   * pins in `codeBase`). Like the title, and unlike a user's own pins such as
+   * `setWorkspacePinned()`, it belongs to the workspace, so every collaborator sees the same pins.
+   * Absent when not pinned. Set with `Overseer.setChatPlacement()`.
+   */
+  pinned?: boolean,
+
+  /**
+   * The name of the folder the workspace's chat list files this chat under. Chats with the same
+   * name make up one folder, so a folder exists only while some chat is in it. Independent of
+   * `pinned`. Absent when the chat is in no folder. Set with `Overseer.setChatPlacement()` and
+   * `Overseer.renameChatFolder()`.
+   */
+  folder?: string,
+
+  /**
    * If present, an LLM (described by the author info) is currently actively responding to the
    * chat.
    */
@@ -4175,6 +4205,21 @@ export type AiChatMetadata = {
    * first submitCodeChange() simply passes `generation: 0, revision: 0`.
    */
   codeBase?: ChatCodeBase;
+};
+
+/**
+ * A change to where a chat sits in its workspace's chat list, for `Overseer.setChatPlacement()`.
+ * A field that's present replaces the chat's own; one that's left out stays as it is, so changing
+ * one doesn't undo someone else's change to the other.
+ */
+export type ChatPlacement = {
+  /** Pins the chat (see `AiChatMetadata.pinned`), or unpins it when false. */
+  pinned?: boolean,
+  /**
+   * Files the chat under this folder (see `AiChatMetadata.folder`), or takes it out of its folder
+   * when null. Must not be blank.
+   */
+  folder?: string | null,
 };
 
 /**

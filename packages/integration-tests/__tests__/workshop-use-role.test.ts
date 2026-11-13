@@ -130,6 +130,8 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   uploadBlob: ws => ws.uploadBlob(new Uint8Array()),
   getChatAttachmentContent: ws => ws.getChatAttachmentContent(1, "attachment"),
   setChatTitle: ws => ws.setChatTitle(1, "Title"),
+  setChatPlacement: ws => ws.setChatPlacement(1, { pinned: true, folder: "Folder" }),
+  renameChatFolder: ws => ws.renameChatFolder("Folder", null),
   mergeChanges: ws => ws.mergeChanges(1),
   updateChatFromMainline: ws => ws.updateChatFromMainline(1),
   revertChanges: ws => ws.revertChanges(1, 0),
