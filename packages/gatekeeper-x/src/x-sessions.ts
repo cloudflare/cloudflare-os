@@ -568,7 +568,8 @@ export class XPostImpl extends RpcTarget implements XPost {
   }
 
   getConversationPost(postId: string): XPost {
-    return new XPostImpl(this.#ctx.dup(), parsePostRef(postId), () => this.#ownConversation());
+    const id = parsePostRef(postId);
+    return new XPostImpl(this.#ctx.dup(), id, () => this.#ownConversation());
   }
 
   async reply(draft: XPostDraft): Promise<XPost> {
@@ -1097,11 +1098,13 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
   }
 
   getPost(idOrUrl: string): XPost {
-    return new XPostImpl(this.#ctx.dup(), parsePostRef(idOrUrl));
+    const id = parsePostRef(idOrUrl);
+    return new XPostImpl(this.#ctx.dup(), id);
   }
 
   getUser(usernameOrUrl: string): XUser {
-    return new XUserImpl(this.#ctx.dup(), { username: parseUsernameRef(usernameOrUrl) });
+    const username = parseUsernameRef(usernameOrUrl);
+    return new XUserImpl(this.#ctx.dup(), { username });
   }
 
   getUserById(userId: string): XUser {
@@ -1110,7 +1113,8 @@ export class XAccountSessionImpl extends RpcTarget implements XAccountSession {
   }
 
   getList(idOrUrl: string): XList {
-    return new XListImpl(this.#ctx.dup(), parseListRef(idOrUrl));
+    const id = parseListRef(idOrUrl);
+    return new XListImpl(this.#ctx.dup(), id);
   }
 
   async createPost(draft: XPostDraft): Promise<XPost> {

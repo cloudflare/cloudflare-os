@@ -302,8 +302,9 @@ export class ObservationGate implements Disposable {
   }
 
   /**
-   * Releases the duplicated authorizer stub. Disposing during isolate shutdown trips a fatal
-   * workerd assertion; shipped gatekeepers leave the release to RPC connection teardown.
+   * Releases the duplicated authorizer stub. Call it from the `[Symbol.dispose]` of the capability
+   * or cursor that owns this gate, or when the call that took it fails before handing it over: the
+   * Workshop counts the session's collaborator as live until every duplicate is released.
    */
   [Symbol.dispose](): void {
     this.#authorizer[Symbol.dispose]();

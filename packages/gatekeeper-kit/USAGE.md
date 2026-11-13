@@ -999,6 +999,9 @@ Useful legacy operational constraints:
   while historical enforcement still needs them; do not introduce that storage for new gatekeepers.
 - An existing gate owns its duplicated authorizer stub and must be disposed. A session holding an
   action queue and a gate over `queue.dup()` releases both; a gate lease owns an independent dup.
+  Take a lease after the call's throwing or awaited setup, immediately before the cursor or
+  capability that disposes it, or release it when that setup fails: the Workshop counts the
+  session's collaborator as live until every duplicate is gone (see `Gatekeeper.startSession()`).
 
 ### A cursor authorizes everything it hands out
 

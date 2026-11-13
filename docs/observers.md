@@ -408,6 +408,15 @@ gadget-minted children alike:
   enabled hook's data flows through, and unlike a bind — which aborts gadget facets via
   `bumpVersion` — enabling a hook leaves existing facets running, so an uncounted retained facet
   would let that widening find no session to sever.
+- **Direct gatekeeper sessions** (`GatekeeperClientImpl.openSession`) count for as long as the
+  gatekeeper holds the session's approval queue (`openGatekeeperSession`'s `holder`): everything
+  the session hands out that discloses data authorizes through that queue, so it outlives every
+  child capability or cursor a client keeps after disposing the session. The gatekeeper owns the
+  release: each duplicate it keeps must be disposed with the last capability holding it, or when
+  the call that took it fails first (`Gatekeeper.startSession()`). A leaked duplicate keeps an
+  offline collaborator counted, so reads they would see keep being verified against their
+  account, and a lapsed or disconnected account can then refuse reads made through other
+  connections in the workspace.
 - **Known gap — `enableHook` neither counts nor aborts gadget-minted children.** The facet-stub
   lease above covers only the stub the overseer minted; a gadget-minted child is independently
   owned (see the preamble) and reachable only by the facet abort — which every binding mutation

@@ -1014,11 +1014,14 @@ type SubresourceObservation = ObservationDescription & { subresources: string[] 
 type SessionBinding = { kind: "organization"; slug: string } | { kind: "project"; ref: string };
 
 class SupabaseSessionContext {
-  // A .dup() of the queue passed to startSession (so it outlives that call). We deliberately do not
-  // dispose it ourselves: disposing a stub schedules an RPC release, and doing that during isolate
-  // shutdown trips a fatal workerd assertion. Like the reference gatekeepers, we let the session's
-  // RPC connection teardown reclaim it.
+  // A .dup() of the queue passed to startSession, shared by every capability the session hands out.
+  // A project or database can outlive the capability that opened it, so the stub is
+  // reference-counted rather than owned by any one of them: each retains it on construction and
+  // releases it on dispose, and it is disposed when the last holder goes away (see retain).
   #approvalQueue: RpcStub<ApprovalQueue>;
+  // Nothing holds the stub until the session's own capability is constructed; starting at one
+  // would leave the count permanently above zero.
+  #references = 0;
   #api: SupabaseApi;
   #cache: SupabaseCache;
   #pending: PendingActionStore;
@@ -1039,6 +1042,21 @@ class SupabaseSessionContext {
     this.#pending = pending;
     this.#noteExpired = noteExpired;
     this.#binding = binding;
+  }
+
+  /**
+   * Takes a reference to the approval queue, returning its idempotent release. Every capability
+   * built on this context retains in its constructor and releases in its `[Symbol.dispose]`, which
+   * Workers RPC calls once the client has released every stub to it.
+   */
+  retain(): () => void {
+    this.#references++;
+    let retained = true;
+    return () => {
+      if (!retained) return;
+      retained = false;
+      if (--this.#references === 0) this.#approvalQueue[Symbol.dispose]();
+    };
   }
 
   // Authorizes a read, reporting every subresource it depends on, which the Workshop checks through
@@ -1173,20 +1191,6 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
     return new SupabaseApi(this.#getAccessToken);
   }
 
-  #makeContext(approvalQueue: RpcStub<ApprovalQueue>): SupabaseSessionContext {
-    const binding: SessionBinding = this.ctx.props.resourceKind === "project"
-      ? { kind: "project", ref: this.#requireRef() }
-      : { kind: "organization", slug: this.#requireSlug() };
-    return new SupabaseSessionContext(
-      this.#makeApi(),
-      approvalQueue.dup(),
-      new SupabaseCache(this.ctx.storage.kv),
-      new PendingActionStore(this.ctx.storage.kv),
-      async () => { await this.#userAccount().noteCredentialsExpired(); },
-      binding,
-    );
-  }
-
   // -------------------------------------------------------------------------
   // Legacy observer tracking (see addObserver/removeObserver). Reads no longer record projects
   // here; what earlier reads recorded stays, and addObserver keeps checking it.
@@ -1257,12 +1261,25 @@ export class SupabaseGatekeeperImpl extends DurableObject<Env, SupabaseGatekeepe
     return AUTO_APPROVABLE_KINDS;
   }
 
+  /**
+   * The binding's props are checked before the queue is duplicated, so the duplicate goes straight
+   * to the session's capability, which retains it (see SupabaseSessionContext.retain).
+   */
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<SupabaseProject | SupabaseOrganization> {
-    const context = this.#makeContext(approvalQueue);
-    if (this.ctx.props.resourceKind === "project") {
-      return new SupabaseProjectImpl(context, this.#requireRef());
-    }
-    return new SupabaseOrganizationImpl(context, this.#requireSlug());
+    const binding: SessionBinding = this.ctx.props.resourceKind === "project"
+      ? { kind: "project", ref: this.#requireRef() }
+      : { kind: "organization", slug: this.#requireSlug() };
+    const context = new SupabaseSessionContext(
+      this.#makeApi(),
+      approvalQueue.dup(),
+      new SupabaseCache(this.ctx.storage.kv),
+      new PendingActionStore(this.ctx.storage.kv),
+      async () => { await this.#userAccount().noteCredentialsExpired(); },
+      binding,
+    );
+    return binding.kind === "project"
+      ? new SupabaseProjectImpl(context, binding.ref)
+      : new SupabaseOrganizationImpl(context, binding.slug);
   }
 
   /**
@@ -1459,11 +1476,17 @@ async function fetchProjectInfo(ctx: SupabaseSessionContext, ref: string): Promi
 class SupabaseOrganizationImpl extends RpcTarget implements SupabaseOrganization {
   #ctx: SupabaseSessionContext;
   #slug: string;
+  #release: () => void;
 
   constructor(ctx: SupabaseSessionContext, slug: string) {
     super();
     this.#ctx = ctx;
     this.#slug = slug;
+    this.#release = ctx.retain();
+  }
+
+  [Symbol.dispose](): void {
+    this.#release();
   }
 
   async getInfo(): Promise<SupabaseOrganizationInfo> {
@@ -1502,19 +1525,27 @@ class SupabaseOrganizationImpl extends RpcTarget implements SupabaseOrganization
   }
 
   async getProject(ref: string): Promise<SupabaseProject> {
-    // Authorize first: this performs an external read and would otherwise be an unlogged
-    // existence/membership oracle for arbitrary project refs.
-    await this.#ctx.authorizeProjectRead(ref, {
-      title: "Open Supabase project",
-      description: `Look up Supabase project \`${ref}\` within organization \`${this.#slug}\`.`,
-    });
+    // Held until the project has retained the queue, so the count cannot reach zero across the
+    // awaits below even if this organization is released mid-call, without relying on Workers RPC
+    // deferring its dispose until the call returns; released however the call ends.
+    const release = this.#ctx.retain();
+    try {
+      // Authorize first: this performs an external read and would otherwise be an unlogged
+      // existence/membership oracle for arbitrary project refs.
+      await this.#ctx.authorizeProjectRead(ref, {
+        title: "Open Supabase project",
+        description: `Look up Supabase project \`${ref}\` within organization \`${this.#slug}\`.`,
+      });
 
-    // Verify the project belongs to this organization before handing out a capability for it.
-    const project = await fetchProjectInfo(this.#ctx, ref);
-    if (project.organizationSlug !== this.#slug) {
-      throw new Error(`Project ${ref} is not part of organization ${this.#slug}.`);
+      // Verify the project belongs to this organization before handing out a capability for it.
+      const project = await fetchProjectInfo(this.#ctx, ref);
+      if (project.organizationSlug !== this.#slug) {
+        throw new Error(`Project ${ref} is not part of organization ${this.#slug}.`);
+      }
+      return new SupabaseProjectImpl(this.#ctx, ref);
+    } finally {
+      release();
     }
-    return new SupabaseProjectImpl(this.#ctx, ref);
   }
 }
 
@@ -1522,11 +1553,17 @@ class SupabaseOrganizationImpl extends RpcTarget implements SupabaseOrganization
 class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
   #ctx: SupabaseSessionContext;
   #ref: string;
+  #release: () => void;
 
   constructor(ctx: SupabaseSessionContext, ref: string) {
     super();
     this.#ctx = ctx;
     this.#ref = ref;
+    this.#release = ctx.retain();
+  }
+
+  [Symbol.dispose](): void {
+    this.#release();
   }
 
   async getInfo(): Promise<SupabaseProjectInfo> {
@@ -1616,11 +1653,17 @@ class SupabaseProjectImpl extends RpcTarget implements SupabaseProject {
 class SupabaseDatabaseImpl extends RpcTarget implements SupabaseDatabase {
   #ctx: SupabaseSessionContext;
   #ref: string;
+  #release: () => void;
 
   constructor(ctx: SupabaseSessionContext, ref: string) {
     super();
     this.#ctx = ctx;
     this.#ref = ref;
+    this.#release = ctx.retain();
+  }
+
+  [Symbol.dispose](): void {
+    this.#release();
   }
 
   async query(sql: string, params?: SupabaseValue[]): Promise<SupabaseQueryResult> {

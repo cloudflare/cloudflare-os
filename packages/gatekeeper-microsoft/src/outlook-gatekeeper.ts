@@ -154,8 +154,10 @@ export class OutlookGatekeeper extends DurableObject<Env, OutlookGatekeeperProps
 
   [restore](_params: OutlookHookParams): OutlookHookDelivery {
     // The binding's own props decide what is delivered; a hook names nothing narrower.
-    return new OutlookHookDeliveryImpl(async approvalQueue =>
-      new OutlookContext(this.#sessionHost(await this.#access()), approvalQueue, this.#observers));
+    return new OutlookHookDeliveryImpl(async approvalQueue => {
+      const access = await this.#access();
+      return new OutlookContext(this.#sessionHost(access), approvalQueue.dup(), this.#observers);
+    });
   }
 
   async applyAction(actionId: number, _cache: RpcStub<GitCache>): Promise<void> {

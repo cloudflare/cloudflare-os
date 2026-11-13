@@ -6,7 +6,7 @@
 // a facet, or to a session it mints, cannot be handed to the test, so TestHooks runs each scenario
 // itself -- a chain of method calls on a session -- and returns the result as plain data.
 
-import { DurableObject, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
   ActionDescription, ConnectHandoff, GatekeeperConnectCallback, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -72,6 +72,15 @@ export class RecordingQueue extends RpcTarget {
   }
 }
 
+/** A `RecordingQueue` that records when native RPC releases it: once every stub to it is disposed. */
+class TrackedQueue extends RecordingQueue {
+  released = false;
+
+  [Symbol.dispose](): void {
+    this.released = true;
+  }
+}
+
 /** A forwarded call's result as plain data: an expected rejection crossing RPC also reports as unhandled. */
 export type Outcome<T> = { ok: T } | { error: string };
 
@@ -110,10 +119,13 @@ type GatekeeperFacet = {
     this.ctx.storage.kv.put(key, value);
   };
 
+type Tracked = { queue: TrackedQueue; held: Callable[] };
+
 class NullGitCache extends RpcTarget {}
 
 export class TestHooks extends DurableObject<Cloudflare.Env> {
   #queues = new Map<string, RecordingQueue>();
+  #tracked = new Map<string, Tracked>();
 
   get #exports(): TestExports {
     return this.ctx.exports as unknown as TestExports;
@@ -166,6 +178,44 @@ export class TestHooks extends DurableObject<Cloudflare.Env> {
         for (const capability of owned.toReversed()) capability[Symbol.dispose]?.();
       }
     });
+  }
+
+  /**
+   * Opens a session on a fresh `TrackedQueue` passed as a native `RpcStub`, whose own stub is
+   * disposed at once, and makes each call in `steps` on what the call before returned. The session
+   * and every capability returned are held, undisposed, for `disposeHeld`/`callHeld`; index 0 is
+   * the session. The last call's outcome comes back.
+   */
+  async openTracked(facetName: string, props: GatekeeperProps, steps: Step[]): Promise<Outcome<unknown>> {
+    const queue = new TrackedQueue();
+    const tracked: Tracked = { queue, held: [] };
+    this.#tracked.set(facetName, tracked);
+    const stub = new RpcStub(queue);
+    const session = await this.#gatekeeper(facetName, props)
+      .startSession(stub as unknown as RecordingQueue);
+    stub[Symbol.dispose]();
+    tracked.held.push(session);
+    return await outcome(async () => {
+      let target: Callable = session;
+      for (const [method, ...args] of steps) {
+        target = await target[method](...args) as Callable;
+        tracked.held.push(target);
+      }
+      return null;
+    });
+  }
+
+  disposeHeld(facetName: string, index: number): void {
+    this.#tracked.get(facetName)!.held[index][Symbol.dispose]?.();
+  }
+
+  async callHeld(facetName: string, index: number, method: string, ...args: unknown[]): Promise<Outcome<unknown>> {
+    return await outcome(() => this.#tracked.get(facetName)!.held[index][method](...args));
+  }
+
+  trackedQueue(facetName: string): { released: boolean; observations: number } {
+    const { queue } = this.#tracked.get(facetName)!;
+    return { released: queue.released, observations: queue.observations.length };
   }
 
   /** What the facet's approval queue has recorded. */

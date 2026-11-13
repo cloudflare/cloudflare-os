@@ -1077,6 +1077,13 @@ export interface Gatekeeper<Session> extends DurableObject {
    * dependent actions. That said, there is no strict requirement that a gatekeeper does such
    * simulation -- it is really up to the gatekeeper author to decide what is appropriate for the
    * particular API.
+   *
+   * `approvalQueue` is disposed when this call returns; a session that keeps it stores a `dup()`.
+   * The Workshop counts a collaborator's session as live, and verifies reads against their
+   * account, for as long as any duplicate is held, so release each one exactly when nothing that
+   * can use it remains: in the `[Symbol.dispose]` of the last capability or cursor that holds it
+   * (one a client retains after disposing its parent keeps it), and before throwing when a call
+   * fails after duplicating it but before handing it to such an owner.
    */
   startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session>;
 

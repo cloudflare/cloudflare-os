@@ -52,6 +52,7 @@ export default defineConfig({
       "__tests__/workerd/gmail-hooks.test.ts",
       "__tests__/workerd/gmail-observers.test.ts",
       "__tests__/workerd/gmail-state.test.ts",
+      "__tests__/workerd/session-queue-release.test.ts",
       "__tests__/workerd/workspace-observers.test.ts",
     ],
     setupFiles: ["@gadgets/scripts/assert-workerd"],
