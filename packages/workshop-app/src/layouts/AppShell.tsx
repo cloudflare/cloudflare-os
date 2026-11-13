@@ -16,10 +16,8 @@ export type AppShellProps = {
   initialSidebar?: SidebarSize
   /** The sidebar came to rest on the rail or at another width, to be kept for the next time. */
   onSidebarChange?: (size: SidebarSize) => void
-  /** Said over everything, at the top of the window, without moving it: e.g. that the app is reconnecting. */
-  status?: ReactNode
   children: ReactNode
-} & Pick<SplitLayoutProps, 'aside' | 'asideAlone' | 'asideFullScreen' | 'onOpenAside' | 'onCloseAside' | 'initialAsideShare' | 'onAsideShareChange'>
+} & Pick<SplitLayoutProps, 'status' | 'aside' | 'asideAlone' | 'asideFullScreen' | 'onOpenAside' | 'onCloseAside' | 'initialAsideShare' | 'onAsideShareChange'>
 
 // The sidebar's width expanded, in pixels. An arrow key moves it by a step.
 const SIDEBAR = { min: 208, initial: 248, max: 400, step: 8 }
@@ -219,6 +217,7 @@ export const AppShell = ({
       {/* The inset is this frame's own padding. */}
       <SplitLayout
         aside={aside}
+        status={status}
         asideAlone={asideAlone}
         asideFullScreen={asideFullScreen}
         onOpenAside={onOpenAside}
@@ -229,7 +228,6 @@ export const AppShell = ({
       >
         {children}
       </SplitLayout>
-      {status && <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">{status}</div>}
     </div>
   )
 }

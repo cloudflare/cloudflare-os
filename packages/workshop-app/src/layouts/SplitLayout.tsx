@@ -12,6 +12,12 @@ export type SplitLayoutProps = {
   /** What is open beside the page, if anything. */
   aside?: ReactNode
   /**
+   * Said over the page, at the top of the window, without moving it: e.g. that the app is
+   * reconnecting. Centred over the page's card, or over the room while the aside is the page, and
+   * over the window while the aside fills it.
+   */
+  status?: ReactNode
+  /**
    * The aside takes all of the room, and the page none: it is the page. Going there and back, the
    * aside grows over to it and the page goes, without the aside moving in the document.
    */
@@ -167,7 +173,7 @@ const AsideCard = ({ share, open, alone, isPage, dim, fullScreen, onGone, childr
  * it out.
  */
 export const SplitLayout = ({
-  children, aside, asideAlone = false, asideFullScreen = false, initialAsideShare, onAsideShareChange, onOpenAside, onCloseAside, edgeInset = 0,
+  children, aside, status, asideAlone = false, asideFullScreen = false, initialAsideShare, onAsideShareChange, onOpenAside, onCloseAside, edgeInset = 0,
 }: SplitLayoutProps) => {
   const reduceMotion = useReducedMotion() ?? false
   const root = useRef<HTMLDivElement>(null)
@@ -213,6 +219,23 @@ export const SplitLayout = ({
     share.jump(reopensAt.current)
     reopensAt.current = undefined
   }
+
+  // How wide what is said over the page is centred in: the page's card, going over to the whole
+  // room as the aside takes the page's place.
+  const statusWidth = useMotionValue<number | string>('100%')
+  const placeStatus = useEffectEvent(() => {
+    if (!page.current || !root.current) return
+    const card = page.current.offsetWidth
+    statusWidth.set(card + (root.current.offsetWidth - card) * alone.get())
+  })
+  useLayoutEffect(() => {
+    placeStatus()
+    const observer = new ResizeObserver(() => placeStatus())
+    observer.observe(page.current!)
+    observer.observe(root.current!)
+    return () => observer.disconnect()
+  }, [])
+  useMotionValueEvent(alone, 'change', () => placeStatus())
 
   const hinting = useEdgeHint(shown, asideAlone)
 
@@ -304,7 +327,7 @@ export const SplitLayout = ({
   }, [shown])
 
   return (
-    <div ref={root} className={cn('flex min-w-0 flex-1', SCROLLBARS_AWAY)}>
+    <div ref={root} className={cn('relative flex min-w-0 flex-1', SCROLLBARS_AWAY)}>
       {/* Out of reach under an aside that fills the window, or the room. */}
       <motion.main ref={page} style={{ flexGrow: pageGrow, opacity: pageOpacity }} inert={asideFullScreen || asideAlone} className={PANE}>
         <motion.div style={{ width: pageWidth }} className="flex min-h-0 flex-1 flex-col">{children}</motion.div>
@@ -361,6 +384,19 @@ export const SplitLayout = ({
       <AnimatePresence initial={false}>
         {shown ? <AsideCard key="aside" share={share} open={open} alone={alone} isPage={asideAlone} dim={dim} fullScreen={asideFullScreen} onGone={reopened}>{aside}</AsideCard> : null}
       </AnimatePresence>
+      {/* Over the page from where the layout starts, at the window's `top-4`; over the window when
+          the aside fills it. The same element either way, so that what is in it carries on. */}
+      {status && (
+        <motion.div
+          style={asideFullScreen ? undefined : { width: statusWidth }}
+          className={cn(
+            'pointer-events-none z-50 flex justify-center',
+            asideFullScreen ? 'fixed inset-x-0 top-4' : 'absolute top-2 left-0',
+          )}
+        >
+          {status}
+        </motion.div>
+      )}
     </div>
   )
 }
