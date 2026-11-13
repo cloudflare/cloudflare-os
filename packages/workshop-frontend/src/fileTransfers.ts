@@ -28,7 +28,7 @@ type SaveFilePicker = (options: {
   }>
 }) => Promise<SaveFileHandle>
 
-function triggerBlobDownload(blob: Blob, filename: string): void {
+export function saveBlobToFile(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob)
 
   try {
@@ -90,11 +90,11 @@ export async function saveStreamToFile(
   }
 
   const stream = await createStream()
-  triggerBlobDownload(await new Response(stream, {
+  saveBlobToFile(await new Response(stream, {
     headers: { 'Content-Type': fileType.contentType },
   }).blob(), filename)
 }
 
 export function saveTextToFile(filename: string, content: string): void {
-  triggerBlobDownload(new Blob([content], { type: 'text/plain;charset=utf-8' }), filename)
+  saveBlobToFile(new Blob([content], { type: 'text/plain;charset=utf-8' }), filename)
 }

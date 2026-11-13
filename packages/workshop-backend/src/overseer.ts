@@ -27,7 +27,7 @@ import {
 import type { UserAiModelRecord, WorkspaceOutputEntry } from "./storage-schema/user-storage";
 import { filesEqual, threeWayMerge, type MergeResult } from "./three-way-merge";
 import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor } from "./git-cache";
-import type { BlobReader } from "./git-chunked-blob";
+import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings,
@@ -69,7 +69,7 @@ import {
   buildReleasePack, buildSnapshotRelease, encodeReleaseCommit, releaseMergeHeader,
   releasesMergedBy, type Release,
 } from "./blueprint-release";
-import { EMPTY_TREE_OID, gitObjectOid, parseGitCommitRefs } from "./git-codec";
+import { EMPTY_TREE_OID, gitObjectOid, parseGitCommitRefs, validateGitOid } from "./git-codec";
 import {
   listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
@@ -583,6 +583,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // ActionLogEntry omits the gatekeeperId for records that didn't come from a real gatekeeper
   // (built-in agent tools use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
   let gatekeeperId = record.gatekeeperId >= 0 ? record.gatekeeperId : undefined;
+  let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
 
   switch (record.type) {
     case "observation": {
@@ -592,6 +593,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       return {
         id: record.id,
         gatekeeperId,
+        chatId,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
@@ -604,6 +606,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       return {
         id: record.id,
         gatekeeperId,
+        chatId,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
@@ -621,6 +624,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
       return {
         id: record.id,
         gatekeeperId,
+        chatId,
         resourceTitle: record.resourceTitle || "(title unavailable)",
         resourceUrl: record.resourceUrl,
         createdAt: record.createdAt,
@@ -2101,8 +2105,10 @@ class OverseerImpl implements AgentHooks {
         .map(meta => meta.id));
   }
 
-  // Re-puts the chats' metadata, re-broadcasting what they propose: removing a workpiece or an
-  // edge changes that with no chatMeta write of the chat's own (as reconcilePendingGadgets).
+  // Re-puts the chats' metadata, re-broadcasting the fields derived from other state (see
+  // chatMetaForClient) when that state changes with no chatMeta write of the chat's own: removing
+  // a workpiece or an edge changes what a chat proposes (as reconcilePendingGadgets), and a
+  // decision whether it is waiting on one.
   #rebroadcastChatMeta(chatIds: Iterable<number>): void {
     for (let chatId of chatIds) {
       let meta = this.storage.chatMeta.get(chatId);
@@ -2846,14 +2852,19 @@ class OverseerImpl implements AgentHooks {
   }
 
   // A chat metadata record as delivered to clients: the stored row with the derived
-  // `proposedChangeWorkpieces` list attached (see proposedChangeWorkpieceIds) and the retired
-  // `hasProposedChanges` flag dropped (see StoredChatMetadata). Never mutates the input.
+  // `proposedChangeWorkpieces` list and `awaitingDecision` flag attached (see
+  // proposedChangeWorkpieceIds and #decisionWait) and the retired `hasProposedChanges` flag
+  // dropped (see StoredChatMetadata). Never mutates the input.
   chatMetaForClient(stored: StoredChatMetadata): AiChatMetadata {
     let meta: StoredChatMetadata = {...stored};
     delete meta.hasProposedChanges;
     let proposed = this.proposedChangeWorkpieceIds(stored.id, stored);
     if (proposed.length > 0) {
       meta.proposedChangeWorkpieces = proposed;
+    }
+    // A responding agent is not stopped on anything, so its chat skips the log scan.
+    if (!stored.activeAgent && this.#decisionWait(stored.id)?.pending) {
+      meta.awaitingDecision = true;
     }
     return meta;
   }
@@ -10047,19 +10058,34 @@ class OverseerImpl implements AgentHooks {
 
   // No await: the decision, its model-visible note, busy state, execution row and alarm all
   // precede model lookup. Live resumption and restart recovery then use the same #resumeAgent.
+  // Every decision a turn waits on comes through here with its id, and that keeps
+  // `awaitingDecision` current: it is derived as metadata is sent, so when such a decision leaves
+  // the agent stopped, this re-sends the metadata (a resume writes it anyway). The callers that
+  // pass no decision are only checking whether a turn can go on, which changes no metadata.
   resumeAgentAfterDecision(chatId: number, decisionId?: number | string): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (meta?.activeAgent) return; // Teardown rechecks after releasing this execution.
+    let staysStopped = () => {
+      if (decisionId !== undefined) this.#rebroadcastChatMeta([chatId]);
+    };
     let record = this.storage.activeAgents.get(chatId);
-    if (!record) return;
+    if (!record) {
+      staysStopped();
+      return;
+    }
     let wait = this.#decisionWait(chatId);
     if (wait && decisionId !== undefined && !(typeof decisionId === "number"
         ? wait.actionIds.includes(decisionId) : wait.requestIds.includes(decisionId))) return;
     if (!meta || !wait || wait.denied) {
       this.storage.activeAgents.delete(chatId);
+      staysStopped();
       return;
     }
-    if (wait.pending || this.isPreparingChatMessage(chatId)) return;
+    if (wait.pending) return; // Still waiting, as the metadata already says.
+    if (this.isPreparingChatMessage(chatId)) {
+      staysStopped();
+      return;
+    }
     let text = wait.titles.length
         ? `The changes you submitted have been approved and applied: ${wait.titles.map(t => `"${t}"`).join(", ")}. Reads now reflect them.`
         : wait.connections
@@ -13063,6 +13089,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return oid;
   }
 
+  async readBlob(oid: string): Promise<ReadableStream<Uint8Array>> {
+    return blobByteStream(await this.impl.gitCache.openBlob(validateGitOid(oid)));
+  }
+
   // Fetch the bytes of a committed chat attachment over the authenticated RPC connection. The
   // caller already has its canonical metadata from the ChatAttachmentRef in the message.
   async getChatAttachmentContent(chatId: number, id: string): Promise<Uint8Array> {
@@ -13951,6 +13981,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       : Promise<string> {
     this.#deny();
   }
+  async readBlob(_oid: string): Promise<ReadableStream<Uint8Array>> { this.#deny(); }
   async getChatAttachmentContent(_chatId: number, _id: string): Promise<Uint8Array> { this.#deny(); }
   async setChatTitle(_chatId: number, _title: string): Promise<void> { this.#deny(); }
   async mergeChanges(_chatId: number): Promise<MergeChangesResult> {
@@ -14757,6 +14788,7 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       started: timestamp,
       lastActive: timestamp,
       spawnerName: config.displayName,
+      spawnerId: this.gatekeeperId,
     };
     this.impl.storage.chatMeta.put(meta);
 
