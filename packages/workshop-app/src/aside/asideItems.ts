@@ -1,3 +1,4 @@
+import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatAttachment, OutputFormat } from '@/chat/chatItems'
 
@@ -139,4 +140,30 @@ export const chatAsideItems = (workspaceId: string, chatId: number, chat: ChatSn
     }
   }
   return [...found.values()]
+}
+
+/**
+ * What a workspace has made, to list beside one of its chats, most recent first: its outputs as
+ * the library has them, and what the chat has made that the library does not have yet (a gadget
+ * whose changes are still to be accepted, a worktree). Each is as recent as it was made, or as
+ * the chat last worked on it if later, and is shown with the changes proposed in `chatId`. The
+ * library's title is the current one.
+ */
+export const workspaceAsideItems = (workspaceId: string, chatId: number | undefined, library: OutputSummary[], chat: AsideItem[]): AsideItem[] => {
+  // The chat's first, which are in the order it worked on them, for that to hold between equals.
+  const found = new Map(chat.filter(({ kind }) => kind === 'output').map((item) => [item.key, item]))
+  for (const summary of library) {
+    if (summary.workspaceId !== workspaceId) continue
+    const key = formatAsideRef({ kind: 'output', workpieceId: summary.workpieceId })
+    const worked = found.get(key)?.at
+    const format = summary.output && { noun: summary.output.noun, icon: summary.output.icon }
+    found.set(key, {
+      key,
+      title: summary.title || 'Untitled',
+      at: worked && worked > summary.created ? worked : summary.created,
+      kind: 'output',
+      output: { workspaceId, workpieceId: summary.workpieceId, type: 'gadget', format, chatId },
+    })
+  }
+  return [...found.values()].toSorted((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
 }

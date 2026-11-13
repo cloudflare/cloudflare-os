@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { CaretLeftIcon } from '@phosphor-icons/react'
-import { chatAsideItems, type AsideItem } from '@/aside/asideItems'
+import type { AsideItem } from '@/aside/asideItems'
 import { asideItemIcon } from '@/aside/asideItemIcon'
+import { useChatLibrary } from '@/aside/useChatLibrary'
 import { FileListItem } from '@/blocks/FileListItem'
 import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
@@ -31,8 +32,8 @@ export type ChatSettingsPaneProps = {
 }
 
 /**
- * What a chat has, apart from the conversation: for now, the files sent in it and the outputs it
- * made, latest first, grouped by when. The whole conversation is read for them, a page at a time.
+ * What a chat has, apart from the conversation: for now, what its workspace has made, as beside
+ * the chat (`useChatLibrary`), latest first, grouped by when.
  */
 export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, onOpenWorkspace, onOpenItem, itemHref }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
@@ -49,13 +50,8 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
   }
   useDocumentTitle(title ? `Settings · ${title}` : 'Chat settings')
 
-  // What was sent or made before the part of the conversation that is loaded is still to be found.
-  const reading = chat.status === 'ready' && chat.hasEarlier && !chat.historyError
-  useEffect(() => {
-    if (reading && chat.status === 'ready' && !chat.loadingEarlier) void actions.loadEarlier()
-  }, [reading, chat, actions])
-
-  const groups = groupByTime(chatAsideItems(workspaceId, chatId, chat).map((item) => ({ value: item, at: item.at })))
+  const library = useChatLibrary({ workspaceId, chatId })
+  const groups = groupByTime(library.items.map((item) => ({ value: item, at: item.at })))
 
   return (
     <PageLayout
@@ -85,8 +81,8 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
         </div>
         {chat.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading the chat…</p>}
-        {chat.status === 'ready' && groups.length === 0 && !reading && (
-          <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. Files sent in the chat and what it makes show here.</p>
+        {chat.status === 'ready' && groups.length === 0 && !library.reading && !library.problem && (
+          <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. What this workspace makes shows here.</p>
         )}
         {groups.map(({ key, label, entries }) => (
           <ListGroup key={key} label={label}>
@@ -102,11 +98,11 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
             ))}
           </ListGroup>
         ))}
-        {reading && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Looking further back in the chat…</p>}
-        {chat.status === 'ready' && chat.historyError && (
+        {library.reading && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading the library…</p>}
+        {library.problem && (
           <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
-            Couldn’t read the whole chat: {chat.historyError}
-            <Button variant="ghost" onClick={() => void actions.loadEarlier()}>Try again</Button>
+            Couldn’t load the library: {library.problem}
+            {library.retry && <Button variant="ghost" onClick={library.retry}>Try again</Button>}
           </p>
         )}
       </div>

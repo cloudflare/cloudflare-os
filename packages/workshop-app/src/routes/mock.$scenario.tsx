@@ -99,12 +99,12 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
 }) => {
   const [open, setOpen] = useState<string>()
   const named = parseAsideRef(open)
-  // Had back before anything the chat has is known: open empty while the chat is read for it.
+  // Had back before what the workspace has made is known: open empty while the library is read.
   const [askedEmpty, setAskedEmpty] = useState(false)
   if (askedEmpty && named) setAskedEmpty(false)
   const openedEmpty = askedEmpty && !named
-  const library = useChatLibrary(CHAT, openedEmpty)
-  const { items } = library
+  const library = useChatLibrary(CHAT)
+  const { items, known } = library
   const firstFound = openedEmpty ? items[0]?.key : undefined
   useEffect(() => {
     if (firstFound !== undefined) setOpen(firstFound)
@@ -129,7 +129,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
         ) : named && !settings && (expanded ? (
           <AsidePane
             placement="page"
-            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
+            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
             fullScreen={false}
             onFullScreenChange={handlers.onFullScreenChange}
             onCollapse={() => setExpanded(false)}
@@ -137,7 +137,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, child
         ) : (
           <AsidePane
             placement="beside"
-            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, items)}
+            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
             items={items}
             onSelect={setOpen}
             onHide={() => setOpen(undefined)}

@@ -22,7 +22,7 @@ export type SidePaneItem = {
 }
 
 type Placement =
-  /** Beside the page, showing one of what the page has, such as what the chat made. */
+  /** Beside the page, showing one of what the page has, such as what its workspace made. */
   | {
       placement: 'beside'
       /** What there is to show, most recent first. There may be nothing. */
@@ -117,7 +117,7 @@ export const SidePane = (props: SidePaneProps) => {
           {beside && choices && choices.length > 1 && (
             <HeaderBubble>
               <DropdownMenu
-                aria-label={`Switch between the ${beside.items.length} in this chat`}
+                aria-label={`Switch between the ${beside.items.length} in this workspace`}
                 triggerVariant="ghost"
                 keepTrigger
                 triggerClassName="bg-kumo-tint px-3 text-kumo-subtle ring-1 ring-kumo-line hover:text-kumo-default"

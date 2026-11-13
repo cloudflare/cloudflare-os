@@ -23,9 +23,9 @@ export type AsidePaneProps = {
   onFullScreenChange: (on: boolean) => void
 } & (
   | {
-      /** Beside the page: one of what the chat has to show. */
+      /** Beside the page: one of what can be shown beside the chat. */
       placement: 'beside'
-      /** What the chat has to show, most recent first. */
+      /** What can be shown beside the chat, most recent first. */
       items: AsideItem[]
       onSelect: (key: string) => void
       onHide: () => void
@@ -103,9 +103,9 @@ export const AsidePane = (props: AsidePaneProps) => {
 }
 
 export type EmptyAsidePaneProps = {
-  /** More of the chat is being read for what it has. */
+  /** The library is being read for what the workspace has made. */
   reading: boolean
-  /** Why the chat could not be read. */
+  /** Why the library could not be read. */
   problem?: string
   /** Reads on after a problem. */
   onRetry?: () => void
@@ -113,22 +113,22 @@ export type EmptyAsidePaneProps = {
 }
 
 /**
- * The pane beside a chat with nothing in it yet: opened before anything the chat has was known,
- * while the rest of the chat is read for it, and then if it has nothing.
+ * The pane beside a chat with nothing in it yet: opened before what its workspace has made was
+ * known, while the library is read for it, and then if it has made nothing.
  */
 export const EmptyAsidePane = ({ reading, problem, onRetry, onHide }: EmptyAsidePaneProps) => (
   <SidePane placement="beside" items={[]} onSelect={() => {}} onHide={onHide}>
     {problem ? (
       <PaneNotice
         icon={WarningCircleIcon}
-        title="Couldn’t read the whole chat"
+        title="Couldn’t load the library"
         description={problem}
         action={onRetry && { label: 'Try again', onClick: onRetry }}
       />
     ) : reading ? (
-      <PaneNotice title="Looking through the chat…" />
+      <PaneNotice title="Loading…" />
     ) : (
-      <PaneNotice icon={TrayIcon} title="Nothing here yet" description="Files sent in the chat and what it makes show here." />
+      <PaneNotice icon={TrayIcon} title="Nothing here yet" description="What this workspace makes shows here." />
     )}
   </SidePane>
 )
