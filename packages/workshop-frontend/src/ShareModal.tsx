@@ -561,7 +561,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
   // are disabled (`ownerInvitesOnly`) no link grants anything, so the control would misstate the
   // link's effect: it goes, and a leftover default link is listed with the others to be revoked.
   const myDefaultLink = canUseShareLinks
-    ? visibleShareLinks.find(link => link.isDefault && link.createdBy.id === currentUser?.id)
+    ? visibleShareLinks.find(link => link.default && link.createdBy.id === currentUser?.id)
     : undefined
   // Only the owner and a link's creator can copy, rename or revoke it, so anyone else's links
   // aren't listed to a collaborator; they still explain how people joined.
@@ -786,7 +786,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
     setCreatingDefaultLink(true)
     try {
       const { key, linkId } = await overseer.createShareLink(
-        grantFor(gadgetId), undefined, { isDefault: true })
+        grantFor(gadgetId), undefined, { default: true })
       // Kept so the first Copy needs no round trip and lands within the click's user activation.
       copiedUrlsRef.current.set(linkId, destinationUrl(metadata.id, gadgetId, key))
       await loadData()
@@ -1415,8 +1415,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                 {advancedShareLinks.map((sk, index) => {
                   const isRevoking = revokeTarget?.linkId === sk.linkId
                   const isRenaming = editingShareLinkId === sk.linkId
-                  // Default links have no note; they're told apart by who made them.
-                  const name = !sk.isDefault ? sk.note
+                  // Default links are named for who made them, not by a note.
+                  const name = !sk.default ? sk.note
                     : sk.createdBy.id === currentUser?.id ? 'Your link' : `${sk.createdBy.name}’s link`
                   return (
                     <div key={sk.linkId} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedShareLinkId === sk.linkId ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
@@ -1496,7 +1496,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, target, 
                                 </button>
                               </Tooltip>
                             )}
-                            {!sk.isDefault && (
+                            {!sk.default && (
                               <WorkshopIconButton
                                 className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                                 onClick={() => startRenameShareLink(sk)}

@@ -1161,7 +1161,7 @@ export type ShareLinkRecord = {
    * creator has at most one non-revoked default link per grant; links created before default
    * links existed have none.
    */
-  isDefault?: true;
+  default?: true;
 
   /**
    * Soft-revocation flag. Revoking a link sets this rather than deleting the record, so that the

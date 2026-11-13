@@ -1366,7 +1366,7 @@ describe('ShareModal', () => {
 
   it('stops offering the default link once share links are disabled, but still lets it be revoked', async () => {
     const myLink: ShareLinkInfo = {
-      linkId: 'link-mine', created: CREATED, createdBy: CURRENT_USER, role: 'build', isDefault: true,
+      linkId: 'link-mine', created: CREATED, createdBy: CURRENT_USER, role: 'build', default: true,
     }
     const previewRevokeShareLink = vi.fn<Overseer['previewRevokeShareLink']>(async () => [])
     const rendered = await render(fakeOverseer({ shareLinks: [myLink], previewRevokeShareLink }))
@@ -1585,10 +1585,10 @@ describe('ShareModal', () => {
 
   describe('anyone with my link', () => {
     const MY_DEFAULT: ShareLinkInfo = {
-      linkId: 'link-mine', created: CREATED, createdBy: CURRENT_USER, role: 'build', isDefault: true,
+      linkId: 'link-mine', created: CREATED, createdBy: CURRENT_USER, role: 'build', default: true,
     }
     const BEA_DEFAULT: ShareLinkInfo = {
-      linkId: 'link-bea', created: CREATED, createdBy: BUILD_MEMBER.profile, role: 'build', isDefault: true,
+      linkId: 'link-bea', created: CREATED, createdBy: BUILD_MEMBER.profile, role: 'build', default: true,
     }
 
     it('starts at no access, then turns on a default link for the gadget and copies it', async () => {
@@ -1606,7 +1606,7 @@ describe('ShareModal', () => {
       expect(footerCopyLink(rendered).disabled).toBe(true)
 
       await chooseLinkAccess(rendered, 'Can use')
-      expect(createShareLink).toHaveBeenCalledWith({ gadgetId: 0 }, undefined, { isDefault: true })
+      expect(createShareLink).toHaveBeenCalledWith({ gadgetId: 0 }, undefined, { default: true })
       expect(linkAccess(rendered)).toBe('Can use')
       // The default link is presented only here, not among the named links.
       expect(rendered.querySelector('#links-heading')).toBeNull()
@@ -1687,7 +1687,7 @@ describe('ShareModal', () => {
       { type: 'user', sharer: OWNER.id, created: CREATED, role: 'build' },
     ])
     const OLIVE_LINK: ShareLinkInfo = {
-      linkId: 'link-olive', created: CREATED, createdBy: OWNER, role: 'build', isDefault: true,
+      linkId: 'link-olive', created: CREATED, createdBy: OWNER, role: 'build', default: true,
     }
     const LINKED = collaborator('lou@example.com', 'Lou', { role: 'build' }, [
       { type: 'shareKey', keyId: OLIVE_LINK.linkId, created: CREATED, role: 'build' },

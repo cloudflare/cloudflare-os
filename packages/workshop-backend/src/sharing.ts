@@ -488,11 +488,8 @@ export class SharingManager {
     caller: SharingCaller;
     grant: CollaboratorGrant;
     note?: string;
-    isDefault?: boolean;
+    default?: boolean;
   }): Promise<{ key: string; linkId: string }> {
-    if (opts.isDefault && opts.note !== undefined) {
-      throw new Error("A default share link has no note.");
-    }
     let fields = this.#grantFields(opts.grant);
     this.#requireCanShare(opts.caller);
 
@@ -501,7 +498,7 @@ export class SharingManager {
 
     // Looked up after the await, right before the write, so that concurrent calls cannot both
     // create the caller's default link: the later one becomes a copy of the earlier.
-    let existing = opts.isDefault
+    let existing = opts.default
         ? this.#findDefaultLink(opts.caller.profileId, fields) : undefined;
     if (existing) {
       this.storage.shareKeys.put({ id: hash, alias: existing.id });
@@ -515,7 +512,7 @@ export class SharingManager {
       created: new Date(),
       createdBy: opts.caller.profileId,
       ...fields,
-      ...(opts.isDefault ? { isDefault: true } : {}),
+      ...(opts.default ? { default: true } : {}),
     });
     return { key, linkId: hash };
   }
@@ -524,7 +521,7 @@ export class SharingManager {
   #findDefaultLink(creator: string, fields: GrantFields): ShareLinkRecord | undefined {
     let grant = grantKey(fields);
     for (let link of this.#listLinks()) {
-      if (link.isDefault && !link.revoked && link.createdBy === creator &&
+      if (link.default && !link.revoked && link.createdBy === creator &&
           grantKey(link) === grant) {
         return link;
       }
