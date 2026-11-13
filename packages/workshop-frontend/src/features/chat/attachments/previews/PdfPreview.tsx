@@ -33,12 +33,15 @@ const PdfPage = ({ doc, pageNumber, width }: {
   const [aspect, setAspect] = useState(DEFAULT_ASPECT);
   /** Whether pdf.js holds this page, whose decoded images stay until it is told to let go. */
   const loadedRef = useRef(false);
+  /** `near` as the observer last reported it, ahead of the render that `near` waits for. */
+  const nearRef = useRef(false);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const observer = new IntersectionObserver((entries) => {
-      setNear(entries[entries.length - 1]!.isIntersecting);
+      nearRef.current = entries[entries.length - 1]!.isIntersecting;
+      setNear(nearRef.current);
     }, { root: scrollRoot(host), rootMargin: "200% 0px" });
     observer.observe(host);
     return () => observer.disconnect();
@@ -51,7 +54,8 @@ const PdfPage = ({ doc, pageNumber, width }: {
       host.replaceChildren();
       if (loadedRef.current) {
         loadedRef.current = false;
-        void doc.getPage(pageNumber).then((page) => page.cleanup());
+        // A document already destroyed has let go of its pages.
+        doc.getPage(pageNumber).then((page) => page.cleanup(), () => {});
       }
       return;
     }
@@ -61,8 +65,12 @@ const PdfPage = ({ doc, pageNumber, width }: {
 
     const draw = async () => {
       const page = await doc.getPage(pageNumber);
+      if (cancelled) {
+        // Gone far while pdf.js was still loading it: let go of it now, as nothing else will.
+        if (!nearRef.current) page.cleanup();
+        return;
+      }
       loadedRef.current = true;
-      if (cancelled) return;
       const natural = page.getViewport({ scale: 1 });
       setAspect(Math.min(MAX_ASPECT, natural.height / natural.width));
       const scale = width / natural.width;

@@ -5,7 +5,7 @@ import { lookupTable } from "./lookup-table";
 /** Glyphs of the Symbol and Wingdings fonts that bullets use, by their code in the font. */
 const SYMBOL_GLYPHS = lookupTable<Readonly<Record<number, string>>>({
   symbol: { 0xb7: "•", 0xa8: "♦", 0xde: "⇒", 0xae: "→" },
-  wingdings: { 0xa7: "▪", 0xa8: "◻", 0x6e: "■", 0x6f: "□", 0x71: "❑", 0x76: "❖", 0x9f: "•", 0xd8: "➢", 0xfc: "✔", 0xe0: "→" },
+  wingdings: { 0x6c: "●", 0xa1: "○", 0xa7: "▪", 0xa8: "◻", 0x6e: "■", 0x6f: "□", 0x71: "❑", 0x76: "❖", 0x9f: "•", 0xd8: "➢", 0xfc: "✔", 0xe0: "→" },
 });
 
 /**

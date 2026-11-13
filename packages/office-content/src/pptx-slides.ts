@@ -361,7 +361,11 @@ class DeckReader {
     const type = attribute(placeholder, "type");
     const index = attribute(placeholder, "idx");
     const layout = scope.layoutPlaceholders;
-    const inLayout = (index !== undefined ? layout.byIndex.get(index) : undefined)
+    // An unstated index is 0, on either side. Matched by that default, the layout's placeholder
+    // has to be of the same kind: a slide's untyped placeholder is no layout title's.
+    const byIndex = layout.byIndex.get(index ?? "0");
+    const indexed = index !== undefined || (byIndex && masterKind(placeholderType(byIndex)) === masterKind(type ?? "obj")) ? byIndex : undefined;
+    const inLayout = indexed
       ?? (type !== undefined ? layout.byType.get(type) ?? layout.byKind.get(masterKind(type)) : undefined);
     const kind = masterKind(type ?? (inLayout ? placeholderType(inLayout) : "obj"));
     const inMaster = scope.masterPlaceholders.byKind.get(kind);
@@ -519,7 +523,7 @@ function placeholderIndex(root: XmlElement | undefined): PlaceholderIndex {
   for (const shape of childElements(shapeTree(root))) {
     const placeholder = placeholderOf(shape);
     if (!placeholder) continue;
-    first(byIndex, attribute(placeholder, "idx"), shape);
+    first(byIndex, attribute(placeholder, "idx") ?? "0", shape);
     first(byType, placeholderType(shape), shape);
     first(byKind, masterKind(placeholderType(shape)), shape);
   }

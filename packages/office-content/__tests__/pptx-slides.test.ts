@@ -79,6 +79,14 @@ describe("readPptxSlides", () => {
     expect(deck.slides[0]!.shapes.slice(0, 3).map(shape => shape.bounds.x)).toEqual([0, 72, 144]);
   });
 
+  it("reads an unstated placeholder index as 0, on the slide and on the layout", async () => {
+    const deck = await deckOf({
+      layoutShapes: drawnShape({ placeholder: "<p:ph/>", properties: transform(INCH, INCH, INCH, INCH), body: "" }),
+      slides: [{ shapes: drawnShape({ placeholder: "<p:ph/>", body: slideParagraph("Content") }) }],
+    });
+    expect(deck.slides[0]!.shapes.map(shape => shape.bounds)).toEqual([{ x: 72, y: 72, width: 72, height: 72, rotation: 0, flipH: false, flipV: false }]);
+  });
+
   it("caps the slides it returns and says so", async () => {
     const deck = await deckOf({ slides: Array.from({ length: MAX_SLIDES + 1 }, () => ({ shapes: "" })) });
     expect(deck.slides).toHaveLength(MAX_SLIDES);
@@ -169,10 +177,10 @@ describe("readPptxSlides", () => {
       const bulleted = (character: string, font: string) =>
         `<a:p><a:pPr><a:buFont typeface="${font}"/><a:buChar char="${character}"/></a:pPr><a:r><a:rPr lang="en-US"/><a:t>x</a:t></a:r></a:p>`;
       const [shape] = await shapesOf({
-        slides: [{ shapes: drawnShape({ properties: transform(0, 0, INCH, INCH), body: bulleted("\uf0b7", "Symbol") + bulleted("§", "Wingdings") + bulleted("–", "Arial") }) }],
+        slides: [{ shapes: drawnShape({ properties: transform(0, 0, INCH, INCH), body: bulleted("\uf0b7", "Symbol") + bulleted("§", "Wingdings") + bulleted("l", "Wingdings") + bulleted("–", "Arial") }) }],
       });
       expect(drawn(shape).text!.paragraphs.map(paragraph => [paragraph.bullet?.text, paragraph.bullet?.font === "Arial"]))
-        .toEqual([["•", false], ["▪", false], ["–", true]]);
+        .toEqual([["•", false], ["▪", false], ["●", false], ["–", true]]);
     });
 
     it("gives body paragraphs their level's bullet, indent and spacing", async () => {
