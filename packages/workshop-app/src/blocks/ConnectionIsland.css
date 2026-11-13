@@ -1,0 +1,94 @@
+/* The island opens the way a menu that keeps its trigger does (DropdownMenu.css), out of a point
+   rather than a button: one clock, --island-open, which ConnectionIsland animates from 0 to 1 and
+   back, moves its four edges along a curve out of that point, and the contents with them. The
+   formulas are the menu's for one that opens below what it comes out of; keep the two in step.
+   --island-from-x, -top and -bottom place the point, inset from the island's own box. */
+.connection-island {
+  --island-size: var(--island-open, 1);
+  --island-ahead: max(0, var(--island-open, 1));
+  --island-closed: calc(1 - var(--island-size));
+  --island-shift: calc(1 - var(--island-open, 1));
+  /* One quadratic curve: the surface leads sideways along the top of the window, then comes down. */
+  --island-bend: calc(var(--island-open, 1) * (1 - var(--island-ahead)));
+  --island-span-y: calc(var(--island-from-top, 0px) + var(--island-from-bottom, 0px));
+  --island-offset-y: calc(var(--island-shift) * (var(--island-from-top, 0px) - var(--island-from-bottom, 0px)) / 2 + var(--island-from-top, 0px) * var(--island-bend));
+  --island-top: calc(var(--island-closed) * var(--island-span-y) / 2 + var(--island-offset-y));
+  --island-bottom: calc(var(--island-closed) * var(--island-span-y) / 2 - var(--island-offset-y));
+  /* The point is in the middle, so both sides move alike. */
+  --island-side: calc(var(--island-closed) * var(--island-from-x, 0px));
+  /* Its corners keep their full radius at every size, rounding it off completely while small. */
+  --island-radius: 22px;
+}
+
+.connection-island-surface {
+  inset: var(--island-top) var(--island-side) var(--island-bottom) var(--island-side);
+  border-radius: var(--island-radius);
+  /* With no button to grow from, it fades in and out at the ends of the morph. */
+  opacity: clamp(0, var(--island-size) / 0.1, 1);
+}
+
+.connection-island-shadow {
+  opacity: clamp(0, var(--island-size), 1);
+}
+
+/* Pinned to the surface's top left, where the mascot is, so the mascot rides the curve out. */
+.connection-island-content {
+  --island-clip-right: calc(2 * var(--island-side));
+  --island-clip-bottom: calc(var(--island-top) + var(--island-bottom));
+  --island-feather: clamp(0px, calc(20px * var(--island-closed)), 12px);
+  translate: var(--island-side) var(--island-top);
+  clip-path: inset(0 var(--island-clip-right) var(--island-clip-bottom) 0 round var(--island-radius));
+  /* Feather only the contents at the moving edges; the surface stays opaque. The fade reaches
+     zero at full size, leaving settled text fully visible. */
+  mask-image:
+    linear-gradient(to right,
+      transparent 0,
+      black var(--island-feather),
+      black calc(100% - var(--island-clip-right) - var(--island-feather)),
+      transparent calc(100% - var(--island-clip-right))),
+    linear-gradient(to bottom,
+      transparent 0,
+      black var(--island-feather),
+      black calc(100% - var(--island-clip-bottom) - var(--island-feather)),
+      transparent calc(100% - var(--island-clip-bottom)));
+  mask-composite: intersect;
+}
+
+.connection-island-items {
+  filter: blur(0px);
+  /* Sharing the surface's clock, settling just ahead of its full size, around the mascot. */
+  scale: calc(0.5 + 0.5 * clamp(0, calc(var(--island-size) / 0.94), 1));
+  transform-origin: var(--island-origin-x) var(--island-origin-y);
+  transition:
+    opacity 137ms 60ms ease-out,
+    filter 171ms 43ms ease-out;
+}
+
+@starting-style {
+  .connection-island-items {
+    opacity: 0;
+    filter: blur(3px);
+  }
+}
+
+/* Closing, the contents share the clock: they soften at once, shrink and travel with the surface,
+   and fade out before it has gone. */
+.connection-island[data-ending] {
+  pointer-events: none;
+}
+
+.connection-island[data-ending] .connection-island-content {
+  --island-feather: clamp(0px, calc(60px * var(--island-closed)), 12px);
+}
+
+.connection-island[data-ending] .connection-island-items {
+  opacity: clamp(0, (var(--island-open) - 0.05) / 0.4, 1);
+  filter: blur(calc(3px * clamp(0, (0.95 - var(--island-open)) / 0.6, 1)));
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connection-island-items {
+    transition: none;
+  }
+}
