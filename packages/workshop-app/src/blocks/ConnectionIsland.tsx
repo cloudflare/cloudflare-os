@@ -184,7 +184,7 @@ const Island = ({ state, onDismiss }: ConnectionIslandProps & { state: Connectio
       className="connection-island group pointer-events-auto relative isolate h-11 cursor-grab touch-none outline-none select-none active:cursor-grabbing"
     >
       <div aria-hidden="true" className="connection-island-surface pointer-events-none absolute -z-10 bg-(--color-island) group-focus-visible:ring-2 group-focus-visible:ring-kumo-focus">
-        <div className="connection-island-shadow absolute inset-0 rounded-[inherit] shadow-2xl" />
+        <div className="connection-island-shadow absolute inset-0 rounded-[inherit] shadow-xl shadow-black/20" />
       </div>
       <div className="connection-island-content absolute inset-0 text-kumo-inverse">
         {/*
