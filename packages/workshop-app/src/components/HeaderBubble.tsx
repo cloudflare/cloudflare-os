@@ -17,8 +17,12 @@ export type HeaderBubbleProps<State> = {
   className?: string
 }
 
-// The named bubbles on screen, each with the state it is in.
-const onScreen = new Map<string, { state: unknown }>()
+// The named bubbles on screen, each with the state it is in, and once it has gone, where it was.
+const onScreen = new Map<string, { state: unknown; left?: number }>()
+
+// Sliding to its place from where the bubble it carries on from was, in step with what it carries
+// on doing there, such as the workspace crumb growing or drawing in its title (`duration-300 ease-out`).
+const SLIDE = { duration: 300, easing: 'cubic-bezier(0, 0, 0.2, 1)' }
 
 /**
  * Plays a bubble's leaving after React has removed it, on a copy left where it was. Called while
@@ -51,15 +55,30 @@ export const HeaderBubble = <State,>({ name, state, children, className }: Heade
   const ref = useRef<HTMLSpanElement>(null)
   const [predecessor] = useState(() => (name === undefined ? undefined : onScreen.get(name)))
 
-  // Layout effects, so a bubble that is leaving can tell in the same commit that it is followed.
+  // Layout effects, so a bubble that is leaving can tell in the same commit that it is followed,
+  // and where it was: its cleanup runs while it is still in the document.
   useLayoutEffect(() => {
     if (name === undefined) return
-    const entry = { state }
+    const element = ref.current!
+    const entry: { state: unknown; left?: number } = { state }
     onScreen.set(name, entry)
     return () => {
+      entry.left = element.getBoundingClientRect().left
       if (onScreen.get(name) === entry) onScreen.delete(name)
     }
   }, [name, state])
+  // Carrying on from one that was elsewhere along the header, such as where the page before had a
+  // button ahead of it, it slides over rather than jumping. By `translate`, which leaves `scale`
+  // to the popping.
+  useLayoutEffect(() => {
+    const from = predecessor?.left
+    if (from === undefined || matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const element = ref.current!
+    const offset = from - element.getBoundingClientRect().left
+    if (Math.abs(offset) < 1) return
+    const slide = element.animate([{ translate: `${offset}px 0` }, { translate: '0 0' }], SLIDE)
+    return () => slide.cancel()
+  }, [predecessor])
   useLayoutEffect(() => {
     const element = ref.current!
     return () => popOut(element, name)

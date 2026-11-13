@@ -26,5 +26,10 @@ declare module '@tanstack/react-router' {
      * chat's settings, from the chat. The way back to that goes back.
      */
     fromChat?: boolean
+    /**
+     * This item's page was opened from the Library page, which is then what it is in: going up
+     * from it on a narrow screen goes there rather than to the item's workspace.
+     */
+    fromLibrary?: boolean
   }
 }

@@ -11,6 +11,8 @@ import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
 import type { Scenario } from '@/chat/mock/scenario'
 import { SCENARIOS } from '@/chat/mock/scenarios'
+import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { NarrowShell } from '@/layouts/NarrowShell'
 import { SplitLayout } from '@/layouts/SplitLayout'
 import { ApiContext } from '@/rpc/ApiContext'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'
@@ -150,63 +152,83 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
     onFullScreenChange: () => {},
   }))
 
+  const narrow = useNarrowScreen()
+  // Nothing to expand into on a narrow screen, where it fills the window already.
+  const asPage = expanded && named !== undefined && !narrow
+  const aside = !settings && openedEmpty ? (
+    <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={() => setAskedEmpty(false)} narrow={narrow} />
+  ) : named && !settings && (asPage ? (
+    <AsidePane
+      placement="page"
+      item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
+      fullScreen={false}
+      onFullScreenChange={handlers.onFullScreenChange}
+      onCollapse={() => setExpanded(false)}
+    />
+  ) : (
+    <AsidePane
+      placement="beside"
+      item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
+      items={items}
+      onSelect={setOpen}
+      onHide={() => setOpen(undefined)}
+      onExpand={() => setExpanded(true)}
+      onFullScreenChange={handlers.onFullScreenChange}
+      narrow={narrow}
+    />
+  ))
+  const openAside = !named && !settings && !openedEmpty ? () => (items.length > 0 ? setOpen(items[0].key) : setAskedEmpty(true)) : undefined
+  const closeAside = () => {
+    setOpen(undefined)
+    setAskedEmpty(false)
+  }
+  const page = (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {asPage ? null : settings ? (
+        <ChatSettingsPane
+          {...CHAT}
+          onBack={() => setSettings(false)}
+          onOpenWorkspace={onOpenScenarios}
+          onOpenItem={(item) => {
+            setOpen(item.key)
+            setSettings(false)
+          }}
+        />
+      ) : (
+        <ChatPane
+          {...CHAT}
+          onOpenWorkspace={onOpenScenarios}
+          onOpenSettings={() => setSettings(true)}
+          onOpenAttachment={handlers.onOpenAttachment}
+          onOpenOutput={handlers.onOpenOutput}
+          onSetUpConnection={onSetUpConnection}
+          onAlwaysApprove={onAlwaysApprove}
+        />
+      )}
+      {children}
+    </div>
+  )
+
+  // As the app is laid out on a narrow screen, without the sidebar.
+  if (narrow) {
+    return (
+      <NarrowShell status={status} aside={aside} onOpenAside={openAside} onCloseAside={closeAside}>
+        {page}
+      </NarrowShell>
+    )
+  }
+
   return (
     <div className="flex h-full p-2">
       <SplitLayout
-        asideAlone={expanded && named !== undefined}
-        aside={!settings && openedEmpty ? (
-          <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={() => setAskedEmpty(false)} />
-        ) : named && !settings && (expanded ? (
-          <AsidePane
-            placement="page"
-            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
-            fullScreen={false}
-            onFullScreenChange={handlers.onFullScreenChange}
-            onCollapse={() => setExpanded(false)}
-          />
-        ) : (
-          <AsidePane
-            placement="beside"
-            item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
-            items={items}
-            onSelect={setOpen}
-            onHide={() => setOpen(undefined)}
-            onExpand={() => setExpanded(true)}
-            onFullScreenChange={handlers.onFullScreenChange}
-          />
-        ))}
-        onOpenAside={!named && !settings && !openedEmpty ? () => (items.length > 0 ? setOpen(items[0].key) : setAskedEmpty(true)) : undefined}
-        onCloseAside={() => {
-          setOpen(undefined)
-          setAskedEmpty(false)
-        }}
+        asideAlone={asPage}
+        aside={aside}
+        onOpenAside={openAside}
+        onCloseAside={closeAside}
         edgeInset={8}
         status={status}
       >
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          {expanded && named ? null : settings ? (
-            <ChatSettingsPane
-              {...CHAT}
-              onBack={() => setSettings(false)}
-              onOpenWorkspace={onOpenScenarios}
-              onOpenItem={(item) => {
-                setOpen(item.key)
-                setSettings(false)
-              }}
-            />
-          ) : (
-            <ChatPane
-              {...CHAT}
-              onOpenWorkspace={onOpenScenarios}
-              onOpenSettings={() => setSettings(true)}
-              onOpenAttachment={handlers.onOpenAttachment}
-              onOpenOutput={handlers.onOpenOutput}
-              onSetUpConnection={onSetUpConnection}
-              onAlwaysApprove={onAlwaysApprove}
-            />
-          )}
-          {children}
-        </div>
+        {page}
       </SplitLayout>
     </div>
   )

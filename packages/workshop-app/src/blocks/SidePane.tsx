@@ -1,7 +1,7 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
-  ArrowClockwiseIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
+  ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
   CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
@@ -54,6 +54,11 @@ export type SidePaneProps = Placement & {
   onReload?: () => void
   /** Saves the one shown to this device. */
   onDownload?: () => void
+  /**
+   * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
+   * step up, and the step down is a back button at the start of the header.
+   */
+  narrow?: boolean
   /** What is shown of the one shown. */
   children: ReactNode
 }
@@ -81,7 +86,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, children } = props
+  const { active, people = [], link, onReload, onDownload, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -98,22 +103,29 @@ export const SidePane = (props: SidePaneProps) => {
 
   // With the header away, the surface's top is the card's, which has an edge of its own.
   const lineOpacity = useTransform(reveal, [0, 0.5], [0, 1])
-  // Filling the window, the card has no corners for the surface's to meet, so they straighten as
-  // the header goes, and are square at the window's top.
+  // Filling the window, full screen or on a narrow screen, the card has no corners for the
+  // surface's to meet, so they straighten as the header goes, and are square at the window's top.
   const corner = useMotionValue(CORNER)
-  const shapeCorners = useEffectEvent(() => corner.set(fullScreen ? CORNER * clampSize(reveal.get(), 0, 1) : CORNER))
+  const fillsWindow = fullScreen || narrow
+  const shapeCorners = useEffectEvent(() => corner.set(fillsWindow ? CORNER * clampSize(reveal.get(), 0, 1) : CORNER))
   useMotionValueEvent(reveal, 'change', shapeCorners)
-  useLayoutEffect(() => shapeCorners(), [fullScreen])
+  useLayoutEffect(() => shapeCorners(), [fillsWindow])
 
   const beside = props.placement === 'beside' ? props : undefined
   const page = props.placement === 'page' ? props : undefined
   const listed = beside?.items.some(({ key }) => key === active?.key) ?? true
   const choices = beside && (listed ? beside.items : active ? [active, ...beside.items] : beside.items)
+  const stepDown = beside ? beside.onHide : page?.onCollapse
 
   return (
     <section aria-label={active?.title ?? 'Side pane'} className="flex min-h-0 flex-1 flex-col">
       <motion.div style={{ marginTop: headerOffset }} inert={!headerShown} className="shrink-0">
         <header style={{ height: HEADER_HEIGHT }} className="flex items-center gap-1.5 px-3">
+          {narrow && stepDown && (
+            <HeaderBubble key="back">
+              <Button icon={ArrowLeftIcon} aria-label="Back" title="Back" onClick={stepDown} />
+            </HeaderBubble>
+          )}
           {beside && choices && choices.length > 1 && (
             <HeaderBubble>
               <DropdownMenu
@@ -170,17 +182,17 @@ export const SidePane = (props: SidePaneProps) => {
               </HeaderBubble>
             )}
             {/* Keyed, so that expanding swaps the one button for the other in its place. */}
-            {beside?.onExpand && active && (
+            {beside?.onExpand && active && !narrow && (
               <HeaderBubble key="expand">
                 <Button icon={ArrowsOutSimpleIcon} aria-label="Expand" title="Expand" onClick={beside.onExpand} />
               </HeaderBubble>
             )}
-            {page?.onCollapse && !fullScreen && (
+            {page?.onCollapse && !fullScreen && !narrow && (
               <HeaderBubble key="collapse">
                 <Button icon={ArrowsInSimpleIcon} aria-label="Collapse" title="Collapse" onClick={page.onCollapse} />
               </HeaderBubble>
             )}
-            {page && (
+            {page && !narrow && (
               // Keyed, so that the one button swaps for the other.
               <HeaderBubble key={fullScreen ? 'exit-full-screen' : 'full-screen'}>
                 {fullScreen

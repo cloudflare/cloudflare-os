@@ -14,5 +14,5 @@ const page = ({ workspaceId, workpieceId, output }: OutputSummary) => itemPage(w
 function Library() {
   const navigate = useNavigate()
   const router = useRouter()
-  return <LibraryPane onOpenOutput={(output) => navigate(page(output))} outputHref={(output) => router.buildLocation(page(output)).href} />
+  return <LibraryPane onOpenOutput={(output) => navigate({ ...page(output), state: { fromLibrary: true } })} outputHref={(output) => router.buildLocation(page(output)).href} />
 }

@@ -21,6 +21,8 @@ export type AsidePaneProps = {
    * Escape, through the connection it was made with.
    */
   onFullScreenChange: (on: boolean) => void
+  /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
+  narrow?: boolean
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -49,7 +51,7 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange } = props
+  const { item, link, onFullScreenChange, narrow } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
@@ -82,6 +84,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+    narrow,
   }
 
   return props.placement === 'beside' ? (
@@ -110,14 +113,16 @@ export type EmptyAsidePaneProps = {
   /** Reads on after a problem. */
   onRetry?: () => void
   onHide: () => void
+  /** Filling a narrow screen (see `SidePane`). */
+  narrow?: boolean
 }
 
 /**
  * The pane beside a chat with nothing in it yet: opened before what its workspace has made was
  * known, while the library is read for it, and then if it has made nothing.
  */
-export const EmptyAsidePane = ({ reading, problem, onRetry, onHide }: EmptyAsidePaneProps) => (
-  <SidePane placement="beside" items={[]} onSelect={() => {}} onHide={onHide}>
+export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: EmptyAsidePaneProps) => (
+  <SidePane placement="beside" items={[]} onSelect={() => {}} onHide={onHide} narrow={narrow}>
     {problem ? (
       <PaneNotice
         icon={WarningCircleIcon}

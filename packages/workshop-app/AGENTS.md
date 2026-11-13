@@ -159,6 +159,11 @@ A draft is only let go of once its message has gone: `Composer`'s `onSend` resol
 did, and until then the draft, its files and what it replies to stay, dimmed and unsendable. One
 that did not go stays as it was, under why.
 
+What can be done with a message (reply, copy, details) shows beside it while it is pointed at, or
+reached by keyboard. A touch screen has nothing to point with, so there a tap on the message shows
+it, until the message or anything else is tapped again; a tap that is for something in the
+message, such as a link, is left to that. Until shown it cannot be tapped either.
+
 Consecutive messages from one sender are drawn as a run (closer together, with smaller corners
 where they meet). `MessageBubble` does that itself between sibling bubbles; the message list wraps
 each row, so `ChatPane` tells the rows about their neighbours (`continuesRun`). A message that
@@ -184,7 +189,8 @@ it. Render a pane's header in the commit that mounts the pane, or what it follow
 
 A workspace's page has a New chat button at the end of its header. It opens an empty chat in
 the workspace (`/workspace/<id>/new`, `NewChatPane`, which the home page shares) that is
-created by its first message; the chat then takes the empty one's place in the history. The home
+created by its first message; the chat then takes the empty one's place in the history. Until
+then it greets the user as the home page does, under its header (`StartLayout`). The home
 page (`/`, which the sidebar's logo goes to) starts one in a new workspace: until its first message
 is sent it greets the user over the composer in the middle of the page (`ChatStart`), and is then
 drawn as the conversation it becomes.
@@ -314,6 +320,30 @@ rail down the side of what is scrolled. And they are kept out of sight while the
 while the pointer is in a gap between them (`useScrollbarsAway`): as a pane is resized or slides
 away, what is in it scrolls to keep its place, and the system would show the scrollbar for that,
 as it does for a pointer that is only beside one.
+
+## On a narrow screen
+
+Narrower than `md` (`hooks/useNarrowScreen.ts`), such as a phone, there is room for one thing at
+a time, and `_app` lays the frame out with `NarrowShell` instead of `AppShell`: edge to edge, with
+no cards, clear of the system's safe areas. The pages are the same, home included. The sidebar is
+beneath the page, on the backdrop. On the pages it goes to (home, a workspace, Library and
+Workspaces), a button at the start of the header (which leaves it the room, `--header-lead`)
+moves the page aside to the far edge, where what stays in sight of it is tapped to put the sidebar
+away again, as is Escape. It is not swiped. Going anywhere puts it away: like full screen, it is
+left behind with the page. A page further in goes up to one of those by its header: a chat, one
+about to be and a chat's settings by the workspace's crumb, and an item's own page by its own way
+up, to the chat it was shown from, the Library page it was opened from (`fromLibrary`), or else
+its workspace's library. The workspace page's New chat is its icon alone.
+A named header bubble that carries on from one elsewhere along the header slides over from there.
+
+What is beside a chat on a wider screen comes over all of it from the far edge, as the page moves
+a little aside beneath it, and is had back from that edge as on a wider screen: pulled out, which
+brings it as far as it is pulled, or tapped, where a pill shows. It goes by a back button at the
+start of its header, or swiped back off the edge from its near one. Going to a chat does not bring
+back what was last shown beside it, which would cover the chat. `SidePane` (`narrow`) is then as
+big as it gets: no Expand, Collapse or full screen, and the step down is that back button. It
+fills the window, so the bar squares off its surface's corners as in full screen. The scripted
+chats (`/mock/*`) are laid out the same way on a narrow screen.
 
 ## Theming
 
