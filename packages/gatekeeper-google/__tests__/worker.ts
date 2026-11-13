@@ -809,7 +809,14 @@ export class TestHooks extends DurableObject<Env> {
     ) as unknown as GoogleDriveFolderSession & Disposable;
     let native = await callOn(session, opener, [fileId]) as Disposable;
     let calling = settle(callOn(native, method, args));
-    await reached.promise;
+    // A call refused before it submits never reaches the hold: it fails with its own error.
+    let early = await Promise.race([reached.promise.then(() => undefined), calling]);
+    if (early !== undefined) {
+      native[Symbol.dispose]();
+      session[Symbol.dispose]();
+      approvalQueue[Symbol.dispose]();
+      throw new Error(`The call ended before it submitted: ${early.error ?? "no error"}`);
+    }
     this.#heldSubmission = async () => {
       released.resolve();
       let outcome = await calling;
