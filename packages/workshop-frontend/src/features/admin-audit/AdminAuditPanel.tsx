@@ -26,7 +26,7 @@ type AdminAuditPanelProps = {
 }
 
 const CARD = 'bg-kumo-elevated border border-kumo-line rounded-xl p-6'
-const ACCESS_LABEL = 'Workspace access'
+const ACCESS_LABEL = 'Inspection access'
 const RETENTION_LABEL = 'Keep audit records for (days)'
 const STATS_DAYS = 7
 
@@ -112,14 +112,16 @@ const StatsCards = ({ stats, onFilterBy }: {
 
 const accessHelp = ({ chosen, effective, max }: AuditSettings['adminWorkspaceAccess']): string[] => {
   const help = [
-    'Whether an admin may inspect a workspace. Metadata shows a workspace’s structure and ' +
-      'withholds chat messages, messages queued for an agent, attachments, file contents, commit ' +
-      'messages, the arguments of calls queued for an agent, the configuration an agent ' +
-      'suggested for a connection, which blueprint a gadget follows, the ids of the blueprints a ' +
-      'workspace publishes, and the descriptions and fields of actions, observations and hooks. ' +
-      'Titles, file names, commit authors, share links’ notes, blueprint descriptions, and the ' +
-      'names and hashes of attachments stay, and can echo content. Off refuses inspection, and ' +
-      'reaches views already open within about a minute.',
+    'Whether an admin may inspect a workspace or a user’s account. Metadata shows a workspace’s ' +
+      'structure and withholds chat messages, messages queued for an agent, attachments, file ' +
+      'contents, commit messages, the arguments of calls queued for an agent, the configuration ' +
+      'an agent suggested for a connection, which blueprint a gadget follows, the ids of the ' +
+      'blueprints a workspace publishes, and the descriptions and fields of actions, ' +
+      'observations and hooks. Titles, file names, commit authors, share links’ notes, blueprint ' +
+      'descriptions, and the names and hashes of attachments stay, and can echo content. Of a ' +
+      'user’s account, Metadata withholds what each connected account’s gatekeeper says of it ' +
+      '(its names, avatar and what it grants) and the ids of the user’s blueprints. Off refuses ' +
+      'inspection, and reaches views already open within about a minute.',
   ]
   if (max === 'off') {
     help.push('This deployment’s ADMIN_WORKSPACE_ACCESS_MAX allows no inspection (a value that is ' +
@@ -138,7 +140,7 @@ const accessRank = (level: AdminWorkspaceAccess) => ADMIN_WORKSPACE_ACCESS_LEVEL
 /**
  * The admin Audit tab: what the deployment-wide admin audit log holds for the last week, the log
  * itself, filtered and a page at a time, and the settings that bound admin access to workspaces and
- * the log's retention.
+ * users' accounts, and the log's retention.
  */
 export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, onFilterChange }: AdminAuditPanelProps) => {
   const toasts = useKumoToastManager()
@@ -235,7 +237,7 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             <h2 id={activityHeading} className="text-lg font-semibold text-kumo-strong">Admin activity</h2>
             <p className="text-sm text-kumo-subtle mt-0.5">
               Every change an admin makes to the deployment&rsquo;s settings, and every admin call into a
-              workspace, kept for {NUMBER.format(retention.effective)} days.
+              workspace or a user&rsquo;s account, kept for {NUMBER.format(retention.effective)} days.
             </p>
           </div>
           <Button
