@@ -605,8 +605,87 @@ describe("PdfImageScan", () => {
 
   it("finds nothing in a file with no images, or one that is not a PDF", () => {
     expect(scan(pdf("%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")))
-      .toEqual({ images: [], more: false, encrypted: false, bytes: 76 });
+      .toEqual({ images: [], more: false, encrypted: false, bytes: 76, pieces: 0, pageMasks: 0 });
     expect(scan(data(5000), [17]).images).toEqual([]);
-    expect(scan(new Uint8Array(0))).toEqual({ images: [], more: false, encrypted: false, bytes: 0 });
+    expect(scan(new Uint8Array(0)))
+      .toEqual({ images: [], more: false, encrypted: false, bytes: 0, pieces: 0, pageMasks: 0 });
+  });
+
+  it("counts a mask as large as a page once, however it is stored and wherever the file holds it", () => {
+    let found = (...objects: string[]) => {
+      let bytes = pdf(`%PDF-1.4\n${objects.join("")}`);
+      let whole = scan(bytes);
+      for (let sizes of [[1], [7]]) expect(scan(bytes, sizes)).toEqual(whole);
+      let { images, pageMasks, pieces, maskEncoding } = whole;
+      return { images: images.length, pageMasks, pieces, maskEncoding };
+    };
+    let none = { pieces: 0, maskEncoding: undefined };
+    let background = imageObject(5, "x");
+    let foreground = (masks: string) => imageObject(6, "x", `/Filter /DCTDecode ${masks}`);
+    let mask = (id: number, filter: string) => imageObject(id, "x", `/ColorSpace /DeviceGray /Filter ${filter}`);
+    expect(found(background, foreground(""))).toEqual({ images: 2, pageMasks: 0, ...none });
+    // A stencil stored as fax is counted, and how it is stored is noted beside the count.
+    let fax = imageObject(7, "x", "/ImageMask true /Filter /CCITTFaxDecode");
+    expect(found(fax)).toEqual({ images: 0, pageMasks: 1, pieces: 0, maskEncoding: "fax" });
+    expect(found(background, fax)).toEqual({ images: 1, pageMasks: 1, pieces: 0, maskEncoding: "fax" });
+    expect(found(background, foreground("/SMask 7 0 R"), mask(7, "/JBIG2Decode")))
+      .toEqual({ images: 2, pageMasks: 1, pieces: 0, maskEncoding: "jbig2" });
+    // Stored in ways that are not noted: deflated, a JPEG, JPEG 2000.
+    expect(found(imageObject(7, "x", "/ImageMask true /Filter /FlateDecode"))).toEqual({ images: 0, pageMasks: 1, ...none });
+    for (let filter of ["/FlateDecode", "/DCTDecode", "/JPXDecode"]) {
+      for (let key of ["/SMask", "/Mask"]) {
+        // After the image that names it, and before.
+        expect(found(background, foreground(`${key} 7 0 R`), mask(7, filter))).toEqual({ images: 2, pageMasks: 1, ...none });
+        expect(found(mask(7, filter), background, foreground(`${key} 7 0 R`))).toEqual({ images: 2, pageMasks: 1, ...none });
+      }
+    }
+    // An update that defines again an image that named a mask is said: what it named was let
+    // go as a mask, and may be a page's image now. One that defines again any other image is not.
+    let masked = found(background, foreground("/SMask 7 0 R"), mask(7, "/FlateDecode"));
+    expect(masked).toEqual({ images: 2, pageMasks: 1, ...none });
+    for (let sizes of [undefined, [1], [7]]) {
+      let update = (again: string) => scan(pdf(
+        `%PDF-1.4\n${background}${foreground("/SMask 7 0 R")}${mask(7, "/FlateDecode")}${REVISION_END}${again}${REVISION_END}`,
+      ), sizes);
+      expect(update(foreground(""))).toMatchObject({ masksRedefined: true });
+      expect(update(foreground("/SMask 7 0 R"))).toMatchObject({ masksRedefined: true });
+      expect(update(imageObject(5, "y"))).not.toHaveProperty("masksRedefined");
+    }
+    // One mask that two images name, and that one image names twice, is one mask.
+    let second = imageObject(8, "x", "/Filter /DCTDecode /SMask 7 0 R");
+    expect(found(foreground("/SMask 7 0 R"), second, mask(7, "/FlateDecode"))).toEqual({ images: 2, pageMasks: 1, ...none });
+    expect(found(mask(7, "/FlateDecode"), foreground("/SMask 7 0 R"), second)).toEqual({ images: 2, pageMasks: 1, ...none });
+    expect(found(mask(7, "/FlateDecode"), foreground("/SMask 7 0 R /Mask 7 0 R"))).toEqual({ images: 1, pageMasks: 1, ...none });
+    // Two masks of one image are two.
+    expect(found(foreground("/SMask 7 0 R /Mask 9 0 R"), mask(7, "/FlateDecode"), mask(9, "/FlateDecode")))
+      .toEqual({ images: 1, pageMasks: 2, ...none });
+    // A mask too small to be a page's is a piece, and a colour to leave unpainted is no mask image.
+    expect(found(background, foreground("/SMask 7 0 R"), mask(7, "/FlateDecode").replace("/Width 600", "/Width 60")))
+      .toEqual({ images: 2, pageMasks: 0, pieces: 1, maskEncoding: undefined });
+    expect(found(background, foreground("/Mask [0 0]"))).toEqual({ images: 2, pageMasks: 0, ...none });
+  });
+
+  it("counts every image too small to be a page, whether or not the file has page images", () => {
+    let sized = (id: number, width: number, height: number, extra?: string) =>
+      imageObject(id, "x", extra).replace("/Width 600 /Height 800", `/Width ${width} /Height ${height}`);
+    let counted = (...objects: string[]) => {
+      let { images, pieces, pageMasks } = scan(pdf(`%PDF-1.4\n${objects.join("")}`));
+      return { images: images.length, pieces, pageMasks };
+    };
+    // Tiles of one page, none of them as large as one.
+    expect(counted(...Array.from({ length: 6 }, (_, i) => sized(5 + i, 1275, 128))))
+      .toEqual({ images: 0, pieces: 6, pageMasks: 0 });
+    // Too narrow, too short, and exactly large enough.
+    expect(counted(sized(5, 199, 800), sized(6, 600, 199), sized(7, 200, 200)))
+      .toEqual({ images: 1, pieces: 2, pageMasks: 0 });
+    // A size that is no whole number, or is not there to be read.
+    expect(counted(sized(5, 600.5, 800), imageObject(6, "x").replace("/Width 600 ", ""),
+      imageObject(7, "x").replace("/Height 800", "/Height 9 0 R")))
+      .toEqual({ images: 0, pieces: 3, pageMasks: 0 });
+    // A small stencil is a piece, not a page's mask.
+    expect(counted(sized(5, 64, 64, "/ImageMask true /Filter /FlateDecode"))).toEqual({ images: 0, pieces: 1, pageMasks: 0 });
+    // A stream that is no image is neither.
+    expect(counted("5 0 obj\n<< /Width 60 /Height 60 /Length 4 >>\nstream\nDATA\nendstream\nendobj\n"))
+      .toEqual({ images: 0, pieces: 0, pageMasks: 0 });
   });
 });

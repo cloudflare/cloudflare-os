@@ -49,6 +49,16 @@ export type PdfImages = {
   maskEncoding?: "fax" | "jbig2";
   /** How many bytes the file had. */
   bytes: number;
+  /** How many images are too small to be a page: tiles or strips of one, or a stamp on it. */
+  pieces: number;
+  /** How many masks are as large as a page, however they are stored. */
+  pageMasks: number;
+  /**
+   * Present when an image that named a mask is defined again later in the file, as an update
+   * does. What it named first was let go as a mask and may be a page's image now, so which of
+   * the file's images are pages can no longer be told from what was kept.
+   */
+  masksRedefined?: true;
 };
 
 /** The most page images a scan keeps. */
@@ -167,11 +177,14 @@ type Candidate = {
  * data instead.
  *
  * An image is taken for a page when both its sides are at least {@link MIN_PAGE_SIDE} pixels and it is
- * neither a mask nor another image's mask; a mask that large is only noted, when it is stored as
- * fax or JBIG2 (see {@link PdfImages.maskEncoding}). Nothing here follows the page tree, so the order is
- * the file's, which is page order for scanner output but is not guaranteed, and an image that no
- * page shows is reported like any other. An object defined again later in the file, as an
- * incremental update does, replaces the earlier one and takes its place in the order.
+ * neither a mask nor another image's mask. A smaller one is only counted
+ * ({@link PdfImages.pieces}), and so is a mask that large ({@link PdfImages.pageMasks}), with how
+ * it is stored when that is as fax or JBIG2 ({@link PdfImages.maskEncoding}). Both counts are made
+ * as the file goes by, so an image defined again is counted again. Nothing here follows the page
+ * tree, so the order is the file's, which is page order for scanner output but is not guaranteed,
+ * and an image that no page shows is reported like any other. An object defined again later in
+ * the file, as an incremental update does, replaces the earlier one and takes its place in the
+ * order.
  */
 export class PdfImageScan {
   /** Bytes read but not yet passed, as one character each. */
@@ -222,6 +235,13 @@ export class PdfImageScan {
   #profiles = new Map<number, number>();
   /** Images other images use as their mask, at most {@link MAX_NOTED}. */
   #masks = new Set<number>();
+  /** How many image dictionaries read so far were too small to be a page's. */
+  #pieces = 0;
+  /** How many masks as large as a page were read so far, however stored. */
+  #pageMaskCount = 0;
+  /** Images that named a mask, at most {@link MAX_NOTED}, and whether one was defined again. */
+  #masked = new Set<number>();
+  #masksRedefined = false;
 
   /** Reads the next bytes of the file. */
   feed(chunk: Uint8Array): void {
@@ -269,6 +289,8 @@ export class PdfImageScan {
       images, more: this.#more || this.#candidates.size > MAX_PAGE_IMAGES,
       encrypted: this.#encrypted, bytes: this.#passed + this.#pending.length,
       ...(maskEncoding ? { maskEncoding } : {}),
+      pieces: this.#pieces, pageMasks: this.#pageMaskCount,
+      ...(this.#masksRedefined ? { masksRedefined: true as const } : {}),
     };
   }
 
@@ -534,24 +556,32 @@ export class PdfImageScan {
 
   /** The image a dictionary describes, kept if it could be a page. */
   #candidate(dict: PdfDict): Candidate | undefined {
+    // The masks an earlier definition of this image named were let go as masks, and are not
+    // taken up again as images: that is said, since one of them may be a page's image now.
+    if (this.#masked.has(this.#object)) this.#masksRedefined = true;
     for (let key of ["/SMask", "/Mask"]) {
       let mask = dict.get(key);
       if (!isRef(mask)) continue;
+      // An image that cannot be noted is taken for one defined again: it may be, unseen.
+      if (this.#masked.size < MAX_NOTED) this.#masked.add(this.#object);
+      else this.#masksRedefined = true;
       // A mask is no page, whether the file holds it before the image it masks or after, so
       // it is let go as soon as it is known for one and never counts towards the most kept.
       this.#noteMask(mask.ref, this.#candidates.get(mask.ref)?.encoding);
-      this.#candidates.delete(mask.ref);
+      if (this.#candidates.delete(mask.ref)) this.#pageMaskCount++;
       if (this.#masks.size < MAX_NOTED) this.#masks.add(mask.ref);
     }
     let width = dict.get("/Width"), height = dict.get("/Height");
     if (typeof width !== "number" || typeof height !== "number" ||
         !Number.isSafeInteger(width) || !Number.isSafeInteger(height) ||
         Math.min(width, height) < MIN_PAGE_SIDE) {
+      this.#pieces++;
       return undefined;
     }
     let stored = encoding(dict, width);
     if (dict.get("/ImageMask") === true || this.#masks.has(this.#object)) {
       this.#noteMask(this.#object, stored.encoding);
+      this.#pageMaskCount++;
       return undefined;
     }
     if (!this.#candidates.has(this.#object) && this.#candidates.size >= MAX_HELD_IMAGES) {

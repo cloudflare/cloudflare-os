@@ -1,8 +1,10 @@
-// Wraps a PDF's losslessly compressed image as a PNG, as its bytes stream past. A PDF keeps such
-// an image as deflated rows of samples, which is what a PNG's image data is, so the PNG is the
-// PDF's own bytes inside PNG's framing whenever the rows already carry PNG's filter bytes, and is
-// re-deflated with one added to each row when they do not. No pixel is decoded, and the image is
-// never held whole.
+// Makes a PNG of an image's rows of samples, as they stream past, from either of two places. A
+// PDF keeps a losslessly compressed image as deflated rows of samples, which is what a PNG's
+// image data is, so the PNG of one is the PDF's own bytes inside PNG's framing whenever the rows
+// already carry PNG's filter bytes, and is re-deflated with one added to each row when they do
+// not: no pixel is decoded. Rows of samples that are not deflated, which a rendered page's are,
+// are given filter bytes and deflated a step at a time. Either way the PNG is produced only as
+// it is read, and the image is never held whole here.
 
 import type { PngLayout } from "./pdf-images";
 
@@ -220,12 +222,41 @@ export function pngFromDeflated(
   data: ReadableStream<Uint8Array>, size: { width: number; height: number }, layout: PngLayout,
   maxBytes: number,
 ): ReadableStream<Uint8Array> {
-  let rows = layout.filtered ? data : putThrough(
-    filteredRows(
-      putThrough(data, new DecompressionStream("deflate") as TransformStream<Uint8Array, Uint8Array>,
-        INFLATE_STEP_BYTES, LINE_END_BYTES),
-      layout.rowBytes, size.height),
-    new CompressionStream("deflate") as TransformStream<Uint8Array, Uint8Array>, DEFLATE_STEP_BYTES);
+  if (layout.filtered) return framed(data, size, layout, maxBytes);
+  return pngFromSamples(
+    putThrough(data, new DecompressionStream("deflate") as TransformStream<Uint8Array, Uint8Array>,
+      INFLATE_STEP_BYTES, LINE_END_BYTES),
+    size, layout, maxBytes);
+}
+
+/**
+ * A PNG of the image whose rows of samples are `samples`, as `layout` describes them and without
+ * filter bytes, produced only as it is read, and holding at most `maxBytes` of image data. The
+ * rows are given PNG's "no filter" byte and deflated a step at a time, as the PNG is read.
+ * Cancelling it cancels `samples` at once, and `samples` failing fails it in the same way. It
+ * fails with an {@link ImageDataError} when there are other than `height` rows, or when the PNG
+ * would be larger than `maxBytes`.
+ */
+export function pngFromSamples(
+  samples: ReadableStream<Uint8Array>, size: { width: number; height: number }, layout: PngLayout,
+  maxBytes: number,
+): ReadableStream<Uint8Array> {
+  return framed(
+    putThrough(filteredRows(samples, layout.rowBytes, size.height),
+      new CompressionStream("deflate") as TransformStream<Uint8Array, Uint8Array>, DEFLATE_STEP_BYTES),
+    size, layout, maxBytes);
+}
+
+/**
+ * `rows`, a PNG's deflated image data, inside PNG's framing, read only as the result is: the
+ * signature and the header, a chunk of image data for each piece of `rows`, and the end. Fails
+ * with an {@link ImageDataError}, and cancels `rows`, once they are more than `maxBytes`.
+ * Cancelling it cancels `rows`, and `rows` failing fails it in the same way.
+ */
+function framed(
+  rows: ReadableStream<Uint8Array>, size: { width: number; height: number }, layout: PngLayout,
+  maxBytes: number,
+): ReadableStream<Uint8Array> {
   let reader = rows.getReader();
   let left = maxBytes;
   return new ReadableStream<Uint8Array>({

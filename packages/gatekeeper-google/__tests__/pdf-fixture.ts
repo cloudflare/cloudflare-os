@@ -101,3 +101,19 @@ export function imagePdf(
   }
   return { bytes, images };
 }
+
+/**
+ * A page image of black marks on white, 96 x 64 pixels, as Group 4 fax data: a corner mark, three
+ * bars, an upright and a diagonal, so that every quarter of the page it is drawn across has
+ * marks. It is too small to be taken for a page image, and fax is not read as stored, so a PDF
+ * of it is one whose pages have to be rendered.
+ */
+export function faxMarks(): PdfImage {
+  let data = atob(
+    "JqH//8c7EPzUB4b//x///Ihe/fb7fb7fNQHhv//Ji7fb7fb7fb7fb7fb7fb5qA8N//5Lbt9vt9vt9vt9vt9vtjbmoDw3/jwAQAQ=");
+  return {
+    data: Uint8Array.from(data, ch => ch.charCodeAt(0)), width: 96, height: 64,
+    filter: "/CCITTFaxDecode", colorSpace: "/DeviceGray", bitsPerComponent: 1,
+    extra: "/DecodeParms << /K -1 /Columns 96 /Rows 64 >>",
+  };
+}

@@ -72,6 +72,30 @@ describe("transcribeImage", () => {
     expect(sentImage(sent[0]!).mimeType).toBe("image/png");
   });
 
+  it("asks for a band of a page in the page's words and a sentence more, with the page's settings", async () => {
+    let requests: VisionJson[] = [];
+    for (let options of [undefined, {}, { band: true }]) {
+      let { ai, sent } = fakeAi(eventResponse(tokenEvents(PAGE)));
+      expect(await drain(await transcribeImage(ai, undefined, jpeg(), undefined, options))).toBe(PAGE.join(""));
+      requests.push(sent[0]!.json as unknown as VisionJson);
+    }
+    let [page, , band] = requests.map(request => request.inputs.messages[0]!.content[0]!.text!);
+    expect(page).toContain("this scanned page");
+    expect(page).not.toContain("image or a link");
+    // The page's prompt, and one sentence more before its last.
+    let added = " Never write an image or a link: of a stamp, a logo or a picture, write only the words printed in it.";
+    let last = " If the page has no text, reply with nothing at all.";
+    expect(page.endsWith(last)).toBe(true);
+    expect(band).toBe(page.slice(0, -last.length) + added + last);
+    expect(requests[1]).toEqual(requests[0]);
+    // Nothing is sent that would vary the answer of an image asked for twice: no seed.
+    let { messages: _messages, ...settings } = requests[2]!.inputs;
+    expect(settings).toEqual({
+      temperature: 0, max_tokens: 8192, stream: true,
+      chat_template_kwargs: { enable_thinking: false },
+    });
+  });
+
   it("reads the text whatever the size of the response's chunks", async () => {
     let pieces = ["Tab\tle | \"quoted\" \\ back", "slash\n", "é ü 你好 ", "😀", " end"];
     for (let size of [1, 2, 3, 5, 64, 100_000]) {

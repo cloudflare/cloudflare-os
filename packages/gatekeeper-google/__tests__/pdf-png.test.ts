@@ -1,7 +1,7 @@
 import { deflateSync, inflateSync } from "node:zlib";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { PngLayout } from "../src/pdf-images";
-import { ImageDataError, pngFromDeflated } from "../src/pdf-png";
+import { ImageDataError, pngFromDeflated, pngFromSamples } from "../src/pdf-png";
 import { byteStream } from "./workers-ai-fixture";
 
 /** A PNG's header fields, its image data inflated, and whether every chunk's checksum holds. */
@@ -218,5 +218,268 @@ describe("pngFromDeflated", () => {
       expect(state.cancelled).toBe(true);
       expect((await waiting).done).toBe(true);
     }
+  });
+});
+
+/** Four rows of five grey pixels. */
+const GREY_SAMPLES = Uint8Array.from({ length: 20 }, (_, i) => (i * 53 + 7) % 256);
+const GREY: PngLayout = { colorType: 0, bitDepth: 8, rowBytes: 5, filtered: false };
+/** A page of 1,200 rows of a thousand grey pixels: more rows than are deflated in four steps. */
+const PAGE = { width: 1000, height: 1200 };
+const PAGE_GREY: PngLayout = { colorType: 0, bitDepth: 8, rowBytes: 1000, filtered: false };
+/** Bytes of rows deflated in one step: the source's `DEFLATE_STEP_BYTES`. */
+const STEP = 256 * 1024;
+
+/** `bytes` as a stream that gives `size` of them when asked and no sooner, and counts what it gave. */
+function countedStream(bytes: Uint8Array, size: number) {
+  let state = { given: 0, cancelled: false };
+  let stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (state.given >= bytes.byteLength) return controller.close();
+      controller.enqueue(bytes.slice(state.given, state.given + size));
+      state.given = Math.min(bytes.byteLength, state.given + size);
+    },
+    cancel() { state.cancelled = true; },
+  }, { highWaterMark: 0 });
+  return { stream, state };
+}
+
+/** Waits until `state` has stood still for a while: what was being fed in has all been. */
+async function settled(state: { given: number }) {
+  for (let before = -1; before !== state.given;) {
+    before = state.given;
+    await new Promise(resolve => setTimeout(resolve, 30));
+  }
+}
+
+/**
+ * A compression stream as workerd's are: it takes every write at once, whether or not anything
+ * reads what comes of it, where Node's holds a write back until what it made has been read.
+ * What it makes is deflate's stored blocks, one a write, so a reader inflates it to what was fed.
+ */
+class EagerDeflate {
+  readable: ReadableStream<Uint8Array>;
+  writable: WritableStream<Uint8Array>;
+  constructor() {
+    // The data's checksum, Adler-32, in its two halves.
+    let low = 1, high = 0, begun = false;
+    let whole = new TransformStream<Uint8Array, Uint8Array>({
+      transform(fed, controller) {
+        // A stored block holds 65,535 bytes at most, and the first follows the data's header.
+        expect(fed.byteLength).toBeLessThan(65536);
+        let at = begun ? 0 : 2;
+        begun = true;
+        let out = new Uint8Array(at + 5 + fed.byteLength);
+        let view = new DataView(out.buffer);
+        if (at > 0) view.setUint16(0, 0x7801);
+        view.setUint16(at + 1, fed.byteLength, true);
+        view.setUint16(at + 3, ~fed.byteLength & 0xffff, true);
+        out.set(fed, at + 5);
+        for (let byte of fed) {
+          low = (low + byte) % 65521;
+          high = (high + low) % 65521;
+        }
+        controller.enqueue(out);
+      },
+      flush(controller) {
+        let out = Uint8Array.of(1, 0, 0, 0xff, 0xff, 0, 0, 0, 0);
+        new DataView(out.buffer).setUint32(5, (high << 16 | low) >>> 0);
+        controller.enqueue(begun ? out : Uint8Array.of(0x78, 0x01, ...out));
+      },
+    }, { highWaterMark: Infinity }, { highWaterMark: Infinity });
+    this.readable = whole.readable;
+    this.writable = whole.writable;
+  }
+}
+
+/**
+ * Reads a page's PNG piece by piece, holding the samples it draws to a step at each: none for
+ * a PNG nobody reads, a step for the first of the image data, and a step more for a later read
+ * at most. `whole` says that a step is fed in whole whatever is read, which an eager stream does.
+ */
+async function readByStep(whole: boolean) {
+  let samples = noise(PAGE.width * PAGE.height);
+  // Pieces of ten rows, of which a step ends inside one.
+  let chunk = 10_000;
+  let source = countedStream(samples, chunk);
+  let reader = pngFromSamples(source.stream, PAGE, PAGE_GREY, ROOM * 2).getReader();
+  // Nothing is read for a PNG nobody reads, nor for its signature and header.
+  await settled(source.state);
+  expect(source.state.given).toBe(0);
+  let pieces = [(await reader.read()).value!, (await reader.read()).value!];
+  expect(pieces[0]).toHaveLength(8);
+  expect(String.fromCharCode(...pieces[1]!.subarray(4, 8))).toBe("IHDR");
+  await settled(source.state);
+  expect(source.state.given).toBe(0);
+  // The first of the image data takes one step of rows, with the piece of samples the step
+  // ended in, and no more follows while nothing is read.
+  pieces.push((await reader.read()).value!);
+  expect(String.fromCharCode(...pieces[2]!.subarray(4, 8))).toBe("IDAT");
+  await settled(source.state);
+  expect(source.state.given).toBeGreaterThan(whole ? STEP - chunk : 0);
+  expect(source.state.given).toBeLessThanOrEqual(STEP + chunk);
+  // From there on a read takes a step more at most.
+  for (;;) {
+    let before = source.state.given;
+    let piece = await reader.read();
+    if (piece.done) break;
+    pieces.push(piece.value);
+    if (source.state.given === before) continue;
+    await settled(source.state);
+    expect(source.state.given - before).toBeLessThanOrEqual(STEP + chunk);
+  }
+  expect(source.state.given).toBe(samples.byteLength);
+  let png = await readPng(new Blob(pieces).stream());
+  expect(png.rows).toHaveLength(PAGE.height * 1001);
+  for (let row = 0; row < PAGE.height; row += 97) {
+    expect(png.rows.subarray(row * 1001, row * 1001 + 1001))
+      .toEqual(Uint8Array.of(0, ...samples.subarray(row * 1000, row * 1000 + 1000)));
+  }
+}
+
+describe("pngFromSamples", () => {
+  it("makes a PNG whose data inflates to each row behind a filter byte", async () => {
+    let png = await readPng(pngFromSamples(byteStream(GREY_SAMPLES).stream, SIZE, GREY, ROOM));
+    expect(png.header).toEqual([5, 4, 8, 0, 0, 0, 0]);
+    expect(png.types[0]).toBe("IHDR");
+    expect(png.types.at(-1)).toBe("IEND");
+    expect(png.types.length).toBeGreaterThan(2);
+    expect(png.types.slice(1, -1).every(type => type === "IDAT")).toBe(true);
+    expect(png.rows.byteLength).toBe(4 * 6);
+    for (let row = 0; row < 4; row++) {
+      expect(png.rows[row * 6]).toBe(0);
+      expect(png.rows.subarray(row * 6 + 1, row * 6 + 6)).toEqual(GREY_SAMPLES.subarray(row * 5, row * 5 + 5));
+    }
+  });
+
+  it("takes a row to be as many bytes as the layout says, which is not the image's width", async () => {
+    // Rows of five RGB pixels, of twenty one-bit pixels and of five sixteen-bit ones: fifteen
+    // bytes, three and ten.
+    let layouts: [PngLayout, number, number[]][] = [
+      [RGB, 5, [5, 4, 8, 2, 0, 0, 0]],
+      [{ colorType: 0, bitDepth: 1, rowBytes: 3, filtered: false }, 20, [20, 4, 1, 0, 0, 0, 0]],
+      [{ colorType: 0, bitDepth: 16, rowBytes: 10, filtered: false }, 5, [5, 4, 16, 0, 0, 0, 0]],
+    ];
+    for (let [layout, width, header] of layouts) {
+      let { rowBytes } = layout;
+      let samples = Uint8Array.from({ length: 4 * rowBytes }, (_, i) => (i * 37 + 11) % 256);
+      let size = { width, height: 4 };
+      for (let sizes of [[samples.byteLength], [1], [rowBytes], [rowBytes - 1, 2], [rowBytes + 1]]) {
+        let png = await readPng(pngFromSamples(byteStream(samples, sizes).stream, size, layout, ROOM));
+        expect(png.header).toEqual(header);
+        expect(png.rows.byteLength).toBe(4 * (rowBytes + 1));
+        for (let row = 0; row < 4; row++) {
+          expect(png.rows.subarray(row * (rowBytes + 1), (row + 1) * (rowBytes + 1)))
+            .toEqual(Uint8Array.of(0, ...samples.subarray(row * rowBytes, (row + 1) * rowBytes)));
+        }
+      }
+      // A row fewer and a row more are counted in the layout's bytes too.
+      let short = byteStream(samples.subarray(0, 3 * rowBytes), [7]).stream;
+      await expect(readPng(pngFromSamples(short, size, layout, ROOM))).rejects.toBeInstanceOf(ImageDataError);
+      let long = byteStream(Uint8Array.of(...samples, ...samples.subarray(0, rowBytes)), [7]).stream;
+      await expect(readPng(pngFromSamples(long, size, layout, ROOM))).rejects.toBeInstanceOf(ImageDataError);
+    }
+  });
+
+  it("makes the same image data of samples cut anywhere as of samples that come whole", async () => {
+    let samples = noise(PAGE.width * 40);
+    let size = { width: PAGE.width, height: 40 };
+    let whole = await readPng(pngFromSamples(byteStream(samples).stream, size, PAGE_GREY, ROOM));
+    expect(whole.rows.byteLength).toBe(40 * 1001);
+    for (let row = 0; row < 40; row++) {
+      expect(whole.rows.subarray(row * 1001, row * 1001 + 1001))
+        .toEqual(Uint8Array.of(0, ...samples.subarray(row * 1000, row * 1000 + 1000)));
+    }
+    // Pieces that end inside a row, on a row's last byte, and one byte at a time around a row's end.
+    for (let sizes of [[1], [7], [333, 667], [999, 1, 1, 999], [1001], [2500], [39_999, 1]]) {
+      let png = await readPng(pngFromSamples(byteStream(samples, sizes).stream, size, PAGE_GREY, ROOM));
+      expect(png.header).toEqual(whole.header);
+      expect(Buffer.from(png.rows).equals(Buffer.from(whole.rows))).toBe(true);
+    }
+  });
+
+  it("fails when the samples are a row more than the image has, or a row fewer", async () => {
+    let rows = Uint8Array.from({ length: 25 }, (_, i) => (i * 29) % 256);
+    for (let samples of [rows, rows.subarray(0, 15), rows.subarray(0, 21), rows.subarray(0, 19), new Uint8Array(0)]) {
+      for (let sizes of [[samples.byteLength || 1], [3]]) {
+        await expect(readPng(pngFromSamples(byteStream(samples, sizes).stream, SIZE, GREY, ROOM)))
+          .rejects.toBeInstanceOf(ImageDataError);
+      }
+    }
+    // Rows past the image's are not waited for to their end.
+    let endless = countedStream(new Uint8Array(64 << 20), 4096);
+    await expect(readPng(pngFromSamples(endless.stream, SIZE, GREY, ROOM))).rejects.toBeInstanceOf(ImageDataError);
+    expect(endless.state.cancelled).toBe(true);
+    expect(endless.state.given).toBeLessThan(1 << 20);
+  });
+
+  it("fails once it holds more image data than it may, and cancels the samples", async () => {
+    // Samples that do not deflate, so the image data is about as large as they are.
+    let samples = noise(PAGE.width * PAGE.height);
+    let fits = await readPng(pngFromSamples(byteStream(samples).stream, PAGE, PAGE_GREY, 2_000_000));
+    expect(fits.rows).toHaveLength(PAGE.height * 1001);
+    let source = countedStream(samples, 4096);
+    await expect(readPng(pngFromSamples(source.stream, PAGE, PAGE_GREY, 50_000)))
+      .rejects.toBeInstanceOf(ImageDataError);
+    expect(source.state.cancelled).toBe(true);
+    // The limit was met with most of the samples unread.
+    expect(source.state.given).toBeLessThan(samples.byteLength / 2);
+  });
+
+  // Node deflates on another thread, so under load a turn can pass before it answers, and a
+  // second step is then fed in for one read.
+  it("reads the samples a step at a time, and only as the PNG is read", { retry: 3 }, async () => {
+    await readByStep(false);
+  });
+
+  it("reads the samples a step at a time when every write is taken at once, as workerd takes them", async () => {
+    vi.stubGlobal("CompressionStream", EagerDeflate);
+    try {
+      await readByStep(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("passes on the samples' own failure as it is", async () => {
+    let brokeOff = new Error("The page's pixels are gone.");
+    let sent = false;
+    let samples = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) throw brokeOff;
+        sent = true;
+        controller.enqueue(GREY_SAMPLES.subarray(0, 7));
+      },
+    }, { highWaterMark: 0 });
+    await expect(readPng(pngFromSamples(samples, SIZE, GREY, ROOM))).rejects.toBe(brokeOff);
+  });
+
+  it("cancels the samples at once when it is cancelled, even while they are waited for", async () => {
+    let samples = noise(PAGE.width * PAGE.height);
+    let state = { cancelled: false, pulls: 0, reason: undefined as unknown };
+    // Gives the first of the samples, then nothing more.
+    let source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (state.pulls++ === 0) controller.enqueue(samples.subarray(0, 300_000));
+      },
+      cancel(reason) {
+        state.cancelled = true;
+        state.reason = reason;
+      },
+    }, { highWaterMark: 0 });
+    let reader = pngFromSamples(source, PAGE, PAGE_GREY, ROOM * 2).getReader();
+    // Reads what the first of the samples makes, up to a read that waits on the rest.
+    let waiting: Promise<ReadableStreamReadResult<Uint8Array>>;
+    for (;;) {
+      waiting = reader.read();
+      let pause = new Promise<"waited">(resolve => setTimeout(resolve, 20, "waited"));
+      if (await Promise.race([waiting, pause]) === "waited") break;
+    }
+    expect(state.cancelled).toBe(false);
+    let stopped = new Error("The text was cancelled.");
+    await reader.cancel(stopped);
+    expect(state.cancelled).toBe(true);
+    expect(state.reason).toBe(stopped);
+    expect((await waiting).done).toBe(true);
   });
 });
