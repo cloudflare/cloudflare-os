@@ -193,10 +193,37 @@ export class GadgetConnection {
   }
 
   start() {
-    const run = ++this.#run
+    window.addEventListener('message', this.#received)
+    this.#open(++this.#run, false)
+  }
+
+  stop() {
+    this.#run++
+    window.removeEventListener('message', this.#received)
+    this.#release()
+  }
+
+  /**
+   * Connects to the gadget again, such as over a new connection to the backend, and loads its UI
+   * again. The page shown stays until the new one takes its place. Nothing, when not started.
+   */
+  reconnect() {
+    if (!this.#overseer) return
+    // The page's connection went with the old one, so the page is only kept to be looked at.
+    const quietly = this.#snapshot.ui.status === 'ready'
+    this.#release()
+    this.#open(++this.#run, quietly)
+  }
+
+  /** Loads the UI again, and starts its page over. */
+  reload = () => {
+    clearTimeout(this.#refresh)
+    if (this.#gadget) void this.#load(this.#run)
+  }
+
+  #open(run: number, quietly: boolean) {
     const overseer = (this.#overseer = this.open())
     this.#gadget = overseer.getGadget(this.workpieceId)
-    window.addEventListener('message', this.#received)
     const changed = () => {
       if (run !== this.#run) return
       clearTimeout(this.#refresh)
@@ -217,13 +244,11 @@ export class GadgetConnection {
     ]
     // Each is extra: the gadget shows without them.
     for (const subscription of this.#subscriptions) subscription.catch(() => {})
-    void this.#load(run)
+    void this.#load(run, quietly)
   }
 
-  stop() {
-    this.#run++
+  #release() {
     clearTimeout(this.#refresh)
-    window.removeEventListener('message', this.#received)
     this.#unlink()
     for (const subscription of this.#subscriptions.splice(0)) {
       void subscription.then(
@@ -234,12 +259,6 @@ export class GadgetConnection {
     this.#gadget?.[Symbol.dispose]()
     this.#overseer?.[Symbol.dispose]()
     this.#gadget = this.#overseer = undefined
-  }
-
-  /** Loads the UI again, and starts its page over. */
-  reload = () => {
-    clearTimeout(this.#refresh)
-    if (this.#gadget) void this.#load(this.#run)
   }
 
   #publish(snapshot: Partial<GadgetSnapshot>) {

@@ -16,6 +16,8 @@ export type AppShellProps = {
   initialSidebar?: SidebarSize
   /** The sidebar came to rest on the rail or at another width, to be kept for the next time. */
   onSidebarChange?: (size: SidebarSize) => void
+  /** Said over everything, at the top of the window, without moving it: e.g. that the app is reconnecting. */
+  status?: ReactNode
   children: ReactNode
 } & Pick<SplitLayoutProps, 'aside' | 'asideAlone' | 'asideFullScreen' | 'onOpenAside' | 'onCloseAside' | 'initialAsideShare' | 'onAsideShareChange'>
 
@@ -82,7 +84,7 @@ const SidebarLayout = ({ instant, children }: { instant: boolean; children: Reac
  * covers it instead (`asideFullScreen`).
  */
 export const AppShell = ({
-  sidebar, initialSidebar, onSidebarChange, children, aside, asideAlone, asideFullScreen = false, onOpenAside, onCloseAside, initialAsideShare, onAsideShareChange,
+  sidebar, initialSidebar, onSidebarChange, status, children, aside, asideAlone, asideFullScreen = false, onOpenAside, onCloseAside, initialAsideShare, onAsideShareChange,
 }: AppShellProps) => {
   const reduceMotion = useReducedMotion() ?? false
   const [start] = useState(() => ({
@@ -227,6 +229,7 @@ export const AppShell = ({
       >
         {children}
       </SplitLayout>
+      {status && <div className="pointer-events-none fixed inset-x-0 top-3 z-50 flex justify-center">{status}</div>}
     </div>
   )
 }

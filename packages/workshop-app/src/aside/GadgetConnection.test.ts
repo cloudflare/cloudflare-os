@@ -180,6 +180,26 @@ describe('GadgetConnection', () => {
     connection.stop()
   })
 
+  it('connects again quietly: the page shown stays until the new one is loaded', async () => {
+    const { connection, gadget, frame, disposed } = setUp()
+    connection.start()
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    handshake(frame)
+    await vi.waitFor(() => expect(gadget.connectToGadget).toHaveBeenCalledOnce())
+    await Promise.resolve()
+    const statuses: string[] = []
+    connection.subscribe(() => statuses.push(connection.getSnapshot().ui.status))
+
+    connection.reconnect()
+
+    await vi.waitFor(() => expect(gadget.getUiBundle).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(statuses).toEqual(['ready']))
+    expect(disposed).toEqual(expect.arrayContaining(['server 0', 'gadget', 'overseer', 'presence', 'chat', 'workpieces']))
+    const ui = connection.getSnapshot().ui
+    expect(ui.status === 'ready' && ui.load).toBe(2)
+    connection.stop()
+  })
+
   it('lists who else is there once each, and not the viewer', async () => {
     const { connection, presence } = setUp()
     connection.start()

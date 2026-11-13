@@ -5,6 +5,7 @@ import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
+import { ConnectionStatus } from '@/blocks/ConnectionStatus'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { AppShell } from '@/layouts/AppShell'
@@ -41,7 +42,7 @@ const absolute = (href: string) => new URL(href, window.location.origin).href
  * one to the other keeps what is in it running.
  */
 const AppFrame = () => {
-  const { user } = useApi()
+  const { user, reconnecting } = useApi()
   const workspacesState = useWorkspaces()
   const navigate = useNavigate()
   const router = useRouter()
@@ -171,6 +172,7 @@ const AppFrame = () => {
           collapsed={collapsed}
         />
       )}
+      status={reconnecting && <ConnectionStatus />}
       initialSidebar={prefs.sidebar}
       onSidebarChange={(sidebar) => writeLayoutPrefs({ sidebar })}
       initialAsideShare={prefs.asideShare}
