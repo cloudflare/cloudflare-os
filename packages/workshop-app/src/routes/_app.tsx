@@ -58,6 +58,7 @@ const AppFrame = () => {
   const appPage = useMatch({ from: '/_app/app/$itemId', shouldThrow: false })
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
+  const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
@@ -172,6 +173,7 @@ const AppFrame = () => {
           notice={notice}
           connections={placeholderLogos}
           library={{ current: libraryPage !== undefined || libraryItemPage !== undefined, onOpen: () => navigate({ to: '/library' }) }}
+          workspacesPage={{ current: workspacesPage !== undefined, onOpen: () => navigate({ to: '/workspaces' }) }}
           collapsed={collapsed}
         />
       )}

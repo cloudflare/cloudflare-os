@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
+import { Route as AppWorkspacesRouteImport } from './routes/_app/workspaces'
 import { Route as MockIndexRouteImport } from './routes/mock.index'
 import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
@@ -34,6 +35,11 @@ const GalleryRoute = GalleryRouteImport.update({
 const AppIndexRoute = AppIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppWorkspacesRoute = AppWorkspacesRouteImport.update({
+  id: '/workspaces',
+  path: '/workspaces',
   getParentRoute: () => AppRoute,
 } as any)
 const MockIndexRoute = MockIndexRouteImport.update({
@@ -89,6 +95,7 @@ const AppWorkspaceWorkspaceIdChatChatIdSettingsRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
+  '/workspaces': typeof AppWorkspacesRoute
   '/mock/$scenario': typeof MockScenarioRoute
   '/mock/': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
@@ -101,6 +108,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
+  '/workspaces': typeof AppWorkspacesRoute
   '/mock/$scenario': typeof MockScenarioRoute
   '/': typeof AppIndexRoute
   '/mock': typeof MockIndexRoute
@@ -116,6 +124,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
+  '/_app/workspaces': typeof AppWorkspacesRoute
   '/mock/$scenario': typeof MockScenarioRoute
   '/_app/': typeof AppIndexRoute
   '/mock/': typeof MockIndexRoute
@@ -132,6 +141,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/gallery'
+    | '/workspaces'
     | '/mock/$scenario'
     | '/mock/'
     | '/app/$itemId'
@@ -144,6 +154,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/gallery'
+    | '/workspaces'
     | '/mock/$scenario'
     | '/'
     | '/mock'
@@ -158,6 +169,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/gallery'
+    | '/_app/workspaces'
     | '/mock/$scenario'
     | '/_app/'
     | '/mock/'
@@ -198,6 +210,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/workspaces': {
+      id: '/_app/workspaces'
+      path: '/workspaces'
+      fullPath: '/workspaces'
+      preLoaderRoute: typeof AppWorkspacesRouteImport
       parentRoute: typeof AppRoute
     }
     '/mock/': {
@@ -267,6 +286,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
+  AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppIndexRoute: typeof AppIndexRoute
   AppAppItemIdRoute: typeof AppAppItemIdRoute
   AppLibraryItemIdRoute: typeof AppLibraryItemIdRoute
@@ -278,6 +298,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppWorkspacesRoute: AppWorkspacesRoute,
   AppIndexRoute: AppIndexRoute,
   AppAppItemIdRoute: AppAppItemIdRoute,
   AppLibraryItemIdRoute: AppLibraryItemIdRoute,
