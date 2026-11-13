@@ -4426,6 +4426,7 @@ function ChatInterface({
     listTree: (commitId) => overseer.listTree(commitId),
     readFilesAtCommit: (commitId, paths) => overseer.readFilesAtCommit(commitId, paths),
     listChangedPaths: (fromCommit, toCommit) => overseer.listChangedPaths(fromCommit, toCommit),
+    readBlob: (oid) => overseer.readBlob(oid),
   };
   const handleAcceptChanges = async () => {
     const chatId = selectedChatId;
