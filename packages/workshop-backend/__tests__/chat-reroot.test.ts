@@ -43,7 +43,9 @@ let doCounter = 0;
 async function withImpl(fn: (impl: any) => Promise<void>): Promise<void> {
   let stub = env.TEST_OVERSEER.getByName(`chat-reroot-${++doCounter}`);
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
-    await fn((instance as unknown as { impl: any }).impl);
+    let impl = (instance as unknown as { impl: any }).impl;
+    impl.storage.nextGatekeeperId.put(GADGET + 1);
+    await fn(impl);
   });
 }
 

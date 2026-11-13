@@ -94,9 +94,12 @@ import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForT
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
+  assertChatAttachmentBatch,
   assertChatAttachmentSize,
+  chatFileMimeType,
   decodeChatAttachmentText,
   isAllowedChatAttachmentImageMimeType,
+  MAX_CHAT_ATTACHMENTS_PER_MESSAGE,
   validateChatAttachmentUpload,
 } from "./chat-attachment-validation";
 import { renderGadgetInBrowser } from "./browser-export";
@@ -446,9 +449,6 @@ function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload
   }
   return screenshot;
 }
-
-const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
-const MAX_CHAT_ATTACHMENT_TOTAL_BYTES = 5 * 1024 * 1024;
 
 const CHAT_ATTACHMENT_EXTENSION_BY_MIME = new Map([
   ["text/csv", ".csv"],
@@ -3480,6 +3480,9 @@ class OverseerImpl implements AgentHooks {
           this.storage.activeAgents.put(execution);
         }
 
+        for (const msg of msgs) {
+          if (msg.type === "message") this.commitChatAttachments(chatId, msg.attachments);
+        }
         this.addChatMessages(chatId, author, msgs, usage, aiGatewayLogId, aiGatewayLogRoute);
         let written = this.materializeChatChanges(chatId, undefined, {
           author,
@@ -6254,8 +6257,6 @@ class OverseerImpl implements AgentHooks {
     if (attachments.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
       throw new Error(`You can attach up to ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments.`);
     }
-
-    let total = 0;
     let result: ChatAttachmentRef[] = [];
     let seenIds = new Set<string>();
     for (let attachment of attachments) {
@@ -6267,7 +6268,6 @@ class OverseerImpl implements AgentHooks {
           mimeType: attachment.mimeType, name: attachment.name,
           content,
         });
-        total += content.byteLength;
         result.push({id: crypto.randomUUID(), oid: attachment.oid,
           mimeType: upload.mimeType, name: upload.name, size: content.byteLength});
         continue;
@@ -6282,7 +6282,6 @@ class OverseerImpl implements AgentHooks {
       let data = content.data;
       if (data === undefined) throw new Error("Staged chat attachment has no content.");
       assertChatAttachmentSize(data.byteLength);
-      total += data.byteLength;
       result.push({
         id,
         mimeType: content.state.mimeType,
@@ -6290,10 +6289,15 @@ class OverseerImpl implements AgentHooks {
         size: data.byteLength,
       });
     }
-    if (total > MAX_CHAT_ATTACHMENT_TOTAL_BYTES) {
-      throw new Error("Attached files are too large.");
-    }
+    assertChatAttachmentBatch(result);
     return result;
+  }
+
+  prepareFileAttachment(name: string, content: Uint8Array): ChatAttachmentRef {
+    const upload = validateChatAttachmentUpload({name, content, mimeType: chatFileMimeType(name, content)});
+    const {oid} = this.gitCache.writeBlob(content);
+    return {id: crypto.randomUUID(), oid, name: upload.name, mimeType: upload.mimeType,
+      size: content.byteLength};
   }
 
   commitChatAttachments(
@@ -8764,6 +8768,17 @@ class OverseerImpl implements AgentHooks {
   //     stamping just means naming reruns next turn.
   async prepareChatBindings(chatId: number, chatMessages: AiChatMessage[])
       : Promise<SeedBindingInfo[]> {
+    // One-off tasks need somewhere durable for outputs even if this chat has no uploads.
+    // Like the seed binding layer, an empty scratch worktree is not a proposed user edit.
+    if (!this.#scratchWorktree(chatId) && !this.getChatAgentContext(chatId).spawnerConfig) {
+      const commitId = await this.gitCache.writeFilesAsCommit(new Map(), {
+        parents: [], message: "Initialize chat scratch space", timestamp: new Date(),
+        author: commitIdentityForAuthor(chatMessages[0]?.author ??
+          {type: "agent", id: "scratch", name: "Scratch space"}),
+      });
+      this.getChatMetaOrThrow(chatId);
+      this.#installScratchWorktree(chatId, {commitId, bindingName: "SCRATCH"});
+    }
     let context = this.getChatAgentContext(chatId);
     let dirty = false;
 

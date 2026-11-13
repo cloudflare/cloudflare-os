@@ -6,6 +6,19 @@ import { PDF_MIME_TYPE } from "./chat-attachment-pdf";
 // (prepareChatAttachment.ts).
 const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 
+/** Maximum number of files attached to one chat message. */
+export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
+
+/** Apply the same per-message bounds to uploaded and assistant-generated attachments. */
+export function assertChatAttachmentBatch(attachments: readonly {size: number}[]): void {
+  if (attachments.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
+    throw new Error(`You can attach up to ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments.`);
+  }
+  if (attachments.reduce((total, attachment) => total + attachment.size, 0) > 5 * 1024 * 1024) {
+    throw new Error("Attached files are too large.");
+  }
+}
+
 const IMAGE_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ["image/jpeg", [0xFF, 0xD8, 0xFF]],
   ["image/png", [0x89, 0x50, 0x4E, 0x47]],
@@ -22,6 +35,21 @@ const CONTENT_SIGNATURES = new Map<string, readonly (number | null)[]>([
   ...IMAGE_SIGNATURES,
   [PDF_MIME_TYPE, [0x25, 0x50, 0x44, 0x46, 0x2D]],
 ]);
+
+/** Infer previewable formats from bytes; other known extensions are download metadata only. */
+export function chatFileMimeType(name: string, content: Uint8Array): string {
+  for (const [mimeType, signature] of CONTENT_SIGNATURES) {
+    if (signature.every((expected, index) => expected === null || content[index] === expected)) {
+      return mimeType;
+    }
+  }
+  const extensions: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp",
+    pdf: PDF_MIME_TYPE, txt: "text/plain", csv: "text/csv", json: "application/json",
+    md: "text/markdown", zip: "application/zip",
+  };
+  return extensions[name.split(".").at(-1)?.toLowerCase() ?? ""] ?? "application/octet-stream";
+}
 
 function sanitizeChatAttachmentMimeType(mimeType: string | undefined): string {
   if (!mimeType || /[\r\n]/.test(mimeType)) return "application/octet-stream";

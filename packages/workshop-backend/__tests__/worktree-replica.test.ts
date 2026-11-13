@@ -427,6 +427,27 @@ async function treeFiles(impl: Impl, tree: string, prefix = ""): Promise<Record<
 const pins = (impl: Impl) => impl.storage.chatMeta.get(1)!.codeBase?.pins ?? [];
 
 describe("worktree commands", () => {
+  it("displays a binary command output after its Git submission reaches the step barrier", () => withCommands(async (impl, id) => {
+    const bytes = Uint8Array.fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6n0AAAAASUVORK5CYII=");
+    runCode(impl, id, {image: async (_repo, replicator, queue) => {
+      const snapshot = await replicator.snapshot(queue);
+      const {oid} = impl.gitCache.writeBlob(bytes);
+      const tree = await impl.gitCache.writeChangedTreeOf(snapshot.tree,
+        new Map([["picture.png", {oid, byteLength: bytes.length}]]));
+      const command = packedResult(impl, snapshot.tree, tree);
+      await replicator.submit(queue, snapshot.tree, tree, command.pack());
+      return "Generated picture.png";
+    }});
+    const attach = () => fauxToolCall("attachFile", {worktree: "REPO", path: "picture.png"});
+    const results = await turn(impl, [[execute("image"), attach()], [attach()]]);
+    expect(results[1]).toContain("next step");
+    expect(JSON.parse(results[2])).toMatchObject({name: "picture.png", mimeType: "image/png", size: bytes.length});
+    const msg = [...impl.storage.chats.list()].find(msg => msg.type === "message" && msg.attachments?.length);
+    if (msg?.type !== "message") throw new Error("Missing command output attachment");
+    expect(await impl.getChatAttachmentData(1, msg.attachments![0].id)).toEqual(bytes);
+    expect(msg.attachments![0].oid).toBe(gitObjectOid("blob", bytes));
+  }));
+
   it("fail outside an execution", () => withCommands(async (impl, id) => {
     using worktree = await mounted(impl, id);
     expect(await worktree.snapshot(await queueFor(impl, "ended")).then(() => "", (error: Error) => error.message))

@@ -66,6 +66,7 @@ function seedGatekeeper(impl: any, id: number): void {
       typeUrlPattern: "https://*",
     },
   });
+  impl.storage.nextGatekeeperId.put(Math.max(impl.storage.nextGatekeeperId.get(), id + 1));
 }
 
 // A vendorless connection (an AI model), which no collaborator is ever verified against.
@@ -78,11 +79,13 @@ function seedVendorlessGatekeeper(impl: any, id: number): void {
       type: "aiModel", modelId: `m${id}`, provider: "anthropic", modelName: "claude",
     },
   });
+  impl.storage.nextGatekeeperId.put(Math.max(impl.storage.nextGatekeeperId.get(), id + 1));
 }
 
 function seedGadget(impl: any, id: number): void {
   impl.storage.gadgets.put(
       { type: "gadget", id, title: "G", created: new Date(0), bindingName: `G${id}`, bindings: {} });
+  impl.storage.nextGatekeeperId.put(Math.max(impl.storage.nextGatekeeperId.get(), id + 1));
 }
 
 // Record a requirement on a connection attributed to `gadgetId`, as a read reporting
@@ -1414,7 +1417,8 @@ describe("ambient resources a chat gains", () => {
     let seeds: SeedBindingInfo[] = await impl.prepareChatBindings(1, [pasted]);
     await impl.prepareChatBindings(2, []);
 
-    expect(impl.getChatAgentContext(1).bindings).toEqual({ RES: 1, RES_3: 3 });
+    let context = impl.getChatAgentContext(1);
+    expect(context.bindings).toEqual({ RES: 1, RES_3: 3, SCRATCH: context.scratch.worktreeId });
     expect(seeds.find(seed => seed.target === 3)).toMatchObject({ name: "RES_3", catalog: null });
     expect(impl.getChatAgentContext(2).bindings).toEqual({});
   }));

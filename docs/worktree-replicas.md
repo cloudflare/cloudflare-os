@@ -35,6 +35,21 @@ are translated into `gitHead()` and `gitPull()` calls by gatekeeper-kit's `serve
   integration harness does this in `packages/integration-tests/scripts/build-upgrade-base.ts`.
 - Mount once, and run commands in later turns, after the workspace has restarted.
 
+## Generated files in chat
+
+Every normal agent chat has a scratch worktree, including chats without uploads. For one-off
+container tasks, mount it with `mountWorktree(env.SCRATCH, "outputs")` (using the scratch binding
+name listed in that chat) and write deliverables under `/workspace/outputs`. Non-ignored files
+return through the same Git submission as repository edits; files outside mounts stay in the
+container. No extra transfer API or explicit Git commit is needed.
+
+In the next agent step, `attachFile({worktree: "SCRATCH", path: "mandelbrot.png"})` attaches the
+file's current bytes to the assistant's message. Supported images display inline; files can be
+downloaded. The attachment names an immutable Git blob, so editing or deleting the original file
+does not change earlier messages. Attachments use the existing authenticated chat APIs and
+limits: 4 MiB per file, five files and 5 MiB total per message. Neither base64 output through the
+model nor a Gadget is needed.
+
 ## Step transactionality
 
 A step's effects are saved if and only if its transcript is
