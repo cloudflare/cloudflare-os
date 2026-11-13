@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
+import { readLibrary } from './readLibrary'
 
 export type LibraryState =
   | { status: 'loading' }
@@ -11,8 +12,8 @@ export type LibraryState =
  * Everything the user's workspaces, and those shared with them, have made, most recently active
  * first. Loaded when mounted, and again whenever `key` changes, such as for each chat it is shown
  * beside, keeping what was loaded meanwhile; `null` wants nothing, and loads nothing. Workspaces
- * older than the index are swept into it a batch at a time, so it is asked again until it says it
- * has caught up, showing what has arrived each time.
+ * older than the index are swept into it a batch at a time, so it is asked again, a little later each
+ * time, until it says it has caught up (`readLibrary`), showing what has arrived each time.
  */
 export const useLibrary = (key?: string | null): LibraryState => {
   const { api } = useApi()
@@ -22,25 +23,20 @@ export const useLibrary = (key?: string | null): LibraryState => {
 
   useEffect(() => {
     if (key === null) return
-    let cancelled = false
-    void (async () => {
-      for (;;) {
-        const { outputs, catchingUp } = await api.listOutputs()
-        if (cancelled) return
-        setState({ status: 'ready', outputs: outputs.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime()) })
-        if (!catchingUp) return
-      }
-    })().catch((error: unknown) => {
-      if (cancelled) return
+    const reading = new AbortController()
+    readLibrary(
+      () => api.listOutputs(),
+      (outputs) => setState({ status: 'ready', outputs: outputs.toSorted((a, b) => b.lastActive.getTime() - a.lastActive.getTime()) }),
+      reading.signal,
+    ).catch((error: unknown) => {
+      if (reading.signal.aborted) return
       const retry = () => {
         setState({ status: 'loading' })
         setAttempt((current) => current + 1)
       }
       setState({ status: 'failed', message: error instanceof Error ? error.message : String(error), retry })
     })
-    return () => {
-      cancelled = true
-    }
+    return () => reading.abort()
   }, [api, key, attempt])
 
   return state
