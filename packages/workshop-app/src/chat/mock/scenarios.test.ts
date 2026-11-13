@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { previewOf } from '@/aside/filePreview'
+import { BACK_FOR, ConnectionNotice, SHOW_AFTER } from '@/rpc/ConnectionNotice'
 import { ChatSession } from '../ChatSession'
 import type { ChatItem } from '../chatItems'
 import { createMockApi, MOCK_WORKSPACE_ID } from './mockApi'
@@ -202,6 +203,54 @@ describe('scenarios', () => {
     await playThrough(overseer)
     expect(ready()).toMatchObject({ activity: undefined, agentActive: false })
     expect(ready().items.at(-1)).toMatchObject({ kind: 'assistant', text: expect.stringContaining('hiring section') })
+  })
+
+  it('connection-lost: nothing is sent while the connection is down, which is said; once back the conversation catches up', async () => {
+    vi.useFakeTimers()
+    const played = scenario('connection-lost')
+    const { session: api, overseer } = createMockApi(played)
+    // Wired as the app wires its connection: the notice is told, and the chat connects again once back.
+    const notice = new ConnectionNotice()
+    const session = new ChatSession(() => api.api.openWorkspace(MOCK_WORKSPACE_ID), 0, { viewerId: api.user.id, connection: notice })
+    overseer.onConnection = (connected) => {
+      if (!connected) return notice.lost()
+      notice.restored()
+      session.reconnect()
+    }
+    session.start()
+    await vi.waitFor(() => expect(session.getSnapshot().status).toBe('ready'))
+    const ready = () => {
+      const snapshot = session.getSnapshot()
+      if (snapshot.status !== 'ready') throw new Error(`expected a ready session, got ${snapshot.status}`)
+      return snapshot
+    }
+    const drop = played.script.findIndex((step) => 'disconnect' in step)
+    while (overseer.player.getSnapshot().position <= drop) overseer.player.step()
+    const shown = ready()
+    expect(shown.agentActive).toBe(true)
+
+    // Said only once it has lasted a moment.
+    expect(notice.getSnapshot().status).toBe('hidden')
+    await vi.advanceTimersByTimeAsync(SHOW_AFTER)
+    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 1 })
+
+    // Put away, it comes back when a message cannot be sent, which is kept to send again.
+    notice.dismiss()
+    expect(await session.send('Thanks!', AGENT.id)).toBe(false)
+    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 2 })
+    expect(ready().sendError).toBeUndefined()
+
+    // The agent finishes meanwhile, unheard.
+    while (overseer.player.getSnapshot().waitingFor === undefined) overseer.player.step()
+    expect(ready()).toBe(shown)
+
+    overseer.reconnectNow()
+    expect(notice.getSnapshot().status).toBe('reconnected')
+    await vi.waitFor(() => expect(ready().items.at(-1)).toMatchObject({ kind: 'assistant', text: expect.stringContaining('Grace') }))
+    expect(ready()).toMatchObject({ agentActive: false, activity: undefined })
+    await vi.advanceTimersByTimeAsync(BACK_FOR)
+    expect(notice.getSnapshot().status).toBe('hidden')
+    expect(await session.send('Thanks!', AGENT.id)).toBe(true)
   })
 
   it('untrusted-content: the SVG sent is shown as its text, and only the PNG as a picture', async () => {

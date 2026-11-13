@@ -8,6 +8,7 @@ import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
 import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
@@ -45,6 +46,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
+  const connection = useConnectionNotice()
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
   // What a row asked for that this app cannot do yet.
@@ -124,7 +126,7 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
     // at the end.
     list.current?.scrollToLatest()
     if (chat.status !== 'ready') {
-      setProblem('The conversation is still loading. Try again in a moment.')
+      if (!connection?.blocked()) setProblem('The conversation is still loading. Try again in a moment.')
       return false
     }
     if (model.status !== 'ready') {
@@ -155,15 +157,14 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
           onSend={sendMessage}
           stop={chat.status === 'ready' && chat.agentActive ? {
             waiting: chat.waiting,
-            onStop: async () => {
+            onStop: () => {
+              if (connection?.blocked()) return false
               setProblem(undefined)
               actions.dismissSendError()
-              try {
-                await actions.stopAgent()
-              } catch (error) {
+              return actions.stopAgent().catch((error: unknown) => {
                 setProblem(`The agent couldn’t be stopped: ${error instanceof Error ? error.message : String(error)}`)
                 throw error
-              }
+              })
             },
           } : undefined}
           problem={sendProblem === undefined ? undefined : {

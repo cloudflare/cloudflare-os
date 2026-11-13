@@ -48,6 +48,8 @@ export const playThrough = async (overseer: MockOverseer, afterStep?: () => void
     if (position === total) break
     if (waitingFor) await act(overseer, waitingFor[0], (await overseer.getChatHistory(0)).messages)
     player.step()
+    // A dropped connection is had back at once: nothing would happen meanwhile but waiting.
+    overseer.reconnectNow()
     afterStep?.()
   }
   return (await overseer.getChatHistory(0)).messages

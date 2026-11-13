@@ -16,13 +16,14 @@ export type LibraryState =
  * time, until it says it has caught up (`readLibrary`), showing what has arrived each time.
  */
 export const useLibrary = (key?: string | null): LibraryState => {
-  const { api } = useApi()
+  const { api, reconnecting } = useApi()
   const [state, setState] = useState<LibraryState>({ status: 'loading' })
   // Bumped to ask again after a failure.
   const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
-    if (key === null) return
+    // Over a lost connection it could only fail; the new connection's `api` reads it.
+    if (key === null || reconnecting) return
     const reading = new AbortController()
     readLibrary(
       () => api.listOutputs(),
@@ -37,7 +38,7 @@ export const useLibrary = (key?: string | null): LibraryState => {
       setState({ status: 'failed', message: error instanceof Error ? error.message : String(error), retry })
     })
     return () => reading.abort()
-  }, [api, key, attempt])
+  }, [api, reconnecting, key, attempt])
 
   return state
 }

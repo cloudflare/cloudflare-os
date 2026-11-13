@@ -239,6 +239,11 @@ type StepEffect =
   | { agentActive: boolean }
   /** The workspace restarts, as for a deploy, and is back after this many milliseconds. */
   | { restart: number }
+  /**
+   * The app's connection to the backend drops, as on a train going into a tunnel, and is back
+   * after this many milliseconds. The workspace carries on meanwhile.
+   */
+  | { disconnect: number }
 
 /**
  * One thing the fake server does. It follows the previous step after `delay` milliseconds, or

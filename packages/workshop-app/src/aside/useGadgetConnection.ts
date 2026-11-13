@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useApi } from '@/rpc/ApiContext'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { AsideOutput } from './asideItems'
 import { GadgetConnection, type GadgetSnapshot } from './GadgetConnection'
 
@@ -14,6 +15,7 @@ const nothing = () => NOTHING
  */
 export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: () => void) => {
   const { api, user } = useApi()
+  const notice = useConnectionNotice()
   // The API the connection opens the workspace with, read when it connects.
   const latestApi = useRef(api)
   const key = output?.type === 'gadget' ? `${output.workspaceId}/${output.workpieceId}/${output.chatId}` : undefined
@@ -25,6 +27,7 @@ export const useGadgetConnection = (output: AsideOutput | undefined, onEscape: (
           chatId: output.chatId,
           viewerId: user.id,
           onEscape,
+          connection: notice ?? undefined,
         })
       : undefined
     setCurrent({ key, connection })

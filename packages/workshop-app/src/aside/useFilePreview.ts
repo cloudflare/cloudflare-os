@@ -37,7 +37,7 @@ const save = (bytes: Uint8Array, name: string) => {
  * and how to show them (`previewOf`). Nothing, for no file. Showing another starts over.
  */
 export const useFilePreview = (file: AsideFile | undefined): FileState => {
-  const { api } = useApi()
+  const { api, reconnecting } = useApi()
   const key = file && `${file.workspaceId}/${file.chatId}/${file.id}`
   // What was fetched, for the file it was fetched for.
   const [fetched, setFetched] = useState<{ key: string; bytes?: Uint8Array; error?: string }>()
@@ -48,6 +48,8 @@ export const useFilePreview = (file: AsideFile | undefined): FileState => {
 
   useEffect(() => {
     if (!key || inline || workspaceId === undefined || chatId === undefined || fileId === undefined) return
+    // Over a lost connection it could only fail; the new connection's `api` fetches it.
+    if (reconnecting) return
     let cancelled = false
     const overseer = api.openWorkspace(workspaceId)
     overseer.getChatAttachmentContent(chatId, fileId).then(
@@ -62,7 +64,7 @@ export const useFilePreview = (file: AsideFile | undefined): FileState => {
       cancelled = true
       overseer[Symbol.dispose]()
     }
-  }, [api, key, inline, workspaceId, chatId, fileId])
+  }, [api, reconnecting, key, inline, workspaceId, chatId, fileId])
 
   const current = fetched?.key === key ? fetched : undefined
   const bytes = inline ?? current?.bytes

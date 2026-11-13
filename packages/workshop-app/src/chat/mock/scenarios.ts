@@ -506,6 +506,36 @@ const workspaceRestart: Scenario = {
   ],
 }
 
+const owners = 'Owners are on the team page: match each step to whoever ran it last time.'
+
+const connectionLost: Scenario = {
+  id: 'connection-lost',
+  title: 'Launch checklist',
+  description:
+    'The app loses its connection to the backend while the agent works, as on a train going into a tunnel, ' +
+    'and has it back eight seconds later. After a moment the island at the top says so: swipe it up to put it ' +
+    'away. Sending, stopping or approving meanwhile does ' +
+    'nothing but bring it back, with a shake, and the draft stays. The agent carries on meanwhile, and once the ' +
+    'connection is back the conversation catches up with what it wrote.',
+  history: history([
+    user('Draft the launch checklist for Thursday.'),
+    agent({ text: 'A first pass: the freeze on Tuesday, a dry run on Wednesday, and the launch at 10:00 on Thursday.' }),
+    user('Add who owns each step.'),
+  ]),
+  script: [
+    ...turn(
+      streamReasoning(owners),
+      { disconnect: 8000, delay: 600 },
+      // Written while the app cannot hear it, which reads it once it is back.
+      {
+        message: agent({ reasoning: owners, text: 'The freeze is Grace’s, the dry run Alan’s and the launch yours. Each step says so now.' }),
+        delay: 3000,
+      },
+    ),
+    ...when('onSend', turn(say(agent({ text: 'Noted.' })))),
+  ],
+}
+
 const steerSlash: Scenario = {
   id: 'steer-slash',
   title: 'Release notes',
@@ -591,6 +621,7 @@ export const SCENARIOS: Scenario[] = [
   errors,
   sendRefused,
   workspaceRestart,
+  connectionLost,
   untrustedContent,
   steerSlash,
   longHistory,

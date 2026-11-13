@@ -189,6 +189,12 @@ const withAction = async (actionLog = log()) => {
   return { fake, session: await started(fake) }
 }
 
+/** The app's connection, down, saying each time something could not be done for it. */
+const down = () => {
+  const connection: { down: boolean; blocked: () => boolean } = { down: true, blocked: vi.fn<() => boolean>(() => connection.down) }
+  return connection
+}
+
 /** A chat with changes waiting to gadget 1. */
 const proposing = (activeAgent?: AiChatAuthorInfo): AiChatMetadata => ({ ...chat(0, 'Chat', 1, activeAgent), proposedChangeWorkpieces: [1] })
 const changes = (sequence: number, extra: Partial<Extract<AiChatMessage, { type: 'changes' }>> = {}): AiChatMessage =>
@@ -1272,6 +1278,70 @@ describe('ChatSession', () => {
 
       expect(session.getSnapshot()).toEqual({ status: 'failed', message: 'You don’t have access to this workspace.' })
       expect(open).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('while the app’s connection is down', () => {
+
+    it('sends nothing and asks nothing, saying so through the connection, and keeps no error of its own', async () => {
+      const connection = down()
+      connection.down = false
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'file it'), actionMessage(1, log())) })
+      const session = await started(fake, 0, { connection })
+      connection.down = true
+
+      expect(await session.send('hello', 'model-1')).toBe(false)
+      await session.approveAction(7)
+      await session.retry('model-1')
+      expect(connection.blocked).toHaveBeenCalledTimes(3)
+      expect(fake.sendChatMessage).not.toHaveBeenCalled()
+      expect(fake.approveAction).not.toHaveBeenCalled()
+      expect(fake.retryAgent).not.toHaveBeenCalled()
+      expect(ready(session)).toMatchObject({ sendError: undefined, actionError: undefined })
+    })
+
+    it('keeps what is shown when the workspace is lost with it, and waits for the connection to be back', async () => {
+      vi.useFakeTimers()
+      try {
+        const connection = down()
+        connection.down = false
+        const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi')) })
+        const two = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi'), agentMessage(1, 'hello')) })
+        const open = vi.fn<() => ChatOverseer>().mockReturnValueOnce(one.overseer).mockReturnValue(two.overseer)
+        const session = new ChatSession(open, 0, { connection })
+        session.start()
+        await vi.waitFor(() => expect(session.getSnapshot().status).toBe('ready'))
+        const shown = session.getSnapshot()
+
+        connection.down = true
+        one.breaks()
+        await vi.advanceTimersByTimeAsync(20_000)
+        // Not tried again over the lost connection: the new one will say when.
+        expect(open).toHaveBeenCalledOnce()
+        expect(session.getSnapshot()).toBe(shown)
+
+        connection.down = false
+        session.reconnect()
+        await vi.waitFor(() => expect(ready(session).items).toHaveLength(2))
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('stays loading, rather than failing, for a chat opened meanwhile, and loads once the connection is back', async () => {
+      const connection = down()
+      const lost = fakeOverseer(new Promise<AiChatMetadata[]>(() => {}))
+      lost.getChatHistory.mockRejectedValue(new Error('Attempted to use RPC stub after it has been disposed.'))
+      const back = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi')) })
+      const overseers = [lost.overseer, back.overseer]
+      const session = new ChatSession(() => overseers.shift()!, 0, { connection })
+      session.start()
+      await flush()
+      expect(session.getSnapshot()).toEqual({ status: 'loading' })
+
+      connection.down = false
+      session.reconnect()
+      await vi.waitFor(() => expect(ready(session).items).toHaveLength(1))
     })
   })
 })

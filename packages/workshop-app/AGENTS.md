@@ -50,12 +50,22 @@ Put protocol logic in plain classes and functions with no React (like `ChatSessi
 tested without rendering. `pnpm --filter @gadgets/workshop-app test:run` runs the tests.
 
 A lost connection leaves the app as it is. Only the first connection has the page to itself;
-after that `RpcGate` keeps rendering what it did, with `ApiSession.reconnecting` set (the shell
-says so with `ConnectionStatus`), and signs in again on the new connection, whose `api` replaces
-the old. Whatever holds stubs starts over on the new `api` without dropping what it shows: the
-chats (`ChatSessions.reconnect`) and the gadget beside the page read again over what is shown, and
-the lists load again with the old ones up meanwhile. A workspace can also restart under a
-connection that stays up, which breaks only the stubs made from it: `ChatSession` and
+after that `RpcGate` keeps rendering what it did, with `ApiSession.reconnecting` set, and signs in
+again on the new connection, whose `api` replaces the old. Whatever holds stubs starts over on the
+new `api` without dropping what it shows: the chats (`ChatSessions.reconnect`) and the gadget
+beside the page read again over what is shown, and the lists load again with the old ones up
+meanwhile. Nothing loads over the lost connection, which could only fail: what opens meanwhile
+says it is loading until the new `api` is there.
+
+What the user is told is `RpcGate`'s `ConnectionNotice` (plain, tested), shown by
+`ConnectionIsland` at the top of the window: only once a drop has lasted a moment, with the mascot
+shaken and then sad, then happy once it is back. A swipe up puts it away. What the user asks for
+meanwhile (send, stop, approve, rename, start a chat) is not tried and fails nothing: ask the
+notice first (`useConnectionNotice().blocked()`), which brings the island back with a shake, and
+leave everything as it was, a draft included. Do the same for anything new the user can ask for.
+The `connection-lost` scenario plays a drop (a script's `disconnect` step).
+
+A workspace can also restart under a connection that stays up, which breaks only the stubs made from it: `ChatSession` and
 `GadgetConnection` hear of it through `onRpcBroken` and connect again the same way, trying again
 with growing waits until the history (or the UI) is in. Register `onRpcBroken` on every stub held
 for longer than a call, or what it feeds goes silently still. The `workspace-restart` scenario

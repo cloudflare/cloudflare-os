@@ -20,8 +20,9 @@ export type MascotProps = {
    */
   interactive?: boolean
   /**
-   * `contrast` (the default) draws it in the colours of the viewer's own messages; `brand` in
-   * the logo's orange, with a white sparkle and face, as the mark is.
+   * `contrast` (the default) draws it in the colours of the viewer's own messages; `inverse` the
+   * other way round, for on top of something drawn in `contrast`; `brand` in the logo's orange,
+   * with a white sparkle and face, as the mark is.
    */
   color?: MascotColor
   /**
@@ -33,12 +34,13 @@ export type MascotProps = {
   className?: string
 }
 
-export type MascotColor = 'contrast' | 'brand'
+export type MascotColor = 'contrast' | 'inverse' | 'brand'
 
 // The brand orange is the logo asset's own (see `LogoIcon`), not a UI token. Kumo has the
 // contrast interior as a text colour only.
 const COLORS: Record<MascotColor, { body: string; interior: string }> = {
   contrast: { body: 'fill-kumo-contrast', interior: 'text-kumo-inverse' },
+  inverse: { body: 'fill-current text-kumo-inverse', interior: 'text-kumo-contrast' },
   brand: { body: 'fill-[#FF5C2E]', interior: 'text-white' },
 }
 

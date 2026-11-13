@@ -1,8 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
 import { asideItemFor, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { useChatLibrary } from '@/aside/useChatLibrary'
+import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
 import { ChatSettingsPane } from '@/chat/ChatSettingsPane'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
@@ -12,6 +13,8 @@ import type { Scenario } from '@/chat/mock/scenario'
 import { SCENARIOS } from '@/chat/mock/scenarios'
 import { SplitLayout } from '@/layouts/SplitLayout'
 import { ApiContext } from '@/rpc/ApiContext'
+import { ConnectionNotice } from '@/rpc/ConnectionNotice'
+import { ConnectionNoticeContext } from '@/rpc/ConnectionNoticeContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 
 /** One scripted chat: the real `ChatPane` over a fake backend, so it needs no server. */
@@ -49,38 +52,64 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   onRestart: () => void
 }) => {
   // Made once, so the callbacks handed to the chat stay the same.
-  const [{ session, overseer, onSetUpConnection, onAlwaysApprove }] = useState(() => {
+  const [{ session: signedIn, overseer, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
     const mock = createMockApi(scenario)
     return {
       ...mock,
+      notice: new ConnectionNotice(),
       // What the real connect flow ends with, and what confirming a standing approval does.
       onSetUpConnection: (requestId: string) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
       onAlwaysApprove: ({ gatekeeperId, actionKind }: Parameters<NonNullable<ChatPaneProps['onAlwaysApprove']>>[0]) =>
         mock.overseer.setAutoApprovedActionKind(gatekeeperId, actionKind),
     }
   })
+  // The fake backend's connection, standing in for the app's: down for a `disconnect` step, and
+  // back with a new API, as a new connection brings, which connects whatever holds stubs again.
+  const [session, setSession] = useState(signedIn)
+  const connectionState = useSyncExternalStore(notice.subscribe, notice.getSnapshot)
 
   useEffect(() => {
+    overseer.onConnection = (connected) => {
+      setSession((current) => connected ? { ...current, api: new Proxy(current.api, {}), reconnecting: false } : { ...current, reconnecting: true })
+    }
     overseer.player.play()
-    return () => overseer.player.pause()
-  }, [overseer])
+    return () => {
+      overseer.onConnection = undefined
+      overseer.player.pause()
+    }
+  }, [overseer, notice])
+
+  // As the app's gate does, before the passive effects beneath, which may ask whether it is down.
+  const { reconnecting } = session
+  useLayoutEffect(() => {
+    if (reconnecting) notice.lost()
+    else notice.restored()
+  }, [notice, reconnecting])
 
   return (
-    <ApiContext value={session}>
-      <WorkspacesProvider>
-        <ChatSessionsProvider>
-          <MockLayout onOpenScenarios={onOpenScenarios} onSetUpConnection={onSetUpConnection} onAlwaysApprove={onAlwaysApprove}>
-            <MockControls
-              scenarios={SCENARIOS}
-              scenario={scenario}
-              player={overseer.player}
-              onSelectScenario={onSelectScenario}
-              onRestart={onRestart}
-            />
-          </MockLayout>
-        </ChatSessionsProvider>
-      </WorkspacesProvider>
-    </ApiContext>
+    <ConnectionNoticeContext value={notice}>
+      <ApiContext value={session}>
+        <WorkspacesProvider>
+          <ChatSessionsProvider>
+            <MockLayout onOpenScenarios={onOpenScenarios} onSetUpConnection={onSetUpConnection} onAlwaysApprove={onAlwaysApprove}>
+              <MockControls
+                scenarios={SCENARIOS}
+                scenario={scenario}
+                player={overseer.player}
+                onSelectScenario={onSelectScenario}
+                onRestart={onRestart}
+              />
+            </MockLayout>
+          </ChatSessionsProvider>
+        </WorkspacesProvider>
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-50 flex justify-center">
+          <ConnectionIsland
+            state={connectionState.status === 'hidden' ? undefined : connectionState}
+            onDismiss={notice.dismiss}
+          />
+        </div>
+      </ApiContext>
+    </ConnectionNoticeContext>
   )
 }
 

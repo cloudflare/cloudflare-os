@@ -5,6 +5,7 @@ import { Composer } from '@/blocks/Composer'
 import { UserMessage } from '@/blocks/UserMessage'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 
@@ -25,6 +26,7 @@ export type NewChatPaneProps = {
 export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneProps) => {
   const model = useDefaultModel()
   const refreshWorkspaces = useRefreshWorkspaces()
+  const connection = useConnectionNotice()
   // The message being sent, shown until the conversation opens; or why it could not be sent.
   const [pending, setPending] = useState<{ text: string; files: File[] }>()
   const [problem, setProblem] = useState<string>()
@@ -35,7 +37,7 @@ export const NewChatPane = ({ header, greeting, start, onStarted }: NewChatPaneP
 
   // Resolves to whether the conversation was started; the composer keeps the draft until it has.
   const send = async (text: string, files: File[]) => {
-    if (pending) return false
+    if (pending || connection?.blocked()) return false
     if (model.status !== 'ready') {
       setProblem(describeModelProblem(model))
       return false

@@ -1,16 +1,17 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { asideItemFor, formatAsideRef, pageOf, parseAsideRef, parseItemPageId, type AsideItem } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
-import { ConnectionStatus } from '@/blocks/ConnectionStatus'
+import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { AppShell } from '@/layouts/AppShell'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useApi } from '@/rpc/ApiContext'
+import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -42,7 +43,9 @@ const absolute = (href: string) => new URL(href, window.location.origin).href
  * one to the other keeps what is in it running.
  */
 const AppFrame = () => {
-  const { user, reconnecting } = useApi()
+  const { user } = useApi()
+  const connection = useConnectionNotice()!
+  const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
   const navigate = useNavigate()
   const router = useRouter()
@@ -172,7 +175,12 @@ const AppFrame = () => {
           collapsed={collapsed}
         />
       )}
-      status={reconnecting && <ConnectionStatus />}
+      status={(
+        <ConnectionIsland
+          state={connectionState.status === 'hidden' ? undefined : connectionState}
+          onDismiss={connection.dismiss}
+        />
+      )}
       initialSidebar={prefs.sidebar}
       onSidebarChange={(sidebar) => writeLayoutPrefs({ sidebar })}
       initialAsideShare={prefs.asideShare}

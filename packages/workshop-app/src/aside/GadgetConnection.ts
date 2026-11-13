@@ -58,6 +58,11 @@ export type GadgetConnectionOptions = {
   viewerId?: string
   /** Escape was pressed in the gadget's page, which keeps its keys from the app. */
   onEscape?: () => void
+  /**
+   * The app's connection to the backend, which may be `down` while it is made again. Meanwhile
+   * what is shown stays as it is, and `reconnect()` follows once it is back.
+   */
+  connection?: { readonly down: boolean }
 }
 
 // Not a latency budget: past this, the reply is taken to be never coming, and a retry is offered.
@@ -244,7 +249,7 @@ export class GadgetConnection {
    * one loads; anything else is left to the load, which says why it failed.
    */
   #lost(run: number) {
-    if (run !== this.#run || this.#snapshot.ui.status !== 'ready') return
+    if (run !== this.#run || this.#snapshot.ui.status !== 'ready' || this.options.connection?.down) return
     const delay = this.#retryDelay
     this.#retryDelay = Math.min(delay ? delay * 2 : RETRY_DELAY.first, RETRY_DELAY.most)
     this.#reconnect(delay)
@@ -336,7 +341,8 @@ export class GadgetConnection {
       if (!bundle) this.#unlink()
       this.#publish({ ui: bundle ? { status: 'ready', page: gadgetPage(bundle.jsCode), load } : { status: 'none' } })
     } catch (error) {
-      if (!current()) return
+      // Still loading, or showing what it did, until the connection is back.
+      if (!current() || this.options.connection?.down) return
       this.#unlink()
       this.#publish({ ui: { status: 'failed', message: messageOf(error) } })
     } finally {
