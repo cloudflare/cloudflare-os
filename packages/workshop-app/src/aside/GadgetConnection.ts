@@ -33,12 +33,15 @@ export type GadgetSnapshot = {
   title?: string
 }
 
+/** A stub, which says when what it reaches can no longer be reached, such as when it restarted. */
+type Breakable = { onRpcBroken(callback: (error: unknown) => void): void }
+
 /** The part of a gadget the pane uses, and the lease that must be disposed. */
 export type GadgetHandle = {
   getUiBundle(chatId?: number): Promise<UiBundle | null>
   /** Its server side, for its page to call. */
-  connectToGadget(chatId?: number): Promise<Disposable>
-} & Disposable
+  connectToGadget(chatId?: number): Promise<Disposable & Breakable>
+} & Disposable & Breakable
 
 /** The part of a workspace's Overseer the pane uses, and the lease that must be disposed. */
 export type GadgetOverseer = {
@@ -46,7 +49,7 @@ export type GadgetOverseer = {
   subscribeToPresence(subscriber: Parameters<RpcStub<Overseer>['subscribeToPresence']>[0]): Promise<Disposable>
   subscribeToChat(subscriber: Parameters<RpcStub<Overseer>['subscribeToChat']>[0]): Promise<Disposable>
   subscribeToWorkpieces(subscriber: Parameters<RpcStub<Overseer>['subscribeToWorkpieces']>[0]): Promise<Disposable>
-} & Disposable
+} & Disposable & Breakable
 
 export type GadgetConnectionOptions = {
   /** Shows the gadget with the changes proposed in this chat. */
@@ -63,6 +66,8 @@ const UI_TIMEOUT = 20_000
 // have stopped coming for this long, not for each.
 const REFRESH_DELAY = 300
 const LOADING: GadgetUi = { status: 'loading' }
+// After the gadget was lost, it is connected to again at once, then after these, doubling.
+const RETRY_DELAY = { first: 1000, most: 10_000 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
@@ -167,6 +172,10 @@ export class GadgetConnection {
   #handshakes = 0
   #link: { session: Disposable; server: Disposable } | undefined
   #frame: () => Window | null | undefined = () => undefined
+  #started = false
+  // Between attempts to connect again after the gadget was lost: how long the next waits.
+  #retryDelay = 0
+  #retry: ReturnType<typeof setTimeout> | undefined
 
   /** `open` connects to the gadget's workspace; the connection disposes what it returns. */
   constructor(
@@ -193,12 +202,16 @@ export class GadgetConnection {
   }
 
   start() {
+    this.#started = true
     window.addEventListener('message', this.#received)
     this.#open(++this.#run, false)
   }
 
   stop() {
     this.#run++
+    this.#started = false
+    this.#retryDelay = 0
+    clearTimeout(this.#retry)
     window.removeEventListener('message', this.#received)
     this.#release()
   }
@@ -208,11 +221,33 @@ export class GadgetConnection {
    * again. The page shown stays until the new one takes its place. Nothing, when not started.
    */
   reconnect() {
-    if (!this.#overseer) return
+    if (!this.#started) return
+    this.#retryDelay = 0
+    this.#reconnect(0)
+  }
+
+  #reconnect(delay: number) {
+    const run = ++this.#run
+    clearTimeout(this.#retry)
     // The page's connection went with the old one, so the page is only kept to be looked at.
     const quietly = this.#snapshot.ui.status === 'ready'
     this.#release()
-    this.#open(++this.#run, quietly)
+    if (delay === 0) return this.#open(run, quietly)
+    this.#retry = setTimeout(() => {
+      if (run === this.#run) this.#open(run, quietly)
+    }, delay)
+  }
+
+  /**
+   * Run `run` lost the gadget, such as when its workspace restarted, and with it the page's
+   * calls. A page that is shown is loaded again quietly, again and again with growing waits until
+   * one loads; anything else is left to the load, which says why it failed.
+   */
+  #lost(run: number) {
+    if (run !== this.#run || this.#snapshot.ui.status !== 'ready') return
+    const delay = this.#retryDelay
+    this.#retryDelay = Math.min(delay ? delay * 2 : RETRY_DELAY.first, RETRY_DELAY.most)
+    this.#reconnect(delay)
   }
 
   /** Loads the UI again, and starts its page over. */
@@ -223,7 +258,7 @@ export class GadgetConnection {
 
   #open(run: number, quietly: boolean) {
     const overseer = (this.#overseer = this.open())
-    this.#gadget = overseer.getGadget(this.workpieceId)
+    const gadget = (this.#gadget = overseer.getGadget(this.workpieceId))
     const changed = () => {
       if (run !== this.#run) return
       clearTimeout(this.#refresh)
@@ -245,6 +280,9 @@ export class GadgetConnection {
     // Each is extra: the gadget shows without them.
     for (const subscription of this.#subscriptions) subscription.catch(() => {})
     void this.#load(run, quietly)
+    // Last, as either can be called at once, for a workspace that cannot be reached.
+    overseer.onRpcBroken(() => this.#lost(run))
+    gadget.onRpcBroken(() => this.#lost(run))
   }
 
   #release() {
@@ -294,6 +332,7 @@ export class GadgetConnection {
         }),
       ])
       if (!current()) return
+      this.#retryDelay = 0
       if (!bundle) this.#unlink()
       this.#publish({ ui: bundle ? { status: 'ready', page: gadgetPage(bundle.jsCode), load } : { status: 'none' } })
     } catch (error) {
@@ -316,6 +355,7 @@ export class GadgetConnection {
     this.#unlink()
     const handshake = this.#handshakes
     try {
+      const run = this.#run
       const server = await this.#gadget!.connectToGadget(this.options.chatId)
       if (handshake !== this.#handshakes) {
         server[Symbol.dispose]()
@@ -323,6 +363,10 @@ export class GadgetConnection {
         return
       }
       this.#link = { server, session: newMessagePortRpcSession(port, server) }
+      // The page's calls go to the gadget's server side, which can go without the rest.
+      server.onRpcBroken(() => {
+        if (this.#link?.server === server) this.#lost(run)
+      })
     } catch (error) {
       port.close()
       if (handshake === this.#handshakes) this.#publish({ ui: { status: 'failed', message: `Couldn’t connect to the gadget: ${messageOf(error)}` } })

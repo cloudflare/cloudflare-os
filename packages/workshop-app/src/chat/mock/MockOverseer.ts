@@ -11,7 +11,7 @@ import type {
   SlashCommandRequest,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
-import { MockGadget } from './MockGadget'
+import { MockGadget, RESTARTED, type Handle } from './MockGadget'
 import { ScriptPlayer } from './ScriptPlayer'
 import { AGENT, stamp, VIEWER, type MessageSource, type Scenario, type ScriptStep } from './scenario'
 
@@ -28,6 +28,8 @@ type ActionEvents = Pick<ActionsSubscriber, 'entry'>
 type ActionMessage = Extract<AiChatMessage, { type: 'action' }>
 
 const lease = (release: () => void) => Promise.resolve({ [Symbol.dispose]: release })
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /**
  * A workspace's Overseer for one scripted chat, holding what a server would: the messages, the
@@ -50,6 +52,11 @@ export class MockOverseer {
   #blobs = new Map<GitOid, Uint8Array>()
   #refusals: string[]
   #sendDelay: number
+  #handles = new Set<Handle>()
+  // Bumped by each restart, as the server's stream generation is.
+  #generation = 1
+  // While the workspace is restarting, until this time, calls wait for it to be back.
+  #downUntil = 0
 
   constructor(scenario: Scenario) {
     this.#messages = [...scenario.history]
@@ -66,13 +73,42 @@ export class MockOverseer {
     this.player = new ScriptPlayer(scenario.script, (step) => this.#run(step))
   }
 
-  /** Nothing to release: the handle `openWorkspace` gives out is this object, which outlives it. */
-  [Symbol.dispose]() {}
+  /**
+   * What `openWorkspace` gives out: this workspace, as an RPC stub would be. When it restarts (a
+   * `restart` step), each handle out says it is broken and its calls fail, and calls through a
+   * new one wait until it is back.
+   */
+  open(): this {
+    const handle: Handle = { broken: false, onBroken: new Set() }
+    this.#handles.add(handle)
+    return new Proxy(this, {
+      get: (target, name) => {
+        if (name === Symbol.dispose) return () => void this.#handles.delete(handle)
+        if (name === 'onRpcBroken') {
+          return (callback: (error: unknown) => void) => (handle.broken ? callback(RESTARTED) : handle.onBroken.add(callback))
+        }
+        if (name === 'getGadget') return (id: number) => this.#gadget(id).open(handle)
+        const value: unknown = Reflect.get(target, name, target)
+        if (typeof value !== 'function' || typeof name === 'symbol' || name === 'then') return value
+        return async (...args: unknown[]) => {
+          await this.#backUp()
+          if (handle.broken) throw RESTARTED
+          return (value as (...args: unknown[]) => unknown).apply(target, args)
+        }
+      },
+    })
+  }
+
+  /** Waits for a workspace that is restarting to be back. */
+  async #backUp() {
+    const wait = this.#downUntil - Date.now()
+    if (wait > 0) await sleep(wait)
+  }
 
   /** Any id is a gadget: the scenarios' outputs are all documents. */
-  getGadget(id: number) {
+  #gadget(id: number) {
     let gadget = this.#gadgets.get(id)
-    if (!gadget) this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review')))
+    if (!gadget) this.#gadgets.set(id, (gadget = new MockGadget('Q3 platform review', () => this.#backUp())))
     return gadget
   }
 
@@ -99,7 +135,7 @@ export class MockOverseer {
 
   subscribeToChat(subscriber: ChatEvents) {
     this.#chatSubscribers.add(subscriber)
-    subscriber.streamGeneration(1)
+    subscriber.streamGeneration(this.#generation)
     this.player.fire('onStart')
     return lease(() => this.#chatSubscribers.delete(subscriber))
   }
@@ -205,11 +241,30 @@ export class MockOverseer {
   }
 
   #run(step: ScriptStep) {
-    if ('stream' in step) this.#chatSubscribers.forEach((subscriber) => subscriber.stream(CHAT_ID, step.stream))
+    if ('restart' in step) this.#restart(step.restart)
+    else if ('stream' in step) this.#chatSubscribers.forEach((subscriber) => subscriber.stream(CHAT_ID, step.stream))
     else if ('message' in step) this.#append(step.message)
     else if ('metadata' in step) this.#setMetadata(step.metadata)
     else if (step.agentActive) this.#setMetadata({ activeAgent: AGENT })
     else this.#endTurn()
+  }
+
+  /**
+   * Restarts the workspace, which is back after `downFor` milliseconds, as a deploy or a crash
+   * would: every handle out breaks, and whoever was subscribed is forgotten. What the chat holds
+   * is kept, as the server's storage is.
+   */
+  #restart(downFor: number) {
+    this.#generation++
+    this.#downUntil = Date.now() + downFor
+    this.#chatSubscribers.clear()
+    this.#actionSubscribers.clear()
+    const handles = [...this.#handles]
+    this.#handles.clear()
+    for (const handle of handles) {
+      handle.broken = true
+      handle.onBroken.forEach((callback) => callback(RESTARTED))
+    }
   }
 
   #endTurn() {

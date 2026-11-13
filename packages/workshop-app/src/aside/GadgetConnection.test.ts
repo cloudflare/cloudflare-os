@@ -33,17 +33,23 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
   const disposed: string[] = []
   const servers: { [Symbol.dispose]: () => void }[] = []
   const lease = (name: string) => ({ [Symbol.dispose]: () => disposed.push(name) })
+  // Whoever is told when a stub breaks, by the stub's name.
+  const onBroken = new Map<string, Array<(error: unknown) => void>>()
+  const breakable = (name: string) => ({
+    ...lease(name),
+    onRpcBroken: (callback: (error: unknown) => void) => void onBroken.set(name, [...(onBroken.get(name) ?? []), callback]),
+  })
   let presence: PresenceSubscriber | undefined
   let chats: AiChatSubscriber | undefined
   let workpieces: WorkpiecesSubscriber | undefined
   const gadget: GadgetHandle = {
     getUiBundle: vi.fn<GadgetHandle['getUiBundle']>(() => bundle),
     connectToGadget: vi.fn<GadgetHandle['connectToGadget']>(async () => {
-      const server = lease(`server ${servers.length}`)
+      const server = breakable(`server ${servers.length}`)
       servers.push(server)
       return server
     }),
-    ...lease('gadget'),
+    ...breakable('gadget'),
   }
   const overseer: GadgetOverseer = {
     getGadget: vi.fn<GadgetOverseer['getGadget']>(() => gadget),
@@ -59,13 +65,15 @@ const setUp = ({ bundle = Promise.resolve<UiBundle | null>({ jsCode: 'render()' 
       workpieces = subscriber as unknown as WorkpiecesSubscriber
       return lease('workpieces')
     },
-    ...lease('overseer'),
+    ...breakable('overseer'),
   }
   const onEscape = vi.fn<() => void>()
   const connection = new GadgetConnection(() => overseer, 41, { chatId: 3, viewerId: 'me', onEscape })
   const frame = {} as Window
   connection.showIn(() => frame)
-  return { connection, overseer, gadget, frame, disposed, onEscape, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
+  /** The stub named `name` can no longer reach what it did, as when the workspace restarted. */
+  const breaks = (name: string) => onBroken.get(name)?.forEach((callback) => callback(new Error('Durable Object reset')))
+  return { connection, overseer, gadget, frame, disposed, onEscape, breaks, presence: () => presence!, chats: () => chats!, workpieces: () => workpieces! }
 }
 
 const handshake = (source: unknown, origin = 'null') => {
@@ -115,11 +123,11 @@ describe('GadgetConnection', () => {
   it('lets go of a connection the page no longer needs: one overtaken by a reload, and the last on stopping', async () => {
     const { connection, gadget, frame, disposed } = setUp()
     connection.start()
-    const pending = deferred<Disposable>()
+    const pending = deferred<Awaited<ReturnType<GadgetHandle['connectToGadget']>>>()
     vi.mocked(gadget.connectToGadget).mockReturnValueOnce(pending.promise)
     handshake(frame)
     connection.reload()
-    pending.resolve({ [Symbol.dispose]: () => disposed.push('overtaken') })
+    pending.resolve({ [Symbol.dispose]: () => disposed.push('overtaken'), onRpcBroken: () => {} })
     await vi.waitFor(() => expect(disposed).toContain('overtaken'))
 
     handshake(frame)
@@ -197,6 +205,57 @@ describe('GadgetConnection', () => {
     expect(disposed).toEqual(expect.arrayContaining(['server 0', 'gadget', 'overseer', 'presence', 'chat', 'workpieces']))
     const ui = connection.getSnapshot().ui
     expect(ui.status === 'ready' && ui.load).toBe(2)
+    connection.stop()
+  })
+
+  it.each(['overseer', 'gadget', 'server 0'])('loads again quietly when the %s breaks, keeping the page shown until the new one is there', async (stub) => {
+    const { connection, gadget, frame, breaks } = setUp()
+    connection.start()
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    handshake(frame)
+    await vi.waitFor(() => expect(gadget.connectToGadget).toHaveBeenCalledOnce())
+    await Promise.resolve()
+    const statuses: string[] = []
+    connection.subscribe(() => statuses.push(connection.getSnapshot().ui.status))
+
+    breaks(stub)
+
+    await vi.waitFor(() => expect(gadget.getUiBundle).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(statuses).toEqual(['ready']))
+    connection.stop()
+  })
+
+  it('keeps trying, with growing waits, while the gadget cannot be reached', async () => {
+    vi.useFakeTimers()
+    const { connection, gadget, overseer, breaks } = setUp()
+    connection.start()
+    await vi.waitFor(() => expect(connection.getSnapshot().ui.status).toBe('ready'))
+    vi.mocked(gadget.getUiBundle).mockReturnValue(new Promise(() => {}))
+
+    breaks('overseer')
+    expect(overseer.getGadget).toHaveBeenCalledTimes(2)
+    breaks('overseer')
+    expect(overseer.getGadget).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(overseer.getGadget).toHaveBeenCalledTimes(3)
+    breaks('overseer')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(overseer.getGadget).toHaveBeenCalledTimes(3)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(overseer.getGadget).toHaveBeenCalledTimes(4)
+    expect(connection.getSnapshot().ui.status).toBe('ready')
+    connection.stop()
+    vi.useRealTimers()
+  })
+
+  it('leaves a gadget that never loaded to say why', async () => {
+    const pending = deferred<UiBundle | null>()
+    const { connection, overseer, breaks } = setUp({ bundle: pending.promise })
+    connection.start()
+    breaks('overseer')
+    pending.reject(new Error('The workspace restarted.'))
+    await vi.waitFor(() => expect(connection.getSnapshot().ui).toEqual({ status: 'failed', message: 'The workspace restarted.' }))
+    expect(overseer.getGadget).toHaveBeenCalledOnce()
     connection.stop()
   })
 

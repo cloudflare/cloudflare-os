@@ -91,6 +91,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     mergeChanges: vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' })),
   }
 
+  const broken = new Set<(error: unknown) => void>()
   const overseer: ChatOverseer = {
     listChats,
     getChatHistory,
@@ -99,6 +100,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     sendChatMessage,
     uploadBlob,
     ...asked,
+    onRpcBroken: (callback) => void broken.add(callback),
     [Symbol.dispose]: dispose,
   }
   return {
@@ -117,6 +119,8 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     server: () => subscriber!,
     /** What the server calls when an action's record changes. */
     actions: () => actionUpdates!,
+    /** The workspace can no longer be reached through this overseer, as when it restarted. */
+    breaks: (error: unknown = new Error('Durable Object reset')) => broken.forEach((callback) => callback(error)),
   }
 }
 
@@ -1195,6 +1199,79 @@ describe('ChatSession', () => {
       const open = vi.fn<() => ChatOverseer>()
       new ChatSession(open, 0).reconnect()
       expect(open).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('when the workspace breaks', () => {
+    it('connects again, keeping what is shown until the new history is in, and is live again', async () => {
+      const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi')) })
+      const two = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      const history = deferred<AiChatHistoryPage>()
+      two.getChatHistory.mockReturnValueOnce(history.promise)
+      const overseers = [one.overseer, two.overseer]
+      const session = new ChatSession(() => overseers.shift()!, 0)
+      session.start()
+      await settled(session)
+      const shown = session.getSnapshot()
+
+      one.breaks()
+      expect(two.subscribeToChat).toHaveBeenCalledOnce()
+      expect(session.getSnapshot()).toBe(shown)
+      // What the old subscription says no longer counts.
+      one.server().message(agentMessage(1, 'stale'))
+      expect(session.getSnapshot()).toBe(shown)
+
+      history.resolve(page(userMessage(0, 'hi'), agentMessage(1, 'hello')))
+      await vi.waitFor(() => expect(ready(session).items).toHaveLength(2))
+      two.server().message(userMessage(2, 'live again'))
+      expect(ready(session).items).toHaveLength(3)
+    })
+
+    it('keeps trying, with growing waits, while the workspace cannot be reached', async () => {
+      vi.useFakeTimers()
+      try {
+        const one = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hi')) })
+        const unreachable = fakeOverseer(new Promise<AiChatMetadata[]>(() => {}))
+        unreachable.getChatHistory.mockRejectedValue(new Error('Durable Object reset'))
+        const open = vi.fn<() => ChatOverseer>().mockReturnValueOnce(one.overseer).mockReturnValue(unreachable.overseer)
+        const session = new ChatSession(open, 0)
+        session.start()
+        await vi.waitFor(() => expect(session.getSnapshot().status).toBe('ready'))
+        const shown = session.getSnapshot()
+
+        one.breaks()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(open).toHaveBeenCalledTimes(2)
+        await vi.advanceTimersByTimeAsync(999)
+        expect(open).toHaveBeenCalledTimes(2)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(open).toHaveBeenCalledTimes(3)
+        await vi.advanceTimersByTimeAsync(2000)
+        expect(open).toHaveBeenCalledTimes(4)
+        expect(session.getSnapshot()).toBe(shown)
+
+        // A new connection to the backend tries at once.
+        session.reconnect()
+        expect(open).toHaveBeenCalledTimes(5)
+        session.stop()
+        await vi.advanceTimersByTimeAsync(20_000)
+        expect(open).toHaveBeenCalledTimes(5)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('says why, for a conversation that was never shown', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]))
+      fake.getChatHistory.mockReturnValueOnce(deferred<AiChatHistoryPage>().promise)
+      const open = vi.fn<() => ChatOverseer>(() => fake.overseer)
+      const session = new ChatSession(open, 0)
+      session.start()
+
+      fake.breaks(new Error('You don’t have access to this workspace.'))
+
+      expect(session.getSnapshot()).toEqual({ status: 'failed', message: 'You don’t have access to this workspace.' })
+      expect(open).toHaveBeenCalledOnce()
     })
   })
 })
