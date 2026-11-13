@@ -6,12 +6,20 @@ import { cloudLobes, happyEye, sadCores, sadFace, sparkle } from './shapes'
 export type MascotEmotion = 'idle' | 'thinking' | 'happy' | 'sad' | 'error' | 'loading'
 type FaceEmotion = 'sad' | 'happy'
 
+/** How long, in seconds, before its sparkle starts shaking `onShake` is called. */
+const SHAKE_LEAD = 0.05
+
 export type MascotMotion = {
   /** Grow in, or shrink away. It starts out not shown. */
   setShown: (shown: boolean) => void
   setEmotion: (emotion: MascotEmotion) => void
   /** How far from its edge a pointer starts to draw it, in multiples of its own size. */
   setReach: (reach: number) => void
+  /**
+   * Called just before its sparkle starts shaking, in error (`SHAKE_LEAD` ahead): at each burst,
+   * once it is ready to spin, so that whatever it is on can be shaken with it.
+   */
+  setOnShake: (listener: (() => void) | undefined) => void
   /** Start squeezing it. Sad, it rains for as long as it is held; otherwise nothing happens. */
   press: () => void
   release: () => void
@@ -159,6 +167,9 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
   let previousMood: MascotEmotion = emotion
   let thinkingAngle = 0
   let errorTime = 0
+  // The burst `onShake` was last called for.
+  let shakeTold = -1
+  let onShake: (() => void) | undefined
   let errorBurst = -1
   let errorAngle = -12
   let errorVelocity = 0
@@ -305,6 +316,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
       thinkingAngle = star.rotation
       errorTime = 0
       errorBurst = -1
+      shakeTold = -1
       errorAngle = star.rotation
       errorVelocity = 0
       liquid.x = liquid.y = liquid.vx = liquid.vy = 0
@@ -360,6 +372,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     }
     const load = loadingMix.amount
     const rotationReady = moodTime >= 0.3 && splitTransition === null && load < 0.025 && mood !== 'loading'
+    const shakeAhead = rotationReady || (moodTime >= 0.3 - SHAKE_LEAD && splitTransition === null && load < 0.025 && mood !== 'loading')
     const pointerEase = 1 - Math.exp(-dt * 16)
     const bodyResponse = mood === 'thinking' ? 0.6 : 1
     follow.x += ((reduced ? 0 : pointer.x * pointer.influence) - follow.x) * pointerEase
@@ -436,6 +449,13 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
         errorBurst = burst
         errorSpinDirection = Math.random() < 0.5 ? -1 : 1
         errorPeakVelocity = 2200 + Math.random() * 400
+      }
+      // Told a little ahead of each burst: of the first as it is about to be ready, and of each after
+      // as the one before it runs out.
+      const comingBurst = Math.floor((errorTime + (rotationReady ? SHAKE_LEAD : 0)) / 2.6)
+      if (shakeAhead && !reduced && comingBurst !== shakeTold) {
+        shakeTold = comingBurst
+        onShake?.()
       }
       // A quick impulse spins it up; friction then dissipates its momentum.
       // Integrating velocity lets it coast for multiple turns without a stop.
@@ -701,6 +721,7 @@ export const startMascotMotion = (frame: HTMLElement): MascotMotion => {
     },
     setEmotion: (next) => { emotion = next },
     setReach: (next) => { reach = next },
+    setOnShake: (next) => { onShake = next },
     press: () => {
       if (emotion !== 'sad') return
       held = true

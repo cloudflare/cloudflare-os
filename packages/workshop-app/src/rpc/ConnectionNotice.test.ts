@@ -31,7 +31,7 @@ describe('ConnectionNotice', () => {
     notice.lost()
     expect(notice.down).toBe(true)
     vi.advanceTimersByTime(SHOW_AFTER)
-    expect(notice.getSnapshot()).toEqual({ status: 'reconnecting', alarms: 1, long: false, offline: false })
+    expect(notice.getSnapshot()).toEqual({ status: 'reconnecting', alarms: 0, long: false, offline: false })
 
     notice.restored()
     expect(status(notice)).toBe('reconnected')
@@ -48,9 +48,9 @@ describe('ConnectionNotice', () => {
     expect(status(notice)).toBe('hidden')
 
     expect(notice.blocked()).toBe(true)
-    expect(alarms(notice)).toBe(2)
+    expect(alarms(notice)).toBe(1)
     expect(notice.blocked()).toBe(true)
-    expect(alarms(notice)).toBe(3)
+    expect(alarms(notice)).toBe(2)
   })
 
   it('comes up at once when something cannot be done, before it would have on its own, and only once', () => {
@@ -96,7 +96,7 @@ describe('ConnectionNotice', () => {
 
     vi.advanceTimersByTime(LONG_AFTER)
     notice.setOffline(false)
-    expect(notice.getSnapshot()).toMatchObject({ long: true, offline: false, alarms: 1 })
+    expect(notice.getSnapshot()).toMatchObject({ long: true, offline: false, alarms: 0 })
   })
 
   it('carries straight on when lost again while saying it was back', () => {
@@ -105,7 +105,7 @@ describe('ConnectionNotice', () => {
     vi.advanceTimersByTime(SHOW_AFTER)
     notice.restored()
     notice.lost()
-    expect(status(notice)).toBe('reconnecting')
+    expect(notice.getSnapshot()).toMatchObject({ status: 'reconnecting', alarms: 0 })
     vi.advanceTimersByTime(BACK_FOR)
     expect(status(notice)).toBe('reconnecting')
   })
