@@ -4,13 +4,15 @@ The workspace owns the timeline and message ordering. Each User DO owns its user
 horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
 for inbox, viewport and native bridge behavior.
 
-Notifications default to off until each user sends their first message or slash command in a
-chat, whether it was created normally or by an agent. Each user can change this with the thread
-menu's **Mute notifications** / **Unmute notifications** control. The User DO stores the explicit
+For newly created chats, notifications default to off until each user sends their first message
+or slash command, whether the chat was created normally or by an agent. Existing chats stay
+subscribed by default; there is no history scan or backfill migration. Each user can change this
+with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO stores the explicit
 override on its private read cursor; participation never overrides that choice. Source fanout
 carries participation from the workspace's persisted per-chat participant IDs, including when a
-batch coalesces a user's message with a later agent response. The upgrade recovers historical
-participants once from the timeline; ordinary writes maintain them alongside the visible counter.
+batch coalesces a user's message with a later agent response. Only new chats initialize the
+participant list; ordinary writes maintain it alongside the visible counter. An absent list keeps
+the existing-chat default enabled, including after later messages.
 
 Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,
 without advancing its read horizon or clearing its unread count. Muted chats keep their catch-up
@@ -63,7 +65,7 @@ Each `chatReadCursors` row contains:
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
 - `notificationsEnabled`: optional explicit per-user override
-- `hasParticipated`: whether this user has sent a message or slash command in the chat
+- `hasParticipated`: participation default for new chats; absent on existing chats, which stay subscribed
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
 - `notifiedEventIds`: completed alert UUIDs at that position; absent when admission skips the whole position
 - `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time

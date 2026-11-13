@@ -5552,7 +5552,7 @@ function ChatInterface({
                   const readState = unread?.chats?.find(item =>
                     item.workspaceId === workspaceId && item.chatId === chat.id);
                   const unreadMessageCount = readState?.unreadMessageCount ?? 0;
-                  const notificationsEnabled = readState?.notificationsEnabled ?? false;
+                  const notificationsEnabled = readState?.notificationsEnabled ?? true;
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}

@@ -1393,8 +1393,6 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
-      //   8 = spawned-chat notification defaults (superseded by participation defaults).
-      //   9 = per-chat participant IDs, recovered from historical human messages once.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1733,8 +1731,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatSequences: collection<{
         chatId: number;
         nextSequence: number;
-        /** Profile IDs of people who have sent a message or slash command in this chat. */
-        participantIds?: string[];
+        /**
+         * Notification participants for newly created chats. Initialized empty at creation and
+         * populated by human messages. Absent on existing chats, which stay subscribed by default.
+         */
+        notificationParticipants?: string[];
         /**
          * Number of visible messages written to the chat since unread tracking began; older history
          * isn't counted. Equal to the `visibleThroughSequence` of the chat's latest record.

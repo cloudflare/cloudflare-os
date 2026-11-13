@@ -243,7 +243,8 @@ Each chat also has a private **Mute notifications** / **Unmute notifications** c
 thread menu. Chat muting suppresses both completion and permission alerts, clears queued alerts,
 and removes the chat from the unread inbox and badge totals, including workspace and app badges.
 Read history and the unread divider remain available when the user opens the chat. Notifications
-default off until that user first sends a message or slash command; an explicit choice always wins. Turning notifications on preserves unread history and alerts only
+default off for new chats until that user first sends a message or slash command. Existing chats
+stay subscribed by default, and an explicit choice always wins. Turning notifications on preserves unread history and alerts only
 about future activity. See [user-owned unread state](user-unread-state.md).
 
 ## Deployment contract

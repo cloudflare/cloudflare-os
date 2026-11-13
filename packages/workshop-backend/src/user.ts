@@ -65,8 +65,8 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
  * it twice is harmless. "Sequence" and "visible sequence" are as described on `ChatReadCursor`.
  */
 export type ChatMessageProgress = {
-  /** Whether this user has participated; an explicit notification preference takes precedence. */
-  hasParticipated?: true;
+  /** Participation default for new chats. Absent on existing chats, which stay subscribed by default. */
+  hasParticipated?: boolean;
   /** The chat's current title and latest-message preview, for the inbox. */
   head: ChatTimelineHead;
   /**
@@ -115,8 +115,8 @@ export type ChatMessageProgress = {
  * described on `ChatReadCursor`.
  */
 export type ChatReadPosition = {
-  /** Whether this user has participated; an explicit notification preference takes precedence. */
-  hasParticipated?: true;
+  /** Participation default for new chats. Absent on existing chats, which stay subscribed by default. */
+  hasParticipated?: boolean;
   /** The chat's current title and latest-message preview. */
   head: ChatTimelineHead;
   /** Workspace metadata time used to order otherwise identical heads. */
@@ -137,8 +137,8 @@ export type ChatReadPosition = {
 
 /** Captured chat state sent on shared-workspace admission to initialize read and alert horizons. */
 export type ChatAdmissionBaseline = {
-  /** Whether this user has participated; an explicit notification preference takes precedence. */
-  hasParticipated?: true;
+  /** Participation default for new chats. Absent on existing chats, which stay subscribed by default. */
+  hasParticipated?: boolean;
   /** The chat's ID within the workspace. */
   chatId: number;
   /** Earlier notifications, through this timeline sequence, are already handled. */
@@ -757,14 +757,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return true;
   }
 
-  #mergeHead(current: ChatReadCursor, incoming: {head?: ChatTimelineHead; headUpdatedAt?: Date; hasParticipated?: true}) {
+  #mergeHead(current: ChatReadCursor, incoming: {head?: ChatTimelineHead; headUpdatedAt?: Date; hasParticipated?: boolean}) {
     let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
     let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
       (incoming.head.latestSequence === current.head.latestSequence &&
         at !== undefined && (previous === undefined || at > previous)));
     return {...(newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
       {head: current.head, headUpdatedAt: current.headUpdatedAt}),
-      hasParticipated: incoming.hasParticipated ?? current.hasParticipated};
+      hasParticipated: current.hasParticipated === true ? true : incoming.hasParticipated ?? current.hasParticipated};
   }
 
   #hasWorkspace(workspaceId: string): boolean {
@@ -807,7 +807,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #chatNotificationsEnabled(cursor: ChatReadCursor): boolean {
-    return cursor.notificationsEnabled ?? cursor.hasParticipated === true;
+    return cursor.notificationsEnabled ?? cursor.hasParticipated !== false;
   }
 
   // Consume alerts independently of read history, so unmuting cannot replay them.
@@ -831,7 +831,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.ctx.storage.transactionSync(() => {
       // Preference changes leave read accounting and its paired head to ordinary fanout.
       let cursor = {...current, notificationsEnabled: enabled,
-        hasParticipated: baseline.hasParticipated ?? current.hasParticipated};
+        hasParticipated: current.hasParticipated === true ? true : baseline.hasParticipated ?? current.hasParticipated};
       this.#storeCursor(this.#skipChatNotifications(cursor, baseline.notifiedThroughSequence));
     });
     this.#unreadChanged(workspaceId, chatId);
@@ -1328,7 +1328,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             this.#storeCursor({workspaceId, chatId: baseline.chatId,
               head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
               notificationsEnabled: cursor?.notificationsEnabled,
-              hasParticipated: baseline.hasParticipated,
+              hasParticipated: cursor?.hasParticipated === true ? true : baseline.hasParticipated,
               readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
               latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
             changed = true;

@@ -64,10 +64,10 @@ it.each([10, 0, undefined])("only offers the useful thread read action (unread c
   expect(markUnread.mock.calls).toEqual(count === 0 ? [[server.overseer, 1]] : []);
 });
 
-// The same thread menu handles normal and spawned chats, including saved overrides.
+// Missing preferences retain the existing-chat default; new chats supply an explicit preference.
 it.each([
-  {spawned: false, enabled: undefined, expectedEnabled: false},
-  {spawned: true, enabled: undefined, expectedEnabled: false},
+  {spawned: false, enabled: undefined, expectedEnabled: true},
+  {spawned: true, enabled: undefined, expectedEnabled: true},
   {spawned: true, enabled: true, expectedEnabled: true},
   {spawned: false, enabled: false, expectedEnabled: false},
   {spawned: false, enabled: true, expectedEnabled: true},

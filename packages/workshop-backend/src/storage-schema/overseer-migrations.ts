@@ -15,7 +15,7 @@ import type {
   AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import {
-  chatKeyPrefix, isChatParticipation, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
+  chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
   type LegacyAgentSpawnerConfig, type OverseerStorage,
 } from "./overseer-storage";
 import { migrateCodeLogToGit } from "./overseer-git-migration";
@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 9;
+export const OVERSEER_STORAGE_VERSION = 7;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -426,31 +426,5 @@ export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
   });
   host.logger.info("froze grants of every gadget", {
     event: "storage.migration.gadget-grants.completed",
-  });
-}
-
-/**
- * Version 7/8 -> 9: default notifications to each user's participation, preserving overrides.
- * Recover historical participants once; subsequent writes maintain them with the visible counter.
- * Ordinary durable fanout applies the default without changing read history or replaying alerts.
- */
-export function migrateToParticipationNotifications(host: OverseerMigrationHost): void {
-  if (![7, 8].includes(host.storage.version.get())) return;
-  host.ctx.storage.transactionSync(() => {
-    for (let meta of Array.from(host.storage.chatMeta.list())) {
-      let counter = host.storage.nextChatSequences.get(meta.id) ?? {chatId: meta.id, nextSequence: 0};
-      let participants = new Set(counter.participantIds);
-      for (let message of host.storage.chats.list({prefix: chatKeyPrefix(meta.id)})) {
-        if (isChatParticipation(message)) participants.add(message.author.id);
-      }
-      host.storage.nextChatSequences.put({...counter, participantIds: [...participants]});
-      let dirty = {...host.storage.dirtyChats.get(meta.id), chatId: meta.id};
-      delete dirty.retryOnly;
-      host.storage.dirtyChats.put(dirty);
-    }
-    host.storage.version.put(9);
-  });
-  host.logger.info("defaulted chat notifications to participation", {
-    event: "storage.migration.chat-participation.completed",
   });
 }

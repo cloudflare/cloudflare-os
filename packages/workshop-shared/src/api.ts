@@ -3668,8 +3668,9 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Enable or mute this chat's unread inbox entry, badges and alerts for the current user. Sending
-   * a first message or slash command enables notifications by default; an explicit preference
-   * always takes precedence. Read history and unread dividers are preserved. Changing
+   * a first message or slash command enables notifications by default in new chats. Existing chats
+   * stay subscribed by default; an explicit preference always takes precedence. Read history and
+   * unread dividers are preserved. Changing
    * the preference clears queued alerts, so enabling only alerts about future activity.
    * Not available in use-only sessions.
    */
