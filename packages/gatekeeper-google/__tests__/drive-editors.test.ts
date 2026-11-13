@@ -1,4 +1,4 @@
-import { ActionJournal, type ActionDefinition } from "@gadgets/gatekeeper-kit/actions";
+import { ActionApplyError, ActionJournal, type ActionDefinition } from "@gadgets/gatekeeper-kit/actions";
 import { describe, expect, it, vi } from "vitest";
 import { DRIVE_ACTIONS, type DriveAction, type DriveHost } from "../src/drive-actions";
 import type { DriveScopeNode } from "../src/drive-api";
@@ -23,7 +23,11 @@ const TARGET = { fileId: "deck-1", fileName: "Q3 deck" };
 /** A Drive host whose Slides host for each file is `slides(fileId)`. */
 function host(slides: (fileId: string) => SlidesHost): DriveEditorsHost {
   return {
-    editors: { slides, sheets: () => { throw new Error("No spreadsheet is edited here."); } },
+    editors: {
+      slides,
+      sheets: () => { throw new Error("No spreadsheet is edited here."); },
+      prove: async () => {},
+    },
   };
 }
 
@@ -265,5 +269,44 @@ describe("a Drive binding's edits", () => {
     await expect(gated.apply(1)).rejects.toThrow(EDIT_OUT_OF_SCOPE);
     expect(journal.get(1)).toMatchObject({ state: "failed", error: EDIT_OUT_OF_SCOPE, undispatched: true });
     expect(applied).toEqual([]);
+  });
+});
+
+describe("a Drive binding's edits, proved again where they apply", () => {
+  it("are proved again inside the action set's queue, before the editor writes", async () => {
+    let proved: [string, string, number][] = [];
+    let written = false;
+    let drive: DriveEditorsHost = {
+      editors: {
+        ...NO_SLIDES.editors,
+        slides: fileId => ({ api: {} as SlidesHost["api"], presentationId: fileId }),
+        prove: async (editor, target, id) => {
+          proved.push([editor, target.fileId, id]);
+          // A move approved ahead of it took the file out of the folder.
+          throw new ActionApplyError("That file is no longer in this connection's scope.");
+        },
+      },
+    };
+    let definition = onDriveFile({
+      ...SLIDES_DEFINITIONS.skipSlides,
+      apply: async () => { written = true; },
+    }, { name: "slides", mimeType: GOOGLE_SLIDES_MIME_TYPE, noun: "presentation",
+      host: (host, fileId) => host.editors.slides(fileId) });
+    await expect(definition.apply({ target: TARGET, change: SKIP }, drive, { id: 7 }))
+      .rejects.toBeInstanceOf(ActionApplyError);
+    expect(proved).toEqual([["slides", "deck-1", 7]]);
+    expect(written).toBe(false);
+  });
+
+  it("leave an edit pending for a refusal a later approval can pass, and fail it otherwise", async () => {
+    let node: DriveScopeNode | undefined;
+    let { fileEditors } = editors({ file: () => node });
+    let gated = editors({ refusal: WRITES_GRANT_MISSING }).fileEditors;
+    await expect(gated.prove("slides", TARGET, 1)).rejects.not.toBeInstanceOf(ActionApplyError);
+    await expect(gated.prove("slides", TARGET, 1)).rejects.toThrow(WRITES_GRANT_MISSING);
+    node = undefined;
+    await expect(fileEditors.prove("slides", TARGET, 1)).rejects.toBeInstanceOf(ActionApplyError);
+    node = { id: "deck-1", mimeType: GOOGLE_SLIDES_MIME_TYPE, trashed: false, canEdit: true };
+    await expect(fileEditors.prove("slides", TARGET, 1)).resolves.toBeUndefined();
   });
 });

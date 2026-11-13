@@ -3904,6 +3904,8 @@ export class GoogleDriveGatekeeperImpl
     editors: {
       slides: (fileId: string) => ({ api: this.#editApis.slides, presentationId: fileId }),
       sheets: (fileId: string) => this.#editors.sheetsHost(fileId),
+      prove: (editor: DriveEditorName, target: DriveWriteTargetPayload, id: number) =>
+        this.#editors.prove(editor, target, id),
     },
   };
   #editApis = {

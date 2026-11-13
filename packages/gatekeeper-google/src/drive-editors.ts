@@ -9,8 +9,9 @@
  * editor's own, with the file named first, and the change is applied to the file the record names.
  */
 
-import type {
-  ActionDefinition, ActionJournal, ActionPresentation, ActionSubmitter,
+import {
+  ActionApplyError, type ActionDefinition, type ActionJournal, type ActionPresentation,
+  type ActionSubmitter,
 } from "@gadgets/gatekeeper-kit/actions";
 import { ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
 import type { DriveScopeNode } from "./drive-api";
@@ -51,6 +52,13 @@ export type DriveSheetsHost = SheetsHost & {
 export type DriveEditorHosts = {
   slides(fileId: string): SlidesHost;
   sheets(fileId: string): DriveSheetsHost;
+  /**
+   * Proves again, inside the action set's one queue of approvals, that edit `id` of `target` may
+   * still be made with `editor`: no approval ahead of it, such as a move, has taken the file out of
+   * reach meanwhile. Throws a plain error for a refusal a later approval can pass, and an
+   * ActionApplyError for any other.
+   */
+  prove(editor: DriveEditorName, target: DriveWriteTargetPayload, id: number): Promise<void>;
 };
 
 /** The part of a Drive binding's action host the edits use. */
@@ -117,6 +125,7 @@ export function onDriveFile<P, H>(
     describe: async ({ target, change }, drive) =>
       withFile(target, await definition.describe(change, editor.host(drive, target.fileId))),
     apply: async ({ target, change }, drive, ctx) => {
+      await drive.editors.prove(editor.name, target, ctx.id);
       let result = await definition.apply(change, editor.host(drive, target.fileId), ctx);
       editor.applied?.(drive, target.fileId, ctx.id);
       return result?.action === undefined ? undefined : { action: { target, change: result.action } };
@@ -390,6 +399,8 @@ export class DriveFileEditors {
     return this.#changes(editor, target.fileId).apply(actionId, async () => {
       // Before the action set claims the record: a proof cut short by a lost activation must not
       // leave a claim, which the next approval would fail as of unknown outcome.
+      // It is proved again inside the action set's queue (see prove()), since an approval ahead
+      // of it there, such as a move, can take the file out of reach meanwhile.
       let state = this.#options.journal.get(actionId)?.state;
       if (state === "staged" || state === "pending") {
         let refusal = await this.#refusal(editor, target);
@@ -403,6 +414,14 @@ export class DriveFileEditors {
       }
       await this.#options.apply(actionId);
     });
+  }
+
+  /** {@link DriveEditorHosts.prove}: the proof repeated as the action set applies edit `id`. */
+  async prove(editor: DriveEditorName, target: DriveWriteTargetPayload, id: number): Promise<void> {
+    let refusal = await this.#refusal(editor, target);
+    if (!refusal) return;
+    if (refusal.liftable) throw new Error(refusal.message);
+    throw new ActionApplyError(refusal.message);
   }
 
   /** Rejects edit `actionId` in its file's turn, or answers `undefined` for a record that is no edit. */

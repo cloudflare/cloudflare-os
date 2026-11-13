@@ -185,6 +185,7 @@ function harness() {
     editors: {
       slides: () => { throw new Error("No Slides edit is applied here."); },
       sheets: () => { throw new Error("No Sheets edit is applied here."); },
+      prove: async () => {},
     },
     scope: () => ({ kind: "account" }),
     writeRefusal: async () => undefined,
