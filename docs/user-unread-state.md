@@ -60,7 +60,10 @@ There is **no unread-history backfill**, workspace enumeration or rollout-time r
 records remain unnumbered and are treated as already read. If the first delivered visible message
 is 4, the User DO initializes its read-visible horizon to 3. For a coalesced first batch 4..6,
 the source's durable dirty row retains 4 and the resulting unread count is 3. Metadata-only updates
-do not initialize missing cursors. An explicit “mark unread” in unnumbered history counts only
+do not initialize missing cursors. Chat metadata separately reports whether the source requires
+participation for notifications, so an empty chat can offer **Enable notifications** before its
+first result without creating a read horizon. Legacy chats omit that flag and retain their
+subscribed default. An explicit “mark unread” in unnumbered history counts only
 newly numbered messages, not that history.
 
 ## User storage and local reads

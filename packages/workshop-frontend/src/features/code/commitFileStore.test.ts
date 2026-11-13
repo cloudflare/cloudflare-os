@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_READ_FILES_PER_CALL, type FileAtCommit, type TreeNode }
   from '@gadgets/workshop-shared/api'
+import { MAX_BUFFERED_BLOB_SIZE } from '@gadgets/workshop-shared/gatekeeper'
 import { CommitFileStore, type CommitFileReader } from './commitFileStore'
 
 // A fake Overseer that records every call. `budget` caps how many entries one readFilesAtCommit
@@ -14,6 +15,8 @@ class FakeReader implements CommitFileReader {
   changed = new Map<string, string[]>()
   budget = Infinity
   failReads = false
+  blobCalls: string[] = []
+  blobs = new Map<string, () => ReadableStream<Uint8Array>>()
 
   async listTree(commitId: string): Promise<TreeNode[]> {
     this.treeCalls.push(commitId)
@@ -37,32 +40,49 @@ class FakeReader implements CommitFileReader {
     if (paths === undefined) throw new Error(`no such commits: ${fromCommit}, ${toCommit}`)
     return paths
   }
+
+  async readBlob(oid: string): Promise<ReadableStream<Uint8Array>> {
+    this.blobCalls.push(oid)
+    const open = this.blobs.get(oid)
+    if (open === undefined) throw new Error(`no such blob: ${oid}`)
+    return open()
+  }
 }
 
 const text = (t: string): FileAtCommit => ({ kind: 'text', text: t })
 
-// A streamed file, as the server sends one over MAX_BUFFERED_BLOB_SIZE: its bytes in two pieces,
-// or erroring after the first piece. `cancelled` reports whether the consumer cancelled it.
-const streamed = (bytes: Uint8Array, options: { fail?: boolean } = {}) => {
-  const state = { cancelled: false }
-  let sent = 0
-  const content = new ReadableStream<Uint8Array>({
-    pull(controller) {
-      if (sent === 1 && options.fail) {
-        controller.error(new Error('stream broke'))
-      } else if (sent < 2) {
-        const half = Math.ceil(bytes.length / 2)
-        controller.enqueue(sent === 0 ? bytes.slice(0, half) : bytes.slice(half))
-        sent++
-      } else {
-        controller.close()
-      }
-    },
-    cancel() { state.cancelled = true },
-  })
-  return { file: { kind: 'stream', byteLength: bytes.length, content } as FileAtCommit, state }
-}
+const oid = (digit: string) => digit.repeat(40)
 const utf8 = (t: string) => new TextEncoder().encode(t)
+
+// A file over MAX_BUFFERED_BLOB_SIZE, as the server names one: its `blob` entry, with the fake's
+// readBlob() serving the bytes on demand in two pieces, cut at `split`, or erroring after the
+// first piece. `pulls` counts the pieces read; `cancelled` reports whether the reader cancelled.
+const large = (
+  reader: FakeReader, blobOid: string, bytes: Uint8Array,
+  options: { split?: number; fail?: boolean } = {},
+) => {
+  const state = { pulls: 0, cancelled: false }
+  const split = options.split ?? Math.ceil(bytes.length / 2)
+  reader.blobs.set(blobOid, () => {
+    let sent = 0
+    return new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent === 1 && options.fail) {
+          controller.error(new Error('stream broke'))
+        } else if (sent < 2) {
+          controller.enqueue(sent === 0 ? bytes.slice(0, split) : bytes.slice(split))
+          sent++
+          state.pulls++
+        } else {
+          controller.close()
+        }
+      },
+      cancel() { state.cancelled = true },
+    }, { highWaterMark: 0 })
+  })
+  const file: FileAtCommit = { kind: 'blob', blob: { oid: blobOid, byteLength: bytes.length } }
+  return { file, state }
+}
 
 describe('CommitFileStore', () => {
   it('memoizes a tree by commit and exposes it synchronously once loaded', async () => {
@@ -179,29 +199,63 @@ describe('CommitFileStore', () => {
     expect(reader.readCalls).toHaveLength(1)
   })
 
-  it('reads a streamed file whole and holds it as the server would have sent it', async () => {
+  it('reads a large text file with readBlob and holds it as text', async () => {
     const reader = new FakeReader()
+    // Each is cut inside a character, and they are read at the same time.
+    const accented = '\uFEFF' + 'é'.repeat(MAX_BUFFERED_BLOB_SIZE / 2)
+    const kanji = '日'.repeat(MAX_BUFFERED_BLOB_SIZE / 2)
     reader.files.set('c1', new Map([
-      ['big.txt', streamed(utf8('héllo\nworld\n')).file],
-      ['nul.bin', streamed(Uint8Array.of(65, 0, 66)).file],
-      ['bad.bin', streamed(Uint8Array.of(65, 0xff, 66)).file],
+      ['accented.txt', large(reader, oid('1'), utf8(accented), { split: 4 }).file],
+      ['kanji.txt', large(reader, oid('2'), utf8(kanji), { split: 1 }).file],
       ['small.txt', text('S')],
     ]))
     const store = new CommitFileStore()
-    const result = await store.readFiles(reader, 'c1', ['big.txt', 'nul.bin', 'bad.bin', 'small.txt'])
-    expect(Object.fromEntries(result)).toEqual({
-      'big.txt': text('héllo\nworld\n'),
-      'nul.bin': { kind: 'unreadable', message: 'nul.bin is not a text file' },
-      'bad.bin': { kind: 'unreadable', message: 'bad.bin is not a text file' },
-      'small.txt': text('S'),
-    })
-    expect(store.peekFile('c1', 'big.txt')).toEqual(text('héllo\nworld\n'))
+    const paths = ['accented.txt', 'kanji.txt', 'small.txt']
+    const [result, again] = await Promise.all(
+      [store.readFiles(reader, 'c1', paths), store.readFiles(reader, 'c1', paths)])
+    expect(result.get('accented.txt')).toEqual(text(accented))
+    expect(result.get('kanji.txt')).toEqual(text(kanji))
+    expect(result.get('small.txt')).toEqual(text('S'))
+    expect(again).toEqual(result)
+    expect(store.peekFile('c1', 'kanji.txt')).toEqual(text(kanji))
+    expect(reader.blobCalls.toSorted()).toEqual([oid('1'), oid('2')])
   })
 
-  it('fails and evicts just the path whose stream breaks, so a retry refetches it', async () => {
+  it('holds a large file that is not text as its blob, reading no more than shows it', async () => {
     const reader = new FakeReader()
+    const filled = (change: (bytes: Uint8Array) => void) => {
+      const bytes = new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(65)
+      change(bytes)
+      return bytes
+    }
+    const nul = large(reader, oid('1'), filled(bytes => { bytes[1] = 0 }))
+    const invalid = large(reader, oid('2'), filled(bytes => { bytes[1] = 0xff }))
+    // Valid until its last byte, which starts a character that never ends.
+    const cut = large(reader, oid('3'), filled(bytes => { bytes[bytes.length - 1] = 0xc3 }))
+    // At the limit, so the server has checked it: the store does not read it.
+    const checked: FileAtCommit =
+      { kind: 'blob', blob: { oid: oid('4'), byteLength: MAX_BUFFERED_BLOB_SIZE } }
     reader.files.set('c1', new Map([
-      ['big.txt', streamed(utf8('0123456789'), { fail: true }).file], ['a', text('A')],
+      ['nul.bin', nul.file], ['invalid.bin', invalid.file], ['cut.bin', cut.file],
+      ['checked.bin', checked],
+    ]))
+    const store = new CommitFileStore()
+    const result = await store.readFiles(
+      reader, 'c1', ['nul.bin', 'invalid.bin', 'cut.bin', 'checked.bin'])
+    expect(Object.fromEntries(result)).toEqual({
+      'nul.bin': nul.file, 'invalid.bin': invalid.file, 'cut.bin': cut.file,
+      'checked.bin': checked,
+    })
+    expect(nul.state).toEqual({ pulls: 1, cancelled: true })
+    expect(invalid.state).toEqual({ pulls: 1, cancelled: true })
+    expect(reader.blobCalls.toSorted()).toEqual([oid('1'), oid('2'), oid('3')])
+  })
+
+  it('fails and evicts just the path whose large read breaks, so a retry refetches it', async () => {
+    const reader = new FakeReader()
+    const content = 'x'.repeat(MAX_BUFFERED_BLOB_SIZE + 1)
+    reader.files.set('c1', new Map([
+      ['big.txt', large(reader, oid('1'), utf8(content), { fail: true }).file], ['a', text('A')],
     ]))
     const store = new CommitFileStore()
     const big = store.readFiles(reader, 'c1', ['big.txt'])
@@ -210,22 +264,9 @@ describe('CommitFileStore', () => {
     expect((await a).get('a')).toEqual(text('A'))
     expect(store.peekFile('c1', 'big.txt')).toBeUndefined()
 
-    reader.files.get('c1')!.set('big.txt', streamed(utf8('0123456789')).file)
+    large(reader, oid('1'), utf8(content))
     expect((await store.readFiles(reader, 'c1', ['big.txt'])).get('big.txt'))
-      .toEqual(text('0123456789'))
-  })
-
-  it('cancels a streamed answer that no read is waiting for', async () => {
-    const unwanted = streamed(utf8('unwanted'))
-    const reader = new FakeReader()
-    reader.files.set('c1', new Map([['a', text('A')]]))
-    const answer = reader.readFilesAtCommit.bind(reader)
-    reader.readFilesAtCommit = async (commitId, paths) =>
-      [...await answer(commitId, paths), ['other', unwanted.file]]
-    const store = new CommitFileStore()
-    expect((await store.readFiles(reader, 'c1', ['a'])).get('a')).toEqual(text('A'))
-    await Promise.resolve()
-    expect(unwanted.state.cancelled).toBe(true)
+      .toEqual(text(content))
   })
 
   // The list is the same either way round (see Overseer.listChangedPaths()), so one fetch

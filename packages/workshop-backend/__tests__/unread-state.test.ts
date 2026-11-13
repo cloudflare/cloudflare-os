@@ -113,6 +113,19 @@ const interceptDelivery = (impl: Impl,
 ) => interceptUsers(impl, (user, method) => method === "messageArrived"
   ? (...args: Parameters<UserDurableObject["messageArrived"]>) => dispatch(user, ...args) : undefined);
 
+it.each([false, true])("reports the source notification default without enrolling unread history (legacy: %s)", async legacy => {
+  const fixture = await setup(undefined, false);
+  await withImpl(fixture.workspace, async impl => {
+    if (legacy) impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 0});
+    const meta = impl.storage.chatMeta.get(1)!;
+    expect(impl.chatMetaForClient(meta).notificationsRequireParticipation).toBe(legacy ? undefined : true);
+    expect(meta.notificationsRequireParticipation).toBeUndefined();
+    await impl.deliverDirtyChats();
+  });
+  expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+  expect(await cursor(fixture)).toBeUndefined();
+});
+
 describe("persisted visible positions", () => {
   it("coalesces a synchronous batch into one background fanout pass", async () => {
     const fixture = await setup();

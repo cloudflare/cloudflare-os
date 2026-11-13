@@ -259,6 +259,16 @@ function docsLinkDestination(link: TextStyle["link"]): string | undefined {
   return internalDocsDestination("heading", link.headingId);
 }
 
+/**
+ * The text one paragraph element shows in a tab's Markdown before any formatting: a run's content,
+ * a chip's name, title or date, or the placeholder of an element with no text of its own.
+ */
+export function paragraphElementText(element: ParagraphElement): string | undefined {
+  // A run's text needs nothing of its style.
+  if (element.textRun) return element.textRun.content;
+  return visibleParagraphElement(element)?.text;
+}
+
 function visibleParagraphElement(element: ParagraphElement): VisibleParagraphElement | undefined {
   let textRun = element.textRun;
   if (textRun) {
@@ -1197,8 +1207,8 @@ function inlineSpanStyle(
   }
 }
 
-/** Google strips these code points from inserted text. */
-function isGoogleDocsStrippedCharacter(code: number): boolean {
+/** Whether Google Docs strips UTF-16 code unit `code` from text it inserts. */
+export function isGoogleDocsStrippedCharacter(code: number): boolean {
   return code <= 0x08 || code >= 0x0c && code <= 0x1f ||
     code >= 0xe000 && code <= 0xf8ff;
 }

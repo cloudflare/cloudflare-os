@@ -30,18 +30,17 @@ afterAll(async () => {
   }
 });
 
-const CREATE_NOTES: ChatCompletionStep = {
-  toolCall: {
-    id: "create-notes",
-    name: "createExternalResource",
-    arguments: {
-      vendorId: TEST_VENDOR_ID,
-      resourceUrlPattern: "https://gadgets-test.example/things/*",
-      title: "Notes",
-      bindingName: "NOTES",
-    },
+const CREATE_NOTES_CALL = {
+  id: "create-notes",
+  name: "createExternalResource",
+  arguments: {
+    vendorId: TEST_VENDOR_ID,
+    resourceUrlPattern: "https://gadgets-test.example/things/*",
+    title: "Notes",
+    bindingName: "NOTES",
   },
 };
+const CREATE_NOTES: ChatCompletionStep = { toolCall: CREATE_NOTES_CALL };
 
 const runCode = (id: string, logged: string): ChatCompletionStep => ({
   toolCall: {
@@ -148,6 +147,37 @@ it.concurrent("a creation approved without a configuration is applied with none"
   await withOwnerWorkspace(harness.url, session.username,
       ws => ws.approveAction(creation.id, { accountId: account.id }));
   expect(await creationConfigurations(account)).toEqual({ configurations: [null] });
+});
+
+it.concurrent("an agent's suggested configuration is offered to the approver, who decides",
+    async () => {
+  const suggested = "https://gadgets-test.example/folders/team";
+  const model = models.script([
+    { toolCall: { ...CREATE_NOTES_CALL,
+      arguments: { ...CREATE_NOTES_CALL.arguments, configuration: suggested } } },
+    { text: "Notes created." },
+  ]);
+  await using session = await openAgentSession(harness.url, {
+    modelId: SCRIPTED_MODEL_ID, userModel: model.userModel, usernamePrefix: "createsuggest",
+  });
+  await session.runTurn("Create a notes thing in the team folder.");
+  const [creation] = await waitFor("the creation to be pending", async () => {
+    const { entries } = await session.listActions({ filter: "pending" });
+    return entries.length === 1 ? entries : null;
+  });
+
+  using publicApi = connect(harness.url);
+  using api = await logIn(publicApi, session.username);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID)!;
+  const chosen = "https://gadgets-test.example/folders/mine";
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    // The approval dialog opens the approver's configurator on what the creation spec suggests.
+    using gatekeeper = await ws.getGatekeeperById(creation.gatekeeperId!);
+    expect(await gatekeeper.getCreationSpec()).toMatchObject({ configuration: suggested });
+    await ws.approveAction(creation.id, { accountId: account.id, configuration: chosen });
+  });
+  expect(await creationConfigurations(account)).toEqual({ configurations: [chosen] });
 });
 
 it.concurrent("rejecting a creation rejects the edits queued on it and removes the connection",

@@ -7,7 +7,7 @@
 // `encodeURIComponent`, a normalization one side does and the other does not -- shows up here
 // rather than as a resource the backend rejects after the user has filled the form.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("@gadgets/configurator-ui", () => ({
   h: (component: unknown, props: unknown, ...children: unknown[]) => ({
@@ -291,6 +291,24 @@ describe("Drive configurator URLs", () => {
     resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: noUi,
   });
 
+  // Reading a read and write URL back asks whether the deployment offers that level and whether
+  // the account allows changes, which `noUi` refuses.
+  const allowed = {
+    offersWriteAccess: async () => true,
+    getWriteAccess: async () => ({ grant: "g", held: true }),
+  } as never;
+  const writeValues = (resourceUrl: string) => driveConfigurator.initialValuesFromResourceUrl({
+    resourceUrl, resourceUrlPattern: GOOGLE_DRIVE_RESOURCE.urlPattern, ui: allowed,
+  });
+
+  // The module mints the parameter only once it has heard that the deployment offers read and
+  // write, and a mint cannot ask: its `ui` refuses every call. Reading a URL back asks, and the
+  // module keeps the answer for every case below.
+  beforeAll(async () => {
+    await expect(writeValues("https://drive.google.com/drive/my-drive?access=write"))
+      .resolves.toEqual({ target: "drive", access: "write" });
+  });
+
   it.for([
     ["the whole account", "drive", { kind: "driveAccount" }],
     ["a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" }],
@@ -298,7 +316,8 @@ describe("Drive configurator URLs", () => {
   ] as const)("mints %s, and reads the URL back into the same choice", async ([, target, parsed]) => {
     let url = configurableUrl(driveConfigurator, { target });
     expect(parseResourceUrl(url)).toEqual(parsed);
-    await expect(driveValues(url)).resolves.toEqual({ target });
+    // A URL that does not ask for Read and write reads back as Read only, over the dialog's default.
+    await expect(driveValues(url)).resolves.toEqual({ target, access: null });
   });
 
   it("mints the natural Drive folder URL", () => {
@@ -307,13 +326,55 @@ describe("Drive configurator URLs", () => {
   });
 
   it("reads a pasted sharing link", async () => {
-    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1" });
-    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1" });
+    await expect(driveValues("https://drive.google.com/file/d/F1/view?usp=sharing")).resolves.toEqual({ target: "file:F1", access: null });
+    await expect(driveValues("https://drive.google.com/drive/folders/D1/")).resolves.toEqual({ target: "folder:D1", access: null });
   });
 
   it("refuses to mint without a choice, or for a grouping, which is not a resource", () => {
     expect(() => configurableUrl(driveConfigurator, { target: null })).toThrow("Choose what to connect.");
     expect(() => configurableUrl(driveConfigurator, { target: "shared-with-me" })).toThrow();
+  });
+
+  it.for([
+    ["the whole account", "drive", { kind: "driveAccount" }, GOOGLE_DRIVE_RESOURCE],
+    [
+      "a folder", "folder:folder/id with spaces", { kind: "driveFolder", folderId: "folder/id with spaces" },
+      GOOGLE_DRIVE_FOLDER_RESOURCE,
+    ],
+    [
+      "a file", "file:file/id with spaces", { kind: "driveFile", fileId: "file/id with spaces" },
+      GOOGLE_DRIVE_FILE_RESOURCE,
+    ],
+  ] as const)("mints Read and write as ?access=write for %s, and reads the URL back into the same choice", async ([, target, parsed, resource]) => {
+    let url = configurableUrl(driveConfigurator, { target, access: "write" });
+    expect(url).toMatch(/\?access=write$/);
+    expect(parseResourceUrl(url)).toEqual({ ...parsed, access: "write" });
+    expect(new URLPattern(resource.urlPattern).test(url), url).toBe(true);
+    await expect(writeValues(url)).resolves.toEqual({ target, access: "write" });
+  });
+
+  it("mints no parameter for Read only", () => {
+    for (let access of [undefined, null, "read", "WRITE"]) {
+      let url = configurableUrl(driveConfigurator, { target: "folder:F1", ...(access === undefined ? {} : { access }) });
+      expect(url, String(access)).toBe("https://drive.google.com/drive/folders/F1");
+      expect("access" in parseResourceUrl(url), String(access)).toBe(false);
+    }
+  });
+
+  it("reads the parameter exactly as the server does", async () => {
+    for (let query of [
+      "?access=write", "?access=WRITE", "?access=", "?access=read&access=write", "?access=write&access=read",
+      "?usp=sharing&access=write",
+    ]) {
+      let url = `https://drive.google.com/drive/folders/F1${query}`;
+      let parsed = parseResourceUrl(url);
+      expect((await writeValues(url) as { access?: unknown }).access === "write", query).toBe("access" in parsed && parsed.access === "write");
+    }
+  });
+
+  it("never puts the parameter on an editable type's URL", () => {
+    expect(configurableUrl(driveConfigurator, { target: "doc:D1", checked: "doc:D1", access: "write" }))
+      .toBe("https://docs.google.com/document/d/D1/edit");
   });
 
   // The picker offers the whole account, folders and files, but the Workshop may ask for only one of

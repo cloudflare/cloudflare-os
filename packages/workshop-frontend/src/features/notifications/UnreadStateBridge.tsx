@@ -55,6 +55,18 @@ const UnreadContext = createContext<UnreadContextValue | null>(null);
 /** Returns badge rollups and this view's scoped rows; absent on unauthenticated surfaces. */
 export const useUnreadState = () => useContext(UnreadContext);
 
+/**
+ * Unread messages waiting in one chat, and 0 when this view holds no cursor for it.
+ *
+ * Rows are scoped to the view that asked for them, so the workspace has to be matched as well as
+ * the chat: another workspace's row for the same chat id would otherwise answer for this one.
+ */
+export const unreadCountOf = (
+  unread: ReturnType<typeof useUnreadState>, workspaceId: string | undefined, chatId: number,
+): number =>
+  unread?.chats?.find(item => item.workspaceId === workspaceId && item.chatId === chatId)
+    ?.unreadMessageCount ?? 0;
+
 const applySummary = (state: UserUnreadState, update: UnreadSummaryUpdate): UserUnreadState => {
   const workspaces = state.workspaces.filter(item => item.workspaceId !== update.workspace.workspaceId);
   if (update.workspace.unreadMessageCount > 0) workspaces.push(update.workspace);

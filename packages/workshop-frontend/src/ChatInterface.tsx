@@ -1,6 +1,6 @@
 import { logRpcFailure, rpcFailureDescription } from "./rpcErrors";
 import { ChatNotificationsMenu } from "./features/notifications/ChatNotificationsMenu";
-import { useUnreadState } from "./features/notifications/UnreadStateBridge";
+import { unreadCountOf, useUnreadState } from "./features/notifications/UnreadStateBridge";
 import { UnreadBadge } from "./features/notifications/UnreadBadge";
 import { ReadTimeline } from "./features/notifications/ReadTimeline";
 import { TimelineReadItem } from "./features/notifications/TimelineReadItem";
@@ -29,7 +29,6 @@ import {
 } from "@cloudflare/kumo";
 
 import {
-  CaretDown,
   CaretLeft,
   CaretRight,
   Check,
@@ -66,8 +65,11 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import styles from "./ChatInterface.module.css";
 import {
+  cacheModels,
+  getCachedModels,
   getStoredSelectedModel,
   persistSelectedModel,
+  syncSelectedModel,
 } from "./modelSelection";
 import {
   Overseer,
@@ -109,9 +111,16 @@ import DeleteConfirmationDialog from "./components/DeleteConfirmationDialog";
 import AutoApproveConfirmDialog from "./components/AutoApproveConfirmDialog";
 import { AlwaysApproveButton, ResolveButton } from "./components/ResolveButton";
 import { RestrictedApprovalNotice } from "./components/RestrictedApprovalNotice";
+import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
-import { actionLogResumed, useActionEntries } from "./useActions";
+import { AgentListRow } from "./features/chat/agents/AgentListRow";
+import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
+import { ChatListTabs, type ChatListTab } from "./features/chat/agents/ChatListTabs";
+import {
+  agentsNeedingAttention, deriveAgents, ownConversations,
+} from "./features/chat/agents/agentList";
+import { actionLogResumed, useActionEntries, useActions } from "./useActions";
 import { useAlwaysApproveTag } from "./useAlwaysApproveTag";
 import { useResolveAction } from "./useResolveAction";
 import { safeExternalUrl } from "./utils/safeExternalUrl";
@@ -330,14 +339,6 @@ type ChatChangeRowBuffer = {
   // but have their own streaming UI): when the newest such row arrived (rows don't carry
   // timestamps on the wire; arrival time is close enough for display).
   lastUserEditAt: Date | null;
-};
-
-type ChatListScope = "direct" | "agents" | "all";
-
-const CHAT_LIST_SCOPE_LABELS: Record<ChatListScope, string> = {
-  all: "All",
-  direct: "Started by people",
-  agents: "Started by agents",
 };
 
 const SHOW_THINKING_TRACES_KEY = "showThinkingTraces";
@@ -2553,6 +2554,7 @@ function inferChatAgentFromMessages(messages: AiChatMessage[]): AiChatAuthorInfo
 }
 
 function fallbackToStoredModelSelection(
+  userId: string | undefined,
   modelId: string | null,
   availableModels: AiChatAuthorInfo[],
 ): string | null {
@@ -2560,7 +2562,7 @@ function fallbackToStoredModelSelection(
     return modelId;
   }
 
-  return getStoredSelectedModel(availableModels);
+  return getStoredSelectedModel(userId, availableModels);
 }
 
 interface ChatInterfaceProps {
@@ -2594,7 +2596,8 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
-  onAgentActiveChange?: (chatId: number, isActive: boolean) => void;
+  // With no selected chat, report whether any chat in the workspace is running.
+  onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
   // Called after an auto-approval rule is enabled from the chat thread, so the Activity pane's
   // Auto-approval list reflects it without a reload.
   onAutoApproveChange?: () => void;
@@ -2810,7 +2813,12 @@ function ChatInterface({
 }: ChatInterfaceProps) {
   // Persistent cache that survives reconnects
   const toasts = useKumoToastManager();
-  const { currentUser } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
+  // Whose remembered models to show: nobody's until the server has confirmed who is signed in.
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined;
+  // Read through a ref so that the chat subscription is not restarted when only this changes.
+  const authenticatedApiRef = useRef(authenticatedApi);
+  authenticatedApiRef.current = authenticatedApi;
   const unread = useUnreadState();
   const getOverseer = useCallback(() => overseer, [overseer]);
   const cacheRef = useRef<ChatCache>({
@@ -2849,7 +2857,15 @@ function ChatInterface({
   // we've already auto-opened for, so dismissing it doesn't immediately reopen.
   const [usageModalOpen, setUsageModalOpen] = useState(false);
   const usageModalShownForRef = useRef<number | null>(null);
-  const [chatListScope, setChatListScope] = useState<ChatListScope>("all");
+  const [listTab, setListTab] = useState<ChatListTab>("chats");
+  // Agents the user opened in the list. Keyed by AgentSummary.key; an agent that stops existing
+  // simply stops being looked up.
+  const [openAgents, setOpenAgents] = useState<ReadonlySet<string>>(new Set());
+  // The agent whose runs the detail pane shows, with the chat that was selected when it opened.
+  // Held by key rather than index so an agent that stops existing (its last run deleted) simply
+  // stops being found; `overChatId` is what lets the route take the pane back (see below).
+  const [agentScreen, setAgentScreen] =
+    useState<{ key: string; overChatId: number | null } | null>(null);
   const [chatListVersion, setChatListVersion] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   // Fetching the page before the selected chat's compaction boundary.
@@ -2914,10 +2930,10 @@ function ChatInterface({
   const [processingConnections, setProcessingConnections] = useState<Set<string>>(
     new Set(),
   );
-  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(
-    [],
-  );
+  // Starts on what this browser last saw, so a new chat's selector doesn't wait on the server.
+  const [availableModels, setAvailableModels] = useState<AiChatAuthorInfo[]>(() => getCachedModels(userId));
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  const [modelsLoading, setModelsLoading] = useState(true);
   const [sidebarActiveTab, setSidebarActiveTab] = useState<
     "chat" | "connections"
   >("chat");
@@ -3108,22 +3124,61 @@ function ChatInterface({
     ),
     [chatListVersion],
   );
+  // Every request awaiting this user, driving the Agents badge and the per-run marks.
+  const { status: pendingStatus, pending: pendingActions } = useActions(overseer);
+
+  // The live line for a chat's row: what its agent is doing right now, read from the same
+  // provisional stream the transcript draws from. Undefined until the turn's first event
+  // reaches us, so a page loaded mid-turn shows none until the next one.
+  const activityLineOf = (chatId: number): string | undefined => {
+    const provisional = provisionalRef.current.get(chatId);
+    if (!provisional) return undefined;
+    if (provisional.compacting) return "Summarizing earlier messages";
+    if (provisional.toolCalls.length > 0) {
+      return buildProvisionalToolSummary(provisional.toolCalls).label;
+    }
+    return provisional.reasoning ? "Thinking" : undefined;
+  };
+
+  // The list's relative times ("11m", "Yesterday") have to move on in a workspace where nothing
+  // else changes, so the list keeps a minute clock while it, or an agent's screen, is showing.
+  const listShowing = sidebarMode === true || selectedChatId === null || agentScreen !== null;
+  const [listClock, setListClock] = useState(() => new Date());
+  useEffect(() => {
+    if (!listShowing) return;
+    setListClock(new Date());
+    const timer = setInterval(() => setListClock(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, [listShowing]);
+
   const {
     visibleChatList,
     chatListNow,
     bucketedVisibleChats,
-    chatListScopes,
+    agents,
+    agentAttention,
+    pendingForRun,
   } = useMemo(() => {
-    const directCount = chatList.filter((chat) => !chat.spawnerName).length;
-    const agentCount = chatList.length - directCount;
-    const visible = chatList.filter((chat) => {
-      if (chatListScope === "direct") return !chat.spawnerName;
-      if (chatListScope === "agents") return Boolean(chat.spawnerName);
-      return true;
-    });
-    const now = new Date();
+    const now = listClock;
+
+    // A request with no chat -- a hook's, or gadget code's outside any chat -- is no run's.
+    const byRun = new Map<number, ActionLogEntry[]>();
+    for (const record of pendingActions) {
+      if (record.chatId === undefined) continue;
+      const existing = byRun.get(record.chatId);
+      if (existing) existing.push(record);
+      else byRun.set(record.chatId, [record]);
+    }
+    const unreadByRun = new Map<number, number>();
+    for (const item of unread?.chats ?? []) {
+      if (item.workspaceId === workspaceId && item.unreadMessageCount > 0 && item.notificationsEnabled !== false) {
+        unreadByRun.set(item.chatId, item.unreadMessageCount);
+      }
+    }
+
+    const conversations = ownConversations(chatList);
     const buckets = new Map<ChatTimeBucket, AiChatMetadata[]>();
-    for (const chat of visible) {
+    for (const chat of conversations) {
       const bucket = getChatTimeBucket(chat.lastActive, now);
       let arr = buckets.get(bucket);
       if (!arr) {
@@ -3133,21 +3188,29 @@ function ChatInterface({
       arr.push(chat);
     }
 
+    const derived = deriveAgents(chatList, byRun, now, unreadByRun);
     return {
-      visibleChatList: visible,
+      visibleChatList: conversations,
       chatListNow: now,
       bucketedVisibleChats: CHAT_TIME_BUCKET_ORDER.flatMap((bucket) => {
         const items = buckets.get(bucket);
         if (!items || items.length === 0) return [];
         return [{ bucket, items }];
       }),
-      chatListScopes: [
-        { value: "all" as const, count: chatList.length },
-        { value: "direct" as const, count: directCount },
-        { value: "agents" as const, count: agentCount },
-      ],
+      agents: derived,
+      agentAttention: agentsNeedingAttention(derived),
+      pendingForRun: byRun as ReadonlyMap<number, ActionLogEntry[]>,
     };
-  }, [chatList, chatListScope]);
+  }, [chatList, pendingActions, unread?.chats, workspaceId, listClock]);
+
+  // The agent's own screen and the route's chat compete for the detail pane. The agent wins,
+  // because opening it was the user's latest move -- until the route selects a different chat,
+  // which is a later move still: a link, a notification, the browser's Back button. Standing the
+  // pane down during render rather than from an Effect, as React prescribes for state that has
+  // to follow a prop, keeps it from covering the new chat for a frame first.
+  const shownScreen = agentScreen?.overChatId === selectedChatId ? agentScreen : null;
+  if (shownScreen !== agentScreen) setAgentScreen(null);
+  const selectedAgent = shownScreen && agents.find((agent) => agent.key === shownScreen.key);
 
   // Notify parent when chat list changes. Gated on chatListReady so that we
   // don't report 0 from the empty initial cache before listChats() has completed.
@@ -3457,18 +3520,18 @@ function ChatInterface({
   // Names the chat's own model in the composer even when the picker no longer offers it.
   const chatAgent = activeAgent ?? inferChatAgentFromMessages(currentMessages);
 
-  // Notify parent when agent active state changes
+  const isViewActive = selectedChatId === null
+    ? chatList.some(chat => !!chat.activeAgent) : isAgentActive;
   const onAgentActiveChangeRef = useRef(onAgentActiveChange);
   onAgentActiveChangeRef.current = onAgentActiveChange;
-  const previousAgentStateRef = useRef({chatId: selectedChatId, active: isAgentActive});
+  const previousAgentStateRef = useRef<{chatId: number | null; active: boolean} | null>(null);
   useEffect(() => {
-    let previous = previousAgentStateRef.current;
-    if (selectedChatId !== null &&
-        (selectedChatId !== previous.chatId || isAgentActive !== previous.active)) {
-      onAgentActiveChangeRef.current?.(selectedChatId, isAgentActive);
+    const previous = previousAgentStateRef.current;
+    if (!previous || selectedChatId !== previous.chatId || isViewActive !== previous.active) {
+      onAgentActiveChangeRef.current?.(selectedChatId, isViewActive);
     }
-    previousAgentStateRef.current = {chatId: selectedChatId, active: isAgentActive};
-  }, [isAgentActive, selectedChatId]);
+    previousAgentStateRef.current = {chatId: selectedChatId, active: isViewActive};
+  }, [isViewActive, selectedChatId]);
 
   // Loads the page before the oldest message on screen. Held in a ref because the scroll handler is
   // built once, while the loader closes over state that changes each render.
@@ -3542,12 +3605,13 @@ function ChatInterface({
   // Update selected model when switching chats
   useEffect(() => {
     if (selectedChatId === null) {
-      setSelectedModel(getStoredSelectedModel(availableModels));
+      setSelectedModel(getStoredSelectedModel(userId, availableModels));
     } else {
       // An existing thread takes its active agent's model, else the one that last spoke.
-      setSelectedModel(fallbackToStoredModelSelection(chatAgent?.id ?? null, availableModels));
+      setSelectedModel(
+        fallbackToStoredModelSelection(userId, chatAgent?.id ?? null, availableModels));
     }
-  }, [selectedChatId, availableModels, chatAgent?.id]);
+  }, [selectedChatId, availableModels, chatAgent?.id, userId]);
 
   // Keep the ref in sync with selectedChatId state
   useEffect(() => {
@@ -4005,9 +4069,10 @@ function ChatInterface({
 
           // After subscribing, load the list of chats and models
           // This is safe because subscription will catch any new activity
-          const [chats, models] = await Promise.all([
+          const [chats, models, syncedUserId] = await Promise.all([
             overseer.listChats(),
             overseer.listModels(),
+            syncSelectedModel(authenticatedApiRef.current),
           ]);
 
           chats.forEach((chat) => {
@@ -4016,13 +4081,15 @@ function ChatInterface({
           bumpChatListVersion();
           setChatListReady(true);
 
+          // The effect that follows the selected chat picks the model from these.
+          cacheModels(syncedUserId, models);
           setAvailableModels(models);
-
-          setSelectedModel(getStoredSelectedModel(models));
+          setModelsLoading(false);
 
           forceUpdate();
         }
       } catch (err) {
+        if (isMounted) setModelsLoading(false);
         if (!logRpcFailure("Failed to subscribe to chats:", err)) {
           reportIssue('chat.subscription-load', err)
           toasts.add({ title: "Unable to load conversations", variant: "error" });
@@ -4267,7 +4334,7 @@ function ChatInterface({
   // Handle model change
   const handleModelChange = (modelId: string | null) => {
     setSelectedModel(modelId);
-    persistSelectedModel(modelId);
+    persistSelectedModel(authenticatedApi, userId, modelId);
   };
 
   // Handle stopping the agent
@@ -4413,6 +4480,7 @@ function ChatInterface({
     listTree: (commitId) => overseer.listTree(commitId),
     readFilesAtCommit: (commitId, paths) => overseer.readFilesAtCommit(commitId, paths),
     listChangedPaths: (fromCommit, toCommit) => overseer.listChangedPaths(fromCommit, toCommit),
+    readBlob: (oid) => overseer.readBlob(oid),
   };
   const handleAcceptChanges = async () => {
     const chatId = selectedChatId;
@@ -5464,48 +5532,16 @@ function ChatInterface({
   // ─── sidebar list content (reused in both modes) ──────────────────────────
   const chatListPanel = (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Chat list header — title doubles as the scope switcher */}
-      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-4">
-        <DropdownMenu>
-          <DropdownMenu.Trigger
-            render={
-              <button
-                type="button"
-                className="group flex h-8 -ml-1.5 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint/60 focus-visible:bg-kumo-tint/60 focus-visible:outline-none data-[popup-open]:bg-kumo-tint/60"
-                aria-label="Filter conversations"
-              >
-                <span className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                  {CHAT_LIST_SCOPE_LABELS[chatListScope]}
-                </span>
-                <CaretDown
-                  size={10}
-                  weight="bold"
-                  className="text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180"
-                />
-              </button>
-            }
-          />
-          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[200px] rounded-lg border border-kumo-line bg-kumo-base p-1">
-            {chatListScopes.map((scope) => {
-              const active = chatListScope === scope.value;
-              return (
-                <DropdownMenu.Item
-                  key={scope.value}
-                  onClick={() => setChatListScope(scope.value)}
-                  className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
-                >
-                  <span className="inline-flex h-3 w-3 items-center justify-center text-kumo-default">
-                    {active ? <Check size={11} weight="bold" /> : null}
-                  </span>
-                  <span className="flex-1">{CHAT_LIST_SCOPE_LABELS[scope.value]}</span>
-                  <span className="ml-1 font-mono text-[11px] text-kumo-inactive">
-                    {scope.count}
-                  </span>
-                </DropdownMenu.Item>
-              );
-            })}
-          </DropdownMenu.Content>
-        </DropdownMenu>
+      {/* Chat list header — Chats and Agents as peers */}
+      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-3">
+        <ChatListTabs
+          tab={listTab}
+          onTabChange={(next) => {
+            setListTab(next);
+            if (next === "chats") setAgentScreen(null);
+          }}
+          attention={agentAttention}
+        />
       </div>
       {/* Chat list */}
       <div
@@ -5517,6 +5553,46 @@ function ChatInterface({
           <div className="flex items-center justify-center py-10">
             <div className="w-5 h-5 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
           </div>
+        ) : listTab === "agents" ? (
+          agents.length === 0 ? (
+            <div className="py-8 text-center">
+              <p className="text-[13px] leading-[18px] text-kumo-inactive">
+                No agents have run yet
+              </p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              {agents.map((agent) => (
+                <AgentListRow
+                  key={agent.key}
+                  agent={agent}
+                  now={chatListNow}
+                  expanded={openAgents.has(agent.key)}
+                  onToggle={() => setOpenAgents((open) => {
+                    const next = new Set(open);
+                    if (!next.delete(agent.key)) next.add(agent.key);
+                    return next;
+                  })}
+                  onOpenAgent={() => setAgentScreen({ key: agent.key, overChatId: selectedChatId })}
+                  workspaceId={workspaceId}
+                  overseer={overseer}
+                  pendingForRun={pendingForRun}
+                  restricted={restricted === true}
+                  selectedChatId={selectedChatId}
+                  onOpenRun={onNavigateToChat}
+                  activityLineOf={activityLineOf}
+                />
+              ))}
+              {/* An incomplete request list leaves every run looking idle and the tab unbadged,
+                  which is a confident all-clear from the one surface whose job is to say an agent
+                  is stuck. Say so instead, as the Activity pane and its bell do. */}
+              {pendingStatus !== "ready" && (
+                <p className="m-0 px-1 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+                  {pendingStatus === "error" ? PENDING_ERROR_COPY : PENDING_CHECKING_COPY}
+                </p>
+              )}
+            </div>
+          )
         ) : chatList.length === 0 ? (
           <p className="text-sm text-kumo-inactive text-center py-8">
             No conversations yet
@@ -5524,18 +5600,18 @@ function ChatInterface({
         ) : (
           <div className="flex flex-col gap-1">
             {visibleChatList.length === 0 ? (
-              // Only reachable when a non-"all" scope filters everything out;
-              // the all-empty case is handled by the outer chatList.length check.
+              // Every chat in the workspace was started by an agent, so the Chats tab is empty
+              // while the Agents tab has all of them.
               <div className="py-8 text-center">
                 <p className="text-[13px] leading-[18px] text-kumo-inactive">
-                  No conversations started by {chatListScope === "agents" ? "agents" : "people"} yet
+                  No conversations of your own yet
                 </p>
                 <button
                   type="button"
-                  onClick={() => setChatListScope("all")}
+                  onClick={() => setListTab("agents")}
                   className="mt-2 cursor-pointer rounded-md px-2 py-1 text-[12px] leading-4 font-medium text-kumo-subtle transition-colors duration-150 ease-out hover:text-kumo-default focus-visible:text-kumo-default focus-visible:outline-none"
                 >
-                  Show all
+                  See agents
                 </button>
               </div>
             ) : (
@@ -5551,8 +5627,8 @@ function ChatInterface({
                   const isRenaming = renamingChatId === chat.id;
                   const readState = unread?.chats?.find(item =>
                     item.workspaceId === workspaceId && item.chatId === chat.id);
-                  const unreadMessageCount = readState?.unreadMessageCount ?? 0;
-                  const notificationsEnabled = readState?.notificationsEnabled ?? true;
+                  const unreadMessageCount = unreadCountOf(unread, workspaceId, chat.id);
+                  const notificationsEnabled = readState?.notificationsEnabled ?? !chat.notificationsRequireParticipation;
                   return (
                   <div
                     onClick={isRenaming ? undefined : () => onNavigateToChat(chat.id)}
@@ -5619,23 +5695,30 @@ function ChatInterface({
                         ) : null}
                       </div>
                       <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-kumo-inactive">
-                        {chat.spawnerName && (
-                          <>
-                            <span className="truncate">Agent · {chat.spawnerName}</span>
-                            <span className="flex-shrink-0" aria-hidden="true">·</span>
-                          </>
-                        )}
-                        <span className="flex-shrink-0">
-                          {formatChatRowTime(chat.lastActive, bucket, chatListNow)}
-                        </span>
-                        {chat.totalCost != null && (
-                          <>
-                            <span className="flex-shrink-0" aria-hidden="true">·</span>
-                            <span className="flex-shrink-0 font-mono">
-                              ${chat.totalCost.toFixed(4)}
-                            </span>
-                          </>
-                        )}
+                        {(() => {
+                          // While an agent works, its current step replaces the row's metadata:
+                          // that is the thing worth knowing about a chat you are not looking at,
+                          // and the time and cost are still moving anyway.
+                          const activity = chat.activeAgent ? activityLineOf(chat.id) : undefined;
+                          if (activity) {
+                            return <span className="min-w-0 truncate">{activity}</span>;
+                          }
+                          return (
+                            <>
+                              <span className="flex-shrink-0">
+                                {formatChatRowTime(chat.lastActive, bucket, chatListNow)}
+                              </span>
+                              {chat.totalCost != null && (
+                                <>
+                                  <span className="flex-shrink-0" aria-hidden="true">·</span>
+                                  <span className="flex-shrink-0 font-mono">
+                                    ${chat.totalCost.toFixed(4)}
+                                  </span>
+                                </>
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
                     {!isRenaming && notificationsEnabled && (
@@ -5714,6 +5797,7 @@ function ChatInterface({
             isAgentActive={false}
             models={availableModels}
             selectedModel={selectedModel === null ? null : { id: selectedModel }}
+            modelsLoading={modelsLoading}
             onModelChange={handleModelChange}
             showThinkingTraces={showThinkingTraces}
             onToggleThinkingTraces={toggleShowThinkingTraces}
@@ -5758,8 +5842,25 @@ function ChatInterface({
         </>
       )}
 
-      {/* ── Non-sidebar mode: show list OR chat ────────────────────────────── */}
-      {!sidebarMode && selectedChatId === null ? (
+      {/* ── Detail pane: an agent's runs, a chat, or (outside sidebar mode) the list ──── */}
+      {selectedAgent ? (
+        <AgentRunsPane
+          agent={selectedAgent}
+          now={chatListNow}
+          workspaceId={workspaceId}
+          overseer={overseer}
+          pendingForRun={pendingForRun}
+          restricted={restricted === true}
+          selectedChatId={selectedChatId}
+          onOpenRun={(chatId) => {
+            setAgentScreen(null);
+            onNavigateToChat(chatId);
+          }}
+          // In sidebar mode the agent list is still on screen, so the pane needs no way back.
+          onBack={sidebarMode ? undefined : () => setAgentScreen(null)}
+          activityLineOf={activityLineOf}
+        />
+      ) : !sidebarMode && selectedChatId === null ? (
         chatListPanel
       ) : selectedChatId !== null ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
@@ -6782,6 +6883,7 @@ function ChatInterface({
                       id: selectedModel,
                       name: chatAgent?.id === selectedModel ? chatAgent.name : undefined,
                     }}
+                    modelsLoading={modelsLoading}
                     onModelChange={handleModelChange}
                     pendingConsoleLogCount={pendingConsoleLogCount}
                     consoleLogPreview={consoleLogPreview}

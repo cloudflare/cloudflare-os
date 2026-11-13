@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 /* eslint-disable react/react-in-jsx-scope */
 import { act } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterAll, afterEach, expect, it, vi } from "vitest";
 import type { AiChatMetadata, Overseer } from "@gadgets/workshop-shared/api";
 import type { useUnreadState } from "./features/notifications/UnreadStateBridge";
 import { makeOverseer, makeTestRoot } from "./action-test-harness";
 import ChatInterface from "./ChatInterface";
 
 const mock = vi.hoisted(() => ({unread: null as ReturnType<typeof useUnreadState>}));
-vi.mock("./features/notifications/UnreadStateBridge", () => ({useUnreadState: () => mock.unread}));
+vi.mock("./features/notifications/UnreadStateBridge", async importOriginal => ({
+  ...await importOriginal<typeof import("./features/notifications/UnreadStateBridge")>(),
+  useUnreadState: () => mock.unread,
+}));
 vi.mock("./AuthContext", () => ({
   useAuthenticatedApi: () => ({currentUser: null}),
   useOptionalAuthenticatedApi: () => null,
@@ -19,6 +22,23 @@ vi.mock("@cloudflare/kumo", async importOriginal => ({
 }));
 
 const testRoot = makeTestRoot();
+const scrolling = (["scrollIntoView", "scrollTo"] as const).map(name => {
+  const previous = Object.getOwnPropertyDescriptor(Element.prototype, name);
+  Object.defineProperty(Element.prototype, name, {configurable: true, value: () => {}});
+  return {name, previous};
+});
+afterAll(() => {
+  for (const {name, previous} of scrolling) {
+    if (previous) Object.defineProperty(Element.prototype, name, previous);
+    else Reflect.deleteProperty(Element.prototype, name);
+  }
+});
+const showSpawnedChat = async () => {
+  const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")]
+    .find(item => item.textContent?.startsWith(label))!;
+  await act(async () => button("Agents").click());
+  await act(async () => button("Spawner").click());
+};
 afterEach(() => { testRoot.cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 it.each([10, 0, undefined])("only offers the useful thread read action (unread count: %s)", async count => {
@@ -64,7 +84,7 @@ it.each([10, 0, undefined])("only offers the useful thread read action (unread c
   expect(markUnread.mock.calls).toEqual(count === 0 ? [[server.overseer, 1]] : []);
 });
 
-// Missing read states retain the existing-chat default; new chats supply their effective default.
+// Private read state takes precedence over the source policy, including explicit mutes.
 it.each([
   {spawned: false, enabled: undefined, override: undefined, expectedEnabled: true},
   {spawned: true, enabled: undefined, override: undefined, expectedEnabled: true},
@@ -81,7 +101,7 @@ it.each([
   const server = makeOverseer();
   const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
   const chat: AiChatMetadata = {id: 1, title: "Notification test", started: new Date(), lastActive: new Date(),
-    ...(spawned ? {spawnerName: "Spawner"} : {})};
+    notificationsRequireParticipation: enabled === undefined ? undefined : true, ...(spawned ? {spawnerName: "Spawner"} : {})};
   Object.assign(server.overseer, {
     listChats: async () => [chat], listModels: async () => [], onRpcBroken: () => {},
     subscribeToChat: () => ({[Symbol.dispose]: () => {}}),
@@ -100,6 +120,7 @@ it.each([
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
       onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
   );
+  if (spawned) await showSpawnedChat();
   expect(document.querySelector('[aria-label="2 unread messages"]') !== null).toBe(expectedEnabled && count > 0);
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Notification test"]')!;
   await act(async () => trigger.click());
@@ -114,4 +135,37 @@ it.each([
   const toggle = items.find(item => item.textContent === (canMute ? "Mute notifications" : "Unmute notifications"))!;
   await act(async () => toggle.click());
   expect(setNotifications).toHaveBeenCalledExactlyOnceWith(1, !canMute);
+});
+
+it.each([false, true].flatMap(spawned => [undefined, true].map(requiresParticipation => ({spawned, requiresParticipation}))))(
+    "shows the source default before unread enrollment (spawned: $spawned, participation: $requiresParticipation)",
+    async ({spawned, requiresParticipation}) => {
+  vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+  const server = makeOverseer();
+  const setNotifications = vi.fn<Overseer["setChatNotificationsEnabled"]>().mockResolvedValue(undefined);
+  const chat: AiChatMetadata = {id: 1, title: "Empty chat", started: new Date(), lastActive: new Date(),
+    notificationsRequireParticipation: requiresParticipation, ...(spawned ? {spawnerName: "Spawner"} : {})};
+  Object.assign(server.overseer, {
+    listChats: async () => [chat], listModels: async () => [], onRpcBroken: () => {},
+    subscribeToChat: () => ({[Symbol.dispose]: () => {}}), setChatNotificationsEnabled: setNotifications,
+  });
+  mock.unread = {
+    chats: [], subscribeToUpdates: () => () => {}, markRead: async () => {}, markUnread: async () => true,
+    markAllRead: async () => {}, markWorkspaceRead: async () => {},
+  };
+  await testRoot.render(
+    <ChatInterface workspaceId="workspace" overseer={server.overseer}
+      selectedChatId={null} onNavigateToChat={() => {}}
+      pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
+      onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
+      onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
+  );
+  if (spawned) await showSpawnedChat();
+  const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Empty chat"]')!;
+  await act(async () => trigger.click());
+  const items = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')];
+  expect(items.some(item => item.textContent === "Enable notifications")).toBe(requiresParticipation === true);
+  const action = items.find(item => item.textContent === (requiresParticipation ? "Enable notifications" : "Mute notifications"))!;
+  await act(async () => action.click());
+  expect(setNotifications).toHaveBeenCalledExactlyOnceWith(1, requiresParticipation === true);
 });

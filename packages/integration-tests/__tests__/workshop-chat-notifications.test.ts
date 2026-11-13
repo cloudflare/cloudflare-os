@@ -68,7 +68,10 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
     const callable = stubs.use(await binding.spawnCallable("Permission probe", {
       types: "interface Probe { /** Ask for a test write. */ run(): void; }", mainType: "Probe",
     }) as RpcStub<Probe>);
-    chatId = (await ws.listChats())[0]!.id;
+    const emptyChat = (await ws.listChats())[0]!;
+    chatId = emptyChat.id;
+    expect(emptyChat.notificationsRequireParticipation).toBe(true);
+    expect(await api.getWorkspaceUnreadState(workspaceId)).toEqual([]);
     start = () => callable.run();
   } else {
     chatId = await ws.newChat("Permission probe", null);

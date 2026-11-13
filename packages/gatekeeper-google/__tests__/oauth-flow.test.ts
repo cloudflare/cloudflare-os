@@ -4,13 +4,24 @@ import {
   shouldDeleteCredentialsOnAlarm, type OAuthFlowMode,
 } from "../src/oauth-flow";
 import {
-  BIGQUERY_RESOURCE, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE, IDENTITY_SCOPES,
-  recordedResourceUrlPatterns,
+  BIGQUERY_RESOURCE, DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
+  IDENTITY_SCOPES, recordedResourceUrlPatterns,
 } from "../src/resources";
 import { FakeKv } from "./fake-kv";
 
 const TEN_MINUTES = 10 * 60 * 1000;
 const OAUTH_REDIRECT_URI = "https://gatekeeper-google.example.workers.dev/oauth";
+
+/**
+ * A reconnect begun for `requested`: the scopes its consent asks Google for, with the grants of
+ * `withheld` left out, and the storage it is kept in.
+ */
+function begun(requested: string[], withheld?: string[]) {
+  let kv = new FakeKv();
+  prepareOAuthFlow(kv, "init", requested, "reconnect", 0);
+  let scopes = beginStoredOAuthFlow(kv, "init", "oauth", OAUTH_REDIRECT_URI, 1, withheld)?.scopes;
+  return { kv, scopes };
+}
 
 describe("stored OAuth flow", () => {
   it("keeps a claimed attempt immutable while a later consent flow starts", () => {
@@ -74,6 +85,30 @@ describe("stored OAuth flow", () => {
       "https://www.googleapis.com/auth/spreadsheets.readonly",
       "https://www.googleapis.com/auth/presentations.readonly",
     ]);
+  });
+
+  it("leaves a withheld grant's scopes out of what a consent asks for, and keeps the grant in the attempt", () => {
+    const FOLDER = GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern;
+    const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+    let folderAlone = begun([FOLDER]).scopes;
+    expect(folderAlone).toEqual([
+      ...IDENTITY_SCOPES,
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/documents.readonly",
+      "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
+    ]);
+
+    let { kv, scopes } = begun([FOLDER, DRIVE_WRITES_GRANT], [DRIVE_WRITES_GRANT]);
+    expect(scopes).toEqual(folderAlone);
+    expect(scopes).not.toContain(DRIVE_SCOPE);
+    // The grant is still what completing the consent records.
+    expect(claimStoredOAuthFlow(kv, "oauth", 2)?.requestedResources)
+      .toEqual([FOLDER, DRIVE_WRITES_GRANT]);
+
+    expect(begun([FOLDER, DRIVE_WRITES_GRANT]).scopes).toContain(DRIVE_SCOPE);
+    // A grant the attempt never requested is not there to leave out.
+    expect(begun([FOLDER], [DRIVE_WRITES_GRANT]).scopes).toEqual(folderAlone);
   });
 
   it("binds the OAuth redirect URI to the claimed attempt", () => {

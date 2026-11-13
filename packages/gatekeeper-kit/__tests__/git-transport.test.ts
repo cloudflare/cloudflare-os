@@ -1,5 +1,5 @@
 // git-transport.ts coverage: pkt-line round-trips, fetch-command composition (the
-// hints-to-filter-spec matrix, and that no fetch command ever emits a `have` line -- the
+// hints-to-filter-spec matrix, and that a cache fill never emits a `have` line -- the
 // transport locked decision of plans/worktrees.md), response demultiplexing feeding
 // raw binary pack streams (real decoding and requested-object checks live in the kernel), and the
 // send-pack side: ref-update command encoding (branch-name/oid validation included), the
@@ -27,6 +27,7 @@ import {
   pushGitRefUpdate,
   simulateBranchHead,
   validateBranchName,
+  openGitFetchResponse,
 } from "../src/git-transport";
 
 /** Deterministic fake full oid. */
@@ -177,7 +178,7 @@ describe("buildGitFetchRequest", () => {
     expect(lines.at(-1)).toBe("<flush>");
   });
 
-  it("never emits a have line, and at most one filter line, for every hint shape", () => {
+  it("emits no have line without haves, and at most one filter line, for every hint shape", () => {
     for (const { name, hints, filter } of HINT_MATRIX) {
       const lines = requestLines(buildGitFetchRequest([oid(1), oid(2)], hints));
       expect(lines.filter(line => line.startsWith("have")), name).toEqual([]);
@@ -200,6 +201,21 @@ describe("buildGitFetchRequest", () => {
     const full = requestLines(buildGitFetchRequest([oid(1)],
         { type: "commit", commitHistory: { kind: "full" } }));
     expect(full.filter(line => line.startsWith("deepen"))).toEqual([]);
+  });
+
+  it("sends the requester's haves and shallow commits, and relative deepens", () => {
+    const lines = requestLines(buildGitFetchRequest([oid(1)], {
+      type: "commit", commitHistory: { kind: "relative", depth: 3 },
+      haves: [oid(2), oid(3), oid(2)], shallow: [oid(4)],
+    }));
+    expect(lines.filter(line => /^(have|shallow|deepen)/.test(line))).toEqual([
+      `shallow ${oid(4)}`, "deepen 3", "deepen-relative", `have ${oid(2)}`, `have ${oid(3)}`,
+    ]);
+    expect(lines.at(-2)).toBe("done");
+    expect(() => buildGitFetchRequest([oid(1)], { type: "commit", commitHistory: DEPTH_1, haves: ["main"] }))
+      .toThrow(/invalid git oid/);
+    expect(() => buildGitFetchRequest([oid(1)], { type: "commit", commitHistory: DEPTH_1, shallow: ["x"] }))
+      .toThrow(/invalid git oid/);
   });
 
   it("rejects malformed oids and empty requests", () => {
@@ -257,6 +273,36 @@ function packfileResponse(options: { withSections?: boolean; progress?: boolean 
 }
 
 describe("demuxGitFetchResponse", () => {
+  it("reports the shallow-info section before any pack data is read", async () => {
+    let reads = 0;
+    const chunks = [
+      encodePktLine("acknowledgments"), encodePktLine("ready"), DELIM_PKT,
+      encodePktLine("shallow-info"), encodePktLine(`shallow ${oid(1)}`),
+      encodePktLine(`unshallow ${oid(2)}`), DELIM_PKT, ...packfileResponse(),
+    ];
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads++;
+        const next = chunks.shift();
+        if (next) controller.enqueue(next); else controller.close();
+      },
+    }, {highWaterMark: 0});
+    const response = openGitFetchResponse(body);
+    expect(await response.shallowInfo()).toEqual({shallow: [oid(1)], unshallow: [oid(2)]});
+    expect(reads).toBe(8);
+    expect(await collect(response.pack)).toEqual(PACK_BYTES);
+    expect(await response.shallowInfo()).toEqual({shallow: [oid(1)], unshallow: [oid(2)]});
+  });
+
+  it("rejects shallowInfo() when the response fails before its pack", async () => {
+    let terminal: GitPullStatus | undefined;
+    const response = openGitFetchResponse(streamOf([encodePktLine("ERR not our ref"), FLUSH_PKT]),
+      Infinity, status => { terminal = status; });
+    await expect(response.shallowInfo()).rejects.toThrow("git fetch failed: not our ref");
+    expect(terminal).toEqual({state: "failed", message: "git fetch failed: not our ref"});
+    await expect(collect(response.pack)).rejects.toThrow("git fetch failed: not our ref");
+  });
+
   it("yields exactly the band-1 payload bytes", async () => {
     const pack = await collect(demuxGitFetchResponse(streamOf(packfileResponse())));
     expect(pack).toEqual(PACK_BYTES);

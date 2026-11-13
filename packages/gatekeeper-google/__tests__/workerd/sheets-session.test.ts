@@ -40,6 +40,17 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   ): Promise<void> {
     throw new Error("Unexpected hook binding");
   }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
+  }
 }
 
 const METADATA = spreadsheetMetadata("sheet-1", "Budget", [

@@ -375,6 +375,15 @@ export type SupportedResource = {
   creationConfigurator?: boolean;
 
   /**
+   * With `creationConfigurator`: what a configuration of this type is, as a noun phrase for the
+   * agent, e.g. "the URL of the Google Drive folder to create it in". It lets the agent suggest one
+   * with createExternalResource's `configuration`, which the approver's configurator opens on; a
+   * type without it takes no suggestion. The configuration is the vendor-defined URL the
+   * configurator returns, so it may carry several settings.
+   */
+  creationConfigurationDescription?: string;
+
+  /**
    * The urlPattern of the type whose connect card this type appears on, instead of a card of its
    * own. A card's types share one configurator, which may return a URL of any of them, so
    * startResourceConfigurator must return that configurator for each of them.
@@ -507,7 +516,9 @@ export interface ResourceConfiguratorHost extends RpcTarget {
    * The concrete resource URL the configurator should pre-fill to (e.g. supplied by an AI agent's
    * connection request), together with this resource's urlPattern, or null for a fresh/manual
    * configuration. The iframe runtime uses this to seed the form's initial values so it opens
-   * pre-filled and editable.
+   * pre-filled and editable. For a creation configurator, `resourceUrl` is the configuration the
+   * agent suggested (createExternalResource's `configuration`), not a URL of
+   * `resourceUrlPattern`, the type being created.
    */
   getInitialResource(): Promise<{ resourceUrl: string; resourceUrlPattern: string } | null>;
 
@@ -860,7 +871,8 @@ export interface GatekeeperUser extends WorkerEntrypoint {
   /**
    * Get the UI in which the approver of a creation of the creatable type `resourceUrlPattern`
    * configures it in this account, e.g. where to create it. The frame starts on the vendor's
-   * default, and its collectResourceUrl() returns the vendor-defined value passed to
+   * default, or on the configuration the agent suggested (see ResourceConfiguratorHost.
+   * getInitialResource()), and its collectResourceUrl() returns the vendor-defined value passed to
    * Gatekeeper.applyCreation(). The choice must not change the simulated resource's interface.
    * Present when the type sets SupportedResource.creationConfigurator.
    */
@@ -994,7 +1006,22 @@ export interface GitPullTransfer extends RpcTarget {
   stream(): Promise<ReadableStream<Uint8Array>>;
   /** Snapshot; a consumer that fails before end-of-stream may still see `streaming`. */
   status(): Promise<GitPullStatus>;
+  /**
+   * How the pack changes the requester's shallow boundary, as reported by the provider before
+   * the pack itself. Both lists are empty unless the pull limited `commitHistory` or passed
+   * `shallow` commits. A native Git consumer needs this alongside the pack, which doesn't carry
+   * it.
+   */
+  shallowInfo(): Promise<GitShallowInfo>;
 }
+
+/** How a pull changes the requester's shallow boundary: Git's `shallow-info` section. */
+export type GitShallowInfo = {
+  /** Commits the pack includes without their parents. */
+  shallow: GitOid[];
+  /** Commits from the pull's `shallow` hint whose history the pack now includes. */
+  unshallow: GitOid[];
+};
 
 /**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
@@ -1161,17 +1188,24 @@ export interface Gatekeeper<Session> extends DurableObject {
    * * The object had been populated by this gatekeeper in the past, but was subsequently evicted
    *   from the cache.
    *
-   * Each requested object must be included or the stream must fail. The returned RPC capability
-   * also reports the terminal status: Workers RPC can replace a stream's original exception with
-   * a generic disconnect, so consumers must check `status()` after ingestion fails to recover
-   * the producer's error. After draining the stream, require `complete` before accepting the
-   * transfer. Dispose the capability when finished. A filter may omit objects only beyond those
-   * requested: the overseer requests an exact blob with no `filterBlobSize`, and stores blobs of
-   * any size.
+   * Each requested object must be included (unless it is reachable from `options.haves`) or the
+   * stream must fail. The returned RPC capability also reports the terminal status: Workers RPC
+   * can replace a stream's original exception with a generic disconnect, so consumers must check
+   * `status()` after ingestion fails to recover the producer's error. After draining the stream,
+   * require `complete` before accepting the transfer. Dispose the capability when finished. A
+   * filter may omit objects only beyond those requested: the overseer requests an exact blob with
+   * no `filterBlobSize`, and stores blobs of any size.
    *
    * With no filters, the pack must contain the complete trees and blobs for the requested
-   * commits. This supports native Git hydration as well as lazy cache population. Consumers own
-   * their storage/transfer limits.
+   * commits. This supports native Git as well as lazy cache population. Consumers own their
+   * storage/transfer limits.
+   *
+   * The workspace also pulls history it has never stored, to serve native Git in a container
+   * that has mounted a worktree (see `WorktreeReplicator.gitPull()`). Such pulls pass the
+   * container's `haves` and `shallow` commits, so the pack leaves out what it already has. Before
+   * pulling a commit outside the cases above, the workspace confirms it is an ancestor of a
+   * commit the gatekeeper is known to have, with a commit-only pull (`filterTreeDepth: 0`) of the
+   * commit whose `haves` are those known commits: an empty pack means it is an ancestor.
    *
    * If the gatekeeper ever uses `GitCache`, it MUST implement `gitPull()`. Otherwise, it can leave
    * the method unimplemented.
@@ -1298,6 +1332,39 @@ export interface ObservationAuthorizer extends RpcTarget {
    * of possession.
    */
   getGitCache(): Promise<GitCache>;
+
+  /**
+   * Throws unless this session can still act: for a session the agent's code opened, unless that
+   * code execution (an `executeCode` call) is still running and the user hasn't stopped its turn;
+   * for a hook firing, unless the hook is still enabled; for any session, unless its gatekeeper
+   * connection still exists. A broken stub (say, because the workspace restarted) throws too.
+   * Either way, the session is over.
+   */
+  requireLive(): Promise<void>;
+
+  /**
+   * Holds `watcher` until this session ends, then releases it, which runs its
+   * `[Symbol.dispose]()`. That happens however the session ends. Most importantly, if the
+   * workspace crashes or restarts, its stub is dropped, so the runtime disposes `watcher` without
+   * the workspace's help. It is also released when the session's execution finishes or times
+   * out, or the user stops its turn (even if the execution's code is still running, since running
+   * code can't be interrupted); when its hook is disabled or deleted; when its gatekeeper
+   * connection is removed; or when the gatekeeper releases this authorizer. Use it to stop work
+   * the session started, such as a container command. If the session has already ended,
+   * `watcher` is released at once.
+   *
+   * Dispose of the returned handle to stop watching; `watcher` is then released at once. A handle
+   * whose connection to the workspace breaks is disposed too, so `watcher` is released then.
+   */
+  watchSession(watcher: RpcStub<RpcTarget>): Promise<RpcStub<RpcTarget>>;
+
+  /**
+   * The ID of the agent's code execution (an `executeCode` call) that opened this session, the
+   * same for every session it opens, on any gatekeeper; undefined for a session with none (a
+   * user's, a gadget's, a hook firing's). It only identifies the execution: no API accepts it as
+   * proof of anything.
+   */
+  getExecutionId(): Promise<string | undefined>;
 }
 
 /**
@@ -1866,9 +1933,10 @@ export type GitOid = string;
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
 
 /**
- * The size, in bytes, above which an RPC that can return a git object's (or file's) content
- * either whole or as a stream returns a stream: `GitCache.get()` returns a `Uint8Array` for an
- * object of at most this many bytes, and a `ReadableStream` for a larger one.
+ * The size, in bytes, above which an RPC does not return a git object's (or file's) content
+ * whole. `GitCache.get()` returns a `Uint8Array` for an object of at most this many bytes, and a
+ * `ReadableStream` for a larger one. `Overseer.readFilesAtCommit()` (see
+ * `@gadgets/workshop-shared/api`) names a larger file by its blob, to read as a stream.
  *
  * This is a choice of representation, not a storage limit: no object is refused for its size.
  * It equals the workspace store's chunk size, so a buffered answer is never more than one stored
@@ -2051,7 +2119,25 @@ export type GitPullHints = {
   commitHistory:
     | { kind: "full" }
     | { kind: "depth", depth: number }
-    | { kind: "since", since: Date };
+    | { kind: "since", since: Date }
+    /** `depth` more commits beyond the requester's `shallow` commits (Git's `--deepen`). */
+    | { kind: "relative", depth: number };
+
+  /**
+   * Commits the requester already has, along with their history down to its `shallow` commits.
+   * The pack leaves out objects reachable from them, but stays self-contained: no object in it
+   * is a delta against one left out. The workspace's Git cache never sets this, because it may
+   * hold a commit without its trees (from a filtered pull). It is set when the workspace serves
+   * native Git, which negotiates what it has (see `Gatekeeper.gitPull()`).
+   */
+  haves?: GitOid[];
+
+  /**
+   * The requester's shallow boundary: commits it has without their parents, as in Git's
+   * `shallow` lines. The provider needs it to deepen the history (see `commitHistory`) and to
+   * interpret `haves`.
+   */
+  shallow?: GitOid[];
 
   /**
    * Omit blobs of at least this size. 0 = do not fetch blobs at all.

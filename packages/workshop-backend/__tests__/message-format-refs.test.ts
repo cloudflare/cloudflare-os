@@ -3,7 +3,7 @@ import type { MessageFormatRef } from "@gadgets/workshop-shared/api";
 
 // overseer.ts reaches capnweb-validate's decorators, which need the bundler plugin. Same stub the
 // other overseer tests use.
-vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
+vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined, skipRpcValidation: () => () => undefined }));
 
 const { sanitizeCommandPosition, sanitizeMessageFormatRefs } = await import("../src/overseer.js");
 
