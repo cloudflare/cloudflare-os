@@ -3139,6 +3139,17 @@ function ChatInterface({
     return provisional.reasoning ? "Thinking" : undefined;
   };
 
+  // The list's relative times ("11m", "Yesterday") have to move on in a workspace where nothing
+  // else changes, so the list keeps a minute clock while it, or an agent's screen, is showing.
+  const listShowing = sidebarMode === true || selectedChatId === null || agentScreen !== null;
+  const [listClock, setListClock] = useState(() => new Date());
+  useEffect(() => {
+    if (!listShowing) return;
+    setListClock(new Date());
+    const timer = setInterval(() => setListClock(new Date()), 60_000);
+    return () => clearInterval(timer);
+  }, [listShowing]);
+
   const {
     visibleChatList,
     chatListNow,
@@ -3147,7 +3158,7 @@ function ChatInterface({
     agentAttention,
     pendingForRun,
   } = useMemo(() => {
-    const now = new Date();
+    const now = listClock;
 
     // A request with no chat -- a hook's, or gadget code's outside any chat -- is no run's.
     const byRun = new Map<number, ActionLogEntry[]>();
@@ -3189,7 +3200,7 @@ function ChatInterface({
       agentAttention: agentsNeedingAttention(derived),
       pendingForRun: byRun as ReadonlyMap<number, ActionLogEntry[]>,
     };
-  }, [chatList, pendingActions, unread?.chats, workspaceId]);
+  }, [chatList, pendingActions, unread?.chats, workspaceId, listClock]);
 
   // The agent's own screen and the route's chat compete for the detail pane. The agent wins,
   // because opening it was the user's latest move -- until the route selects a different chat,

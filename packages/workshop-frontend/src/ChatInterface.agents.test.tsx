@@ -274,6 +274,25 @@ it("marks a run that stops on a decision while the page is open", async () => {
   expect(reviewButton("Monday digest")).not.toBeNull();
 });
 
+it("moves a run's age on while nothing else in the workspace changes", async () => {
+  vi.useFakeTimers({toFake: ["Date", "setInterval", "clearInterval"]});
+  try {
+    vi.setSystemTime(new Date("2026-11-13T12:00:00Z"));
+    await renderList([chat({id: 10, title: "Reply to Acme", spawnerName: "Email joker"})]);
+    await openAgentsTab();
+    await act(async () => { button(/Email joker/)!.click(); });
+    const row = () => button(/^Reply to Acme/)?.textContent;
+    expect(row()).toContain("now");
+
+    await act(async () => { vi.advanceTimersByTime(60 * 60_000); });
+
+    // A quiet workspace sends nothing that would redraw the list, and the run is an hour old.
+    expect(row()).toContain("1h");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("keeps a run's thread read controls, which left the chat list with it", async () => {
   const markRead = vi.fn<NonNullable<ReturnType<typeof useUnreadState>>["markRead"]>()
     .mockResolvedValue(undefined);
