@@ -137,6 +137,12 @@ describe("readDocxDocument", () => {
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
+  it("keeps no more tab stops for a paragraph than Word allows", async () => {
+    const tabs = Array.from({ length: 1_000 }, (_, index) => `<w:tab w:val="left" w:pos="${(index + 1) * 20}"/>`).join("");
+    const document = await readDocxDocument(await buildLayoutDocx({ body: paragraph(run("x"), `<w:tabs>${tabs}</w:tabs>`) }));
+    expect(paragraphs(document.body)[0]!.tabStops).toHaveLength(64);
+  });
+
   it("keeps only the start of a marker pattern, which every numbered paragraph repeats", async () => {
     const numbered = paragraph(run("x"), '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>');
     const document = await readDocxDocument(await buildLayoutDocx({

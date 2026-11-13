@@ -97,7 +97,7 @@ function isHidden(element: XmlElement): boolean {
   for (const child of childElements(element)) {
     if (!child.name.startsWith("p:nv")) continue;
     const hidden = attribute(firstChild(child, "p:cNvPr"), "hidden");
-    return hidden === "1" || hidden === "true";
+    return isTrue(hidden);
   }
   return false;
 }
@@ -191,7 +191,7 @@ class DeckReader {
   /** Reads one slide, or returns undefined for a hidden one. */
   async readSlide(partName: string, number: number): Promise<Slide | undefined> {
     const root = await readPart(this.zip, partName);
-    if (attribute(root, "show") === "0") return undefined;
+    if (isFalse(attribute(root, "show"))) return undefined;
     const relationships = await readRelationships(this.zip, partName);
     const layoutPart = findRelationship(relationships, "slideLayout")?.target;
     const layout = layoutPart && this.zip.has(layoutPart) ? await this.#layout(layoutPart) : undefined;
@@ -226,8 +226,8 @@ class DeckReader {
     const masterScope = master && scope(master.relationships, master.colorMap, false);
 
     const shapes: SlideShape[] = [];
-    if (attribute(root, "showMasterSp") !== "0") {
-      if (masterScope && attribute(layout?.root, "showMasterSp") !== "0") await this.#readTree(shapeTree(master.root), masterScope, undefined, shapes);
+    if (!isFalse(attribute(root, "showMasterSp"))) {
+      if (masterScope && !isFalse(attribute(layout?.root, "showMasterSp"))) await this.#readTree(shapeTree(master.root), masterScope, undefined, shapes);
       if (layoutScope) await this.#readTree(shapeTree(layout.root), layoutScope, undefined, shapes);
     }
     await this.#readTree(shapeTree(root), slideScope, undefined, shapes);
@@ -523,6 +523,11 @@ function readBounds(transform: XmlElement | undefined): SlideBounds | undefined 
 
 function isTrue(value: string | undefined): boolean {
   return value === "1" || value === "true";
+}
+
+/** Whether an attribute that is on unless it says otherwise says otherwise, in either XML spelling. */
+function isFalse(value: string | undefined): boolean {
+  return value === "0" || value === "false";
 }
 
 /** A group scales its children from the space `chOff`/`chExt` describe into its own box, then turns and flips them with it. */

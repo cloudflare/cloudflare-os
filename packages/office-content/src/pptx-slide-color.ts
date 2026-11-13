@@ -256,9 +256,15 @@ export function findFill(container: XmlElement | undefined, context: ColorContex
   return undefined;
 }
 
+/**
+ * The most stops a gradient keeps; PowerPoint lets a gradient have ten. Every shape painted with
+ * a theme gradient gets its own copy of the stops, so a longer list would be copied once per shape.
+ */
+const MAX_GRADIENT_STOPS = 64;
+
 function gradientOf(element: XmlElement, context: ColorContext, placeholder: SlideColor | undefined): FillChoice {
   const stops: SlideGradientStop[] = [];
-  for (const stop of childElements(firstChild(element, "a:gsLst"), "a:gs")) {
+  for (const stop of childElements(firstChild(element, "a:gsLst"), "a:gs").slice(0, MAX_GRADIENT_STOPS)) {
     const color = resolveColor(stop, context, placeholder);
     const position = percent(attribute(stop, "pos"));
     if (color && position !== undefined) stops.push({ position: clamp01(position), color });

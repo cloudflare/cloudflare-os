@@ -41,6 +41,25 @@ describe("readPptxSlides", () => {
     expect(deck.slides[0]!.shapes).toHaveLength(1);
   });
 
+  it("reads either spelling of an XML false, for a hidden slide and for one without its master's shapes", async () => {
+    const text = (value: string) => drawnShape({ properties: transform(0, 0, INCH, INCH), body: slideParagraph(value) });
+    const deck = await deckOf({
+      masterShapes: text("Master"),
+      slides: [{ shapes: "", attributes: 'show="false"' }, { shapes: text("Own"), attributes: 'showMasterSp="false"' }, { shapes: text("Own") }],
+    });
+    expect(deck.slides.map(slide => [slide.number, slide.shapes.length])).toEqual([[2, 1], [3, 2]]);
+  });
+
+  it("keeps a bounded number of a theme gradient's stops for each shape painted with it", async () => {
+    const stops = Array.from({ length: 1_000 }, (_, index) => `<a:gs pos="${index * 100}"><a:srgbClr val="336699"/></a:gs>`).join("");
+    const deck = await deckOf({
+      slides: [{ shapes: drawnShape({ properties: `${transform(0, 0, INCH, INCH)}<a:gradFill><a:gsLst>${stops}</a:gsLst></a:gradFill>` }) }],
+    });
+    const [shape] = deck.slides[0]!.shapes as SlideDrawnShape[];
+    expect(shape!.fill).toMatchObject({ kind: "gradient" });
+    expect(shape!.fill?.kind === "gradient" && shape!.fill.stops.length).toBe(64);
+  });
+
   it("caps the slides it returns and says so", async () => {
     const deck = await deckOf({ slides: Array.from({ length: MAX_SLIDES + 1 }, () => ({ shapes: "" })) });
     expect(deck.slides).toHaveLength(MAX_SLIDES);

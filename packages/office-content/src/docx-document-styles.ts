@@ -241,6 +241,12 @@ function readBorders(element: XmlElement | undefined, theme: Theme): BorderEdges
 
 // ---- Paragraph formatting ----
 
+/**
+ * The most tab stops a paragraph keeps, which is Word's own limit. Each paragraph gets its own
+ * copy of the stops it inherits, so a longer list in a style would be copied once per paragraph.
+ */
+const MAX_TAB_STOPS = 64;
+
 /** A tab stop as a `w:tabs` lists it; `clear` removes an inherited stop at its position. */
 export interface TabFormat extends DocxTabStop {
   readonly clear: boolean;
@@ -284,7 +290,7 @@ export function readParagraphFormat(properties: XmlElement | undefined, theme: T
   const hanging = twips(indent, "w:hanging");
   const line = numeric(attribute(spacing, "w:line"));
   const lineRule = attribute(spacing, "w:lineRule");
-  const tabs = childElements(firstChild(properties, "w:tabs"), "w:tab").flatMap((tab): TabFormat[] => {
+  const tabs = childElements(firstChild(properties, "w:tabs"), "w:tab").slice(0, MAX_TAB_STOPS).flatMap((tab): TabFormat[] => {
     const position = twips(tab, "w:pos");
     const kind = attribute(tab, "w:val");
     if (position === undefined) return [];
@@ -322,7 +328,9 @@ export function layeredParagraph(...layers: readonly (ParagraphFormat | undefine
   const borders = layered<BorderEdges>(...layers.map(layer => layer?.borders));
   const tabs = new Map<number, TabFormat>();
   for (const layer of layers) {
-    for (const tab of layer?.tabs ?? []) tabs.set(tab.position, tab);
+    for (const tab of layer?.tabs ?? []) {
+      if (tabs.size < MAX_TAB_STOPS || tabs.has(tab.position)) tabs.set(tab.position, tab);
+    }
   }
   return {
     ...layered<ParagraphFormat>(...layers),
