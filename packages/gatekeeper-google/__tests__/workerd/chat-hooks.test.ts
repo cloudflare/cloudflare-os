@@ -4,6 +4,7 @@
 
 import {env} from "cloudflare:workers";
 import {SELF, runDurableObjectAlarm, runInDurableObject} from "cloudflare:test";
+import {HookRegistry} from "@gadgets/gatekeeper-kit/hook-registry";
 import {SignJWT, exportJWK, generateKeyPair} from "jose";
 import {afterEach, beforeAll, beforeEach, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImplProps} from "../../src/chat";
@@ -26,6 +27,8 @@ const PUSH_ACCOUNT = "push@test.iam.gserviceaccount.com";
 const PUSH_URL = "http://localhost:8787/gatekeeper/google/pubsub";
 const CREATED = "google.workspace.chat.message.v1.created";
 const BATCH_CREATED = "google.workspace.chat.message.v1.batchCreated";
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
 
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), {status, headers: {"Content-Type": "application/json"}});
@@ -76,10 +79,11 @@ function mockGoogle() {
     unthreaded: false,
     messages: new Map<string, ChatMessageRaw>(),
     posted: [] as Array<{text: string; thread?: {name: string}}>,
-    /** Subscriptions created, reactivated and deleted, renewal attempts, and how many more renewals fail. */
+    /** Subscriptions created, reactivated and deleted, read in turn, renewal attempts, and how many more renewals fail. */
     creates: 0,
     reactivated: [] as string[],
     deleted: [] as string[],
+    reads: [] as string[],
     renewals: 0,
     failRenewals: 0,
   };
@@ -123,6 +127,7 @@ function mockGoogle() {
       return json({name: "operations/reactivate", done: true, response: live});
     }
     if (url.hostname === "workspaceevents.googleapis.com" && subscription && method === "GET") {
+      google.reads.push(subscription);
       if (google.lost) return json({error: {code: 404, status: "NOT_FOUND"}}, 404);
       if (!google.stallGet) return json(live);
       google.stallGet.started = true;
@@ -742,4 +747,123 @@ it("rejects pushes not signed for this endpoint by the configured service accoun
   await deliver();
 
   expect((await ada.hooks.readHook()).received).toEqual([]);
+});
+
+const alarmTime = () => runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => state.storage.getAlarm());
+
+const subscriptions = () => runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) =>
+  [...state.storage.kv.list<{renewAt: number}>({prefix: "sub:"})].map(([, subscription]) => subscription));
+
+it("leaves its alarm at the next renewal, and none once its subscription has lapsed unused", async () => {
+  mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+
+  await runDurableObjectAlarm(driver());
+  // Not the fallback a minute out.
+  expect(await alarmTime()).toBe((await subscriptions())[0]!.renewAt);
+
+  await ada.hooks.chatDisableHook();
+  vi.setSystemTime(Date.now() + 4 * HOUR);
+  try {
+    await runDurableObjectAlarm(driver());
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(await subscriptions()).toEqual([]);
+  expect(await alarmTime()).toBeNull();
+});
+
+it("renews its subscriptions even when delivering fails, logs the failure, and runs again a minute later", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  const failing = vi.spyOn(HookRegistry.prototype, "run").mockRejectedValue(new Error("Storage is full."));
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+
+  vi.setSystemTime(Date.now() + 3 * HOUR);
+  try {
+    expect(await runDurableObjectAlarm(driver())).toBe(true);
+    expect(google.renewals).toBe(1);
+    expect(await alarmTime()).toBe(Date.now() + MINUTE);
+    expect(logged.mock.calls.map(([entry]) => entry)).toContainEqual(expect.objectContaining({event: "chat.hooks.alarm.failed"}));
+  } finally {
+    vi.useRealTimers();
+    failing.mockRestore();
+    logged.mockRestore();
+  }
+});
+
+it("stops starting renewals two minutes into an alarm, and the next alarm renews the rest", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+  google.stallGet = {started: false, released: false};
+
+  // Both renewals are due, and Google holds the first past the budget.
+  vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout", "Date"], now: Date.now() + 3 * HOUR});
+  try {
+    const alarm = runDurableObjectAlarm(driver());
+    await vi.waitFor(() => expect(google.stallGet!.started).toBe(true));
+    vi.advanceTimersByTime(2 * MINUTE);
+    google.stallGet.released = true;
+    await alarm;
+    expect(google.reads).toEqual(["subscriptions/ada"]);
+    // Due at once for the renewal left.
+    expect(await alarmTime()).toBeLessThanOrEqual(Date.now());
+
+    google.stallGet = undefined;
+    await runDurableObjectAlarm(driver());
+    expect(google.reads).toEqual(["subscriptions/ada", "subscriptions/bob"]);
+    expect(google.renewals).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("sets its fallback alarm, and puts a renewal off by 15 minutes, before starting it", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  await ada.hooks.chatEnableHook();
+  google.stallGet = {started: false, released: false};
+
+  vi.setSystemTime(Date.now() + 3 * HOUR);
+  try {
+    const alarm = runDurableObjectAlarm(driver());
+    await vi.waitFor(() => expect(google.stallGet!.started).toBe(true));
+    // As a kill now would leave them.
+    expect(await alarmTime()).toBe(Date.now() + MINUTE);
+    expect((await subscriptions())[0]!.renewAt).toBe(Date.now() + 15 * MINUTE);
+    google.stallGet.released = true;
+    await alarm;
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("renews first what was due before a renewal a kill cut off", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  const bob = await connect("bob");
+  await ada.hooks.chatEnableHook();
+  await bob.hooks.chatEnableHook();
+  // An alarm at `killed` put off Ada's renewal, then was killed renewing it; Bob's was due already.
+  const killed = Date.now() + 3 * HOUR;
+  await runInDurableObject(driver(), (_instance: unknown, state: DurableObjectState) => {
+    const stored = [...state.storage.kv.list<{renewAt: number}>({prefix: "sub:"})];
+    for (const [key, subscription] of stored) {
+      state.storage.kv.put(key, {...subscription, renewAt: key.endsWith("/ada") ? killed + 15 * MINUTE : killed - MINUTE});
+    }
+  });
+
+  vi.setSystemTime(killed + 21 * MINUTE);
+  try {
+    await runDurableObjectAlarm(driver());
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(google.reads).toEqual(["subscriptions/bob", "subscriptions/ada"]);
+  expect(google.renewals).toBe(2);
 });

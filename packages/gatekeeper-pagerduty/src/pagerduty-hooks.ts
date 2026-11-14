@@ -41,6 +41,8 @@ const logger = obsContext.createLogger({ component: "gatekeeper.pagerduty.hooks"
 
 export const HOOKS_NOT_CONFIGURED = "PagerDuty hooks are not configured on this deployment.";
 
+const MINUTE_MS = 60_000;
+
 /** Whether this deployment receives PagerDuty's webhook. */
 export const hooksConfigured = (env: Env): boolean => Boolean(env.PAGERDUTY_WEBHOOK_SECRET);
 
@@ -257,8 +259,13 @@ export class PagerDutyHookDriver extends DurableObject<Env> {
   }
 
   async alarm(): Promise<void> {
-    await this.#hooks.run(Date.now());
-    await this.#reschedule();
+    await this.ctx.storage.setAlarm(Date.now() + MINUTE_MS); // the retry if this handler fails or is killed
+    try {
+      await this.#hooks.run(Date.now());
+      await this.#reschedule();
+    } catch (error) {
+      logger.error("PagerDuty hook driver alarm failed", { event: "hooks.alarm.failed", error }); // the fallback alarm stands
+    }
   }
 
   async #reschedule(): Promise<void> {
