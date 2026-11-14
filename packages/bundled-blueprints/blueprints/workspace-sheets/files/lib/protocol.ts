@@ -2,13 +2,22 @@
 // The contract between the Sheets client and its Durable Object: what is stored,
 // what an operation carries, what comes back, and what the server calls the
 // client with. Types only; both entries import it with `import type`.
+//
+// Rows and columns have ids (lib/lines.ts), and the grid speaks in them: a cell is named by its
+// key, "rowId:colId", and a formula's references and a sheet's settings name lines by id
+// (lib/refs.ts). Editors from before ids (an open tab when the gadget updates) still speak A1;
+// the server translates for them by where lines are at the moment (see Operation.lineIds).
 // ---------------------------------------------------------------------------
+import type { LineOp, StoredOrder } from "./lines.ts";
+
+/** Horizontal alignment: left, centre or right. */
+export type Align = "l" | "c" | "r";
 
 /**
  * A cell's formatting. Every key is optional and absent when off: `b`, `i`, `u`, `s` and `wrap`
- * are flags; `c`/`bg` are hex colours; `a` is the horizontal alignment; `nf` a number-format name
- * (`number`, `integer`, `currency`, `percent`, `scientific`, `date`, `time`, `datetime`, `text`);
- * `d` the decimal places; `fs` the font size in CSS pixels.
+ * are flags; `c`/`bg` are hex colours; `a` the horizontal alignment; `nf` a number-format name
+ * (`auto`, `text`, `number`, `integer`, `percent`, `scientific`, `currency`, `date`, `time`,
+ * `datetime`); `d` the decimal places (0–10); `fs` the font size in CSS pixels (6–96).
  */
 export interface CellFmt {
   b?: boolean;
@@ -18,7 +27,7 @@ export interface CellFmt {
   wrap?: boolean;
   c?: string;
   bg?: string;
-  a?: "l" | "c" | "r";
+  a?: Align;
   nf?: string;
   d?: number;
   fs?: number;
@@ -31,13 +40,77 @@ export interface Cell {
   version: number;
 }
 
-/** One sheet's cells, keyed by A1 reference. */
+/** One sheet's cells, keyed by cell key ("rowId:colId"), or by A1 reference where a type says so. */
 export type CellMap = Record<string, Cell>;
 
-/** Column widths or row heights in pixels, keyed by zero-based index (as a string). */
+/** Column widths or row heights in pixels: keyed by line id as stored, by zero-based index (as a string) as editors see them. */
 export type Dims = Record<string, number>;
 
-/** A sheet's structure: identity, name, size and sizing metadata. */
+/** Chart kinds the grid draws and the XLSX writer exports natively. */
+export type ChartType = "line" | "pie" | "area" | "stackedBar";
+
+/** A chart floating over a sheet: its data range, labels and placement in grid pixels. */
+export interface Chart {
+  id: string;
+  type: ChartType;
+  range: string;
+  title: string;
+  xAxisTitle: string;
+  yAxisTitle: string;
+  legend: boolean;
+  firstRowHeaders: boolean;
+  firstColLabels: boolean;
+  smooth: boolean;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** A filter's sort indicator: the column it sorted on, and which way. */
+export interface FilterSort {
+  column: number;
+  direction: "asc" | "desc";
+}
+
+/**
+ * A sheet's filter: the header `row` and last row of the table, the columns it covers, the chosen
+ * values per column (`criteria`, column -> value tokens; see the client's `filterToken`), the
+ * original row order (so a sort can be undone; positions, reset when the sheet's rows change), and
+ * the sort. Lines are named by id as stored, by zero-based position as editors see them.
+ */
+export interface SheetFilter {
+  row: number;
+  endRow: number;
+  columns: number[];
+  criteria: Record<string, string[]>;
+  rowOrder: number[];
+  sort: FilterSort | null;
+}
+
+/** How a pivot table summarises its value field. */
+export type PivotAggregate = "sum" | "count" | "average" | "min" | "max";
+
+/** A pivot sheet's settings: where its data comes from and how it is grouped and summarised. */
+export interface PivotSettings {
+  sourceSheetId: string;
+  sourceRange: string;
+  rowField: string;
+  columnField: string;
+  valueField: string;
+  aggregate: PivotAggregate;
+  showRowTotals: boolean;
+  showColumnTotals: boolean;
+  filterField: string;
+  filterValues: string[];
+}
+
+/**
+ * A sheet's structure: identity, name, size, sizing metadata, filter, charts and pivot settings.
+ * As stored and sent, widths, heights and the filter name lines by id, and chart and pivot ranges
+ * are stored ranges (lib/refs.ts `viewSheet` turns them into positions); `rows` and `cols` are
+ * how many lines are live, which only line operations change.
+ */
 export interface SheetMeta {
   id: string;
   name: string;
@@ -47,27 +120,11 @@ export interface SheetMeta {
   rowHeights: Dims;
   frozenRows: number;
   frozenCols: number;
-}
-
-/** The `meta` record the server stores: everything about the workbook except the cells. */
-export interface DocumentMeta {
-  revision: number;
-  title: string;
-  sheetOrder: string[];
-  sheets: Record<string, SheetMeta>;
-  lastModified: number;
-}
-
-/** A complete workbook snapshot, as `getDocument()` and `subscribe()` return it: the meta plus every sheet's cells by sheet id. */
-export interface SheetsDocument extends DocumentMeta {
-  cells: Record<string, CellMap>;
-}
-
-/** The workbook structure as a client sends it: last-writer-wins, applied wholesale; anything omitted keeps its stored value. */
-export interface StructureUpdate {
-  title?: string;
-  sheetOrder?: string[];
-  sheets?: Record<string, Partial<SheetMeta>>;
+  filter: SheetFilter | null;
+  charts: Chart[];
+  pivot: PivotSettings | null;
+  /** The revision that created the sheet (0 for sheets older than this field); the server assigns it, so a sheet a client adds has none yet. */
+  created?: number;
 }
 
 /** The workbook structure as the server repeats it after an operation. */
@@ -77,27 +134,162 @@ export interface Structure {
   sheets: Record<string, SheetMeta>;
 }
 
-/** One cell edit: the new content and the version it was based on (0 for a new cell); `value` and `fmt` both `null` deletes the cell. */
+/** The `meta` record the server stores: everything about the workbook except the cells. */
+export interface DocumentMeta extends Structure {
+  revision: number;
+  lastModified: number;
+  /** `4` marks cells stored by line id (see the server's storage notes); older workbooks are migrated on load. */
+  cellStorage?: number;
+  /** The last operations applied, newest last, so one sent again is answered rather than applied twice (see Operation.id). */
+  recentOps?: RecentOperation[];
+  /** For each sheet, the revision its lines last changed at. */
+  linesChanged?: Record<string, number>;
+  /** Ids of sheets deleted lately, which a snapshot built before the deletion can't bring back. */
+  deletedSheets?: string[];
+}
+
+/** An applied operation as the server remembers it: its id and what it refused, by cell key (`refused` is null when that was too much to keep). */
+export interface RecentOperation {
+  id: string;
+  refused: { conflicts: CellDeletion[]; gone: CellDeletion[]; sorted: CellDeletion[]; refusedLines: LineOp[] } | null;
+}
+
+/** A complete workbook snapshot by position, as `getDocument()` returns it: the structure as editors see it, and every sheet's cells by A1 reference with formulas as A1 text. */
+export interface SheetsDocument extends Structure {
+  revision: number;
+  lastModified: number;
+  cells: Record<string, CellMap>;
+}
+
+/**
+ * Cells as parallel arrays, as stored blocks and pages carry them: `styles[i]` indexes `fmts`
+ * (-1 for none), so each format travels once. `versions` and `styles`/`fmts` are left out of a
+ * page that did not ask for them.
+ */
+export interface PackedCells {
+  refs: string[];
+  values: string[];
+  versions?: number[];
+  styles?: number[];
+  fmts?: CellFmt[];
+}
+
+/** A packed page with every field present, as clients receive it. */
+export type FullPackedCells = Required<PackedCells>;
+
+/** A run of a sheet's row blocks a client reads with `getCellsPage` (block names; `to` excluded, "" for the end). Blocks hold rows by id, so they aren't in display order. */
+export interface SheetSlice {
+  sheetId: string;
+  after: string;
+  from: string;
+  to: string;
+}
+
+/**
+ * What `subscribe()` / `openDocument()` return: the stored structure, every sheet's line order,
+ * and about one page of cells, packed by cell key with stored values; `slices` lists what is left
+ * (read with getCellsPage) and `cursors` maps each sheet that did not fit to where it continues.
+ * An editor from before ids subscribes without `lines` and gets `getDocument()`'s snapshot instead
+ * (`cells`, by position).
+ */
+export interface OpenedDocument extends Structure {
+  revision: number;
+  lastModified: number;
+  orders?: Record<string, StoredOrder>;
+  cells?: Record<string, CellMap>;
+  packed?: Record<string, FullPackedCells>;
+  slices?: SheetSlice[];
+  cursors: Record<string, string>;
+}
+
+/** One page of a sheet's cells (`getCellsPage`), packed by cell key; `next` is where the following page continues. */
+export interface CellsPage {
+  revision: number;
+  sheetId: string;
+  packed: FullPackedCells;
+  next: string | null;
+  /** Set when the sheet no longer exists. */
+  missing?: true;
+}
+
+/** One page of cells for an export: packed by A1 reference without versions, formulas as A1 text; `revision` is -1 when an edit landed mid-read. */
+export interface ExportPage extends PackedCells {
+  revision: number;
+  next: string | null;
+  missing?: true;
+}
+
+/**
+ * The workbook structure as a client sends it (stored form): last-writer-wins, applied wholesale;
+ * anything omitted keeps its stored value. `rows` and `cols` count only for a sheet it creates.
+ */
+export interface StructureUpdate {
+  title?: string;
+  sheetOrder?: string[];
+  sheets?: Record<string, Partial<SheetMeta>>;
+  /** The revision the snapshot was built on: a sheet created after it is kept rather than deleted. */
+  revision?: number;
+}
+
+/**
+ * One cell edit: the cell's key, its new content (formulas in stored form) and the version it was
+ * based on (0 for a new cell); `value` and `fmt` both `null` deletes the cell. `basis` is the
+ * revision the edit was made on: one made before a sort rewrote its cell is refused as `sorted`
+ * rather than written over another record.
+ */
 export interface CellOp {
   sheetId: string;
   ref: string;
   value: string | null;
   fmt: CellFmt | null;
   baseVersion: number;
+  basis?: number;
 }
 
-/** A whole-sheet cell replacement, used for sort, insert/delete and other operations that move many cells at once. */
-export interface SheetReplacement {
-  sheetId: string;
-  cells: CellMap;
-}
+/**
+ * A sort's cell writes, applied all together or not at all: every cell op must still match its
+ * version, or none is written. `rows` and `cols` are the ids of the lines it sorted. Inline as
+ * `cellOps`, or staged with `stageCells` (each staged cell's `version` is its base version, and
+ * an empty value without a format deletes it).
+ */
+export type SortWrite =
+  | { sheetId: string; rows: number[]; cols: number[]; cellOps: CellOp[]; uploadId?: undefined }
+  | { sheetId: string; rows: number[]; cols: number[]; uploadId: string; count: number; cellOps?: undefined };
 
-/** What a client sends to `applyOperation`: any combination of a structure snapshot, sheet replacements and per-cell edits. */
+/**
+ * A whole-sheet cell replacement, for a sheet whose content is regenerated (a pivot table) or made
+ * in the same operation (a duplicate). It resets the sheet's lines to `size` in identity order
+ * (ids 0..n-1), and its cells are keyed by those ids. Inline, or staged with `stageCells`.
+ */
+export type SheetReplacement =
+  | { sheetId: string; size: { rows: number; cols: number }; cells: CellMap; uploadId?: undefined }
+  | { sheetId: string; size: { rows: number; cols: number }; uploadId: string; count: number; cells?: undefined };
+
+/**
+ * What a client sends to `applyOperation`, applied in this order: sheet replacements, line
+ * operations, the structure snapshot, sorts, then per-cell edits. `lineIds` says the cells and
+ * structure are by id (the current client); without it they're by position, from an editor that
+ * predates ids, which the server translates by where lines are now. `id` names the operation: one
+ * whose reply was lost is sent again as it was, and the server answers it from where things are
+ * now rather than apply it twice (a move or a replacement would undo what came after it).
+ */
 export interface Operation {
+  id?: string;
   senderId?: string;
+  lineIds?: true;
+  lineOps?: LineOp[];
   structure?: StructureUpdate | null;
-  cellOps?: CellOp[];
   sheetReplacements?: SheetReplacement[];
+  sorts?: SortWrite[];
+  cellOps?: CellOp[];
+}
+
+/** One part of a staged sheet replacement (`stageCells`). */
+export interface StagedPart {
+  uploadId: string;
+  sheetId: string;
+  part: number;
+  cells: CellMap;
 }
 
 /** An accepted cell edit, with the version the server assigned. */
@@ -120,26 +312,37 @@ export interface CellConflict {
   cell: Cell;
 }
 
-/** The first thing a client reads in a reply: `applied` if anything changed, `conflict` if anything was rejected, else `unchanged`. */
-export type OperationStatus = "applied" | "conflict" | "unchanged";
+/** Rows or columns an agent inserted or deleted, so open grids can draw a hint where they went. */
+export interface AgentHint {
+  kind: "rows" | "cols";
+  op: "insert" | "delete";
+  sheetId: string;
+  at: number;
+  count: number;
+}
 
 /**
  * A committed operation as the server broadcasts it to every subscriber: the new revision, the
- * structure after it, the per-cell diffs, and for each replaced sheet its full new cell map.
+ * line operations it applied with each changed sheet's order after them, the structure after it
+ * (only when the operation changed it), the per-cell diffs, and for each replaced sheet its new
+ * cells (`null`: too many to send; reload that sheet in pages).
  */
 export interface OperationEvent {
   type: "operation";
   senderId: string | undefined;
   revision: number;
-  structure: Structure;
+  lineOps?: LineOp[];
+  orders?: Record<string, StoredOrder>;
+  structure?: Structure;
   upserts: CellUpsert[];
   deletes: CellDeletion[];
-  replacedSheets: string[];
-  replacedCells?: Record<string, CellMap>;
+  replacedSheets?: string[];
+  replacedCells?: Record<string, CellMap | null>;
+  agentHint?: AgentHint;
   lastModified: number;
 }
 
-/** A full snapshot delivered over the `operation` callback; the client accepts it though the current server never sends one. */
+/** A whole workbook by position, sent to an editor from before ids in place of a change it can't follow (lines moved, a sheet renamed). */
 export interface SnapshotEvent {
   type: "snapshot";
   document: SheetsDocument;
@@ -148,11 +351,30 @@ export interface SnapshotEvent {
 /** What the server delivers to a subscriber's `operation` callback. */
 export type SubscriberEvent = OperationEvent | SnapshotEvent;
 
+/** The first thing a client reads in a reply. `upload-missing`: a staged write was lost, nothing was applied. */
+export type OperationStatus = "applied" | "conflict" | "unchanged" | "upload-missing";
+
 /** What `applyOperation` returns: the status and rejected cells, plus the committed event's fields when anything changed. */
-export interface OperationResult extends Partial<OperationEvent> {
+export interface OperationResult extends Partial<Omit<OperationEvent, "replacedCells">> {
   status: OperationStatus;
   revision: number;
   conflicts: CellConflict[];
+  /** Cell edits refused because their row or column is gone. */
+  gone?: CellDeletion[];
+  /** Cell edits refused because a sort rewrote their cell after they were made (see CellOp.basis). */
+  sorted?: CellDeletion[];
+  /** Line operations refused (an id taken, a line already gone, a size limit), and so not applied. */
+  refusedLines?: LineOp[];
+  /** Sheets whose sort was refused because a cell it rewrote had changed; nothing in the operation was applied. */
+  refusedSorts?: string[];
+}
+
+/** What a cell-API write returns. */
+export interface AgentWriteResult {
+  status: "applied" | "unchanged";
+  revision: number;
+  updated?: number;
+  cleared?: number;
 }
 
 /** How a subscriber introduces itself: the id its events carry, and how to draw it. */
@@ -186,16 +408,33 @@ export interface SubscriberCallbacks {
   presence(event: SheetsPresenceEvent): unknown;
 }
 
+/** What a client says about itself when it subscribes; `lines` says it speaks in line ids (see OpenedDocument). */
+export interface SubscribeOptions extends Partial<CollaboratorInfo> {
+  lines?: boolean;
+}
+
 /**
  * The client's view of the Durable Object's RPC surface: every method it calls on the `gadget`
- * stub. A view rather than the class's own signature (`Gadget` does not `implements` it): the
- * server's `updatePresence` and `leavePresence` return synchronously, since their broadcasts run
- * outside the mutation queue and are not awaited, while over RPC every call resolves to a promise.
+ * stub (over RPC every call resolves to a promise).
  */
 export interface GadgetStub {
-  getDocument(): Promise<SheetsDocument>;
+  subscribe(callback: SubscriberCallbacks, client?: SubscribeOptions): Promise<OpenedDocument>;
+  openDocument(): Promise<OpenedDocument>;
+  getCellsPage(options: { sheetId: string; after?: string; from?: string; to?: string }): Promise<CellsPage>;
+  getSheetSlices(options: { sheetIds: string[] }): Promise<{ revision: number; slices: SheetSlice[] }>;
+  stageCells(part: StagedPart): Promise<{ received: number }>;
   applyOperation(operation: Operation): Promise<OperationResult>;
-  subscribe(callback: SubscriberCallbacks, client?: CollaboratorInfo): Promise<SheetsDocument>;
   updatePresence(presence: PresenceUpdate): Promise<void>;
   leavePresence(clientId: string): Promise<void>;
+}
+
+/** The structure an export reads first (`getStructure`). */
+export interface StructureWithRevision extends Structure {
+  revision: number;
+}
+
+/** What the export handler calls on the gadget's Durable Object. */
+export interface ExportGadgetStub {
+  getStructure(): Promise<StructureWithRevision>;
+  exportPage(options: { sheetId: string; after?: string; formats?: boolean }): Promise<ExportPage>;
 }
