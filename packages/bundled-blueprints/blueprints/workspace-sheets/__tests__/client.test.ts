@@ -282,6 +282,30 @@ describe("sync", () => {
     expect(shown("B1")).toBe("theirs");
   });
 
+  it("keeps a rename acknowledged while a reconnect's older snapshot loads", async () => {
+    const one = sheet("s1"), other = { ...sheet("s2"), name: "Other" };
+    const book = (name: string) => ({ title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: { ...one, name }, s2: other } });
+    const h = await loadClient(one, {}, { ...book("Sheet1"), cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Sheet1!A1") } } });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    document.querySelector(".tab[data-id='s1']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    const input = document.querySelector<HTMLInputElement>(".tab-rename")!;
+    input.value = "Mine";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle(); // the rename is out
+    // The subscription drops; the reconnect reads a snapshot from before the rename landed.
+    const snapshot = deferred<OpenedDocument>();
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => { h.callbacks = callback; return snapshot.promise; });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    save.resolve({ status: "applied", revision: 2, conflicts: [], structure: book("Mine"), upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Mine!A1", 2) }], deletes: [] });
+    await settle();
+    snapshot.resolve({ revision: 1, lastModified: 0, ...book("Sheet1"), cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Sheet1!A1") } }, cursors: {} });
+    await settle();
+    expect(document.querySelector(".tab[data-id='s1']")!.textContent).toContain("Mine");
+    const later = h.gadget.applyOperation.mock.calls.slice(1).map(([op]) => (op as Operation).structure?.sheets?.s1?.name).filter(Boolean);
+    expect(later).not.toContain("Sheet1");
+  });
+
   it("keeps a rename that overtook this tab's own rename before its reply arrived", async () => {
     const one = sheet("s1"), other = { ...sheet("s2"), name: "Other" };
     const two = { title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: one, s2: other } };

@@ -7411,11 +7411,13 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
   snapshotGeneration++; reloadAcks.length = 0; overtakingWrites.clear();
   model.revision = doc.revision || 0;
   model.cells = doc.cells || {};
-  const structure = { title: doc.title || "Untitled spreadsheet", sheetOrder: doc.sheetOrder || [], sheets: doc.sheets || {} };
+  // So is a structure this tab saved meanwhile: the server's, as of its acknowledgment.
+  const newerAck = reconcile && ackedStructure && ackedStructureRevision > model.revision ? { structure: structuredClone(ackedStructure), revision: ackedStructureRevision } : null;
+  const structure = newerAck?.structure ?? { title: doc.title || "Untitled spreadsheet", sheetOrder: doc.sheetOrder || [], sheets: doc.sheets || {} };
   if (reconcile && ackedStructure) {
     model.sheets = {};
     ackedStructureRevision = -1;
-    applyStructure(structure, model.revision);
+    applyStructure(structure, newerAck?.revision ?? model.revision);
   } else {
     model.title = structure.title;
     model.sheetOrder = structure.sheetOrder.slice();
