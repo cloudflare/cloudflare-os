@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  NODE_VERSION: "24.19.0"
+  NODE_VERSION: "24.22.3"
 
 jobs:
   # Parallel to `test` so lint, type and test failures surface on the same run. The package type
