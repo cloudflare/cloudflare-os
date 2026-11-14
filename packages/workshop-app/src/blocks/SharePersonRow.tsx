@@ -44,7 +44,7 @@ export const SharePersonRow = ({ name, you, group, detail, access, landed }: Sha
       ) : (
         <Avatar name={name} />
       )}
-      <span className="flex min-w-0 flex-1 flex-col">
+      <span className="flex w-0 min-w-0 flex-1 flex-col">
         <span className="truncate text-kumo-default">
           {name}
           {you && <span className="text-kumo-subtle"> (you)</span>}

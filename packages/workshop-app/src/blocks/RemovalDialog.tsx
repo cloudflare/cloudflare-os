@@ -104,7 +104,7 @@ export const RemovalDialog = ({ open, onOpenChange, name, outcome, unknown, from
                   onCheckedChange={(checked) => toggle(person.id, checked === true)}
                 />
                 <Avatar name={person.name} />
-                <span className="flex min-w-0 flex-1 flex-col">
+                <span className="flex w-0 min-w-0 flex-1 flex-col">
                   <span className="truncate text-kumo-default">{person.name}</span>
                   <span className="truncate text-sm text-kumo-subtle">Invited by {person.invitedBy}</span>
                 </span>

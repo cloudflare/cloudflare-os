@@ -90,7 +90,7 @@ export const InviteField = ({
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy}
           // Shorter beside a choice of access, which takes some of its room.
-          placeholder={`Add ${accessChoice ? '' : 'people '}by ${suggestions ? 'name' : 'username'} or email`}
+          placeholder={accessChoice ? `${suggestions ? 'Name' : 'Username'} or email` : `Add people by ${suggestions ? 'name' : 'username'} or email`}
           value={value}
           readOnly={pending}
           autoComplete="off"
@@ -125,7 +125,7 @@ export const InviteField = ({
               setHighlighted((current) => (current + step + people.length) % Math.max(people.length, 1))
             }
           }}
-          className="h-full min-w-0 flex-1 bg-transparent text-base text-kumo-default outline-none placeholder:text-kumo-subtle"
+          className="h-full w-0 min-w-0 flex-1 bg-transparent text-base text-kumo-default outline-none placeholder:text-kumo-subtle"
         />
         {accessChoice}
         <Button variant="primary" disabled={pending || query === ''} onClick={submit} className="shrink-0">
