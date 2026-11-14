@@ -14,9 +14,10 @@ export type ConfirmDialogProps = {
   destructive?: boolean
   /**
    * Does it. While a promise it returns is out the dialog stays, its buttons held, and it goes
-   * once the promise resolves. A rejection leaves it open, under why.
+   * once the promise resolves. A rejection leaves it open, under why, and `false` leaves it open
+   * as it was, for what was not tried at all (the connection is down: `blocked()` has said so).
    */
-  onConfirm: () => void | Promise<void>
+  onConfirm: () => void | boolean | Promise<void | boolean>
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -29,8 +30,7 @@ export const ConfirmDialog = ({ open, onOpenChange, title, description, confirm,
     setProblem(undefined)
     setPending(true)
     try {
-      await onConfirm()
-      onOpenChange(false)
+      if ((await onConfirm()) !== false) onOpenChange(false)
     } catch (error) {
       setProblem(messageOf(error))
     } finally {

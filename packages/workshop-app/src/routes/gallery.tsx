@@ -21,6 +21,7 @@ import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
+import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
@@ -225,11 +226,9 @@ function Gallery() {
         <Avatar name="Ada Lovelace" />
         <Avatar name="Broken image" src="/missing.png" />
       </Section>
-      <Section title="ConnectButton">
-        <ConnectButton>
-          <span className="size-5 rounded-full bg-kumo-fill" />
-          <span className="size-5 rounded-full bg-kumo-fill" />
-        </ConnectButton>
+      <Section title="ConnectButton (no logos, two, and more than fit, which fan out when pointed at)">
+        <ConnectButton logos={[{ key: 'github', name: 'GitHub' }, { key: 'slack', name: 'Slack' }]} />
+        <ConnectButton logos={['GitHub', 'Slack', 'Linear', 'Notion', 'Jira'].map((name) => ({ key: name, name, src: name === 'Slack' ? '/missing.png' : undefined }))} />
         <ConnectButton />
       </Section>
       <Section title="WorkspaceIcon (and small, as in a button)">
@@ -319,6 +318,7 @@ function Gallery() {
       <CardBlocksPreview />
       <SystemBlocksPreview />
       <SettingsPreview />
+      <ConnectionsPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
