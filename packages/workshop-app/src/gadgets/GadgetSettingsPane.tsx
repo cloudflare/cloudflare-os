@@ -212,6 +212,8 @@ export const GadgetSettingsPane = ({
       </div>
       {gadget && (
         <PublishBlueprintDialog
+          // Starting from what it is now: a gadget renamed since starts with its new name.
+          key={`${gadget.title}\n${description ?? ''}`}
           open={publishing}
           onOpenChange={setPublishing}
           initialTitle={gadget.title}
