@@ -20,6 +20,7 @@ const ICONS: Record<ToolName, ToolIcon> = {
   saveCapsuleAsBinding: 'link',
   requestConnection: 'link',
   createGadget: 'plus',
+  setGadgetFormat: 'edit',
   createExternalResource: 'plus',
   createWorktree: 'branch',
   executeCode: 'terminal',
@@ -86,7 +87,12 @@ const describe = (call: AiToolCall, gadget: StepGadget | undefined): { verb: str
     case 'saveCapsuleAsBinding':
       return { verb: 'Saved resource', target: call.input.bindingName }
     case 'createGadget':
-      return { verb: 'Created gadget', target: call.input.title }
+      return { verb: `Created ${call.input.format?.noun.toLowerCase() ?? 'gadget'}`, target: call.input.title }
+    case 'setGadgetFormat': {
+      const name = gadget ? gadgetName({ ...gadget, noun: undefined }) : call.input.gadget
+      const format = call.input.format
+      return { verb: 'Made', target: `${name} ${format ? `${/^[aeiou]/i.test(format.noun) ? 'an' : 'a'} ${format.noun.toLowerCase()}` : 'a plain app'}` }
+    }
     case 'createWorktree':
       return { verb: 'Created worktree', target: call.input.title }
     case 'executeCode':
@@ -135,6 +141,7 @@ const IN_PROGRESS: Record<ToolName, string> = {
   setGadgetBinding: 'Wiring up binding',
   saveCapsuleAsBinding: 'Saving resource',
   createGadget: 'Creating gadget',
+  setGadgetFormat: 'Naming what a gadget is',
   createWorktree: 'Creating worktree',
   executeCode: 'Running code',
   webFetch: 'Fetching',
@@ -226,6 +233,7 @@ export const toolSections = (call: AiToolCall, named = false): ToolSection[] => 
     case 'setGadgetBinding':
     case 'saveCapsuleAsBinding':
     case 'createGadget':
+    case 'setGadgetFormat':
     case 'createWorktree':
     case 'createExternalResource':
       return []

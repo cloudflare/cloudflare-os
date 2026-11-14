@@ -3,6 +3,7 @@ import type { AiChatMessage } from '@gadgets/workshop-shared/api'
 import { continuesRun, toChatFeed, type ChatFeed, type ChatItem } from './chatItems'
 import recordedDevChat from './fixtures/dev-chat.json'
 import { readFixture } from './fixtures/readFixture'
+import { toolLabel } from './toolCalls'
 import { MockOverseer } from './mock/MockOverseer'
 import { playThrough } from './mock/playThrough'
 import {
@@ -293,6 +294,15 @@ describe('toChatFeed', () => {
       it('falls back to what a gadget is, and keeps the file in the step’s detail', () => {
         const { work } = toChatFeed(history([agent({ toolCalls: [write(5)] })]), { gadgets: new Map([[5, { title: '', noun: 'Document' }]]) })
         expect(work).toMatchObject([{ label: 'Updated the document', sections: [{ label: 'File', text: 'client.js' }, { label: 'Content', text: 'x' }] }])
+      })
+
+      it('says what the agent made a gadget, and what kind it created', () => {
+        const made = call('setGadgetFormat', { gadget: 'TIP_JAR', format: { noun: 'Dashboard', icon: 'chartBar' } }, { workpieceId: 5 })
+        const plain = call('setGadgetFormat', { gadget: 'TIP_JAR', format: null }, { workpieceId: 5 })
+        const { work } = toChatFeed(history([agent({ toolCalls: [made, plain] })]), { gadgets: new Map([[5, { title: 'Tip Jar', noun: 'Dashboard' }]]) })
+        expect(work.map(({ label }) => label)).toEqual(['Made Tip Jar a dashboard', 'Made Tip Jar a plain app'])
+        const typed = call('createGadget', { title: 'Sales', bindingName: 'SALES', format: { noun: 'Tracker', icon: 'listChecks' } }, { output: { gadgetId: 6, changeId: 1 } })
+        expect(toolLabel(typed)).toBe('Created tracker Sales')
       })
 
       it('names the file when the gadget is not known, as in chats from before it was recorded', () => {

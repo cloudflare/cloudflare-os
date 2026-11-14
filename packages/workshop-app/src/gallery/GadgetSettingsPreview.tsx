@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ListChecksIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
+import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
 import { PublishBlueprintDialog } from '@/blocks/PublishBlueprintDialog'
@@ -12,6 +13,7 @@ import { Section } from './Section'
 export const GadgetSettingsPreview = () => {
   const { report, say, later } = useReport()
   const [publishing, setPublishing] = useState<'works' | 'fails'>()
+  const [kind, setKind] = useState<'plain' | 'dashboard' | 'fails'>()
 
   return (
     <>
@@ -43,6 +45,23 @@ export const GadgetSettingsPreview = () => {
           await later()
           if (publishing === 'fails') throw new Error('The workspace is offline.')
           say('published')
+          return true
+        }}
+      />
+      <Section title="GadgetKindDialog (a plain app, one that is a Dashboard, and one whose save fails and stays open under why)">
+        <Button onClick={() => setKind('plain')}>What it is</Button>
+        <Button onClick={() => setKind('dashboard')}>What it is, a Dashboard</Button>
+        <Button onClick={() => setKind('fails')}>What it is, failing</Button>
+      </Section>
+      <GadgetKindDialog
+        key={kind}
+        open={kind !== undefined}
+        onOpenChange={(open) => { if (!open) setKind(undefined) }}
+        initial={kind === 'dashboard' ? { noun: 'Dashboard', icon: 'chartBar' } : undefined}
+        onSave={async (next) => {
+          await later()
+          if (kind === 'fails') throw new Error('The workspace is offline.')
+          say(next ? `now a ${next.noun} (${next.icon})` : 'now a plain app')
           return true
         }}
       />

@@ -5,6 +5,7 @@ import {
   type BoundHookInfo,
   type GadgetBindingInfo,
   type GadgetClient,
+  type GadgetFormat,
   type Overseer,
   type WorkpieceSummary,
   type WorkpiecesSubscriber,
@@ -33,7 +34,7 @@ export type GadgetSettingsSnapshot =
   }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'remove' | 'listBindings' | 'unbind' | 'createBlueprint'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'unbind' | 'createBlueprint'> & Disposable
 
 /** The part of a workspace's Overseer the settings use, and the lease that must be disposed. */
 export type SettingsOverseer = Pick<Overseer, 'listHooks' | 'deleteHook' | 'enableHook' | 'disableHook'> & {
@@ -159,6 +160,9 @@ export class GadgetSettings {
   }
 
   rename = (title: string) => this.#with((gadget) => gadget.setTitle(title))
+
+  /** Says what it is, such as a Dashboard, and its icon; with `null`, that it is a plain app. */
+  setKind = (format: GadgetFormat | null) => this.#with((gadget) => gadget.setOutput(format))
 
   /** Deletes it, for everyone. */
   remove = () => this.#with((gadget) => gadget.remove())

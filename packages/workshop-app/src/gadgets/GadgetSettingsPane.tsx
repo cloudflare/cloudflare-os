@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { CaretLeftIcon, ExportIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, ExportIcon, ShapesIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { BindingRow } from '@/blocks/BindingRow'
+import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { HookCard } from '@/blocks/HookCard'
 import { ListGroup } from '@/blocks/ListGroup'
@@ -77,6 +78,7 @@ export const GadgetSettingsPane = ({
   const [renameProblem, setRenameProblem] = useState<string>()
   const [publishing, setPublishing] = useState(false)
   const [sharing, setSharing] = useState(false)
+  const [choosingKind, setChoosingKind] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   const rename = (next: string) => {
@@ -135,6 +137,15 @@ export const GadgetSettingsPane = ({
           <Tabs value={tab} onValueChange={onTabChange} tabs={[...GADGET_SETTINGS_TABS]} aria-label="Gadget settings" className="gap-6">
             <Tabs.Panel value="settings" className="flex flex-col gap-2">
               <SettingsGroup label="Gadget">
+                {builds && (
+                  <SettingsRow
+                    title="What it is"
+                    description={gadget?.output
+                      ? `A ${gadget.output.noun.toLowerCase()}, wherever it’s listed and in blueprints made from it.`
+                      : 'Give it a kind and an icon, shown wherever it’s listed and in blueprints made from it.'}
+                    control={<Button icon={gadget?.output ? <FormatIcon name={gadget.output.icon} /> : ShapesIcon} onClick={() => setChoosingKind(true)}>{gadget?.output?.noun ?? 'Choose'}</Button>}
+                  />
+                )}
                 {builds && (
                   <SettingsRow
                     title="Access"
@@ -210,6 +221,22 @@ export const GadgetSettingsPane = ({
           </Tabs>
         )}
       </div>
+      {builds && gadget && (
+        <GadgetKindDialog
+          // Starting from what it is now, as the agent may have changed it since.
+          key={`${gadget.output?.noun}\n${gadget.output?.icon}`}
+          open={choosingKind}
+          onOpenChange={setChoosingKind}
+          initial={gadget.output && { noun: gadget.output.noun, icon: gadget.output.icon }}
+          onSave={async (kind) => {
+            if (connection?.blocked()) return false
+            // A plural it had is kept while its name stays the same.
+            const plural = kind && kind.noun === gadget.output?.noun ? gadget.output.plural : undefined
+            await settings.setKind(kind && { ...kind, plural })
+            return true
+          }}
+        />
+      )}
       {builds && <ShareGadgetDialog workspaceId={workspaceId} gadgetId={workpieceId} title={title ?? 'Gadget'} page={link} open={sharing} onOpenChange={setSharing} />}
       {gadget && (
         <PublishBlueprintDialog

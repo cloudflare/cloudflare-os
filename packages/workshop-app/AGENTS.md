@@ -267,6 +267,9 @@ while it works and staying open under why if it fails. A dialog (`Dialog`) grows
 arrives in the conversation and dims and makes inert the window beneath. A chat's settings page
 (`?tab=settings`) has its workspace's notifications, which cannot be muted one chat at a time and
 say so, what it has used (`chat/usage.ts`), and deleting it.
+A gadget's settings page starts with what it is (`GadgetKindDialog`): a kind such as "Dashboard"
+and one of the format icons, which the agent can also give it (createGadget's `format`,
+`setGadgetFormat`) and which a blueprint published from it keeps. With no kind it is a plain app.
 
 ## Search and the account
 

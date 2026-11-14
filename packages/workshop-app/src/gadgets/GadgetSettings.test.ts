@@ -10,6 +10,7 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
   const broken: Array<(error: unknown) => void> = []
   const gadget = {
     setTitle: vi.fn<SettingsGadget['setTitle']>(async () => {}),
+    setOutput: vi.fn<SettingsGadget['setOutput']>(async () => {}),
     remove: vi.fn<SettingsGadget['remove']>(async () => {}),
     listBindings: vi.fn<SettingsGadget['listBindings']>(async () => [{ name: 'GITHUB', target: 3, resourceTitle: 'cloudflare/gadgets', vendorId: 'github' }]),
     unbind: vi.fn<SettingsGadget['unbind']>(async () => {}),
@@ -106,6 +107,17 @@ describe('GadgetSettings', () => {
     await settings.deleteHook(1)
     expect(overseer.deleteHook).toHaveBeenCalledWith(1)
     expect(overseer.listHooks).toHaveBeenCalledTimes(3)
+  })
+
+  it('says what the gadget is through its client, and that it is a plain app with null', async () => {
+    const { overseer, gadget, server } = fakeWorkspace()
+    const settings = new GadgetSettings(() => overseer, 7)
+    settings.start()
+    await vi.waitFor(() => expect(overseer.subscribeToWorkpieces).toHaveBeenCalled())
+    server().entry(summary('Todo'))
+    await settings.setKind({ noun: 'Tracker', icon: 'listChecks' })
+    await settings.setKind(null)
+    expect(gadget.setOutput.mock.calls).toEqual([[{ noun: 'Tracker', icon: 'listChecks' }], [null]])
   })
 
   it('opens the workspace again once it restarted, and lets the old one go', async () => {

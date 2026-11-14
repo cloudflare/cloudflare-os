@@ -700,6 +700,8 @@ function getToolCallSummary(
       return { verb: "Requested connection", target: tc.input.vendorId };
     case "createExternalResource":
       return { verb: "Created", target: tc.input.title };
+    case "setGadgetFormat":
+      return { verb: "Set format", target: tc.input.format?.noun ?? "app" };
   }
   // Compile-time exhaustiveness check.
   const _exhaustive: never = tc;
@@ -801,6 +803,8 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return count === 1 ? "Requested a connection" : `Requested ${count} connections`;
     case "createExternalResource":
       return `Created ${pluralize(count, "external resource")}`;
+    case "setGadgetFormat":
+      return count === 1 ? "Set a gadget's format" : `Set ${count} gadgets' formats`;
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -906,6 +910,7 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return "Requesting a connection";
     case "createExternalResource": return "Creating external resource";
+    case "setGadgetFormat": return "Setting format";
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
@@ -933,6 +938,7 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "listConnectableResources": return "Listing connectable resources";
     case "requestConnection": return `Requesting ${pluralize(count, "connection")}`;
     case "createExternalResource": return `Creating ${pluralize(count, "external resource")}`;
+    case "setGadgetFormat": return "Setting formats";
   }
   const _exhaustive: never = toolName;
   return _exhaustive;
