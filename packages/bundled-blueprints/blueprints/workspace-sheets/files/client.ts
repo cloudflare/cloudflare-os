@@ -1704,6 +1704,11 @@ let sheetReloads = 0, snapshotGeneration = 0;
 /** A cell as one of this tab's saves left it (`cell: null` when deleted), at that save's revision. */
 interface ReloadAck { sheetId: string; ref: string; cell: Cell | null; revision: number }
 const reloadAcks: ReloadAck[] = [];
+// Sheets this tab replaced (an insert, a sort) with the save acknowledged during a reload or
+// reconnect, at that save's revision. Pages read before it hold the old layout, so they're read again.
+const reloadReplacements: { sheetId: string; revision: number }[] = [];
+// Sheets a reconnect's snapshot had from before such a save; reloaded once it's applied.
+let staleAfterSnapshot: string[] = [];
 async function reloadSheets(ids: string[]) {
   holdEvents(); sheetReloads++;
   const generation = snapshotGeneration;
@@ -1714,6 +1719,7 @@ async function reloadSheets(ids: string[]) {
         const { revision, slices } = await gadget.getSheetSlices({ sheetIds: ids });
         await readSlices(slices, (id, page) => { if (!page.missing) pageCellsInto(page, loaded.get(id)!); });
         if (generation !== snapshotGeneration) break;
+        if (reloadReplacements.some((r) => ids.includes(r.sheetId) && r.revision > revision)) continue;
         // Every page is at least as new as `revision`; a save acknowledged after it may be missing.
         layReloadAcks(revision, (id) => loaded.get(id));
         for (const id of ids) {
@@ -1733,6 +1739,7 @@ async function reloadSheets(ids: string[]) {
     sheetReloads--;
     // An event held during the reload mustn't undo a save of the same cell acknowledged after it.
     const acked = new Map<string, number>();
+    if (!sheetReloads && !connecting) reloadReplacements.length = 0;
     if (!sheetReloads) for (const ack of reloadAcks.splice(0)) acked.set(ack.sheetId + "!" + ack.ref, Math.max(acked.get(ack.sheetId + "!" + ack.ref) ?? 0, ack.revision));
     if (!connecting && !sheetReloads) { ready = true; replayBuffered(acked); if (hasPendingSave()) scheduleSave(40); }
   }
@@ -1884,6 +1891,7 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   }
   if (pendingStructure === sentStructure) pendingStructure = null;
   for (const [sheetId, cells] of sentReplacements) {
+    if (sheetReloads || connecting) reloadReplacements.push({ sheetId, revision: result.revision });
     const landed = result.structure?.sheets[sheetId]?.layout;
     // A later move heard before this reply keeps its layout.
     if (landed !== undefined && model.sheets[sheetId]) model.sheets[sheetId].layout = Math.max(model.sheets[sheetId].layout || 0, landed);
@@ -4848,7 +4856,8 @@ formulaRangeHandle.addEventListener("pointercancel", finishFormulaRangeResize);
 /** The view to restore when coming back to the edited cell's sheet. */
 interface HomeView { anchor: RC; focus: RC; extraRanges: Area[]; scrollTop: number; scrollLeft: number }
 /** The cell being edited; `sheetId` is its sheet, which isn't always the one on screen. */
-interface EditingState { ref: string; r: number; c: number; sheetId: string; home: HomeView | null }
+/** `stale`: a reconnect found its sheet's cells moved in ways this tab never heard, so `ref` may name another record's cell. */
+interface EditingState { ref: string; r: number; c: number; sheetId: string; home: HomeView | null; stale?: true }
 let editing: EditingState | null = null;
 let imeComposing = false;
 function armEditorCapture(focusCapture = false) {
@@ -5076,6 +5085,8 @@ function commitEdit(advance: "down" | "up" | "right" | "left" | "none" = "down")
   if (value !== cellEditor.value) { cellEditor.value = value; formulaInput.value = value; }
   const formulaError = validateFormula(value);
   if (formulaError) { focusEditingSurface(); showFormulaError(formulaError); return; }
+  // The draft stays open, so its text can be copied before Esc.
+  if (editing.stale) { focusEditingSurface(); toast("Rows or columns moved while reconnecting; copy your text, press Esc and enter it again", "bad"); return; }
   // A Plain text cell keeps what's typed, as in Excel: "00123" stays text rather than becoming 123.
   if (model.cells[editing.sheetId]?.[ref]?.fmt?.nf === "text" && /^\s*([-+]?\$?[\d,]*\.?\d+%?|true|false)\s*$/i.test(value)) value = "'" + value;
   // Cells were picked on another sheet: the formula goes into its own cell, on its own sheet.
@@ -7409,7 +7420,8 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
   applyingRemote = true;
   // A save of this tab's acknowledged while the snapshot was read is newer than it.
   const acked = reconcile ? layReloadAcks(doc.revision || 0, (id) => doc.sheets?.[id] ? ((doc.cells ||= {})[id] ||= {}) : undefined) : new Map<string, number>();
-  snapshotGeneration++; reloadAcks.length = 0; overtakingWrites.clear();
+  staleAfterSnapshot = reconcile ? [...new Set(reloadReplacements.filter((r) => r.revision > (doc.revision || 0)).map((r) => r.sheetId))] : [];
+  snapshotGeneration++; reloadAcks.length = 0; reloadReplacements.length = 0; overtakingWrites.clear();
   const layoutsBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.layout || 0]));
   model.revision = doc.revision || 0;
   model.cells = doc.cells || {};
@@ -7437,10 +7449,11 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
       pendingCellOps.delete(key); unplaced++;
     }
     if (unplaced) toast(`${unplaced === 1 ? "An unsaved edit" : `${unplaced} unsaved edits`} couldn't be kept because rows or columns moved meanwhile`, "bad");
-    // Undo history and a cut name cells by where they were, which a move this tab missed changed.
+    // Undo history, a cut and an open editor name cells by where they were, which a move this tab missed changed.
     for (const id of model.sheetOrder) {
       if ((model.sheets[id]?.layout || 0) <= (layoutsBefore.get(id) ?? Infinity)) continue;
       forgetHistoryOf(id);
+      if (editing?.sheetId === id) editing.stale = true;
       if (copyFallback?.cut && copyFallback.sheetId === id && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
     }
     for (const [sheetId, cells] of Object.entries(model.cells)) layPendingCellOps(sheetId, cells);
@@ -7541,6 +7554,9 @@ async function connect() {
         if (!isExport) gridScroll.focus({ preventScroll: true });
       }
       replayBuffered(acked);
+      const stale = staleAfterSnapshot.filter((id) => model.sheets[id]);
+      staleAfterSnapshot = [];
+      if (stale.length) void reloadSheets(stale);
       // A pivot's source may have changed while no grid was open to rebuild it.
       if (!isExport) schedulePivotRefreshes();
       if (hasPendingSave()) scheduleSave(20);

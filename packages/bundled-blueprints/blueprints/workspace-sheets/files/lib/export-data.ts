@@ -208,13 +208,15 @@ export function refreshExportPivots(workbook: ExportWorkbook): ExportEvaluator {
     if (index === undefined) { index = workbook.fmts.length; fmtIds.set(key, index); workbook.fmts.push(fmt); }
     return index;
   };
-  // A source value past the evaluation budget counts as blank.
+  // Past the evaluation budget a source value is unknown: the pivot keeps what the grid last built
+  // rather than totals that leave it out.
   const compute = (sheetId: string, row: number, column: number): Scalar => { const value = evaluator.value(sheetId, row, column); return value === EXPORT_UNKNOWN ? null : value as Scalar; };
   for (let pass = 0; pass <= pivots.length && pivots.length; pass++) {
     const rebuilt = new Map<string, ExportCells>();
     for (const id of pivots) {
       const sheet = workbook.sheets[id], pivot = sheet.pivot as PivotSettings;
       const output = buildPivotOutput(pivot, workbook.sheets[pivot.sourceSheetId], compute);
+      if (evaluator.spent) continue;
       workbook.sheets[id] = pivotSheetLayout(sheet, output);
       const data = new ExportCells();
       for (const [ref, cell] of Object.entries(output.cells)) {

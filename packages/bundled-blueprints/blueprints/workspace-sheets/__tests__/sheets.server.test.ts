@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ExportHandler, Gadget } from "../files/server.ts";
 import { workbookToXlsx } from "../files/lib/xlsx.ts";
 import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, MAX_EXPORT_TEXT, loadExportWorkbook } from "../files/lib/export-data.ts";
@@ -1057,6 +1057,23 @@ describe("review regressions", () => {
     const parts = await xlsx(gadget);
     expect(cellXml(part(parts, "xl/worksheets/sheet2.xml"), "B2")).toContain("<v>40</v>");
     expect(part(parts, "xl/worksheets/sheet4.xml")).toContain('<row r="1" ht="22.5" customHeight="1">');
+  });
+
+  it("keeps a pivot as the grid built it when the evaluation budget runs out while rebuilding it", async () => {
+    const gadget = newGadget();
+    const document = await gadget.getStructure();
+    const [source] = document.sheetOrder;
+    await gadget.setRange({ values: [["Region", "Sales"], ["North", "=5*4"]] });
+    const settings = { sourceSheetId: source, sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Sales", aggregate: "sum" as const, showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [] };
+    await gadget.applyOperation({ structure: { sheetOrder: [source, "s_pivot"], sheets: { [source]: document.sheets[source], s_pivot: { ...document.sheets[source], id: "s_pivot", name: "Pivot", pivot: settings, created: undefined } } } });
+    expect((await gadget.applyOperation({ baseRevision: 2, sheetReplacements: [{ sheetId: "s_pivot", cells: { A1: { value: "Region", fmt: null, version: 1 }, B1: { value: "Sales", fmt: null, version: 1 }, A2: { value: "North", fmt: null, version: 1 }, B2: { value: "10", fmt: null, version: 1 } } }] })).status).toBe("applied");
+    // The source's formula is past the budget: unknown, rather than worked out.
+    const value = ExportEvaluator.prototype.value;
+    const spy = vi.spyOn(ExportEvaluator.prototype, "value").mockImplementation(function (this: ExportEvaluator, sheetId, row, column) {
+      if (sheetId === source && row === 1 && column === 1) { this.spent = true; return EXPORT_UNKNOWN; }
+      return value.call(this, sheetId, row, column);
+    });
+    try { expect(await csvText(gadget, "s_pivot")).toBe("\uFEFFRegion,Sales\r\nNorth,10\r\n"); } finally { spy.mockRestore(); }
   });
 
   it("forgets a subscriber whose first read failed", async () => {

@@ -282,6 +282,28 @@ describe("sync", () => {
     expect(shown("B1")).toBe("theirs");
   });
 
+  it("won't commit a draft whose cell's rows moved while this tab was disconnected, and keeps it open", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "e", bubbles: true }));
+    const editor = document.querySelector<HTMLTextAreaElement>(".cell-editor")!;
+    editor.value = "edited";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+    // An agent's row insertion lands unheard; the reconnect's snapshot has "first" at A2 now.
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => {
+      h.callbacks = callback;
+      return { revision: 3, lastModified: 0, ...structure({ ...meta, layout: 3 }), cells: { s1: { A2: cell("first"), A3: cell("second") } }, cursors: {} };
+    });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    await settle();
+    editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    expect(h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? [])).toEqual([]);
+    expect(editor.value).toBe("edited");
+  });
+
   it("forgets undo history on a sheet whose rows moved while this tab was disconnected", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
@@ -298,6 +320,27 @@ describe("sync", () => {
     (h.callbacks as unknown as Disposable)[Symbol.dispose]();
     await settle();
     expect(undo.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("reads a sheet again when its replacement was acknowledged while a reconnect's older snapshot loaded", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    document.querySelector<HTMLElement>('td.cell[data-ref="A1"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Insert row above"))!.click();
+    await settle(); // the insert is out
+    const snapshot = deferred<OpenedDocument>();
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => { h.callbacks = callback; return snapshot.promise; });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    save.resolve({ status: "applied", revision: 2, conflicts: [], structure: structure({ ...meta, layout: 2 }) });
+    await settle();
+    // The server, at revision 2, has the rows moved down.
+    h.gadget.getSheetSlices.mockResolvedValue({ revision: 2, slices: [{ sheetId: "s1", after: "", from: "", to: "" }] });
+    h.gadget.getCellsPage.mockResolvedValue({ revision: 2, sheetId: "s1", next: null, packed: { refs: ["A2", "A3"], values: ["first", "second"], versions: [2, 2], styles: [-1, -1], fmts: [] } });
+    snapshot.resolve({ revision: 1, lastModified: 0, ...structure(meta), cells: { s1: { A1: cell("first"), A2: cell("second") } }, cursors: {} });
+    await settle();
+    expect([shown("A1"), shown("A2"), shown("A3")]).toEqual(["", "first", "second"]);
   });
 
   it("keeps a rename acknowledged while a reconnect's older snapshot loads", async () => {

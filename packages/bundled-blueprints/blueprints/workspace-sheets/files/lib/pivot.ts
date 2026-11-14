@@ -104,8 +104,9 @@ export function buildPivotOutput(pivot: PivotSettings, source: SheetMeta | undef
       value: valueColumn == null ? 1 : compute(pivot.sourceSheetId, row, valueColumn),
     });
   }
-  const rowKeys = [...new Set(records.map((record) => record.row))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const columnKeys = [...new Set(records.map((record) => record.column))].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  // A fixed locale, so the grid and a server export order them alike.
+  const rowKeys = [...new Set(records.map((record) => record.row))].sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  const columnKeys = [...new Set(records.map((record) => record.column))].sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
   // The output is every row value × every column value plus headers and totals; past the cell
   // cap or the sheet's limits it can't be laid out, so the pivot says so instead of freezing.
   const outputRows = rowKeys.length + 2, outputColumns = columnKeys.length + 2;
