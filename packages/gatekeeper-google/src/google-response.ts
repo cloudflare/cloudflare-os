@@ -3,12 +3,14 @@ import { obsContext } from "./observability";
 
 const MAX_PROVIDER_ERROR_BYTES = 64 * 1024;
 const MAX_PROVIDER_REASONS = 8;
+const PROVIDER_ERROR_READ_TIMEOUT_MS = 2000;
 const PROVIDER_CODE_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const logger = obsContext.createLogger({
   component: "gatekeeper.google.api", vendorId: "google",
 });
 
-type GoogleProviderDiagnostics = {
+/** Google's own codes for a failed request; never its prose. */
+export type GoogleProviderDiagnostics = {
   providerCode?: number;
   providerStatus?: string;
   providerReasons?: string[];
@@ -83,12 +85,45 @@ function parseProviderDiagnostics(text: string): GoogleProviderDiagnostics {
 async function readProviderDiagnostics(
   response: Response, provider: string,
 ): Promise<GoogleProviderDiagnostics> {
+  // Google's error bodies are small and arrive at once. One that never ends must not hold up the
+  // failure it belongs to, so the body is cancelled after a short wait. It is cancelled through
+  // the reader that holds it, which is what ends a read still waiting on the body in workerd.
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    let text = await readBoundedText(response, MAX_PROVIDER_ERROR_BYTES, provider);
+    let reader = response.body?.getReader();
+    timer = setTimeout(
+      () => void reader?.cancel().catch(() => undefined), PROVIDER_ERROR_READ_TIMEOUT_MS);
+    let body = reader === undefined ? null : new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        let { done, value } = await reader.read();
+        if (done) controller.close(); else controller.enqueue(value);
+      },
+      cancel: reason => reader.cancel(reason),
+    });
+    let text = await readBoundedText(
+      new Response(body, { headers: response.headers }), MAX_PROVIDER_ERROR_BYTES, provider);
     return parseProviderDiagnostics(text);
   } catch {
     return {};
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * Consume a failed Google response and log it as `google.api.request.failed`, at `level`. Returns
+ * Google's status and reason codes, the only parts of its error body that are read: its prose can
+ * repeat what the request carried.
+ */
+export async function reportGoogleRequestFailure(
+  response: Response, provider: string, operation: string, level: "warn" | "info" = "warn",
+): Promise<GoogleProviderDiagnostics> {
+  let diagnostics = await readProviderDiagnostics(response, provider);
+  logger[level]("Google provider request failed", {
+    event: "google.api.request.failed", provider, operation, httpStatus: response.status,
+    ...diagnostics,
+  });
+  return diagnostics;
 }
 
 async function readBoundedText(
@@ -113,11 +148,7 @@ export async function readGoogleJson<T>(
 ): Promise<T> {
   let { provider, operation, maxBytes } = options;
   if (!response.ok) {
-    let diagnostics = await readProviderDiagnostics(response, provider);
-    logger.warn("Google provider request failed", {
-      event: "google.api.request.failed", provider, operation, httpStatus: response.status,
-      ...diagnostics,
-    });
+    let diagnostics = await reportGoogleRequestFailure(response, provider, operation);
     throw new GoogleApiError(`${provider} ${operation} failed [http=${response.status}]`,
       diagnostics.providerStatus, diagnostics.providerReasons);
   }

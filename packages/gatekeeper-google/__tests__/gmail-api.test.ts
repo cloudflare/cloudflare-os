@@ -1848,12 +1848,91 @@ describe("Gmail API request shapes", () => {
     expect(error.message).not.toContain("confidential");
   });
 
-  it("preserves Gmail API errors when response cancellation fails", async () => {
-    const cancel = vi.fn(() => Promise.reject(new Error("cancel failed")));
-    stubFetch([new Response(new ReadableStream({cancel}), {status: 400})]);
+  it("gives up on an error body that never ends, cancelling it, and still reports Gmail's status", async () => {
+    vi.useFakeTimers();
+    try {
+      const cancel = vi.fn(() => Promise.reject(new Error("cancel failed")));
+      stubFetch([new Response(new ReadableStream({cancel}), {status: 400})]);
+      const failed = api().listMessages(20).catch(value => value);
+      await vi.advanceTimersByTimeAsync(2000);
+      const error = await failed;
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(error).toBeInstanceOf(GmailApiError);
+      expect(error.status).toBe(400);
+      expect(error.reasons).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A 403 can be a usage limit, a missing permission or another refusal, and only Google's reason
+  // says which.
+  it("carries Google's reason codes, and says what to do about a rate limit", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch([json({error: {
+      code: 403, status: "PERMISSION_DENIED",
+      message: "User-rate limit exceeded for confidential@example.com",
+      errors: [{reason: "userRateLimitExceeded", message: "User-rate limit exceeded"}],
+    }}, 403)]);
     const error = await api().listMessages(20).catch(value => value);
-    expect(cancel).toHaveBeenCalledOnce();
     expect(error).toBeInstanceOf(GmailApiError);
-    expect(error.status).toBe(400);
+    expect(error.status).toBe(403);
+    expect(error.reasons).toEqual(["userRateLimitExceeded"]);
+    expect(error.message).toBe(
+      "Gmail API messages.list failed [http=403 reason=userRateLimitExceeded] Gmail is limiting " +
+      "requests. Try again later, with fewer or smaller requests: a short-term limit lifts within " +
+      "a minute or so, but a daily limit, such as the one on sending mail, can take hours.");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn.mock.calls[0]?.[0]).toMatchObject({
+      event: "google.api.request.failed", provider: "Gmail", operation: "messages.list",
+      httpStatus: 403, providerCode: 403, providerStatus: "PERMISSION_DENIED",
+      providerReasons: ["userRateLimitExceeded"],
+    });
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("confidential");
+    warn.mockRestore();
+  });
+
+  it("logs a 404, which callers expect and handle, as information and not as a warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    stubFetch([json({error: {code: 404, status: "NOT_FOUND", errors: [{reason: "notFound"}]}}, 404)]);
+    const error = await api().getThread("1a03a1e31ecc5e70").catch(value => value);
+    expect(error).toBeInstanceOf(GmailApiError);
+    expect(error.status).toBe(404);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info.mock.calls.map(([entry]) => entry)).toEqual([expect.objectContaining({
+      event: "google.api.request.failed", provider: "Gmail", operation: "threads.get", httpStatus: 404,
+    })]);
+    vi.restoreAllMocks();
+  });
+
+  it("says to reconnect when the token lacks a scope, and treats any 429 as a rate limit", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    stubFetch([
+      json({error: {code: 403, errors: [{reason: "insufficientPermissions"}], details: [
+        {"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason: "ACCESS_TOKEN_SCOPE_INSUFFICIENT"},
+      ]}}, 403),
+      json({error: {code: 403, errors: [{reason: "forbidden"}]}}, 403),
+    ]);
+    const scope = await api().listMessages(20).catch(value => value);
+    expect(scope.reasons).toEqual(["insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"]);
+    expect(scope.message).toBe(
+      "Gmail API messages.list failed [http=403 reason=insufficientPermissions,ACCESS_TOKEN_SCOPE_INSUFFICIENT] " +
+      "The Google connection lacks a permission this needs: reconnect the Google account and allow " +
+      "the access it asks for.");
+    // A 429 that outlasts its retries names no reason of its own. It is also how a daily limit
+    // shows, which a minute's wait does not lift.
+    expect(new GmailApiError(429, "messages.send").message).toBe(
+      "Gmail API messages.send failed [http=429] Gmail is limiting requests. Try again later, " +
+      "with fewer or smaller requests: a short-term limit lifts within a minute or so, but a daily " +
+      "limit, such as the one on sending mail, can take hours.");
+    // The Google Cloud project's own quota is a limit too, so it gets the same advice.
+    expect(new GmailApiError(403, "messages.list", ["dailyLimitExceeded"]).message).toBe(
+      "Gmail API messages.list failed [http=403 reason=dailyLimitExceeded] Gmail is limiting " +
+      "requests. Try again later, with fewer or smaller requests: a short-term limit lifts within " +
+      "a minute or so, but a daily limit, such as the one on sending mail, can take hours.");
+    const refused = await api().listMessages(20).catch(value => value);
+    expect(refused.message).toBe("Gmail API messages.list failed [http=403 reason=forbidden]");
+    vi.restoreAllMocks();
   });
 });
