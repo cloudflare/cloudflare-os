@@ -122,8 +122,17 @@ function chatBackend() {
       replyOption: string | null;
       body: {text: string; thread?: {name: string}};
     }>,
-    /** Profiles in the organization's directory, matched by email or name prefix. */
+    /**
+     * Profiles in the organization's directory, matched by email or name prefix. Chat resolves an
+     * email alias to these people whether or not the account may search the directory.
+     */
     directory: [] as Array<{id: string; name: string; email: string}>,
+    /** Refuse directory searches with this status, as for an account its organization doesn't share the directory with. */
+    directoryFailure: 0,
+    /** The `ErrorInfo` reasons a refused directory search gives. */
+    directoryReasons: [] as string[],
+    /** The query of every directory search. */
+    directorySearches: [] as string[],
     /** External shared contacts, which only a directory search for domain contacts returns. */
     externalContacts: [] as Array<{id: string; name: string; email: string}>,
     /** Group chats findGroupChats returns, a page at a time; each has `members` unless in `otherMembers`. */
@@ -146,7 +155,17 @@ function chatBackend() {
   };
   const fetchImpl = async (url: URL, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? "GET").toUpperCase();
+    if (url.hostname === "oauth2.googleapis.com" && url.pathname === "/token") {
+      return json({access_token: "refreshed-token", expires_in: 3600});
+    }
     if (url.hostname === "people.googleapis.com" && url.pathname === "/v1/people:searchDirectoryPeople") {
+      state.directorySearches.push(url.searchParams.get("query")!);
+      if (state.directoryFailure) {
+        return json({error: {
+          code: state.directoryFailure, status: "PERMISSION_DENIED",
+          details: state.directoryReasons.map(reason => ({"@type": "type.googleapis.com/google.rpc.ErrorInfo", reason})),
+        }}, state.directoryFailure);
+      }
       const query = url.searchParams.get("query")!.toLowerCase();
       const sources = url.searchParams.getAll("sources");
       const people = [
@@ -197,7 +216,12 @@ function chatBackend() {
         const members = body.memberships.map(membership => membership.member.name);
         state.setups.push({requestId: body.requestId, spaceType: body.space.spaceType, members});
         Object.assign(state, {spaceType: body.space.spaceType, spaceName: ""});
-        state.members = ["users/subject-a", ...members.filter(member => !state.setupOmits.includes(member))]
+        // Chat names everyone by user ID, however the request named them.
+        const ids = members.map(member => {
+          const email = member.slice("users/".length);
+          return `users/${state.directory.find(person => person.email === email)?.id ?? email}`;
+        });
+        state.members = ["users/subject-a", ...ids.filter(member => !state.setupOmits.includes(member))]
           .map(member => joined(member.slice("users/".length)));
       }
       if (state.setupFailure) return json({}, state.setupFailure);
@@ -344,7 +368,8 @@ function chatBackend() {
 
 function chatHarness(
     backend: ReturnType<typeof chatBackend>,
-    userInfo: (token?: string | null) => {sub: string; name?: string} = () => ({sub: "subject-a", name: "Ada"}),
+    userInfo: (token?: string | null) => {sub: string; name?: string; email?: string; hd?: string} =
+      () => ({sub: "subject-a", name: "Ada"}),
     binding: "account" | "space" | "thread" = "space",
 ) {
   // Plain flags rather than promises: the stub runs inside the gatekeeper DO, and a promise made
@@ -1694,8 +1719,11 @@ describe("Starting Google Chat conversations", () => {
   const BOB = {id: "200", name: "Bob Jones", email: "bob@example.com"};
   const CAROL = {id: "300", name: "Carol King", email: "carol@example.com"};
   const CHAT_APP = {...joined("app1"), member: {name: "users/app1", type: "BOT"}};
-  /** With `groupChat`, Ada already has the group chat SPACE_NAME with Bob and Carol. */
-  const accountChat = ({groupChat = false} = {}) => {
+  /**
+   * With `groupChat`, Ada already has the group chat SPACE_NAME with Bob and Carol. `hd` is the
+   * primary domain of her Workspace organization, empty for a consumer account, which has none.
+   */
+  const accountChat = ({groupChat = false, hd = "example.com"} = {}) => {
     const backend = chatBackend();
     // Directory profiles carry numeric People ids, the same number as the account's subject.
     backend.state.directory.push({id: "100", name: "Ada", email: "ada@example.com"}, BOB, CAROL);
@@ -1704,7 +1732,8 @@ describe("Starting Google Chat conversations", () => {
       backend.state.groupChats = [SPACE_NAME];
       backend.state.members = ["100", BOB.id, CAROL.id].map(joined);
     }
-    return {backend, chat: chatHarness(backend, () => ({sub: "100", name: "Ada"}), "account")};
+    const userInfo = () => ({sub: "100", name: "Ada", email: "Ada@Example.com", ...(hd ? {hd} : {})});
+    return {backend, chat: chatHarness(backend, userInfo, "account")};
   };
 
   it("searches only the organization's directory, recording each page it returns", async () => {
@@ -1716,6 +1745,35 @@ describe("Starting Google Chat conversations", () => {
     expect(await cursor.next()).toEqual([{id: "users/200", name: "Bob Jones", email: "bob@example.com"}]);
     using outside = await account.searchPeople("eve");
     expect(await outside.next()).toBeNull();
+  });
+
+  it("explains a directory search Google refuses the account", async () => {
+    const {backend, chat} = accountChat();
+    backend.state.directoryFailure = 403;
+    using account = await chat.account();
+    using cursor = await account.searchPeople("bo");
+    await expect(Promise.resolve(cursor.next()))
+      .rejects.toThrow(/no access to its organization's directory.*http=403.*likely doesn't share/);
+    backend.state.directoryReasons = ["ACCESS_TOKEN_SCOPE_INSUFFICIENT"];
+    using scoped = await account.searchPeople("bo");
+    await expect(Promise.resolve(scoped.next()))
+      .rejects.toThrow(/http=403 ACCESS_TOKEN_SCOPE_INSUFFICIENT.*lacks the directory\.readonly scope/);
+  });
+
+  // Only a refusal about the account's access to the directory means Chat must check addresses itself.
+  it.each([
+    ["a 401 that outlived a token refresh", 401, []],
+    ["a 403 because the People API is disabled", 403, ["SERVICE_DISABLED"]],
+    ["a 403 for a rate limit", 403, ["RATE_LIMIT_EXCEEDED"]],
+  ])("passes through %s rather than falling back to email aliases", async (_case, status, reasons) => {
+    const {backend, chat} = accountChat();
+    Object.assign(backend.state, {directoryFailure: status, directoryReasons: reasons});
+    using account = await chat.account();
+    await expect(Promise.resolve(account.sendDirectMessage([BOB.email], "hi")))
+      .rejects.toThrow(new RegExp(`searchDirectoryPeople failed \\[http=${status}\\]`));
+    using cursor = await account.searchPeople("bo");
+    await expect(Promise.resolve(cursor.next())).rejects.not.toThrow(/no access to its organization's directory/);
+    expect((await chat.readQueue()).submissions).toEqual([]);
   });
 
   it("posts in an existing direct message or group chat as an ordinary send", async () => {
@@ -1821,6 +1879,7 @@ describe("Starting Google Chat conversations", () => {
   it("creates a direct message from a known same-organization Chat user ID", async () => {
     const {backend, chat} = accountChat();
     backend.state.directory = [];
+    backend.state.directoryFailure = 403;
     using account = await chat.account();
 
     using _message = (await account.sendDirectMessage(["users/200"], "hello")).message;
@@ -1835,6 +1894,114 @@ describe("Starting Google Chat conversations", () => {
     await chat.applyAction(1);
     expect(backend.state.setups).toMatchObject([{spaceType: "DIRECT_MESSAGE", members: ["users/200"]}]);
     expect(backend.state.creates.map(create => create.body.text)).toEqual(["hello"]);
+    expect(backend.state.directorySearches).toEqual([]);
+  });
+
+  it.each([
+    ["a direct message", [BOB.email], "DIRECT_MESSAGE", "bob@example.com"],
+    ["a group chat", [BOB.email, CAROL.email], "GROUP_CHAT", "bob@example.com and carol@example.com"],
+  ])("starts %s by Chat's email alias when Google refuses the directory", async (_case, people, spaceType, names) => {
+    const {backend, chat} = accountChat();
+    backend.state.directoryFailure = 403;
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(people, "hello")).message;
+    // After one refusal, the rest go straight to Chat.
+    expect(new Set(backend.state.directorySearches)).toEqual(new Set([BOB.email]));
+    expect((await chat.readQueue()).submissions[0].description).toMatchObject({
+      title: `Start a Google Chat conversation with ${names}`,
+      actionKind: {tag: "chatStartConversation"},
+      fields: [
+        {label: "People", kind: "list", items: people},
+        {label: "Message", kind: "text", value: "hello"},
+      ],
+    });
+    await chat.applyAction(1);
+    expect(backend.state.setups).toMatchObject([{spaceType, members: people.map(email => `users/${email}`)}]);
+    expect(backend.state.creates.map(create => create.body.text)).toEqual(["hello"]);
+  });
+
+  it("never looks up a users/{email} alias in the directory", async () => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(["users/Bob@Example.com"], "hello")).message;
+    expect((await chat.readQueue()).submissions[0].description).toMatchObject({
+      fields: [{label: "People", kind: "list", items: [BOB.email]}, {label: "Message"}],
+    });
+    await chat.applyAction(1);
+    expect(backend.state.setups).toMatchObject([{spaceType: "DIRECT_MESSAGE", members: [`users/${BOB.email}`]}]);
+    expect(backend.state.directorySearches).toEqual([]);
+  });
+
+  // Chat names the people in a conversation by user ID, so an alias is checked as the member it names.
+  it("posts nothing when Google leaves someone named by email alias out of a new group chat", async () => {
+    const {backend, chat} = accountChat();
+    backend.state.setupOmits = [`users/${CAROL.id}`];
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(
+      [`users/${BOB.email}`, `users/${CAROL.email}`], "hi both")).message;
+    await expect(chat.applyAction(1)).rejects.toThrow(/left carol@example\.com out/);
+    expect(backend.state.creates).toEqual([]);
+  });
+
+  // Google drops a repeated membership, so a person named twice would leave the approved place to
+  // anyone, such as someone who joins before a setup replayed after a lost response.
+  it.each([
+    ["a group chat", [`users/${BOB.id}`, `users/${BOB.email}`, `users/${CAROL.email}`], false],
+    ["a group chat someone joins before a replayed setup", [
+      `users/${BOB.id}`, `users/${BOB.email}`, `users/${CAROL.email}`,
+    ], true],
+    ["what would be a direct message", [`users/${BOB.id}`, `users/${BOB.email}`], false],
+  ])("posts nothing when an email alias names someone also named by id, for %s", async (_case, people, joins) => {
+    const {backend, chat} = accountChat();
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(people, "hi")).message;
+    if (joins) {
+      backend.state.setupFailure = 503;
+      await expect(chat.applyAction(1)).rejects.toThrow();
+      backend.state.setupFailure = 0;
+      backend.state.members.push(joined("400"));
+    }
+    await expect(chat.applyAction(1))
+      .rejects.toThrow(/users\/200 and bob@example\.com turned out to be the same person.*nothing was posted/);
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
+  });
+
+  it("posts nothing when an email alias turns out to be one of your own addresses", async () => {
+    const {backend, chat} = accountChat();
+    // An address of Ada's besides the primary one the account reports.
+    backend.state.directory.push({id: "100", name: "Ada", email: "ada.lovelace@example.com"});
+    using account = await chat.account();
+    using _message = (await account.sendDirectMessage(
+      ["users/ada.lovelace@example.com", `users/${BOB.email}`], "hi")).message;
+    await expect(chat.applyAction(1)).rejects.toThrow(/ada\.lovelace@example\.com turned out to be you/);
+    expect(backend.state.creates).toEqual([]);
+    await chat.rejectAction(1);
+  });
+
+  it.each([
+    ["the directory is refused", 403, ["eve@elsewhere.test"]],
+    ["it is a users/{email} alias", 0, ["users/eve@elsewhere.test"]],
+    ["its address has another @", 0, ["users/eve@elsewhere.test@example.com"]],
+  ])("refuses an address outside the organization's domain when %s", async (_case, status, people) => {
+    const {backend, chat} = accountChat();
+    backend.state.directoryFailure = status;
+    using account = await chat.account();
+    await expect(Promise.resolve(account.sendDirectMessage(people, "hi")))
+      .rejects.toThrow(/eve@elsewhere\.test.* not at your organization's domain \(example\.com\)/);
+    await expect(Promise.resolve(account.sendDirectMessage([BOB.email, "users/ada@example.com"], "hi")))
+      .rejects.toThrow(/yourself/);
+    expect((await chat.readQueue()).submissions).toEqual([]);
+    expect(backend.state.setups).toEqual([]);
+  });
+
+  it("can't confirm anyone is in the organization of an account with no Workspace domain", async () => {
+    const {backend, chat} = accountChat({hd: ""});
+    backend.state.directoryFailure = 403;
+    using account = await chat.account();
+    await expect(Promise.resolve(account.sendDirectMessage([BOB.email], "hi")))
+      .rejects.toThrow(/Couldn't confirm that bob@example\.com is in your organization/);
+    expect((await chat.readQueue()).submissions).toEqual([]);
   });
 
   it("refuses to start a conversation with anyone outside the directory, or with yourself", async () => {

@@ -13,7 +13,7 @@
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { chatCardsFromRaw } from "./chat-cards";
-import { readGoogleJson } from "./google-response";
+import { GoogleApiError, readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
   ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatPerson, ChatReaction,
@@ -102,6 +102,40 @@ export async function chatApiFailure(operation: string, response: Response): Pro
     // Best effort; the status line is what matters.
   }
   throw new ChatApiError(response.status, operation, rpcCode, reasons);
+}
+
+/**
+ * 403 reasons, from either google.rpc `ErrorInfo` or the legacy `errors` list, that say nothing about
+ * this account's access to the directory: the project, its quota or a rate limit. Such a refusal
+ * passes through as it is rather than reading as a directory the organization withholds.
+ */
+const NOT_DIRECTORY_REASONS = new Set([
+  "SERVICE_DISABLED", "API_KEY_SERVICE_BLOCKED", "CONSUMER_INVALID", "RESOURCE_PROJECT_INVALID",
+  "RATE_LIMIT_EXCEEDED", "accessNotConfigured", "dailyLimitExceeded",
+  "quotaExceeded", "rateLimitExceeded", "userRateLimitExceeded",
+]);
+
+/**
+ * The People API refused this account a directory search with a 403 that isn't about the project or
+ * its quota: the connection lacks the `directory.readonly` scope, or, likely, the organization doesn't
+ * share its directory with the account.
+ */
+export class ChatDirectoryUnavailableError extends Error {
+  constructor(reasons: readonly string[], options?: ErrorOptions) {
+    super("This Google account has no access to its organization's directory, so people can't be " +
+      `searched (Google People people.searchDirectoryPeople failed [http=${[403, ...reasons].join(" ")}]). ` +
+      (reasons.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+        ? "The connection lacks the directory.readonly scope. "
+        : "Its Workspace likely doesn't share the directory with it. ") +
+      "sendDirectMessage() still takes email addresses at your organization's primary domain.", options);
+  }
+}
+
+/** Whether a People API failure is Google refusing this account the directory (see {@link ChatDirectoryUnavailableError}). */
+function isDirectoryRefusal(error: unknown, status: number): error is GoogleApiError {
+  // A 401 outlived fetchWithAuthRetry's refresh, so it is about the credentials, not the directory.
+  return status === 403 && error instanceof GoogleApiError && error.providerStatus !== "RESOURCE_EXHAUSTED" &&
+    !error.providerReasons.some(reason => NOT_DIRECTORY_REASONS.has(reason));
 }
 
 /** A deliberately omitted app-authored message with a viewer narrower than its space. */
@@ -747,7 +781,7 @@ export class ChatApi {
       for (const { name } of page.spaces ?? []) {
         if (name === undefined) continue;
         const spaceName = `spaces/${chatSpaceId(name)}`;
-        const ids = await this.#onlyIn(spaceName, users, resolved);
+        const ids = await this.onlyIn(spaceName, users, resolved);
         if (ids) return { spaceName, ids };
       }
       pageToken = page.nextPageToken;
@@ -755,24 +789,37 @@ export class ChatApi {
     return null;
   }
 
-  /** The `users/{user}` ids of `users`, if they and the connected user are everyone in `spaceName`. */
-  async #onlyIn(
-    spaceName: string, users: readonly string[], resolved: Map<string, string>,
+  /**
+   * The `users/{user}` ids of `users`, each a `users/{user}` id or email address, if they and the
+   * connected user are everyone in `spaceName`.
+   */
+  async onlyIn(
+    spaceName: string, users: readonly string[], resolved = new Map<string, string>(),
   ): Promise<string[] | null> {
     const present = await this.audienceIn(spaceName);
     if (present.size !== users.length + 1) return null;
     const ids = new Set<string>();
-    // A `users/{user}` id is its own membership's; only an email address needs looking up, one at a
-    // time, as Chat allows 15 reads a second per space.
+    // One at a time, as Chat allows 15 reads a second per space.
     for (const user of users.map(chatUserName)) {
-      const id = present.has(user) || !user.includes("@")
-        ? user : resolved.get(user) ?? personIn(await this.getMembership(spaceName, user));
+      const id = resolved.get(user) ?? await this.idIn(spaceName, user, present);
       if (id === undefined || !present.has(id)) return null;
       resolved.set(user, id);
       ids.add(id);
     }
     // Two references to one person would leave room for someone else.
     return ids.size === users.length ? [...ids] : null;
+  }
+
+  /**
+   * The `users/{user}` id that `user`, a `users/{user}` id or email address, has among `present`,
+   * the audience of `spaceName`, or undefined when they aren't in it. A `users/{user}` id is its
+   * own membership's; only an email address needs looking up.
+   */
+  async idIn(spaceName: string, user: string, present: ReadonlySet<string>): Promise<string | undefined> {
+    const name = chatUserName(user);
+    const id = present.has(name) || !name.includes("@")
+      ? name : personIn(await this.getMembership(spaceName, name));
+    return id !== undefined && present.has(id) ? id : undefined;
   }
 
   /**
@@ -815,7 +862,8 @@ export class ChatApi {
 
   /**
    * The directory profile with this email address, or null when the organization has none.
-   * Throws when more profiles match than one page holds and none of those has it.
+   * Throws when more profiles match than one page holds and none of those has it, and a
+   * {@link ChatDirectoryUnavailableError} when Google refuses this account the directory.
    */
   async findDirectoryPerson(email: string): Promise<ChatPerson | null> {
     const wanted = email.toLowerCase();
@@ -845,6 +893,9 @@ export class ChatApi {
       { headers: { Accept: "application/json" } }, this.getAccessToken);
     const body = await readGoogleJson<{ people?: DirectoryPersonRaw[]; nextPageToken?: string }>(response, {
       provider: "Google People", operation: "people.searchDirectoryPeople", maxBytes: 256 * 1024,
+    }).catch((error: unknown) => {
+      throw isDirectoryRefusal(error, response.status)
+        ? new ChatDirectoryUnavailableError(error.providerReasons, { cause: error }) : error;
     });
     return {
       items: (body.people ?? []).flatMap(raw => directoryEntryFromRaw(raw) ?? []),
