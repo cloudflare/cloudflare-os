@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { RpcTarget as NativeRpcTarget, RpcStub as NativeRpcStub } from "cloudflare:workers";
+import { RpcSession, type RpcStub } from "capnweb";
 import type { UiBundle } from "@gadgets/workshop-shared/api";
 
 const launch = vi.hoisted(() => vi.fn());
@@ -29,7 +31,40 @@ type Harness = {
   setSnapshot: (value: string) => void;
 };
 
-function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
+// Messages one end of a fake RPC transport has sent and the other hasn't received yet.
+class MessageQueue {
+  #messages: string[] = [];
+  #receivers: ((message: string) => void)[] = [];
+
+  push(message: string): void {
+    let receiver = this.#receivers.shift();
+    if (receiver) receiver(message);
+    else this.#messages.push(message);
+  }
+
+  next(): Promise<string> {
+    let message = this.#messages.shift();
+    return message === undefined
+      ? new Promise(resolve => this.#receivers.push(resolve))
+      : Promise.resolve(message);
+  }
+}
+
+/**
+ * With `client`, the fake page has an RPC session with the export, as the export runtime would,
+ * and runs `client` on its main object while the export waits for the client module.
+ */
+function makeHarness(
+  pdfChunks = ["%PDF-1.4"],
+  closePdf = true,
+  client?: (root: RpcStub<any>) => Promise<void>,
+) {
+  let toBrowser = new MessageQueue();
+  let toWorker = new MessageQueue();
+  let browserRoot = client && new RpcSession<any>({
+    send: async message => toWorker.push(message),
+    receive: () => toBrowser.next(),
+  }).getRemoteMain();
   let browserClosed = false;
   let clientInitialized = false;
   let documentTitle: string | undefined;
@@ -62,8 +97,14 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     }
     if (fn.toString().includes("__workshopExportModulePromise")) {
       if (isolated) throw new Error("Client module was awaited outside the main world.");
-      clientInitialized = true;
+      return (client?.(browserRoot!) ?? Promise.resolve()).then(() => { clientInitialized = true; });
+    }
+    if (client && fn.toString().includes("__workshopExportSendToBrowser")) {
+      toBrowser.push(args[0] as string);
       return Promise.resolve();
+    }
+    if (client && fn.toString().includes("__workshopExportReceiveFromBrowser")) {
+      return toWorker.next();
     }
     if (fn.toString().includes("MutationObserver")) {
       if (!isolated) throw new Error("DOM settling ran in the main world.");
@@ -327,6 +368,36 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.exportDocumentCsp()).toContain("img-src data: blob:");
     expect(harness.exportDocumentCsp()).toContain("media-src data: blob:");
     expect(harness.blobRequestContinued()).toBe(true);
+  });
+
+  it("lets the page copy and dispose its gadget stub, then releases the stub", async () => {
+    let released = 0;
+    class TestGadget extends NativeRpcTarget {
+      read() { return "from the server"; }
+      [Symbol.dispose]() { released++; }
+    }
+    let reads: string[] = [];
+    let { harness } = makeHarness(undefined, true, async root => {
+      let gadget = root.gadget;
+      // As gadget code may: a copy, used and disposed while the original stays in use.
+      let copy = gadget.dup();
+      reads.push(await copy.read());
+      copy[Symbol.dispose]();
+      reads.push(await gadget.read());
+    });
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      {jsCode: ""},
+      "Test Gadget",
+      new NativeRpcStub(new TestGadget()) as never,
+      {id: "pdf", label: "PDF", mode: "browser", contentType: "application/pdf", fileExtension: ".pdf"},
+    );
+
+    expect(await collect(await stream)).toBe("%PDF-1.4");
+    expect(reads).toEqual(["from the server", "from the server"]);
+    expect(harness.browserClosed()).toBe(true);
+    await vi.waitFor(() => expect(released).toBe(1));
   });
 
   it("starts a UI sent as modules by calling main(), mapping capnweb for its modules", async () => {

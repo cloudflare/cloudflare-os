@@ -3044,10 +3044,10 @@ export type UiBundle = {
    * `ui-page.ts`). Anyone who can use the gadget receives these, so nothing only `server.js`
    * imports is ever included.
    *
-   * The page starts the UI by calling `main(gadget)` on `client.js`'s default export, and sets
-   * no globals: the `gadget` stub reaches only code `main()` passes it to, and the modules import
-   * `RpcTarget` and `RpcStub` from "capnweb", which the page maps to the Cap'n Web its RPC session
-   * uses.
+   * The page starts the UI by calling `main(gadget, host)` on `client.js`'s default export, where
+   * `host` is a `GadgetHost`, and sets no globals: the `gadget` stub reaches only code `main()`
+   * passes it to, and the modules import `RpcTarget` and `RpcStub` from "capnweb", which the page
+   * maps to the Cap'n Web its RPC session uses.
    *
    * That keeps the stub from code that isn't handed it, not from code trying to get it: the
    * modules share one realm, where one can intercept what another passes around. Nor is the
@@ -3057,6 +3057,20 @@ export type UiBundle = {
    */
   modules: UiModule[];
 };
+
+/**
+ * What the page running a gadget's UI offers it besides the gadget's server: the second argument
+ * of `main(gadget, host)` (see `UiBundle.modules`). The Workshop implements it for the live view,
+ * and browser-mode export implements it too, so each method also says what it does during an
+ * export, where there is no Workshop UI.
+ *
+ * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
+ * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
+ * proxies through the frame.
+ *
+ * It has no methods yet.
+ */
+export interface GadgetHost {}
 
 /** One module of a Gadget UI. */
 export type UiModule = {

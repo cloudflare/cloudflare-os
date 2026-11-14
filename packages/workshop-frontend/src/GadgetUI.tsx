@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { GadgetClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
@@ -16,17 +16,21 @@ import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 // The runtime is a module script placed before the gadget's entry. Module scripts run in document
 // order, so what it sets up exists before any gadget module evaluates, even one the entry imports:
 // for a legacy UI, its globals. It must stay synchronous: a top-level await would let the entry run
-// first. For a UI that `callsMain`, the `gadget` stub stays in the runtime's module scope, so it
-// reaches only the code `main()` hands it to.
+// first. For a UI that `callsMain`, the `gadget` and `host` stubs stay in the runtime's module
+// scope, so they reach only the code `main()` hands them to.
 const MISSING_MAIN = "client.js's default export has no main() function. Start the UI with " +
   '`export default { main(gadget) { ... } }`.'
 const runtimeUrl = (callsMain: boolean) => `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
-let gadget;  // RPC stub to the gadget's server-side Durable Object.
+// The gadget's server-side Durable Object, and the page's GadgetHost: the properties of the main
+// object of the frame's one RPC session with the page (GadgetFrameRoot).
+let gadget, host;
 {
   let {port1, port2} = new MessageChannel();
   window.parent.postMessage("handshake", "*", [port2]);
-  gadget = newMessagePortRpcSession(port1);
+  let root = newMessagePortRpcSession(port1);
+  gadget = root.gadget;
+  host = root.host;
 }
 ${callsMain ? '' : `
 globalThis.gadget = gadget;
@@ -113,7 +117,7 @@ import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
     reportError([${JSON.stringify(MISSING_MAIN)}]);
     return;
   }
-  return main.call(entry.default, gadget);
+  return main.call(entry.default, gadget, host);
 }, () => {
   // The entry's <script> element reports a module that fails to load or to evaluate.
 });
@@ -121,6 +125,30 @@ import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
 //# sourceURL=gadget-runtime.js`)}`
 const LEGACY_RUNTIME_URL = runtimeUrl(false)
 const MAIN_RUNTIME_URL = runtimeUrl(true)
+
+// The Workshop as a gadget UI's host.
+class WorkshopGadgetHost extends RpcTarget implements GadgetHost {}
+
+// The main object of the frame's RPC session. The frame reaches the gadget's server and the host
+// through one session, so a capability passed between them never proxies through the frame.
+class GadgetFrameRoot extends RpcTarget {
+  readonly #gadget: RpcTarget
+  readonly #host: GadgetHost
+
+  constructor(gadget: RpcTarget, host: GadgetHost) {
+    super()
+    this.#gadget = gadget
+    this.#host = host
+  }
+
+  get gadget() {
+    return this.#gadget
+  }
+
+  get host() {
+    return this.#host
+  }
+}
 
 const createSandboxedHtml = (page: UiPage): string => {
   return `<!DOCTYPE html>
@@ -417,7 +445,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
                 : gadgetStubRef.current[property]
             },
           })
-          rpcSessionRef.current = newMessagePortRpcSession(port, forwardingTarget)
+          rpcSessionRef.current = newMessagePortRpcSession(
+              port, new GadgetFrameRoot(forwardingTarget, new WorkshopGadgetHost()))
         } catch (caught) {
           gadgetStub?.[Symbol.dispose]?.()
           port.close()

@@ -35,6 +35,12 @@ interface TestGadget {
   subscribe(callback: RpcStub<TestSubscriber>): TestSubscription
 }
 
+// The main object of the frame's session, as the runtime sees it.
+interface TestFrameRoot {
+  gadget: TestGadget
+  host: object
+}
+
 interface TestChild {
   read(): string
 }
@@ -186,7 +192,7 @@ function loadedCode(container: HTMLElement): string {
 describe('GadgetUI RPC recovery', () => {
   let container: HTMLDivElement
   let root: Root
-  const childSessions: RpcStub<TestGadget>[] = []
+  const childSessions: RpcStub<TestFrameRoot>[] = []
 
   beforeEach(() => {
     container = document.createElement('div')
@@ -201,12 +207,14 @@ describe('GadgetUI RPC recovery', () => {
     container.remove()
   })
 
+  // Connects as the frame's runtime does, returning the gadget it reaches through the session's
+  // main object.
   function connectIframe(iframe: HTMLIFrameElement) {
     const { port1, port2 } = new MessageChannel()
-    const child = newMessagePortRpcSession<TestGadget>(port1)
-    childSessions.push(child)
+    const root = newMessagePortRpcSession<TestFrameRoot>(port1)
+    childSessions.push(root)
     dispatchIframeHandshake(iframe, port2)
-    return child
+    return root.gadget
   }
 
   it('lays out gadget UI against the device-width viewport', async () => {

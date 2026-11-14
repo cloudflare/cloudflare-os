@@ -12,7 +12,7 @@ declare global {
   /** Data URL containing the Gadget client module. */
   var __workshopExportClientUrl: string;
   /**
-   * Whether to start the UI by calling `main(gadget)` on the client module's
+   * Whether to start the UI by calling `main(gadget, host)` on the client module's
    * default export (see `UiPage.callsMain`), rather than setting globals.
    */
   var __workshopExportCallsMain: boolean;
@@ -74,8 +74,16 @@ class WorkerRpcTransport implements RpcTransport {
   }
 }
 
-const workerSession = new RpcSession<any>(new WorkerRpcTransport());
-const gadget = workerSession.getRemoteMain();
+/** The session's main object: the Gadget's server and its host, as in the live iframe. */
+interface ExportPageRoot {
+  gadget: any;
+  host: any;
+}
+
+const workerSession = new RpcSession<ExportPageRoot>(new WorkerRpcTransport());
+const root = workerSession.getRemoteMain();
+const gadget = root.gadget;
+const host = root.host;
 
 const clientUrl = globalThis.__workshopExportClientUrl;
 const callsMain = globalThis.__workshopExportCallsMain;
@@ -89,7 +97,7 @@ if (callsMain) {
     if (typeof main !== "function") {
       throw new Error("client.js's default export has no main() function.");
     }
-    await main.call(entry.default, gadget);
+    await main.call(entry.default, gadget, host);
   });
 } else {
   globalThis.gadget = gadget;

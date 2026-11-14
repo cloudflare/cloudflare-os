@@ -45,7 +45,7 @@ const run = async (bundle: UiBundle) => {
   return logs
 }
 
-it('calls main() with the gadget stub, setting no globals', async () => {
+it('calls main() with the gadget and host stubs, setting no globals', async () => {
   const logs = await run({
     modules: [
       {
@@ -53,8 +53,9 @@ it('calls main() with the gadget stub, setting no globals', async () => {
         code: `import { RpcTarget } from "capnweb";
 import { label } from "gadget:ui/label.js";
 export default {
-  async main(gadget) {
+  async main(gadget, host) {
     console.log("globals:", typeof globalThis.gadget, typeof globalThis.RpcTarget);
+    console.log("host:", typeof host);
     console.log(label + ":", await gadget.read());
     class Callback extends RpcTarget { update(value) { console.log("callback:", value); } }
     await gadget.subscribe(new Callback());
@@ -67,6 +68,8 @@ export default {
 
   await expect.poll(() => logs).toContain('callback: called back')
   expect(logs).toContain('globals: undefined undefined')
+  // A stub, which is a callable proxy.
+  expect(logs).toContain('host: function')
   expect(logs).toContain('read: from the server')
 })
 

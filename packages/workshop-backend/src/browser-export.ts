@@ -1,7 +1,8 @@
 import { launch, type Page } from "@cloudflare/puppeteer";
-import { RpcSession, type RpcStub, type RpcTransport } from "capnweb";
+import { RpcSession, RpcStub, RpcTarget, type RpcTransport } from "capnweb";
+import { validateRpc } from "capnweb-validate";
 import { createLogger } from "@gadgets/observability/logger";
-import type { GadgetExportFormat, UiBundle } from "@gadgets/workshop-shared/api";
+import type { GadgetExportFormat, GadgetHost, UiBundle } from "@gadgets/workshop-shared/api";
 import { prepareUiPage } from "@gadgets/workshop-shared/ui-page";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
 import CAPNWEB_MODULE from "./generated/capnweb-module.txt";
@@ -130,6 +131,40 @@ export class BrowserRpcTransport implements RpcTransport {
   }
 }
 
+/** A browser-mode export as a Gadget UI's host. There is no Workshop UI around the page. */
+@validateRpc()
+class ExportGadgetHost extends RpcTarget implements GadgetHost {}
+
+/**
+ * The main object of the export page's RPC session, as in the live iframe: the Gadget's server and
+ * its host, on one session. Owns `gadget`.
+ */
+class ExportFrameRoot extends RpcTarget {
+  #gadget: RpcStub<any>;
+  #host = new ExportGadgetHost();
+
+  constructor(gadget: RpcStub<any>) {
+    super();
+    // `gadget` is a Workers-native stub. Cap'n Web gives each copy the page makes of it, by dup()
+    // or by resolving the property, its own wrapper, whose disposal would dispose the native stub
+    // for every copy. One Cap'n Web stub around it makes the copies share its lifetime instead.
+    this.#gadget = new RpcStub(gadget);
+  }
+
+  // Reading a property transfers no ownership, so the stub stays this root's to dispose.
+  get gadget(): RpcStub<any> {
+    return this.#gadget;
+  }
+
+  get host(): GadgetHost {
+    return this.#host;
+  }
+
+  [Symbol.dispose](): void {
+    this.#gadget[Symbol.dispose]();
+  }
+}
+
 function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
@@ -235,7 +270,7 @@ export async function renderGadgetInBrowser(
       await page.goto(EXPORT_DOCUMENT_URL, { waitUntil: "load" });
       let transport = new BrowserRpcTransport(page);
       page.on("close", () => transport.abort(new Error("Browser page closed.")));
-      let rpcSession = new RpcSession(transport, gadget);
+      let rpcSession = new RpcSession(transport, new ExportFrameRoot(gadget));
       sessionCloser = rpcSession.getRemoteMain();
       await page.evaluate(waitForClientModule);
       const frame = page.mainFrame() as FrameWithIsolatedRealm;
