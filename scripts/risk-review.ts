@@ -1,0 +1,1429 @@
+// Loaded by .github/workflows/risk-review.yml through actions/github-script, like
+// contribution-policy.ts: its runtime is node24, which strips the types, and the GitHub API shapes
+// are written structurally because this repository does not depend on the Octokit types.
+//
+// The gate posts the one `risk-review` check run on each pull request head and merge group, as the
+// risk-review GitHub App. It is the only publisher: producer workflows (reviewer verdicts, rung 1
+// proofs, band evidence) run on `pull_request`, write one artifact each, and post nothing; the gate
+// reads those artifacts only from runs bound to the head (risk-review-contract.ts). It runs only
+// from `main`'s definition, through `workflow_run` and `issue_comment`; merge groups reach it
+// through the relay's `workflow_run`, and a merge group is accepted only when the merge queue lists
+// its commit. It reads every policy file from the base branch, so a pull request cannot rewrite its
+// own gate.
+//
+// What it decides, per pull request (rules in risk-review-policy.ts):
+//
+// - A band (low, medium, high) and an area from fixed rules, and whether the change touches a path
+//   no AI may decide on (`NEVER_AUTO`).
+// - Whether it could merge without a person: its area and band are open in
+//   `.github/automerge-bands.json`, it touches no policy path, a maintainer wrote it (or Dependabot,
+//   for rung 1's dependency proof only), no maintainer commented after the last push, and either a
+//   rung 1 proof holds (never for text people or agents read) or both reviewers' verdicts (Bonk's
+//   and our Opus runner's) clear the band's threshold, with the band's evidence passing.
+// - Otherwise a maintainer from `.github/maintainers` must approve the head commit, and a pull
+//   request an agent opened needs its human assignee's approval.
+//
+// The bands file's `mode` sets what the check run reports. In `shadow`, which ships, it mirrors
+// today's rule (`reviewDecision == APPROVED`), records the decision above without acting on it,
+// and is not a required check, so it cannot change who merges. In `enforce` it reports the gate's own
+// decision, and for an open band it approves (when App approvals count) and enqueues with the App's
+// token. Every missing, stale or malformed input counts as absent, which sends the pull request to a
+// person.
+
+import { basename } from "node:path/posix";
+
+import {
+  AREAS,
+  BANDS,
+  addedDependencies,
+  changedInstallSettings,
+  isCatalogVersionBump,
+  isSkillPath,
+  isWorkerConfig,
+  asObject,
+  classifyChangeset,
+  durableObjectRisks,
+  needsContents,
+  parseEscapeSnapshot,
+  parseJson,
+  parseMaintainers,
+  type Area,
+  type Band,
+  type ChangedFile,
+  type Classification,
+  type ContentFacts,
+  type ContentsKind,
+  type EscapeSnapshot,
+  type Json,
+} from "./risk-review-policy.ts";
+import {
+  PRODUCERS,
+  VERDICT_NAMES,
+  artifactName,
+  bindingError,
+  identityError,
+  isProducerName,
+  newestRun,
+  parseFingerprint,
+  parseProducerArtifact,
+  pickArtifact,
+  readArtifactFile,
+  type Artifact,
+  type BindingExpectation,
+  type Fingerprint,
+  type ProducerArtifact,
+  type ProducerInput,
+  type ProducerName,
+  type WorkflowRun,
+} from "./risk-review-contract.ts";
+
+/** The check run the gate posts; the ruleset requires it once the gate enforces. */
+export const CHECK_NAME = "risk-review";
+
+/** Policy files, read at the base commit. */
+export const POLICY_FILES = {
+  maintainers: ".github/maintainers",
+  bands: ".github/automerge-bands.json",
+  escapes: ".github/automerge-escape-files.json",
+} as const;
+
+/** The decision JSON leads the check run's summary and stays under this, inside GitHub's 65,535. */
+export const MAX_DECISION_CHARS = 60_000;
+
+const MAX_SUMMARY_CHARS = 65_535;
+
+const PER_PAGE = 100;
+
+/** Bots that open pull requests on a schedule rather than at someone's direction. */
+const DEPENDABOT = "dependabot[bot]";
+
+/** Rung 1 proofs a maintainer's pull request may qualify through. */
+// `proof-actions` is Dependabot's only: see {@link GATE_WORKFLOWS}. `proof-migrations` is not a proof
+// either: it holds for any change that leaves migrations alone, so it is only a precondition for a
+// change that touches a Worker config.
+const PROOFS = ["proof-deps", "proof-equivalence", "proof-tests"] as const;
+
+/**
+ * The workflows the gate reads from or runs as: every producer's, and its own. A Dependabot Actions
+ * bump whose proof holds needs no person unless it touches one of these or any other `.github/**`
+ * file; the proof checks the workflows it touches hold no credential.
+ */
+export const GATE_WORKFLOWS: ReadonlySet<string> = new Set([
+  ".github/workflows/risk-review.yml",
+  ".github/workflows/risk-review-trigger.yml",
+  ...Object.values(PRODUCERS).map(({ workflow }) => workflow),
+]);
+
+/** What the check run reports. */
+export type Mode = "shadow" | "enforce";
+
+/** One area and band's entry in `.github/automerge-bands.json`. */
+export interface BandRule {
+  open: boolean;
+  /** The lower reviewer score must be at least this, 0 to 10. */
+  threshold: number | null;
+  /** The reviewer configuration the band was calibrated on; a verdict from any other closes it. */
+  reviewerFingerprint: Partial<Record<(typeof VERDICT_NAMES)[number], Fingerprint>> | null;
+  /** Producers whose `holds` must be true. */
+  evidence: ProducerName[];
+}
+
+/** `.github/automerge-bands.json`. */
+export interface BandsConfig {
+  mode: Mode;
+  /** Whether the App's approving review counts toward the ruleset's required review. */
+  appApprovalsCount: boolean;
+  areas: Record<Area, Record<Band, BandRule>>;
+}
+
+const CLOSED_RULE: BandRule = { open: false, threshold: null, reviewerFingerprint: null, evidence: [] };
+
+function closedArea(): Record<Band, BandRule> {
+  return { low: CLOSED_RULE, medium: CLOSED_RULE, high: CLOSED_RULE };
+}
+
+/** Every area and band closed, as a fresh object the parser can fill in. */
+function closedAreas(): BandsConfig["areas"] {
+  return { proven: closedArea(), scored: closedArea(), "kernel-small": closedArea(), "agent-facing-api": closedArea(), kernel: closedArea() };
+}
+
+/** What a missing or malformed bands file means: shadow mode, every band closed. */
+export const CLOSED_BANDS: BandsConfig = { mode: "shadow", appApprovalsCount: false, areas: closedAreas() };
+
+function parseBandRule(value: Json | undefined, area: Area): BandRule | string {
+  const rule = asObject(value);
+  if (!rule) return "not an object";
+  const { open, threshold, reviewer_fingerprint, evidence } = rule;
+  if (typeof open !== "boolean") return "open is not a boolean";
+  if (threshold !== null && (typeof threshold !== "number" || !Number.isInteger(threshold) || threshold < 0 || threshold > 10)) {
+    return "threshold is not null or an integer from 0 to 10";
+  }
+  if (!Array.isArray(evidence)) return "evidence is not a list";
+  const names = evidence.flatMap((name) => (typeof name === "string" && isProducerName(name) ? [name] : []));
+  if (names.length !== evidence.length) return "evidence names an unknown producer";
+  let reviewerFingerprint: BandRule["reviewerFingerprint"] = null;
+  if (reviewer_fingerprint !== null) {
+    const object = asObject(reviewer_fingerprint);
+    if (!object) return "reviewer_fingerprint is not null or an object";
+    reviewerFingerprint = {};
+    for (const name of VERDICT_NAMES) {
+      const print = parseFingerprint(object[name]);
+      if (!print) return `reviewer_fingerprint.${name} is malformed`;
+      reviewerFingerprint[name] = print;
+    }
+  }
+  if (open && area !== "proven" && (threshold === null || reviewerFingerprint === null)) {
+    return "an open AI-scored band needs a threshold and a reviewer fingerprint";
+  }
+  return { open, threshold, reviewerFingerprint, evidence: names };
+}
+
+function closedBecause(problem: string): { config: BandsConfig; problem: string } {
+  return { config: CLOSED_BANDS, problem };
+}
+
+/**
+ * Parses `.github/automerge-bands.json`. Anything malformed closes every band in shadow mode.
+ *
+ * @returns The config, and why it was replaced by {@link CLOSED_BANDS} if it was.
+ */
+export function parseBands(text: string | undefined): { config: BandsConfig; problem?: string } {
+  if (text === undefined) return closedBecause("the bands file is missing");
+  const root = asObject(parseJson(text));
+  if (!root || root.schema !== 1) return closedBecause("the bands file is not schema 1 JSON");
+  if (root.mode !== "shadow" && root.mode !== "enforce") return closedBecause("mode is not shadow or enforce");
+  if (typeof root.app_approvals_count !== "boolean") return closedBecause("app_approvals_count is not a boolean");
+  const areasJson = asObject(root.areas);
+  if (!areasJson) return closedBecause("areas is not an object");
+  const areas = closedAreas();
+  for (const area of AREAS) {
+    const bands = asObject(areasJson[area]);
+    if (!bands) return closedBecause(`areas.${area} is missing`);
+    for (const band of BANDS) {
+      const rule = parseBandRule(bands[band], area);
+      if (typeof rule === "string") return closedBecause(`areas.${area}.${band}: ${rule}`);
+      areas[area][band] = rule;
+    }
+  }
+  return { config: { mode: root.mode, appApprovalsCount: root.app_approvals_count, areas } };
+}
+
+/** Policy read from the base commit. */
+export interface Policy {
+  sha: string;
+  maintainers: ReadonlySet<string>;
+  bands: BandsConfig;
+  bandsProblem?: string;
+  escapes: EscapeSnapshot | undefined;
+}
+
+/** A GitHub account. `type` is `User` for people and `Bot` for apps and bot accounts. */
+export interface GitHubUser {
+  login: string;
+  type?: string;
+}
+
+/** The pull request fields the gate reads. */
+export interface PullRequest {
+  number: number;
+  node_id: string;
+  state: string;
+  draft?: boolean;
+  user: GitHubUser | null;
+  assignees?: GitHubUser[] | null;
+  head: { sha: string; ref: string };
+  base: { sha: string; ref: string };
+  /** Files changed, which can exceed what `pulls.listFiles` will list. */
+  changed_files: number;
+  /** Commits, which can exceed what `pulls.listCommits` will list (250). */
+  commits: number;
+}
+
+/** A commit on a pull request, as `pulls.listCommits` returns it. */
+export interface PullCommit {
+  sha: string;
+  /** The GitHub account of the commit's author, or `null` when its email matches none. */
+  author: GitHubUser | null;
+  committer: GitHubUser | null;
+  commit: { verification?: { verified: boolean } | null };
+}
+
+/**
+ * Why a Dependabot pull request's commits are not all Dependabot's own, or `undefined` when they
+ * are. A commit counts only when GitHub verified its signature and links its author to
+ * `dependabot[bot]` and its committer to `web-flow`, which signs what Dependabot pushes; commit
+ * emails alone can be written by anyone who can push to the branch.
+ *
+ * @param commits Every commit on the pull request, or `undefined` when they could not all be listed.
+ */
+export function dependabotCommitsError(commits: PullCommit[] | undefined): string | undefined {
+  if (commits === undefined) return "its commits could not all be listed";
+  const other = commits.find(({ author, committer, commit }) =>
+    author?.login !== DEPENDABOT || committer?.login !== "web-flow" || commit.verification?.verified !== true);
+  return other && `commit ${other.sha.slice(0, 7)} is not a verified Dependabot commit`;
+}
+
+/** A pull request review. */
+export interface Review {
+  id: number;
+  user?: GitHubUser | null;
+  /** `APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED` or `PENDING`. */
+  state: string;
+  /** The head commit when the review was submitted. */
+  commit_id?: string | null;
+  submitted_at?: string | null;
+}
+
+/** An issue comment or a review comment. */
+export interface Comment {
+  user?: GitHubUser | null;
+  created_at: string;
+}
+
+/** Everything the decision reads about one pull request. */
+export interface PullInputs {
+  pull: PullRequest;
+  files: ChangedFile[];
+  facts: ContentFacts;
+  reviews: Review[];
+  comments: Comment[];
+  /** When the head commit was pushed, or `undefined` when unknown. */
+  lastPush: string | undefined;
+  reviewDecision: string | null;
+  producers: Partial<Record<ProducerName, ProducerInput>>;
+  /** Every commit, for a pull request Dependabot opened; `undefined` otherwise or when unlisted. */
+  commits: PullCommit[] | undefined;
+}
+
+/** A producer input as the decision record shows it. */
+export type InputSummary =
+  | { absent: string }
+  | { status: string; holds: boolean }
+  | {
+    status: string;
+    merge_confidence: number | null;
+    findings: Record<"P0" | "P1" | "P2" | "P3", number>;
+    needs_person: string[];
+    fingerprint: Fingerprint;
+  };
+
+/** The decision for one pull request, as the check run records it. */
+export interface PullDecision {
+  number: number;
+  head_sha: string;
+  base_sha: string;
+  band: Band;
+  band_reasons: string[];
+  area: Classification["area"];
+  never_auto: string[];
+  author: { login: string; maintainer: boolean };
+  approvers: string[];
+  blockers: string[];
+  holds: string[];
+  inputs: Partial<Record<ProducerName, InputSummary>>;
+  /** Today's rule, which shadow mode reports. */
+  today: { review_decision: string | null; passes: boolean };
+  /** The gate's own rule, which enforce mode reports. */
+  gate: { passes: boolean; reason: string };
+  /** Whether it could merge without a person, through which area, and every reason it cannot. */
+  would: { decision: "auto" | "person"; area: Area | null; reasons: string[] };
+  /**
+   * Both reviewers' scores when their verdicts' own conditions hold, whatever the band, threshold,
+   * evidence, holds and change requests; `null` otherwise. The calibration report reads these.
+   */
+  eligible_scores: Scores | null;
+  /** Whether it changes a Worker config while the migration proof does not hold, which rules out any merge. */
+  needs_migration_proof: boolean;
+}
+
+/**
+ * Finds the maintainers whose approval of the head commit counts, and those still requesting
+ * changes. Each reviewer's latest decisive review counts, as on GitHub.
+ *
+ * @param reviews Every review on the pull request, oldest first.
+ */
+export function tallyReviews(reviews: Review[], { headSha, author, maintainers }: {
+  headSha: string;
+  author: string | undefined;
+  maintainers: ReadonlySet<string>;
+}): { approvers: string[]; blockers: string[] } {
+  const latest = new Map<string, Review>();
+  for (const review of reviews) {
+    const login = review.user?.login.toLowerCase();
+    if (
+      !login || review.user?.type !== "User" || login === author?.toLowerCase() || !maintainers.has(login) ||
+      !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(review.state)
+    ) {
+      continue;
+    }
+    latest.set(login, review);
+  }
+  const approvers: string[] = [];
+  const blockers: string[] = [];
+  for (const [login, review] of latest) {
+    if (review.state === "APPROVED" && review.commit_id === headSha) approvers.push(login);
+    if (review.state === "CHANGES_REQUESTED") blockers.push(login);
+  }
+  return { approvers, blockers };
+}
+
+/**
+ * Lists the maintainer holds: a maintainer other than the author commented, or reviewed with
+ * comments or a change request, after the last push. An approval is not a hold. An unknown push
+ * time holds, since any comment could be after it.
+ */
+export function maintainerHolds(reviews: Review[], comments: Comment[], { lastPush, author, maintainers }: {
+  lastPush: string | undefined;
+  author: string | undefined;
+  maintainers: ReadonlySet<string>;
+}): string[] {
+  if (lastPush === undefined) return ["the time of the last push is unknown"];
+  const pushed = Date.parse(lastPush);
+  const holder = (user: GitHubUser | null | undefined, at: string | null | undefined): string[] => {
+    const login = user?.login.toLowerCase();
+    const counts = !!login && user?.type === "User" && login !== author?.toLowerCase() && maintainers.has(login) &&
+      !!at && Date.parse(at) > pushed;
+    return counts ? [login] : [];
+  };
+  const holders = new Set([
+    ...comments.flatMap(({ user, created_at }) => holder(user, created_at)),
+    ...reviews.flatMap(({ user, state, submitted_at }) =>
+      state === "COMMENTED" || state === "CHANGES_REQUESTED" ? holder(user, submitted_at) : []),
+  ]);
+  return [...holders].map((login) => `@${login} commented after the last push`);
+}
+
+function summarize(input: ProducerInput): InputSummary {
+  if ("absent" in input) return input;
+  const { artifact } = input;
+  if (artifact.kind !== "verdict") return { status: artifact.status, holds: artifact.holds };
+  const findings = { P0: 0, P1: 0, P2: 0, P3: 0 };
+  for (const { severity } of artifact.findings) findings[severity]++;
+  return {
+    status: artifact.status,
+    merge_confidence: artifact.merge_confidence,
+    findings,
+    needs_person: artifact.needs_person,
+    fingerprint: artifact.fingerprint,
+  };
+}
+
+function holding(input: ProducerInput | undefined): boolean {
+  return !!input && "artifact" in input && input.artifact.kind !== "verdict" && input.artifact.status === "ok" &&
+    input.artifact.holds;
+}
+
+function sameFingerprint(a: Fingerprint, b: Fingerprint): boolean {
+  return a.model === b.model && a.opencode === b.opencode && a.review_md === b.review_md && a.prompt === b.prompt &&
+    a.action === b.action;
+}
+
+/** A score per reviewer. */
+export type Scores = Record<(typeof VERDICT_NAMES)[number], number>;
+
+/**
+ * Checks both verdicts' own conditions: present, `ok`, a full review (not diff-only), no P0 or P1
+ * finding, no `NEEDS-A-PERSON`, and a score. These are what the AI said, so they hold or fail the
+ * same whatever the band, its threshold, the evidence, holds or change requests.
+ *
+ * @returns Every failed condition, and both scores when none failed.
+ */
+function verdictConditions(inputs: PullInputs): { failures: string[]; scores: Scores | null } {
+  const failures: string[] = [];
+  const scores: Partial<Scores> = {};
+  for (const name of VERDICT_NAMES) {
+    const input = inputs.producers[name] ?? { absent: "no run" };
+    if ("absent" in input) {
+      failures.push(`${name} verdict absent: ${input.absent}`);
+      continue;
+    }
+    const { artifact } = input;
+    if (artifact.kind !== "verdict") {
+      failures.push(`${name} is not a verdict`);
+      continue;
+    }
+    if (artifact.status !== "ok") failures.push(`${name} verdict status is ${artifact.status}`);
+    // A diff-only re-review did not look again at what earlier rounds found.
+    if (artifact.review_from_sha !== null) {
+      failures.push(`${name} reviewed only the diff since ${artifact.review_from_sha.slice(0, 7)}`);
+    }
+    const blocking = artifact.findings.filter(({ severity }) => severity === "P0" || severity === "P1");
+    if (blocking.length > 0) failures.push(`${name} found ${blocking.length} P0 or P1 issues`);
+    for (const need of artifact.needs_person) failures.push(`${name}: needs a person: ${need}`);
+    if (artifact.merge_confidence === null) failures.push(`${name} gave no merge confidence`);
+    else scores[name] = artifact.merge_confidence;
+  }
+  const { bonk, opus } = scores;
+  return { failures, scores: failures.length === 0 && bonk !== undefined && opus !== undefined ? { bonk, opus } : null };
+}
+
+/** Every reason the merge rule fails for one area and band; empty when it holds. */
+function mergeRuleFailures(area: Area, band: Band, inputs: PullInputs, rule: BandRule): string[] {
+  const reasons: string[] = [];
+  if (!rule.open) reasons.push(`the ${area} area's ${band} band is closed`);
+  if (area !== "proven") {
+    const { failures, scores } = verdictConditions(inputs);
+    reasons.push(...failures);
+    for (const name of VERDICT_NAMES) {
+      const input = inputs.producers[name];
+      const pinned = rule.reviewerFingerprint?.[name];
+      if (pinned && input && "artifact" in input && input.artifact.kind === "verdict" && !sameFingerprint(pinned, input.artifact.fingerprint)) {
+        reasons.push(`${name} ran with a configuration other than the band's, which closes the band for this pull request`);
+      }
+    }
+    const lowest = scores && Math.min(scores.bonk, scores.opus);
+    if (lowest !== null && rule.threshold !== null && lowest < rule.threshold) {
+      reasons.push(`lower merge confidence ${lowest} is below the band's ${rule.threshold}`);
+    }
+  }
+  for (const name of rule.evidence) {
+    if (!holding(inputs.producers[name])) reasons.push(`evidence ${name} does not hold`);
+  }
+  return reasons;
+}
+
+/**
+ * Decides one pull request: the record shadow mode logs, today's rule, the gate's rule, and
+ * whether it could merge without a person.
+ */
+export function decide(inputs: PullInputs, policy: Policy, now: Date): PullDecision {
+  const { pull } = inputs;
+  const author = pull.user ?? undefined;
+  const authorLogin = author?.login ?? "";
+  const dependabotAuthor = authorLogin === DEPENDABOT && author?.type === "Bot";
+  const commitProblem = dependabotAuthor ? dependabotCommitsError(inputs.commits) : undefined;
+  // Someone who can push to a Dependabot branch keeps its author, so both Dependabot routes also
+  // need every commit to be Dependabot's.
+  const dependabot = dependabotAuthor && commitProblem === undefined;
+  const classification = classifyChangeset({
+    files: inputs.files,
+    listed: inputs.files.length >= pull.changed_files,
+    facts: inputs.facts,
+    escapes: policy.escapes,
+    now,
+    ...(dependabot && holding(inputs.producers["proof-actions"]) && { provenActionsBump: { gateInputs: GATE_WORKFLOWS } }),
+  });
+  const maintainer = author?.type === "User" && policy.maintainers.has(authorLogin.toLowerCase());
+  const people = { author: author?.login, maintainers: policy.maintainers };
+  const { approvers, blockers } = tallyReviews(inputs.reviews, { headSha: pull.head.sha, ...people });
+  const holds = maintainerHolds(inputs.reviews, inputs.comments, { lastPush: inputs.lastPush, ...people });
+
+  const common: string[] = [...classification.neverAuto.map((reason) => `policy: ${reason}`), ...holds];
+  if (blockers.length > 0) common.push(`changes requested by ${blockers.map((login) => `@${login}`).join(", ")}`);
+  const depsProven = holding(inputs.producers["proof-deps"]) && holding(inputs.producers["preview-smoke"]);
+  const touchesWorkerConfig = inputs.files.some((file) =>
+    [file.filename, file.previous_filename].some((path) => path !== undefined && isWorkerConfig(path)));
+  const needsMigrationProof = touchesWorkerConfig && !holding(inputs.producers["proof-migrations"]);
+  if (needsMigrationProof) common.push("changes a Worker config, and the migration proof does not hold");
+  // No proof judges text that people or agents read; such a change can only be AI-scored.
+  const provable = classification.readText.length === 0;
+  const proven = provable && (dependabotAuthor
+    ? dependabot && (depsProven || classification.workflowBump)
+    : PROOFS.some((name) => name === "proof-deps" ? depsProven : holding(inputs.producers[name])));
+  const candidates: Area[] = [];
+  if (proven) candidates.push("proven");
+  if (maintainer) candidates.push(classification.area);
+  else if (!dependabotAuthor) common.push("the author is not a maintainer");
+  if (commitProblem) common.push(`a Dependabot pull request needs only Dependabot's commits: ${commitProblem}`);
+  else if (dependabotAuthor && !proven) {
+    common.push("a Dependabot pull request needs its dependency proof and preview smoke, or its Actions proof, to hold");
+  }
+
+  let would: PullDecision["would"] = { decision: "person", area: candidates[0] ?? null, reasons: [...common] };
+  for (const area of candidates) {
+    const failures = mergeRuleFailures(area, classification.band, inputs, policy.bands.areas[area][classification.band]);
+    if (common.length === 0 && failures.length === 0) {
+      would = { decision: "auto", area, reasons: [] };
+      break;
+    }
+    would.reasons.push(...failures.map((reason) => `${area}: ${reason}`));
+  }
+
+  return {
+    number: pull.number,
+    head_sha: pull.head.sha,
+    base_sha: pull.base.sha,
+    band: classification.band,
+    band_reasons: classification.bandReasons,
+    area: classification.area,
+    never_auto: classification.neverAuto,
+    author: { login: authorLogin, maintainer },
+    approvers,
+    blockers,
+    holds,
+    inputs: Object.fromEntries(Object.entries(inputs.producers).map(([name, input]) => [name, summarize(input)])),
+    today: { review_decision: inputs.reviewDecision, passes: inputs.reviewDecision === "APPROVED" },
+    gate: gateRule(inputs, { approvers, blockers, autoApproves: would.decision === "auto" && policy.bands.appApprovalsCount }),
+    would,
+    eligible_scores: verdictConditions(inputs).scores,
+    needs_migration_proof: needsMigrationProof,
+  };
+}
+
+/**
+ * The gate's own rule: no outstanding change request; for a pull request an agent opened, a human
+ * assignee's approval; and a maintainer's approval of the head commit, unless the App approves it.
+ */
+function gateRule(inputs: PullInputs, { approvers, blockers, autoApproves }: {
+  approvers: string[];
+  blockers: string[];
+  autoApproves: boolean;
+}): PullDecision["gate"] {
+  const { pull } = inputs;
+  const commit = pull.head.sha.slice(0, 7);
+  if (blockers.length > 0) {
+    return { passes: false, reason: `changes requested by ${blockers.map((login) => `@${login}`).join(", ")}` };
+  }
+  if (pull.user?.type === "Bot" && pull.user.login !== DEPENDABOT) {
+    const directors = (pull.assignees ?? []).filter((user) => user.type === "User").map((user) => user.login.toLowerCase());
+    if (directors.length === 0) {
+      return { passes: false, reason: "an agent opened this; assign the person who directed it, who must approve" };
+    }
+    if (!directors.some((login) => approvers.includes(login))) {
+      return { passes: false, reason: `needs approval of ${commit} from ${directors.map((l) => `@${l}`).join(" or ")}` };
+    }
+  }
+  if (autoApproves) return { passes: true, reason: "the risk-review App approves it" };
+  if (approvers.length === 0) return { passes: false, reason: `needs a maintainer's approval of ${commit}` };
+  return { passes: true, reason: `approved by ${approvers.map((login) => `@${login}`).join(", ")}` };
+}
+
+/** The record the check run's summary leads with. */
+export interface DecisionRecord {
+  schema: 1;
+  mode: Mode;
+  event: string;
+  sha: string;
+  policy_sha: string;
+  bands_problem?: string;
+  conclusion: "success" | "failure";
+  reason: string;
+  pulls: PullDecision[];
+  truncated?: true;
+}
+
+/** The check run's conclusion: today's rule in shadow mode, the gate's in enforce mode. */
+export function conclude(pulls: PullDecision[], mode: Mode, problem?: string): Pick<DecisionRecord, "conclusion" | "reason"> {
+  if (problem) return { conclusion: "failure", reason: problem };
+  if (pulls.length === 0) return { conclusion: "failure", reason: "no pull request to decide" };
+  const failing = pulls.filter((pull) => (mode === "shadow" ? !pull.today.passes : !pull.gate.passes));
+  if (failing.length === 0) {
+    return { conclusion: "success", reason: mode === "shadow" ? "approved under today's rule" : "the gate's rule holds" };
+  }
+  const why = failing.map((pull) =>
+    `#${pull.number}: ${mode === "shadow" ? `review decision ${pull.today.review_decision ?? "none"}` : pull.gate.reason}`);
+  return { conclusion: "failure", reason: why.join("; ") };
+}
+
+/**
+ * Renders the check run's output: the decision JSON first, in a fenced block under
+ * {@link MAX_DECISION_CHARS}, so truncation can only cut the prose after it.
+ */
+export function renderOutput(record: DecisionRecord): { title: string; summary: string } {
+  let json = JSON.stringify(record);
+  if (json.length > MAX_DECISION_CHARS) {
+    const pulls = record.pulls.map(({ number, head_sha, base_sha, band, area, today, gate, would }) =>
+      ({ number, head_sha, base_sha, band, area, today, gate, would: { ...would, reasons: would.reasons.slice(0, 5) } }));
+    json = JSON.stringify({ ...record, pulls, truncated: true });
+  }
+  if (json.length > MAX_DECISION_CHARS) {
+    const { pulls: _pulls, ...rest } = record;
+    json = JSON.stringify({ ...rest, pulls: [], truncated: true });
+  }
+  const lines = record.pulls.map((pull) =>
+    `- #${pull.number} at ${pull.head_sha.slice(0, 7)}: ${pull.band} band, ${pull.area} area; ` +
+    `would ${pull.would.decision === "auto" ? `merge through ${pull.would.area}` : "go to a person"}` +
+    (pull.would.reasons.length > 0 ? `: ${pull.would.reasons.join("; ")}` : ""));
+  const prose = [`**${record.mode}**: ${record.reason}`, ...lines].join("\n");
+  const summary = `\`\`\`json\n${json}\n\`\`\`\n\n${prose}`.slice(0, MAX_SUMMARY_CHARS);
+  const title = `${record.mode}: ${record.conclusion === "success" ? "passes" : "blocked"}; would ` +
+    (record.pulls.every((pull) => pull.would.decision === "auto") && record.pulls.length > 0 ? "auto-merge" : "need a person");
+  return { title, summary };
+}
+
+interface RepoRef {
+  owner: string;
+  repo: string;
+}
+
+type PullRef = RepoRef & { pull_number: number };
+
+type Page = { per_page: number; page: number };
+
+/** An entry of a git tree, as `git.getTree` returns it. */
+interface TreeEntry {
+  path: string;
+  mode: string;
+  type: string;
+  sha: string;
+}
+
+/** A file or directory entry from `repos.getContent`. */
+interface ContentEntry {
+  type: string;
+  /** The blob SHA, for a file. */
+  sha?: string;
+  content?: string;
+  encoding?: string;
+}
+
+/** The subset of actions/github-script's authenticated Octokit client the gate calls. */
+export interface GitHubClient {
+  rest: {
+    pulls: {
+      get(args: PullRef): Promise<{ data: PullRequest }>;
+      list(args: RepoRef & Page & { state: "open" | "all"; head: string; base?: string }): Promise<{ data: PullRequest[] }>;
+      listFiles(args: PullRef & Page): Promise<{ data: ChangedFile[] }>;
+      listReviews(args: PullRef & Page): Promise<{ data: Review[] }>;
+      listReviewComments(args: PullRef & Page): Promise<{ data: Comment[] }>;
+      listCommits(args: PullRef & Page): Promise<{ data: PullCommit[] }>;
+      createReview(args: PullRef & { commit_id: string; event: "APPROVE"; body: string }): Promise<object>;
+      dismissReview(args: PullRef & { review_id: number; message: string }): Promise<object>;
+    };
+    issues: {
+      listComments(args: RepoRef & Page & { issue_number: number }): Promise<{ data: Comment[] }>;
+      listEventsForTimeline(args: RepoRef & Page & { issue_number: number }):
+        Promise<{ data: { event?: string; created_at?: string }[] }>;
+    };
+    repos: {
+      getContent(args: RepoRef & { path: string; ref: string }): Promise<{ data: ContentEntry | ContentEntry[] }>;
+      compareCommitsWithBasehead(args: RepoRef & { basehead: string; per_page: number }):
+        Promise<{ data: { merge_base_commit: { sha: string } } }>;
+    };
+    git: {
+      getTree(args: RepoRef & { tree_sha: string }): Promise<{ data: { tree: TreeEntry[]; truncated: boolean } }>;
+    };
+    checks: {
+      create(args: RepoRef & { name: string; head_sha: string; status: "in_progress"; details_url: string }):
+        Promise<{ data: { id: number } }>;
+      update(args: RepoRef & {
+        check_run_id: number;
+        status: "completed";
+        conclusion: "success" | "failure" | "cancelled";
+        output: { title: string; summary: string };
+      }): Promise<object>;
+      listForRef(args: RepoRef & { ref: string; check_name: string; app_id: number; filter: "all"; per_page: number }):
+        Promise<{ data: { check_runs: { id: number }[] } }>;
+      listSuitesForRef(args: RepoRef & { ref: string; per_page: number }):
+        Promise<{ data: { total_count: number; check_suites: { created_at: string | null }[] } }>;
+    };
+    actions: {
+      listWorkflowRuns(args: RepoRef & { workflow_id: string; head_sha: string; event: string; per_page: number }):
+        Promise<{ data: { total_count: number; workflow_runs: WorkflowRun[] } }>;
+      listWorkflowRunArtifacts(args: RepoRef & { run_id: number; name: string; per_page: number }):
+        Promise<{ data: { artifacts: Artifact[] } }>;
+      downloadArtifact(args: RepoRef & { artifact_id: number; archive_format: "zip" }): Promise<{ data: ArrayBuffer }>;
+    };
+  };
+  graphql(query: string, variables: Record<string, string | number>): Promise<Json>;
+}
+
+/** The GitHub Actions event context fields the gate reads. */
+export interface ActionsContext {
+  eventName: string;
+  /** For `workflow_run` and `issue_comment`, the default branch's head when the event fired. */
+  sha: string;
+  runId: number;
+  serverUrl: string;
+  repo: RepoRef;
+  payload: {
+    repository?: { default_branch: string; full_name: string };
+    workflow_run?: {
+      event: string;
+      head_sha: string;
+      head_branch: string | null;
+      head_repository: { owner: { login: string } } | null;
+      pull_requests?: { number: number; base: { ref: string } }[];
+    };
+    issue?: { number: number; pull_request?: object | null };
+  };
+}
+
+/** The actions/github-script logging helpers the gate calls. */
+export interface ActionsCore {
+  notice(message: string): void;
+  summary: { addRaw(text: string): ActionsCore["summary"]; write(): Promise<object> };
+}
+
+/** The risk-review App, whose token the workflow passes in. */
+export interface RiskReviewApp {
+  id: number;
+  /** The App's bot login, `<slug>[bot]`. */
+  login: string;
+}
+
+async function listAll<T>(list: (page: Page) => Promise<{ data: T[] }>): Promise<T[]> {
+  const all: T[] = [];
+  for (let page = 1; ; page++) {
+    const { data } = await list({ per_page: PER_PAGE, page });
+    all.push(...data);
+    if (data.length < PER_PAGE) return all;
+  }
+}
+
+function isNotFound(error: Error): boolean {
+  return "status" in error && error.status === 404;
+}
+
+async function readFile(github: GitHubClient, repo: RepoRef, path: string, ref: string): Promise<string | undefined> {
+  try {
+    const { data } = await github.rest.repos.getContent({ ...repo, path, ref });
+    if (Array.isArray(data) || data.type !== "file" || data.encoding !== "base64" || data.content === undefined) {
+      return undefined;
+    }
+    return Buffer.from(data.content, "base64").toString("utf8");
+  } catch (error) {
+    if (error instanceof Error && isNotFound(error)) return undefined;
+    throw error;
+  }
+}
+
+/** A file's blob SHA at a commit, or `undefined` when it is not a file there. */
+async function readBlobSha(github: GitHubClient, repo: RepoRef, path: string, ref: string): Promise<string | undefined> {
+  try {
+    const { data } = await github.rest.repos.getContent({ ...repo, path, ref });
+    return Array.isArray(data) || data.type !== "file" ? undefined : data.sha;
+  } catch (error) {
+    if (error instanceof Error && isNotFound(error)) return undefined;
+    throw error;
+  }
+}
+
+/** The merge base of two commits, or `undefined` when GitHub cannot compare them. */
+async function mergeBaseOf(github: GitHubClient, repo: RepoRef, base: string, head: string): Promise<string | undefined> {
+  try {
+    const { data } = await github.rest.repos.compareCommitsWithBasehead({ ...repo, basehead: `${base}...${head}`, per_page: 1 });
+    return data.merge_base_commit.sha;
+  } catch (error) {
+    if (error instanceof Error && isNotFound(error)) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Why a rung 1 proof, made against the commit it names as its base, does not hold for the base this
+ * decision is about (the pull request's base, or what a merge group puts under it), or `undefined`
+ * when it does. Each proof read something from its base; that must be the same, readable, at the
+ * decision's.
+ *
+ * - `proof-actions` read every touched workflow at its base, for credentials.
+ * - `proof-deps` read the release-age policy in `pnpm-workspace.yaml` and the package names in
+ *   `pnpm-lock.yaml` at the merge base of its base and the head.
+ * - `proof-equivalence` and `proof-tests` built or ran the whole tree at that merge base, which no
+ *   file list can bound: they hold only when made against the decision base and the head already
+ *   contains it, so the merge base they built is the decision base and the head is what merges.
+ */
+async function staleProofError(github: GitHubClient, repo: RepoRef, { name, artifact, pull, files, decisionBase }: {
+  name: ProducerName;
+  artifact: ProducerArtifact;
+  pull: PullRequest;
+  files: ChangedFile[];
+  decisionBase: string;
+}): Promise<string | undefined> {
+  const proofBase = artifact.base_sha;
+  const unchanged = async (paths: string[], at: string) => {
+    for (const path of paths) {
+      const before = await readBlobSha(github, repo, path, at);
+      const after = at === decisionBase ? before : await readBlobSha(github, repo, path, decisionBase);
+      if (before === undefined || before !== after) {
+        return `${path} is unreadable or changed between ${at.slice(0, 7)} and ${decisionBase.slice(0, 7)}`;
+      }
+    }
+    return undefined;
+  };
+  switch (name) {
+    case "proof-actions":
+      return unchanged(files.map(({ filename }) => filename), proofBase);
+    case "proof-deps": {
+      const from = await mergeBaseOf(github, repo, proofBase, pull.head.sha);
+      if (from === undefined) return `cannot compare ${proofBase.slice(0, 7)} with the head`;
+      return unchanged(["pnpm-workspace.yaml", "pnpm-lock.yaml"], from);
+    }
+    case "proof-equivalence":
+    case "proof-tests": {
+      if (proofBase !== decisionBase) return `made against ${proofBase.slice(0, 7)}, not ${decisionBase.slice(0, 7)}`;
+      return await mergeBaseOf(github, repo, decisionBase, pull.head.sha) === decisionBase
+        ? undefined
+        : `the head does not contain ${decisionBase.slice(0, 7)}`;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Reads the policy files at a base commit. */
+export async function readPolicy(github: GitHubClient, repo: RepoRef, sha: string): Promise<Policy> {
+  const [maintainers, bands, escapes] = await Promise.all([
+    readFile(github, repo, POLICY_FILES.maintainers, sha),
+    readFile(github, repo, POLICY_FILES.bands, sha),
+    readFile(github, repo, POLICY_FILES.escapes, sha),
+  ]);
+  const { config, problem } = parseBands(bands);
+  return {
+    sha,
+    maintainers: parseMaintainers(maintainers),
+    bands: config,
+    ...(problem && { bandsProblem: problem }),
+    escapes: parseEscapeSnapshot(escapes),
+  };
+}
+
+function contentsKind(file: ChangedFile): ContentsKind | undefined {
+  return needsContents(file.filename) ?? (file.previous_filename === undefined ? undefined : needsContents(file.previous_filename));
+}
+
+async function readFacts(github: GitHubClient, repo: RepoRef, pull: PullRequest, files: ChangedFile[]): Promise<ContentFacts> {
+  const facts: ContentFacts = { workspaceCatalogOnly: true, newDependencies: [], durableObjectRisks: [], skillSymlinks: [] };
+  const needed = files.filter((file) => contentsKind(file) !== undefined);
+  const skills = files.filter((file) => [file.filename, file.previous_filename].some((path) => path !== undefined && isSkillPath(path)));
+  if (needed.length === 0 && skills.length === 0) return facts;
+  const { data } = await github.rest.repos.compareCommitsWithBasehead({
+    ...repo,
+    basehead: `${pull.base.sha}...${pull.head.sha}`,
+    per_page: 1,
+  });
+  const mergeBase = data.merge_base_commit.sha;
+  for (const file of skills) {
+    // Each side that exists must be a plain file: a symlink would make edits to its target read as
+    // skill edits, or point a skill at anything in the repository.
+    const sides = [
+      ...(file.status === "added" ? [] : [{ path: file.previous_filename ?? file.filename, ref: mergeBase }]),
+      ...(file.status === "removed" ? [] : [{ path: file.filename, ref: pull.head.sha }]),
+    ];
+    for (const { path, ref } of sides) {
+      const mode = await entryMode(github, repo, path, ref);
+      if (mode !== "100644" && mode !== "100755") facts.skillSymlinks.push(path);
+    }
+  }
+  for (const file of needed) {
+    const added = file.status === "added";
+    const removed = file.status === "removed";
+    // A file renamed into place starts from nothing: its old contents were not this kind of file, so
+    // settings it carried in (an install script in a JSON fixture) are new here.
+    const renamedIn = file.previous_filename !== undefined && needsContents(file.previous_filename) !== contentsKind(file);
+    const before = added || renamedIn ? undefined : await readFile(github, repo, file.previous_filename ?? file.filename, mergeBase);
+    const after = removed ? undefined : await readFile(github, repo, file.filename, pull.head.sha);
+    // A side that exists but cannot be read (too large, not a file) is unknown, so it counts against the change.
+    const unreadable = (!added && !renamedIn && before === undefined) || (!removed && after === undefined);
+    switch (contentsKind(file)) {
+      case "workspace":
+        facts.workspaceCatalogOnly = before !== undefined && after !== undefined && isCatalogVersionBump(before, after);
+        break;
+      case "manifest": {
+        const names = unreadable ? undefined : addedDependencies(before, after);
+        const settings = unreadable ? undefined : changedInstallSettings(before, after);
+        if (names === undefined || settings === undefined) facts.newDependencies.push(`${file.filename}: unreadable`);
+        else {
+          facts.newDependencies.push(...names.map((name) => `${file.filename}: ${name}`));
+          facts.newDependencies.push(...settings.map((setting) => `${file.filename}: changes ${setting}`));
+        }
+        break;
+      }
+      case "worker-config": {
+        // The release deploys `packages/<dir>/wrangler.jsonc`, by directory (`readDeployablePackages`
+        // in scripts/release/manifest-lib.ts). A config removed or renamed, even to another
+        // directory, takes its Worker out of the release, and its Durable Objects with it.
+        const renamedFrom = file.status === "renamed" && file.previous_filename !== undefined && needsContents(file.previous_filename) === "worker-config"
+          ? file.previous_filename
+          : undefined;
+        const risks = removed || renamedFrom !== undefined
+          ? ["removed"]
+          : unreadable || after === undefined ? ["unreadable"] : durableObjectRisks(before, after);
+        facts.durableObjectRisks.push(...risks.map((risk) => `${renamedFrom ?? file.filename}: ${risk}`));
+        break;
+      }
+      case undefined:
+        break;
+    }
+  }
+  return facts;
+}
+
+/**
+ * A path's git mode at a commit (`100644`, `100755`, `120000` for a symlink, `040000`, `160000`),
+ * walked down from the commit's root tree one directory at a time. The contents API cannot tell: it
+ * resolves a symlink to a file and reports the file.
+ */
+async function entryMode(github: GitHubClient, repo: RepoRef, path: string, commit: string): Promise<string | undefined> {
+  let tree = commit;
+  const segments = path.split("/");
+  for (const [index, segment] of segments.entries()) {
+    let entries: TreeEntry[];
+    try {
+      const { data } = await github.rest.git.getTree({ ...repo, tree_sha: tree });
+      if (data.truncated) return undefined;
+      entries = data.tree;
+    } catch (error) {
+      if (error instanceof Error && isNotFound(error)) return undefined;
+      throw error;
+    }
+    const entry = entries.find((candidate) => candidate.path === segment);
+    if (!entry) return undefined;
+    if (index === segments.length - 1) return entry.mode;
+    if (entry.type !== "tree") return undefined;
+    tree = entry.sha;
+  }
+  return undefined;
+}
+
+/** When the head was pushed: the earliest check suite GitHub created for it. */
+async function readLastPush(github: GitHubClient, repo: RepoRef, sha: string): Promise<string | undefined> {
+  const { data } = await github.rest.checks.listSuitesForRef({ ...repo, ref: sha, per_page: PER_PAGE });
+  if (data.total_count === 0 || data.total_count > data.check_suites.length) return undefined;
+  const times = data.check_suites.flatMap(({ created_at }) => (created_at ? [Date.parse(created_at)] : []));
+  return times.length > 0 ? new Date(Math.min(...times)).toISOString() : undefined;
+}
+
+async function readReviewDecision(github: GitHubClient, repo: RepoRef, number: number): Promise<string | null> {
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) { pullRequest(number: $number) { reviewDecision } }
+    }`,
+    { owner: repo.owner, repo: repo.repo, number },
+  );
+  const decision = asObject(asObject(asObject(response)?.repository)?.pullRequest)?.reviewDecision;
+  return typeof decision === "string" ? decision : null;
+}
+
+/** A pull request's base over time: its base when opened, and each change. */
+export interface BaseHistory {
+  number: number;
+  createdAt: number;
+  /** Its base now. */
+  baseRefName: string;
+  changes: { at: number; from: string; to: string }[];
+}
+
+/**
+ * When a pull request first had a base other than the default branch, or `undefined` when it never
+ * did. Its first base is the first change's `from`, or its base now when it never changed.
+ */
+export function firstOtherBase(history: BaseHistory, defaultBranch: string): { at: number; base: string } | undefined {
+  const changes = history.changes.toSorted((a, b) => a.at - b.at);
+  const first = changes[0]?.from ?? history.baseRefName;
+  if (first !== defaultBranch) return { at: history.createdAt, base: first };
+  const moved = changes.find(({ to }) => to !== defaultBranch);
+  return moved && { at: moved.at, base: moved.to };
+}
+
+async function readBaseHistory(github: GitHubClient, repo: RepoRef, number: number): Promise<BaseHistory | undefined> {
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $number) {
+          createdAt
+          baseRefName
+          timelineItems(itemTypes: [BASE_REF_CHANGED_EVENT], first: 100) {
+            pageInfo { hasNextPage }
+            nodes { ... on BaseRefChangedEvent { createdAt previousRefName currentRefName } }
+          }
+        }
+      }
+    }`,
+    { owner: repo.owner, repo: repo.repo, number },
+  );
+  const pull = asObject(asObject(asObject(response)?.repository)?.pullRequest);
+  const items = asObject(pull?.timelineItems);
+  const nodes = items?.nodes;
+  const { createdAt, baseRefName } = pull ?? {};
+  if (typeof createdAt !== "string" || typeof baseRefName !== "string" || !Array.isArray(nodes)) return undefined;
+  if (asObject(items?.pageInfo)?.hasNextPage !== false) return undefined;
+  const changes: BaseHistory["changes"] = [];
+  for (const value of nodes) {
+    const { createdAt: at, previousRefName: from, currentRefName: to } = asObject(value) ?? {};
+    if (typeof at !== "string" || typeof from !== "string" || typeof to !== "string") return undefined;
+    changes.push({ at: Date.parse(at), from, to });
+  }
+  return { number, createdAt: Date.parse(createdAt), baseRefName, changes };
+}
+
+/**
+ * The earliest time another pull request from this branch, open or closed, had a base other than
+ * the default branch: from then on its runs of that base's workflows share this head commit and
+ * branch, so they could stand in for this pull request's. A history that cannot be read fences
+ * every run.
+ */
+async function siblingFence(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
+  Promise<{ at: number; reason: string } | undefined> {
+  const others = await listAll((page) =>
+    github.rest.pulls.list({ ...repo, ...page, state: "all", head: `${repo.owner}:${pull.head.ref}` }));
+  let fence: { at: number; reason: string } | undefined;
+  for (const other of others.filter(({ number }) => number !== pull.number)) {
+    const history = await readBaseHistory(github, repo, other.number);
+    const found = history ? firstOtherBase(history, defaultBranch) : { at: 0, base: "a base its history does not show" };
+    if (found && (!fence || found.at < fence.at)) {
+      fence = { at: found.at, reason: `#${other.number} from the same branch targeted ${found.base}` };
+    }
+  }
+  return fence;
+}
+
+/** When the pull request's base last changed, or 0 when it never did. */
+async function lastBaseChange(github: GitHubClient, repo: RepoRef, number: number): Promise<number> {
+  const events = await listAll((page) => github.rest.issues.listEventsForTimeline({ ...repo, ...page, issue_number: number }));
+  return Math.max(0, ...events.flatMap(({ event, created_at }) =>
+    event === "base_ref_changed" && typeof created_at === "string" ? [Date.parse(created_at)] : []));
+}
+
+async function readProducers(github: GitHubClient, repo: RepoRef, pull: PullRequest, defaultBranch: string):
+  Promise<Partial<Record<ProducerName, ProducerInput>>> {
+  const repository = `${repo.owner}/${repo.repo}`;
+  const [fence, notBefore] = await Promise.all([
+    siblingFence(github, repo, pull, defaultBranch),
+    lastBaseChange(github, repo, pull.number),
+  ]);
+  // After a base change GitHub rebuilds the merge ref in the background, so a run the change itself
+  // started may still use the old base's workflows. Only a head pushed after the change is safe.
+  const pushed = notBefore > 0 ? await readLastPush(github, repo, pull.head.sha) : undefined;
+  const staleBase = notBefore > 0 && (pushed === undefined || Date.parse(pushed) <= notBefore)
+    ? "the base changed after the head was pushed; producers count again after the next push"
+    : undefined;
+  const shared = staleBase;
+  const runsByWorkflow = new Map<string, WorkflowRun[] | string>();
+  const runsOf = async (workflow: string) => {
+    const cached = runsByWorkflow.get(workflow);
+    if (cached !== undefined) return cached;
+    let runs: WorkflowRun[] | string;
+    try {
+      const { data } = await github.rest.actions.listWorkflowRuns({
+        ...repo,
+        workflow_id: basename(workflow),
+        head_sha: pull.head.sha,
+        event: "pull_request",
+        per_page: PER_PAGE,
+      });
+      runs = data.total_count > data.workflow_runs.length ? "too many runs to tell which is newest" : data.workflow_runs;
+    } catch (error) {
+      if (!(error instanceof Error && isNotFound(error))) throw error;
+      runs = `${workflow} does not exist`;
+    }
+    runsByWorkflow.set(workflow, runs);
+    return runs;
+  };
+
+  const inputs: Partial<Record<ProducerName, ProducerInput>> = {};
+  for (const [name, producer] of Object.entries(PRODUCERS)) {
+    if (!isProducerName(name)) continue;
+    if (shared) {
+      inputs[name] = { absent: shared };
+      continue;
+    }
+    const expected = {
+      producer,
+      headSha: pull.head.sha,
+      repository,
+      pullNumber: pull.number,
+      defaultBranch,
+      headBranch: pull.head.ref,
+      notBefore,
+      siblingFence: fence,
+    };
+    const runs = await runsOf(producer.workflow);
+    if (typeof runs === "string") {
+      inputs[name] = { absent: runs };
+      continue;
+    }
+    // Only the producer's own runs compete to be the newest, so an unrelated run cannot mask them.
+    const run = newestRun(runs.filter((candidate) => identityError(candidate, expected) === undefined));
+    // With none of its own, say why the newest run on the head was not the producer's.
+    const rejected = run ? undefined : newestRun(runs);
+    const why = rejected && identityError(rejected, expected);
+    inputs[name] = why ? { absent: why } : await readProducer(github, repo, { name, run, pull, expected });
+  }
+  return inputs;
+}
+
+async function readProducer(github: GitHubClient, repo: RepoRef, { name, run, pull, expected }: {
+  name: ProducerName;
+  run: WorkflowRun | undefined;
+  pull: PullRequest;
+  expected: BindingExpectation;
+}): Promise<ProducerInput> {
+  if (!run) return { absent: "no run" };
+  const error = bindingError(run, expected);
+  if (error) return { absent: error };
+  const artifact = artifactName(name);
+  const { data } = await github.rest.actions.listWorkflowRunArtifacts({ ...repo, run_id: run.id, name: artifact, per_page: PER_PAGE });
+  const picked = pickArtifact(data.artifacts, artifact, run);
+  if (!picked) return { absent: "the run's latest attempt uploaded no usable artifact" };
+  const zip = await github.rest.actions.downloadArtifact({ ...repo, artifact_id: picked.id, archive_format: "zip" });
+  const file = readArtifactFile(new Uint8Array(zip.data), `${artifact}.json`);
+  if ("absent" in file) return file;
+  return parseProducerArtifact(file.text, { name, headSha: pull.head.sha, baseSha: pull.base.sha });
+}
+
+/**
+ * Reads everything the decision needs about one pull request.
+ *
+ * @param decisionBase The commit the pull request would land on: its base, or, in a merge group, the
+ *     commit the queue puts under it.
+ */
+export async function readPullInputs(github: GitHubClient, context: ActionsContext, pull: PullRequest, decisionBase: string):
+  Promise<PullInputs> {
+  const repo = context.repo;
+  const ref = { ...repo, pull_number: pull.number };
+  const files = await listAll((page) => github.rest.pulls.listFiles({ ...ref, ...page }));
+  const [facts, reviews, issueComments, reviewComments, lastPush, reviewDecision, producers, commits] = await Promise.all([
+    readFacts(github, repo, pull, files),
+    listAll((page) => github.rest.pulls.listReviews({ ...ref, ...page })),
+    listAll((page) => github.rest.issues.listComments({ ...repo, issue_number: pull.number, ...page })),
+    listAll((page) => github.rest.pulls.listReviewComments({ ...ref, ...page })),
+    readLastPush(github, repo, pull.head.sha),
+    readReviewDecision(github, repo, pull.number),
+    readProducers(github, repo, pull, context.payload.repository?.default_branch ?? "main"),
+    pull.user?.login === DEPENDABOT ? listAll((page) => github.rest.pulls.listCommits({ ...ref, ...page })) : undefined,
+  ]);
+  for (const [name, input] of Object.entries(producers)) {
+    // Only a holding proof can count, so only it needs checking.
+    if (!isProducerName(name) || !input || !("artifact" in input)) continue;
+    if (input.artifact.kind === "verdict" || input.artifact.status !== "ok" || !input.artifact.holds) continue;
+    const stale = await staleProofError(github, repo, { name, artifact: input.artifact, pull, files, decisionBase });
+    if (stale) producers[name] = { absent: stale };
+  }
+  return {
+    pull,
+    files,
+    facts,
+    reviews,
+    comments: [...issueComments, ...reviewComments],
+    lastPush,
+    reviewDecision,
+    producers,
+    // The API lists at most 250 commits; a longer pull request's commits cannot all be checked.
+    commits: commits && commits.length >= pull.commits ? commits : undefined,
+  };
+}
+
+/** The commit a run posts on, the pull requests it decides, and the commit policy is read at. */
+interface Target {
+  sha: string;
+  policySha: string;
+  /** Each pull request, and the commit it would land on. */
+  pulls: { pull: PullRequest; base: string }[];
+  mergeGroup: boolean;
+  /** Set when the event names a commit but its pull requests cannot be told apart. */
+  problem?: string;
+}
+
+async function openPullIntoDefault(github: GitHubClient, context: ActionsContext, number: number) {
+  const { data } = await github.rest.pulls.get({ ...context.repo, pull_number: number });
+  const base = context.payload.repository?.default_branch;
+  return data.state === "open" && data.base.ref === base ? data : undefined;
+}
+
+/**
+ * The pull requests in the merge group whose commit is `headSha`, oldest first, and the group's
+ * base: walk from the entry whose merge commit is `headSha` back through each entry's base until a
+ * base that is no entry's commit. `undefined` when no queue entry has that commit, so a branch that
+ * only looks like a merge group's is never decided as one.
+ */
+export function mergeGroupPulls(entries: Json, headSha: string):
+  { pulls: { number: number; base: string }[]; baseSha: string } | undefined {
+  const nodes = asObject(asObject(asObject(asObject(entries)?.repository)?.mergeQueue)?.entries)?.nodes;
+  if (!Array.isArray(nodes)) return undefined;
+  const byHead = new Map<string, { base: string; number: number }>();
+  for (const node of nodes) {
+    const entry = asObject(node);
+    const head = asObject(entry?.headCommit)?.oid;
+    const base = asObject(entry?.baseCommit)?.oid;
+    const number = asObject(entry?.pullRequest)?.number;
+    if (typeof head === "string" && typeof base === "string" && typeof number === "number") {
+      byHead.set(head, { base, number });
+    }
+  }
+  const pulls: { number: number; base: string }[] = [];
+  let sha = headSha;
+  for (let entry = byHead.get(sha); entry; entry = byHead.get(sha)) {
+    if (pulls.length >= byHead.size) return undefined;
+    pulls.unshift({ number: entry.number, base: entry.base });
+    sha = entry.base;
+  }
+  return pulls.length > 0 ? { pulls, baseSha: sha } : undefined;
+}
+
+async function resolveMergeGroup(github: GitHubClient, context: ActionsContext, run: { head_sha: string; head_branch: string | null }):
+  Promise<Target | undefined> {
+  const { repo, payload } = context;
+  const defaultBranch = payload.repository?.default_branch ?? "main";
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $branch: String!) {
+      repository(owner: $owner, name: $repo) {
+        mergeQueue(branch: $branch) {
+          entries(first: 100) { nodes { headCommit { oid } baseCommit { oid } pullRequest { number } } }
+        }
+      }
+    }`,
+    { owner: repo.owner, repo: repo.repo, branch: defaultBranch },
+  );
+  const group = mergeGroupPulls(response, run.head_sha);
+  // The queue's ref names its newest pull request: gh-readonly-queue/<base>/pr-<number>-<base sha>.
+  const named = /^gh-readonly-queue\/[^/]+\/pr-(\d+)-/.exec(run.head_branch ?? "")?.[1];
+  if (!group || Number(named) !== group.pulls.at(-1)?.number) return undefined;
+  const target = { sha: run.head_sha, policySha: group.baseSha, mergeGroup: true };
+  // Each pull request lands on the queue's commit under it, which holds the entries ahead of it.
+  const pulls = await Promise.all(group.pulls.map(async ({ number, base }) => {
+    const pull = await openPullIntoDefault(github, context, number);
+    return pull && { pull, base };
+  }));
+  const open = pulls.filter((entry) => entry !== undefined);
+  if (open.length !== group.pulls.length) {
+    return { ...target, pulls: [], problem: "a pull request in the group is not open into the default branch" };
+  }
+  return { ...target, pulls: open };
+}
+
+async function resolveTarget(github: GitHubClient, context: ActionsContext): Promise<Target | undefined> {
+  const { payload, repo } = context;
+  const defaultBranch = payload.repository?.default_branch ?? "main";
+  let number: number | undefined;
+  if (context.eventName === "issue_comment") {
+    if (payload.issue?.pull_request) number = payload.issue.number;
+  } else if (context.eventName === "workflow_run" && payload.workflow_run) {
+    const run = payload.workflow_run;
+    if (run.event === "merge_group") return resolveMergeGroup(github, context, run);
+    number = run.pull_requests?.find((pull) => pull.base.ref === defaultBranch)?.number;
+    // `pull_requests` is empty when the head is in a fork, so look the pull request up by head and
+    // base. GitHub allows one open pull request per pair.
+    if (number === undefined && run.head_repository && run.head_branch) {
+      const { data } = await github.rest.pulls.list({
+        ...repo,
+        state: "open",
+        head: `${run.head_repository.owner.login}:${run.head_branch}`,
+        base: defaultBranch,
+        per_page: PER_PAGE,
+        page: 1,
+      });
+      number = data[0]?.number;
+    }
+  }
+  if (number === undefined) return undefined;
+  const pull = await openPullIntoDefault(github, context, number);
+  return pull && { sha: pull.head.sha, policySha: context.sha, pulls: [{ pull, base: pull.base.sha }], mergeGroup: false };
+}
+
+/**
+ * Keeps the App's approval in step with an enforce-mode decision: it approves the head commit of a
+ * pull request that may merge without a person when App approvals count, and withdraws any standing
+ * approval otherwise. It enqueues a pull request that may merge without a person once the gate
+ * passes.
+ */
+async function execute(github: GitHubClient, context: ActionsContext, { inputs, decision, policy, app }: {
+  inputs: PullInputs;
+  decision: PullDecision;
+  policy: Policy;
+  app: RiskReviewApp;
+}): Promise<void> {
+  const { repo } = context;
+  const ref = { ...repo, pull_number: decision.number };
+  const auto = decision.would.decision === "auto";
+  // A draft is not ready to merge: approving it now would carry the App's approval past "ready for review".
+  const approve = auto && policy.bands.appApprovalsCount && !inputs.pull.draft;
+  const standing = inputs.reviews.filter((review) => review.user?.login === app.login && review.state === "APPROVED");
+  if (!approve) {
+    for (const review of standing) {
+      await github.rest.pulls.dismissReview({ ...ref, review_id: review.id, message: decision.gate.reason });
+    }
+  } else if (!standing.some((review) => review.commit_id === decision.head_sha)) {
+    await github.rest.pulls.createReview({ ...ref, commit_id: decision.head_sha, event: "APPROVE", body: decision.gate.reason });
+  }
+  if (!auto || !decision.gate.passes || inputs.pull.draft) return;
+  const response = await github.graphql(
+    `query($owner: String!, $repo: String!, $number: Int!) {
+      repository(owner: $owner, name: $repo) { pullRequest(number: $number) { mergeQueueEntry { id } } }
+    }`,
+    { owner: repo.owner, repo: repo.repo, number: decision.number },
+  );
+  const queued = asObject(asObject(asObject(asObject(response)?.repository)?.pullRequest)?.mergeQueueEntry) !== undefined;
+  if (queued) return;
+  await github.graphql(
+    `mutation($id: ID!, $head: GitObjectID!) {
+      enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $head }) { mergeQueueEntry { id } }
+    }`,
+    { id: inputs.pull.node_id, head: decision.head_sha },
+  );
+}
+
+/**
+ * Decides the pull requests the event is about and posts the `risk-review` check run, then, in
+ * enforce mode, approves and enqueues those that may merge without a person.
+ *
+ * @param options GitHub Actions runtime dependencies, the risk-review App, and the decision time.
+ */
+export async function runRiskReview({ github, context, core, app, now = new Date() }: {
+  github: GitHubClient;
+  context: ActionsContext;
+  core: ActionsCore;
+  app: RiskReviewApp;
+  now?: Date;
+}): Promise<void> {
+  const target = await resolveTarget(github, context);
+  if (!target) {
+    core.notice("No open pull request into the default branch, or queued merge group, matches this event; nothing to decide.");
+    return;
+  }
+  const { repo } = context;
+  // Created before anything is read, so a later run's check run is always newer than this one's and
+  // this run can tell it has been overtaken.
+  const { data: created } = await github.rest.checks.create({
+    ...repo,
+    name: CHECK_NAME,
+    head_sha: target.sha,
+    status: "in_progress",
+    details_url: `${context.serverUrl}/${repo.owner}/${repo.repo}/actions/runs/${context.runId}`,
+  });
+  const complete = (conclusion: "success" | "failure" | "cancelled", output: { title: string; summary: string }) =>
+    github.rest.checks.update({ ...repo, check_run_id: created.id, status: "completed", conclusion, output });
+  let published: {
+    summary: string;
+    enforce?: { policy: Policy; pulls: { inputs: PullInputs; decision: PullDecision }[] };
+  } | undefined;
+  try {
+    const policy = await readPolicy(github, repo, target.policySha);
+    const pulls = await Promise.all(target.pulls.map(async ({ pull, base }) => {
+      const inputs = await readPullInputs(github, context, pull, base);
+      return { inputs, decision: decide(inputs, policy, now) };
+    }));
+    const decisions = pulls.map(({ decision }) => decision);
+    const record: DecisionRecord = {
+      schema: 1,
+      mode: policy.bands.mode,
+      event: target.mergeGroup ? "merge_group" : context.eventName,
+      sha: target.sha,
+      policy_sha: policy.sha,
+      ...(policy.bandsProblem && { bands_problem: policy.bandsProblem }),
+      ...conclude(decisions, policy.bands.mode, target.problem),
+      pulls: decisions,
+    };
+
+    const { data: latest } = await github.rest.checks.listForRef({
+      ...repo,
+      ref: target.sha,
+      check_name: CHECK_NAME,
+      app_id: app.id,
+      filter: "all",
+      per_page: PER_PAGE,
+    });
+    if (latest.check_runs.some(({ id }) => id > created.id)) {
+      await complete("cancelled", { title: "Superseded", summary: "A later run decides this commit." });
+      core.notice("A later run has taken over this commit's check run; leaving it to that run.");
+      return;
+    }
+    const output = renderOutput(record);
+    await complete(record.conclusion, output);
+    published = { summary: output.summary, ...(record.mode === "enforce" && !target.mergeGroup && { enforce: { policy, pulls } }) };
+  } catch (error) {
+    // A check run left in progress would hold the commit until some later event; fail it instead.
+    const message = error instanceof Error ? error.message : String(error);
+    await complete("failure", { title: "The gate failed", summary: `The gate could not decide: ${message}` });
+    throw error;
+  }
+  // Everything below runs after the check is published, so a failure here (GitHub refusing the
+  // enqueue while required checks run, or the step summary not writing) fails this run but never
+  // the decision. CI's completion starts the run that tries the enqueue again.
+  if (!published) return;
+  if (published.enforce) {
+    const { policy, pulls } = published.enforce;
+    for (const { inputs, decision } of pulls) await execute(github, context, { inputs, decision, policy, app });
+  }
+  await core.summary.addRaw(published.summary).write();
+}

@@ -1,0 +1,69 @@
+{
+  "pull": {
+    "number": 993,
+    "user": {
+      "login": "dependabot[bot]",
+      "type": "Bot"
+    },
+    "commits": 2,
+    "head": {
+      "sha": "ac686c19b7229073033315499cdcb2017d8a2c66"
+    },
+    "base": {
+      "sha": "303902059743b7f082e73c8b5ba3343b71088259",
+      "ref": "main"
+    }
+  },
+  "commits": [
+    {
+      "author": {
+        "login": "dependabot[bot]",
+        "type": "Bot"
+      },
+      "commit": {
+        "author": {
+          "email": "49699333+dependabot[bot]@users.noreply.github.com",
+          "name": "dependabot[bot]"
+        },
+        "committer": {
+          "email": "noreply@github.com",
+          "name": "GitHub"
+        },
+        "verification": {
+          "reason": "valid",
+          "verified": true
+        }
+      },
+      "committer": {
+        "login": "web-flow",
+        "type": "User"
+      },
+      "sha": "cce4780abd285bc7fbf087cb23a713c511c18684"
+    },
+    {
+      "author": {
+        "login": "ndisidore",
+        "type": "User"
+      },
+      "commit": {
+        "author": {
+          "email": "nathan@cloudflare.com",
+          "name": "Nathan Disidore"
+        },
+        "committer": {
+          "email": "nathan@cloudflare.com",
+          "name": "Nathan Disidore"
+        },
+        "verification": {
+          "reason": "unknown_key",
+          "verified": false
+        }
+      },
+      "committer": {
+        "login": "ndisidore",
+        "type": "User"
+      },
+      "sha": "ac686c19b7229073033315499cdcb2017d8a2c66"
+    }
+  ]
+}

@@ -1,0 +1,89 @@
+name: Risk review
+
+# Posts the `risk-review` check run on each pull request head into `main` and on each merge group,
+# as the risk-review GitHub App. scripts/risk-review.ts holds the rules and the reasons behind them;
+# .github/automerge-bands.json sets whether the check mirrors today's rule (shadow) or reports the
+# gate's own decision (enforce).
+#
+# The gate is the only publisher of `risk-review`. Producer workflows (Bonk PR Review, Review verdict,
+# Automerge proofs, Automerge evidence, Workshop eval comparison) upload one JSON artifact each; the
+# gate reads an artifact only from a run bound to the pull request's head. Their completion, and the
+# review relay, wake this workflow through `workflow_run`; maintainer comments wake it through
+# `issue_comment`. Both run this file and check out the script from the default branch, never the
+# pull request's copy, so a change cannot rewrite its own gate. Nothing here checks out or runs pull
+# request code.
+#
+# Merge groups reach the gate through the relay too, rather than through `merge_group` here: that
+# event runs on a `gh-readonly-queue/main/*` ref, and anyone who can push can create a branch under
+# that name, so an environment that admitted those refs would hand them the key. The gate decides a
+# merge group only when the merge queue lists its commit.
+#
+# The App's key is a secret of the `risk-review` environment, whose only deployment branch is
+# `main`: a workflow a pull request adds runs on its own ref and can neither read the key nor post as
+# the App. There is no fallback to the job token, whose check runs any workflow could forge.
+on:
+  workflow_run:
+    # CI runs the required checks: when it finishes last, the gate tries again the enqueue GitHub
+    # refused while they were running.
+    workflows: [Risk review trigger, Bonk PR Review, Review verdict, Automerge proofs, Automerge evidence, Workshop eval comparison, CI]
+    types: [completed]
+  issue_comment:
+    types: [created, deleted]
+
+permissions: {}
+
+jobs:
+  gate:
+    # Comments from bots never hold a pull request, so they need no new decision.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && github.event.comment.user.type != 'Bot')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # One run per commit at a time. Runs for one pull request can still overlap across events, so
+    # each creates its check run before reading anything and leaves the commit to any newer one.
+    concurrency:
+      group: risk-review-${{ github.event.workflow_run.head_sha || github.event.issue.number }}
+      cancel-in-progress: false
+    environment: risk-review
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the trusted script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+
+      - name: Mint the risk-review app's token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ vars.RISK_REVIEW_APP_ID }}
+          private-key: ${{ secrets.RISK_REVIEW_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-checks: write
+          permission-contents: read
+          permission-merge-queues: write
+          permission-pull-requests: write
+
+      - name: Decide and post the check run
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RISK_REVIEW_APP_ID: ${{ vars.RISK_REVIEW_APP_ID }}
+          RISK_REVIEW_APP_SLUG: ${{ steps.app.outputs.app-slug }}
+        with:
+          github-token: ${{ steps.app.outputs.token }}
+          script: |
+            const { pathToFileURL } = await import("node:url");
+            const scriptUrl = pathToFileURL(`${process.env.GITHUB_WORKSPACE}/scripts/risk-review.ts`);
+            const { runRiskReview } = await import(scriptUrl.href);
+            await runRiskReview({
+              github,
+              context,
+              core,
+              app: {
+                id: Number(process.env.RISK_REVIEW_APP_ID),
+                login: `${process.env.RISK_REVIEW_APP_SLUG}[bot]`,
+              },
+            });

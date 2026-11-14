@@ -1,0 +1,52 @@
+{
+  "pull": {
+    "base": {
+      "ref": "main",
+      "sha": "bf9eef37c1439b2e90d29f49dbafff662497d169"
+    },
+    "changed_files": 4,
+    "head": {
+      "sha": "ab77943fc807e4f2fdda9052167ec14cce1b7f47"
+    },
+    "number": 621,
+    "title": "Bump the github-actions group with 3 updates",
+    "user": {
+      "login": "dependabot[bot]",
+      "type": "Bot"
+    }
+  },
+  "files": [
+    {
+      "additions": 2,
+      "changes": 4,
+      "deletions": 2,
+      "filename": ".github/workflows/ci.yml",
+      "patch": "@@ -38,7 +38,7 @@ jobs:\n       # means they race to reserve the same lockfile-keyed entry.\n       # TODO(someday): It would be great if the setup-vp action could share a cache key with the test job but disable writes to cache\n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: false\n@@ -75,7 +75,7 @@ jobs:\n       # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not\n       # needed.\n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true",
+      "status": "modified"
+    },
+    {
+      "additions": 3,
+      "changes": 6,
+      "deletions": 3,
+      "filename": ".github/workflows/preview.yml",
+      "patch": "@@ -96,7 +96,7 @@ jobs:\n       # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not\n       # needed.\n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true\n@@ -228,7 +228,7 @@ jobs:\n       # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not\n       # needed.\n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true\n@@ -273,7 +273,7 @@ jobs:\n       # named in `packageManager` (integrity hash checked as Corepack does), so setup-node is not\n       # needed.\n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true",
+      "status": "modified"
+    },
+    {
+      "additions": 14,
+      "changes": 28,
+      "deletions": 14,
+      "filename": ".github/workflows/workshop-evals-pr.yml",
+      "patch": "@@ -119,7 +119,7 @@ jobs:\n           fetch-depth: 2\n \n       - name: Set up Node.js\n-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           run-install: false\n@@ -162,7 +162,7 @@ jobs:\n         run: corepack enable\n \n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true\n@@ -211,7 +211,7 @@ jobs:\n \n       - name: Upload ${{ matrix.revision }} results\n         if: ${{ !cancelled() }}\n-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n         with:\n           name: workshop-evals-run-${{ matrix.revision }}\n           path: ${{ runner.temp }}/run\n@@ -234,7 +234,7 @@ jobs:\n       matrix: ${{ fromJSON(needs.plan.outputs.store) }}\n     steps:\n       - name: Download ${{ matrix.revision }} results\n-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0\n+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n         with:\n           name: workshop-evals-run-${{ matrix.revision }}\n           path: run\n@@ -258,7 +258,7 @@ jobs:\n \n       - name: Store ${{ matrix.task }}\n         if: steps.clean.outputs.clean == 'true'\n-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n         with:\n           name: workshop-evals-${{ matrix.name }}\n           path: run/${{ matrix.revision }}/${{ matrix.task }}.json\n@@ -290,7 +290,7 @@ jobs:\n         run: corepack enable\n \n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true\n@@ -299,7 +299,7 @@ jobs:\n       # Each leg's files sit under its revision, so merging gives one layout for one leg or two.\n       - name: Download this run's results\n         if: needs.plan.outputs.legs != ''\n-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0\n+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n         with:\n           pattern: workshop-evals-run-*\n           path: runs\n@@ -315,7 +315,7 @@ jobs:\n         run: node scripts/evals/workflow.ts join runs artifacts\n \n       - name: Upload baseline trajectories\n-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n         with:\n           name: workshop-evals-baseline\n           path: artifacts/baseline/results.json\n@@ -324,7 +324,7 @@ jobs:\n           retention-days: 30\n \n       - name: Upload candidate trajectories\n-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n         with:\n           name: workshop-evals-candidate\n           path: artifacts/candidate/results.json\n@@ -348,7 +348,7 @@ jobs:\n           cat artifacts/comparison/comparison.md >> \"$GITHUB_STEP_SUMMARY\"\n \n       - name: Upload comparison\n-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2\n+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n         with:\n           name: workshop-evals-comparison\n           path: artifacts/comparison\n@@ -397,19 +397,19 @@ jobs:\n         run: echo /artifacts/ >> .git/info/exclude\n \n       - name: Download baseline trajectories\n-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0\n+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n         with:\n           name: workshop-evals-baseline\n           path: artifacts/baseline\n \n       - name: Download candidate trajectories\n-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0\n+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n         with:\n           name: workshop-evals-candidate\n           path: artifacts/candidate\n \n       - name: Download deterministic comparison\n-        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0\n+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n         with:\n           name: workshop-evals-comparison\n           path: artifacts/comparison\n@@ -418,7 +418,7 @@ jobs:\n         run: corepack enable\n \n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@313600b80b104eadebb9111787d37a2e83e014ca # v1.17.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: ${{ env.NODE_VERSION }}\n           cache: true",
+      "status": "modified"
+    },
+    {
+      "additions": 1,
+      "changes": 2,
+      "deletions": 1,
+      "filename": ".github/workflows/workshop-evals.yml",
+      "patch": "@@ -33,7 +33,7 @@ jobs:\n         run: corepack enable\n \n       - name: Set up Vite+, Node.js and dependencies\n-        uses: voidzero-dev/setup-vp@49c3e4e92c52e7f8392712a9267bbe71c5ab30e5 # v1.19.0\n+        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1\n         with:\n           node-version: \"24.19.0\"\n           cache: true",
+      "status": "modified"
+    }
+  ]
+}

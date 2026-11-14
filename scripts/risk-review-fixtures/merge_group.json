@@ -1,0 +1,40 @@
+{
+  "action": "checks_requested",
+  "merge_group": {
+    "head_sha": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+    "head_ref": "refs/heads/gh-readonly-queue/main/pr-943-4e1c0d9a7b2f6e3d8c5a9b0f1e2d3c4b5a6f7e8d",
+    "base_sha": "79f87d199c34f0d0e40250d1071c963664dd88ad",
+    "base_ref": "refs/heads/main",
+    "head_commit": {
+      "id": "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+      "tree_id": "b1d4e6f8a0c2e4f6a8b0c2d4e6f8a0b2c4d6e8f0",
+      "message": "Merge pull request #943 from cloudflare/maximo/eval-skip\n\n",
+      "timestamp": "2026-11-01T18:04:11Z",
+      "author": {
+        "name": "github-merge-queue[bot]",
+        "email": "118344674+github-merge-queue[bot]@users.noreply.github.com"
+      },
+      "committer": {
+        "name": "GitHub",
+        "email": "noreply@github.com"
+      }
+    }
+  },
+  "repository": {
+    "default_branch": "main",
+    "full_name": "cloudflare/cloudflare-os",
+    "id": 1211925923,
+    "name": "cloudflare-os",
+    "node_id": "R_kgDOSDyFow",
+    "owner": {
+      "login": "cloudflare",
+      "type": "Organization"
+    },
+    "private": false
+  },
+  "sender": {
+    "login": "github-merge-queue[bot]",
+    "id": 118344674,
+    "type": "Bot"
+  }
+}

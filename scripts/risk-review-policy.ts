@@ -1,0 +1,743 @@
+// The risk-review gate's fixed rules: which band a change is in, which area it belongs to, and
+// which paths always need a person. Everything here is a pure function of the changed files and of
+// policy files read from the base branch, so the gate can apply it without running pull request code.
+//
+// Imports are limited to `node:` builtins and other `scripts/risk-review*` modules (see
+// risk-review-imports.test.ts): the gate runs this file from the base branch, and a dependency
+// resolved from the workspace could come from the pull request's lockfile.
+
+import { matchesGlob } from "node:path/posix";
+import { isDeepStrictEqual } from "node:util";
+
+/** A risk band, lowest first. */
+export type Band = "low" | "medium" | "high";
+
+export const BANDS: readonly Band[] = ["low", "medium", "high"];
+
+/**
+ * Where a change may later merge without a person. `proven` is rung 1 (a proof holds, no AI);
+ * `scored` is rung 2; the other three are rung 3's areas.
+ */
+export type Area = "proven" | "scored" | "kernel-small" | "agent-facing-api" | "kernel";
+
+export const AREAS: readonly Area[] = ["proven", "scored", "kernel-small", "agent-facing-api", "kernel"];
+
+/** Lines changed above which a change is high risk whatever its paths. */
+export const MAX_LINES = 400;
+
+/**
+ * Files touched above which a change is high risk. Measured 2026-11-02: 3 of the 217 merged GitHub
+ * pull requests with at most 400 changed lines touched more than 20 files (95th percentile: 14).
+ */
+export const MAX_FILES = 20;
+
+/** Lines changed at or below which a kernel change can be in the `kernel-small` area. */
+export const KERNEL_SMALL_LINES = 50;
+
+/** A changed file, as `pulls.listFiles` returns it. */
+export interface ChangedFile {
+  filename: string;
+  /** The path before a rename or copy, which matters as much as the new one. */
+  previous_filename?: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  changes: number;
+  /** Absent for binary files and for diffs too large for the API to inline. */
+  patch?: string;
+}
+
+/**
+ * Paths that set a minimum band, highest first. High is the kernel, this gate and the rest of CI
+ * and release, the supply-chain policy, and the security chokepoints REVIEW.md names outside the
+ * kernel.
+ */
+const PATH_FLOORS: { band: Band; reason: string; globs: string[] }[] = [
+  {
+    band: "high",
+    reason: "touches a designated sensitive path",
+    globs: [
+      ".github/**",
+      "scripts/release/**",
+      "scripts/risk-review*",
+      "scripts/risk-review*/**",
+      "scripts/automerge/**",
+      "scripts/contribution-policy.ts",
+      "pnpm-workspace.yaml",
+      "**/.npmrc",
+      "**/.pnpmfile.cjs",
+      "**/.pnpmfile.mjs",
+      "packages/workshop-backend/**",
+      "packages/typed-storage/**",
+      "packages/workshop-shared/src/api.ts",
+      "packages/workshop-frontend/src/routes/connect.handoff.tsx",
+      "packages/gatekeeper-kit/src/credential-stage.ts",
+      "packages/gatekeeper-context/src/collection-access.ts",
+      "packages/mcp-shared/src/tools.ts",
+    ],
+  },
+  {
+    band: "medium",
+    reason:
+      "changes shared code, a gatekeeper, the router, shared UI, the approval UI, observability, build " +
+      "or dev tooling, dependencies, worker config, or the instructions an AI reviewer follows",
+    globs: [
+      "packages/workshop-shared/src/**",
+      "packages/gatekeeper-*/src/**",
+      "packages/mcp-shared/src/**",
+      "packages/router/src/**",
+      "packages/bundled-blueprints/**",
+      "packages/configurator-ui/build/**",
+      "packages/ui/**",
+      "packages/observability/**",
+      "packages/error-reporting/**",
+      "packages/workshop-frontend/src/useResolveAction.tsx",
+      "packages/workshop-frontend/src/useAutoApproval.ts",
+      "scripts/**",
+      "**/vite.config.ts",
+      "**/vitest*.config.ts",
+      "**/tsconfig*.json",
+      "**/package.json",
+      "pnpm-lock.yaml",
+      "**/cloudflare.config.ts",
+      "**/wrangler.jsonc",
+      "REVIEW.md",
+      "**/AGENTS.md",
+      "**/CLAUDE.md",
+      "**/.agents/**",
+      "**/opencode.json",
+      "**/opencode.jsonc",
+      "**/.opencode/**",
+    ],
+  },
+];
+
+/** Skills, which coding agents read; edits here are AI-scored. */
+const SKILLS = ".agents/skills/**";
+
+/**
+ * Paths no AI may decide on, always a person: this gate and everything it reads or trusts (so a
+ * pull request that an AI judges always runs `main`'s producer workflows and judge scripts), the
+ * instructions AI reviewers follow, auth config, the supply-chain policy and release. Each entry
+ * names its reason for the decision record. The one exception is a proven Actions bump (see
+ * {@link classifyChangeset}); no AI decides that either.
+ */
+const NEVER_AUTO_PATHS: { reason: string; globs: string[]; except?: string[] }[] = [
+  { reason: "CI, repository policy or a producer workflow", globs: [".github/**"] },
+  {
+    reason: "gate or judge code",
+    globs: ["scripts/risk-review*", "scripts/risk-review*/**", "scripts/automerge/**", "scripts/contribution-policy*"],
+  },
+  {
+    reason: "instructions an AI reviewer follows",
+    globs: [
+      "REVIEW.md",
+      "**/AGENTS.md",
+      "**/CLAUDE.md",
+      "**/opencode.json",
+      "**/opencode.jsonc",
+      "**/.opencode/**",
+    ],
+  },
+  {
+    reason: "agent skills and settings outside .agents/skills/",
+    globs: ["**/.agents/**"],
+    // Skills are scored like code: the reviewers read the base version of every instruction file,
+    // so a skill edit cannot steer its own review (decision 2026-11-10). A symlink there can.
+    except: [SKILLS],
+  },
+  { reason: "auth config", globs: ["packages/workshop-backend/src/auth/**"] },
+  { reason: "supply-chain policy", globs: ["**/.npmrc", "**/.pnpmfile.cjs", "**/.pnpmfile.mjs"] },
+  { reason: "release pipeline", globs: ["scripts/release/**"] },
+  {
+    // Wrangler looks for `wrangler.json` before `wrangler.jsonc`, in the Worker's directory and
+    // every one above it, and `wrangler deploy` follows `.wrangler/deploy/config.json`. Either
+    // would deploy a config that the generated `wrangler.jsonc` does not show.
+    reason: "a Wrangler config other than the generated wrangler.jsonc",
+    globs: ["**/wrangler.json", "**/wrangler.toml", "**/.wrangler/**"],
+  },
+];
+
+/**
+ * Text that people or agents read, which no rung 1 proof can judge: a skill or a doc it links
+ * leaves the build byte-identical, so `proof-equivalence` would admit it with no reader.
+ */
+const READ_TEXT = ["**/*.md", "docs/**", "plans/**", "**/.agents/**"];
+
+/**
+ * Files an escape snapshot entry does not raise the band for: lockfiles and prose outside
+ * `.agents/`, which nearly every pull request touches and which no reviewer judges by their past.
+ */
+const ESCAPE_IGNORED = { globs: ["**/pnpm-lock.yaml", "docs/**", "plans/**", "**/*.md"], except: ["**/.agents/**"] };
+
+/** Worker configs: the `cloudflare.config.ts` source and the `wrangler.jsonc` generated from it. */
+const WORKER_CONFIGS = ["**/cloudflare.config.ts", "**/wrangler.jsonc"];
+
+/** Whether `filename` is a Worker config, either the source or the generated file. */
+export function isWorkerConfig(filename: string): boolean {
+  return matchesAny(filename, WORKER_CONFIGS);
+}
+
+/**
+ * The Worker config that deploys: Wrangler and the release manifest (`scripts/release/
+ * manifest-lib.ts`) read `wrangler.jsonc`, and `cloudflare.config.ts` takes effect only through it.
+ */
+const DEPLOYED_CONFIG = "**/wrangler.jsonc";
+
+/** `pnpm-workspace.yaml` is on the policy list except when only catalog versions change. */
+const WORKSPACE_FILE = "pnpm-workspace.yaml";
+
+/** Code whose change is high risk wherever it sits: storage, RPC and capability seams. */
+const SEAMS: { reason: string; globs: string[] }[] = [
+  { reason: "storage", globs: ["**/storage-schema/**", "packages/typed-storage/**"] },
+  { reason: "RPC", globs: ["packages/workshop-shared/src/api.ts", "**/*-binding.d.ts"] },
+  {
+    reason: "capability",
+    globs: [
+      "packages/workshop-backend/src/user.ts",
+      "packages/workshop-backend/src/overseer.ts",
+      "packages/gatekeeper-kit/src/credential-stage.ts",
+      "packages/gatekeeper-context/src/collection-access.ts",
+      "packages/mcp-shared/src/tools.ts",
+    ],
+  },
+];
+
+const KERNEL = ["packages/workshop-backend/**", "packages/workshop-shared/src/api.ts", "packages/typed-storage/**"];
+
+/** Declarations the agent receives as verbatim text. */
+const AGENT_DECLARATIONS = [
+  "packages/gatekeeper-*/src/*types.d.ts",
+  "packages/mcp-shared/src/types.d.ts",
+  "packages/workshop-backend/src/*-binding.d.ts",
+];
+
+const GATEKEEPER_CODE = ["packages/gatekeeper-*/src/**", "packages/mcp-shared/src/**"];
+
+/**
+ * Words in a changed gatekeeper line that put the change in rung 3's agent-facing API area: scopes,
+ * resource URL patterns, auto-approvable actions, `readOnlyHint`, bindings, `describe()`,
+ * auto-provisioning, request paths, OAuth and tokens. A lexical match over-approximates, so it can
+ * only move a change out of rung 2, never into it.
+ */
+const AGENT_FACING_WORDS =
+  /scope|resourceUrlPattern|autoApprovable|readOnlyHint|binding|describe\s*\(|autoProvision|createAccount|oauth|token|requestPath|urlFor|apiPath/i;
+
+/**
+ * `matchesGlob` per path segment, where a `**` segment matches any number of segments, dot-segments
+ * included (`matchesGlob` alone never crosses those). A trailing `**` needs at least one segment, so
+ * `packages/workshop-backend/**` does not match a file named `packages/workshop-backend`.
+ */
+function matchesPath(filename: string, glob: string): boolean {
+  return matchSegments(filename.split("/"), glob.split("/"));
+}
+
+function matchSegments(path: string[], glob: string[]): boolean {
+  const [pattern, ...rest] = glob;
+  if (pattern === undefined) return path.length === 0;
+  if (pattern === "**") {
+    if (rest.length === 0) return path.length > 0;
+    return path.some((_, start) => matchSegments(path.slice(start), rest)) || matchSegments([], rest);
+  }
+  const [segment, ...remaining] = path;
+  return segment !== undefined && matchesGlob(segment, pattern) && matchSegments(remaining, rest);
+}
+
+function matchesAny(filename: string, globs: readonly string[]): boolean {
+  return globs.some((glob) => matchesPath(filename, glob));
+}
+
+function matchesRule(filename: string, { globs, except = [] }: { globs: readonly string[]; except?: readonly string[] }): boolean {
+  return matchesAny(filename, globs) && !matchesAny(filename, except);
+}
+
+/** Whether a path is under `.agents/skills/`, where a symlink needs a person. */
+export function isSkillPath(filename: string): boolean {
+  return matchesPath(filename, SKILLS);
+}
+
+/** Both paths of a changed file: a rename away from a path counts as changing it. */
+function pathsOf({ filename, previous_filename }: ChangedFile): string[] {
+  return previous_filename === undefined ? [filename] : [previous_filename, filename];
+}
+
+function describePath({ filename, previous_filename }: ChangedFile): string {
+  return previous_filename === undefined ? filename : `${previous_filename} → ${filename}`;
+}
+
+function maxBand(a: Band, b: Band): Band {
+  return BANDS.indexOf(a) >= BANDS.indexOf(b) ? a : b;
+}
+
+function raiseOne(band: Band): Band {
+  return BANDS[Math.min(BANDS.indexOf(band) + 1, BANDS.length - 1)] ?? "high";
+}
+
+/**
+ * Returns the minimum band a path sets.
+ *
+ * @param filename Repository-relative path.
+ */
+export function pathFloor(filename: string): Band {
+  return PATH_FLOORS.find(({ globs }) => matchesAny(filename, globs))?.band ?? "low";
+}
+
+function fileFloor(file: ChangedFile): Band {
+  return pathsOf(file).map(pathFloor).reduce(maxBand, "low");
+}
+
+function names(files: ChangedFile[]): string {
+  const shown = files.slice(0, 3).map(describePath).join(", ");
+  return files.length > 3 ? `${shown}, and ${files.length - 3} more` : shown;
+}
+
+/** One changed file's entry in the escape snapshot, from a culprit of an escaped defect. */
+export interface EscapeEntry {
+  path: string;
+  /** The day the escape's fix merged, `YYYY-MM-DD`. */
+  fixed: string;
+  culprit: string;
+  fix: string;
+}
+
+/** `.github/automerge-escape-files.json`. */
+export interface EscapeSnapshot {
+  windowDays: number;
+  files: EscapeEntry[];
+}
+
+/** What the gate read from the head and base contents of files whose diff alone is not enough. */
+export interface ContentFacts {
+  /** Whether `pnpm-workspace.yaml` changed only catalog version values; true when it did not change. */
+  workspaceCatalogOnly: boolean;
+  /** `path: name` for each dependency a `package.json` gained, or `path: unreadable`. */
+  newDependencies: string[];
+  /**
+   * `path: reason` for each way a `wrangler.jsonc` change may drop Durable Object data: a class an
+   * appended migration deletes, another operation that is not adding classes, rewritten
+   * migrations, a file `removed`, or one that is `unreadable`.
+   */
+  durableObjectRisks: string[];
+  /** Paths under `.agents/skills/` that are a symlink at base or head, or whose type is unreadable. */
+  skillSymlinks: string[];
+}
+
+/** The band, area and policy reasons of one change. */
+export interface Classification {
+  band: Band;
+  bandReasons: string[];
+  /** Why no AI may decide; empty when one may. */
+  neverAuto: string[];
+  /** The rung 2 or rung 3 area an AI decision would come from. */
+  area: Exclude<Area, "proven">;
+  /** Whether the change is a proven Actions bump, exempt from the `.github/**` policy rule. */
+  workflowBump: boolean;
+  /** Changed files people or agents read, which bar every rung 1 proof. */
+  readText: string[];
+}
+
+/** A workflow file GitHub runs: directly under `.github/workflows/`. */
+const WORKFLOW_FILE = /^\.github\/workflows\/[^/]+\.ya?ml$/;
+
+/**
+ * Classifies a change. Every rule can only raise the band or add a policy reason.
+ *
+ * @param input The changed files; whether `listFiles` returned every one (it stops at 3,000); what
+ *     the gate read from file contents; the escape snapshot from the base branch, or `undefined` when
+ *     it is missing or malformed; the time of the decision, for the escape window; and, only when
+ *     Dependabot opened the pull request and its Actions proof holds, the workflows the gate reads
+ *     from. Such a change is exempt from the `.github/**` rule when every changed file is an existing
+ *     workflow, modified in place (not added, removed or renamed), that is not one of those.
+ */
+export function classifyChangeset({ files, listed, facts, escapes, now, provenActionsBump }: {
+  files: ChangedFile[];
+  listed: boolean;
+  facts: ContentFacts;
+  escapes: EscapeSnapshot | undefined;
+  now: Date;
+  provenActionsBump?: { gateInputs: ReadonlySet<string> };
+}): Classification {
+  let band: Band = "low";
+  const bandReasons: string[] = [];
+  const raise = (to: Band, reason: string) => {
+    band = maxBand(band, to);
+    bandReasons.push(`${to}: ${reason}`);
+  };
+
+  for (const { band: floor, reason } of PATH_FLOORS) {
+    const matched = files.filter((file) => fileFloor(file) === floor);
+    if (matched.length > 0) raise(floor, `${reason} (${names(matched)})`);
+  }
+  const neverAuto: string[] = [];
+  // An unlisted file's path is unknown, so it could be any floor's or a policy file.
+  if (!listed) {
+    raise("high", "some changed files were not listed, so their paths went unchecked");
+    neverAuto.push("some changed files were not listed");
+  }
+  const lines = files.reduce((sum, file) => sum + file.additions + file.deletions, 0);
+  if (lines > MAX_LINES) raise("high", `${lines} lines changed, over ${MAX_LINES}`);
+  if (files.length > MAX_FILES) raise("high", `${files.length} files changed, over ${MAX_FILES}`);
+  const seams = SEAMS.filter(({ globs }) => files.some((file) => pathsOf(file).some((path) => matchesAny(path, globs))));
+  for (const { reason } of seams) raise("high", `changes ${reason} code`);
+  if (facts.newDependencies.length > 0) raise("high", `adds dependencies (${facts.newDependencies.join(", ")})`);
+
+  if (escapes === undefined) {
+    band = raiseOne(band);
+    bandReasons.push(`${band}: raised one band: the escape list is missing or malformed`);
+  } else {
+    const since = now.getTime() - escapes.windowDays * 86_400_000;
+    const hits = escapes.files.filter((entry) =>
+      Date.parse(entry.fixed) >= since && !matchesRule(entry.path, ESCAPE_IGNORED) &&
+      files.some((file) => pathsOf(file).includes(entry.path)));
+    if (hits.length > 0) {
+      band = raiseOne(band);
+      const shown = [...new Set(hits.map(({ path, culprit }) => `${path} (${culprit})`))].slice(0, 3).join(", ");
+      bandReasons.push(`${band}: raised one band: touches files with a recent escaped defect (${shown})`);
+    }
+  }
+
+  const workflowBump = provenActionsBump !== undefined && files.length > 0 &&
+    files.every(({ filename, previous_filename, status }) =>
+      status === "modified" && previous_filename === undefined && WORKFLOW_FILE.test(filename) &&
+      !provenActionsBump.gateInputs.has(filename));
+  for (const rule of NEVER_AUTO_PATHS) {
+    if (workflowBump && rule.globs.includes(".github/**")) continue;
+    const matched = files.filter((file) => pathsOf(file).some((path) => matchesRule(path, rule)));
+    if (matched.length > 0) neverAuto.push(`${rule.reason} (${names(matched)})`);
+  }
+  if (facts.skillSymlinks.length > 0) neverAuto.push(`a symlink under .agents/skills/ (${facts.skillSymlinks.join(", ")})`);
+  if (files.some((file) => pathsOf(file).includes(WORKSPACE_FILE)) && !facts.workspaceCatalogOnly) {
+    neverAuto.push(`supply-chain policy (${WORKSPACE_FILE} beyond catalog versions)`);
+  }
+  if (facts.durableObjectRisks.length > 0) {
+    neverAuto.push(`may drop Durable Object data (${facts.durableObjectRisks.join(", ")})`);
+  }
+
+  const readText = files.filter((file) => pathsOf(file).some((path) => matchesAny(path, READ_TEXT))).map(describePath);
+  return { band, bandReasons, neverAuto, area: areaOf(files, band, lines, seams.length > 0), workflowBump, readText };
+}
+
+function areaOf(files: ChangedFile[], band: Band, lines: number, seam: boolean): Classification["area"] {
+  const touches = (globs: readonly string[]) => files.some((file) => pathsOf(file).some((path) => matchesAny(path, globs)));
+  const agentFacing = touches(AGENT_DECLARATIONS) || files.some(changesAgentFacingGatekeeperCode);
+  if (touches(KERNEL)) {
+    const small = lines <= KERNEL_SMALL_LINES && !seam && !agentFacing;
+    return small ? "kernel-small" : "kernel";
+  }
+  if (agentFacing) return "agent-facing-api";
+  return band === "high" ? "kernel" : "scored";
+}
+
+function changesAgentFacingGatekeeperCode(file: ChangedFile): boolean {
+  if (!pathsOf(file).some((path) => matchesAny(path, GATEKEEPER_CODE))) return false;
+  if (pathsOf(file).some((path) => AGENT_FACING_WORDS.test(path))) return true;
+  // A diff the API did not inline is unread, so it may change anything.
+  if (file.patch === undefined) return file.changes > 0;
+  return file.patch.split("\n").some((line) =>
+    /^[+-](?![+-]{2} )/.test(line) && AGENT_FACING_WORDS.test(line.slice(1)));
+}
+
+/**
+ * Whether `head` differs from `base` only in the values of existing catalog entries: the same
+ * lines outside `catalog:`/`catalogs:`, and inside them the same keys in the same order. A new or
+ * removed entry is a new dependency, not a version bump.
+ */
+export function isCatalogVersionBump(base: string, head: string): boolean {
+  const before = base.split("\n");
+  const after = head.split("\n");
+  if (before.length !== after.length) return false;
+  let inCatalog = false;
+  for (const [index, line] of before.entries()) {
+    const other = after[index];
+    if (other === undefined) return false;
+    const topLevel = /^([A-Za-z][\w-]*):/.exec(line);
+    if (topLevel) inCatalog = topLevel[1] === "catalog" || topLevel[1] === "catalogs";
+    if (line === other) continue;
+    if (!inCatalog) return false;
+    const entry = catalogEntry(line);
+    const changed = catalogEntry(other);
+    if (!entry || !changed || entry.key !== changed.key || entry.indent !== changed.indent) return false;
+  }
+  return true;
+}
+
+function catalogEntry(line: string): { indent: string; key: string } | undefined {
+  // A version or range only: `npm:`, `github:`, `file:` or `link:` would swap the package itself.
+  const match = /^(\s+)(['"]?[@\w./-]+['"]?):\s*(['"]?)[\^~]?\d[\w.+-]*\3\s*(#.*)?$/.exec(line);
+  return match ? { indent: match[1] ?? "", key: match[2] ?? "" } : undefined;
+}
+
+const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"];
+
+/** One comparator of a semver range: an optional operator, then a full or partial version. */
+const RANGE_PART =
+  /^(?:[\^~]|[<>]=?|=)?v?(?:\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?|(?:\d+|[xX*])(?:\.(?:\d+|[xX*])){0,2})$/;
+
+/**
+ * Whether a spec names a version of the same package: a version or range, `catalog:` or
+ * `workspace:`. Anything else (`npm:`, `github:`, `file:`, `link:`, a URL or a dist-tag) can bring
+ * in another package, or one an attacker controls.
+ */
+function namesSamePackage(spec: string): boolean {
+  if (/^catalog:[\w.-]*$/.test(spec) || spec.startsWith("workspace:")) return true;
+  return spec.trim().split(/\s+/).every((part) => part === "||" || part === "-" || RANGE_PART.test(part));
+}
+
+/**
+ * The dependencies a `package.json` declares in `head` but not in `base`, and those whose spec
+ * changed to one that can name another package. Each field is compared on its own, since pnpm
+ * reads a name from one field, not the last one listed. A new `workspace:` dependency names a
+ * package in this repository, not a new third-party one, so it is left out. A `workspace:`
+ * dependency whose spec changes to anything but `workspace:` swaps the local package for one from a
+ * registry, so it counts as added.
+ *
+ * @returns The names, or `undefined` when either side is not a JSON object.
+ */
+export function addedDependencies(base: string | undefined, head: string | undefined): string[] | undefined {
+  const before = base === undefined ? new Map<string, string>() : dependencyMap(base);
+  const after = head === undefined ? new Map<string, string>() : dependencyMap(head);
+  if (!before || !after) return undefined;
+  const added = [...after].filter(([key, spec]) => {
+    const was = before.get(key);
+    if (was === undefined) return !spec.startsWith("workspace:");
+    if (was.startsWith("workspace:") && !spec.startsWith("workspace:")) return true;
+    return spec !== was && !namesSamePackage(spec);
+  });
+  return [...new Set(added.map(([key]) => key.slice(key.indexOf(" ") + 1)))];
+}
+
+/** A JSON value, as `JSON.parse` returns it. */
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
+/** Narrows a JSON value to an object. */
+export function asObject(value: Json | undefined): { [key: string]: Json } | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
+}
+
+/** Parses JSON text, or returns `undefined` when it is not JSON. */
+export function parseJson(text: string): Json | undefined {
+  try {
+    const value: Json = JSON.parse(text);
+    return value;
+  } catch (error) {
+    // Malformed JSON is a named domain case: every caller treats it as a missing input.
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
+/**
+ * Manifest settings that can swap a package, the package manager or the runtime, or run code at
+ * install, without declaring a dependency: the package manager and runtime pins pnpm switches to
+ * (`packageManager`, `devEngines`, `engines`), the override and patch tables older pnpm, npm and
+ * Yarn read from the manifest (`pnpm`, `overrides`, `resolutions`), and the install lifecycle
+ * scripts, including pnpm's own `pnpm:devPreinstall`.
+ */
+const INSTALL_FIELDS = ["packageManager", "devEngines", "engines", "pnpm", "overrides", "resolutions"];
+const INSTALL_SCRIPTS = ["pnpm:devPreinstall", "preinstall", "install", "postinstall", "preprepare", "prepare", "postprepare"];
+
+/**
+ * The install settings a `package.json` changes between `base` and `head` (see `INSTALL_FIELDS`
+ * and `INSTALL_SCRIPTS`), named `pnpm`, `overrides`, `resolutions` or `scripts.<name>`.
+ *
+ * @returns The changed names, or `undefined` when either side is not a JSON object.
+ */
+export function changedInstallSettings(base: string | undefined, head: string | undefined): string[] | undefined {
+  const before = base === undefined ? {} : asObject(parseJson(base));
+  const after = head === undefined ? {} : asObject(parseJson(head));
+  if (!before || !after) return undefined;
+  const scriptsBefore = asObject(before.scripts) ?? {};
+  const scriptsAfter = asObject(after.scripts) ?? {};
+  return [
+    ...INSTALL_FIELDS.filter((field) => jsonDiffers(before[field], after[field])),
+    ...INSTALL_SCRIPTS.filter((name) => jsonDiffers(scriptsBefore[name], scriptsAfter[name])).map((name) => `scripts.${name}`),
+  ];
+}
+
+function jsonDiffers(a: Json | undefined, b: Json | undefined): boolean {
+  return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+}
+
+/** Every declared dependency's spec, keyed `<field> <name>`. */
+function dependencyMap(text: string): Map<string, string> | undefined {
+  const manifest = asObject(parseJson(text));
+  if (!manifest) return undefined;
+  const map = new Map<string, string>();
+  for (const field of DEPENDENCY_FIELDS) {
+    const entries = manifest[field];
+    if (entries === undefined) continue;
+    const object = asObject(entries);
+    if (!object) return undefined;
+    for (const [name, spec] of Object.entries(object)) {
+      if (typeof spec !== "string") return undefined;
+      map.set(`${field} ${name}`, spec);
+    }
+  }
+  return map;
+}
+
+/**
+ * Reads a `wrangler.jsonc` in the one form the generator writes: `//` comment lines, then strict
+ * JSON. Anything else a JSONC reader would accept is not read here (a comment anywhere else, a
+ * trailing comma, a line break other than `\n`), so this never reads a file differently from the
+ * reader that deploys it.
+ *
+ * @returns The value, and every string in the JSON, decoded; `undefined` for any other text.
+ */
+function readGeneratedConfig(text: string): { value: Json; strings: Json[] } | undefined {
+  // A comment line ends at any line break, and `\r`, U+2028 and U+2029 are line breaks too.
+  if (/[\r\u2028\u2029]/.test(text)) return undefined;
+  const lines = text.split("\n");
+  const json = lines.slice(lines.findIndex((line) => !line.startsWith("//"))).join("\n");
+  const value = parseJson(json);
+  if (value === undefined) return undefined;
+  // In valid JSON a quote only ever opens or closes a string, so this finds each one.
+  return { value, strings: (json.match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((string) => parseJson(string) ?? null) };
+}
+
+/** A migration's keys that only add Durable Object classes. Any other operation needs a person. */
+const ADDS_CLASSES = ["tag", "new_classes", "new_sqlite_classes"];
+
+/** One Durable Object migration, as `wrangler.jsonc` holds it. */
+type Migration = { [key: string]: Json };
+
+/** What one place in a `wrangler.jsonc` (the top level, or an environment) deploys. */
+interface Deployment {
+  /** The Worker's `name` there, as written. */
+  name: Json | undefined;
+  /** Its Durable Object migrations; empty when it lists none. */
+  migrations: Migration[];
+}
+
+/**
+ * Reads what a `wrangler.jsonc` says about its Workers' Durable Objects, by place: `null` for the
+ * top level, else an environment's name.
+ *
+ * `undefined` when the file is not in the generated form or a migrations list is not a list of
+ * objects. Also when the file holds a `__proto__` key, which some readers turn into inherited
+ * properties, or when `migrations` or `deleted_classes` occurs as a string anywhere this did not
+ * read it as that key (a repeated key that a later one shadows, the word as a value or under
+ * another setting): what this reads must be what any reader reads.
+ */
+function readWorkerConfig(text: string): Map<string | null, Deployment> | undefined {
+  const config = readGeneratedConfig(text);
+  const root = asObject(config?.value);
+  const environments = root?.env === undefined ? {} : asObject(root.env);
+  if (!config || !root || !environments) return undefined;
+  const places: [string | null, Json][] = [[null, root], ...Object.entries(environments)];
+  const deployments = new Map<string | null, Deployment>();
+  let lists = 0;
+  let deletions = 0;
+  for (const [place, value] of places) {
+    const holder = asObject(value);
+    if (!holder) return undefined;
+    const migrations: Migration[] = [];
+    if (holder.migrations !== undefined) {
+      lists++;
+      if (!Array.isArray(holder.migrations)) return undefined;
+      for (const entry of holder.migrations) {
+        const migration = asObject(entry);
+        if (!migration) return undefined;
+        if (migration.deleted_classes !== undefined) deletions++;
+        migrations.push(migration);
+      }
+    }
+    deployments.set(place, { name: holder.name, migrations });
+  }
+  const occurs = (word: string) => config.strings.filter((string) => string === word).length;
+  return occurs("__proto__") === 0 && occurs("migrations") === lists && occurs("deleted_classes") === deletions
+    ? deployments
+    : undefined;
+}
+
+/**
+ * Why a `wrangler.jsonc` change needs a person for its Durable Object data. Empty when it keeps
+ * each Worker's name and migrations, or only appends migrations that add classes.
+ *
+ * Migrations are append-only: Wrangler applies the ones after the deployed tag, by position, so a
+ * list that is reordered, retagged, edited or cut can run an old deletion again. Nothing here
+ * compares class names between base and head, so no look-alike in the base can stand for a
+ * deletion it "already made". Each reason is one of:
+ * - `unreadable`: either side is not a file this reads exactly;
+ * - `renames the Worker`: under a new name, at the top level or in an environment, a plain
+ *   `wrangler deploy` creates a new Worker without the old one's Durable Objects;
+ * - `rewrites migrations`: somewhere the head's list does not start with the base's;
+ * - `deletes <class>`: for each class an appended migration deletes;
+ * - `<operation> in <tag>`: any other operation in an appended migration that is not adding
+ *   classes (`renamed_classes`, `transferred_classes`, one this does not know).
+ */
+export function durableObjectRisks(base: string | undefined, head: string): string[] {
+  const before = base === undefined ? new Map<string | null, Deployment>() : readWorkerConfig(base);
+  const after = readWorkerConfig(head);
+  if (!before || !after) return ["unreadable"];
+  const risks: string[] = [];
+  for (const [place, was] of before) {
+    const now = after.get(place);
+    if (now && !isDeepStrictEqual(was.name, now.name) && risks.length === 0) risks.push("renames the Worker");
+    // Compared as values: text forms lose differences (`1e400` and `null` both print as `null`).
+    if (was.migrations.some((migration, index) => !isDeepStrictEqual(migration, now?.migrations[index]))) {
+      return [...risks, "rewrites migrations"];
+    }
+  }
+  for (const [place, now] of after) {
+    for (const migration of now.migrations.slice(before.get(place)?.migrations.length ?? 0)) {
+      for (const [operation, value] of Object.entries(migration)) {
+        if (ADDS_CLASSES.includes(operation)) continue;
+        if (operation === "deleted_classes" && Array.isArray(value) && value.every((name) => typeof name === "string")) {
+          risks.push(...value.map((name) => `deletes ${String(name)}`));
+        } else {
+          risks.push(`${operation} in ${typeof migration.tag === "string" ? migration.tag : "an untagged migration"}`);
+        }
+      }
+    }
+  }
+  return risks;
+}
+
+/** A file whose contents, not only its diff, the classifier reads. */
+export type ContentsKind = "workspace" | "manifest" | "worker-config";
+
+/** Whether the classifier needs a file's contents, not only its diff. */
+export function needsContents(filename: string): ContentsKind | undefined {
+  if (filename === WORKSPACE_FILE) return "workspace";
+  if (matchesPath(filename, "**/package.json")) return "manifest";
+  return matchesPath(filename, DEPLOYED_CONFIG) ? "worker-config" : undefined;
+}
+
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/**
+ * Parses `.github/maintainers`: one GitHub login per line, no `@`, no comments, blank lines ignored.
+ * Matching is case-insensitive, so logins come back lowercased. A missing file, or any line that is
+ * not a login, means nobody is a maintainer.
+ */
+export function parseMaintainers(text: string | undefined): ReadonlySet<string> {
+  if (text === undefined) return new Set();
+  const logins = text.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  if (!logins.every((login) => LOGIN.test(login))) return new Set();
+  return new Set(logins.map((login) => login.toLowerCase()));
+}
+
+/** Parses the escape snapshot, or returns `undefined` when it is missing or malformed. */
+export function parseEscapeSnapshot(text: string | undefined): EscapeSnapshot | undefined {
+  const root = asObject(text === undefined ? undefined : parseJson(text));
+  const windowDays = root?.window_days;
+  const files = root?.files;
+  if (root?.schema !== 1 || typeof windowDays !== "number" || !Number.isInteger(windowDays) || windowDays < 1) {
+    return undefined;
+  }
+  if (!Array.isArray(files)) return undefined;
+  const entries: EscapeEntry[] = [];
+  for (const value of files) {
+    const entry = asObject(value);
+    const { path, fixed, culprit, fix } = entry ?? {};
+    if (
+      typeof path !== "string" || typeof culprit !== "string" || typeof fix !== "string" ||
+      typeof fixed !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(fixed) || Number.isNaN(Date.parse(fixed))
+    ) {
+      return undefined;
+    }
+    entries.push({ path, fixed, culprit, fix });
+  }
+  return { windowDays, files: entries };
+}
