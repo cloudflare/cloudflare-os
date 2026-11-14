@@ -9,6 +9,7 @@ import {afterEach, beforeAll, beforeEach, expect, it, vi} from "vitest";
 import type {GoogleChatGatekeeperImplProps} from "../../src/chat";
 import type {ChatMessageRaw} from "../../src/chat-api";
 import type {ChatSubscribeOptions} from "../../src/chat-types";
+import {timeoutsOnFakeClock} from "../fake-timeouts";
 import type {TestHooks} from "./worker";
 
 const testEnv = env as unknown as {
@@ -45,6 +46,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 /** Google, answering as whichever account the bearer token belongs to (`token-<subject>`). */
@@ -61,6 +63,10 @@ function mockGoogle() {
     stallGet: undefined as {started: boolean; released: boolean} | undefined,
     /** When set, subscriptions.create flags that it started and answers once released, polled as `stallGet` is. */
     stallCreate: undefined as {started: boolean; released: boolean} | undefined,
+    /** When set, subscriptions.create flags that it started and answers only by failing once its request is aborted. */
+    hangCreate: undefined as {started: boolean} | undefined,
+    /** Make subscriptions.get find nothing, as once Google has dropped a subscription. */
+    lost: false,
     /**
      * The account's subscription to the space that Google holds but the driver never learned of,
      * as when a create's response is lost; Google refuses to create another while it exists.
@@ -85,6 +91,12 @@ function mockGoogle() {
     if (url.href === "https://oauth2.googleapis.com/revoke" && method === "POST") return new Response(null);
     if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") return json({sub: subject});
     if (url.href === "https://workspaceevents.googleapis.com/v1/subscriptions" && method === "POST") {
+      if (google.hangCreate) {
+        google.hangCreate.started = true;
+        const signal = init.signal!;
+        await until(() => signal.aborted);
+        throw signal.reason;
+      }
       if (google.unrecorded) return json({error: {code: 409, status: "ALREADY_EXISTS"}}, 409);
       if (google.stallCreate) {
         google.stallCreate.started = true;
@@ -111,6 +123,7 @@ function mockGoogle() {
       return json({name: "operations/reactivate", done: true, response: live});
     }
     if (url.hostname === "workspaceevents.googleapis.com" && subscription && method === "GET") {
+      if (google.lost) return json({error: {code: 404, status: "NOT_FOUND"}}, 404);
       if (!google.stallGet) return json(live);
       google.stallGet.started = true;
       await vi.waitFor(() => expect(google.stallGet!.released).toBe(true));
@@ -209,6 +222,14 @@ const deliver = () => vi.waitFor(() => runInDurableObject(driver(), (_instance: 
   const due = [...state.storage.kv.list<{at?: number}>({prefix: "msg:"})].filter(([, row]) => row.at! <= Date.now());
   if (due.length > 0) throw new Error(`${due.length} deliveries due`);
 }));
+
+/** Poll until `ready` on the real clock, as vi.waitFor() would advance a faked one. */
+async function until(ready: () => boolean | Promise<boolean>): Promise<void> {
+  while (!await ready()) await scheduler.wait(1);
+}
+
+/** Advance the faked clock inside the driver, as only it may settle what its timers settle. */
+const advanceDriver = (ms: number) => runInDurableObject(driver(), () => vi.advanceTimersByTimeAsync(ms));
 
 it("delivers each new message from someone else once, and the hook's reply applies as an action", async () => {
   const google = mockGoogle();
@@ -582,6 +603,28 @@ it("retries a failed subscription renewal before the subscription lapses", async
     vi.useRealTimers();
   }
   expect(google.renewals).toBe(2);
+});
+
+it("fails an enable whose subscription create Google never answers after 10 seconds", async () => {
+  const google = mockGoogle();
+  const ada = await connect("ada");
+  google.hangCreate = {started: false};
+
+  vi.useFakeTimers({toFake: ["setTimeout", "clearTimeout"]});
+  timeoutsOnFakeClock();
+  try {
+    let settled = false;
+    const refused = expect(Promise.resolve(ada.hooks.chatEnableHook()).finally(() => { settled = true; }))
+      .rejects.toThrow(/timed out/);
+    await until(() => google.hangCreate!.started);
+    await advanceDriver(9_999);
+    expect(settled).toBe(false);
+    await advanceDriver(1);
+    await refused;
+  } finally {
+    vi.useRealTimers();
+  }
+  expect(await registeredAccounts()).toEqual([]);
 });
 
 it("adopts, and reactivates, the suspended subscription an unanswered earlier create left", async () => {

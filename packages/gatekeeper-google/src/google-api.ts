@@ -217,11 +217,14 @@ export type GoogleAccountProfile = {
   picture?: string;
 };
 
+/** Per attempt: Chat's hook delivery checks its account through this. */
+const PROFILE_TIMEOUT_MS = 10_000;
+
 export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
   const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
-  }, typeof accessToken === "string" ? async () => accessToken : accessToken);
+  }, typeof accessToken === "string" ? async () => accessToken : accessToken, { timeoutMs: PROFILE_TIMEOUT_MS });
 
   if (!response.ok) {
     await response.body?.cancel();
@@ -2298,6 +2301,12 @@ function gmailHistoryId(value: unknown): string {
   return value;
 }
 
+/**
+ * Per attempt, how long a metadata read, which each Gmail hook delivery makes, may take, its small
+ * body included.
+ */
+const METADATA_TIMEOUT_MS = 10_000;
+
 export class GmailApi {
   private selfEmail: string;
 
@@ -2559,7 +2568,8 @@ export class GmailApi {
     ]) {
       url.searchParams.append("metadataHeaders", header);
     }
-    const response = await this.authedFetch(url.toString());
+    const response = await fetchWithAuthRetry(
+      url.toString(), {}, this.getAccessToken, {timeoutMs: METADATA_TIMEOUT_MS});
     if (!response.ok) await gmailApiFailure("messages.get", response);
     return await response.json() as GmailMessageFull;
   }

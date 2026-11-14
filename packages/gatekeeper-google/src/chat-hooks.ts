@@ -291,6 +291,8 @@ export class ChatHookDriver extends DurableObject<Env> {
 const EVENTS_API_BASE = "https://workspaceevents.googleapis.com/v1";
 const MESSAGE_CREATED = "google.workspace.chat.message.v1.created";
 const MESSAGES_CREATED = "google.workspace.chat.message.v1.batchCreated";
+/** Per attempt, and safe to abandon: a lost create is adopted, and a renewal reads the subscription afresh. */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 type SubscriptionRaw = {
   name: string; authority: string; state: string; expireTime: string;
@@ -363,7 +365,7 @@ class WorkspaceEventsApi {
   async #request<T>(operation: string, path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetchWithAuthRetry(`${EVENTS_API_BASE}${path}`, {
       ...init, headers: { "Content-Type": "application/json" },
-    }, this.getAccessToken);
+    }, this.getAccessToken, { timeoutMs: REQUEST_TIMEOUT_MS });
     if (!response.ok) await chatApiFailure(operation, response);
     return response.json<T>();
   }
