@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { AiChatAuthorInfo, AiChatMetadata, AiChatSubscriber, PresenceSubscriber, UiBundle, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
+import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type AiChatAuthorInfo, type AiChatMetadata, type AiChatSubscriber, type PresenceSubscriber, type UiBundle, type WorkpieceSummary, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { GadgetConnection, type GadgetHandle, type GadgetOverseer } from './GadgetConnection'
 
 const deferred = <T,>() => {
@@ -105,6 +105,13 @@ describe('GadgetConnection', () => {
     broken.connection.start()
     await vi.waitFor(() => expect(broken.connection.getSnapshot().ui).toEqual({ status: 'failed', message: 'No such gadget' }))
     broken.connection.stop()
+  })
+
+  it('says when the viewer has no access to the gadget’s workspace', async () => {
+    const denied = setUp({ bundle: Promise.reject(createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied)) })
+    denied.connection.start()
+    await vi.waitFor(() => expect(denied.connection.getSnapshot().ui).toEqual({ status: 'denied' }))
+    denied.connection.stop()
   })
 
   it('connects only the page in its own frame, which has no origin', async () => {

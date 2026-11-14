@@ -60,7 +60,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
       ...mock,
       notice: new ConnectionNotice(),
       // What the real connect flow ends with.
-      onSetUpConnection: (requestId: string) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
+      onSetUpConnection: ({ requestId }: { requestId: string }) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
     }
   })
   // The fake backend's connection, standing in for the app's: down for a `disconnect` step, and

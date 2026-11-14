@@ -1,14 +1,16 @@
 import { RpcTarget, newMessagePortRpcSession, type RpcStub } from 'capnweb'
-import type {
-  AiChatAuthorInfo,
-  AiChatMetadata,
-  AiChatSubscriber,
-  Overseer,
-  PresenceParticipant,
-  PresenceSubscriber,
-  UiBundle,
-  WorkpieceSummary,
-  WorkpiecesSubscriber,
+import {
+  getOpenWorkspaceErrorCode,
+  OPEN_WORKSPACE_ERROR_CODES,
+  type AiChatAuthorInfo,
+  type AiChatMetadata,
+  type AiChatSubscriber,
+  type Overseer,
+  type PresenceParticipant,
+  type PresenceSubscriber,
+  type UiBundle,
+  type WorkpieceSummary,
+  type WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { CodeChange } from '@gadgets/workshop-shared/code-change'
 import { ESCAPE_MESSAGE, HANDSHAKE_MESSAGE, gadgetPage } from './gadgetSandbox'
@@ -24,6 +26,8 @@ export type GadgetUi =
   /** The gadget has no UI: it is new, or an agent with no code. */
   | { status: 'none' }
   | { status: 'failed'; message: string }
+  /** The viewer has no access to the gadget's workspace: it is someone else's, shared with others. */
+  | { status: 'denied' }
 
 export type GadgetSnapshot = {
   ui: GadgetUi
@@ -344,7 +348,8 @@ export class GadgetConnection {
       // Still loading, or showing what it did, until the connection is back.
       if (!current() || this.options.connection?.down) return
       this.#unlink()
-      this.#publish({ ui: { status: 'failed', message: messageOf(error) } })
+      const denied = getOpenWorkspaceErrorCode(error) === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied
+      this.#publish({ ui: denied ? { status: 'denied' } : { status: 'failed', message: messageOf(error) } })
     } finally {
       clearTimeout(timer)
     }

@@ -1,8 +1,7 @@
-import type { ReactNode } from 'react'
 import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, SignOutIcon } from '@phosphor-icons/react'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
-import { ConnectButton } from '@/components/ConnectButton'
+import { ConnectButton, type ConnectButtonLogo } from '@/components/ConnectButton'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { LogoIcon } from '@/components/LogoIcon'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
@@ -18,8 +17,10 @@ export type SidebarProps = {
   onGoHome?: () => void
   /** Shown in place of the list when there is nothing to list, e.g. "No workspaces yet." */
   notice?: string
-  /** Logos of the connected apps, shown in the connect button. */
-  connections?: ReactNode
+  /** Logos of the connected services, shown in the connect button. */
+  connections?: ConnectButtonLogo[]
+  /** The connect button's page, of what is connected and what can be, and whether it is the one showing. */
+  connectionsPage?: { current: boolean; onOpen: () => void }
   /** The library's page, and whether it is the one showing. */
   library?: { current: boolean; onOpen: () => void }
   /** The page listing every workspace, and whether it is the one showing. */
@@ -43,6 +44,7 @@ export const Sidebar = ({
   onGoHome,
   notice,
   connections,
+  connectionsPage,
   library,
   workspacesPage,
   onSearch,
@@ -104,7 +106,7 @@ export const Sidebar = ({
         </header>
         {nav}
         <footer className="mt-3 flex flex-col items-center gap-1">
-          <ConnectButton />
+          <ConnectButton current={connectionsPage?.current} onConnect={connectionsPage?.onOpen} />
           {account}
         </footer>
       </div>
@@ -122,7 +124,7 @@ export const Sidebar = ({
       {nav}
       <footer className="flex items-center justify-between">
         {account}
-        <ConnectButton>{connections}</ConnectButton>
+        <ConnectButton logos={connections} current={connectionsPage?.current} onConnect={connectionsPage?.onOpen} />
       </footer>
     </div>
   )

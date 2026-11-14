@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { asideItemFor, formatAsideRef, pageOf, parseAsideRef, parseItemPageId, type AsideItem } from '@/aside/asideItems'
+import { asideItemFor, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
@@ -8,6 +8,9 @@ import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
+import { connectedVendors } from '@/connections/ConnectedAccounts'
+import { useConnectedAccounts } from '@/connections/ConnectedAccountsContext'
+import { ConnectedAccountsProvider } from '@/connections/ConnectedAccountsProvider'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
@@ -30,17 +33,16 @@ export const Route = createFileRoute('/_app')({
     <RpcGate connection={sharedConnection()}>
       <ShareLinkGate>
         <WorkspacesProvider>
-          <ChatSessionsProvider>
-            <AppFrame />
-          </ChatSessionsProvider>
+          <ConnectedAccountsProvider>
+            <ChatSessionsProvider>
+              <AppFrame />
+            </ChatSessionsProvider>
+          </ConnectedAccountsProvider>
         </WorkspacesProvider>
       </ShareLinkGate>
     </RpcGate>
   ),
 })
-
-// Placeholder logos until real connected apps are wired in.
-const placeholderLogos = [0, 1, 2].map((i) => <span key={i} className="size-5 rounded-full bg-kumo-fill" />)
 
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
@@ -57,6 +59,7 @@ const AppFrame = () => {
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
+  const accounts = useConnectedAccounts()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -72,6 +75,7 @@ const AppFrame = () => {
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
+  const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
@@ -129,6 +133,13 @@ const AppFrame = () => {
   const linkTo = (inWorkspace: string, item: AsideItem, fromChat: number | undefined) =>
     absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: fromChat } }).href)
 
+  // A gadget's own settings, which the way back from comes back to.
+  const openSettings = (output: AsideOutput, title: string) =>
+    navigate({
+      to: '/app/$itemId/settings',
+      params: { itemId: itemPageId(output.workspaceId, { kind: 'output', workpieceId: output.workpieceId }) },
+      state: { fromItem: true, gadgetTitle: title },
+    })
   let asideElement: ReactNode = null
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
@@ -144,6 +155,7 @@ const AppFrame = () => {
         fullScreen={fullScreen}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
+        onOpenSettings={openSettings}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
         // Opened otherwise, such as from the library, there is nothing to collapse into. On a
         // narrow screen, where it is beside nothing, it goes up.
@@ -165,6 +177,7 @@ const AppFrame = () => {
         link={linkTo(besideWorkspaceId, item, chatId)}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
+        onOpenSettings={openSettings}
         onSelect={(key) => aside.show(key, chatRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}
@@ -213,7 +226,16 @@ const AppFrame = () => {
         clearToken()
         window.location.assign('/')
       }}
-      connections={placeholderLogos}
+      connections={accounts.status === 'ready'
+        ? connectedVendors(accounts.accounts).map(({ vendorId, name, logoUrl }) => ({ key: vendorId, name, src: logoUrl }))
+        : undefined}
+      connectionsPage={{
+        current: connectionsPage !== undefined,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/connections' })
+        },
+      }}
       library={{
         current: libraryPage !== undefined || libraryItemPage !== undefined,
         onOpen: () => {
@@ -261,7 +283,7 @@ const AppFrame = () => {
             onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
             // On the pages the sidebar goes to. Those further in have their way up already, such as
             // a chat's workspace crumb, or an item's own back button.
-            button: [homePage, workspacePage, libraryPage, workspacesPage].some((match) => match !== undefined),
+            button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage].some((match) => match !== undefined),
           }}
           status={status}
           aside={pageItem ? undefined : asideElement}
