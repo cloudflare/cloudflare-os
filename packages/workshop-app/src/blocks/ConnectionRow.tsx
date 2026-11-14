@@ -33,7 +33,7 @@ export const ConnectionRow = ({ name, logo, detail, problem, verb, onSelect, act
     >
       <ServiceLogo name={name} src={logo?.src} color={logo?.color} />
       <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span className="shrink-0 font-medium text-kumo-default">{name}</span>
+        <span className="max-w-full shrink-0 truncate font-medium text-kumo-default">{name}</span>
         {detail && <span className={cn('min-w-0 truncate', problem ? 'text-kumo-danger' : 'text-kumo-subtle')}>{detail}</span>}
       </span>
     </button>
