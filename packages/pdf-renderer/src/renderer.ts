@@ -112,8 +112,11 @@ export class RenderRefusal extends Error {
   }
 }
 
-/** What gave a hold back: whoever had it, or the renderer, for another PDF, after it sat idle. */
-export type HoldRelease = "disposed" | "idle";
+/**
+ * What gave a hold back: whoever had it; the renderer, for another PDF, after it sat idle; or
+ * the renderer, on finding that a call for it was cut off, which leaves nobody to have it.
+ */
+export type HoldRelease = "disposed" | "idle" | "cut-off";
 
 /**
  * What is held for one PDF while its pages are rendered: the file's bytes and room for one
@@ -196,6 +199,13 @@ type Seen = {
  * to find, whether this one ended, failed, aborted, trapped or ran out of work. No call yields,
  * so no two overlap and nothing else runs while a document is open. `now` is the clock holds
  * are aged by; no render is timed.
+ *
+ * One way a call ends has no way out: the Worker's invocation is ended inside it, as when it has
+ * used the CPU time an invocation may. Nothing here runs then, so the instance is left as the
+ * call had it and the PDF's room is charged still, to a caller that is gone. Since no call
+ * yields, a call that is still marked as being made when anything is next asked of the renderer
+ * was cut off: the instance is put back then, before it is used, and that PDF let go, so that
+ * whoever was reading it can open it again (see `recover`).
  */
 export function pdfRenderer(
   modules: PdfiumModules, limits: RenderLimits = RENDER_LIMITS, instantiate = instantiatePdfium,
@@ -209,6 +219,8 @@ export function pdfRenderer(
   let holds = new Set<Held>();
   /** The document PDFium is reading, during a call only. */
   let reading: Uint8Array | undefined;
+  /** The hold a call is being made for, during the call only: left set by one that was cut off. */
+  let calling: Held | undefined;
   /** How many of one row's pixels are at each grey level, while its ink is summed: all zero between rows. */
   let levels = new Uint32Array(256);
 
@@ -266,6 +278,20 @@ export function pdfRenderer(
   };
 
   /**
+   * Clears up after a call that was cut off, when there was one: the instance is put back as
+   * after any call, the count of a row's pixels emptied, and the PDF the call was for let go.
+   */
+  let recover = (): void => {
+    let cut = calling;
+    if (!cut) return;
+    calling = undefined;
+    reading = undefined;
+    levels.fill(0);
+    if (arena) restore(arena);
+    cut.release("cut-off");
+  };
+
+  /**
    * Runs `use` with `hold`'s PDF open in the instance and at most `work` to do, and puts the
    * instance back however it ends. `call` wraps each call into PDFium: running out of work, a
    * growth refused, an abort or a trap during it ends the render with a refusal, never with a
@@ -275,6 +301,7 @@ export function pdfRenderer(
     hold: Held, work: number, spent: (work: number) => void,
     use: (own: Arena, document: number, call: Call) => T,
   ): T => {
+    recover();
     if (hold.released) throw new RenderRefusal("released");
     hold.touched = now();
     if (failed) throw failed;
@@ -309,6 +336,7 @@ export function pdfRenderer(
       return result;
     };
     let used = () => work - Math.max(0, x.work.value as number);
+    calling = hold;
     reading = hold.file;
     x.work.value = work;
     try {
@@ -330,6 +358,7 @@ export function pdfRenderer(
       spent(used());
       reading = undefined;
       restore(own);
+      calling = undefined;
     }
   };
 
@@ -498,6 +527,7 @@ export function pdfRenderer(
 
   return {
     hold(fileBytes, released) {
+      recover();
       if (!(fileBytes > 0 && fileBytes <= limits.fileBytes)) throw new RenderRefusal("file-size");
       let inkBytes = 4 * limits.sidePixels;
       let bytes = inkBytes + fileBytes + limits.pagePixels;

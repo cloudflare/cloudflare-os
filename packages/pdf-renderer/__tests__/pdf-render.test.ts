@@ -1459,6 +1459,76 @@ describe("holds", () => {
   });
 });
 
+describe("a call that was cut off", () => {
+  /**
+   * A renderer whose calls can be ended with no way out, as one is when its Worker's invocation
+   * has used the CPU time it may: while `cut.now`, putting the instance back throws at its first
+   * step, so the call ends with the instance as the call left it and nothing after that done.
+   */
+  function cuttable(limits: RenderLimits = AT_72) {
+    let cut = { now: false };
+    let own = watched(limits, {
+      wrap: instance => replacing(instance, {
+        _emscripten_stack_restore: (stack: number) => {
+          if (cut.now) throw new Error("the invocation ended");
+          instance.exports._emscripten_stack_restore!(stack);
+          return 0;
+        },
+      }),
+    });
+    /** Draws `hold`'s first page in a call that is cut off. */
+    let cutOff = (hold: RenderHold) => {
+      cut.now = true;
+      try {
+        expect(() => hold.renderPage(0, IN_TWO)).toThrow("the invocation ended");
+      } finally {
+        cut.now = false;
+      }
+    };
+    return { ...own, cutOff };
+  }
+
+  it("leaves the instance as the call had it, and the next call puts it back before it is used", () => {
+    let own = cuttable();
+    own.cutOff(holding(own.renderer, faxPdf()));
+    // Nothing put the instance back: the document the call opened is in it still.
+    expect(() => own.expectRestored()).toThrow();
+    // The next call draws what a renderer that was never cut off draws, and leaves it at rest.
+    let page = own.renderPage(scannedPdf([onePage(bitsImage())]));
+    expect(page).toEqual(watched().renderPage(scannedPdf([onePage(bitsImage())])));
+    own.expectRestored();
+  });
+
+  it("lets the PDF the call was for go, saying so, so that there is room to open it again", () => {
+    let pdf = faxPdf();
+    let own = cuttable({ ...AT_72, heldBytes: charge(pdf.byteLength) });
+    let said: string[] = [];
+    let first = own.renderer.hold(pdf.byteLength, by => said.push(by));
+    first.fill(pdf, 0);
+    own.cutOff(first);
+    expect(said).toEqual([]);
+    // The room is the cut-off PDF's still, until something is next asked of the renderer.
+    let again = holding(own.renderer, pdf);
+    expect(said).toEqual(["cut-off"]);
+    expect(refusal(() => first.renderPage(0, IN_TWO))).toMatchObject({ reason: "released", ofPage: false });
+    expect(again.countPages()).toBe(1);
+    own.expectRestored();
+  });
+
+  it("takes no call that came out for one that was cut off, however it ended", () => {
+    let own = cuttable();
+    let said: string[] = [];
+    let pdf = faxPdf();
+    let hold = own.renderer.hold(pdf.byteLength, by => said.push(by));
+    hold.fill(pdf, 0);
+    expect(() => hold.renderPage(1, IN_TWO)).toThrow(RangeError);
+    expect(hold.countPages()).toBe(1);
+    holding(own.renderer, pdf).release();
+    expect(said).toEqual([]);
+    expect(hold.renderPage(0, IN_TWO)).toMatchObject({ blank: false });
+  });
+});
+
 describe("cutRows", () => {
   it("cuts at clear rows within reach of the even cut, and at none beyond it", () => {
     // Two clear rows in reach, and two nearer the top that are not.
