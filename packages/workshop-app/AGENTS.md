@@ -262,11 +262,11 @@ say so, what it has used (`chat/usage.ts`), and deleting it.
 ## Search and the account
 
 Search (`SearchDialog`, from the sidebar or ⌘K/Ctrl+K anywhere, `routes/-AppSearch.tsx`) finds the
-app's pages (Connections among them) and every workspace from the list the sidebar already has, so opening it reads
-nothing. What fits is ranked by `blocks/searchMatches.ts`: a title that starts with what was typed,
-then a word in it that does, then anywhere; a single letter only at a word's start. The arrow keys
-move through it and Enter goes. The sidebar's avatar opens the account menu, which signs out of
-this browser.
+app's pages (Connections among them) and every workspace from the list the sidebar already has, so
+opening it reads nothing. What fits is ranked by `blocks/searchMatches.ts`: a title that starts with
+what was typed, then a word in it that does, then anywhere; a single letter only at a word's start.
+The arrow keys move through it and Enter goes. The sidebar's avatar opens the account menu, which
+signs out of this browser.
 
 ## Sharing
 
