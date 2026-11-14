@@ -271,6 +271,12 @@ Balint's `packages/workshop-app`, which is the baseline: where the two disagree 
 and ours is redone in his idiom (layers, tested plain classes, `Card`, the arrival spring, a gallery
 entry for every block). What was decided on the way:
 
+- **The old prototype UI.** Rebased onto main, the branch leaves `workshop-frontend` exactly as
+  main has it: the prototype's rework there collided with main's own (the agents tab, the approvals
+  tray, the share modals, attachment previews), and workshop-app carries it forward. The old UI is
+  on `backup/b-figma-balint-pre-rebase`. What it relied on in the backend and the Google gatekeeper
+  stays, ported onto main's Drive-backed Docs, Sheets and Slides.
+
 - **Accepting.** His client accepts a turn's code on its own (`autoAccept.ts`), and so does our
   kernel (`#autoAcceptTurn`). Both go through the chat lock, so they are kept together. The viewer's
   own accepts are not marked, as he has it, so Undo/Restore lives on the answer that ended the
