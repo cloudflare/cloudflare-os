@@ -304,6 +304,21 @@ describe("sync", () => {
     expect(editor.value).toBe("edited");
   });
 
+  it("drops an unsaved formula reading a sheet whose rows moved while this tab was disconnected", async () => {
+    const data = { ...sheet("s1"), name: "Data" }, other = sheet("s2");
+    const book = (layout: number) => ({ title: "Book", sheetOrder: ["s2", "s1"], sheets: { s1: { ...data, layout }, s2: other } });
+    const h = await loadClient(other, {}, { ...book(0), cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Data!A1") } } });
+    const snapshot = deferred<OpenedDocument>();
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => { h.callbacks = callback; return snapshot.promise; });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    typeIntoActiveCell("=Data!A1*2");
+    // Meanwhile an agent inserted a row above Data!A1, rewriting the stored formula.
+    snapshot.resolve({ revision: 3, lastModified: 0, ...book(3), cells: { s1: { A2: cell("7") }, s2: { A1: cell("=Data!A2", 3) } }, cursors: {} });
+    await settle();
+    expect(h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? []).map((op) => op.value)).not.toContain("=Data!A1*2");
+    expect(shown("A1")).toBe("7");
+  });
+
   it("forgets undo history on a sheet whose rows moved while this tab was disconnected", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });

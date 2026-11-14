@@ -2228,6 +2228,14 @@ function referenceSheetName(prefix: string): string {
   const name = prefix.endsWith("!") ? prefix.slice(0, -1) : prefix;
   return (name.startsWith("'") ? name.slice(1, -1).replace(/\\'|''/g, "'") : name).toLowerCase();
 }
+// Whether a formula names one of these sheets (lower-cased names) in a reference.
+function formulaReadsSheets(value: string, names: Set<string>): boolean {
+  for (const endpoint of formulaReferences(value, true)) {
+    const bang = endpoint.text.lastIndexOf("!");
+    if (bang >= 0 && names.has(referenceSheetName(endpoint.text.slice(0, bang + 1)))) return true;
+  }
+  return false;
+}
 // Rewrites references to the sheet named `oldName` with `prefix` (the new name's own prefix,
 // quoted as needed), so formulas keep pointing at a renamed sheet. Everything else stays as typed.
 function renameFormulaSheet(value: string, oldName: string, prefix: string): string {
@@ -7442,16 +7450,20 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
   }
   for (const id of model.sheetOrder) if (!model.cells[id]) model.cells[id] = {};
   if (reconcile) {
-    // An edit addressed before its sheet's cells moved, in moves this tab never heard, can't be placed.
+    // Sheets whose cells moved in ways this tab never heard.
+    const moved = model.sheetOrder.filter((id) => (model.sheets[id]?.layout || 0) > (layoutsBefore.get(id) ?? Infinity));
+    const movedNames = new Set(moved.map((id) => model.sheets[id].name.toLowerCase()));
+    // An edit addressed before its sheet's cells moved can't be placed, nor can a formula's
+    // references to another such sheet be followed.
     let unplaced = 0;
     for (const [key, op] of pendingCellOps) {
-      if (op.addressedIn === undefined || op.addressedIn >= (model.sheets[op.sheetId]?.layout || 0)) continue;
+      const misaddressed = op.addressedIn !== undefined && op.addressedIn < (model.sheets[op.sheetId]?.layout || 0);
+      if (!misaddressed && !(movedNames.size && op.value?.startsWith("=") && formulaReadsSheets(op.value, movedNames))) continue;
       pendingCellOps.delete(key); unplaced++;
     }
     if (unplaced) toast(`${unplaced === 1 ? "An unsaved edit" : `${unplaced} unsaved edits`} couldn't be kept because rows or columns moved meanwhile`, "bad");
     // Undo history, a cut and an open editor name cells by where they were, which a move this tab missed changed.
-    for (const id of model.sheetOrder) {
-      if ((model.sheets[id]?.layout || 0) <= (layoutsBefore.get(id) ?? Infinity)) continue;
+    for (const id of moved) {
       forgetHistoryOf(id);
       if (editing?.sheetId === id) editing.stale = true;
       if (copyFallback?.cut && copyFallback.sheetId === id && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
