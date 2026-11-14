@@ -52,7 +52,7 @@ Every write runs in the Durable Object's mutation queue, bumps versions only for
 | `insertRows({ sheet?, at, count = 1 })` / `deleteRows(…)` | Inserts before row `at`. As in the grid, formula references from every sheet move, references into deleted lines become `#REF!`, ranges shrink, and chart ranges, pivot sources, the filter and row heights follow. A sheet keeps at least one row. |
 | `insertCols({ sheet?, at, count = 1 })` / `deleteCols(…)` | Same, with `at` a column letter or number. |
 | `addSheet({ name?, rows?, cols?, index? })` | Returns `{ sheetId, name }`. Names are trimmed to 60 characters and must be unique (default `SheetN`). New sheets default to 100 × 26. |
-| `renameSheet({ sheet, name })` | Rewrites references to the sheet in every formula. |
+| `renameSheet({ sheet, name })` | Formulas reading the sheet show the new name. |
 | `deleteSheet({ sheet })` | Never the last sheet. |
 | `addChart({ sheet?, range, type = "line", title?, xAxisTitle?, yAxisTitle?, legend?, firstRowHeaders?, firstColLabels?, x?, y?, width?, height? })` | Returns `{ chartId }`. `type` is `line`, `pie`, `area` or `stackedBar`. `legend`, `firstRowHeaders` and `firstColLabels` default to true. Size is clamped to 280–1200 × 200–900 px (default 520 × 320). Without `x`/`y` it's placed beside the data, past any filled columns next to it, or under it when there's no room. At most 50 charts per sheet. |
 | `setColumnWidths({ sheet?, widths: { A: 180, C: 120 } })` | In px, 24–2000; `null` resets a column to the default (92). |
@@ -81,11 +81,14 @@ The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic,
 ## Data model
 
 - `meta`: revision, title, sheet order, and per-sheet metadata (`rows`, `cols`, `colWidths`, `rowHeights`, frozen panes, `filter`, `charts`, `pivot`). `title` isn't edited in the grid; the browser tab shows it when set, and otherwise the active sheet's name. Frozen panes exist in the model but have no UI.
-- Cells are `{ value, fmt, version }`, stored in blocks of 32 rows (`b:<sheetId>:<block>`), packed as parallel arrays.
-- Clients send per-cell edits with the version they rest on; conflicts are rebased and resent, so when two people commit the same cell, the later commit wins. Layout-changing edits (sort, row/column insert, delete or move) are sent as whole-sheet replacements guarded by `baseRevision`, refused if the document moved on.
-- A replacement says how it moved the sheet's cells (`moves`), and the server records the revision as the sheet's `layout`. Peers move their unsaved edits with the cells they were typed into (dropping one on a deleted line), and the server refuses an edit addressed before the sheet's last move (`misplaced`), so a position never stands in for a different record.
+- Every row and column has an id (`lib/lines.ts`): a sheet's first lines are `0…n-1`, and inserted lines get fresh random ids. Each sheet's order is stored at `o:<sheetId>` as runs of ids, deleted lines kept as tombstones (none stored: identity order).
+- Cells are `{ value, fmt, version }`, keyed `"rowId:colId"` and stored in blocks of 32 row ids (`c:<sheetId>:<block>`), packed as parallel arrays. Formulas, chart ranges, pivot sources, the filter and line sizes are stored by id too (`lib/refs.ts`) and shown as A1 for the current order, so inserting, deleting or moving lines and renaming sheets rewrite nothing: a reference follows its cell, a range keeps the lines between its two ends (as Excel's cut and insert does), and a reference to a deleted line is `#REF!`.
+- Clients send line operations (insert, delete, move by id), applied in order, and per-cell edits by key with the version they rest on; conflicts are rebased and resent, so when two people commit the same cell, the later commit wins. An edit stays on its record however the lines moved before it landed; one on a deleted line is refused (`gone`). A save whose reply is lost goes again as it was, under its id, and the server answers it from where things are now rather than apply it twice.
+- A sort rewrites cells, not lines (references to sorted cells keep reading the same places, as in Excel), sent as one write applied whole or refused if any cell it rewrites changed first. An edit made before a sort rewrote its cell is refused (`sorted`) rather than land on another record.
+- A pivot table's output sheet and a sheet duplicated in the same operation are written as whole-sheet replacements, which start the sheet's lines over (references into it read by position).
+- Editors from before line ids keep working: the server translates their edits by where lines are now, and sends them positions.
 - Presence events flow between clients, but no remote cursors are drawn.
-- Older storage layouts are converted to blocks the first time a workbook loads.
+- Older storage layouts (cells by position) are converted to id blocks the first time a workbook loads.
 
 ## Export formats
 
@@ -100,7 +103,7 @@ Excel and CSV are computed on the server with the grid's own formula engine, so 
 - No file import; the clipboard uses tab-separated text.
 - No Replace in Find.
 - A filter covers the rows it had when it was turned on, plus rows inserted inside it; rows written below it aren't filtered or sorted until it is turned off and on again.
-- Structural edits and sorting clear local undo history.
+- Inserting or deleting rows and columns can't be undone (moving them can); someone else's pivot refresh or sheet replacement clears local undo history for that sheet.
 - The whole workbook is held in the browser's memory; about a million filled cells is the practical ceiling.
 
 ## Code map

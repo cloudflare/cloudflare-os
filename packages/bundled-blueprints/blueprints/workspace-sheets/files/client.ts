@@ -29,7 +29,6 @@ import {
   formulaReferences,
   functionHelp,
   isErr,
-  letterToCol,
   makeEngine,
   parseFormula,
   parseRef,
@@ -46,17 +45,19 @@ import type {
   Align,
   Cell,
   CellFmt,
+  CellConflict,
+  CellDeletion,
   CellMap,
-  CellMove,
   CellOp,
+  CellUpsert,
   CellsPage,
   Chart,
   ChartType,
-  Dims,
   FilterSort,
   FullPackedCells,
   GadgetStub,
   OpenedDocument,
+  Operation,
   OperationEvent,
   OperationResult,
   PivotAggregate,
@@ -68,10 +69,13 @@ import type {
   SheetSlice,
   SheetsDocument,
   SheetsPresenceEvent,
+  SortWrite,
   Structure,
   SubscriberCallbacks,
   SubscriberEvent,
 } from "./lib/protocol.ts";
+import { type Axis, type LineOp, SheetOrder, type StoredOrder, newLineIds, parseCellKey } from "./lib/lines.ts";
+import { type RefContext, hasStoredRefs, render, storeSheet, storedSheets, toStored, viewSheet } from "./lib/refs.ts";
 
 // The bindings the Workshop's iframe bootstrap defines before this module runs: the RPC stub to
 // this gadget's Durable Object, and Cap'n Web's RpcTarget for the callbacks it is handed.
@@ -898,6 +902,244 @@ function shownFmt(cell: Cell | null | undefined): CellFmt | null | undefined {
 }
 function cellRaw(ref: string): string { const c = getCell(ref); return c ? c.value : ""; }
 function colWidth(c: number): number { return curSheet().colWidths[c] || DEFAULT_COL_W; }
+
+// ===========================================================================
+// Line ids
+// ===========================================================================
+// Rows and columns have ids (lib/lines.ts), and the server names cells, formula references and
+// sheet settings by them, so an edit stays with its record however lines move. This tab works by
+// position: `model.cells` is keyed by A1 reference with formulas as A1 text, and `model.sheets`
+// holds settings by index. An edit becomes ids when it's queued, and what the server sends becomes
+// positions when it lands. When lines move or a sheet is renamed, `relayout` re-keys the cells and
+// redraws each formula from the stored form it keeps.
+
+/** A cell as this tab holds it: `src` is its formula in stored form, which holds while `value` is still `srcOf` (the text it was drawn as). */
+type ViewCell = Cell & { src?: string; srcOf?: string };
+
+/** Each sheet's line order as the server last sent it, with the revision it came with. */
+const serverOrders = new Map<string, { order: SheetOrder; revision: number }>();
+/**
+ * This tab's changes to line orders not yet acknowledged, oldest first: line operations, and
+ * `reset`s, which start a sheet over in identity order (a sheet made here, or one replaced
+ * wholesale; see queueReplacement). The first `lineLogSent` are in the save awaiting its reply.
+ */
+type OrderStep = LineOp | { kind: "reset"; sheetId: string; rows: number; cols: number };
+const lineLog: OrderStep[] = [];
+let lineLogSent = 0;
+/** Every sheet's lines as this tab shows them: the server's, with this tab's unacknowledged changes on top. */
+let orders = new Map<string, SheetOrder>();
+// Cells the server sent on lines this tab hasn't heard of yet (a page read after someone
+// inserted rows, whose event is still waiting), by sheet and key, until those lines arrive.
+const unplaced = new Map<string, Map<string, Cell>>();
+
+function computeOrders() {
+  const next = new Map<string, SheetOrder>(), own = new Set<string>();
+  for (const [id, known] of serverOrders) next.set(id, known.order);
+  for (const step of lineLog) {
+    if (step.kind === "reset") { next.set(step.sheetId, SheetOrder.from(null, step.rows, step.cols)); own.add(step.sheetId); continue; }
+    const order = next.get(step.sheetId);
+    if (!order) continue;
+    if (!own.has(step.sheetId)) { next.set(step.sheetId, order.clone()); own.add(step.sheetId); }
+    next.get(step.sheetId)!.axis(step.axis).apply(step);
+  }
+  orders = next;
+}
+// The server's orders from an event, a reply or a snapshot, unless a newer one is already known.
+function adoptOrders(sent: Record<string, StoredOrder> | undefined, revision: number) {
+  for (const [id, stored] of Object.entries(sent || {})) {
+    if ((serverOrders.get(id)?.revision ?? -1) > revision) continue;
+    serverOrders.set(id, { order: SheetOrder.from(stored, 0, 0), revision });
+  }
+}
+// A sheet made here starts at its size in identity order.
+function createSheetLines(sheetId: string, rows: number, cols: number) {
+  lineLog.push({ kind: "reset", sheetId, rows, cols });
+  computeOrders();
+}
+
+/** How formulas read at a moment: every sheet's lines and name. */
+interface Book { orders: Map<string, SheetOrder>; names: Map<string, string>; ctx(sheetId: string): RefContext }
+function book(): Book {
+  const lines = orders, names = new Map<string, string>(), ids = new Map<string, string>();
+  for (const id of model.sheetOrder) {
+    const name = model.sheets[id]?.name;
+    if (name != null) { names.set(id, name); ids.set(name.toLowerCase(), id); }
+  }
+  return {
+    orders: lines,
+    names,
+    ctx: (sheetId) => ({ sheetId, order: (id) => lines.get(id), sheetIdByName: (name) => ids.get(name.toLowerCase()), sheetName: (id) => names.get(id) }),
+  };
+}
+const orderOf = (sheetId: string) => orders.get(sheetId);
+// A cell's key ("rowId:colId") from its A1 reference, and back (null past the grid, or on a deleted line).
+function keyOf(sheetId: string, ref: string): string | null {
+  const p = parseRef(ref);
+  return p && (orders.get(sheetId)?.keyAt(p.r, p.c) ?? null);
+}
+function refOf(sheetId: string, key: string): string | null {
+  const p = orders.get(sheetId)?.positionOf(key);
+  return p ? rcToRef(p.r, p.c) : null;
+}
+// A value in stored form: a formula's own stored form while it still shows this text, otherwise
+// the text read against the lines as they are now.
+function storedValue(sheetId: string, ref: string, value: string, b: Book = book()): string {
+  if (!value.startsWith("=")) return value;
+  const cell = model.cells[sheetId]?.[ref] as ViewCell | undefined;
+  return cell?.src !== undefined && cell.srcOf === value ? cell.src : toStored(value, b.ctx(sheetId));
+}
+/** A stored cell as this tab holds it: formulas drawn as A1 text, keeping their stored form. */
+function viewCell(sheetId: string, cell: Cell, b: Book = book()): ViewCell {
+  const fmt = cell.fmt ? { ...cell.fmt } : null;
+  if (!hasStoredRefs(cell.value)) return { value: cell.value, fmt, version: cell.version };
+  const value = render(cell.value, b.ctx(sheetId));
+  return { value, fmt, version: cell.version, src: cell.value, srcOf: value };
+}
+// Puts a stored cell (null: deleted) where its key is now, or keeps it for lines still to come.
+function placeStored(sheetId: string, key: string, cell: Cell | null, b: Book = book()) {
+  const ref = refOf(sheetId, key);
+  if (ref) {
+    const cells = model.cells[sheetId] || (model.cells[sheetId] = {});
+    if (cell) cells[ref] = viewCell(sheetId, cell, b); else delete cells[ref];
+    unplaced.get(sheetId)?.delete(key);
+    return;
+  }
+  const ids = parseCellKey(key), order = orders.get(sheetId);
+  if (!ids || !order || (order.rows.has(ids.row) && order.cols.has(ids.col))) return; // deleted with its line
+  let waiting = unplaced.get(sheetId);
+  if (!waiting) unplaced.set(sheetId, waiting = new Map());
+  if (cell) waiting.set(key, cell); else waiting.delete(key);
+}
+// A sheet's stored cells (by key) as this tab holds them (by position).
+function viewCells(sheetId: string, cells: CellMap, b: Book = book()): CellMap {
+  model.cells[sheetId] = {};
+  unplaced.delete(sheetId);
+  for (const key in cells) placeStored(sheetId, key, cells[key], b);
+  return model.cells[sheetId];
+}
+// A sheet's cells by key, with formulas in stored form, as a replacement sends them.
+function storedCells(sheetId: string): CellMap {
+  const out: CellMap = {}, b = book();
+  for (const [ref, cell] of Object.entries(model.cells[sheetId] || {})) {
+    const key = keyOf(sheetId, ref);
+    if (key) out[key] = { value: storedValue(sheetId, ref, cell.value, b), fmt: cell.fmt ? { ...cell.fmt } : null, version: cell.version };
+  }
+  return out;
+}
+
+// Each formula's stored form, read against `b` where it's missing or stale. One with no stored
+// references keeps none: a reference into a sheet with no lines yet (one being made) is read
+// again once it has them.
+function pinFormulas(b: Book) {
+  for (const [sheetId, cells] of Object.entries(model.cells)) {
+    let ctx: RefContext | null = null;
+    for (const ref in cells) {
+      const cell = cells[ref] as ViewCell;
+      if (!cell.value?.startsWith("=") || (cell.src !== undefined && cell.srcOf === cell.value)) continue;
+      const stored = toStored(cell.value, ctx ||= b.ctx(sheetId));
+      if (hasStoredRefs(stored)) { cell.src = stored; cell.srcOf = cell.value; }
+      else { delete cell.src; delete cell.srcOf; }
+    }
+  }
+}
+// The cell being edited, by key, with its draft formula in stored form.
+function editingAnchor(): { key: string | null; draft: string | null } | null {
+  if (!editing) return null;
+  return { key: keyOf(editing.sheetId, editing.ref), draft: cellEditor.value.startsWith("=") ? toStored(cellEditor.value, book().ctx(editing.sheetId)) : null };
+}
+// The editor stays on its cell, wherever that went, and its draft keeps pointing at the same cells.
+function followEditing(held: ReturnType<typeof editingAnchor>, b: Book) {
+  if (!held || !editing) return;
+  const at = held.key ? orders.get(editing.sheetId)?.positionOf(held.key) : null;
+  if (!at) { cancelEdit(); toast("The cell you were editing was deleted", "bad"); return; }
+  if (at.r !== editing.r || at.c !== editing.c) Object.assign(editing, { ref: rcToRef(at.r, at.c), r: at.r, c: at.c });
+  if (held.draft !== null) {
+    const text = render(held.draft, b.ctx(editing.sheetId));
+    if (text !== cellEditor.value) { cellEditor.value = text; if (document.activeElement !== formulaInput) formulaInput.value = text; }
+  }
+  if (!editingAway()) placeCellEditor();
+}
+// Unsaved edits whose row or column is gone are dropped; returns how many.
+function dropDeadEdits(): number {
+  let dropped = 0;
+  for (const [key, op] of pendingCellOps) {
+    const order = orders.get(op.sheetId);
+    if (order && !order.liveKey(op.key)) { pendingCellOps.delete(key); dropped++; }
+  }
+  return dropped;
+}
+
+/**
+ * Runs `change`, which moves lines (updating `serverOrders` or `lineLog`) or renames or removes
+ * sheets, then puts everything this tab holds by position where it is now: cells re-keyed,
+ * formulas and settings drawn again from their stored form, the editor kept on its cell, and
+ * unsaved edits on deleted lines dropped (`dropped` says how many). `renumbered`: sheets that
+ * start over by position (see queueReplacement), whose cells and settings stay where they are and
+ * whose references are read again from what they show.
+ */
+function relayout(change: () => void, renumbered: ReadonlySet<string> = new Set()): { changed: boolean; dropped: number } {
+  const before = book();
+  pinFormulas(before);
+  const sheetsBefore = new Map(Object.entries(model.sheets));
+  const storedBefore = new Map([...sheetsBefore].map(([id, sheet]) => [id, storeSheet(sheet, (sid) => before.orders.get(sid))]));
+  const editAt = editingAnchor();
+  change();
+  computeOrders();
+  const after = book();
+  const runs = (order: SheetOrder | undefined) => (order ? JSON.stringify(order.toStored()) : "");
+  const moved = new Set([...after.orders.keys()].filter((id) => model.sheets[id] && before.orders.has(id) && runs(before.orders.get(id)) !== runs(after.orders.get(id))));
+  const renamed = [...before.names].some(([id, name]) => after.names.get(id) !== name);
+  if (!moved.size && !renamed) return { changed: false, dropped: 0 };
+  for (const id of moved) {
+    measuredRowHeights.delete(id);
+    if (renumbered.has(id)) continue;
+    const from = before.orders.get(id)!, to = after.orders.get(id)!, cells = model.cells[id] || {}, next: CellMap = {};
+    for (const ref in cells) {
+      const p = parseRef(ref), key = p && from.keyAt(p.r, p.c), at = key && to.positionOf(key);
+      if (at) next[rcToRef(at.r, at.c)] = cells[ref];
+    }
+    model.cells[id] = next;
+    const waiting = unplaced.get(id);
+    if (waiting) for (const [key, cell] of [...waiting]) placeStored(id, key, cell, after);
+  }
+  for (const [id, sheet] of Object.entries(model.sheets)) {
+    // A sheet the change replaced is already as it should be.
+    if (sheetsBefore.get(id) !== sheet || renumbered.has(id)) continue;
+    const source = sheet.pivot?.sourceSheetId;
+    if (!moved.has(id) && !(source && moved.has(source) && !renumbered.has(source))) continue;
+    Object.assign(sheet, viewSheet(storedBefore.get(id)!, (sid) => after.orders.get(sid)));
+    // A filter's sort is by position, so it starts over (as the server's does).
+    if (moved.has(id)) resetFilterSortBaseline(sheet);
+  }
+  // References into a sheet that started over are read again by position: their text stays.
+  const touches = (value: string) => [...storedSheets(value)].some((sid) => renumbered.has(sid));
+  for (const [sheetId, cells] of Object.entries(model.cells)) {
+    const ctx = after.ctx(sheetId);
+    for (const ref in cells) {
+      const cell = cells[ref] as ViewCell;
+      if (cell.src === undefined || !hasStoredRefs(cell.src)) continue;
+      if (renumbered.has(sheetId) || touches(cell.src)) { delete cell.src; delete cell.srcOf; continue; }
+      cell.value = cell.srcOf = render(cell.src, ctx);
+    }
+  }
+  if (renumbered.size) {
+    for (const op of pendingCellOps.values()) {
+      if (op.value && hasStoredRefs(op.value) && touches(op.value)) op.value = toStored(render(op.value, before.ctx(op.sheetId)), after.ctx(op.sheetId));
+    }
+  }
+  const dropped = dropDeadEdits();
+  followEditing(editAt, after);
+  // A selection past a sheet that shrank comes back inside it.
+  const sheet = curSheet();
+  if (sheet) {
+    const fit = (rc: RC): RC => ({ r: Math.min(rc.r, Math.max(0, sheet.rows - 1)), c: Math.min(rc.c, Math.max(0, sheet.cols - 1)) });
+    anchor = fit(anchor); focus = fit(focus);
+    extraRanges = extraRanges.filter((range) => range.r1 < sheet.rows && range.c1 < sheet.cols).map((range) => ({ ...range, r2: Math.min(range.r2, sheet.rows - 1), c2: Math.min(range.c2, sheet.cols - 1) }));
+  }
+  layout = null;
+  rebuildEngine();
+  return { changed: true, dropped };
+}
 function rowHeight(r: number): number { return curSheet().rowHeights[r] || DEFAULT_ROW_H; }
 
 /* ═══════════════════════════════ 5. Chrome ═══════════════════════════════ */
@@ -1471,76 +1713,98 @@ function holdEvents() {
   if (ready) replayFloor = model.revision;
   ready = false;
 }
+// The newest revision of others' changes this tab has shown (a snapshot or an event): what an
+// edit is made on (see CellOp.basis). Not model.revision, which this tab's own save replies can
+// raise past events still on their way.
+let seenRevision = 0;
 /**
- * A local cell edit waiting to be saved; `baseVersion` unset means "the cell's version when sent".
- * `layout`: a reference rewrite on another sheet that belongs to a pending row or column change,
- * and is discarded with it if that change is refused. `addressedIn`: the sheet layout (see
- * `SheetMeta.layout`) `ref` names a cell in; unset while this tab's own replacement of the sheet,
- * which set the layout, is unsaved.
+ * A local cell edit waiting to be saved: the cell's key, and its value in stored form.
+ * `baseVersion` unset means "the cell's version when sent"; `basis` is the revision it was made on.
  */
-interface PendingCellOp { sheetId: string; ref: string; value: string | null; fmt: CellFmt | null; baseVersion?: number; layout?: true; addressedIn?: number }
-/** A whole-workbook structure snapshot, with the revision it was built on. */
+interface PendingCellOp { sheetId: string; key: string; value: string | null; fmt: CellFmt | null; baseVersion?: number; basis: number }
+/** A whole-workbook structure snapshot (stored form), with the revision it was built on. */
 type StructureSnapshot = Structure & { revision: number };
-const pendingCellOps = new Map<string, PendingCellOp>();
+const pendingCellOps = new Map<string, PendingCellOp>(); // "sheetId!key" -> edit
 let pendingStructure: StructureSnapshot | null = null;      // latest complete structure snapshot to send
-const pendingReplacements = new Map<string, CellMap>(); // sheetId -> cells (full)
-// How each pending replacement moved its sheet's cells since the last one sent (null: unknown).
-const replacementMoves = new Map<string, CellMove[] | null>();
-// The revision the model held when the first pending structure snapshot or sheet replacement
-// was built. A replacement (a sort, an inserted row) is only valid on that layout, so it's sent
-// with this revision and the server refuses it if the sheet has moved on. null while neither
-// is pending.
-let wholesaleBaseRevision: number | null = null;
-// The newest remote write (`cell: null` for a deletion) to a cell whose edit was pending when it
-// arrived. A save's reply can come after it, and must not put back the older acknowledged cell.
+/** A sheet replaced wholesale (see queueReplacement): its size, and every cell by key. */
+interface PendingReplacement { size: { rows: number; cols: number }; cells: CellMap }
+const pendingReplacements = new Map<string, PendingReplacement>();
+/**
+ * A sort waiting to be saved (see writeSort): the lines it sorted, and every cell it rewrote by
+ * key, with its new content (stored form; null and null deletes it) and the version it was
+ * computed from. `histories`: its undo entries, which go if the server refuses it.
+ */
+interface PendingSort {
+  sheetId: string;
+  rows: Set<number>;
+  cols: Set<number>;
+  cells: Map<string, { value: string | null; fmt: CellFmt | null; baseVersion: number }>;
+  histories: CellHistory[];
+}
+const pendingSorts = new Map<string, PendingSort>();
+let inFlightSorts: PendingSort[] = [];
+// The newest remote write (`cell: null` for a deletion; stored form) to a cell whose edit was
+// pending when it arrived. A save's reply can come after it, and must not put back the older
+// acknowledged cell.
 const overtakingWrites = new Map<string, { revision: number; cell: Cell | null }>();
-// An edit a move carried or rewrote (followCellMoves) is a new entry; this links each one it
-// replaced to it, with the move's revision, so a save reply can tell whether it is still owed.
-const followedEdits = new WeakMap<PendingCellOp, { next: PendingCellOp; revision: number }>();
-// Set when a save failed, so the next attempt first asks the server where the sheet stands: a
-// failure says nothing about whether the commit landed.
-let resyncBeforeSave = false;
-// Set when that check (or a refused save) reloaded the sheet, so the user is told once.
-let reloadedAfterFailure = false;
 // Structure is saved as a whole-workbook snapshot. `ackedStructure` (what the server last held)
-// lets a remote update be merged with local changes still pending, field by field.
+// lets a remote update be merged with local changes still pending, field by field. Both, like
+// the snapshots, are in stored form: settings name lines by id, so they compare however lines move.
 let ackedStructure: Structure | null = null;
 let ackedStructureRevision = -1;
 let inFlightStructure: StructureSnapshot | null = null; // structure sent in the save awaiting its response
 
-function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion?: number, layout = false) {
-  // A sheet whose cells someone else moved shows them where they were until its pages load, so
-  // an edit there would land on another record. It isn't saved; the loaded cells replace it.
-  if (loadingSheets.has(sheetId)) { toast(SHEET_LOADING, "bad"); return; }
-  const key = sheetId + "!" + ref;
-  // An edit on top of a reference rewrite carries the rewritten text, so it depends on that layout too.
-  if (pendingCellOps.get(key)?.layout) layout = true;
-  const addressedIn = pendingReplacements.has(sheetId) ? undefined : model.sheets[sheetId]?.layout || 0;
-  pendingCellOps.set(key, { sheetId, ref, value, fmt, baseVersion, addressedIn, ...(layout ? { layout: true as const } : {}) });
+// Whether a cell's content is this tab's until a save lands: an unsaved edit or sort.
+function ownsCell(sheetId: string, key: string): boolean {
+  return pendingCellOps.has(sheetId + "!" + key) || !!pendingSorts.get(sheetId)?.cells.has(key) || inFlightSorts.some((sort) => sort.sheetId === sheetId && sort.cells.has(key));
+}
+// The version a cell's edit is based on when nothing else says.
+function shownVersion(sheetId: string, key: string): number {
+  const ref = refOf(sheetId, key);
+  return (ref && model.cells[sheetId]?.[ref]?.version) || 0;
+}
+function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion?: number) {
+  const key = keyOf(sheetId, ref);
+  if (!key) return;
+  const stored = value == null ? null : storedValue(sheetId, ref, value);
+  // The cell keeps the stored form it was saved with.
+  const cell = model.cells[sheetId]?.[ref] as ViewCell | undefined;
+  if (cell && value != null && cell.value === value && stored !== value) { cell.src = stored as string; cell.srcOf = value; }
+  // A sort waiting to be sent holds its cells; an edit there joins it.
+  const sort = pendingSorts.get(sheetId)?.cells.get(key);
+  if (sort) Object.assign(sort, { value: stored, fmt });
+  else pendingCellOps.set(sheetId + "!" + key, { sheetId, key, value: stored, fmt, baseVersion, basis: seenRevision });
   noteEditedCell(sheetId, ref);
   scheduleSave();
 }
 // `revision` is the one the snapshot was built on: the server keeps a sheet created after it
-// (by the agent or a peer) that the snapshot couldn't have known, instead of deleting it.
+// (by the agent or a peer) that the snapshot couldn't have known, instead of deleting it. A sheet
+// the server doesn't have yet is made at the size it started with, before its line operations
+// (whose effect `rows` and `cols` show here); for one it has, they're ignored.
 function structureSnapshot(): StructureSnapshot {
-  return { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(model.sheets)), revision: model.revision };
+  const sheets: Record<string, SheetMeta> = {};
+  for (const [id, sheet] of Object.entries(model.sheets)) {
+    const order = orders.get(id);
+    sheets[id] = { ...storeSheet(sheet, orderOf), ...(order ? { rows: order.rows.started, cols: order.cols.started } : {}) };
+  }
+  return structuredClone({ title: model.title, sheetOrder: model.sheetOrder.slice(), sheets, revision: model.revision });
 }
 function queueStructure() {
-  if (wholesaleBaseRevision === null) wholesaleBaseRevision = model.revision;
   pendingStructure = structureSnapshot();
   scheduleSave();
 }
-// The replacement is the sheet's whole cell map, local edits included, so a cell op still queued
-// for that sheet is redundant -- and, since the caller has just moved the cells (an inserted row,
-// a sort), keyed by a position that no longer names the cell it edited. `moves` say how the cells
-// moved, so peers' unsaved edits can follow them.
-function queueReplacement(sheetId: string, moves: CellMove[]) {
+// A sheet whose content is regenerated (a pivot table) or new (a duplicate) is sent whole: it
+// starts over in identity order at its current size, its cells keyed by position. Edits still
+// queued for it are in the replacement. Its structure goes with it.
+function queueReplacement(sheetId: string) {
+  const sheet = model.sheets[sheetId];
+  if (!sheet) return;
   dropCellOpsFor(sheetId);
-  if (wholesaleBaseRevision === null) wholesaleBaseRevision = model.revision;
-  pendingReplacements.set(sheetId, copyCellMap(model.cells[sheetId] || {}));
-  const earlier = replacementMoves.has(sheetId) ? replacementMoves.get(sheetId)! : [];
-  replacementMoves.set(sheetId, earlier && [...earlier, ...moves]);
-  scheduleSave();
+  pendingSorts.delete(sheetId);
+  const size = { rows: sheet.rows, cols: sheet.cols };
+  relayout(() => { lineLog.push({ kind: "reset", sheetId, ...size }); }, new Set([sheetId]));
+  pendingReplacements.set(sheetId, { size, cells: storedCells(sheetId) });
+  queueStructure();
 }
 // A detached copy of a sheet's cells (faster than a JSON round trip on a big sheet).
 function copyCellMap(cells: CellMap): CellMap {
@@ -1551,33 +1815,33 @@ function copyCellMap(cells: CellMap): CellMap {
 function dropCellOpsFor(sheetId: string) {
   for (const [key, op] of pendingCellOps) if (op.sheetId === sheetId) pendingCellOps.delete(key);
 }
-// Forgets refused sheet replacements, with every edit that depends on their layout: edits on
-// those sheets, and the reference rewrites they made on others. Other edits stay queued.
-function dropPendingLayouts() {
-  for (const sheetId of pendingReplacements.keys()) dropCellOpsFor(sheetId);
-  for (const [key, op] of pendingCellOps) if (op.layout) pendingCellOps.delete(key);
-  pendingReplacements.clear(); replacementMoves.clear();
+// Shows an edit this tab hasn't saved yet (stored value; null and null: deleted) on its cell.
+function showIntent(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, version: number, b: Book = book()) {
+  const cells = model.cells[sheetId] || (model.cells[sheetId] = {});
+  if (value == null && fmt == null) delete cells[ref];
+  else cells[ref] = viewCell(sheetId, { value: value ?? "", fmt: fmt ?? null, version }, b);
 }
-// Cells read from the server for a sheet, with this tab's unsaved edits laid back on top.
-function layPendingCellOps(sheetId: string, cells: CellMap) {
+// Cells read from the server for a sheet, with this tab's unsaved edits and sorts laid back on top.
+function layPendingEdits(sheetId: string, b: Book = book()) {
+  const cells = model.cells[sheetId] || {};
   for (const op of pendingCellOps.values()) {
-    if (op.sheetId !== sheetId) continue;
-    if (op.value == null && op.fmt == null) delete cells[op.ref];
-    else cells[op.ref] = { value: op.value ?? "", fmt: op.fmt ?? null, version: cells[op.ref]?.version || 0 };
+    const ref = op.sheetId === sheetId ? refOf(sheetId, op.key) : null;
+    if (ref) showIntent(sheetId, ref, op.value, op.fmt, cells[ref]?.version || 0, b);
+  }
+  for (const sort of [...inFlightSorts, ...pendingSorts.values()]) {
+    if (sort.sheetId !== sheetId) continue;
+    for (const [key, entry] of sort.cells) {
+      const ref = refOf(sheetId, key);
+      if (ref) showIntent(sheetId, ref, entry.value, entry.fmt, cells[ref]?.version || 0, b);
+    }
   }
 }
-// After a reload throws away a layout this client had built, its undo history no longer
-// describes the sheet, and the user hears about it once.
-function noteReloadedAfterFailure() {
-  undoStack.length = 0; redoStack.length = 0; updateUndoButtons();
-  reloadedAfterFailure = true;
-}
 
-const hasUnsavedEdits = () => !!(pendingCellOps.size || pendingStructure || pendingReplacements.size);
+const hasUnsavedEdits = () => !!(outgoing || pendingCellOps.size || pendingStructure || pendingReplacements.size || pendingSorts.size || lineLog.length > lineLogSent);
 // The shared save loop debounces, serializes and retries with backoff. Nothing typed is lost on a
-// failure: everything stays queued and is retried, after first checking whether the failed save
-// landed (resyncBeforeSave). While events are held (a reload or reconnect) nothing is sent; the
-// hold's end schedules the save.
+// failure: the save goes again as it was, under its id (see Outgoing), and edits made meanwhile
+// wait for the next one. While events are held (a reload or reconnect) nothing is
+// sent; the hold's end schedules the save.
 const saves = new SaveScheduler({
   debounceMs: 180,
   readOnly: isExport,
@@ -1593,10 +1857,7 @@ const saves = new SaveScheduler({
       // A save that keeps failing while online is said out loud once, not left to the badge.
       if (saves.failures === 4 && navigator.onLine !== false) toast("Recent changes aren't saved yet. Still trying — keep this tab open.", "bad");
     } else if (status !== "saved" || hasUnsavedEdits()) setSync(saves.failures ? "offline" : "saving");
-    else {
-      setSync("saved");
-      if (reloadedAfterFailure) { reloadedAfterFailure = false; toast("Reloaded the latest version after a save couldn't be applied", "bad"); }
-    }
+    else setSync("saved");
   },
 });
 function scheduleSave(delay?: number) {
@@ -1606,8 +1867,8 @@ function scheduleSave(delay?: number) {
 
 // ── Big workbooks travel in pieces ─────────────────────────────────────────
 // One message has a size limit, so a large sheet is never sent or received whole: the server
-// pages cells out (openDocument, getCellsPage), a big replacement (a sort, an inserted row) is
-// uploaded in parts (stageCells), and cell edits go out in rounds of about OP_BYTES.
+// pages cells out (openDocument, getCellsPage), a big replacement or sort is uploaded in parts
+// (stageCells), and cell edits go out in rounds of about OP_BYTES.
 const OP_BYTES = 4_000_000;
 const SAVE_TIMEOUT_MS = 45_000;
 const UPLOAD_PART_BYTES = 1_500_000;
@@ -1619,7 +1880,7 @@ function cellMapBytes(cells: CellMap, stopAt = Infinity): number {
   for (const ref in cells) { bytes += approxCellBytes(ref, cells[ref]); if (bytes > stopAt) break; }
   return bytes;
 }
-async function stageReplacement(sheetId: string, cells: CellMap): Promise<SheetReplacement> {
+async function stageCells(sheetId: string, cells: CellMap): Promise<{ uploadId: string; count: number }> {
   const uploadId = `${clientId}-${Date.now().toString(36)}-${++uploadCounter}`;
   let part = 0, chunk: CellMap = {}, bytes = 0, count = 0;
   for (const ref in cells) {
@@ -1628,10 +1889,40 @@ async function stageReplacement(sheetId: string, cells: CellMap): Promise<SheetR
     if (bytes >= UPLOAD_PART_BYTES) { await gadget.stageCells({ uploadId, sheetId, part: part++, cells: chunk }); chunk = {}; bytes = 0; }
   }
   if (bytes || part === 0) await gadget.stageCells({ uploadId, sheetId, part: part++, cells: chunk });
-  return { sheetId, uploadId, count };
+  return { uploadId, count };
+}
+async function replacementFor(sheetId: string, { size, cells }: PendingReplacement): Promise<SheetReplacement> {
+  return cellMapBytes(cells, UPLOAD_PART_BYTES) > UPLOAD_PART_BYTES ? { sheetId, size, ...await stageCells(sheetId, cells) } : { sheetId, size, cells };
+}
+// A staged sort cell carries its base version as `version`, and "" without a format deletes it.
+async function sortWriteFor(sort: PendingSort): Promise<SortWrite> {
+  const lines = { sheetId: sort.sheetId, rows: [...sort.rows], cols: [...sort.cols] };
+  const staged: CellMap = {};
+  for (const [key, entry] of sort.cells) staged[key] = { value: entry.value ?? "", fmt: entry.fmt, version: entry.baseVersion };
+  if (cellMapBytes(staged, UPLOAD_PART_BYTES) > UPLOAD_PART_BYTES) return { ...lines, ...await stageCells(sort.sheetId, staged) };
+  return { ...lines, cellOps: [...sort.cells].map(([key, entry]) => ({ sheetId: sort.sheetId, ref: key, value: entry.value, fmt: entry.fmt, baseVersion: entry.baseVersion })) };
+}
+// Sorts that went out and come back unsent: a newer sort of the same sheet was made since, so its cells win.
+function requeueSorts(sorts: PendingSort[]) {
+  for (const sort of sorts) {
+    const newer = pendingSorts.get(sort.sheetId);
+    if (newer) {
+      for (const [key, entry] of sort.cells) if (!newer.cells.has(key)) newer.cells.set(key, entry); else newer.cells.get(key)!.baseVersion = entry.baseVersion;
+      for (const id of sort.rows) newer.rows.add(id);
+      for (const id of sort.cols) newer.cols.add(id);
+      newer.histories.unshift(...sort.histories);
+    } else pendingSorts.set(sort.sheetId, sort);
+  }
+}
+// The line operations a save sends: a sheet's changes before it was replaced are in the
+// replacement, and a sheet deleted since has none.
+function lineOpsToSend(steps: OrderStep[]): LineOp[] {
+  const lastReset = new Map<string, number>();
+  steps.forEach((step, index) => { if (step.kind === "reset") lastReset.set(step.sheetId, index); });
+  return steps.filter((step, index): step is LineOp => step.kind !== "reset" && !!model.sheets[step.sheetId] && index > (lastReset.get(step.sheetId) ?? -1));
 }
 // Pages arrive packed (parallel arrays; each format once per page, see the server's
-// readPackedPage). Every cell gets its own copy of its format, as edits may change it in place.
+// readPackedPage), by cell key with stored values. Every cell gets its own copy of its format.
 function unpackCells(packed: FullPackedCells, into: CellMap): CellMap {
   const { refs, values, versions, styles, fmts } = packed;
   for (let i = 0; i < refs.length; i++) {
@@ -1640,7 +1931,6 @@ function unpackCells(packed: FullPackedCells, into: CellMap): CellMap {
   }
   return into;
 }
-function pageCellsInto(page: CellsPage, into: CellMap): CellMap { return page.packed ? unpackCells(page.packed, into) : Object.assign(into, page.cells || {}); }
 // A big sheet is read as a few runs of row blocks ("slices", chosen by the server: the
 // `slices` of openDocument, or getSheetSlices), two at a time: one page travels while the
 // server builds the next. More doesn't help (the server does one thing at a time) and costs it
@@ -1651,7 +1941,7 @@ async function readSlices(slices: SheetSlice[], onPage: (sheetId: string, page: 
     while (next < slices.length) {
       const slice = slices[next++];
       for (let after = slice.after; ;) {
-        const page = await gadget.getCellsPage({ sheetId: slice.sheetId, after, from: slice.from, to: slice.to, packed: true });
+        const page = await gadget.getCellsPage({ sheetId: slice.sheetId, after, from: slice.from, to: slice.to });
         onPage(slice.sheetId, page);
         if (page.missing || page.next == null) break;
         after = page.next;
@@ -1660,24 +1950,21 @@ async function readSlices(slices: SheetSlice[], onPage: (sheetId: string, page: 
   };
   await Promise.all(Array.from({ length: Math.min(2, slices.length) }, worker));
 }
+/** A document whose cells have all been read and unpacked (see loadRemainingPages): stored cells by key. */
+type LoadedDocument = OpenedDocument & { cells: Record<string, CellMap> };
 // Fills in the cells `openDocument` left for later (and unpacks the first page). True when
 // every page came from the document's own revision. `progress(cellsSoFar)` follows along.
-/** A document whose cells have all been read and unpacked (see loadRemainingPages). */
-type LoadedDocument = OpenedDocument & { cells: Record<string, CellMap> };
 async function loadRemainingPages(doc: OpenedDocument, progress: ((count: number) => void) | null = null): Promise<boolean> {
   let count = 0;
-  if (doc.packed) {
-    doc.cells = {};
-    for (const [sheetId, packed] of Object.entries(doc.packed)) { doc.cells[sheetId] = unpackCells(packed, {}); count += packed.refs.length; }
-    delete doc.packed;
-  }
-  doc.cells ||= {};
+  const cells: Record<string, CellMap> = doc.cells = {};
+  for (const [sheetId, packed] of Object.entries(doc.packed || {})) { cells[sheetId] = unpackCells(packed, {}); count += packed.refs.length; }
+  delete doc.packed;
   let stable = true;
   await readSlices(doc.slices || [], (sheetId, page) => {
     if (page.revision !== doc.revision) stable = false;
     if (page.missing) return;
-    pageCellsInto(page, doc.cells![sheetId] || (doc.cells![sheetId] = {}));
-    count += page.packed ? page.packed.refs.length : Object.keys(page.cells || {}).length;
+    unpackCells(page.packed, cells[sheetId] || (cells[sheetId] = {}));
+    count += page.packed.refs.length;
     progress?.(count);
   });
   return stable;
@@ -1685,55 +1972,45 @@ async function loadRemainingPages(doc: OpenedDocument, progress: ((count: number
 // The whole workbook, read again (a few times at most) until it comes from one revision.
 async function fetchDocument(): Promise<LoadedDocument> {
   for (let attempt = 0; ; attempt++) {
-    const doc = await gadget.openDocument({ packed: true });
+    const doc = await gadget.openDocument();
     // loadRemainingPages has filled in `cells`.
     if ((await loadRemainingPages(doc)) || attempt >= 3) return doc as LoadedDocument;
   }
 }
-// Live events wait while a reload is read and applied, then are replayed if newer, so a
-// reload that takes a moment can't overwrite an edit that arrived meanwhile.
-async function reloadHoldingEvents(apply: (doc: LoadedDocument) => void) {
-  holdEvents();
-  try { apply(await fetchDocument()); }
-  finally { if (!connecting && !sheetReloads) { ready = true; replayBuffered(); } }
-}
-// A big sheet someone else replaced arrives without its cells (`null`): they're read in pages
-// while live events wait, and edits typed here meanwhile stay on top until they're saved.
+// A big sheet someone else replaced arrives without its cells (`null`), and a refused sort leaves
+// a sheet as this tab sorted it: such a sheet is read again in pages while live events wait, and
+// edits typed here meanwhile stay on top until they're saved.
 //
 // A snapshot applied meanwhile (a reconnect) is newer than the pages, so a reload started
 // before it is dropped. This tab's own saves acknowledged during the reload (or a reconnect) are
 // kept in `reloadAcks` and laid over pages read before they landed.
 let sheetReloads = 0, snapshotGeneration = 0;
-/** A cell as one of this tab's saves left it (`cell: null` when deleted), at that save's revision. */
-interface ReloadAck { sheetId: string; ref: string; cell: Cell | null; revision: number }
+/** A cell as one of this tab's saves left it (`cell: null` when deleted; stored form), at that save's revision. */
+interface ReloadAck { sheetId: string; key: string; cell: Cell | null; revision: number }
 const reloadAcks: ReloadAck[] = [];
-// Sheets this tab replaced (an insert, a sort) with the save acknowledged during a reload or
-// reconnect, at that save's revision. Pages read before it hold the old layout, so they're read again.
+// Sheets this tab replaced with the save acknowledged during a reload or reconnect, at that
+// save's revision. Pages read before it hold the cells the replacement removed, so they're read again.
 const reloadReplacements: { sheetId: string; revision: number }[] = [];
 // Sheets a reconnect's snapshot had from before such a save; reloaded once it's applied.
 let staleAfterSnapshot: string[] = [];
-// Sheets reloadSheets is reading, which can't be edited meanwhile (see queueCellOp).
-const loadingSheets = new Set<string>();
-const SHEET_LOADING = "This sheet is still loading its moved rows; try again in a moment";
 async function reloadSheets(ids: string[]) {
   holdEvents(); sheetReloads++;
-  for (const id of ids) loadingSheets.add(id);
   const generation = snapshotGeneration;
   try {
     for (let attempt = 0; generation === snapshotGeneration; attempt++) {
       try {
         const loaded = new Map<string, CellMap>(ids.map((id) => [id, {}]));
         const { revision, slices } = await gadget.getSheetSlices({ sheetIds: ids });
-        await readSlices(slices, (id, page) => { if (!page.missing) pageCellsInto(page, loaded.get(id)!); });
+        await readSlices(slices, (id, page) => { if (!page.missing) unpackCells(page.packed, loaded.get(id)!); });
         if (generation !== snapshotGeneration) break;
         if (reloadReplacements.some((r) => ids.includes(r.sheetId) && r.revision > revision)) continue;
         // Every page is at least as new as `revision`; a save acknowledged after it may be missing.
         layReloadAcks(revision, (id) => loaded.get(id));
+        const b = book();
         for (const id of ids) {
-          const cells = loaded.get(id)!;
           if (!model.sheets[id]) continue;
-          layPendingCellOps(id, cells);
-          model.cells[id] = cells;
+          viewCells(id, loaded.get(id)!, b);
+          layPendingEdits(id, b);
         }
         rebuildEngine(); renderGrid();
         break;
@@ -1744,255 +2021,234 @@ async function reloadSheets(ids: string[]) {
     }
   } finally {
     sheetReloads--;
-    // Edits refused meanwhile left history at the positions shown then.
-    for (const id of ids) { loadingSheets.delete(id); forgetHistoryOf(id); }
-    if (pivotRefreshDeferred && !loadingSheets.size) { pivotRefreshDeferred = false; schedulePivotRefreshes(); }
+    if (pivotRefreshDeferred && !sheetReloads) { pivotRefreshDeferred = false; schedulePivotRefreshes(); }
     // An event held during the reload mustn't undo a save of the same cell acknowledged after it.
     const acked = new Map<string, number>();
     if (!sheetReloads && !connecting) reloadReplacements.length = 0;
-    if (!sheetReloads) for (const ack of reloadAcks.splice(0)) acked.set(ack.sheetId + "!" + ack.ref, Math.max(acked.get(ack.sheetId + "!" + ack.ref) ?? 0, ack.revision));
+    if (!sheetReloads) for (const ack of reloadAcks.splice(0)) acked.set(ack.sheetId + "!" + ack.key, Math.max(acked.get(ack.sheetId + "!" + ack.key) ?? 0, ack.revision));
     if (!connecting && !sheetReloads) { ready = true; replayBuffered(acked); if (hasPendingSave()) scheduleSave(40); }
   }
 }
-function noteReloadAck(sheetId: string, ref: string, cell: Cell | null, revision: number) {
-  if (sheetReloads || connecting) reloadAcks.push({ sheetId, ref, cell: cell && { ...cell }, revision });
+function noteReloadAck(sheetId: string, key: string, cell: Cell | null, revision: number) {
+  if (sheetReloads || connecting) reloadAcks.push({ sheetId, key, cell: cell && { ...cell }, revision });
 }
-// Lays this tab's saves acknowledged after `revision` over cells read at it, and returns when
-// each cell was last saved, so held events older than that save don't undo it either.
+// Lays this tab's saves acknowledged after `revision` over stored cells read at it, and returns
+// when each cell was last saved, so held events older than that save don't undo it either.
 function layReloadAcks(revision: number, cellsOf: (sheetId: string) => CellMap | undefined): Map<string, number> {
   const acked = new Map<string, number>();
   for (const ack of reloadAcks) {
     const cells = cellsOf(ack.sheetId);
     if (!cells || ack.revision <= revision) continue;
-    if (ack.cell) cells[ack.ref] = { ...ack.cell }; else delete cells[ack.ref];
-    const key = ack.sheetId + "!" + ack.ref;
+    if (ack.cell) cells[ack.key] = { ...ack.cell }; else delete cells[ack.key];
+    const key = ack.sheetId + "!" + ack.key;
     acked.set(key, Math.max(acked.get(key) ?? 0, ack.revision));
   }
   return acked;
 }
+// Whether a refused sort is one that had already landed: its save is being sent again after an
+// unclear failure, and every cell it would write already holds what it wrote.
+function sortLanded(sort: PendingSort, conflicts: CellConflict[]): boolean {
+  const current = new Map(conflicts.filter((cf) => cf.sheetId === sort.sheetId).map((cf) => [cf.ref, cf.cell]));
+  for (const [key, entry] of sort.cells) {
+    const cell = current.get(key);
+    if (entry.value == null && entry.fmt == null) { if (cell) return false; continue; }
+    if (!cell || cell.value !== (entry.value ?? "") || JSON.stringify(cell.fmt ?? null) !== JSON.stringify(entry.fmt ?? null)) return false;
+  }
+  return true;
+}
+// A refused sort is undone here: the sheet is read again, and edits made on top of the sorted
+// cells (which would land on other records now) and its undo entries go with it.
+function abandonSort(sort: PendingSort) {
+  for (const key of sort.cells.keys()) pendingCellOps.delete(sort.sheetId + "!" + key);
+  for (const stack of [undoStack, redoStack]) {
+    const kept = stack.filter((entry) => !sort.histories.includes(entry as CellHistory));
+    stack.splice(0, stack.length, ...kept);
+  }
+  updateUndoButtons();
+}
 
-// Sends everything queued as one operation and adopts what the server acknowledged.
-//
-// Cell versions keep local intent across retries. Whole-sheet replacements also carry the
-// revision their layout was built on: replaying a sort or an insertion on another layout would
-// silently overwrite someone else's changes. After an unclear failure the sheet is reloaded
-// before such payloads are retried, and they're dropped if that revision moved on.
+/**
+ * A save sent and not yet answered: what it carried, and the operation as sent. After a failure
+ * (its reply lost, or a timeout) it goes again exactly as it was, under the same id, so a save the
+ * server did apply is answered rather than applied twice: a move or a replacement applied again
+ * would undo what others did since, and an edit sent again would rebase over a later one.
+ */
+interface Outgoing {
+  id: string;
+  sentCellOps: [string, PendingCellOp][];
+  sentStructure: StructureSnapshot | null;
+  sentReplacements: [string, PendingReplacement][];
+  sentSorts: PendingSort[];
+  sentSteps: number;
+  cellOps: CellOp[];
+  lineOps: LineOp[];
+  operation: Operation | null;
+}
+let outgoing: Outgoing | null = null;
+function operationId(): string {
+  const words = new Uint32Array(4);
+  crypto.getRandomValues(words);
+  return [...words].map((word) => word.toString(36)).join("");
+}
+
+// Sends everything queued as one operation and adopts what the server acknowledged. The server
+// applies it in order: replacements, line operations, structure, sorts, then cell edits, so the
+// edits name lines the same operation inserted.
 async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
-  if (resyncBeforeSave && wholesaleBaseRevision === null) {
-    // Nothing wholesale is pending, and a stale cell op is refused on its own version.
-    resyncBeforeSave = false;
-  } else if (resyncBeforeSave) {
-    // Throwing here leaves the flag set; the retry tries again.
-    await reloadHoldingEvents((doc) => {
-      resyncBeforeSave = false;
-      if (doc.revision === wholesaleBaseRevision) return;
-      pendingStructure = null;
-      wholesaleBaseRevision = null;
-      // A cell op queued after a replacement is keyed by the layout the replacement built, which
-      // the server may not have. Losing an edit after a failed save is something the user sees
-      // and can redo; writing into the wrong cell isn't.
-      dropPendingLayouts();
-      applySnapshot(doc, true);
-      noteReloadedAfterFailure();
-    });
+  if (!outgoing) {
+    // One message carries at most about OP_BYTES of cell edits (a huge paste goes out over a few
+    // rounds; each round is saved as it lands).
+    const sentCellOps: [string, PendingCellOp][] = [];
+    let opBytes = 0;
+    for (const entry of pendingCellOps) {
+      const bytes = approxCellBytes(entry[1].key, entry[1]);
+      if (sentCellOps.length && opBytes + bytes > OP_BYTES) break;
+      opBytes += bytes; sentCellOps.push(entry);
+    }
+    const sentStructure = pendingStructure;
+    const sentReplacements = [...pendingReplacements];
+    const sentSorts = [...pendingSorts.values()];
+    const sentSteps = lineLog.length;
+    if (!sentCellOps.length && !sentStructure && !sentReplacements.length && !sentSorts.length && !sentSteps) return "saved";
+    outgoing = {
+      id: operationId(), sentCellOps, sentStructure, sentReplacements, sentSorts, sentSteps, operation: null,
+      cellOps: sentCellOps.map(([, op]) => ({ sheetId: op.sheetId, ref: op.key, value: op.value, fmt: op.fmt, baseVersion: op.baseVersion ?? shownVersion(op.sheetId, op.key), basis: op.basis })),
+      lineOps: lineOpsToSend(lineLog.slice(0, sentSteps)),
+    };
+    // From here the sorts are in flight: an edit of a sorted cell made meanwhile is its own edit.
+    pendingSorts.clear(); inFlightSorts = sentSorts;
+    lineLogSent = sentSteps;
+    inFlightStructure = sentStructure;
   }
-  // One message carries at most about OP_BYTES of cell edits (a huge paste goes out over a few
-  // rounds; each round is saved as it lands).
-  const sentCellOps: [string, PendingCellOp][] = [];
-  let opBytes = 0;
-  for (const entry of pendingCellOps) {
-    const bytes = approxCellBytes(entry[1].ref, entry[1]);
-    if (sentCellOps.length && opBytes + bytes > OP_BYTES) break;
-    opBytes += bytes; sentCellOps.push(entry);
+  const out = outgoing;
+  const { sentCellOps, sentStructure, sentReplacements, sentSorts, sentSteps } = out;
+  // Only for a save the server certainly didn't apply: what it carried is queued again, to be
+  // sent afresh with whatever was edited since.
+  const unsent = () => { outgoing = null; inFlightStructure = null; lineLogSent = 0; inFlightSorts = []; requeueSorts(sentSorts); };
+  // A failure from here (the save may have been applied, its reply lost) leaves it out, to go
+  // again as it was.
+  if (!out.operation) {
+    // A big replaced sheet or sort is uploaded in parts first; the operation then names the upload.
+    const sheetReplacements = await Promise.all(sentReplacements.map(([sheetId, replacement]) => replacementFor(sheetId, replacement)));
+    const sorts = await Promise.all(sentSorts.map(sortWriteFor));
+    out.operation = { id: out.id, senderId: clientId, lineIds: true, lineOps: out.lineOps, structure: sentStructure, sheetReplacements, sorts, cellOps: out.cellOps };
   }
-  const sentStructure = pendingStructure;
-  const sentReplacements = [...pendingReplacements];
-  if (!sentCellOps.length && !sentStructure && !sentReplacements.length) return "saved";
-
-  const cellOps: CellOp[] = sentCellOps.map(([, op]) => {
-    const cur = (model.cells[op.sheetId] || {})[op.ref];
-    return { sheetId: op.sheetId, ref: op.ref, value: op.value, fmt: op.fmt, baseVersion: op.baseVersion ?? (cur ? cur.version : 0), ...(op.addressedIn !== undefined ? { layout: op.addressedIn } : {}) };
-  });
-  // A big replaced sheet is uploaded in parts first; the operation then names the upload.
-  const sheetReplacements: SheetReplacement[] = [];
-  const sentMoves = new Map<string, CellMove[] | null>();
-  for (const [sheetId, cells] of sentReplacements) {
-    const moves = replacementMoves.get(sheetId) ?? null;
-    sentMoves.set(sheetId, moves);
-    const replacement = cellMapBytes(cells, UPLOAD_PART_BYTES) > UPLOAD_PART_BYTES ? await stageReplacement(sheetId, cells) : { sheetId, cells };
-    sheetReplacements.push(moves ? { ...replacement, moves } : replacement);
-  }
-  // A pivot sheet is rebuilt by every client that sees its source change, so a refresh isn't
-  // guarded: one racing an edit elsewhere would otherwise be refused and reload the workbook.
-  const sentBaseRevision = sentReplacements.some(([sheetId]) => !model.sheets[sheetId]?.pivot) ? wholesaleBaseRevision : null;
-  const sentRevision = model.revision;
-  inFlightStructure = sentStructure;
-  let result: OperationResult;
-  try {
-    // A half-open connection can leave a call unanswered forever, which would stall every later
-    // save behind it. Past SAVE_TIMEOUT_MS the call counts as failed (its outcome unknown, like
-    // any failure: the retry resyncs first, and versions make a repeated cell edit harmless);
-    // a late reply is ignored.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const call = gadget.applyOperation({
-      senderId: clientId, structure: sentStructure, cellOps, sheetReplacements,
-      ...(sentReplacements.length && sentBaseRevision !== null ? { baseRevision: sentBaseRevision } : {}),
-    });
-    call.catch(() => {});
-    result = await Promise.race([call, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Save timed out")), SAVE_TIMEOUT_MS); })])
-      .finally(() => clearTimeout(timer));
-  } catch (e) {
-    inFlightStructure = null;
-    resyncBeforeSave = true;
-    throw e;
-  }
-  inFlightStructure = null;
+  // A half-open connection can leave a call unanswered forever, which would stall every later
+  // save behind it. Past SAVE_TIMEOUT_MS the call counts as failed; a late reply is ignored.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const call = gadget.applyOperation(out.operation);
+  call.catch(() => {});
+  const result = await Promise.race([call, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Save timed out")), SAVE_TIMEOUT_MS); })])
+    .finally(() => clearTimeout(timer));
+  outgoing = null;
   if (result.status === "upload-missing") {
     // The server lost the staged parts (it restarted) before nothing was applied: send again,
     // backing off if that keeps happening.
+    unsent();
     if (++uploadRetries > 3) { uploadRetries = 0; throw new Error("Staged upload kept going missing"); }
     return "retry";
   }
   uploadRetries = 0;
-  if (result.staleRevision) {
-    // The server refused the whole payload; cell edits on sheets that weren't replaced stay queued.
-    const newerStructure = pendingStructure && pendingStructure !== sentStructure ? localStructureChanges(pendingStructure) : null;
-    const rejectedLayoutSheets = new Set(pendingReplacements.keys());
-    await reloadHoldingEvents((doc) => {
-      dropPendingLayouts(); pendingStructure = null; wholesaleBaseRevision = null;
-      applySnapshot(doc, true);
-      noteReloadedAfterFailure();
-    });
-    // Edits made while this save was out weren't refused. Keep independent settings, but not
-    // ones tied to a discarded layout (ranges on a replaced sheet).
-    let retained = false;
-    if (newerStructure?.title != null && newerStructure.title !== sentStructure?.title) { model.title = newerStructure.title; retained = true; }
-    for (const [id, fields] of Object.entries<Partial<SheetMeta>>(newerStructure?.sheets || {})) {
-      if (!model.sheets[id]) continue;
-      for (const key of Object.keys(fields) as (keyof SheetMeta)[]) {
-        if (key !== "name" && rejectedLayoutSheets.has(id)) continue;
-        if (JSON.stringify(fields[key]) === JSON.stringify(sentStructure?.sheets[id]?.[key])) continue;
-        Object.assign(model.sheets[id], { [key]: fields[key] }); retained = true;
-      }
+  if (result.refusedSorts?.length) {
+    // A cell a sort rewrote changed before it landed, so nothing was applied. The rest goes again
+    // at once; the refused sort is undone, unless it had landed already.
+    const refused = new Set(result.refusedSorts);
+    unsent();
+    let lost = false;
+    for (const id of refused) {
+      const sort = pendingSorts.get(id);
+      if (!sort) continue;
+      pendingSorts.delete(id);
+      if (!sortLanded(sort, result.conflicts || [])) { abandonSort(sort); lost = true; }
     }
-    if (retained) queueStructure();
-    rebuildEngine(); renderTabs(); renderGrid(); refreshToolbarState();
+    void reloadSheets([...refused].filter((id) => model.sheets[id]));
+    if (lost) toast("Someone changed those rows while you sorted, so the sort was undone; sort again", "bad");
     return "conflict";
   }
 
   // Only what this call carried leaves the queue: an edit made while it was out replaced its
-  // entry and stays pending, and one refused as misplaced is resent where its cell went (see
-  // followCellMoves). It's looked up where it is now, as a move may have carried it.
-  const misplaced = new Set((result.misplaced || []).map((x) => x.sheetId + "!" + x.ref));
-  const accepted = new Set([...(result.upserts || []), ...(result.deletes || [])].map((x) => x.sheetId + "!" + x.ref));
-  const sentLayouts = new Map(cellOps.map((op) => [op.sheetId + "!" + op.ref, op.layout]));
-  const retired: { sheetId: string; ref: string }[] = [];
-  for (const [key, op] of sentCellOps) {
-    const at = op.sheetId + "!" + op.ref;
-    if (pendingCellOps.get(at) !== op) {
-      const cell = accepted.has(key) ? retireFollowed(op, result.revision) : null;
-      if (cell) retired.push(cell);
-      continue;
-    }
-    if (!misplaced.has(key)) pendingCellOps.delete(at);
-    // Refused for a move this tab has heard nothing of, even in held events: it can't be placed,
-    // so it's dropped rather than resent forever.
-    else if (ready && !buffered.length && op.addressedIn === sentLayouts.get(key)) { pendingCellOps.delete(at); toast(`An edit to ${op.ref} couldn't be saved because rows or columns moved`, "bad"); }
-  }
+  // entry and stays pending.
+  lineLog.splice(0, lineLogSent);
+  inFlightStructure = null; lineLogSent = 0; inFlightSorts = [];
   if (pendingStructure === sentStructure) pendingStructure = null;
-  for (const [sheetId, cells] of sentReplacements) {
+  for (const [sheetId, replacement] of sentReplacements) {
     if (sheetReloads || connecting) reloadReplacements.push({ sheetId, revision: result.revision });
-    const landed = result.structure?.sheets[sheetId]?.layout;
-    // A later move heard before this reply keeps its layout.
-    if (landed !== undefined && model.sheets[sheetId]) model.sheets[sheetId].layout = Math.max(model.sheets[sheetId].layout || 0, landed);
-    if (pendingReplacements.get(sheetId) === cells) {
-      pendingReplacements.delete(sheetId); replacementMoves.delete(sheetId);
-      // Edits typed while the replacement was out are addressed in the layout it made.
-      for (const op of pendingCellOps.values()) if (op.sheetId === sheetId && op.addressedIn === undefined) op.addressedIn = model.sheets[sheetId]?.layout || 0;
-    } else {
-      // A later replacement keeps only the moves this one didn't carry.
-      const sent = sentMoves.get(sheetId), all = replacementMoves.get(sheetId);
-      if (sent && all) replacementMoves.set(sheetId, all.slice(sent.length));
-    }
+    if (pendingReplacements.get(sheetId) === replacement) pendingReplacements.delete(sheetId);
   }
-  if (pendingStructure === null && pendingReplacements.size === 0) {
-    wholesaleBaseRevision = null;
-    // The layout they belong to has landed, so they are ordinary edits now.
-    for (const op of pendingCellOps.values()) delete op.layout;
-  }
-
   model.revision = Math.max(model.revision, result.revision || 0);
-  // A late reply mustn't replace a newer structure already received from someone else.
-  if (sentStructure && result.structure && result.revision >= ackedStructureRevision) {
+  // Lines first: the reply names cells by key, placed where their lines now are.
+  const { changed: relaid, dropped } = result.orders || sentSteps ? relayout(() => adoptOrders(result.orders, result.revision)) : { changed: false, dropped: 0 };
+  if (result.refusedLines?.length) toast("A row or column change couldn't be saved, as someone else changed those lines first", "bad");
+  else if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
+  // The server's structure as of this reply; a late reply mustn't replace a newer one already received.
+  if (result.structure && result.revision >= ackedStructureRevision) {
     ackedStructure = result.structure;
     ackedStructureRevision = result.revision;
   } else if (sentStructure && result.structure && pendingStructure) settleOvertakenStructure(sentStructure);
-  // Only our own next commit certifies a snapshot built while this call was out; a later
-  // remote revision doesn't certify the replacement's older cells.
-  if ((pendingStructure !== null || pendingReplacements.size) && wholesaleBaseRevision === sentRevision
-      && result.type === "operation" && result.revision === sentRevision + 1) wholesaleBaseRevision = result.revision;
+
+  const intents = new Map(sentCellOps);
+  for (const [key, op] of sentCellOps) if (pendingCellOps.get(key) === op) pendingCellOps.delete(key);
   // An acknowledgment advances versions but doesn't overwrite an edit typed while it was out.
   const noteCommits = (result.upserts?.length || 0) + (result.deletes?.length || 0) <= RACE_NOTICE_CELLS;
   // A remote write committed after this save, and already heard, wins over the acknowledgment.
   let adoptedRemote = false;
-  const overtaking = (sheetId: string, ref: string) => {
-    const key = sheetId + "!" + ref, write = overtakingWrites.get(key);
+  const overtaking = (key: string) => {
+    const write = overtakingWrites.get(key);
     overtakingWrites.delete(key);
     if (!write || write.revision <= result.revision) return null;
     adoptedRemote = true;
     return write;
   };
-  // A sheet whose cells moved after this commit was sent with them in the move; the reply's
-  // positions for it name other cells now.
-  const movedSince = (sheetId: string) => (model.sheets[sheetId]?.layout || 0) > result.revision;
-  for (const up of result.upserts || []) {
-    if (movedSince(up.sheetId)) continue;
-    const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
-    const pending = pendingCellOps.get(up.sheetId + "!" + up.ref);
-    if (!pending && noteCommits) noteCommit(up.sheetId, up.ref, up.cell.value, up.cell.version);
-    noteReloadAck(up.sheetId, up.ref, up.cell, result.revision);
-    const later = overtaking(up.sheetId, up.ref);
-    if (!pending && later) { if (later.cell) cells[up.ref] = later.cell; else delete cells[up.ref]; }
-    else if (!pending) cells[up.ref] = { ...up.cell };
-    else {
-      pending.baseVersion = up.cell.version;
-      if (pending.value == null && pending.fmt == null) delete cells[up.ref];
-      else cells[up.ref] = { value: pending.value ?? "", fmt: pending.fmt ?? null, version: up.cell.version };
+  const b = book(), touched: CellChange[] = [];
+  const acknowledge = (sheetId: string, key: string, cell: Cell | null) => {
+    const id = sheetId + "!" + key, pending = pendingCellOps.get(id), ref = refOf(sheetId, key);
+    if (!pending && noteCommits) noteCommit(sheetId, key, cell?.value ?? null, cell?.version ?? 0);
+    noteReloadAck(sheetId, key, cell, result.revision);
+    const later = overtaking(id);
+    // A sort made since holds the cell, and is based on this version now.
+    const sort = pendingSorts.get(sheetId)?.cells.get(key);
+    if (sort) { sort.baseVersion = cell?.version ?? 0; return; }
+    if (!ref) return;
+    touched.push({ sheetId, ref });
+    if (pending) { pending.baseVersion = cell?.version ?? 0; showIntent(sheetId, ref, pending.value, pending.fmt, cell?.version ?? 0, b); }
+    else placeStored(sheetId, key, later ? later.cell : cell, b);
+  };
+  for (const up of result.upserts || []) acknowledge(up.sheetId, up.ref, up.cell);
+  for (const del of result.deletes || []) acknowledge(del.sheetId, del.ref, null);
+  // Edits refused because their line is gone, or because someone's sort put another record in
+  // their cell, are dropped rather than saved over something else. A write that came meanwhile shows instead.
+  const refusedEdits = (list: CellDeletion[] | undefined) => {
+    let count = 0;
+    for (const { sheetId, ref: key } of list || []) {
+      const id = sheetId + "!" + key;
+      if (!intents.has(id)) continue;
+      count++;
+      pendingCellOps.delete(id);
+      const write = overtakingWrites.get(id), ref = refOf(sheetId, key);
+      overtakingWrites.delete(id);
+      if (write && ref) { placeStored(sheetId, key, write.cell, b); touched.push({ sheetId, ref }); }
     }
-  }
-  for (const del of result.deletes || []) {
-    if (movedSince(del.sheetId)) continue;
-    const cells = model.cells[del.sheetId] || (model.cells[del.sheetId] = {});
-    const pending = pendingCellOps.get(del.sheetId + "!" + del.ref);
-    if (!pending && noteCommits) noteCommit(del.sheetId, del.ref, null, 0);
-    noteReloadAck(del.sheetId, del.ref, null, result.revision);
-    const later = overtaking(del.sheetId, del.ref);
-    if (!pending && later?.cell) cells[del.ref] = later.cell;
-    else if (!pending) delete cells[del.ref];
-    else {
-      pending.baseVersion = 0;
-      if (pending.value == null && pending.fmt == null) delete cells[del.ref];
-      else cells[del.ref] = { value: pending.value ?? "", fmt: pending.fmt ?? null, version: 0 };
-    }
-  }
-  const conflicts = result.status === "conflict" && result.conflicts ? result.conflicts.filter((cf) => !movedSince(cf.sheetId)) : [];
+    return count;
+  };
+  const gone = refusedEdits(result.gone), sorted = refusedEdits(result.sorted);
+  if (gone) toast(gone === 1 ? "An edit was on a row or column someone else deleted, so it wasn't saved" : `${gone} edits were on rows or columns someone else deleted, so they weren't saved`, "bad");
+  if (sorted) toast(sorted === 1 ? "Someone sorted those rows while you edited, so your edit wasn't saved; make it again" : `Someone sorted those rows while you edited, so ${sorted} edits weren't saved; make them again`, "bad");
+  const conflicts = result.status === "conflict" && result.conflicts ? result.conflicts : [];
   // Rebase the refused intent (not the visible cell) onto the current version.
-  const intents = new Map(sentCellOps);
   for (const cf of conflicts) {
-    const key = cf.sheetId + "!" + cf.ref;
-    const intent = pendingCellOps.get(key) || intents.get(key);
-    const cells = model.cells[cf.sheetId] || (model.cells[cf.sheetId] = {});
+    const id = cf.sheetId + "!" + cf.ref, ref = refOf(cf.sheetId, cf.ref);
+    const intent = pendingCellOps.get(id) || intents.get(id);
     noteReloadAck(cf.sheetId, cf.ref, cf.cell, result.revision);
-    if (!intent) { cells[cf.ref] = { ...cf.cell }; continue; }
+    if (ref) touched.push({ sheetId: cf.sheetId, ref });
+    if (!intent) { placeStored(cf.sheetId, cf.ref, cf.cell, b); continue; }
     const rebased = { ...intent, baseVersion: cf.cell?.version || 0 };
-    pendingCellOps.set(key, rebased);
-    if (rebased.value == null && rebased.fmt == null) delete cells[cf.ref];
-    else cells[cf.ref] = { value: rebased.value ?? "", fmt: rebased.fmt ?? null, version: cf.cell?.version || 0 };
+    pendingCellOps.set(id, rebased);
+    if (ref) showIntent(cf.sheetId, ref, rebased.value, rebased.fmt, cf.cell?.version || 0, b);
   }
-  // Only the cells this reply touched need working out again.
-  rebuildEngine([...(result.upserts || []), ...(result.deletes || []), ...conflicts, ...retired].map((x) => ({ sheetId: x.sheetId, ref: x.ref })));
-  // Our own broadcasts are ignored; conflicts, reloads and adopted remote writes need a redraw.
-  if (reloadedAfterFailure || conflicts.length || adoptedRemote || retired.length) renderGrid();
+  // Only the cells this reply touched need working out again (unless lines moved).
+  if (!relaid) rebuildEngine(touched);
+  // Our own broadcasts are ignored; conflicts, refusals, moved lines and adopted remote writes need a redraw.
+  if (relaid || conflicts.length || adoptedRemote || gone || sorted) renderGrid();
   return conflicts.length ? "conflict" : "saved";
 }
 // Leaving or hiding the page saves immediately rather than after the debounce.
@@ -2002,25 +2258,30 @@ window.addEventListener("pagehide", () => { if (ready && hasUnsavedEdits()) save
 // ===========================================================================
 // Undo / redo (local history of inverse cell/structure snapshots)
 // ===========================================================================
-/** One cell's state before a change (null: it didn't exist). */
-interface CellRecord { sheetId: string; ref: string; prev: Cell | null }
-/** An undoable batch of cell edits: each cell's state before it, by "sheetId!REF". */
+// History names cells by key and lines by id, so it follows them wherever they move; a cell
+// whose row or column was deleted since is skipped.
+/** One cell's state before a change, in stored form (null: it didn't exist). */
+interface CellRecord { sheetId: string; key: string; prev: Cell | null }
+/** An undoable batch of cell edits: each cell's state before it, by "sheetId!key". */
 interface CellHistory { kind?: undefined; cells: Map<string, CellRecord>; sheetId: string }
-/** An undoable row/column move: the inverse move, and the filter as it was (see moveLines). */
-interface MoveHistory { kind: "move"; sheetId: string; rows: boolean; from: number; count: number; to: number; restoreFilter: SheetFilter | null }
+/** An undoable row/column move: the lines to put back before line `before` (null: the end), and the filter as it was (stored form; see moveLines). */
+interface MoveHistory { kind: "move"; sheetId: string; axis: Axis; ids: number[]; before: number | null; restoreFilter: SheetFilter | null }
 type HistoryEntry = CellHistory | MoveHistory;
 const undoStack: HistoryEntry[] = [];
 const redoStack: HistoryEntry[] = [];
 let historyBatch: CellHistory | null = null;
 
 function beginBatch() { historyBatch = { cells: new Map(), sheetId: activeSheetId }; }
+// A cell as history keeps it: its stored form, so it reads the same cells however lines move.
+function recordedCell(sheetId: string, ref: string, b: Book): Cell | null {
+  const cur = model.cells[sheetId]?.[ref];
+  return cur ? { value: storedValue(sheetId, ref, cur.value, b), fmt: cur.fmt ? { ...cur.fmt } : null, version: cur.version } : null;
+}
 function recordCell(sheetId: string, ref: string) {
   if (!historyBatch) beginBatch();
-  const key = sheetId + "!" + ref;
-  if (!historyBatch!.cells.has(key)) {
-    const cur = (model.cells[sheetId] || {})[ref];
-    historyBatch!.cells.set(key, { sheetId, ref, prev: cur ? { ...cur } : null });
-  }
+  const key = keyOf(sheetId, ref);
+  if (!key || historyBatch!.cells.has(sheetId + "!" + key)) return;
+  historyBatch!.cells.set(sheetId + "!" + key, { sheetId, key, prev: recordedCell(sheetId, ref, book()) });
 }
 function commitBatch() {
   if (!historyBatch || !historyBatch.cells.size) { historyBatch = null; return; }
@@ -2032,15 +2293,18 @@ function commitBatch() {
 }
 function applyHistory(entry: CellHistory, into: HistoryEntry[]) {
   const inverse: CellHistory = { cells: new Map(), sheetId: entry.sheetId };
-  for (const [key, rec] of entry.cells) {
+  const b = book();
+  for (const [id, rec] of entry.cells) {
+    const ref = refOf(rec.sheetId, rec.key);
+    if (!ref) continue;
     const cells = model.cells[rec.sheetId] || (model.cells[rec.sheetId] = {});
-    const now = cells[rec.ref] ? { ...cells[rec.ref] } : null;
-    inverse.cells.set(key, { sheetId: rec.sheetId, ref: rec.ref, prev: now });
+    const now = cells[ref];
+    inverse.cells.set(id, { sheetId: rec.sheetId, key: rec.key, prev: recordedCell(rec.sheetId, ref, b) });
     // The restored content is an edit of the cell as it is now, so it carries the current version.
     const version = now ? now.version : 0;
-    if (rec.prev) { cells[rec.ref] = { ...rec.prev, version }; }
-    else delete cells[rec.ref];
-    queueCellOp(rec.sheetId, rec.ref, rec.prev ? rec.prev.value : null, rec.prev ? rec.prev.fmt : null, version);
+    if (rec.prev) cells[ref] = viewCell(rec.sheetId, { ...rec.prev, version }, b);
+    else delete cells[ref];
+    queueCellOp(rec.sheetId, ref, rec.prev ? cells[ref].value : null, rec.prev ? rec.prev.fmt : null, version);
   }
   into.push(inverse);
   rebuildEngine([]);
@@ -2051,7 +2315,7 @@ function applyHistory(entry: CellHistory, into: HistoryEntry[]) {
 function undo() { if (!undoStack.length) return; const entry = undoStack.pop()!; if (entry.kind === "move") applyMoveHistory(entry, redoStack); else applyHistory(entry, redoStack); }
 function redo() { if (!redoStack.length) return; const entry = redoStack.pop()!; if (entry.kind === "move") applyMoveHistory(entry, undoStack); else applyHistory(entry, undoStack); }
 function updateUndoButtons() { setDisabled(undoBtn, !undoStack.length); setDisabled(redoBtn, !redoStack.length); }
-// History is kept by cell ref, so it can't follow someone else's insert, delete, sort or move.
+// A sheet someone else replaced wholesale started over, so history naming its cells means others.
 function forgetHistoryOf(sheetId: string) {
   for (const stack of [undoStack, redoStack]) {
     const kept = stack.filter((entry) => entry.kind === "move" ? entry.sheetId !== sheetId : ![...entry.cells.values()].some((rec) => rec.sheetId === sheetId));
@@ -2087,7 +2351,7 @@ function setCellFmt(ref: string, mutator: (fmt: CellFmt) => void) {
   const clean = Object.keys(fmt).length ? fmt : null;
   const value = cur ? cur.value : "";
   if ((value == null || value === "") && !clean) { if (cur) { const baseVersion = cur.version || 0; delete cells[ref]; queueCellOp(sheetId, ref, null, null, baseVersion); } return; }
-  cells[ref] = { value: value || "", fmt: clean, version: cur ? cur.version : 0 };
+  cells[ref] = { ...cur, value: value || "", fmt: clean, version: cur ? cur.version : 0 };
   queueCellOp(sheetId, ref, cells[ref].value, clean);
 }
 
@@ -2230,309 +2494,118 @@ function autoSum() {
 function isNumericCell(ref: string): boolean { const v = engine.computeRef(activeSheetId, ref); return typeof v === "number"; }
 
 // ===========================================================================
-// Insert / delete rows & columns (adjusts formula references)
+// Insert, delete and move rows & columns
 // ===========================================================================
-// The sheet name a reference prefix names, folded for comparison: `'Owner''s Sheet'!` and
-// `'Owner\'s Sheet'!` both name "owner's sheet".
-function referenceSheetName(prefix: string): string {
-  const name = prefix.endsWith("!") ? prefix.slice(0, -1) : prefix;
-  return (name.startsWith("'") ? name.slice(1, -1).replace(/\\'|''/g, "'") : name).toLowerCase();
+// Each is a line operation by id (lib/lines.ts): the lines change here at once and on the server
+// when saved, and everything that names lines -- cells, formulas everywhere, charts, pivot
+// sources, the filter, sizes -- follows them without being rewritten (see relayout). A range
+// keeps the lines between its two ends, so lines inserted inside it join it.
+function changeLines(op: LineOp) {
+  relayout(() => { lineLog.push(op); });
+  queueStructure();
+  renderGrid();
+  schedulePivotRefreshes();
 }
-// Whether a formula names one of these sheets (lower-cased names) in a reference.
-function formulaReadsSheets(value: string, names: Set<string>): boolean {
-  for (const endpoint of formulaReferences(value, true)) {
-    const bang = endpoint.text.lastIndexOf("!");
-    if (bang >= 0 && names.has(referenceSheetName(endpoint.text.slice(0, bang + 1)))) return true;
-  }
-  return false;
-}
-// Rewrites references to the sheet named `oldName` with `prefix` (the new name's own prefix,
-// quoted as needed), so formulas keep pointing at a renamed sheet. Everything else stays as typed.
-function renameFormulaSheet(value: string, oldName: string, prefix: string): string {
-  const target = String(oldName).toLowerCase();
-  let result = "", start = 0;
-  for (const endpoint of formulaReferences(value, true)) {
-    const bang = endpoint.text.lastIndexOf("!");
-    if (bang < 0 || referenceSheetName(endpoint.text.slice(0, bang + 1)) !== target) continue;
-    result += value.slice(start, endpoint.start) + prefix + endpoint.text.slice(bang + 1);
-    start = endpoint.end;
-  }
-  return result + value.slice(start);
-}
-/**
- * A line map: where line `i` goes, or null if it was deleted. A reorder lists `breaks`, the lines
- * where its runs of consecutively moving lines start and end.
- */
-type LineMap = ((i: number) => number | null) & { breaks?: number[] };
-// Where the lines lo..hi go, as a low-to-high pair, or null if all were deleted. Lines reordered
-// among themselves keep their whole extent; otherwise the range shrinks around deleted lines and
-// follows its two ends.
-function mapLineSpan(lo: number, hi: number, map: LineMap): [number, number] | null {
-  if (map.breaks) {
-    // Each run moves as one, so the lines' images are bounded by the images of their run ends.
-    const images = [lo, hi, ...map.breaks.filter((i) => i > lo && i < hi)].map((i) => map(i) as number);
-    const min = Math.min(...images), max = Math.max(...images);
-    if (max - min === hi - lo) return [min, max];
-  }
-  let start: number | null = null, end: number | null = null;
-  for (let i = lo; i <= hi && start == null; i++) start = map(i);
-  for (let i = hi; i >= lo && end == null; i--) end = map(i);
-  if (start == null || end == null) return null;
-  return start > end ? [end, start] : [start, end];
-}
-// Rewrites a formula's text for rows or columns of the sheet named `sheetName` moved through
-// `map` (inserted, deleted or reordered). Only references into that sheet move: unqualified ones
-// when the formula lives there (`ownSheet`), qualified ones from anywhere. A reference into
-// deleted lines becomes #REF!; a range shrinks around them, and is moved as `mapLineSpan` says
-// (written low-to-high). Everything else in the formula (spacing, quoted text, number spelling, `$`
-// locks) is left exactly as typed.
-/** One endpoint of a reference, parsed: where it sits in the reference's text, its sheet prefix, `$` locks and position. */
-interface RefPart { start: number; end: number; prefix: string; fc: string; col: number; fr: string; row: number }
-function remapFormulaLines(value: string, { rows, map, sheetName, ownSheet }: { rows: boolean; map: LineMap; sheetName: string; ownSheet: boolean }): string {
-  const target = String(sheetName).toLowerCase();
-  let result = "", start = 0;
-  for (const reference of formulaReferences(value)) {
-    const parts = [...formulaReferences("=" + reference.text, true)].map((endpoint): RefPart | null => {
-      const bang = endpoint.text.lastIndexOf("!");
-      const m = /^(\$?)([A-Z]{1,2})(\$?)([1-9]\d*)$/i.exec(endpoint.text.slice(bang + 1));
-      return m && { start: endpoint.start - 1, end: endpoint.end - 1, prefix: endpoint.text.slice(0, bang + 1), fc: m[1], col: letterToCol(m[2].toUpperCase()), fr: m[3], row: Number(m[4]) - 1 };
-    });
-    if (!parts.length || !parts.every((part): part is RefPart => !!part)) continue;
-    const onTarget = parts[0].prefix ? referenceSheetName(parts[0].prefix) === target : ownSheet;
-    if (!onTarget) continue;
-    const index = (part: RefPart) => rows ? part.row : part.col;
-    const lo = Math.min(...parts.map(index)), hi = Math.max(...parts.map(index));
-    const span = mapLineSpan(lo, hi, map);
-    let replacement = "#REF!";
-    if (span && (parts.length > 1 || lo === hi)) {
-      replacement = ""; let cursor = 0;
-      for (const part of parts) {
-        const n = index(part) === lo ? span[0] : span[1];
-        replacement += reference.text.slice(cursor, part.start) + part.prefix + part.fc + colToLetter(rows ? part.col : n) + part.fr + ((rows ? n : part.row) + 1);
-        cursor = part.end;
-      }
-      replacement += reference.text.slice(cursor);
-    }
-    result += value.slice(start, reference.start) + replacement;
-    start = reference.end;
-  }
-  return result + value.slice(start);
-}
-// Applies a row/column edit on the active sheet to formulas across the workbook. The edited
-// sheet's cells are saved by its whole-sheet replacement; formulas elsewhere that point into it
-// are saved as ordinary cell edits.
-function rewriteFormulasForAxis(rows: boolean, at: number, delta: number) {
-  rewriteFormulasByMap(rows, axisLineMap(at, delta));
-}
-// Lines inserted (`delta` > 0) or deleted (`delta` < 0) at `at`.
-function axisLineMap(at: number, delta: number): LineMap {
-  return (i) => delta > 0 ? (i >= at ? i + delta : i) : (i < at ? i : i < at - delta ? null : i + delta);
-}
-function rewriteFormulasByMap(rows: boolean, map: LineMap) {
-  const sheetName = curSheet().name;
-  for (const sheetId of model.sheetOrder) {
-    const own = sheetId === activeSheetId;
-    for (const [ref, cell] of Object.entries(model.cells[sheetId] || {})) {
-      if (!cell.value || cell.value[0] !== "=") continue;
-      const next = remapFormulaLines(cell.value, { rows, map, sheetName, ownSheet: own });
-      if (next === cell.value) continue;
-      cell.value = next;
-      if (!own) queueCellOp(sheetId, ref, next, cell.fmt, cell.version || 0, true);
-    }
-  }
-}
-
-// Moves every cell and range-bearing piece of metadata through the row and column maps
-// (`index -> index | null` for deleted). Chart ranges and pivot sources that read this sheet
-// shrink around deleted lines and grow around inserted ones.
-function rebuildSheetCells(mapRow: LineMap, mapCol: LineMap) {
-  const next: CellMap = {};
-  for (const [ref, cell] of Object.entries(curCells())) {
-    const rc = parseRef(ref); if (!rc) continue;
-    const r = mapRow(rc.r), c = mapCol(rc.c);
-    if (r == null || c == null) continue;
-    next[rcToRef(r, c)] = { ...cell, version: cell.version };
-  }
-  model.cells[activeSheetId] = next;
-  for (const chart of curSheet().charts || []) chart.range = remapRange(chart.range, mapRow, mapCol);
-  for (const id of pivotSheets()) {
-    const pivot = model.sheets[id].pivot;
-    if (pivot?.sourceSheetId === activeSheetId) pivot.sourceRange = remapRange(pivot.sourceRange, mapRow, mapCol);
-  }
-}
-function remapRange(text: string, mapRow: LineMap, mapCol: LineMap): string {
-  const range = parseRangeText(text); if (!range) return text;
-  const rows = mapLineSpan(range.r1, range.r2, mapRow), columns = mapLineSpan(range.c1, range.c2, mapCol);
-  if (!rows || !columns) return "";
-  const [r1, r2] = rows, [c1, c2] = columns;
-  return text.includes(":") || r1 !== r2 || c1 !== c2 ? `${rcToRef(r1, c1)}:${rcToRef(r2, c2)}` : rcToRef(r1, c1);
-}
-const sameIndex = (i: number) => i;
-
-function insertRows(at: number, count: number) {
-  const sh = curSheet();
+function insertLines(axis: Axis, at: number, count: number): boolean {
+  const line = orders.get(activeSheetId)?.axis(axis);
+  if (!line) return false;
+  const max = axis === "rows" ? MAX_ROWS : MAX_COLS;
   // Lines pushed past the grid's limit would carry their cells out of sight.
-  if (sh.rows + count > MAX_ROWS) { toast(`A sheet holds up to ${MAX_ROWS.toLocaleString()} rows`, "bad"); return; }
-  if (sh.filter) {
-    if (at <= sh.filter.row) { sh.filter.row += count; sh.filter.endRow = (sh.filter.endRow ?? sh.rows - 1) + count; }
-    else if (at <= (sh.filter.endRow ?? sh.rows - 1)) sh.filter.endRow = (sh.filter.endRow ?? sh.rows - 1) + count;
+  if (line.size + count > max) { toast(`A sheet holds up to ${max.toLocaleString()} ${axis === "rows" ? "rows" : "columns"}`, "bad"); return false; }
+  changeLines({ kind: "insert", sheetId: activeSheetId, axis, ids: newLineIds(count), before: line.idAt(at) ?? null });
+  // Columns inserted inside a filtered table belong to its records.
+  const filter = curSheet().filter;
+  if (axis === "cols" && filter) {
+    const columns = filterColumns(filter).filter((column) => column < at || column >= at + count);
+    if (columns.length && at > Math.min(...columns) && at <= Math.max(...columns)) {
+      filter.columns = [...columns, ...Array.from({ length: count }, (_, index) => at + index)].sort((a, b) => a - b);
+      queueStructure();
+    }
   }
-  rewriteFormulasForAxis(true, at, count);
-  rebuildSheetCells((r) => r >= at ? r + count : r, sameIndex);
-  sh.rows += count;
-  shiftDims(sh.rowHeights, at, count);
-  commitStructuralChange({ moves: [{ kind: "lines", rows: true, at, count }] });
-  moveActive(at, selRange().c1);
+  return true;
+}
+function insertRows(at: number, count: number) {
+  if (insertLines("rows", at, count)) moveActive(at, selRange().c1);
 }
 function insertCols(at: number, count: number) {
-  const sh = curSheet();
-  // Lines pushed past the grid's limit would carry their cells out of sight.
-  if (sh.cols + count > MAX_COLS) { toast(`A sheet holds up to ${MAX_COLS.toLocaleString()} columns`, "bad"); return; }
-  if (sh.filter) {
-    const next: Record<string, string[]> = {};
-    for (const [column, values] of Object.entries(sh.filter.criteria || {})) next[Number(column) >= at ? Number(column) + count : Number(column)] = values;
-    sh.filter.criteria = next;
-    const shifted = filterColumns(sh.filter).map((column) => column >= at ? column + count : column);
-    // Columns inserted inside the table belong to its records.
-    const inside = shifted.length && at > Math.min(...shifted) && at <= Math.max(...shifted);
-    sh.filter.columns = inside ? [...shifted, ...Array.from({ length: count }, (_, index) => at + index)].sort((a, b) => a - b) : shifted;
-  }
-  rewriteFormulasForAxis(false, at, count);
-  rebuildSheetCells(sameIndex, (c) => c >= at ? c + count : c);
-  sh.cols += count;
-  shiftDims(sh.colWidths, at, count);
-  commitStructuralChange({ moves: [{ kind: "lines", rows: false, at, count }] });
-  moveActive(selRange().r1, at);
+  if (insertLines("cols", at, count)) moveActive(selRange().r1, at);
+}
+function deleteLines(axis: Axis, at: number, count: number): boolean {
+  const line = orders.get(activeSheetId)?.axis(axis);
+  if (!line || line.size - count < 1) return false;
+  changeLines({ kind: "delete", sheetId: activeSheetId, axis, ids: line.live().slice(at, at + count) });
+  return true;
 }
 function deleteRows() {
   const r = selRange();
-  const at = r.r1, count = r.r2 - r.r1 + 1;
-  const sh = curSheet();
-  if (sh.rows - count < 1) return;
-  if (sh.filter) {
-    const deletionEnd = at + count - 1;
-    if (sh.filter.row >= at && sh.filter.row <= deletionEnd) sh.filter = null;
-    else {
-      if (deletionEnd < sh.filter.row) sh.filter.row -= count;
-      const endRow = sh.filter.endRow ?? sh.rows - 1;
-      if (at <= endRow) sh.filter.endRow = endRow - Math.min(count, endRow - at + 1);
-    }
-  }
-  rewriteFormulasForAxis(true, at, -count);
-  rebuildSheetCells((row) => (row >= at && row < at + count) ? null : (row > at ? row - count : row), sameIndex);
-  sh.rows -= count;
-  removeDims(sh.rowHeights, at, count);
-  commitStructuralChange({ moves: [{ kind: "lines", rows: true, at, count: -count }] });
-  moveActive(Math.min(at, sh.rows - 1), r.c1);
+  if (deleteLines("rows", r.r1, r.r2 - r.r1 + 1)) moveActive(Math.min(r.r1, curSheet().rows - 1), r.c1);
 }
 function deleteCols() {
   const r = selRange();
-  const at = r.c1, count = r.c2 - r.c1 + 1;
-  const sh = curSheet();
-  if (sh.cols - count < 1) return;
-  if (sh.filter) {
-    const next: Record<string, string[]> = {};
-    for (const [column, values] of Object.entries(sh.filter.criteria || {})) {
-      const col = Number(column);
-      if (col >= at && col < at + count) continue;
-      next[col >= at + count ? col - count : col] = values;
-    }
-    sh.filter.criteria = next;
-    sh.filter.columns = filterColumns(sh.filter)
-      .filter((column) => column < at || column >= at + count)
-      .map((column) => column >= at + count ? column - count : column);
-    if (!sh.filter.columns.length) sh.filter = null;
-  }
-  rewriteFormulasForAxis(false, at, -count);
-  rebuildSheetCells(sameIndex, (c) => (c >= at && c < at + count) ? null : (c > at ? c - count : c));
-  sh.cols -= count;
-  removeDims(sh.colWidths, at, count);
-  commitStructuralChange({ moves: [{ kind: "lines", rows: false, at, count: -count }] });
-  moveActive(r.r1, Math.min(at, sh.cols - 1));
+  if (deleteLines("cols", r.c1, r.c2 - r.c1 + 1)) moveActive(r.r1, Math.min(r.c1, curSheet().cols - 1));
+}
+// Pasting past a sheet's edge grows it: new lines at its end.
+function growSheet(sheetId: string, rows: number, cols: number) {
+  const order = orders.get(sheetId);
+  if (!order) return;
+  const steps: LineOp[] = [];
+  if (rows > order.rows.size) steps.push({ kind: "insert", sheetId, axis: "rows", ids: newLineIds(rows - order.rows.size), before: null });
+  if (cols > order.cols.size) steps.push({ kind: "insert", sheetId, axis: "cols", ids: newLineIds(cols - order.cols.size), before: null });
+  if (!steps.length) return;
+  relayout(() => { lineLog.push(...steps); });
+  queueStructure();
 }
 // Moves `count` rows (or columns) starting at `from` so they sit before line `to` (an index in
 // the current layout, 0…n; `to` inside the block is no move). Like a cut and insert in Excel:
-// every formula in the workbook follows the cells it points at (a range follows its corners),
-// as do charts, pivot sources, the filter, and row heights / column widths. Undoable: the
-// history gets the inverse move (see applyMoveHistory).
-function lineMoveMap(from: number, count: number, to: number): ((i: number) => number) & { breaks: number[] } {
-  const dest = to < from ? to : to - count;
-  const map = (i: number) => {
-    if (i >= from && i < from + count) return dest + (i - from);
-    if (to < from) return i >= to && i < from ? i + count : i;
-    return i >= from + count && i < to ? i - count : i;
-  };
-  return Object.assign(map, { breaks: [to - 1, to, from - 1, from, from + count - 1, from + count] });
-}
-function moveLines(rows: boolean, from: number, count: number, to: number, { restoreFilter, fromHistory = null }: { restoreFilter?: SheetFilter | null; fromHistory?: HistoryEntry[] | null } = {}): boolean {
-  const sh = curSheet(); if (!sh) return false;
-  const total = rows ? sh.rows : sh.cols;
+// everything follows the lines that moved, and a range follows its two ends. Undoable: the
+// history gets the move back (see moveIds).
+function moveLines(rows: boolean, from: number, count: number, to: number): boolean {
+  const sh = curSheet(), line = orders.get(activeSheetId)?.axis(rows ? "rows" : "cols");
+  if (!sh || !line) return false;
+  const total = line.size;
   if (count < 1 || from < 0 || from + count > total || to < 0 || to > total || (to >= from && to <= from + count)) return false;
   if (sh.pivot) { setStatus("bad", "A pivot table arranges its own rows and columns"); return false; }
-  if (rows && sh.filter && sh.filter.row >= from && sh.filter.row < from + count && restoreFilter === undefined) {
+  if (rows && sh.filter && sh.filter.row >= from && sh.filter.row < from + count) {
     setStatus("bad", "The filter's header row can't move. Remove the filter first."); return false;
   }
-  const map = lineMoveMap(from, count, to), dest = to < from ? to : to - count;
-  const filterBefore: SheetFilter | null = sh.filter ? JSON.parse(JSON.stringify(sh.filter)) : null;
-  rewriteFormulasByMap(rows, map);
-  rebuildSheetCells(rows ? map : sameIndex, rows ? sameIndex : map);
-  const dims = rows ? sh.rowHeights : sh.colWidths, moved: Dims = {};
-  for (const [k, v] of Object.entries(dims)) moved[map(Number(k))] = v;
-  for (const k of Object.keys(dims)) delete dims[k];
-  Object.assign(dims, moved);
-  if (restoreFilter !== undefined) sh.filter = restoreFilter ? JSON.parse(JSON.stringify(restoreFilter)) : null;
-  else if (sh.filter && rows) {
-    // The table keeps its records wherever they went inside it, and stretches to keep any
-    // that were dragged past its end.
-    const filter = sh.filter, end = filter.endRow ?? sh.rows - 1;
-    filter.row = map(filter.row);
-    let last = filter.row;
-    for (let row = filterBefore!.row + 1; row <= end; row++) last = Math.max(last, map(row));
-    filter.endRow = last;
-  } else if (sh.filter) {
-    const filter = sh.filter, criteria: Record<string, string[]> = {};
-    for (const [column, values] of Object.entries(filter.criteria || {})) criteria[map(Number(column))] = values;
-    filter.criteria = criteria;
-    if (filter.columns?.length) filter.columns = filter.columns.map(map).sort((a, b) => a - b);
-  }
-  commitStructuralChange({ keepHistory: true, moves: [{ kind: "move", rows, from, count, to }] });
-  // The way back: the block, now at `dest`, returns to where it was.
-  const inverse: MoveHistory = { kind: "move", sheetId: activeSheetId, rows, from: dest, count, to: from < dest ? from : from + count, restoreFilter: filterBefore };
-  if (fromHistory) fromHistory.push(inverse);
-  else { undoStack.push(inverse); if (undoStack.length > 200) undoStack.shift(); redoStack.length = 0; }
+  return moveIds(activeSheetId, rows ? "rows" : "cols", line.live().slice(from, from + count), line.idAt(to) ?? null);
+}
+// Moves lines by id before line `before` (null: the end). `restoreFilter` (stored form) puts the
+// filter back as it was, for undo; `fromHistory` is the stack the move back goes on.
+function moveIds(sheetId: string, axis: Axis, ids: number[], before: number | null, { restoreFilter, fromHistory = null }: { restoreFilter?: SheetFilter | null; fromHistory?: HistoryEntry[] | null } = {}): boolean {
+  const sheet = model.sheets[sheetId], line = orders.get(sheetId)?.axis(axis);
+  // Someone else may have deleted them since.
+  if (!sheet || !line || !ids.length || !ids.every((id) => line.isLive(id))) return false;
+  const live = line.live(), moving = new Set(ids);
+  const last = Math.max(...ids.map((id) => line.indexOf(id)));
+  // The way back: before the line that followed them.
+  const after = live.slice(last + 1).find((id) => !moving.has(id)) ?? null;
+  const filterBefore = sheet.filter ? storeSheet(sheet, orderOf).filter : null;
+  // Rows of a filtered table stay in it wherever they're dragged (it stretches to keep them).
+  const table = axis === "rows" && sheet.filter ? live.slice(sheet.filter.row + 1, sheet.filter.endRow + 1) : [];
+  relayout(() => { lineLog.push({ kind: "move", sheetId, axis, ids, before }); });
+  const now = orders.get(sheetId)!.axis(axis);
+  if (restoreFilter !== undefined) sheet.filter = restoreFilter && viewSheet({ ...storeSheet(sheet, orderOf), filter: restoreFilter }, orderOf).filter;
+  else if (sheet.filter && table.length) sheet.filter.endRow = Math.max(sheet.filter.endRow, ...table.map((id) => now.indexOf(id)));
+  queueStructure();
+  renderGrid();
+  schedulePivotRefreshes();
+  const back: MoveHistory = { kind: "move", sheetId, axis, ids, before: after, restoreFilter: filterBefore };
+  if (fromHistory) fromHistory.push(back);
+  else { undoStack.push(back); if (undoStack.length > 200) undoStack.shift(); redoStack.length = 0; }
   updateUndoButtons();
-  if (rows) setSelection({ r: dest, c: 0 }, { r: dest + count - 1, c: sh.cols - 1 });
-  else setSelection({ r: 0, c: dest }, { r: sh.rows - 1, c: dest + count - 1 });
+  if (sheetId === activeSheetId) {
+    const dest = Math.min(...ids.map((id) => now.indexOf(id))), end = dest + ids.length - 1;
+    if (axis === "rows") setSelection({ r: dest, c: 0 }, { r: end, c: sheet.cols - 1 });
+    else setSelection({ r: 0, c: dest }, { r: sheet.rows - 1, c: end });
+  }
   return true;
 }
-// Undoing (or redoing) a move is the inverse move, shown on its sheet.
+// Undoing (or redoing) a move puts the lines back, shown on their sheet.
 function applyMoveHistory(entry: MoveHistory, into: HistoryEntry[]) {
   if (!model.sheets[entry.sheetId]) return;
   if (entry.sheetId !== activeSheetId) { switchSheet(entry.sheetId); if (entry.sheetId !== activeSheetId) return; }
-  if (!moveLines(entry.rows, entry.from, entry.count, entry.to, { restoreFilter: entry.restoreFilter, fromHistory: into })) updateUndoButtons();
-}
-function shiftDims(dims: Dims, at: number, count: number) {
-  const entries = Object.entries(dims).map(([k, v]): [number, number] => [Number(k), v]);
-  for (const k of Object.keys(dims)) delete dims[k];
-  for (const [k, v] of entries) dims[k >= at ? k + count : k] = v;
-}
-function removeDims(dims: Dims, at: number, count: number) {
-  const entries = Object.entries(dims).map(([k, v]): [number, number] => [Number(k), v]);
-  for (const k of Object.keys(dims)) delete dims[k];
-  for (const [k, v] of entries) { if (k >= at && k < at + count) continue; dims[k > at ? k - count : k] = v; }
-}
-function commitStructuralChange({ keepHistory = false, moves }: { keepHistory?: boolean; moves: CellMove[] }) {
-  // Structural row/col changes establish a new natural row order.
-  resetFilterSortBaseline();
-  measuredRowHeights.delete(activeSheetId); // rows moved: what was measured where is stale
-  layout = null;
-  queueStructure();
-  queueReplacement(activeSheetId, moves);
-  rebuildEngine();
-  renderGrid();
-  // Inserts and deletes aren't locally undoable (moves are: they record their own inverse).
-  if (!keepHistory) { undoStack.length = 0; redoStack.length = 0; updateUndoButtons(); }
-  schedulePivotRefreshes();
+  if (!moveIds(entry.sheetId, entry.axis, entry.ids, entry.before, { restoreFilter: entry.restoreFilter, fromHistory: into })) updateUndoButtons();
 }
 
 // ===========================================================================
@@ -2551,6 +2624,53 @@ function compareSortValues(a: Scalar, b: Scalar, ascending: boolean): number {
   }
   return ascending ? cmp : -cmp;
 }
+/** One row of a sort: its cells by column, and where it was. */
+interface SortRow { rowCells: Record<number, Cell>; sourceRow: number }
+// A sort rewrites cells, not lines: references to the sorted cells keep reading the same places,
+// as in Excel, and formulas that move shift their relative references as a copy does. It's saved
+// as one write (SortWrite), which the server applies whole, or refuses if any cell changed since.
+// Undoable as an edit of its cells.
+function writeSort(area: Area, rows: SortRow[]) {
+  const sheetId = activeSheetId, order = orders.get(sheetId);
+  if (!order) return;
+  const cells = curCells(), b = book();
+  let sort = pendingSorts.get(sheetId);
+  if (!sort) pendingSorts.set(sheetId, sort = { sheetId, rows: new Set(), cols: new Set(), cells: new Map(), histories: [] });
+  beginBatch();
+  const batch = historyBatch!;
+  for (let i = 0; i < rows.length; i++) {
+    const row = area.r1 + i;
+    for (let col = area.c1; col <= area.c2; col++) {
+      const ref = rcToRef(row, col), key = keyOf(sheetId, ref);
+      if (!key) continue;
+      recordCell(sheetId, ref);
+      const cur = cells[ref], src = rows[i].rowCells[col];
+      // An edit still queued for the cell is in the sort now.
+      if (!sort.cells.has(key)) {
+        const op = pendingCellOps.get(sheetId + "!" + key);
+        pendingCellOps.delete(sheetId + "!" + key);
+        sort.cells.set(key, { value: null, fmt: null, baseVersion: op?.baseVersion ?? cur?.version ?? 0 });
+      }
+      const entry = sort.cells.get(key)!;
+      if (src) {
+        cells[ref] = { value: shiftedCopyFormula(src.value, rcToRef(rows[i].sourceRow, col), ref, false), fmt: src.fmt, version: cur?.version || 0 };
+        Object.assign(entry, { value: storedValue(sheetId, ref, cells[ref].value, b), fmt: src.fmt });
+      } else {
+        delete cells[ref];
+        Object.assign(entry, { value: null, fmt: null });
+      }
+      sort.rows.add(order.rows.idAt(row)!); sort.cols.add(order.cols.idAt(col)!);
+      noteEditedCell(sheetId, ref);
+    }
+  }
+  measuredRowHeights.delete(sheetId);
+  commitBatch();
+  if (undoStack.includes(batch)) sort.histories.push(batch);
+  scheduleSave();
+  rebuildEngine([]);
+  renderGrid();
+  schedulePivotRefreshes();
+}
 function sortSelection(asc: boolean) {
   const r = { ...selRange() };
   // Whole columns (or ⌘A) sort the part of the sheet in use; the empty rest stays put.
@@ -2558,7 +2678,7 @@ function sortSelection(asc: boolean) {
   r.r2 = Math.min(r.r2, Math.max(r.r1, used.rows - 1)); r.c2 = Math.min(r.c2, Math.max(r.c1, used.cols - 1));
   if (r.r1 === r.r2) return;
   const cells = curCells();
-  const rows: { rowCells: Record<number, Cell>; keyVal: Scalar; sourceRow: number }[] = [];
+  const rows: (SortRow & { keyVal: Scalar })[] = [];
   for (let row = r.r1; row <= r.r2; row++) {
     const rowCells: Record<number, Cell> = {};
     for (let col = r.c1; col <= r.c2; col++) { const c = cells[rcToRef(row, col)]; if (c) rowCells[col] = { ...c }; }
@@ -2567,24 +2687,10 @@ function sortSelection(asc: boolean) {
     rows.push({ rowCells, keyVal, sourceRow: row });
   }
   rows.sort((x, y) => compareSortValues(x.keyVal, y.keyVal, asc));
-  measuredRowHeights.delete(activeSheetId);
-  // Write back. Formulas move with their rows and shift their relative references, as Excel does.
-  for (let i = 0; i < rows.length; i++) {
-    const row = r.r1 + i;
-    for (let col = r.c1; col <= r.c2; col++) {
-      const src = rows[i].rowCells[col];
-      const ref = rcToRef(row, col);
-      if (src) cells[ref] = { value: shiftedCopyFormula(src.value, rcToRef(rows[i].sourceRow, col), ref, false), fmt: src.fmt, version: (cells[ref]?.version || 0) };
-      else delete cells[ref];
-    }
-  }
+  // A filter's own sort order describes rows it no longer has in that order.
   resetFilterSortBaseline();
-  queueStructure();
-  queueReplacement(activeSheetId, [{ kind: "sort", r1: r.r1, c1: r.c1, c2: r.c2, order: rows.map((row) => row.sourceRow) }]);
-  rebuildEngine();
-  renderGrid();
-  undoStack.length = 0; redoStack.length = 0; updateUndoButtons();
-  schedulePivotRefreshes();
+  writeSort(r, rows);
+  if (curSheet().filter) queueStructure();
 }
 
 /* ═════════════ 8. Rendering (pivots, charts, filters, grid) ══════════════ */
@@ -2623,7 +2729,7 @@ function refreshPivot(sheetId: string, save = true): boolean {
   if (JSON.stringify(output.cells) === JSON.stringify(current)) return false;
   model.cells[sheetId] = output.cells;
   Object.assign(sheet, pivotSheetLayout(sheet, output));
-  if (save) { queueStructure(); queueReplacement(sheetId, []); }
+  if (save) queueReplacement(sheetId);
   rebuildEngine();
   renderGrid(); // formulas on any sheet may read the pivot
   return true;
@@ -2636,8 +2742,8 @@ function refreshPivot(sheetId: string, save = true): boolean {
 function schedulePivotRefreshes() {
   if (!pivotSheets().length) return;
   clearTimeout(pivotRefreshTimer);
-  // A source still loading its moved cells is read once it has (see reloadSheets).
-  pivotRefreshTimer = setTimeout(() => { if (loadingSheets.size) pivotRefreshDeferred = true; else refreshPivots(); }, 320);
+  // A sheet being read again holds old cells until it has (see reloadSheets).
+  pivotRefreshTimer = setTimeout(() => { if (sheetReloads) pivotRefreshDeferred = true; else refreshPivots(); }, 320);
 }
 // `save`: false for an export, which prints them as rebuilt without writing them back.
 function refreshPivots(save = true) {
@@ -2666,7 +2772,7 @@ function createPivotTable() {
   const pivotSheet: Omit<SheetMeta, "created"> = { id, name: `Pivot table ${number}`, rows: 100, cols: 26, colWidths: {}, rowHeights: {}, frozenRows: 0, frozenCols: 0, filter: null, charts: [], pivot };
   model.sheets[id] = pivotSheet as SheetMeta;
   model.cells[id] = {}; model.sheetOrder.push(id); refreshPivot(id, false);
-  queueStructure(); queueReplacement(id, []); switchSheet(id);
+  queueReplacement(id); switchSheet(id);
   // The new pivot's settings open under the button, ready to pick rows and values.
   requestAnimationFrame(() => openPivotMenu(id));
 }
@@ -3348,10 +3454,10 @@ function detectFilterRange(): SheetFilter | null {
   }
   return columns.length ? { row: best.row, endRow: maxRow, columns, criteria: {}, rowOrder: Array.from({ length: maxRow - best.row }, (_, index) => header.row + 1 + index), sort: null } : null;
 }
-function resetFilterSortBaseline() {
-  const filter = curSheet()?.filter;
+function resetFilterSortBaseline(sheet: SheetMeta | undefined = curSheet()) {
+  const filter = sheet?.filter;
   if (!filter) return;
-  const endRow = filter.endRow ?? curSheet().rows - 1;
+  const endRow = filter.endRow ?? sheet.rows - 1;
   filter.rowOrder = Array.from({ length: Math.max(0, endRow - filter.row) }, (_, index) => filter.row + 1 + index);
   filter.sort = null;
 }
@@ -3390,20 +3496,11 @@ function reorderFilteredRows(compare: (left: FilterRow, right: FilterRow) => num
     rows.push({ rowCells, originalOrder: baseline[row - filter.row - 1], currentRow: row });
   }
   rows.sort(compare);
-  for (let index = 0; index < rows.length; index++) {
-    const row = filter.row + 1 + index;
-    for (const col of columns) {
-      const ref = rcToRef(row, col), source = rows[index].rowCells[col];
-      // Rows move as in Excel's sort: relative references travel with the formula.
-      if (source) curCells()[ref] = { value: shiftedCopyFormula(source.value, rcToRef(rows[index].currentRow, col), ref, false), fmt: source.fmt, version: getCell(ref)?.version || 0 };
-      else delete curCells()[ref];
-    }
-  }
+  // Rows move as in Excel's sort: relative references travel with the formula (see writeSort).
+  writeSort({ r1: filter.row + 1, c1: first, r2: endRow, c2: last }, rows.map((entry) => ({ rowCells: entry.rowCells, sourceRow: entry.currentRow })));
   filter.rowOrder = rows.map((entry) => entry.originalOrder);
   filter.sort = nextSort;
-  queueStructure(); queueReplacement(activeSheetId, [{ kind: "sort", r1: filter.row + 1, c1: first, c2: last, order: rows.map((entry) => entry.currentRow) }]); rebuildEngine(); renderGrid();
-  undoStack.length = 0; redoStack.length = 0; updateUndoButtons();
-  schedulePivotRefreshes();
+  queueStructure();
 }
 function sortFilteredRange(column: number, ascending: boolean) {
   const values = new Map<number, Scalar>();
@@ -4874,9 +4971,8 @@ formulaRangeHandle.addEventListener("pointercancel", finishFormulaRangeResize);
 
 /** The view to restore when coming back to the edited cell's sheet. */
 interface HomeView { anchor: RC; focus: RC; extraRanges: Area[]; scrollTop: number; scrollLeft: number }
-/** The cell being edited; `sheetId` is its sheet, which isn't always the one on screen. */
-/** `stale`: a reconnect found its sheet's cells moved in ways this tab never heard, so `ref` may name another record's cell. */
-interface EditingState { ref: string; r: number; c: number; sheetId: string; home: HomeView | null; stale?: true }
+/** The cell being edited; `sheetId` is its sheet, which isn't always the one on screen. It moves with its cell (see relayout). */
+interface EditingState { ref: string; r: number; c: number; sheetId: string; home: HomeView | null }
 let editing: EditingState | null = null;
 let imeComposing = false;
 function armEditorCapture(focusCapture = false) {
@@ -4898,7 +4994,6 @@ function startEdit(ref: string, replace = false, seed: string | null = null, fro
   if (!rc || !curSheet() || rc.r >= curSheet().rows || rc.c >= curSheet().cols) return;
   // Until the next frame moves the selection off a row a filter just hid (doRenderGrid), nothing types into it.
   if (curSheet().filter && !rowPassesFilter(rc.r)) return;
-  if (loadingSheets.has(activeSheetId)) { toast(SHEET_LOADING, "bad"); return; }
   editing = { ref, r: rc.r, c: rc.c, sheetId: activeSheetId, home: null };
   // Typing into a cell scrolled out of view brings it back first (the window follows).
   if (!rowHidden(rc.r)) scrollCellIntoView(rc.r, rc.c);
@@ -5105,8 +5200,6 @@ function commitEdit(advance: "down" | "up" | "right" | "left" | "none" = "down")
   if (value !== cellEditor.value) { cellEditor.value = value; formulaInput.value = value; }
   const formulaError = validateFormula(value);
   if (formulaError) { focusEditingSurface(); showFormulaError(formulaError); return; }
-  // The draft stays open, so its text can be copied before Esc.
-  if (editing.stale) { focusEditingSurface(); toast("Rows or columns moved while reconnecting; copy your text, press Esc and enter it again", "bad"); return; }
   // A Plain text cell keeps what's typed, as in Excel: "00123" stays text rather than becoming 123.
   if (model.cells[editing.sheetId]?.[ref]?.fmt?.nf === "text" && /^\s*([-+]?\$?[\d,]*\.?\d+%?|true|false)\s*$/i.test(value)) value = "'" + value;
   // Cells were picked on another sheet: the formula goes into its own cell, on its own sheet.
@@ -5697,8 +5790,12 @@ function deleteSelectionContents() {
 // ===========================================================================
 // Copy / paste (TSV via clipboard)
 // ===========================================================================
-/** One copied cell as the clipboard snapshot holds it (`value: null` for an empty source; `computed`: its result, as stored text). */
-interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string; computed?: string }
+/**
+ * One copied cell as the clipboard snapshot holds it (`value: null` for an empty source;
+ * `computed`: its result, as stored text). A cut finds its cell again by `sourceKey`, and tells
+ * whether it still holds what was cut by `stored`, its value in stored form.
+ */
+interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string; computed?: string; sourceKey: string | null; stored: string | null }
 /** What this tab last copied or cut: the text it wrote, the cells behind it, and the private token. */
 interface ClipboardSnapshot {
   tsv: string;
@@ -5712,7 +5809,6 @@ interface ClipboardSnapshot {
   token: string;
 }
 let copyFallback: ClipboardSnapshot | null = null;
-const CUT_MOVED = "The cut cells moved; cut them again";
 // Whole-row and whole-column selections are trimmed to the populated extent (a whole-sheet
 // selection in both directions); `trimmed` records which axis, so a paste doesn't mistake the trimmed block for a pattern to repeat.
 function clipboardReferenceMatrix(): { refs: (string | null)[][]; trimmed: ClipboardSnapshot["trimmed"] } {
@@ -5792,9 +5888,11 @@ function parseClipboardText(text: string): string[][] {
 }
 function prepareClipboard(cut = false) {
   const { refs, trimmed } = clipboardReferenceMatrix();
+  const b = book();
   const cells = refs.map((row) => row.map((ref) => {
-    const cell = ref ? getCell(ref) : null;
-    return cell && ref ? { value: cell.value, fmt: cell.fmt, sourceRef: ref, computed: storedValueOf(engine.computeRef(activeSheetId, ref)) } : (ref ? { value: null, fmt: null, sourceRef: ref } : null);
+    if (!ref) return null;
+    const cell = getCell(ref), sourceKey = keyOf(activeSheetId, ref);
+    return cell ? { value: cell.value, fmt: cell.fmt, sourceRef: ref, sourceKey, stored: storedValue(activeSheetId, ref, cell.value, b), computed: storedValueOf(engine.computeRef(activeSheetId, ref)) } : { value: null, fmt: null, sourceRef: ref, sourceKey, stored: null };
   }));
   const tsv = refs.map((row) => row.map(clipboardCellText).join("\t")).join("\n");
   copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, cancelled: null, token: Math.random().toString(36).slice(2) };
@@ -5849,6 +5947,12 @@ function shiftedCopyFormula(value: string, sourceRef: string, targetRef: string,
   const source = parseRef(sourceRef), target = parseRef(targetRef);
   if (!source || !target) return value;
   return shiftFormulaReferences(value, target.r - source.r, target.c - source.c);
+}
+// The sheet name a reference prefix names, folded for comparison: `'Owner''s Sheet'!` and
+// `'Owner\'s Sheet'!` both name "owner's sheet".
+function referenceSheetName(prefix: string): string {
+  const name = prefix.endsWith("!") ? prefix.slice(0, -1) : prefix;
+  return (name.startsWith("'") ? name.slice(1, -1).replace(/\\'|''/g, "'") : name).toLowerCase();
 }
 // The sheet a reference endpoint points into: its own prefix, or the formula's sheet. A prefix
 // naming no sheet resolves to "".
@@ -5958,7 +6062,7 @@ function remapCutFormula(value: string, formulaSourceSheetId: string, formulaTar
 // A cut source is removed only while it still holds what was cut; an edit made in between wins.
 function cutSourceUnchanged(sheetId: string, snapshot: ClipboardCell): boolean {
   const current = model.cells[sheetId]?.[snapshot.sourceRef];
-  return (current?.value ?? null) === snapshot.value && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null);
+  return (current ? storedValue(sheetId, snapshot.sourceRef, current.value) : null) === snapshot.stored && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null);
 }
 function clearStoredCell(sheetId: string, ref: string) {
   const cells = model.cells[sheetId] || (model.cells[sheetId] = {});
@@ -5975,6 +6079,18 @@ function pasteText(text: string, { keepFormatting = true, token = null }: { keep
   const useSnapshot = clipboard && (token ? token === clipboard.token
     : !clipboard.cut && clipboard.tsv.replace(/\r/g, "") === normalized) ? clipboard : null;
   if (useSnapshot?.cut && useSnapshot.cancelled) { toast(useSnapshot.cancelled, "bad"); return; }
+  // A cut finds its cells by key, as rows and columns may have moved since; a formula among them
+  // moves as it reads now.
+  if (useSnapshot?.cut) {
+    for (const row of useSnapshot.cells) for (const snapshot of row) {
+      if (!snapshot) continue;
+      const ref = snapshot.sourceKey && refOf(useSnapshot.sheetId, snapshot.sourceKey);
+      if (!ref) { toast("Rows or columns of the cut cells were deleted; cut again", "bad"); return; }
+      snapshot.sourceRef = ref;
+      const current = model.cells[useSnapshot.sheetId]?.[ref];
+      if (current && cutSourceUnchanged(useSnapshot.sheetId, snapshot)) snapshot.value = current.value;
+    }
+  }
   const moving = !!useSnapshot?.cut;
   const moves = new Map<string, CutTarget>();
   // Checked before any destination is written: overlapping moves overwrite other sources.
@@ -5991,10 +6107,7 @@ function pasteText(text: string, { keepFormatting = true, token = null }: { keep
   if (targetRanges.length === 1) {
     const sh = curSheet(), target = targetRanges[0];
     const needRows = Math.min(MAX_ROWS, target.r1 + sourceHeight), needCols = Math.min(MAX_COLS, target.c1 + sourceWidth);
-    if (needRows > sh.rows || needCols > sh.cols) {
-      sh.rows = Math.max(sh.rows, needRows); sh.cols = Math.max(sh.cols, needCols);
-      queueStructure();
-    }
+    if (needRows > sh.rows || needCols > sh.cols) growSheet(activeSheetId, Math.max(sh.rows, needRows), Math.max(sh.cols, needCols));
     if (target.r1 + sourceHeight > MAX_ROWS || target.c1 + sourceWidth > MAX_COLS) {
       toast(`A sheet holds up to ${MAX_ROWS.toLocaleString()} rows and ${MAX_COLS} columns; the rest wasn't pasted`, "bad");
     }
@@ -6438,6 +6551,7 @@ function addSheet() {
   model.sheets[id] = { id, name: "Sheet" + n, rows: 100, cols: 26, colWidths: {}, rowHeights: {}, frozenRows: 0, frozenCols: 0, filter: null, charts: [], pivot: null };
   model.sheetOrder.push(id);
   model.cells[id] = {};
+  createSheetLines(id, 100, 26);
   activeSheetId = id;
   queueStructure();
   newTabId = id;
@@ -6484,21 +6598,11 @@ function renameSheet(id: string) {
     done = true;
     hideTip();
     input.remove();
-    // A rename rewrites formulas where they're shown, which a loading sheet's aren't yet.
-    if (save && clean && clean !== original && loadingSheets.size) { toast(SHEET_LOADING, "bad"); save = false; }
     const changed = save && clean && clean !== original && model.sheets[id];
     if (changed) {
-      model.sheets[id].name = clean;
-      // Formulas anywhere that name the sheet follow it (saved with the new name, as one operation).
-      const prefix = sheetRefPrefix(id);
-      for (const sheetId of model.sheetOrder) {
-        for (const [ref, cell] of Object.entries(model.cells[sheetId] || {})) {
-          if (!cell.value || cell.value[0] !== "=") continue;
-          const next = renameFormulaSheet(cell.value, original, prefix);
-          if (next !== cell.value) { cell.value = next; queueCellOp(sheetId, ref, next, cell.fmt, cell.version || 0); }
-        }
-      }
-      queueStructure(); rebuildEngine(); renderGrid();
+      // Formulas name sheets by id, so every one reading this sheet shows the new name (see relayout).
+      relayout(() => { model.sheets[id].name = clean; });
+      queueStructure(); renderGrid();
     }
     renderTabs();
     if (changed && !reducedMotion.matches) tabbar.querySelector(`.tab[data-id="${CSS.escape(id)}"]`)?.classList.add("renamed");
@@ -6549,7 +6653,7 @@ function duplicateSheet(id: string) {
   model.cells[nid] = copyCellMap(model.cells[id] || {});
   const idx = model.sheetOrder.indexOf(id);
   model.sheetOrder.splice(idx + 1, 0, nid);
-  queueStructure(); queueReplacement(nid, []);
+  queueReplacement(nid);
   newTabId = nid;
   switchSheet(nid);
 }
@@ -6557,8 +6661,11 @@ function deleteSheet(id: string) {
   if (model.sheetOrder.length <= 1) return;
   if (!finishEditBeforeSheetChange()) return;
   const idx = model.sheetOrder.indexOf(id);
-  model.sheetOrder.splice(idx, 1);
-  delete model.sheets[id]; delete model.cells[id];
+  // Formulas reading the sheet show #REF! (see relayout).
+  relayout(() => {
+    model.sheetOrder.splice(idx, 1);
+    delete model.sheets[id]; delete model.cells[id];
+  });
   if (activeSheetId === id) activeSheetId = model.sheetOrder[Math.max(0, idx - 1)];
   queueStructure();
   switchSheet(activeSheetId);
@@ -7165,16 +7272,16 @@ function showStructuralHint(h: AgentHint) {
 const RACE_WINDOW_MS = 3000;
 const RACE_NOTICE_CELLS = 100; // a bigger save (a paste) isn't followed cell by cell
 const recentCommits = new Map<string, { value: string | null; version: number; at: number }>();
-function noteCommit(sheetId: string, ref: string, value: string | null, version: number) {
+function noteCommit(sheetId: string, key: string, value: string | null, version: number) {
   const now = Date.now();
-  for (const [key, commit] of recentCommits) if (now - commit.at > RACE_WINDOW_MS) recentCommits.delete(key);
-  recentCommits.set(sheetId + "!" + ref, { value, version, at: now });
+  for (const [id, commit] of recentCommits) if (now - commit.at > RACE_WINDOW_MS) recentCommits.delete(id);
+  recentCommits.set(sheetId + "!" + key, { value, version, at: now });
 }
-// Whether a remote write to this cell replaces what this tab saved there a moment ago.
-function replacesRecentCommit(sheetId: string, ref: string, value: string | null, version: number): boolean {
-  const key = sheetId + "!" + ref, commit = recentCommits.get(key);
+// Whether a remote write to this cell (by key) replaces what this tab saved there a moment ago.
+function replacesRecentCommit(sheetId: string, key: string, value: string | null, version: number): boolean {
+  const id = sheetId + "!" + key, commit = recentCommits.get(id);
   if (!commit || Date.now() - commit.at > RACE_WINDOW_MS || (commit.value != null && version <= commit.version)) return false;
-  recentCommits.delete(key);
+  recentCommits.delete(id);
   return (commit.value ?? "") !== (value ?? "");
 }
 function noticeReplacedCommits(cells: { sheetId: string; ref: string }[]) {
@@ -7183,51 +7290,62 @@ function noticeReplacedCommits(cells: { sheetId: string; ref: string }[]) {
   const name = sheetId === activeSheetId ? ref : (model.sheets[sheetId]?.name || "another sheet") + "!" + ref;
   toast(cells.length === 1 ? `${name} was also edited elsewhere just now, and that edit replaced yours` : `${cells.length} cells you just edited were also edited elsewhere, and those edits replaced yours`, "bad");
 }
-function applyRemoteOperation(event: OperationEvent) {
-  if (!event || event.senderId === clientId) return;
-  const live = event.senderId === "agent" && liveEffectsOn() ? captureLiveEdit(event) : null;
+function applyRemoteOperation(event: SubscriberEvent) {
+  // Snapshots are for editors from before line ids.
+  if (!event || event.type !== "operation" || event.senderId === clientId) return;
   const replaced: { sheetId: string; ref: string }[] = [];
   applyingRemote = true;
-  const namesBefore = sheetNamesKey();
   model.revision = Math.max(model.revision, event.revision || 0);
+  seenRevision = Math.max(seenRevision, event.revision || 0);
+  const known = new Set(model.sheetOrder);
+  // Lines and structure first: the event names cells by key, placed where their lines now are.
+  const { changed: relaid, dropped } = relayout(() => {
+    adoptOrders(event.orders, event.revision);
+    if (event.structure) applyStructure(event.structure, event.revision || 0);
+  });
   if (event.structure) {
-    const known = new Set(model.sheetOrder);
-    applyStructure(event.structure, event.revision || 0);
     // A sheet someone else just added rises into the tab bar.
     const added = model.sheetOrder.find((id) => !known.has(id));
     if (added && known.size && liveEffectsOn()) newTabId = added;
   }
-  for (const up of event.upserts || []) {
-    // A local edit that hasn't been saved yet stays on screen; it is sent (and
-    // rebased onto this version) by the next save.
-    if (pendingCellOps.has(up.sheetId + "!" + up.ref)) { overtakingWrites.set(up.sheetId + "!" + up.ref, { revision: event.revision, cell: { ...up.cell } }); continue; }
-    if (event.senderId !== "agent" && replacesRecentCommit(up.sheetId, up.ref, up.cell.value, up.cell.version)) replaced.push(up);
-    const cells = model.cells[up.sheetId] || (model.cells[up.sheetId] = {});
-    cells[up.ref] = { ...up.cell };
-  }
-  for (const del of event.deletes || []) {
-    if (pendingCellOps.has(del.sheetId + "!" + del.ref)) { overtakingWrites.set(del.sheetId + "!" + del.ref, { revision: event.revision, cell: null }); continue; }
-    if (event.senderId !== "agent" && replacesRecentCommit(del.sheetId, del.ref, null, Infinity)) replaced.push(del);
-    const cells = model.cells[del.sheetId]; if (cells) delete cells[del.ref];
-  }
-  for (const [sid, moves] of Object.entries(event.moves || {})) followCellMoves(sid, moves, event.revision);
+  const b = book();
+  // The live touch compares cells by where they're shown.
+  const shown = (list: { sheetId: string; ref: string; cell?: Cell }[] | undefined) => (list || []).flatMap((item) => {
+    const ref = refOf(item.sheetId, item.ref);
+    return ref ? [{ ...item, ref, ...(item.cell ? { cell: viewCell(item.sheetId, item.cell, b) } : {}) }] : [];
+  });
+  const live = event.senderId === "agent" && liveEffectsOn() ? captureLiveEdit({ ...event, upserts: shown(event.upserts) as CellUpsert[], deletes: shown(event.deletes) }) : null;
+  const touched: CellChange[] = [];
+  const apply = (sheetId: string, key: string, cell: Cell | null) => {
+    const id = sheetId + "!" + key;
+    // A local edit that hasn't been saved yet stays on screen; it is sent (and rebased onto this
+    // version) by the next save.
+    if (ownsCell(sheetId, key)) { overtakingWrites.set(id, { revision: event.revision, cell: cell && { ...cell } }); return; }
+    const ref = refOf(sheetId, key);
+    if (event.senderId !== "agent" && replacesRecentCommit(sheetId, key, cell?.value ?? null, cell ? cell.version : Infinity)) replaced.push({ sheetId, ref: ref || key });
+    placeStored(sheetId, key, cell, b);
+    if (ref) touched.push({ sheetId, ref });
+  };
+  for (const up of event.upserts || []) apply(up.sheetId, up.ref, up.cell);
+  for (const del of event.deletes || []) apply(del.sheetId, del.ref, null);
   const reload: string[] = [];
   if (event.replacedCells) for (const [sid, cells] of Object.entries(event.replacedCells)) {
     if (!model.sheets[sid]) continue;
+    // The sheet started over: history naming its cells means others now.
     forgetHistoryOf(sid);
-    if (cells) { layPendingCellOps(sid, cells); model.cells[sid] = cells; } else reload.push(sid);
+    if (cells) { viewCells(sid, cells, b); layPendingEdits(sid, b); } else reload.push(sid);
   }
   applyingRemote = false;
   if (reload.length) reloadSheets(reload);
   // Someone's cell edits: only those cells and what depends on them are recalculated.
-  if (!event.replacedCells && sheetNamesKey() === namesBefore) {
-    rebuildEngine([...(event.upserts || []), ...(event.deletes || [])].map((x) => ({ sheetId: x.sheetId, ref: x.ref })));
-  } else rebuildEngine();
+  if (!relaid && !event.replacedCells) rebuildEngine(touched);
+  else if (event.replacedCells) rebuildEngine();
   // Someone else deleted a sheet involved in an edit: the formula's own sheet ends it; the sheet
   // being picked from just sends the edit back to its cell.
   if (editing && !model.sheets[editing.sheetId]) cancelEdit();
   else if (editingAway() && !model.sheets[activeSheetId]) returnToEditingCell();
   if (!model.sheets[activeSheetId]) { if (editing) cancelEdit(); activeSheetId = model.sheetOrder[0]; }
+  if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
   // A merged structure (local changes replayed on a remote one) still has to be sent.
   if (pendingStructure && !saves.busy) scheduleSave(40);
   // The agent's edits re-materialize the pivots reading them; another tab rebuilds its own.
@@ -7241,148 +7359,45 @@ function applyRemoteOperation(event: OperationEvent) {
   // The grid re-renders on the next frame; the live touch is drawn right after.
   if (live) requestAnimationFrame(() => { try { showLiveEdit(live); } catch (e) { console.error(e); } });
 }
-// An unsaved edit whose text was rewritten is shown as rewritten (the moved sheet's own cells
-// come with its replacement).
-function showPendingValue(op: PendingCellOp) {
-  const shown = model.cells[op.sheetId]?.[op.ref];
-  if (shown && op.value != null) shown.value = op.value;
-}
-// A saved edit a later move carried: the server moved it too, so what the move made of it isn't
-// owed, unless it was edited again since. A write that came after the move shows instead.
-function retireFollowed(op: PendingCellOp, committed: number): { sheetId: string; ref: string } | null {
-  let link = followedEdits.get(op);
-  if (!link || link.revision <= committed) return null;
-  while (followedEdits.get(link.next)) link = followedEdits.get(link.next)!;
-  const last = link.next, key = last.sheetId + "!" + last.ref;
-  if (pendingCellOps.get(key) !== last) return null;
-  pendingCellOps.delete(key);
-  // The write stays for the reply's upserts, so they don't put back the older acknowledged cell.
-  const write = overtakingWrites.get(key), cells = model.cells[last.sheetId];
-  if (write && cells) { if (write.cell) cells[last.ref] = write.cell; else delete cells[last.ref]; }
-  return last;
-}
-// Someone else's replacement moved a sheet's cells (null: in ways unknown). This tab's unsaved
-// edits to that sheet follow the cells they were typed into, and are addressed in the new layout;
-// one on a deleted line is dropped. Their formulas, like everyone's stored ones, follow the lines
-// they read. So does the cell being edited. What was keyed by position on that sheet (writes that
-// overtook a save, recent commits, acknowledgments held for a reload) is older than the move.
-function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: number) {
-  const sheet = model.sheets[sheetId]; if (!sheet) return;
-  sheet.layout = Math.max(sheet.layout || 0, revision);
-  const lineMap = (move: Exclude<CellMove, { kind: "sort" }>) => move.kind === "move" ? lineMoveMap(move.from, move.count, move.to) : axisLineMap(move.at, move.count);
-  // Where one move takes a cell (null: its line was deleted).
-  const step = (rc: RC, move: CellMove): RC | null => {
-    if (move.kind === "sort") {
-      const index = rc.c >= move.c1 && rc.c <= move.c2 ? move.order.indexOf(rc.r) : -1;
-      return index >= 0 ? { r: move.r1 + index, c: rc.c } : rc;
-    }
-    const line = lineMap(move)(move.rows ? rc.r : rc.c);
-    return line == null ? null : move.rows ? { r: line, c: rc.c } : { r: rc.r, c: line };
-  };
-  const place = (ref: string): string | null => {
-    let rc: RC | null = parseRef(ref);
-    for (const move of moves || []) if (rc) rc = step(rc, move);
-    return rc && rcToRef(rc.r, rc.c);
-  };
-  // `at`: the cell a formula on this sheet is in. A sort carries it like a copy, by how far that
-  // sort alone moved it.
-  const rewrite = (value: string | null, at: RC | null): string | null => {
-    if (!value?.startsWith("=")) return value;
-    for (const move of moves || []) {
-      const next = at && step(at, move);
-      if (move.kind !== "sort") value = remapFormulaLines(value, { rows: move.rows, map: lineMap(move), sheetName: sheet.name, ownSheet: !!at });
-      else if (at && next) value = shiftFormulaReferences(value, next.r - at.r, next.c - at.c);
-      at = next;
-    }
-    return value;
-  };
-  // A changed edit is a new entry, so a save already carrying the old one doesn't clear it.
-  // Moved in ways unknown (a client that doesn't send its moves), an edit on the sheet, or a
-  // formula reading it, can't be followed: it's dropped rather than saved over another record.
-  let dropped = 0, unplaced = 0;
-  const ops = [...pendingCellOps.values()];
-  const names = new Set([sheet.name.toLowerCase()]);
-  pendingCellOps.clear();
-  for (const was of ops) {
-    let op = was;
-    if (!moves && (op.sheetId === sheetId || op.value?.startsWith("=") && formulaReadsSheets(op.value, names))) { unplaced++; continue; }
-    if (op.sheetId === sheetId) {
-      const ref = place(op.ref);
-      if (!ref) { dropped++; continue; }
-      op = { ...op, value: rewrite(op.value, parseRef(op.ref)), ref, addressedIn: sheet.layout };
-    } else {
-      const value = rewrite(op.value, null);
-      if (value !== op.value) { op = { ...op, value }; showPendingValue(op); }
-    }
-    if (op !== was) followedEdits.set(was, { next: op, revision });
-    pendingCellOps.set(op.sheetId + "!" + op.ref, op);
-  }
-  // A cut's source cells are named by where they were; once they've moved, removing them could
-  // take another record's cells.
-  if (copyFallback?.cut && copyFallback.sheetId === sheetId && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
-  if (unplaced) toast(`${unplaced === 1 ? "An unsaved edit" : `${unplaced} unsaved edits`} couldn't be kept because rows or columns moved meanwhile`, "bad");
-  if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
-  for (const map of [overtakingWrites, recentCommits]) for (const key of map.keys()) if (key.startsWith(sheetId + "!")) map.delete(key);
-  for (let i = reloadAcks.length - 1; i >= 0; i--) if (reloadAcks[i].sheetId === sheetId && reloadAcks[i].revision < revision) reloadAcks.splice(i, 1);
-  if (editing?.sheetId === sheetId && !moves) editing.stale = true;
-  else if (editing?.sheetId === sheetId) {
-    const ref = place(editing.ref), rc = ref && parseRef(ref);
-    if (!rc) cancelEdit();
-    else Object.assign(editing, { ref, r: rc.r, c: rc.c });
-  }
-}
-// Remote structure replaces the model's (the server keeps the last one written). Local changes
-// still pending are diffed against `ackedStructure` and replayed on top, field by field, so a
-// remote chart and a local filter on the same sheet both survive.
-// `namesBefore`: each sheet's name before this structure, by ID (a reconnect clears the sheets first).
-function applyStructure(s: Structure, revision: number, namesBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.name]))) {
+// Remote structure (stored form) replaces the model's (the server keeps the last one written).
+// Local changes still pending are diffed against `ackedStructure` and replayed on top, field by
+// field, so a remote chart and a local filter on the same sheet both survive. Run inside
+// relayout, which redraws formulas if a sheet was renamed.
+function applyStructure(s: Structure, revision: number) {
   // A late event mustn't undo a newer structure already applied.
   if (revision < ackedStructureRevision) return;
   // A structure awaiting its save reply is local too: the server applies it after this remote
   // one, so it's replayed here as well (and re-sent merged, since the server holds only ours).
   const localSource = pendingStructure || inFlightStructure;
   const local = localSource ? localStructureChanges(localSource, s) : null;
-  if (s.title != null) model.title = s.title;
-  model.sheetOrder = s.sheetOrder.slice();
-  for (const id of model.sheetOrder) model.sheets[id] = { ...model.sheets[id], ...s.sheets[id] };
-  // Stored formulas follow a remote rename on the server; unsaved ones follow it here (unless this
-  // tab renamed the sheet too, which wins). Like a move, a rewrite is a new entry (see followedEdits).
-  for (const id of model.sheetOrder) {
-    const before = namesBefore.get(id);
-    if (before === undefined || before === model.sheets[id].name || local?.sheets[id]?.name != null) continue;
-    for (const [key, op] of pendingCellOps) {
-      const value = op.value?.startsWith("=") ? renameFormulaSheet(op.value, before, sheetRefPrefix(id)) : op.value;
-      if (value === op.value) continue;
-      const next = { ...op, value };
-      followedEdits.set(op, { next, revision });
-      pendingCellOps.set(key, next);
-      showPendingValue(next);
+  ackedStructure = structuredClone({ title: s.title, sheetOrder: s.sheetOrder.slice(), sheets: Object.fromEntries(s.sheetOrder.map((id) => [id, s.sheets[id]])) });
+  ackedStructureRevision = revision;
+  let title = s.title ?? model.title, sheetOrder = s.sheetOrder.slice();
+  const stored: Record<string, SheetMeta> = structuredClone(ackedStructure.sheets);
+  if (local) {
+    if (local.title != null) title = local.title;
+    for (const id of local.removed) { sheetOrder = sheetOrder.filter((sid) => sid !== id); delete stored[id]; }
+    for (const [id, fields] of Object.entries(local.sheets)) {
+      if (local.added.includes(id) && localSource?.sheets[id]) {
+        stored[id] = structuredClone(localSource.sheets[id]);
+        if (!sheetOrder.includes(id)) sheetOrder.push(id);
+      } else if (stored[id]) Object.assign(stored[id], structuredClone(fields));
+      // A sheet deleted remotely while edited here stays deleted.
+    }
+    if (local.sheetOrder) {
+      const order = local.sheetOrder.filter((id) => sheetOrder.includes(id));
+      sheetOrder = [...order, ...sheetOrder.filter((id) => !order.includes(id))];
     }
   }
-  const added = new Set(local?.added);
-  for (const id of Object.keys(model.sheets)) if (!model.sheetOrder.includes(id) && !added.has(id)) { delete model.sheets[id]; delete model.cells[id]; }
-  ackedStructure = { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(Object.fromEntries(model.sheetOrder.map((id) => [id, model.sheets[id]])))) };
-  ackedStructureRevision = revision;
-  if (!local) { invalidateMissingCutSource(); return; }
-  if (local.title != null) model.title = local.title;
-  for (const id of local.removed) {
-    const index = model.sheetOrder.indexOf(id);
-    if (index >= 0) { model.sheetOrder.splice(index, 1); delete model.sheets[id]; delete model.cells[id]; }
+  for (const id of Object.keys(model.sheets)) if (!stored[id]) { delete model.sheets[id]; delete model.cells[id]; serverOrders.delete(id); unplaced.delete(id); }
+  model.title = title;
+  model.sheetOrder = sheetOrder;
+  computeOrders();
+  for (const id of sheetOrder) {
+    model.sheets[id] = viewSheet(stored[id], orderOf);
+    if (!model.cells[id]) model.cells[id] = {};
   }
-  for (const [id, fields] of Object.entries(local.sheets)) {
-    if (added.has(id) && localSource?.sheets[id]) {
-      model.sheets[id] = JSON.parse(JSON.stringify(localSource.sheets[id]));
-      if (!model.sheetOrder.includes(id)) model.sheetOrder.push(id);
-      if (!model.cells[id]) model.cells[id] = {};
-    } else if (model.sheetOrder.includes(id)) Object.assign(model.sheets[id], fields);
-    // A sheet deleted remotely while edited here stays deleted.
-  }
-  if (local.sheetOrder) {
-    const order = local.sheetOrder.filter((id) => model.sheetOrder.includes(id));
-    model.sheetOrder = [...order, ...model.sheetOrder.filter((id) => !order.includes(id))];
-  }
-  pendingStructure = structureSnapshot();
-  if (pendingReplacements.size === 0) wholesaleBaseRevision = model.revision;
+  if (local) pendingStructure = structureSnapshot();
   invalidateMissingCutSource();
 }
 // A remote structure committed after this tab's sent one arrived before its reply, and had the sent
@@ -7391,23 +7406,25 @@ function applyStructure(s: Structure, revision: number, namesBefore = new Map(Ob
 function settleOvertakenStructure(sent: StructureSnapshot) {
   const remote = ackedStructure; if (!remote || !pendingStructure) return;
   const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-  const local = localStructureChanges(pendingStructure);
-  if (local.title != null && local.title === sent.title) model.title = remote.title;
-  if (local.sheetOrder && same(local.sheetOrder, sent.sheetOrder)) {
-    model.sheetOrder = [...remote.sheetOrder.filter((id) => model.sheets[id]), ...model.sheetOrder.filter((id) => !remote.sheetOrder.includes(id))];
-  }
-  for (const [id, fields] of Object.entries<Partial<SheetMeta>>(local.sheets)) {
-    if (!remote.sheets[id] || !model.sheets[id]) continue;
-    for (const key of Object.keys(fields) as (keyof SheetMeta)[]) {
-      if (same(fields[key], sent.sheets[id]?.[key])) Object.assign(model.sheets[id], { [key]: structuredClone(remote.sheets[id][key]) });
+  relayout(() => {
+    const local = localStructureChanges(pendingStructure!), current = structureSnapshot();
+    if (local.title != null && local.title === sent.title) model.title = remote.title;
+    if (local.sheetOrder && same(local.sheetOrder, sent.sheetOrder)) {
+      model.sheetOrder = [...remote.sheetOrder.filter((id) => model.sheets[id]), ...model.sheetOrder.filter((id) => !remote.sheetOrder.includes(id))];
     }
-  }
+    for (const [id, fields] of Object.entries<Partial<SheetMeta>>(local.sheets)) {
+      if (!remote.sheets[id] || !model.sheets[id]) continue;
+      let settled = false;
+      for (const key of Object.keys(fields) as (keyof SheetMeta)[]) {
+        if (same(fields[key], sent.sheets[id]?.[key])) { Object.assign(current.sheets[id], { [key]: structuredClone(remote.sheets[id][key]) }); settled = true; }
+      }
+      if (settled) model.sheets[id] = viewSheet(current.sheets[id], orderOf);
+    }
+  });
   const rest = localStructureChanges(structureSnapshot());
   pendingStructure = rest.title != null || rest.sheetOrder || rest.added.length || rest.removed.length || Object.keys(rest.sheets).length ? structureSnapshot() : null;
-  if (!pendingStructure && !pendingReplacements.size) wholesaleBaseRevision = null;
-  rebuildEngine(); renderTabs(); renderGrid(); refreshToolbarState(); updateTabTitle();
+  renderTabs(); renderGrid(); refreshToolbarState(); updateTabTitle();
 }
-// What a local structure snapshot changed relative to what the server last acknowledged.
 /** What a local structure snapshot changed relative to the last acknowledged one: `null` title/order when unchanged, sheets added and removed, and each sheet's changed fields. */
 interface StructureChanges {
   title: string | null;
@@ -7416,6 +7433,8 @@ interface StructureChanges {
   removed: string[];
   sheets: Record<string, Partial<SheetMeta>>;
 }
+// What a local structure snapshot changed relative to what the server last acknowledged (both in
+// stored form). A sheet's size is its lines', which line operations change, not the structure.
 function localStructureChanges(snapshot: Structure, remote?: Structure | null): StructureChanges {
   const base: Structure = ackedStructure || { title: snapshot.title, sheetOrder: [], sheets: {} };
   const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
@@ -7433,8 +7452,7 @@ function localStructureChanges(snapshot: Structure, remote?: Structure | null): 
     if (!baseSheet) { changes.sheets[id] = sheet; continue; }
     const fields: Partial<Record<keyof SheetMeta, unknown>> = {};
     for (const key of new Set([...Object.keys(sheet), ...Object.keys(baseSheet)] as (keyof SheetMeta)[])) {
-      // `layout` is the server's (see SheetMeta); a snapshot's copy is only ever older.
-      if (key !== "layout" && !same(sheet[key], baseSheet[key])) fields[key] = sheet[key];
+      if (key !== "rows" && key !== "cols" && !same(sheet[key], baseSheet[key])) fields[key] = sheet[key];
     }
     // Each field was copied from `sheet` under its own key.
     if (Object.keys(fields).length) changes.sheets[id] = fields as Partial<SheetMeta>;
@@ -7443,64 +7461,58 @@ function localStructureChanges(snapshot: Structure, remote?: Structure | null): 
 }
 
 // A snapshot replaces the model. After a reconnect, local edits that were never saved are laid
-// back on top (structure merged field by field) so nothing typed is lost.
-function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false): Map<string, number> {
+// back on top (structure merged field by field) so nothing typed is lost: they name cells and
+// lines by id, so they land on their records however lines moved meanwhile.
+function applySnapshot(doc: LoadedDocument, reconcile = false): Map<string, number> {
   applyingRemote = true;
+  const editAt = editingAnchor();
   // A save of this tab's acknowledged while the snapshot was read is newer than it.
-  const acked = reconcile ? layReloadAcks(doc.revision || 0, (id) => doc.sheets?.[id] ? ((doc.cells ||= {})[id] ||= {}) : undefined) : new Map<string, number>();
+  const acked = reconcile ? layReloadAcks(doc.revision || 0, (id) => doc.sheets?.[id] ? (doc.cells[id] ||= {}) : undefined) : new Map<string, number>();
   staleAfterSnapshot = reconcile ? [...new Set(reloadReplacements.filter((r) => r.revision > (doc.revision || 0)).map((r) => r.sheetId))] : [];
-  snapshotGeneration++; reloadAcks.length = 0; reloadReplacements.length = 0; overtakingWrites.clear();
-  const layoutsBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.layout || 0]));
+  snapshotGeneration++; reloadAcks.length = 0; reloadReplacements.length = 0; overtakingWrites.clear(); unplaced.clear();
   model.revision = doc.revision || 0;
-  model.cells = doc.cells || {};
+  seenRevision = Math.max(seenRevision, model.revision);
+  // Lines this tab heard of after the snapshot was read (its own save replies) are kept.
+  for (const id of [...serverOrders.keys()]) if ((serverOrders.get(id)!.revision) <= model.revision) serverOrders.delete(id);
+  for (const id of doc.sheetOrder || []) {
+    if (serverOrders.has(id) || !doc.sheets[id]) continue;
+    serverOrders.set(id, { order: SheetOrder.from(doc.orders?.[id], doc.sheets[id].rows, doc.sheets[id].cols), revision: model.revision });
+  }
   // So is a structure this tab saved meanwhile: the server's, as of its acknowledgment.
   const newerAck = reconcile && ackedStructure && ackedStructureRevision > model.revision ? { structure: structuredClone(ackedStructure), revision: ackedStructureRevision } : null;
   const structure = newerAck?.structure ?? { title: doc.title || "Untitled spreadsheet", sheetOrder: doc.sheetOrder || [], sheets: doc.sheets || {} };
+  model.sheets = {}; model.cells = {};
   if (reconcile && ackedStructure) {
-    const namesBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.name]));
-    model.sheets = {};
     ackedStructureRevision = -1;
-    applyStructure(structure, newerAck?.revision ?? model.revision, namesBefore);
+    applyStructure(structure, newerAck?.revision ?? model.revision);
   } else {
     model.title = structure.title;
     model.sheetOrder = structure.sheetOrder.slice();
-    model.sheets = structure.sheets;
-    ackedStructure = structureSnapshot();
+    computeOrders();
+    for (const id of model.sheetOrder) model.sheets[id] = viewSheet(structure.sheets[id], orderOf);
+    ackedStructure = structuredClone({ title: structure.title, sheetOrder: structure.sheetOrder, sheets: structure.sheets });
     ackedStructureRevision = model.revision;
     invalidateMissingCutSource();
   }
-  for (const id of model.sheetOrder) if (!model.cells[id]) model.cells[id] = {};
+  const b = book();
+  for (const id of model.sheetOrder) viewCells(id, doc.cells[id] || {}, b);
+  let dropped = 0;
   if (reconcile) {
-    // Sheets whose cells moved in ways this tab never heard.
-    const moved = model.sheetOrder.filter((id) => (model.sheets[id]?.layout || 0) > (layoutsBefore.get(id) ?? Infinity));
-    const movedNames = new Set(moved.map((id) => model.sheets[id].name.toLowerCase()));
-    // An edit addressed before its sheet's cells moved can't be placed, nor can a formula's
-    // references to another such sheet be followed.
-    let unplaced = 0;
-    for (const [key, op] of pendingCellOps) {
-      const misaddressed = op.addressedIn !== undefined && op.addressedIn < (model.sheets[op.sheetId]?.layout || 0);
-      if (!misaddressed && !(movedNames.size && op.value?.startsWith("=") && formulaReadsSheets(op.value, movedNames))) continue;
-      pendingCellOps.delete(key); unplaced++;
-    }
-    if (unplaced) toast(`${unplaced === 1 ? "An unsaved edit" : `${unplaced} unsaved edits`} couldn't be kept because rows or columns moved meanwhile`, "bad");
-    // Undo history, a cut and an open editor name cells by where they were, which a move this tab missed changed.
-    for (const id of moved) {
-      forgetHistoryOf(id);
-      if (editing?.sheetId === id) editing.stale = true;
-      if (copyFallback?.cut && copyFallback.sheetId === id && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
-    }
-    for (const [sheetId, cells] of Object.entries(model.cells)) layPendingCellOps(sheetId, cells);
-    for (const [sheetId, cells] of pendingReplacements) if (model.sheets[sheetId]) model.cells[sheetId] = copyCellMap(cells);
+    dropped = dropDeadEdits();
+    for (const id of model.sheetOrder) layPendingEdits(id, b);
+    for (const [sheetId, replacement] of pendingReplacements) if (model.sheets[sheetId]) { viewCells(sheetId, replacement.cells, b); layPendingEdits(sheetId, b); }
   }
   replayFloor = model.revision;
   // (As for live updates: a sheet involved in an open edit may be gone after a reconnect.)
   if (editing && !model.sheets[editing.sheetId]) cancelEdit();
   else if (editingAway() && !model.sheets[activeSheetId]) returnToEditingCell();
+  else followEditing(editAt, b);
   if (!activeSheetId || !model.sheets[activeSheetId]) activeSheetId = model.sheetOrder[0];
   applyingRemote = false;
   rebuildEngine();
   renderTabs(); renderGrid();
   updateSelectionUI(); refreshToolbarState(); updateEditingOrigin();
+  if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else deleted meanwhile" : `${dropped} unsaved edits were on rows or columns someone else deleted meanwhile`, "bad");
   // A pivot's source may have changed with no grid open to rebuild it (see refreshExportPivots).
   if (isExport) { refreshPivots(false); renderPrintWorkbook(); }
   return acked;
@@ -7514,10 +7526,10 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
 function replayBuffered(acked = new Map<string, number>()) {
   const events = buffered;
   buffered = [];
-  const current = (event: OperationEvent) => (cell: { sheetId: string; ref: string }) => (acked.get(cell.sheetId + "!" + cell.ref) ?? 0) < event.revision;
   for (const event of events) {
-    if ((event.revision || 0) <= replayFloor) continue;
-    applyRemoteOperation(acked.size ? { ...event, upserts: (event.upserts || []).filter(current(event)), deletes: (event.deletes || []).filter(current(event)) } : event);
+    if (event.type !== "operation" || (event.revision || 0) <= replayFloor) continue;
+    const current = (cell: { sheetId: string; ref: string }) => (acked.get(cell.sheetId + "!" + cell.ref) ?? 0) < event.revision;
+    applyRemoteOperation(acked.size ? { ...event, upserts: (event.upserts || []).filter(current), deletes: (event.deletes || []).filter(current) } : event);
   }
 }
 type SheetSubscriber = SubscriberCallbacks & Disposable;
@@ -7552,11 +7564,11 @@ async function connect() {
   for (let attempt = 0; ; attempt++) {
     try {
       let doc: OpenedDocument;
-      if (subscription) doc = await gadget.openDocument({ packed: true });
+      if (subscription) doc = await gadget.openDocument();
       else {
         // Held before the call returns, so a drop during it is seen.
         const sub = subscription = newSubscriber();
-        try { doc = await gadget.subscribe(sub, { ...collaborator, packed: true }); }
+        try { doc = await gadget.subscribe(sub, { ...collaborator, lines: true }); }
         catch (e) { if (subscription === sub) subscription = null; throw e; }
       }
       // The rest of a big workbook loads page by page; edits made meanwhile are buffered as
@@ -7576,7 +7588,7 @@ async function connect() {
       }
       // The subscriber was dropped meanwhile: subscribe again and re-read.
       if (!subscription) continue;
-      const acked = applySnapshot(doc, connectedOnce);
+      const acked = applySnapshot(doc as LoadedDocument, connectedOnce);
       ready = true;
       if (!connectedOnce) {
         connectedOnce = true;
