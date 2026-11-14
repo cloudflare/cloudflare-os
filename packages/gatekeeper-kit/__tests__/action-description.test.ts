@@ -192,6 +192,17 @@ describe("ActionDescriptionBuilder", () => {
     ]);
   });
 
+  it.each("00a0 1680 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 200a 2028 2029 202f 205f 2800 3000".split(" "))(
+    "escapes look-alike whitespace U+%s without losing the value", (hex) => {
+      const value = `a${String.fromCodePoint(parseInt(hex, 16))}b`, escaped = `"a\\u${hex}b"`;
+      const shown = buildDescription().inline("To", value).verbatim("Body", value).list("Cc", [value]).finish();
+      expect(shown.descriptionIsComplete).toBe(true);
+      expect(shown.fields).toEqual([
+        { label: "To", kind: "json", value: escaped }, { label: "Body", kind: "json", value: escaped },
+        { label: "Cc", kind: "json", value: `[\n  ${escaped}\n]` },
+      ]);
+    });
+
   it("reroutes values with other invisible characters to JSON", () => {
     const shown = buildDescription()
       .inline("Email", "admin\u200B@x.com")
