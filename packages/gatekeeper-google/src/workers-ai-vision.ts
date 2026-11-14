@@ -63,7 +63,57 @@ export type ImageSource = { mimeType: "image/jpeg" | "image/png"; body: Readable
 export type TranscribeOptions = {
   /** Whether the image is one horizontal band of a page, not a whole page. */
   band?: boolean;
+  /**
+   * Told how the request ended, once, for whoever counts the calls made to the model. Never told
+   * of a request that was given up, or whose image failed, before the service answered.
+   */
+  record?: (call: TranscribeCall) => void;
 };
+
+/**
+ * How one request to the model ended, in closed words and numbers: nothing of the image or of
+ * the answer.
+ */
+export type TranscribeCall = {
+  /**
+   * `success` once the answer has ended, or was given up after it began, which is billed all
+   * the same; `refused` when the service declined for rate or capacity; `error` otherwise.
+   */
+  outcome: "success" | "refused" | "error";
+  /**
+   * Why a request did not succeed: what {@link refusedFor} says of one that was refused; `http`
+   * for any other status, and for an answer that has no body; `network` when the request itself
+   * failed; and `stream` when the answer broke off or reported an error partway.
+   */
+  reason?: "rate" | "capacity" | "http" | "stream" | "network";
+  /**
+   * Of an answer: `truncated` when the model was stopped at its output limit, `given-up` when it
+   * was let go before its end.
+   */
+  detail?: "truncated" | "given-up";
+  /** The status the service answered with. */
+  httpStatus?: number;
+  /** The service's error code, when a failed request gave one. */
+  providerCode?: number;
+  /** Bytes of the image sent. */
+  bytes: number;
+  /**
+   * Milliseconds from the request to this end of it: of an answer, to the end of its being
+   * read, so any time it waited for its reader is in them.
+   */
+  durationMs: number;
+};
+
+/**
+ * Why the service declined a request for rate or capacity, as a word, or `undefined` for any
+ * other failure: `capacity` for the service's code for a model with no room, under any status,
+ * and `rate` for HTTP 429 without it.
+ */
+export function refusedFor(failure: ConversionFailure): "rate" | "capacity" | undefined {
+  if (!("httpStatus" in failure)) return undefined;
+  if (failure.providerCode === CAPACITY_CODE) return "capacity";
+  return failure.httpStatus === 429 ? "rate" : undefined;
+}
 
 /** A failed transcription, with why it failed and how much of the image had been sent. */
 export class TranscriptionError extends Error {
@@ -94,11 +144,12 @@ export type Transcription = {
  * read. A failed request rejects with a {@link TranscriptionError}, and a failure of the image
  * stream itself with that failure as it is; either way the image is released. Aborting `signal`
  * gives up a request the service has not answered yet, which fails as any other, and releases
- * the image at once. `options` says what the image is, which chooses the prompt.
+ * the image at once. `options` says what the image is, which chooses the prompt, and who is told
+ * how the request ended.
  */
 export async function transcribeImage(
   ai: AiFetcher, gatewayId: string | undefined, image: ImageSource, signal?: AbortSignal,
-  { band }: TranscribeOptions = {},
+  { band, record }: TranscribeOptions = {},
 ): Promise<Transcription> {
   // {"inputs":{"messages":[{role, content:[{text}, {image_url:{url}}]}], …settings},"options":…}
   let text = JSON.stringify({ type: "text", text: band ? BAND_PROMPT : PROMPT });
@@ -115,6 +166,18 @@ export async function transcribeImage(
     throw new TranscriptionError(failure, sent.bytes);
   };
   signal?.addEventListener("abort", () => void cancelSource(), { once: true });
+  let started = Date.now();
+  let settled = false;
+  /** Tells `record` how the request ended: the first time that is said, and never again. */
+  let settle = (call: Omit<TranscribeCall, "bytes" | "durationMs">) => {
+    if (settled) return;
+    settled = true;
+    try {
+      record?.({ ...call, bytes: sent.bytes, durationMs: Date.now() - started });
+    } catch {
+      // What is counted of a request is never what fails it.
+    }
+  };
 
   let response: Response;
   try {
@@ -129,15 +192,21 @@ export async function transcribeImage(
       signal,
     });
   } catch (error) {
+    // A request given up, or broken off by its own image, is not one the service failed.
+    if (!signal?.aborted && !sent.error) settle({ outcome: "error", reason: "network" });
     return fail({ error });
   }
+  let { status: httpStatus } = response;
   if (!response.ok || !response.body) {
     // Only the service's numeric error code is kept from its answer, never its text: the first
     // it gives, unless any it gives, or its message, says the model has no room.
     let prefix = await readTextPrefix(response, MAX_ERROR_BYTES).catch(() => "");
     let codes = Array.from(prefix.matchAll(/"(?:internalCode|code)"\s*:\s*(\d+)/g), match => Number(match[1]));
     let code = codes.includes(CAPACITY_CODE) || CAPACITY_MESSAGE.test(prefix) ? CAPACITY_CODE : codes[0];
-    return fail({ httpStatus: response.status, ...(code === undefined ? {} : { providerCode: code }) });
+    let failure = { httpStatus, ...(code === undefined ? {} : { providerCode: code }) };
+    let refused = refusedFor(failure);
+    settle({ outcome: refused ? "refused" : "error", reason: refused ?? "http", ...failure });
+    return fail(failure);
   }
   let reader = new TokenReader(response.body);
   return {
@@ -145,13 +214,22 @@ export async function transcribeImage(
     get truncated() { return reader.truncated; },
     async next() {
       try {
-        return await reader.next();
+        let piece = await reader.next();
+        if (piece === undefined) {
+          settle({ outcome: "success", detail: reader.truncated ? "truncated" : undefined, httpStatus });
+        }
+        return piece;
       } catch (error) {
+        // An answer that the request's signal ended was given up, whoever cancels it, or nobody.
+        settle(signal?.aborted
+          ? { outcome: "success", detail: "given-up", httpStatus }
+          : { outcome: "error", reason: "stream", httpStatus });
         await reader.cancel();
         return fail({ error });
       }
     },
     async cancel(reason) {
+      settle({ outcome: "success", detail: "given-up", httpStatus });
       await reader.cancel(reason);
       await cancelSource();
     },

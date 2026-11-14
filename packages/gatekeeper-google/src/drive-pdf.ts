@@ -8,9 +8,13 @@
 
 import type { Logger } from "@gadgets/observability/logger";
 import {
+  subserviceTally, type SubserviceCallInput, type SubserviceTally,
+} from "@gadgets/observability/metrics";
+import {
   RENDER_LIMITS, type PdfDocument, type PdfRendering, type RenderedPage, type RenderRefusalReason,
   type RenderRefused,
 } from "@gadgets/pdf-renderer/api";
+import { summedInto } from "./call-metrics";
 import { FILE_CHANGED } from "./drive-file-read";
 import { PDF_MIME_TYPE } from "./drive-session";
 import type { DrivePdfText } from "./drive-types";
@@ -69,14 +73,72 @@ type RenderLogFields = {
 /** What a PDF's lines are logged by. */
 type PdfLogger = Logger<GoogleObservabilityFields & RenderLogFields>;
 
+/** The component the lines of the source named `name` are logged under, and its calls counted under. */
+function component(name: PdfSource["name"]): string {
+  return `gatekeeper.google.${name}.pdf`;
+}
+
 /** Each source's logger, under a component of its own. */
 const loggers: Record<PdfSource["name"], PdfLogger> = {
-  drive: obsContext.createLogger({ component: "gatekeeper.google.drive.pdf", vendorId: "google" }),
+  drive: obsContext.createLogger({ component: component("drive"), vendorId: "google" }),
 };
 
 /** What logs `source`'s lines. */
 function log(source: PdfSource): Pick<PdfLogger, "info" | "warn"> {
   return loggers[source.name];
+}
+
+/** How a call ended, as it is summed: all that is counted of it but who made it, to what and for what. */
+type CallEnd = Omit<SubserviceCallInput, "source" | "service" | "operation">;
+
+/**
+ * Sums one call made for a text of `source`'s into the text's `tally`: to `service`, for
+ * `operation`, ended as `call` says. It is counted under the component `source`'s lines are
+ * logged under, and nothing of the PDF is in it.
+ */
+function countCall(
+  tally: SubserviceTally, source: PdfSource, service: "workers-ai" | "pdf-renderer", operation: string,
+  call: CallEnd,
+): void {
+  tally.add({ ...call, source: component(source.name), service, operation });
+}
+
+/**
+ * What is counted for one text: its calls, summed, and its conversion. See {@link textTally},
+ * whose `add` writes a call that comes once the sums have been written.
+ */
+type TextTally = SubserviceTally & {
+  /** Says how the text's conversion ended, in place of what was said of it before. */
+  converted(call: CallEnd): void;
+};
+
+/**
+ * The tally of one text of `source`'s. Its conversion is counted once, as what it came to: one
+ * that answered may still fail once its text has begun, so how it ended is kept apart from the
+ * sums, and written after them from a tally of its own: however many kinds of call the text
+ * made, they cannot have it summed under another operation. A call that was in flight as the
+ * text ended is added once the sums have been written, and is then written as it is added.
+ */
+function textTally(source: PdfSource): TextTally {
+  let sums = subserviceTally();
+  let conversion: CallEnd | undefined;
+  let written = false;
+  return {
+    add(call) {
+      sums.add(call);
+      if (written) sums.flush();
+    },
+    converted: call => { conversion = call; },
+    flush() {
+      written = true;
+      sums.flush();
+      if (!conversion) return;
+      let own = subserviceTally();
+      countCall(own, source, "workers-ai", "to-markdown", conversion);
+      conversion = undefined;
+      own.flush();
+    },
+  };
 }
 
 /**
@@ -315,6 +377,14 @@ type PageSource = {
  * `source` is where the PDF is read from: its failures are given in that source's words, and its
  * log lines go under that source's names. `calls` is how many model calls the text may have in
  * flight, whichever way its pages are read.
+ *
+ * What is asked of Workers AI, of the renderer and of the file for one text is summed, and
+ * written once, when the text ends, for a deployment that records such calls (see
+ * `recordSubserviceCall`): a count and closed words, and nothing of the PDF. The conversion is
+ * one of those calls, counted as what it came to. A call to the renderer or the model, or a read
+ * of the file, that is still in flight as the text ends is written when it ends. The conversion
+ * of a PDF that is returned as its own text alone is not counted when that text is left neither
+ * read to its end nor cancelled, since nothing ends it.
  */
 export async function pdfToText(
   ai: AiFetcher, gatewayId: string | undefined, pdf: ReadableStream<Uint8Array>,
@@ -327,6 +397,13 @@ export async function pdfToText(
   if (scan) pdf = watched(pdf, chunk => scan.feed(chunk), () => { scanned = true; });
   /** The text's limiter of model calls, whichever way its pages are read. */
   let slots = callSlots(calls);
+  /** What the calls made for the text come to, written once, when the text ends. */
+  let tally = textTally(source);
+  /** `error`, as what ends a text that never began: what its calls came to is written. */
+  let unbegun = <E>(error: E): E => {
+    tally.flush();
+    return error;
+  };
   let options = {
     ...(gatewayId ? { gateway: { id: gatewayId } } : {}),
     conversionOptions: { pdf: { metadata: false, images: { convert: false } } },
@@ -345,22 +422,23 @@ export async function pdfToText(
       start.feed(data);
     }
   } catch (error) {
-    throw reported(error, source);
+    throw unbegun(reported(error, source, tally));
   }
   let first = start.text;
   let hasText = first !== undefined;
   log(source).info("converted a Drive PDF", {
     event: "google.drive.pdf.converted", pdfBytes: conversion.sentBytes, hasText,
   });
+  tally.converted({ outcome: "success", bytes: conversion.sentBytes });
   if (!hasText) {
     // A conversion that answered before the PDF ended leaves page images unlocated, and the
     // PDF still open.
     if (scan && !scanned) {
       await conversion.cancel();
-      throw new Error(source.conversionFailed);
+      throw unbegun(new Error(source.conversionFailed));
     }
     let found = scan?.end();
-    if (found?.encrypted) throw refusal(source, found, "it is encrypted");
+    if (found?.encrypted) throw unbegun(refusal(source, found, "it is encrypted"));
     let rendered = renderer !== undefined && found !== undefined && found.bytes <= RENDER_LIMITS.fileBytes;
     // The scan sees the images a file stores as objects of their own, a tile or strip of a page
     // and a mask as large as one among them: a file with none has nothing to send as it is
@@ -369,6 +447,7 @@ export async function pdfToText(
     // rendered is not held to what the scan counted.
     if (!found || (!rendered && found.images.length === 0 && found.pieces === 0 && found.pageMasks === 0)) {
       let text = new ReadableStream<Uint8Array>({ start: controller => controller.close() });
+      tally.flush();
       return { text, hasText, transcribed: false, rereads: false };
     }
     // Settled here for a PDF that is rendered too: should the renderer not take it, its text
@@ -378,25 +457,25 @@ export async function pdfToText(
     let pages: PageSource;
     if (renderer && rendered) {
       pages = renderedPages(
-        renderedPdf(ai, gatewayId, found, readRange!, renderer, source, slots), found,
-        stored ? storedPages(ai, gatewayId, found, readRange!, slots, source) : undefined, source);
+        renderedPdf(ai, gatewayId, found, readRange!, renderer, source, slots, tally), found,
+        stored ? storedPages(ai, gatewayId, found, readRange!, slots, source, tally) : undefined, source);
       log(source).info("transcribing a scanned Drive PDF", {
         event: "google.drive.pdf.transcribing", pdfBytes: found.bytes, route: "rendered",
       });
     } else {
-      if (unread) throw refusal(source, found, unread.why, unread.encoding);
+      if (unread) throw unbegun(refusal(source, found, unread.why, unread.encoding));
       if (!stored) {
-        throw refusal(source, found, "its pages have to be rendered to be read, which is " + (renderer
+        throw unbegun(refusal(source, found, "its pages have to be rendered to be read, which is " + (renderer
           ? `done only for a PDF of up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`
-          : "not available on this deployment"));
+          : "not available on this deployment")));
       }
-      pages = storedPages(ai, gatewayId, found, readRange!, slots, source);
+      pages = storedPages(ai, gatewayId, found, readRange!, slots, source, tally);
       log(source).info("transcribing a scanned Drive PDF", {
         event: "google.drive.pdf.transcribing", pdfBytes: found.bytes, ocrPages: found.images.length,
         route: "stored",
       });
     }
-    return { text: transcription(pages, source), hasText, transcribed: true, rereads: true };
+    return { text: transcription(pages, source, tally), hasText, transcribed: true, rereads: true };
   }
 
   // Pages are read into the text only when the scan saw the whole file, and so knows its
@@ -409,8 +488,8 @@ export async function pdfToText(
       first!.startsWith(`### Page ${start.passed + 1}\n`)) {
     let pages = mixedPages(
       conversion, start.passed, first!,
-      renderedPdf(ai, gatewayId, found, readRange!, renderer!, source, slots), source);
-    return { text: transcription(pages, source), hasText, transcribed: false, rereads: true };
+      renderedPdf(ai, gatewayId, found, readRange!, renderer!, source, slots, tally), source, tally);
+    return { text: transcription(pages, source, tally), hasText, transcribed: false, rereads: true };
   }
 
   let encoder = new TextEncoder();
@@ -422,15 +501,18 @@ export async function pdfToText(
         chunk = first ?? await conversion.next();
       } catch (error) {
         // Cancelling ends a read in progress as if the response had broken off.
-        if (!cancelled) controller.error(reported(error, source));
-        return;
+        if (cancelled) return;
+        controller.error(reported(error, source, tally, true));
+        return tally.flush();
       }
       first = undefined;
-      if (chunk === undefined) controller.close();
-      else controller.enqueue(encoder.encode(chunk));
+      if (chunk !== undefined) return controller.enqueue(encoder.encode(chunk));
+      controller.close();
+      tally.flush();
     },
     cancel: reason => {
       cancelled = true;
+      tally.flush();
       return conversion.cancel(reason);
     },
   }, { highWaterMark: 0 });
@@ -439,16 +521,18 @@ export async function pdfToText(
 
 /**
  * `pdf`, with each chunk shown to `onChunk` as it is read and `onEnd` called at its end, which
- * being cancelled is not.
+ * being cancelled is not. With `tally`, a request that reading `pdf` makes is summed into it,
+ * whoever reads what is returned.
  */
 function watched(
   pdf: ReadableStream<Uint8Array>, onChunk: (chunk: Uint8Array) => void, onEnd: () => void,
+  tally?: SubserviceTally,
 ): ReadableStream<Uint8Array> {
   let reader = pdf.getReader();
   let cancelled = false;
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
-      let chunk = await reader.read();
+      let chunk = await (tally ? summedInto(tally, () => reader.read()) : reader.read());
       // Cancelling ends a read in progress the way the PDF's own end does.
       if (cancelled) return;
       if (chunk.done) {
@@ -569,10 +653,12 @@ type StoredPage = {
  * A piece of an image that arrives, one `readRange` says it passed over on its way to an image,
  * and a piece of an answer each count as the text moving, but only while the reader waits for a
  * page: what is read ahead does not keep a text that nobody reads.
+ *
+ * Each call to the model, and each request a read of a range makes, is summed into `tally`.
  */
 function storedPages(
   ai: AiFetcher, gatewayId: string | undefined, { images, bytes: fileSize }: PdfImages,
-  readRange: PdfRangeReader, slots: CallSlots, source: PdfSource,
+  readRange: PdfRangeReader, slots: CallSlots, source: PdfSource, tally: SubserviceTally,
 ): PageSource {
   /** The pages begun and not yet given to the reader. */
   let begun = new Map<number, StoredPage>();
@@ -606,15 +692,17 @@ function storedPages(
     let { signal } = page.abort;
     signal.throwIfAborted();
     let { offset, length } = image;
-    let range = await readRange({ page: index + 1, offset, length, fileSize }, touch);
+    let range = await summedInto(tally, () => readRange({ page: index + 1, offset, length, fileSize }, touch));
     if (signal.aborted) await range.cancel().catch(() => undefined);
     signal.throwIfAborted();
     // The image is sent as it arrives, and nothing of the text moves until the model answers:
     // each piece that arrives is what shows that a large image is on its way and not stalled.
-    let data = watched(range, touch, passed);
+    // The model's request reads it, so a request the range makes as it is read is summed here.
+    let data = watched(range, touch, passed, tally);
     let answer = await transcribeImage(ai, gatewayId, image.png
       ? { mimeType: "image/png", body: pngFromDeflated(data, image, image.png, MAX_IMAGE_BYTES) }
-      : { mimeType: "image/jpeg", body: data }, signal);
+      : { mimeType: "image/jpeg", body: data }, signal,
+    { record: made => countCall(tally, source, "workers-ai", "vision.page", made) });
     // An answer being read is not ended by the signal its request was made with, nor is the
     // wait for its reader.
     let stop = () => {
@@ -828,10 +916,15 @@ type RenderedPdf = {
  * further, a read of the file fails, or a band cannot be read), no page after it is begun, and
  * each one that was is given up at once: its calls are aborted, and what came of it is never
  * taken. The pages before it go on.
+ *
+ * Each call to the renderer and to the model, and each request a read of the file makes, is
+ * summed into `tally`: an open as `open` the first time and as `reopen` after, with why the
+ * document before it was lost. An open that is ended from here, by the file's read failing or
+ * by its page being given up, is not counted, since the renderer did not fail it.
  */
 function renderedPdf(
   ai: AiFetcher, gatewayId: string | undefined, found: PdfImages, readRange: PdfRangeReader,
-  renderer: PdfRendering, source: PdfSource, slots: CallSlots,
+  renderer: PdfRendering, source: PdfSource, slots: CallSlots, tally: SubserviceTally,
 ): RenderedPdf {
   /** The PDF open in the renderer, while it is, and how many pages it has once it was opened. */
   let document: PdfDocument | undefined;
@@ -860,13 +953,13 @@ function renderedPdf(
     mimeType: "image/png",
     body: pngFromSamples(inSteps(pixels!), { width, height: rows },
       { colorType: 0, bitDepth: 8, rowBytes: width, filtered: false }, MAX_IMAGE_BYTES),
-  }, signal, { band: true });
+  }, signal, { band: true, record: made => countCall(tally, source, "workers-ai", "vision.band", made) });
 
   /** Opens the PDF, `again` being why when it was open before. */
   let open = async (
-    signal: AbortSignal, moved: () => void, again?: string,
+    signal: AbortSignal, moved: () => void, again?: Unrendered["reason"],
   ): Promise<Unrendered | undefined> => {
-    let data = await readRange({ offset: 0, length: found.bytes, fileSize: found.bytes });
+    let data = await summedInto(tally, () => readRange({ offset: 0, length: found.bytes, fileSize: found.bytes }));
     if (signal.aborted) await data.cancel().catch(() => undefined);
     signal.throwIfAborted();
     let reader = data.getReader();
@@ -878,7 +971,8 @@ function renderedPdf(
       start(controller) { handed = controller; },
       async pull(controller) {
         try {
-          let chunk = await reader.read();
+          // The renderer's call reads this: a request the file makes as it is read is summed too.
+          let chunk = await summedInto(tally, () => reader.read());
           // Ended while the file was being waited on.
           if (done) return;
           if (chunk.done) {
@@ -921,6 +1015,13 @@ function renderedPdf(
       unopened = { reason: "call", error };
     } finally {
       signal.removeEventListener("abort", ended);
+    }
+    // A call that was ended from here did not fail of itself.
+    if (opened || !(failure || signal.aborted)) {
+      countCall(tally, source, "pdf-renderer", again ? "reopen" : "open", {
+        outcome: !unopened ? "success" : opened ? "refused" : "error", reason: unopened?.reason,
+        detail: again, bytes: found.bytes,
+      });
     }
     moved();
     // A call that answered without reading the file to its end leaves the read to be let go.
@@ -965,6 +1066,8 @@ function renderedPdf(
         } catch (thrown) {
           error = thrown;
         }
+        countCall(tally, source, "pdf-renderer", "render-page", !answer ? { outcome: "error", reason: "call" }
+          : "refused" in answer ? { outcome: "refused", reason: answer.refused } : { outcome: "success" });
         moved();
         // A page that was being rendered as the text ended is of no use to it.
         signal.throwIfAborted();
@@ -1257,10 +1360,11 @@ class PageSections {
  * that was begun is not used. The text does fail with what a read of the file failed with, a
  * changed file included, since it is then the text of another version; and with a failure of
  * the conversion's, in our words: each once the reader has been given all that came before it.
+ * A failure of the conversion's is what `tally` is told the conversion came to.
  */
 function mixedPages(
   conversion: MarkdownConversion, passed: number, first: string | undefined, pdf: RenderedPdf,
-  source: PdfSource,
+  source: PdfSource, tally: TextTally,
 ): PageSource {
   let sections = new PageSections();
   /** What was read of the text and is yet to be given, and whether that was the end of it. */
@@ -1324,7 +1428,7 @@ function mixedPages(
         data = await conversion.next();
       } catch (error) {
         // Ending the text ends a read in progress as if the response had broken off.
-        throw signal.aborted ? error : reported(error, source);
+        throw signal.aborted ? error : reported(error, source, tally, true);
       }
       touch();
     }
@@ -1455,14 +1559,17 @@ function inSteps(bytes: Uint8Array): ReadableStream<Uint8Array> {
  * The text of a PDF that has text of its own is read the same way, and ends the same ways.
  * `pages` then gives it in pieces, its page headings in them, and each is passed on as it is.
  *
- * However the text ends, what `pages` has in flight is given up and what it holds let go.
+ * However the text ends, what `pages` has in flight is given up and what it holds let go, and
+ * what the calls made for it came to, in `tally`, is written.
  *
  * A failed transcription is logged by page, size and status only, never by the service's text,
  * and errors the stream in our words, and so does a page image whose data proves not to be what
  * the file says of it; anything else `pages` fails with, such as a failure of a read of the
  * file, is passed on as it is.
  */
-function transcription(pages: PageSource, source: PdfSource): ReadableStream<Uint8Array> {
+function transcription(
+  pages: PageSource, source: PdfSource, tally: SubserviceTally,
+): ReadableStream<Uint8Array> {
   let encoder = new TextEncoder();
   /**
    * The page being transcribed, from 0, and the model's answer to it while that is being given,
@@ -1483,6 +1590,7 @@ function transcription(pages: PageSource, source: PdfSource): ReadableStream<Uin
     clearTimeout(timer);
     over.abort(reason);
     pages.release();
+    tally.flush();
   };
   let end = (reason?: unknown) => {
     ended = true;
@@ -1602,9 +1710,12 @@ export function releasedAtEnd(
 /**
  * `error` as a PDF read reports it: a failed conversion is logged by why it failed and replaced by
  * `source`'s words for it; anything else, such as the PDF stream's own failure, is kept as it is.
+ * A failed conversion is what the text's `tally` is told its conversion came to, as one that
+ * failed `partway` when text of it had been given.
  */
-function reported(error: unknown, source: PdfSource): unknown {
+function reported(error: unknown, source: PdfSource, tally: TextTally, partway = false): unknown {
   if (!(error instanceof MarkdownConversionError)) return error;
+  tally.converted({ outcome: "error", reason: partway ? "partway" : undefined, bytes: error.sentBytes });
   log(source).warn("Workers AI failed to convert a PDF", {
     event: "google.drive.pdf.failed", pdfBytes: error.sentBytes, ...error.failure,
   });

@@ -652,7 +652,7 @@ export class ChatApi {
       `${CHAT_API_BASE}${path}`,
       { ...rest, headers },
       this.getAccessToken,
-      idempotent === undefined ? {} : { idempotent },
+      idempotent === undefined ? { operation } : { operation, idempotent },
     );
     if (!response.ok) await chatApiFailure(operation, response);
     if (response.status === 204) return undefined as T;

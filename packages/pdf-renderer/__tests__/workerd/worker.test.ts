@@ -1,8 +1,10 @@
 import { createExecutionContext, env, SELF, waitOnExecutionContext } from "cloudflare:test";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { env as bindings } from "cloudflare:workers";
+import { encodeSubserviceCallPoint, type SubserviceOutcome } from "@gadgets/observability/metrics";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { HOLD_IDLE_MS, RENDER_LIMITS, type PdfRendering, type RenderRefused } from "../../src/api";
 import { pdfiumModules } from "../../src/pdfium-module";
-import { pdfRenderer } from "../../src/renderer";
+import { pdfRenderer, type HoldRelease } from "../../src/renderer";
 import { PdfRenderer } from "../../src/worker";
 import { bitsImage, encryptedPdf, faxPdf, onePage, scannedPdf } from "../pdf-render-fixture";
 
@@ -96,6 +98,30 @@ function givenBack(lines: LogLine[]): LogLine[] {
   return lines.filter(line => line.event === "pdf-renderer.released");
 }
 
+/**
+ * The points the Worker writes from here to the end of the test, as it does where a deployment
+ * records subservice calls: with the dataset bound and the variable set, on the bindings it reads.
+ */
+function writtenPoints(): AnalyticsEngineDataPoint[] {
+  let ambient = bindings as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+  let points: AnalyticsEngineDataPoint[] = [];
+  ambient.METRICS = { writeDataPoint: point => { points.push(point!); } };
+  ambient.SUBSERVICE_METRICS = "true";
+  onTestFinished(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+  });
+  return points;
+}
+
+/** The point that counts a PDF's room given back by `releasedBy`, which is counted as `outcome`. */
+function release(releasedBy: HoldRelease, outcome: SubserviceOutcome): AnalyticsEngineDataPoint {
+  return encodeSubserviceCallPoint({
+    eventType: "release", source: "pdf-renderer", service: "pdf-renderer", operation: "document", outcome,
+    reason: releasedBy,
+  });
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (let document of left.splice(0)) document[Symbol.dispose]();
@@ -186,6 +212,7 @@ describe("the entrypoint, over a service binding", () => {
     let documents = [];
     for (let n = 0; n < ROOM_FOR; n++) documents.push((await opened(pdf)).document);
     let lines = logLines();
+    let points = writtenPoints();
     let [kept, ...idle] = documents;
     clock.mockReturnValue(1_000_000 + HOLD_IDLE_MS);
     expect(await answerTo(pdf)).toEqual(unstarted("room"));
@@ -204,8 +231,38 @@ describe("the entrypoint, over a service binding", () => {
     // kept the eleven, too: there is no room for another now.
     idle[taken[0]!]![Symbol.dispose]();
     expect(await answerTo(pdf)).toEqual(unstarted("room"));
-    // The one was said to be taken back, once.
+    // The one was said to be taken back, once, and counted so.
     expect(givenBack(lines)).toEqual([logLine("released", { releasedBy: "idle" })]);
+    expect(points).toEqual([release("idle", "refused")]);
+  });
+
+  it("counts a PDF whose call was cut off as let go for that, once something is next asked of the renderer", async () => {
+    // With as many PDFs open as fit, none that an earlier test opened is still to be given back.
+    let documents = [];
+    for (let n = 0; n < ROOM_FOR; n++) documents.push((await opened(faxPdf())).document);
+    let points = writtenPoints();
+    // The call ends with no way out, as when its invocation has used the CPU time it may: once
+    // it is marked as being made, the first thing done is to give PDFium the work it may do,
+    // by setting a WebAssembly global, and that throws. The Worker makes its one instance
+    // itself, so what is replaced is the setter every such global has, for this call alone.
+    let work = vi.spyOn(WebAssembly.Global.prototype, "value", "set").mockImplementation(() => {
+      throw new Error("the invocation ended");
+    });
+    try {
+      expect(await thrown(documents[0]!.renderPage(0, { bands: 1 }))).toBe("Error: the invocation ended");
+    } finally {
+      work.mockRestore();
+    }
+    // Nothing ran after the call was cut off: its PDF has the room still, and nothing is counted.
+    expect(points).toEqual([]);
+    // The next thing asked of the renderer finds it, and has the room it gave back.
+    expect((await opened(faxPdf())).pages).toBe(1);
+    expect(points).toEqual([release("cut-off", "error")]);
+    expect(await documents[0]!.renderPage(0, { bands: 1 })).toEqual(unstarted("released"));
+    // Disposing what was let go already counts nothing more.
+    documents[0]![Symbol.dispose]();
+    expect(await answerTo(faxPdf())).toEqual(unstarted("room"));
+    expect(points).toEqual([release("cut-off", "error")]);
   });
 
   it("answers a page it does not render as a value, and renders the page after it", async () => {
@@ -241,6 +298,7 @@ describe("the entrypoint, over a service binding", () => {
     let filling = [];
     for (let n = 0; n < ROOM_FOR; n++) filling.push((await opened(faxPdf())).document);
     let lines = logLines();
+    let points = writtenPoints();
     for (let document of filling) document[Symbol.dispose]();
     let released = logLine("released", { releasedBy: "disposed" });
     await vi.waitFor(() => expect(lines).toEqual(filling.map(() => released)));
@@ -262,6 +320,8 @@ describe("the entrypoint, over a service binding", () => {
       logLine("refused", { reason: "unreadable", heapBytes: unread.heapBytes, work: unread.work }),
       released,
     ]));
+    // Each PDF that was opened is counted once as it is given back, and one that was refused never.
+    expect(points).toEqual([...filling, document].map(() => release("disposed", "success")));
   });
 
   it("answers anything but a call of the entrypoint with a 404", async () => {

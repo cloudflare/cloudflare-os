@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiFetcher } from "../src/workers-ai-markdown";
-import { transcribeImage, TranscriptionError, type Transcription } from "../src/workers-ai-vision";
+import {
+  transcribeImage, TranscriptionError, type TranscribeCall, type Transcription,
+} from "../src/workers-ai-vision";
 import {
   BYTES, byteStream, eventResponse, fakeAi, sentImage, tokenEvents, type VisionJson,
 } from "./workers-ai-fixture";
@@ -306,5 +308,158 @@ describe("transcribeImage", () => {
     await transcription.cancel();
     expect(response.cancelled).toBe(true);
     expect(image.state.cancelled).toBe(true);
+  });
+});
+
+/** What a call counted on a clock that stands still says when the whole image was sent. */
+const SENT = { bytes: BYTES.byteLength, durationMs: 0 };
+
+/**
+ * A request for an image, made over `ai` under `signal` when one is given, on a clock that stands
+ * still until a test moves it, with what `record` was told of it: nothing until the request
+ * ends, and then how it ended, once.
+ */
+function counted(ai: AiFetcher, signal?: AbortSignal, image = byteStream(BYTES).stream) {
+  vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+  let calls: TranscribeCall[] = [];
+  let request = transcribeImage(ai, undefined, jpeg(image), signal, { record: call => calls.push(call) });
+  return { calls, request };
+}
+
+/** A binding that answers with a response of `body` before it has read the whole image. */
+function earlyAi(body: ReadableStream<Uint8Array>): AiFetcher {
+  return {
+    fetch: async (_url: string, init: RequestInit) => {
+      await (init.body as ReadableStream<Uint8Array>).getReader().read();
+      return new Response(body);
+    },
+  } as unknown as AiFetcher;
+}
+
+describe("transcribeImage's record", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is told of an answer once it has ended, with the image's bytes and how long it took, and never again", async () => {
+    let { calls, request } = counted(fakeAi(eventResponse(tokenEvents(PAGE))).ai);
+    let transcription = await request;
+    // The service has answered, and the answer is still to be read.
+    expect(calls).toEqual([]);
+    vi.mocked(Date.now).mockReturnValue(1_000_250);
+    expect(await drain(transcription)).toBe(PAGE.join(""));
+    expect(calls).toEqual([{ outcome: "success", httpStatus: 200, bytes: BYTES.byteLength, durationMs: 250 }]);
+    // Nothing more is asked of an answer that has ended, however it is let go.
+    expect(await transcription.next()).toBeUndefined();
+    await transcription.cancel();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("is told that an answer the model was stopped in did not end whole", async () => {
+    let { calls, request } = counted(fakeAi(eventResponse(tokenEvents(["cut"], "length"))).ai);
+    expect(await drain(await request)).toBe("cut");
+    expect(calls).toEqual([{ outcome: "success", detail: "truncated", httpStatus: 200, ...SENT }]);
+  });
+
+  it.each<[string, number, object, Partial<TranscribeCall>]>([
+    ["refused for rate, with HTTP 429", 429, {}, { outcome: "refused", reason: "rate", httpStatus: 429 }],
+    ["refused for want of room, by the service's code under another status", 500, { errors: [{ code: 3040 }] },
+      { outcome: "refused", reason: "capacity", httpStatus: 500, providerCode: 3040 }],
+    ["refused for want of room, by that code under HTTP 429", 429, { internalCode: 3040 },
+      { outcome: "refused", reason: "capacity", httpStatus: 429, providerCode: 3040 }],
+    ["failed with any other status", 400, { internalCode: 8006, message: "secret page text" },
+      { outcome: "error", reason: "http", httpStatus: 400, providerCode: 8006 }],
+    ["failed with a status and no code", 503, { message: "secret page text" },
+      { outcome: "error", reason: "http", httpStatus: 503 }],
+  ])("is told once of a request the service %s", async (_label, status, body, call) => {
+    let { calls, request } = counted(fakeAi(new Response(JSON.stringify(body), { status })).ai);
+    await failure(request);
+    expect(calls).toEqual([{ ...call, ...SENT }]);
+    expect(JSON.stringify(calls)).not.toContain("secret");
+  });
+
+  it("is told once of an answer that breaks off partway, as a failure of the answer's", async () => {
+    let events = tokenEvents(["partial"]).replace("data: [DONE]\n\n", "");
+    let { calls, request } = counted(fakeAi(eventResponse(events)).ai);
+    let transcription = await request;
+    await failure(drain(transcription));
+    expect(calls).toEqual([{ outcome: "error", reason: "stream", httpStatus: 200, ...SENT }]);
+    await transcription.cancel();
+    expect(calls).toHaveLength(1);
+  });
+
+  it("is told of a request the binding failed, and not of one given up, or ended by its own image, before the service answered", async () => {
+    let thrown = new Error("Network connection lost.");
+    let failed = counted({ fetch: async () => { throw thrown; } } as unknown as AiFetcher);
+    await failure(failed.request);
+    expect(failed.calls).toEqual([{ outcome: "error", reason: "network", bytes: 0, durationMs: 0 }]);
+
+    let abort = new AbortController();
+    let givenUp = counted({
+      fetch: (_url: string, { signal }: RequestInit) => new Promise<Response>((_, reject) => {
+        signal!.addEventListener("abort", () => reject(signal!.reason));
+      }),
+    } as unknown as AiFetcher, abort.signal);
+    abort.abort(new Error("no longer wanted"));
+    await failure(givenUp.request);
+    expect(givenUp.calls).toEqual([]);
+
+    let brokeOff = new Error("The Google Drive download failed.");
+    let broken = counted(fakeAi(eventResponse(tokenEvents(PAGE))).ai, undefined, new ReadableStream<Uint8Array>({
+      pull() { throw brokeOff; },
+    }));
+    await expect(broken.request).rejects.toBe(brokeOff);
+    expect(broken.calls).toEqual([]);
+  });
+
+  it("is told once of an answer given up partway: it began, so it is billed", async () => {
+    let more = new TextEncoder().encode(tokenEvents(["more "]).split("data: [DONE]")[0]);
+    let pulls = 0;
+    // Gives a piece of the answer, and then nothing until it is cancelled.
+    let body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (pulls++ === 0) controller.enqueue(more);
+        else return new Promise<void>(() => {});
+      },
+    }, { highWaterMark: 0 });
+    let { calls, request } = counted(earlyAi(body), undefined, byteStream(BYTES, [10]).stream);
+    let transcription = await request;
+    expect(await transcription.next()).toBe("more ");
+    expect(calls).toEqual([]);
+
+    // Cancelling ends the read in progress as an answer that ended early, which is not counted too.
+    let pending = transcription.next();
+    await transcription.cancel();
+    await failure(pending);
+    await transcription.cancel();
+    expect(calls).toEqual([{ outcome: "success", detail: "given-up", httpStatus: 200, bytes: 10, durationMs: 0 }]);
+  });
+
+  it("is told the same of an answer its request's signal ended partway, which nobody cancelled", async () => {
+    let abort = new AbortController();
+    let more = new TextEncoder().encode(tokenEvents(["more "]).split("data: [DONE]")[0]);
+    // Gives a piece of the answer, and breaks off when the request is given up, as a fetch's does.
+    let body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(more);
+        abort.signal.addEventListener("abort", () => controller.error(abort.signal.reason));
+      },
+    });
+    let { calls, request } = counted(earlyAi(body), abort.signal, byteStream(BYTES, [10]).stream);
+    let transcription = await request;
+    expect(await transcription.next()).toBe("more ");
+
+    let pending = transcription.next();
+    abort.abort(new Error("no longer wanted"));
+    await failure(pending);
+    expect(calls).toEqual([{ outcome: "success", detail: "given-up", httpStatus: 200, bytes: 10, durationMs: 0 }]);
+  });
+
+  it("does not fail a request whose record throws", async () => {
+    let record = vi.fn(() => { throw new Error("the count failed"); });
+    let transcription = await transcribeImage(
+      fakeAi(eventResponse(tokenEvents(PAGE))).ai, undefined, jpeg(), undefined, { record });
+    expect(await drain(transcription)).toBe(PAGE.join(""));
+    expect(record).toHaveBeenCalledTimes(1);
   });
 });

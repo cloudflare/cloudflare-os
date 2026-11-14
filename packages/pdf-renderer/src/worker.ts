@@ -7,6 +7,7 @@
 import { RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import { createLogger } from "@gadgets/observability/logger";
+import { recordSubserviceCall, type SubserviceOutcome } from "@gadgets/observability/metrics";
 import type {
   PdfDocument, PdfRendering, RenderedPage, RenderOptions, RenderRefusalReason, RenderRefused,
 } from "./api";
@@ -41,6 +42,14 @@ type RendererLogFields = {
 };
 
 const logger = createLogger<RendererLogFields>({ component: "pdf-renderer" });
+
+/**
+ * How a document's room being given back is counted, by what gave it back: its caller let it
+ * go; it was taken back for another PDF; or a call for it was cut off.
+ */
+const RELEASE_OUTCOME: Record<HoldRelease, SubserviceOutcome> = {
+  disposed: "success", idle: "refused", "cut-off": "error",
+};
 
 /** The isolate's one renderer, once the first PDF has been opened. */
 let made: Renderer | undefined;
@@ -108,7 +117,12 @@ export class PdfRenderer extends WorkerEntrypoint implements PdfRendering {
     try {
       hold = (await renderer()).hold(size, releasedBy => {
         // A PDF that was refused has said so: only one that was opened is said to be given back.
-        if (opened) logger.info("gave back a PDF's room", { event: "pdf-renderer.released", releasedBy });
+        if (!opened) return;
+        logger.info("gave back a PDF's room", { event: "pdf-renderer.released", releasedBy });
+        recordSubserviceCall({
+          eventType: "release", source: "pdf-renderer", service: "pdf-renderer", operation: "document",
+          outcome: RELEASE_OUTCOME[releasedBy], reason: releasedBy,
+        });
       });
     } catch (error) {
       await pdf.cancel();

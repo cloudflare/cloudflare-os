@@ -1,9 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { env } from "cloudflare:workers";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { deflateSync, inflateSync } from "node:zlib";
+import { COMMON_SLOTS, SUBSERVICE_V1_SLOTS } from "@gadgets/observability/metrics-schema";
 import {
   RENDER_LIMITS, type PdfDocument, type PdfRendering, type RenderedPage, type RenderOptions,
   type RenderRefusalReason, type RenderRefused,
 } from "@gadgets/pdf-renderer/api";
+import { GOOGLE_API_SOURCE, recordCall } from "../src/call-metrics";
 import {
   pdfConverter, pdfToText, releasedAtEnd, TRANSCRIPTION_IDLE_MS, type PdfPageRange,
   type PdfRangeReader,
@@ -1254,6 +1257,40 @@ async function tickedUntil(met: () => boolean): Promise<void> {
   }
 }
 
+/**
+ * Has the deployment record subservice calls for the test that calls it, with the dataset bound
+ * and `SUBSERVICE_METRICS` set to `variable`, and returns the points written, in the order they
+ * were: each as its outcome and the family's own columns by name, without those left empty or 0.
+ */
+function countedCalls(variable = "true"): Record<string, unknown>[] {
+  let ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+  let columns = Object.entries({ outcome: COMMON_SLOTS.outcome, ...SUBSERVICE_V1_SLOTS });
+  let points: Record<string, unknown>[] = [];
+  ambient.METRICS = {
+    writeDataPoint(written) {
+      points.push(Object.fromEntries(columns.flatMap(([name, slot]) => {
+        let value = slot.startsWith("blob")
+          ? written!.blobs![Number(slot.slice(4)) - 1] : written!.doubles![Number(slot.slice(6)) - 1];
+        return value === "" || value === 0 ? [] : [[name, value]];
+      })));
+    },
+  };
+  ambient.SUBSERVICE_METRICS = variable;
+  onTestFinished(() => {
+    delete ambient.METRICS;
+    delete ambient.SUBSERVICE_METRICS;
+  });
+  return points;
+}
+
+/**
+ * A point counted for a Drive PDF's text: `calls` calls to `service` for `operation` that ended
+ * as `outcome`, with what else of them `rest` says.
+ */
+function point(service: string, operation: string, outcome: string, calls: number, rest: object = {}) {
+  return { source: "gatekeeper.google.drive.pdf", service, operation, outcome, calls, ...rest };
+}
+
 describe("pdfToText reading a scan's stored page images ahead of its reader", () => {
   it("has the model read the pages after the one being read while that one's answer comes, asking for each range once the one before it was read to its end", async () => {
     let rest = deferred<void>();
@@ -1325,9 +1362,11 @@ describe("pdfToText reading a scan's stored page images ahead of its reader", ()
   });
 
   it.each([
-    ["with HTTP 429", () => refusedCall()],
-    ["with its code for a model that has no room, under another status", () => refusedCall(500, 3040)],
-  ])("asks again, by a second read of its range, for a page whose call the service refused %s", async (_label, refusal) => {
+    ["with HTTP 429", () => refusedCall(), { reason: "rate", httpStatus: 429 }],
+    ["with its code for a model that has no room, under another status", () => refusedCall(500, 3040),
+      { reason: "capacity", httpStatus: 500, providerCode: 3040 }],
+  ])("asks again, by a second read of its range, for a page whose call the service refused %s", async (_label, refusal, counted) => {
+    let points = countedCalls();
     let refusals = 0;
     let { ai, calls } = pageAi(page => page === 2 && refusals++ === 0 ? refusal() : PAGES[page - 1]!);
     let { asked, readRange } = ranges(SCAN);
@@ -1344,6 +1383,13 @@ describe("pdfToText reading a scan's stored page images ahead of its reader", ()
       .toEqual([[1, undefined], [2, 1], [3, undefined]]);
     expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
     expect(everythingLogged()).not.toContain("secret");
+    // The refused call is counted as one the service refused, and the page's second as an answer.
+    expect(points.filter(({ operation }) => operation === "vision.page").toSorted(
+      (a, b) => String(a.outcome).localeCompare(String(b.outcome)))).toEqual([
+      point("workers-ai", "vision.page", "refused", 1, { ...counted, bytes: 702 }),
+      point("workers-ai", "vision.page", "success", 3, { httpStatus: 200, bytes: 701 + 702 + 703 }),
+    ]);
+    expect(JSON.stringify(points)).not.toContain("secret");
   });
 
   it("fails a page the service refused once more than there are pauses, and gives up the page after it", async () => {
@@ -2322,6 +2368,7 @@ describe("a rendered PDF whose document is lost", () => {
     ["the call for a page fails", LOST, "call"],
     ["a page is answered with the PDF having been released", refusedAs("released"), "released"],
   ])("reads and opens the file again, once, when %s after a page was rendered", async (_label, lost, reason) => {
+    let points = countedCalls();
     let { renderer, state } = fakeRenderer(nth => nth === 0
       ? [drawn([11]), lost, drawn([99])] : [drawn([98]), drawn([21]), drawn([31])]);
     let { result, asked } = await rendering(SCAN, renderer);
@@ -2336,6 +2383,14 @@ describe("a rendered PDF whose document is lost", () => {
       expect.not.objectContaining({ reason }), expect.objectContaining({ ocrPages: 3, reason }),
     ]);
     expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+    // What was asked of the renderer is counted: the second open as one made again, and why.
+    let bytes = SCAN.bytes.byteLength;
+    expect(points.filter(({ service }) => service === "pdf-renderer")).toEqual([
+      point("pdf-renderer", "open", "success", 1, { bytes }),
+      point("pdf-renderer", "render-page", "success", 3),
+      point("pdf-renderer", "render-page", lost === LOST ? "error" : "refused", 1, { reason }),
+      point("pdf-renderer", "reopen", "success", 1, { detail: reason, bytes }),
+    ]);
   });
 
   it.each<[string, PageAnswer[], string, object]>([
@@ -3652,5 +3707,310 @@ describe("pdfConverter", () => {
       byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
     expect(await read(result)).toBe("### Page 1\nband 11");
     expect(state.events).toEqual(["open", "render 1", "disposed"]);
+  });
+});
+
+describe("pdfToText counting the calls made for a text", () => {
+  /** The conversion of a PDF of `bytes` bytes, counted as one that succeeded. */
+  let converted = (bytes: number) => point("workers-ai", "to-markdown", "success", 1, { bytes });
+
+  it("writes nothing until a scan's text ends, and then its conversion, its reads of the file and its page calls, each kind summed", async () => {
+    let points = countedCalls();
+    let { ai } = ocrAi();
+    let { readRange } = ranges(SCAN);
+    // Each range is read by one request of Google's, counted as the Drive client counts its own.
+    let request = {
+      source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "success" as const,
+      httpStatus: 206,
+    };
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, async range => {
+      let stream = await readRange(range);
+      recordCall(request);
+      return stream;
+    });
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, "### Page 3\n");
+    expect(points).toEqual([]);
+
+    expect(await readOn(reader, text)).toBe(TRANSCRIBED);
+    expect(points).toEqual([
+      { ...request, calls: 3 },
+      point("workers-ai", "vision.page", "success", 3, { httpStatus: 200, bytes: 701 + 702 + 703 }),
+      converted(SCAN.bytes.byteLength),
+    ]);
+    // They are counted under the component the text's lines are logged under.
+    expect(linesOf("info", "google.drive.pdf.converted")).toEqual([
+      expect.objectContaining({ component: points.at(-1)!.source }),
+    ]);
+  });
+
+  it("writes a text's points only where the deployment has turned them on", async () => {
+    let ambient = env as { METRICS?: AnalyticsEngineDataset; SUBSERVICE_METRICS?: string };
+    // The scan's text is the same either way: what differs is its two points, written or not.
+    for (let [variable, written] of [["false", 0], ["", 0], ["1", 0], [undefined, 0], [" True ", 2]] as const) {
+      let points = countedCalls(variable);
+      // Unset: what the helper set for want of a value is taken away again.
+      if (variable === undefined) delete ambient.SUBSERVICE_METRICS;
+      let result = await pdfToText(ocrAi().ai, undefined, byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+      expect(await read(result)).toBe(TRANSCRIBED);
+      expect(points).toHaveLength(written);
+    }
+    // With the variable set and no dataset bound there is nowhere to write them, and nothing fails.
+    countedCalls();
+    delete ambient.METRICS;
+    let result = await pdfToText(ocrAi().ai, undefined, byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+    expect(await read(result)).toBe(TRANSCRIBED);
+    expect(vi.mocked(console.warn)).not.toHaveBeenCalled();
+  });
+
+  it("writes what a cancelled text's calls came to, an answer given up partway among them, and then a call that ends only after it", async () => {
+    let points = countedCalls();
+    let rest = deferred<void>();
+    // The first page's answer stops partway, and the third page's request is not answered, until
+    // after the text was cancelled.
+    let { ai } = pageAi(page => page === 1 ? heldAnswer(PAGES[0]!, rest.promise)
+      : page === 3 ? rest.promise.then(() => eventResponse(tokenEvents(PAGES[2]!))) : PAGES[page - 1]!);
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+    let reader = result.text.getReader();
+    await readThrough(reader, "Harbour Ledger");
+    await vi.waitFor(() => expect(endedPages()).toEqual([2]));
+    expect(points).toEqual([]);
+
+    await reader.cancel();
+    // The first page's answer had begun, so it is billed, though it was not read to its end.
+    let written = [
+      point("workers-ai", "vision.page", "success", 1, { httpStatus: 200, bytes: 702 }),
+      point("workers-ai", "vision.page", "success", 1, { detail: "given-up", httpStatus: 200, bytes: 701 }),
+      converted(SCAN.bytes.byteLength),
+    ];
+    expect(points).toEqual(written);
+    // The third page's request was in flight as the text ended. Its answer comes now and is let
+    // go at once: it is billed all the same, and written as it ends, the sums having been.
+    rest.resolve();
+    await settled();
+    expect(points).toEqual([
+      ...written,
+      point("workers-ai", "vision.page", "success", 1, { detail: "given-up", httpStatus: 200, bytes: 703 }),
+    ]);
+  });
+
+  it("writes the conversion as a point of its own, however many kinds of call the text made", async () => {
+    let points = countedCalls();
+    let pdf = imagePdf([scanPage(1)]);
+    // The page's range is read by requests answered in 48 ways: as many kinds as a text's calls
+    // are summed by, so that the page's own call, after them, is summed as one of the rest.
+    let result = await pdfToText(ocrAi().ai, undefined, byteStream(pdf.bytes).stream, async range => {
+      for (let httpStatus = 500; httpStatus < 548; httpStatus++) {
+        recordCall({
+          source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "error",
+          reason: "http", httpStatus,
+        });
+      }
+      return ranges(pdf).readRange(range);
+    });
+    await read(result);
+    expect(points).toHaveLength(50);
+    expect(points.slice(48)).toEqual([
+      point("workers-ai", "other", "success", 1, { bytes: 701 }),
+      converted(pdf.bytes.byteLength),
+    ]);
+  });
+
+  it("sums a request made only as a range is read, whether the model's request reads it or the renderer's call", async () => {
+    let request = {
+      source: GOOGLE_API_SOURCE, service: "google-drive", operation: "GET", outcome: "success" as const,
+      httpStatus: 206,
+    };
+    // As of a source that opens its file again partway: each piece of a range costs a request,
+    // made when the piece is read, after the read that gave the range has returned.
+    let readRange: PdfRangeReader = async ({ offset, length }) => {
+      let at = offset;
+      return new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (at === offset + length) return controller.close();
+          recordCall(request);
+          controller.enqueue(SCAN.bytes.slice(at, at = Math.min(at + 400, offset + length)));
+        },
+      }, { highWaterMark: 0 });
+    };
+    for (let [ai, renderer, calls] of [
+      [ocrAi().ai, undefined, 6],
+      [bandAi().ai, fakeRenderer([drawn([11])]).renderer, Math.ceil(SCAN.bytes.byteLength / 400)],
+    ] as const) {
+      let points = countedCalls();
+      let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange, renderer);
+      let reader = result.text.getReader();
+      await reader.read();
+      expect(points).toEqual([]);
+      await readOn(reader);
+      expect(points[0]).toEqual({ ...request, calls });
+    }
+  });
+
+  it("writes what a text's calls came to when it fails, by status and code and never by what the service said", async () => {
+    let points = countedCalls();
+    let pdf = imagePdf([scanPage(1)]);
+    let { ai } = ocrAi([new Response(JSON.stringify({ internalCode: 8006, message: "secret" }), { status: 400 })]);
+    let result = await pdfToText(ai, undefined, byteStream(pdf.bytes).stream, ranges(pdf).readRange);
+    await expect(read(result)).rejects.toThrow(TRANSCRIPTION_FAILED);
+    expect(points).toEqual([
+      point("workers-ai", "vision.page", "error", 1, { reason: "http", httpStatus: 400, providerCode: 8006, bytes: 701 }),
+      converted(pdf.bytes.byteLength),
+    ]);
+    expect(JSON.stringify(points)).not.toContain("secret");
+  });
+
+  it("writes what a text's calls came to when it is ended for sitting idle", async () => {
+    vi.useFakeTimers();
+    let points = countedCalls();
+    let result = await pdfToText(ocrAi().ai, undefined, byteStream(SCAN.bytes).stream, ranges(SCAN).readRange);
+    await vi.advanceTimersByTimeAsync(TRANSCRIPTION_IDLE_MS - 1);
+    expect(points).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(points).toEqual([converted(SCAN.bytes.byteLength)]);
+    await expect(result.text.getReader().read()).rejects.toThrow(IDLE);
+  });
+
+  it.each<[string, BuiltPdf, () => AiFetcher, string | undefined, object | undefined]>([
+    ["its conversion fails", SCAN, () => fakeAi(new Response("{}", { status: 400 })).ai, CONVERSION_FAILED,
+      point("workers-ai", "to-markdown", "error", 1, { bytes: SCAN.bytes.byteLength })],
+    // Nothing of the PDF had been sent when the conversion answered.
+    ["its conversion answers before the PDF was all sent", SCAN,
+      () => ({ fetch: async () => streamedResponse(markdownJson(SCANNED_PDF)) }) as unknown as AiFetcher,
+      CONVERSION_FAILED, point("workers-ai", "to-markdown", "success", 1)],
+    ["it is encrypted", imagePdf([scanPage(1)], { trailer: "/Encrypt 9 0 R" }), () => ocrAi().ai,
+      "it is encrypted", undefined],
+    ["its pages are stored in an encoding that is not read", FAX_SCAN, () => ocrAi().ai, unread("fax (CCITT)"), undefined],
+    ["its pages would have to be rendered", imagePdf([scanPage(1, { width: 64, height: 64 })]), () => ocrAi().ai,
+      "its pages have to be rendered to be read", undefined],
+    ["it has neither text nor an image", imagePdf([]), () => ocrAi().ai, undefined, undefined],
+  ])("writes the conversion's point as the text ends without beginning, when %s", async (_label, pdf, ai, message, counted) => {
+    let points = countedCalls();
+    let run = pdfToText(ai(), undefined, byteStream(pdf.bytes, [65_536]).stream, ranges(pdf).readRange);
+    if (message) await expect(run).rejects.toThrow(message);
+    else expect(await run).toMatchObject({ hasText: false, rereads: false });
+    expect(points).toEqual([counted ?? converted(pdf.bytes.byteLength)]);
+  });
+
+  it("writes the conversion's point when a PDF's own text has been read to its end, and not before", async () => {
+    let points = countedCalls();
+    let result = await pdfToText(fakeAi(streamedResponse(markdownJson(TEXT_PDF))).ai, undefined, byteStream(BYTES).stream);
+    let reader = result.text.getReader();
+    await reader.read();
+    expect(points).toEqual([]);
+    await readOn(reader);
+    expect(points).toEqual([converted(BYTES.byteLength)]);
+  });
+
+  it("writes the conversion's point when a PDF's own text is cancelled", async () => {
+    let points = countedCalls();
+    let result = await pdfToText(fakeAi(endlessResponse().response).ai, undefined, byteStream(BYTES).stream);
+    expect(points).toEqual([]);
+    await result.text.cancel();
+    expect(points).toEqual([converted(BYTES.byteLength)]);
+  });
+
+  it("counts a conversion that fails after text of it was given as one that failed partway", async () => {
+    let points = countedCalls();
+    let json = markdownJson(TEXT_PDF);
+    let { ai } = fakeAi(streamedResponse(json.slice(0, json.indexOf("Page 2")), 16));
+    let result = await pdfToText(ai, undefined, byteStream(BYTES).stream);
+    await expect(read(result)).rejects.toThrow(CONVERSION_FAILED);
+    // It is one conversion, and so one point: what it came to, in place of its having answered.
+    expect(points).toEqual([
+      point("workers-ai", "to-markdown", "error", 1, { reason: "partway", bytes: BYTES.byteLength }),
+    ]);
+  });
+
+  it("counts so a conversion that fails partway in a text whose pages without any are read", async () => {
+    let points = countedCalls();
+    let { renderer } = fakeRenderer([drawn([11]), TEXT_PAGE, drawn([31]), TEXT_PAGE, drawn([51])]);
+    let json = markdownJson(IMAGE_FIRST_MIDDLE_LAST);
+    let { result } = await mixed(streamedResponse(json.slice(0, json.indexOf("### Page 4")), 16), renderer);
+    expect((await readToFailure(result)).error).toEqual(new Error(CONVERSION_FAILED));
+    expect(points.filter(({ operation }) => operation === "to-markdown")).toEqual([
+      point("workers-ai", "to-markdown", "error", 1, { reason: "partway", bytes: SCAN.bytes.byteLength }),
+    ]);
+  });
+
+  it("counts a rendered PDF's open, each page asked of the renderer by how it was answered, and its band calls", async () => {
+    let points = countedCalls();
+    let { renderer } = fakeRenderer([refusedAs("memory", true), drawn([21, 22])]);
+    let { result } = await rendering(FAX_SCAN, renderer);
+    expect(await read(result)).toBe(`### Page 1\n${UNDRAWN_PAGE}\n\n### Page 2\nband 21\nband 22`);
+    let bytes = FAX_SCAN.bytes.byteLength;
+    expect(points).toEqual([
+      point("pdf-renderer", "open", "success", 1, { bytes }),
+      point("pdf-renderer", "render-page", "refused", 1, { reason: "memory" }),
+      point("pdf-renderer", "render-page", "success", 1),
+      point("workers-ai", "vision.band", "success", 2, { httpStatus: 200, bytes: expect.any(Number) as number }),
+      converted(bytes),
+    ]);
+  });
+
+  it.each<[string, Opening, string, string]>([
+    ["refuses", "room", "refused", "room"],
+    ["fails", LOST, "error", "call"],
+  ])("counts an open the renderer %s, by its word, before the stored pages read instead", async (_label, opening, outcome, reason) => {
+    let points = countedCalls();
+    let { renderer } = fakeRenderer([drawn([11])], [opening]);
+    let { result } = await rendering(SCAN, renderer);
+    expect(await read(result)).toBe(TRANSCRIBED);
+    let bytes = SCAN.bytes.byteLength;
+    expect(points).toEqual([
+      point("pdf-renderer", "open", outcome, 1, { reason, bytes }),
+      point("workers-ai", "vision.page", "success", 3, { httpStatus: 200, bytes: 701 + 702 + 703 }),
+      converted(bytes),
+    ]);
+  });
+
+  it("counts no open that the text's own read of the file ended", async () => {
+    let points = countedCalls();
+    let broke = new Error("The download broke off.");
+    let { renderer } = fakeRenderer([drawn([11])], [async pdf => {
+      await new Response(pdf).arrayBuffer().catch(() => undefined);
+      throw new Error("ReadableStream received over RPC disconnected prematurely.");
+    }]);
+    let sent = 0;
+    let result = await pdfToText(bandAi().ai, undefined, byteStream(SCAN.bytes).stream, async () =>
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent++ === 0) controller.enqueue(SCAN.bytes.slice(0, 100));
+          else controller.error(broke);
+        },
+      }, { highWaterMark: 0 }), renderer);
+    expect((await readToFailure(result)).error).toBe(broke);
+    expect(points).toEqual([converted(SCAN.bytes.byteLength)]);
+  });
+
+  it("counts no open that was given up with its page, when a page before it failed", async () => {
+    let points = countedCalls();
+    // The third page finds its document lost, and the file is opened again for it: an open that
+    // fails as its stream does, once the stream is ended.
+    let { renderer } = fakeRenderer([drawn([11]), TEXT_PAGE, refusedAs("released")], [undefined, async pdf => {
+      await new Response(pdf).arrayBuffer().catch(() => undefined);
+      throw new Error("ReadableStream received over RPC disconnected prematurely.");
+    }]);
+    let again = stalledDownload(SCAN.bytes);
+    // The first page's band fails once the file is being read again. The PDF has text of its
+    // own, which goes on without its pages that have none: the open has long ended when the
+    // text does, and its calls are written.
+    let { ai } = bandAi(async () => {
+      await again.stalled;
+      return new Response("{}", { status: 400 });
+    }, IMAGE_FIRST_MIDDLE_LAST);
+    let reads = 0;
+    let result = await pdfToText(ai, undefined, byteStream(SCAN.bytes, [65_536]).stream,
+      async () => reads++ === 0 ? byteStream(SCAN.bytes).stream : again.stream, renderer);
+    let reader = result.text.getReader();
+    let text = await readThrough(reader, `${UNREAD_PAGES}\n\n`);
+    expect(again.state.cancelled).toBe(true);
+    await settled();
+    expect(await readOn(reader, text)).toBe(sheets(`${UNREAD_PAGES}\n\n`));
+    expect(points.filter(({ service }) => service === "pdf-renderer")).toEqual([
+      point("pdf-renderer", "open", "success", 1, { bytes: SCAN.bytes.byteLength }),
+      point("pdf-renderer", "render-page", "success", 1),
+      point("pdf-renderer", "render-page", "refused", 1, { reason: "released" }),
+    ]);
   });
 });

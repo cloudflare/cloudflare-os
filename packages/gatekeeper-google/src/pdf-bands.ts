@@ -7,7 +7,7 @@
 
 import type { RenderedBand, RenderedPage } from "@gadgets/pdf-renderer/api";
 import type { PageSlots } from "./pdf-read-ahead";
-import { CAPACITY_CODE, TranscriptionError, type Transcription } from "./workers-ai-vision";
+import { refusedFor, TranscriptionError, type Transcription } from "./workers-ai-vision";
 
 /**
  * What makes an answer a runaway: a unit of at least {@link RUNAWAY_UNIT_CHARS} characters said
@@ -60,8 +60,7 @@ export const REFUSED_PAUSE = { ms: [1000, 2000, 4000, 8000, 16000], jitter: 0.25
  * any answer with HTTP 429, or with the service's code for a model with no room under any status.
  */
 export function refusedCall(error: unknown): boolean {
-  if (!(error instanceof TranscriptionError) || !("httpStatus" in error.failure)) return false;
-  return error.failure.httpStatus === 429 || error.failure.providerCode === CAPACITY_CODE;
+  return error instanceof TranscriptionError && refusedFor(error.failure) !== undefined;
 }
 
 /** Waits out `ms` milliseconds, or until `signal` aborts. */
