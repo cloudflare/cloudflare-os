@@ -1,6 +1,7 @@
 // Fixture for the suites that need real Durable Object storage rather than the cloning Node fake.
 
 import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudflare:workers";
+import type { RunReport } from "../../src/hook-delivery-queue";
 import { HookRegistry } from "../../src/hook-registry";
 import { ObserverTracker } from "../../src/observers";
 export { ConformanceAccount, ConformanceResource, ConformanceVerifier } from "./conformance/gatekeeper";
@@ -102,8 +103,14 @@ export class FixtureHookDelivery extends WorkerEntrypoint {
 
 /** A driver's registry over a real DO's storage, which hands back a fresh stub on every read. */
 export class HookHost extends DurableObject {
-  readonly #hooks = new HookRegistry<FixtureHook, string, unknown>(this.ctx.storage.kv, { onRunReport: () => {} });
+  readonly #reports: RunReport[] = [];
+  readonly #hooks = new HookRegistry<FixtureHook, string, unknown>(this.ctx.storage.kv, {
+    onRunReport: report => void this.#reports.push(report),
+  });
   readonly #received: string[] = [];
+  readonly #arrived = new Map<string, PromiseWithResolvers<void>>();
+  /** Holds the delivery of the message `"held"` until `release()`. */
+  readonly #held = Promise.withResolvers<void>();
 
   /** Enables `key` in a transaction, with a registration storage refuses unless `storable`. */
   enable(key: string, storable = true): void {
@@ -124,8 +131,43 @@ export class HookHost extends DurableObject {
     return this.#received;
   }
 
-  received(message: string): void {
+  /** Queues `message` alone (`queue` is a handler's name), and with `alarm` sets an alarm only a test runs. */
+  async enqueue(key: string, message: string, alarm = false): Promise<void> {
+    this.#hooks.enqueue(key, message, message, Date.now());
+    if (alarm) await this.ctx.storage.setAlarm(Date.now() + 60 * 60_000);
+  }
+
+  async alarm(): Promise<void> {
+    await this.#hooks.run(Date.now());
+  }
+
+  async received(message: string): Promise<void> {
     this.#received.push(message);
+    this.#arrival(message).resolve();
+    if (message === "held") await this.#held.promise;
+  }
+
+  /** Resolves once the hook has received `message`. */
+  async arrived(message: string): Promise<void> {
+    await this.#arrival(message).promise;
+  }
+
+  release(): void {
+    this.#held.resolve();
+  }
+
+  row(key: string): unknown {
+    return this.ctx.storage.kv.get(`msg:${key}`);
+  }
+
+  reports(): RunReport[] {
+    return this.#reports;
+  }
+
+  #arrival(message: string): PromiseWithResolvers<void> {
+    let arrival = this.#arrived.get(message);
+    if (!arrival) this.#arrived.set(message, arrival = Promise.withResolvers<void>());
+    return arrival;
   }
 }
 

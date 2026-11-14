@@ -270,9 +270,12 @@ One per connected account, named by its `UserAccount` id; see `src/github-hooks.
   event's payload: an event pending delivery to one hook, with `attempts` counting the attempts
   started on it (stored before each call), or a finished one kept for a day to collapse
   redeliveries.
-- `queue:due:<time>:<hookKey>:<eventId>`, `queue:finished:<time>:<hookKey>:<eventId>` and
-  `queue:indexed` -> the queue's indexes of those rows: by when each pending one is next due, and
-  when each finished one finished, which the dedupe window counts from.
+- `queue:due:<hookKey>:<time>:<eventId>`, `queue:ready:<time>:<hookKey>`,
+  `queue:readyAt:<hookKey>`, `queue:paused:<hookKey>`, `queue:finished:<time>:<hookKey>:<eventId>`
+  and `queue:indexed` -> the queue's indexes of those rows: each hook's pending ones by when they
+  are due, each hook with any by when it next needs a run, a hook's pause after timeouts, each
+  finished one by when it finished, which the dedupe window counts from, and their layout (see
+  [hook delivery](../../docs/hook-delivery.md#storage)).
 - `revoked` -> set, with every key but `account`, `webhook:` and `unrecorded:` deleted, once the
   account is disconnected.
 
