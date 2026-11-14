@@ -1,4 +1,4 @@
-import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AGENT_SPAWNER_CONNECTION_ID, AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPinRecord, GadgetFormat, gadgetOutputOf, OUTPUT_ICONS, MainlineMergeGadget, WorkpieceId, type AiModelConfig, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange, validateCodeChangeSchema,
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
@@ -474,6 +474,12 @@ export interface AgentHooks {
    */
   createGadget(title: string, bindingName: string, chatId: number,
                blueprint?: {output?: BlueprintOutput}): {id: WorkpieceId, title: string};
+
+  /**
+   * Say what a gadget is (GadgetSummary.output), or with undefined that it is a generic app.
+   * Throws for a workpiece that is not a gadget.
+   */
+  setGadgetOutput(gadgetId: WorkpieceId, output: BlueprintOutput | undefined): void;
 
   /**
    * Create a new worktree workpiece rooted at the given commit id (a full oid, resolved against
@@ -1314,7 +1320,33 @@ Create a new Gadget in this workspace. The new gadget immediately becomes availa
 Use this when the user's request or established context clearly calls for a new application or saved output. An empty workspace or a one-off task does not require a gadget. Always choose a short, descriptive title — the user will see it.
 
 By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`listBlueprints\` tool, or given by the user) to instead start the gadget from a blueprint's code; the result then also describes the bindings the blueprint expects you to wire up.
+
+Pass \`format\` to say what kind of thing the gadget is -- e.g. {noun: "Dashboard", icon: "chartBar"} -- so the user sees it labeled and drawn as one, and a blueprint published from it carries the same label. A blueprint already brings its own format, so pass one or the other. Change it later with \`setGadgetFormat\`.
 `.trim();
+
+let SET_GADGET_FORMAT_TOOL_DESCRIPTION = `
+Say what kind of thing a gadget is: a noun such as "Dashboard", "Tracker" or "Doc", and an icon, which the user sees on the gadget and which a blueprint published from it carries. Pass \`format: null\` to make it a plain app again. The change takes effect immediately; it is not one of the chat's proposed code changes.
+`.trim();
+
+/** The parameter schema for a gadget's format, shared by createGadget and setGadgetFormat. */
+let gadgetFormatSchema = () => Type.Object({
+  noun: Type.String({
+    description: "What the gadget is, singular and title-cased, e.g. \"Dashboard\" or \"Tracker\".",
+  }),
+  plural: Type.Optional(Type.String({
+    description: "The noun's plural, when adding an \"s\" is wrong (e.g. \"Libraries\").",
+  })),
+  icon: Type.Union(OUTPUT_ICONS.map(icon => Type.Literal(icon)), {
+    description: "The icon drawn for the gadget.",
+  }),
+});
+
+/** A format the tool was given as a gadget's BlueprintOutput, refusing one that names nothing. */
+let outputOfFormat = (format: GadgetFormat) => {
+  let output = gadgetOutputOf(format);
+  if (!output) throw new Error("A gadget's format needs a noun and a known icon.");
+  return output;
+};
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
 Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
@@ -2673,6 +2705,10 @@ async function runAgentPass(
                   toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
                 }
+                case "setGadgetFormat":
+                  // Set when first called, not proposed, so there is nothing to redo.
+                  toolOutput = {text: jsonToolResultText({success: true})};
+                  break;
                 case "executeCode":
                   toolOutput = {text: toolCall.output!};
                   break;
@@ -3934,10 +3970,16 @@ async function runAgentPass(
               "If given, initialize the new gadget from this blueprint's code instead of empty. " +
               "Use the listBlueprints tool to discover available blueprint IDs.",
         })),
+        format: Type.Optional(gadgetFormatSchema()),
       }),
-      execute: async (toolCallId, {title, bindingName, blueprintId}) => {
+      execute: async (toolCallId, {title, bindingName, blueprintId, format}) => {
         try {
           validateBindingName(bindingName);
+          if (blueprintId !== undefined && format !== undefined) {
+            throw new Error("A blueprint brings its own format; pass blueprintId or format, " +
+                "not both.");
+          }
+          let formatOutput = format ? outputOfFormat(format) : undefined;
           if (isNameInScope(bindingName)) {
             throw new Error(`There is already a binding named "${bindingName}" in your env. ` +
                 `Choose a different name.`);
@@ -3959,11 +4001,13 @@ async function runAgentPass(
 
           // Let the transcript name the format while the call runs, as writes do with their target
           // file.
-          if (blueprint?.output) {
-            emitStreamEvent({type: "toolCallOutputFormat", toolCallId, output: blueprint.output});
+          let shownOutput = formatOutput ?? blueprint?.output;
+          if (shownOutput) {
+            emitStreamEvent({type: "toolCallOutputFormat", toolCallId, output: shownOutput});
           }
 
-          let created = hooks.createGadget(title, bindingName, chatId, blueprint);
+          let created = hooks.createGadget(title, bindingName, chatId,
+              formatOutput ? {output: formatOutput} : blueprint);
           pendingCreatedGadgets.push({gadgetId: created.id, title: created.title, bindingName});
           chatBindings.set(bindingName, {type: "workpiece", id: created.id});
 
@@ -4011,6 +4055,32 @@ async function runAgentPass(
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
           });
+          throw error;
+        }
+      }
+    }),
+
+    setGadgetFormat: defineTool({
+      name: "setGadgetFormat",
+      label: "Set gadget format",
+      description: SET_GADGET_FORMAT_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        gadget: Type.String({description: "The gadget's binding name in your env."}),
+        format: Type.Union([gadgetFormatSchema(), Type.Null()]),
+      }),
+      execute: async (toolCallId, {gadget, format}) => {
+        try {
+          let entry = chatBindings.get(gadget);
+          if (!entry || entry.type !== "workpiece" || hooks.isWorktree(entry.id)) {
+            throw new Error(`There is no gadget named "${gadget}" in your env.`);
+          }
+          // A format is the gadget's metadata, not its code, so it is set at once rather than
+          // proposed, as a title is from the gadget's settings.
+          hooks.setGadgetOutput(entry.id, format ? outputOfFormat(format) : undefined);
+          return toolResult(jsonToolResultText({success: true}),
+              {workpieceId: entry.id} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
           throw error;
         }
       }

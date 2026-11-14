@@ -93,7 +93,8 @@ import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
-import type { ChatFileSummary, CreationApproval, GadgetExportFormat, WorkspaceKind } from "@gadgets/workshop-shared/api";
+import type { ChatFileSummary, CreationApproval, GadgetExportFormat, GadgetFormat, WorkspaceKind } from "@gadgets/workshop-shared/api";
+import { gadgetOutputOf } from "@gadgets/workshop-shared/api";
 import {
   assertChatAttachmentSize,
   decodeChatAttachmentText,
@@ -1906,6 +1907,14 @@ class OverseerImpl implements AgentHooks {
   // comes to follow it when its creation is accepted. `actorUserId` (hex user DO ID) feeds
   // analytics only; a permanent creation's caller records its own workpiece_created, naming its
   // source.
+  // AgentHooks implementation, and GadgetClient.setOutput(): what the gadget is, or a generic app.
+  setGadgetOutput(gadgetId: WorkpieceId, output: BlueprintOutput | undefined): void {
+    let record = this.getGadgetRecord(gadgetId);
+    if (output) record.output = output;
+    else delete record.output;
+    this.storage.gadgets.put(record);
+  }
+
   createGadget(title: string, bindingName: string, chatId?: number,
                blueprint?: {output?: BlueprintOutput}, initialCommitId?: string,
                actorUserId?: string): GadgetRecord {
@@ -14926,6 +14935,12 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     this.impl.storage.gadgets.put(record);
   }
 
+  async setOutput(format: GadgetFormat | null): Promise<void> {
+    let output = format ? gadgetOutputOf(format) : undefined;
+    if (format && !output) throw new Error("A gadget's format needs a noun and a known icon.");
+    this.impl.setGadgetOutput(this.id, output);
+  }
+
   async setAutoApprove(enabled: boolean): Promise<void> {
     let record = this.impl.getGadgetRecord(this.id);
     if (enabled) {
@@ -15279,6 +15294,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   async getView(): Promise<GadgetView> { this.#deny(); }
   async openView(): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
+  async setOutput(_output: GadgetFormat | null): Promise<void> { this.#deny(); }
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
   async remove(): Promise<void> { this.#deny(); }
@@ -15368,6 +15384,7 @@ class ViewGadgetClientInterface extends RpcTarget implements GadgetClient {
 
   async openView(): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
+  async setOutput(_output: GadgetFormat | null): Promise<void> { this.#deny(); }
   async getExportFormats(_chatId?: number): Promise<GadgetExportFormat[]> { this.#deny(); }
   async export(_id: string, _chatId?: number): Promise<ReadableStream<Uint8Array>> {
     this.#deny();

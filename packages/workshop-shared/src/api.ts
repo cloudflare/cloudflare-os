@@ -3048,6 +3048,30 @@ export const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow"
 export type OutputIcon = typeof OUTPUT_ICONS[number];
 
 /**
+ * What a gadget is, as the agent or its owner says it: a BlueprintOutput without its grouping id,
+ * which is made from the noun (see gadgetOutputOf()).
+ */
+export type GadgetFormat = {
+  /** What one of it is called, capitalized as a title: "Tracker". */
+  noun: string;
+  /** What several are called: "Trackers". Absent means the noun with an "s". */
+  plural?: string;
+  icon: OutputIcon;
+};
+
+/**
+ * The BlueprintOutput a GadgetFormat stands for: its grouping id is the noun in lower case, words
+ * joined with hyphens ("Reading list" groups as "reading-list"), so gadgets of the same kind group
+ * together whoever named them. Undefined for a format with no noun or an unknown icon.
+ */
+export function gadgetOutputOf(format: GadgetFormat): BlueprintOutput | undefined {
+  let noun = format.noun?.trim();
+  let id = noun?.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  if (!noun || !id || !isOutputIcon(format.icon)) return undefined;
+  return {id, noun, plural: format.plural?.trim() || `${noun}s`, icon: format.icon};
+}
+
+/**
  * Whether an unknown value names one of the icons this deployment can draw. Used wherever an icon
  * arrives from outside the kernel: a published blueprint, an admin override, or the browser.
  */
@@ -5594,6 +5618,13 @@ export type AiToolCall = {
      * proposed changes) instead of empty.
      */
     blueprintId?: string;
+
+    /**
+     * What the new gadget is, for a gadget built from scratch: shown wherever it is in place of a
+     * generic gadget, and carried into a blueprint published from it. Absent for a generic app,
+     * and for a blueprint's gadget, which takes the blueprint's format.
+     */
+    format?: GadgetFormat;
   };
 
   /**
@@ -5610,6 +5641,17 @@ export type AiToolCall = {
    * doesn't have to re-fetch the blueprint (whose content may have changed since).
    */
   output?: {gadgetId: WorkpieceId, changeId?: number, blueprintNotes?: string};
+} | {
+  /**
+   * Say what a gadget is (see GadgetClient.setOutput()), or, with `format: null`, that it is a
+   * generic app. Applied at once rather than proposed with the chat's changes, as a rename is.
+   */
+  toolName: "setGadgetFormat";
+  input: {
+    /** Chat binding name of the gadget. */
+    gadget: string;
+    format: GadgetFormat | null;
+  };
 } | {
   /**
    * Create a new worktree workpiece: a file tree rooted at a git commit, private to the creating
@@ -6842,6 +6884,13 @@ export interface GadgetClient extends WorkpieceClient {
    * workspace has read restricted data.
    */
   setAutoApprove(enabled: boolean): Promise<void>;
+
+  /**
+   * Say what the gadget is -- a Document, a Tracker -- and the icon it is drawn with, or with null
+   * that it is a generic app (see GadgetSummary.output). Presentation only, like a blueprint's
+   * declared format, which a blueprint published from the gadget then declares.
+   */
+  setOutput(output: GadgetFormat | null): Promise<void>;
 
   /**
    * Get the gadget's deployed UI code, to be run inside an iframe sandbox.

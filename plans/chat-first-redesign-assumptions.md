@@ -323,4 +323,10 @@ list it here, so it is known what workshop-app needs from the kernel.
   the gadget a file step touched (kernel: `AiToolCall.workpieceId`, recorded by readFile, grep,
   writeFile and editFile on success). Without it a finished step knows only the binding name the
   agent used, which the client cannot resolve.
+- **What a gadget is.** A format (a noun such as "Dashboard" and an icon, `BlueprintOutput`)
+  could only come from a blueprint. Now the agent can give one (createGadget's `format`, and
+  `setGadgetFormat` for a gadget that exists) and the gadget's settings can change it (kernel:
+  `GadgetClient.setOutput`, `GadgetFormat` and `gadgetOutputOf` in workshop-shared). It is metadata,
+  set at once like a title rather than proposed with the chat's changes, and it goes with a
+  blueprint published from the gadget. Spawned agents are not offered the tool.
 
