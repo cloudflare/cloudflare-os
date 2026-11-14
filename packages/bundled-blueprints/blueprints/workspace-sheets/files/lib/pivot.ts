@@ -4,7 +4,8 @@ import type { CellFmt, CellMap, PivotAggregate, PivotSettings, SheetMeta } from 
 // ---------------------------------------------------------------------------
 // Pivot tables: what a pivot sheet holds, worked out from its source. The grid rebuilds a pivot
 // whenever its source may have changed and saves the result; an export rebuilds every pivot from
-// the cells it read, so neither waits on the other. Values come through `compute`, the caller's
+// the cells it read, so neither waits on the other (unless the export's evaluation budget runs
+// out, when it keeps the pivot the grid last built). Values come through `compute`, the caller's
 // engine, so a source formula (even one reading another pivot) counts as it shows.
 // ---------------------------------------------------------------------------
 

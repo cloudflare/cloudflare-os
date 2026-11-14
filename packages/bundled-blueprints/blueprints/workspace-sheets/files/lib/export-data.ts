@@ -194,7 +194,8 @@ export class ExportEvaluator {
   }
 }
 // A pivot sheet holds what the grid last built from its source, which may since have changed with
-// no grid open, so every pivot is built again from the exported cells (lib/pivot.ts). A pivot's
+// no grid open, so every pivot is built again from the exported cells (lib/pivot.ts), unless the
+// evaluation budget runs out while building it, which keeps the stored pivot. A pivot's
 // source may read another pivot: passes repeat until no pivot changes, one more than there are
 // pivots at most. Returns the evaluator for the workbook as rebuilt.
 export function refreshExportPivots(workbook: ExportWorkbook): ExportEvaluator {
