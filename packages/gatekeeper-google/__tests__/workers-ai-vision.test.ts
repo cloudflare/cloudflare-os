@@ -162,6 +162,29 @@ describe("transcribeImage", () => {
     expect(error.sentBytes).toBe(BYTES.byteLength);
   });
 
+  it.each([
+    ["its first code", 429, { internalCode: 3040, httpCode: 429, message: "secret" }],
+    ["a code after its first", 400, { errors: [{ code: 7009, message: "secret" }, { code: 3040 }] }],
+    ["its message, under another code", 400, { errors: [{ code: 10000, message: "AiError: 3040: Capacity temporarily exceeded, secret" }] }],
+    ["its message alone", 500, { error: "3040:capacity temporarily exceeded" }],
+  ])("reports a request refused for want of room by the code for it, 3040, given as %s", async (_label, status, body) => {
+    let error = await failure(transcribeImage(
+      fakeAi(new Response(JSON.stringify(body), { status })).ai, undefined, jpeg()));
+    expect(error.failure).toEqual({ httpStatus: status, providerCode: 3040 });
+  });
+
+  it.each([
+    ["no code is 3040", { errors: [{ code: 8006 }, { code: 5007 }] }, 8006],
+    ["3040 is in its message without the words for it", { internalCode: 8006, message: "3040: pages" }, 8006],
+    ["3040 ends a longer number", { internalCode: 8006, message: "13040: Capacity temporarily exceeded" }, 8006],
+    ["3040 comes after its first 1,024 bytes", { internalCode: 8006, message: "x".repeat(1024), code: 3040 }, 8006],
+    ["it gives no code", { message: "secret" }, undefined],
+  ])("reports any other refusal by its first code, as when %s", async (_label, body, code) => {
+    let error = await failure(transcribeImage(
+      fakeAi(new Response(JSON.stringify(body), { status: 400 })).ai, undefined, jpeg()));
+    expect(error.failure).toEqual({ httpStatus: 400, ...(code === undefined ? {} : { providerCode: code }) });
+  });
+
   it("reports a request the binding throws on, and releases the image", async () => {
     let image = byteStream(BYTES, [10]);
     let thrown = new Error("Network connection lost.");

@@ -46,6 +46,13 @@ const SETTINGS = {
 
 /** Bytes of a failed request's response read for its error code. */
 const MAX_ERROR_BYTES = 1024;
+/**
+ * The service's error code for a model that has no room for a request just now. It comes under
+ * more than one HTTP status, and a request that failed with it may be made again.
+ */
+export const CAPACITY_CODE = 3040;
+/** How a failure's message says the same, when the code is given nowhere else. */
+const CAPACITY_MESSAGE = /\b3040:\s*Capacity temporarily exceeded/i;
 /** Characters of one line of the response held; a line carries one token. */
 const MAX_LINE_CHARS = 256 * 1024;
 
@@ -125,10 +132,12 @@ export async function transcribeImage(
     return fail({ error });
   }
   if (!response.ok || !response.body) {
-    // Only the service's numeric error code is kept from its answer, never its text.
+    // Only the service's numeric error code is kept from its answer, never its text: the first
+    // it gives, unless any it gives, or its message, says the model has no room.
     let prefix = await readTextPrefix(response, MAX_ERROR_BYTES).catch(() => "");
-    let code = /"(?:internalCode|code)"\s*:\s*(\d+)/.exec(prefix)?.[1];
-    return fail({ httpStatus: response.status, ...(code ? { providerCode: Number(code) } : {}) });
+    let codes = Array.from(prefix.matchAll(/"(?:internalCode|code)"\s*:\s*(\d+)/g), match => Number(match[1]));
+    let code = codes.includes(CAPACITY_CODE) || CAPACITY_MESSAGE.test(prefix) ? CAPACITY_CODE : codes[0];
+    return fail({ httpStatus: response.status, ...(code === undefined ? {} : { providerCode: code }) });
   }
   let reader = new TokenReader(response.body);
   return {

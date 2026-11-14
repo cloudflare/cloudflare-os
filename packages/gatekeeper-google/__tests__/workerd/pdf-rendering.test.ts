@@ -54,9 +54,9 @@ function same(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * The bands of page 1 of {@link SCAN} as the renderer cuts it when asked for four, and the page's
- * width. The document it is asked of has been let go, and the renderer has said so, by the time
- * this returns.
+ * The bands of page 1 of {@link SCAN} as the renderer cuts it when asked as the reader asks, and
+ * the page's width. The document it is asked of has been let go, and the renderer has said so,
+ * by the time this returns.
  */
 async function firstPageBands(): Promise<{ width: number; bands: RenderedBand[] }> {
   const before = released();
@@ -66,7 +66,7 @@ async function firstPageBands(): Promise<{ width: number; bands: RenderedBand[] 
     if ("refused" in answer) throw new Error(`The PDF was refused (${answer.refused}).`);
     return answer;
   }, RENDERER_WAIT);
-  const page = await opened.document.renderPage(0, { bands: 4 });
+  const page = await opened.document.renderPage(0, { bands: 4, denseLines: 14 });
   opened.document[Symbol.dispose]();
   await vi.waitFor(() => expect(released()).toBe(before + 1), RENDERER_WAIT);
   if ("refused" in page) throw new Error(`The page was refused (${page.refused}).`);

@@ -1,11 +1,11 @@
 // Reads a rendered page's bands with a vision model, a few at a time, and puts their texts
-// together in the page's order. What can be told of one band's answer is acted on here, by
-// asking for the band once more: a call that failed as any call may, an answer stopped at the
-// model's output limit, one that ran away repeating itself, and one far shorter than the band's
-// writing would make.
+// together in the page's order. What can be told of one band's answer is acted on here. A call
+// that failed as any call may is made once more. A band whose answer was stopped at the model's
+// output limit, ran away repeating itself, or is far shorter than the band's writing would make
+// is cut in two, and its halves asked for.
 
 import type { RenderedBand, RenderedPage } from "@gadgets/pdf-renderer/api";
-import { TranscriptionError, type Transcription } from "./workers-ai-vision";
+import { CAPACITY_CODE, TranscriptionError, type Transcription } from "./workers-ai-vision";
 
 /** The most model calls in flight for one page. */
 const MAX_IN_FLIGHT = 4;
@@ -13,7 +13,7 @@ const MAX_IN_FLIGHT = 4;
  * What makes an answer a runaway: a unit of at least {@link RUNAWAY_UNIT_CHARS} characters said
  * {@link RUNAWAY_REPEATS} times on end, or {@link RUNAWAY_SHORT_CHARS} characters on end of one
  * shorter unit. A unit is the shortest thing that repeats, so a row of dots is a unit of one
- * character however long the row. A band's second answer is held to the
+ * character however long the row. Every answer after a band's first is held to the
  * {@link RUNAWAY_SHORT_CHARS} characters whatever its unit: a table may hold twelve equal rows,
  * and nothing is asked after it that could tell such a table from a runaway.
  */
@@ -36,6 +36,15 @@ const RUNAWAY_WINDOW_CHARS = RUNAWAY_REPEATS * 512;
 const SHORT_MIN_OTHERS = 2;
 const SHORT_DENSITY_PART = 3;
 const SHORT_INK_PART = 10;
+/** The fewest rows a band is cut in two with. One of fewer is asked for again as it is. */
+const CUT_MIN_ROWS = 64;
+
+/**
+ * How long a call that failed waits before it is made again: `ms` milliseconds, and up to
+ * `jitterMs` more at random, so that the calls a model had no room for do not all come back at
+ * once. Tests set both to nothing.
+ */
+export const RETRY_PAUSE = { ms: 250, jitterMs: 250 };
 
 /**
  * Asks the model for one band of a page `width` pixels wide: a transcription of a PNG made
@@ -51,11 +60,11 @@ export type BandEvent = {
   bands: number;
   /** Bytes of the band's image sent, over every ask. */
   imageBytes: number;
-  /** How many times the model was asked for the band: 1 or 2. */
+  /** How many times the model was asked for the band, its halves included: 1 to 3. */
   asks: number;
   /**
-   * Why it was asked a second time: the first call failed, its answer was stopped at the output
-   * limit, its answer ran away, or its answer was short for the band's writing.
+   * Why it was asked again: the first call failed, its answer was stopped at the output limit,
+   * its answer ran away, or its answer was short for the band's writing.
    */
   askedAgain?: "failed" | "truncated" | "runaway" | "short";
 };
@@ -88,15 +97,23 @@ type Asked = Answer | { failure: TranscriptionError; transient: boolean };
  * ends early. `moved` is called as any band's text arrives, and `log` once for each band asked
  * for, also when the page fails.
  *
- * A band is asked for twice at most. It is asked again when its call failed with HTTP 429 or a
- * 5xx, or its response broke or reported an error partway, and a second failure is thrown; any
- * other failure is thrown at once. It is asked again when its answer was stopped at the output
- * limit, or ran away and was stopped here: a second answer that ended whole is then the band's,
- * and failing one the first is kept, a runaway as far as the first of what it repeated, and the
- * page is cut off. A second answer is let repeat for longer before it is stopped, so that a
- * table of equal rows, which the first was stopped in, is read to its end. And once every band
- * has an answer, a band whose answer is short for its writing is asked again, and the longer of
- * its two answers kept.
+ * A band costs three calls at most. Its call is made again as it was, once and after
+ * {@link RETRY_PAUSE}, when it failed with HTTP 429, a 5xx or the service's code for a model
+ * with no room, or its response broke or reported an error partway: a second failure is thrown,
+ * any other failure is thrown at once, and the second answer is the band's however it ended.
+ *
+ * A band whose first answer was stopped at the output limit, or ran away and was stopped here,
+ * is not asked for again as it was: the model would answer the same. It is cut in two (see
+ * {@link halves}) and each half that has ink is asked for, the top first. The halves' texts,
+ * the top's on the lines before the bottom's, are then the band's, cut off when either did not
+ * end whole. When a half's call fails, or neither half has ink, the first answer is kept, a
+ * runaway as far as the first of what it repeated, and the page is cut off. A half's answer is
+ * let repeat for longer before it is stopped, so that a table of equal rows, which the first
+ * was stopped in, is read to its end. And once every band has an answer, a band whose answer is
+ * short for its writing is cut in two likewise, and its halves' texts kept when they are longer
+ * together. A band of fewer than {@link CUT_MIN_ROWS} rows is not cut but asked for once more
+ * as it is: after an answer that did not end whole, a second that did is the band's, and after
+ * a short one the longer of the two is.
  *
  * When a band fails, or `signal` aborts, every other call in flight is given up and waited for
  * before this rejects, with the band's failure or the signal's reason: no call outlives it.
@@ -115,20 +132,26 @@ export async function readBands(
   let reads = page.bands.flatMap((rendered, index): BandRead[] => rendered.pixels
     ? [{ rendered, band: index + 1, imageBytes: 0, asks: 0, text: "", cutOff: false }] : []);
 
-  /** Asks for `read`'s band: a second time when `again` says why. */
-  let ask = async (read: BandRead, again?: BandEvent["askedAgain"]): Promise<Asked> => {
+  /** Asks for `read`'s band, or for `band` of it: not for the first time when `again` says why. */
+  let ask = async (
+    read: BandRead, again?: BandEvent["askedAgain"], band = read.rendered,
+  ): Promise<Asked> => {
     abort.signal.throwIfAborted();
     read.asks++;
     read.askedAgain = again;
     let answer: Transcription;
     try {
-      answer = await call(read.rendered, page.width, abort.signal);
+      answer = await call(band, page.width, abort.signal);
     } catch (error) {
       if (!(error instanceof TranscriptionError)) throw error;
       read.imageBytes += error.sentBytes;
       if (abort.signal.aborted) throw error;
-      let status = "httpStatus" in error.failure ? error.failure.httpStatus : 0;
-      return { failure: error, transient: status === 429 || (status >= 500 && status <= 599) };
+      let answered = "httpStatus" in error.failure ? error.failure : undefined;
+      let status = answered?.httpStatus ?? 0;
+      return {
+        failure: error,
+        transient: status === 429 || (status >= 500 && status <= 599) || answered?.providerCode === CAPACITY_CODE,
+      };
     }
     // An answer being read is not ended by the signal its request was made with.
     let stop = () => void answer.cancel(abort.signal.reason).catch(() => undefined);
@@ -154,15 +177,50 @@ export async function readBands(
       read.imageBytes += answer.sentBytes;
     }
   };
-  /** A band's first ask, and the second that a failure or an answer that did not end whole gets. */
+  /** Waits out {@link RETRY_PAUSE}, or until the page is given up. */
+  let pause = async () => {
+    let ms = RETRY_PAUSE.ms + Math.random() * RETRY_PAUSE.jitterMs;
+    if (ms <= 0 || abort.signal.aborted) return;
+    await new Promise<void>(resolve => {
+      let end = () => {
+        clearTimeout(timer);
+        abort.signal.removeEventListener("abort", end);
+        resolve();
+      };
+      let timer = setTimeout(end, ms);
+      abort.signal.addEventListener("abort", end, { once: true });
+    });
+  };
+  /**
+   * What the halves of `read`'s band that have ink say, the top first, as one answer, which did
+   * not end whole when either did not. `undefined` when neither half has ink, and when a half's
+   * call failed, after which the other is not asked for.
+   */
+  let recut = async (read: BandRead, why: BandEvent["askedAgain"]): Promise<Answer | undefined> => {
+    let said: Answer | undefined;
+    for (let half of halves(read.rendered, page.width)) {
+      if (half.ink <= 0) continue;
+      let asked = await ask(read, why, half);
+      if ("failure" in asked) return undefined;
+      said = said === undefined ? asked : {
+        text: [said.text, asked.text].filter(text => text !== "").join("\n"),
+        ended: said.ended === "whole" ? asked.ended : said.ended,
+      };
+    }
+    return said;
+  };
+  /** A band's first ask, and what a failure or an answer that did not end whole gets after it. */
   let first = async (read: BandRead) => {
     let asked = await ask(read);
     let why: BandEvent["askedAgain"];
     if ("failure" in asked) {
       if (!asked.transient) throw asked.failure;
+      await pause();
       why = "failed";
     } else if (asked.ended === "whole") {
       return keep(read, asked);
+    } else if (read.rendered.rows >= CUT_MIN_ROWS) {
+      return keep(read, await recut(read, asked.ended) ?? asked);
     } else {
       why = asked.ended;
     }
@@ -174,10 +232,10 @@ export async function readBands(
       keep(read, second.ended === "whole" || "failure" in asked ? second : asked);
     }
   };
-  /** The second ask of a band whose whole answer is short. A failure leaves it its first. */
+  /** What is asked after a band's whole answer that is short. A failure leaves it its first. */
   let again = async (read: BandRead) => {
-    let second = await ask(read, "short");
-    if ("text" in second && second.text.length > read.text.length) keep(read, second);
+    let second = read.rendered.rows >= CUT_MIN_ROWS ? await recut(read, "short") : await ask(read, "short");
+    if (second && "text" in second && second.text.length > read.text.length) keep(read, second);
   };
   /** Runs `run` for each of `some`, {@link MAX_IN_FLIGHT} at a time, until one fails. */
   let inFlight = async (some: BandRead[], run: (read: BandRead) => Promise<void>) => {
@@ -222,11 +280,50 @@ function keep(read: BandRead, answer: Answer): void {
 }
 
 /**
+ * `band`, of a page `width` pixels wide, cut in two at the least inked row of its middle third:
+ * the top half, and the bottom, which begins with that row. A row's ink is measured as the
+ * renderer measures it: how far its pixels are from the row's ground, the level that half of
+ * them are at or under, summed. So a row between two lines of writing has the least whether the
+ * page is dark on light or light on dark, and on a white ground it is the darkness of the row's
+ * pixels. Of the rows with the least, the one nearest the band's middle is taken. Each half is a
+ * view of the band's rows, and its `ink` is its rows'.
+ */
+function halves(band: RenderedBand, width: number): [RenderedBand, RenderedBand] {
+  let pixels = band.pixels!;
+  let inks = new Float64Array(band.rows);
+  let levels = new Uint32Array(256);
+  for (let row = 0, at = 0; row < band.rows; row++) {
+    for (let end = at + width; at < end; at++) levels[pixels[at]!]!++;
+    let ground = 0, under = levels[0]!;
+    while (under * 2 < width) under += levels[++ground]!;
+    let ink = 0;
+    for (let level = 0; level < 256; level++) ink += levels[level]! * Math.abs(level - ground);
+    inks[row] = ink;
+    levels.fill(0);
+  }
+  let third = Math.floor(band.rows / 3);
+  let middle = band.rows / 2;
+  let cut = third;
+  for (let row = third + 1; row < band.rows - third; row++) {
+    if (inks[row]! < inks[cut]! ||
+      (inks[row] === inks[cut] && Math.abs(row - middle) < Math.abs(cut - middle))) cut = row;
+  }
+  let inked = (from: number, to: number) => inks.subarray(from, to).reduce((sum, ink) => sum + ink, 0);
+  return [
+    { top: band.top, rows: cut, ink: inked(0, cut), pixels: pixels.subarray(0, cut * width) },
+    {
+      top: band.top + cut, rows: band.rows - cut, ink: inked(cut, band.rows),
+      pixels: pixels.subarray(cut * width, band.rows * width),
+    },
+  ];
+}
+
+/**
  * How much of `text` is kept when its end is a runaway, as the constants above define one: up to
  * the end of the first of what is repeated. `undefined` for a text that does not end in one. A
  * unit with no letter or digit in it, however long, is held to {@link RUNAWAY_SHORT_CHARS}: a
  * table's rule of many equal columns and a page of empty rows repeat as a runaway does. So is
- * every unit of a `second` answer.
+ * every unit of a `second` answer, which is any after a band's first.
  */
 function keptOfRunaway(text: string, second: boolean): number | undefined {
   let window = Math.min(text.length, RUNAWAY_WINDOW_CHARS);

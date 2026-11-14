@@ -1,21 +1,51 @@
 import type { RenderedPage } from "@gadgets/pdf-renderer/api";
-import { describe, expect, it } from "vitest";
-import { readBands, type BandCall, type BandEvent } from "../src/pdf-bands";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readBands, RETRY_PAUSE, type BandCall, type BandEvent } from "../src/pdf-bands";
 import { TranscriptionError, type Transcription } from "../src/workers-ai-vision";
 
 /** Bytes every fake answer says were sent of its band's image. */
 const SENT = 100;
 const WIDTH = 1275;
+/** Rows of a band of {@link page}: fewer than a band is cut in two with. */
+const ROWS = 40;
+/** The width of a page of {@link tall} bands. */
+const NARROW = 4;
 
-/** A page whose bands hold as much ink as `inks` says; one with `undefined` has no pixels. */
+/**
+ * A page whose bands hold as much ink as `inks` says; one with `undefined` has no pixels. Its
+ * bands are too small to be cut in two, so one asked for again is asked for as it is.
+ */
 function page(inks: (number | undefined)[]): RenderedPage {
   return {
-    width: WIDTH, height: inks.length * 400, blank: false, images: 1, surveyed: true, dpi: 150, reduced: false,
+    width: WIDTH, height: inks.length * ROWS, blank: false, images: 1, surveyed: true, dpi: 150, reduced: false,
     bands: inks.map((ink, index) => ({
-      top: index * 400, rows: 400, ink: ink ?? 0, ...(ink === undefined ? {} : { pixels: new Uint8Array(8) }),
+      top: index * ROWS, rows: ROWS, ink: ink ?? 0, ...(ink === undefined ? {} : { pixels: new Uint8Array(8) }),
     })),
     cost: { heapBytes: 0, objects: 1, imagePixels: 0, steps: 1, strips: 1, work: 0 },
   };
+}
+
+/**
+ * A page of bands with all their pixels, each given as the ink of its rows: a row's last pixel
+ * is that far from white, and its others are white.
+ */
+function tall(bands: number[][]): RenderedPage {
+  let top = 0;
+  return {
+    ...page([]), width: NARROW, height: bands.flat().length,
+    bands: bands.map(inks => {
+      let pixels = new Uint8Array(inks.length * NARROW).fill(255);
+      inks.forEach((ink, index) => { pixels[(index + 1) * NARROW - 1] = 255 - ink; });
+      let band = { top, rows: inks.length, ink: inks.reduce((sum, ink) => sum + ink, 0), pixels };
+      top += inks.length;
+      return band;
+    }),
+  };
+}
+
+/** The ink of `count` rows: `ink` each, but for the rows `others` names. */
+function rowsOf(count: number, ink: number, others: Record<number, number> = {}): number[] {
+  return Array.from({ length: count }, (_, index) => others[index] ?? ink);
 }
 
 /** `length` characters of words, which begin and end with none of the whitespace an answer loses. */
@@ -43,6 +73,11 @@ function deferred() {
 /** Lets everything that can go on without a timer do so. */
 function tick(ms = 0): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** As {@link tick} does, where `setTimeout` is faked. */
+function settle(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve));
 }
 
 function refusal(failure: TranscriptionError["failure"], sentBytes = SENT): TranscriptionError {
@@ -112,18 +147,23 @@ function* endless(unit: string, before: string[] = []): Generator<string> {
 }
 
 /**
- * A fake of the model for `sheet`: band n's asks are answered by `script[n - 1]` in turn, and an
- * ask past its end fails the test. It records every ask, `retry` saying that the band was asked
- * for before, and how many are in flight: from the call until its answer has ended, failed or
- * been cancelled.
+ * A fake of the model for `sheet`: band n's asks, those for its halves among them, are answered
+ * by `script[n - 1]` in turn, and an ask past its end fails the test. It records every ask,
+ * `retry` saying that the band was asked for before and `top`, `rows` and `pixels` what of it
+ * was asked for, and how many are in flight: from the call until its answer has ended, failed
+ * or been cancelled.
  */
 function fakeModel(sheet: RenderedPage, script: Reply[][]) {
-  let asks: { band: number; width: number; retry: boolean; signal: AbortSignal }[] = [];
+  let asks: {
+    band: number; width: number; retry: boolean; signal: AbortSignal; top: number; rows: number; pixels: Uint8Array;
+  }[] = [];
   let flight = { now: 0, most: 0 };
   let turns = script.map(() => 0);
   let call: BandCall = async (band, width, signal) => {
-    let index = sheet.bands.indexOf(band);
-    asks.push({ band: index + 1, width, retry: turns[index]! > 0, signal });
+    let index = sheet.bands.findIndex(whole => band.top >= whole.top && band.top < whole.top + whole.rows);
+    asks.push({
+      band: index + 1, width, retry: turns[index]! > 0, signal, top: band.top, rows: band.rows, pixels: band.pixels!,
+    });
     flight.most = Math.max(flight.most, ++flight.now);
     let landed = false;
     let land = () => {
@@ -174,6 +214,21 @@ async function oneBand(pieces: Iterable<string>, second: Reply[] = []) {
   let run = reading(page([500]), [[says(pieces, { state }), ...second]]);
   return { ...await run.done, asks: run.asks.length, state, events: run.seen.events };
 }
+
+/** What of the page each ask was for, in the order asked. */
+function partsAsked(run: { asks: { top: number; rows: number }[] }): { top: number; rows: number }[] {
+  return run.asks.map(({ top, rows }) => ({ top, rows }));
+}
+
+// The pause before a failed call is made again is off, but where it is what is tested.
+beforeEach(() => {
+  Object.assign(RETRY_PAUSE, { ms: 0, jitterMs: 0 });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
 
 describe("readBands", () => {
   it("reads the bands that have pixels, and gives their texts in order, a line each", async () => {
@@ -564,6 +619,262 @@ describe("readBands", () => {
       expect(await run.done).toMatchObject({ cutOff: true });
       expect(run.asks.filter(ask => ask.band === 1)).toHaveLength(2);
       expect(run.seen.events[0]).toMatchObject({ asks: 2, askedAgain: "truncated" });
+    });
+  });
+
+  describe("a band cut in two", () => {
+    const ROW = "| Lot 55-0193-G | 18,442.07 |\n";
+    const CUT = says("as far as the limit", { truncated: true });
+
+    // Of 90 rows, the middle third is rows 30 to 59 and the middle is row 45.
+    it.each([
+      ["its one least inked row", { 40: 1 }, 40],
+      ["the nearest the middle of several as little inked", { 33: 2, 50: 2 }, 50],
+      ["the middle, when every row is as inked as the next", {}, 45],
+      ["the third's first row, whatever lies above it", { 29: 0, 30: 5 }, 30],
+      ["the third's last row, whatever lies below it", { 59: 5, 60: 0 }, 59],
+    ])("is cut at the least inked row of its middle third: %s", async (_label, others, cut) => {
+      // The band is the page's second, so that its halves are placed in the page and not in it.
+      let run = reading(tall([rowsOf(90, 9), rowsOf(90, 9, others)]), [[says("above")], [CUT, says("top"), says("bottom")]]);
+      expect(await run.done).toEqual({ text: "above\ntop\nbottom", cutOff: false });
+      expect(partsAsked(run).slice(1)).toEqual([
+        { top: 90, rows: 90 }, { top: 90, rows: cut }, { top: 90 + cut, rows: 90 - cut },
+      ]);
+    });
+
+    it("is cut between two lines of light writing on a dark ground, where the rows stand out least from their ground", async () => {
+      // Every row is black but for one white pixel of writing; row 40 holds none.
+      let sheet = tall([rowsOf(90, 9)]);
+      let pixels = sheet.bands[0]!.pixels!.fill(0);
+      for (let row = 0; row < 90; row++) if (row !== 40) pixels[row * NARROW] = 255;
+      let run = reading(sheet, [[CUT, says("top"), says("bottom")]]);
+      expect(await run.done).toEqual({ text: "top\nbottom", cutOff: false });
+      expect(partsAsked(run)).toEqual([{ top: 0, rows: 90 }, { top: 0, rows: 40 }, { top: 40, rows: 50 }]);
+    });
+
+    it("has its halves read from its own rows, the top first, and is never asked for a fourth time", async () => {
+      let sheet = tall([rowsOf(90, 9, { 50: 1 })]);
+      let run = reading(sheet, [[CUT, says("the top half"), says("the bottom half"), says("never asked for")]]);
+      expect(await run.done).toEqual({ text: "the top half\nthe bottom half", cutOff: false });
+      expect(run.asks.map(({ band, width, retry }) => ({ band, width, retry }))).toEqual([
+        { band: 1, width: NARROW, retry: false }, { band: 1, width: NARROW, retry: true },
+        { band: 1, width: NARROW, retry: true },
+      ]);
+      // Views of the band's pixels, not copies of them.
+      let { pixels } = sheet.bands[0]!;
+      expect(run.asks.map(ask => [ask.pixels.buffer === pixels!.buffer, ask.pixels.byteOffset, ask.pixels.byteLength]))
+        .toEqual([[true, 0, 90 * NARROW], [true, 0, 50 * NARROW], [true, 50 * NARROW, 40 * NARROW]]);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: 3 * SENT, asks: 3, askedAgain: "truncated" }]);
+    });
+
+    it.each([
+      ["the top", [says("top", { truncated: true }), says("bottom")]],
+      ["the bottom", [says("top"), says("bottom", { truncated: true })]],
+      ["either", [says("top", { truncated: true }), says("bottom", { truncated: true })]],
+    ])("is cut off when %s half's answer did not end whole, and no half is asked for again", async (_label, halves) => {
+      let run = reading(tall([rowsOf(90, 9)]), [[CUT, ...halves, says("never asked for")]]);
+      expect(await run.done).toEqual({ text: "top\nbottom", cutOff: true });
+      expect(run.asks).toHaveLength(3);
+    });
+
+    it("is not asked for again when its halves' texts are short for its writing", async () => {
+      let run = reading(tall([rowsOf(90, 9), rowsOf(90, 9), rowsOf(90, 9)]), [
+        [CUT, says("a"), says("b"), says("never asked for")], [says(prose(600, 2))], [says(prose(600, 3))],
+      ]);
+      expect((await run.done).text.split("\n").slice(0, 2)).toEqual(["a", "b"]);
+      expect(run.asks.filter(ask => ask.band === 1)).toHaveLength(3);
+    });
+
+    it("is cut in two when its answer ran away, and its halves let repeat for 2,000 characters", async () => {
+      // A table of twenty equal rows, which the first answer was stopped in.
+      let table = `| Lot | Florins |\n|---|---|\n${ROW.repeat(20)}| Total | 368,841.40 |`;
+      let run = reading(tall([rowsOf(90, 9)]), [[
+        says(endless(ROW, ["| Lot | Florins |\n|---|---|\n"])), says(table.match(/[^]{1,7}/g)!), says("Counted by the harbour master"),
+      ]]);
+      expect(await run.done).toEqual({ text: `${table}\nCounted by the harbour master`, cutOff: false });
+      expect(partsAsked(run)).toEqual([{ top: 0, rows: 90 }, { top: 0, rows: 45 }, { top: 45, rows: 45 }]);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: 3 * SENT, asks: 3, askedAgain: "runaway" }]);
+
+      // A half that runs away is stopped, and kept as far as the first of what it repeated.
+      let state: AnswerState = { reads: 0, cancelled: false };
+      run = reading(tall([rowsOf(90, 9)]), [[says(endless(ROW)), says(endless(ROW), { state }), says("the end")]]);
+      expect(await run.done).toEqual({ text: `${ROW.trim()}\nthe end`, cutOff: true });
+      expect(state).toEqual({ reads: Math.ceil(2000 / ROW.length), cancelled: true });
+    });
+
+    it.each([
+      ["is stopped at the output limit", says("as far as the limit", { truncated: true }), "as far as the limit"],
+      ["runs away", says(endless(ROW)), ROW.trim()],
+    ])("is not cut when the call made again after one that failed %s: that answer is kept, cut off", async (_label, second, text) => {
+      for (let first of [fails(refusal({ httpStatus: 503 })), says(["half"], { breaks: broken() })]) {
+        let run = reading(tall([rowsOf(90, 9)]), [[first, second, says("never asked for")]]);
+        expect(await run.done).toEqual({ text, cutOff: true });
+        expect(partsAsked(run)).toEqual([{ top: 0, rows: 90 }, { top: 0, rows: 90 }]);
+        expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: 2 * SENT, asks: 2, askedAgain: "failed" }]);
+      }
+    });
+
+    it("has only its halves that have ink asked for", async () => {
+      // The top half of the first is white, and the bottom half of the second.
+      let run = reading(tall([[...rowsOf(50, 0), ...rowsOf(40, 9)], [...rowsOf(40, 9), ...rowsOf(50, 0)]]), [
+        [CUT, says("the bottom half"), says("never asked for")], [CUT, says("the top half"), says("never asked for")],
+      ]);
+      expect(await run.done).toEqual({ text: "the bottom half\nthe top half", cutOff: false });
+      expect(partsAsked(run).filter(({ rows }) => rows !== 90)).toEqual([{ top: 45, rows: 45 }, { top: 90, rows: 45 }]);
+      expect(run.seen.events).toEqual([
+        { band: 1, bands: 2, imageBytes: 2 * SENT, asks: 2, askedAgain: "truncated" },
+        { band: 2, bands: 2, imageBytes: 2 * SENT, asks: 2, askedAgain: "truncated" },
+      ]);
+    });
+
+    it("keeps its first answer, cut off, when neither half has ink, and asks for nothing more", async () => {
+      let run = reading(tall([rowsOf(90, 0)]), [[CUT, says("never asked for")]]);
+      expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: SENT, asks: 1 }]);
+    });
+
+    it.each([
+      ["the top half's call fails as one that may be made again", [fails(refusal({ httpStatus: 503 }))], 2],
+      ["the top half's call is refused", [fails(refusal({ httpStatus: 400, providerCode: 8006 }))], 2],
+      ["the top half's response breaks", [says(["half"], { breaks: broken() })], 2],
+      ["the bottom half's call fails", [says("the top half"), fails(refusal({ httpStatus: 503 }))], 3],
+    ])("keeps its first answer, cut off, when %s, and asks for nothing after", async (_label, halves, asks) => {
+      let run = reading(tall([rowsOf(90, 9)]), [[CUT, ...halves, says("never asked for"), says("never asked for")]]);
+      expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });
+      expect(run.asks).toHaveLength(asks);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: asks * SENT, asks, askedAgain: "truncated" }]);
+    });
+
+    it("fails the page when the image's own stream fails at a half", async () => {
+      let gone = new Error("The page's pixels are gone.");
+      let run = reading(tall([rowsOf(90, 9)]), [[CUT, says("the top half"), fails(gone)]]);
+      await expect(run.done).rejects.toBe(gone);
+    });
+
+    it("is asked for again as it is with fewer than 64 rows, and cut in two with 64", async () => {
+      let small = reading(tall([rowsOf(63, 9)]), [[CUT, says("the whole band"), says("never asked for")]]);
+      expect(await small.done).toEqual({ text: "the whole band", cutOff: false });
+      expect(partsAsked(small)).toEqual([{ top: 0, rows: 63 }, { top: 0, rows: 63 }]);
+      let cut = reading(tall([rowsOf(64, 9)]), [[CUT, says("top"), says("bottom")]]);
+      expect(await cut.done).toEqual({ text: "top\nbottom", cutOff: false });
+      expect(partsAsked(cut)).toEqual([{ top: 0, rows: 64 }, { top: 0, rows: 32 }, { top: 32, rows: 32 }]);
+    });
+
+    describe("whose answer is short for its writing", () => {
+      /** Three bands of 810 ink: the first answers 100 characters, and the others 600 each. */
+      function sheetOf(halves: Reply[]) {
+        return reading(tall([rowsOf(90, 9), rowsOf(90, 9), rowsOf(90, 9)]), [
+          [says(prose(100)), ...halves, says("never asked for")], [says(prose(600, 2))], [says(prose(600, 3))],
+        ]);
+      }
+
+      it("has its halves asked for once every band has answered, and their texts kept when longer together", async () => {
+        let run = sheetOf([says(prose(300, 5)), says(prose(300, 6))]);
+        expect((await run.done).text.split("\n").slice(0, 2)).toEqual([prose(300, 5), prose(300, 6)]);
+        expect(partsAsked(run)).toEqual([
+          { top: 0, rows: 90 }, { top: 90, rows: 90 }, { top: 180, rows: 90 }, { top: 0, rows: 45 }, { top: 45, rows: 45 },
+        ]);
+        expect(run.seen.events[0]).toEqual({ band: 1, bands: 3, imageBytes: 3 * SENT, asks: 3, askedAgain: "short" });
+      });
+
+      it.each([
+        ["its halves' texts are shorter together", [says(prose(49, 5)), says(prose(49, 6))], 3],
+        ["they are as long together", [says(prose(49, 5)), says(prose(50, 6))], 3],
+        ["the top half's call fails, after which the bottom is not asked for", [fails(refusal({ httpStatus: 503 }))], 2],
+        ["the bottom half's call fails", [says(prose(300, 5)), fails(refusal({ httpStatus: 400 }))], 3],
+      ])("keeps its first answer as it is when %s", async (_label, halves, asks) => {
+        let run = sheetOf(halves);
+        let read = await run.done;
+        expect(read.text.split("\n")[0]).toBe(prose(100));
+        expect(read.cutOff).toBe(false);
+        expect(run.asks.filter(ask => ask.band === 1)).toHaveLength(asks);
+      });
+
+      it("is cut off when its halves' texts are kept and one did not end whole", async () => {
+        let run = sheetOf([says(prose(300, 5)), says(prose(300, 6), { truncated: true })]);
+        expect(await run.done).toMatchObject({ cutOff: true });
+      });
+    });
+  });
+
+  describe("the pause before a failed call is made again", () => {
+    beforeEach(() => {
+      Object.assign(RETRY_PAUSE, { ms: 250, jitterMs: 250 });
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    });
+
+    it.each([[0, 250], [0.5, 375], [0.996, 499]])("is 250 ms and up to 250 more at random: %f makes %i", async (random, ms) => {
+      vi.spyOn(Math, "random").mockReturnValue(random);
+      for (let first of [fails(refusal({ httpStatus: 503 })), says(["half"], { breaks: broken() })]) {
+        let run = reading(page([5]), [[first, says("the second answer")]]);
+        await vi.advanceTimersByTimeAsync(ms - 1);
+        await settle();
+        expect(run.asks).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await run.done).toEqual({ text: "the second answer", cutOff: false });
+        expect(run.asks).toHaveLength(2);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    });
+
+    it.each([400, 503])("comes before a call that failed for want of room, under HTTP %i, is made again, and never a third time", async status => {
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      let again = refusal({ httpStatus: status, providerCode: 3040 }, 60);
+      let run = reading(page([5]), [[
+        fails(refusal({ httpStatus: status, providerCode: 3040 })), fails(again), says("never asked for"),
+      ]]);
+      let failed = expect(run.done).rejects.toBe(again);
+      await vi.advanceTimersByTimeAsync(249);
+      await settle();
+      expect(run.asks).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await failed;
+      expect(run.asks.map(ask => ask.retry)).toEqual([false, true]);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: SENT + 60, asks: 2, askedAgain: "failed" }]);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it("is ended at once when another band fails the page, which does not wait it out", async () => {
+      let gate = deferred();
+      let refused = refusal({ httpStatus: 400 });
+      let run = reading(page([5, 5]), [
+        [fails(refusal({ httpStatus: 503 })), says("never asked for")], [after(gate, fails(refused))],
+      ]);
+      let failed = expect(run.done).rejects.toBe(refused);
+      await settle();
+      expect(vi.getTimerCount()).toBe(1);
+      gate.resolve();
+      await settle();
+      // No time has passed.
+      expect(vi.getTimerCount()).toBe(0);
+      await failed;
+      expect(run.asks.map(({ band, retry }) => ({ band, retry }))).toEqual([
+        { band: 1, retry: false }, { band: 2, retry: false },
+      ]);
+    });
+
+    it("is ended at once when the signal aborts", async () => {
+      let request = new AbortController();
+      let reason = new Error("The text was cancelled.");
+      let run = reading(page([5]), [[fails(refusal({ httpStatus: 503 })), says("never asked for")]], request.signal);
+      let failed = expect(run.done).rejects.toBe(reason);
+      await settle();
+      expect(vi.getTimerCount()).toBe(1);
+      request.abort(reason);
+      expect(vi.getTimerCount()).toBe(0);
+      await failed;
+      expect(run.asks).toHaveLength(1);
+    });
+
+    it("is not made before a band's halves, nor after a half that failed", async () => {
+      let cut = says("as far as the limit", { truncated: true });
+      let run = reading(tall([rowsOf(90, 9), rowsOf(90, 9)]), [
+        [cut, says("top"), says("bottom")], [cut, fails(refusal({ httpStatus: 503 })), says("never asked for")],
+      ]);
+      // No time passes.
+      expect(await run.done).toEqual({ text: "top\nbottom\nas far as the limit", cutOff: true });
+      expect(run.asks).toHaveLength(5);
+      expect(vi.getTimerCount()).toBe(0);
     });
   });
 
