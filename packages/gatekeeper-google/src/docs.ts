@@ -1089,7 +1089,12 @@ function storedDocSource(
  * What a Doc opened from Drive learns from its binding about the document's other sessions: how
  * many writes have landed in it, and when its newest pending edit was queued.
  */
-export type DocFreshness = { writes(): number; newestPending(): number };
+export type DocFreshness = {
+  writes(): number;
+  newestPending(): number;
+  /** The newest pending edit's number, or 0: any edit queued since changes it. */
+  newestQueued(): number;
+};
 
 /**
  * A Doc as a Drive binding opens one, on the snapshot it read last: reused for the TTL, then
@@ -1106,6 +1111,7 @@ export function driveDocSource(
   docsApi: GoogleDocReader, driveApi: DriveApi, documentId: string, freshness?: DocFreshness,
 ): DocSource {
   let writes = () => freshness?.writes() ?? 0;
+  let queued = () => freshness?.newestQueued() ?? 0;
   /** The writes landed when each snapshot was fetched. */
   let fetchedAfter = new WeakMap<GoogleDocSnapshot, number>();
   /** A fetch still in flight, so reads issued together observe one revision. */
@@ -1115,19 +1121,23 @@ export function driveDocSource(
   let next = async (): Promise<GoogleDocSnapshot> => {
     for (;;) {
       let landed = writes();
+      let newest = queued();
+      // An edit queued while a request was out may have been checked against a newer revision
+      // than the one it answers, so the replay over it would fail that edit.
+      let moved = () => landed !== writes() || newest !== queued();
       let cached = approved;
       if (cached && fetchedAfter.get(cached) === landed &&
           (freshness?.newestPending() ?? 0) <= cached.fetchedAt) {
         if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
         if (await googleDocRevisionUnchanged(docsApi, documentId, cached)) {
-          if (landed !== writes()) continue;
+          if (moved()) continue;
           cached.fetchedAt = Date.now();
           return cached;
         }
       }
       let snapshot = googleDocSnapshot(await docsApi.getDocument(documentId));
       // Fetched before a write landed, it would read the edit as neither made nor pending.
-      if (landed !== writes()) continue;
+      if (moved()) continue;
       fetchedAfter.set(snapshot, landed);
       return snapshot;
     }

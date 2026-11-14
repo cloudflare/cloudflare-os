@@ -431,6 +431,7 @@ export class DriveFileEditors {
       writes: () => this.#docCache(fileId).writes,
       newestPending: () => Math.max(0,
         ...this.#docsPending(fileId).map(({ action }) => action.submittedAt)),
+      newestQueued: () => Math.max(0, ...this.#docsPending(fileId).map(({ id }) => id)),
     };
   }
 

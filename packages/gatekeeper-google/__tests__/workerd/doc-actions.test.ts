@@ -5,7 +5,7 @@ import type { RpcStub } from "cloudflare:workers";
 import {
   DOC_DEFINITIONS, googleDocSnapshot, type DocHost, type GoogleDocAction,
 } from "../../src/doc-actions";
-import { GoogleDocSessionImpl, type DocChangeQueue } from "../../src/docs";
+import { driveDocSource, GoogleDocSessionImpl, type DocChangeQueue } from "../../src/docs";
 import type { GoogleDocsApi, GoogleDocsDocument } from "../../src/docs-api";
 import type { DriveApi } from "../../src/drive-api";
 import { MARKDOWN_RENDERING_VERSION } from "../../src/markdown-converter";
@@ -210,5 +210,35 @@ describe("a Doc edit prepared through a read that is authorized", () => {
     let { docs, queued } = session(pending);
     await docs.replaceText("More", "Most");
     expect(queued).toMatchObject([{ type: "replaceText", oldMarkdown: "More", newMarkdown: "Most" }]);
+  });
+});
+
+describe("a Drive binding's Doc snapshot", () => {
+  // Another session on the binding can queue an edit checked against a newer revision while this
+  // one's request is out: replayed over the older answer, that valid edit would fail for good.
+  it("is fetched again when an edit is queued while the fetch is out", async () => {
+    let revision = "r1";
+    let calls = 0;
+    let release: (() => void) | undefined;
+    let docsApi = {
+      getDocument: async () => {
+        calls++;
+        let answered = { ...document("Draft"), revisionId: revision };
+        if (calls === 1) await new Promise<void>(resolve => { release = resolve; });
+        return answered;
+      },
+    } as unknown as GoogleDocsApi;
+    let newest = 0;
+    let source = driveDocSource(docsApi, {} as DriveApi, "doc-1", {
+      writes: () => 0, newestPending: () => 0, newestQueued: () => newest,
+    });
+
+    let fetched = source.snapshot();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    revision = "r2";
+    newest = 7;
+    release!();
+    expect((await fetched).revisionId).toBe("r2");
+    expect(calls).toBe(2);
   });
 });
