@@ -1,12 +1,18 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import { XIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Tooltip } from '@/components/Tooltip'
 import { attachmentKind } from '@/files/attachmentKind'
+import { previewFormat } from '@/files/previewFormat'
 import { useImageUrl } from '@/hooks/useImageUrl'
-import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
+import { AttachmentTileFace } from './AttachmentTileFace'
+import { useFileThumbnail } from './file-preview/useFileThumbnail'
 import type { ComposerAttachment } from './useComposerAttachments'
 
+/**
+ * A file about to be sent: its picture, or a glimpse of its first page, slide or sheet, drawn from
+ * the file on this device before it is uploaded.
+ */
 export const ComposerAttachmentCard = ({ attachment, onRemove }: {
   attachment: ComposerAttachment
   onRemove: () => void
@@ -15,12 +21,14 @@ export const ComposerAttachmentCard = ({ attachment, onRemove }: {
   const [previewFailed, setPreviewFailed] = useState(false)
   const previewUrl = useImageUrl(file, file)
   const name = file.name || 'Attached file'
-  const KindIcon = ATTACHMENT_KIND_ICONS[attachmentKind(file)]
+  const picture = previewUrl && !previewFailed
+  const load = useCallback(async () => new Uint8Array(await file.arrayBuffer()), [file])
+  const { ref, thumbnail } = useFileThumbnail<HTMLDivElement>(picture ? undefined : previewFormat(file), load)
 
   return (
     <Tooltip content={name}>
-      <div className="group relative size-22 overflow-hidden rounded-2xl bg-kumo-base sm:size-26">
-        {previewUrl && !previewFailed ? (
+      <div ref={ref} className="group relative size-22 overflow-hidden rounded-2xl bg-kumo-base sm:size-26">
+        {picture ? (
           <img
             src={previewUrl}
             alt={name}
@@ -28,10 +36,7 @@ export const ComposerAttachmentCard = ({ attachment, onRemove }: {
             onError={() => setPreviewFailed(true)}
           />
         ) : (
-          <div className="flex h-full flex-col justify-between gap-2 p-3">
-            <KindIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-subtle" />
-            <span className="line-clamp-2 text-xs/4 font-medium wrap-anywhere text-kumo-default">{name}</span>
-          </div>
+          <AttachmentTileFace name={name} kind={attachmentKind(file)} thumbnail={thumbnail} />
         )}
         <span aria-hidden="true" className="pointer-events-none absolute inset-0 rounded-[inherit] ring-1 ring-kumo-line ring-inset" />
         <Button

@@ -13,11 +13,20 @@ describe('previewOf', () => {
     expect(previewOf({ name: 'a.mp4', mimeType: 'video/mp4' }, new Uint8Array(4))).toEqual({ kind: 'video', type: 'video/mp4' })
   })
 
-  it('shows text, code, CSV and Markdown as text', () => {
+  it('shows text, code and Markdown as text', () => {
     expect(previewOf({ name: 'notes.txt', mimeType: 'text/plain' }, text('hi'))).toEqual({ kind: 'text', text: 'hi' })
     expect(previewOf({ name: 'a.ts', mimeType: '' }, text('let a'))).toEqual({ kind: 'text', text: 'let a' })
-    expect(previewOf({ name: 'a.csv', mimeType: 'text/csv' }, text('a,b'))).toEqual({ kind: 'text', text: 'a,b' })
     expect(previewOf({ name: 'README.md', mimeType: 'text/plain' }, text('# Hi'))).toEqual({ kind: 'markdown', text: '# Hi' })
+  })
+
+  it('draws Word, PowerPoint and Excel files and CSVs with its own previewers, but not the older binary Office files', () => {
+    const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04])
+    expect(previewOf({ name: 'brief.docx', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }, zip)).toEqual({ kind: 'document' })
+    expect(previewOf({ name: 'deck.pptx', mimeType: 'application/octet-stream' }, zip)).toEqual({ kind: 'slides' })
+    expect(previewOf({ name: 'budget.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }, zip)).toEqual({ kind: 'workbook' })
+    expect(previewOf({ name: 'a.csv', mimeType: 'text/csv' }, text('a,b'))).toEqual({ kind: 'delimited' })
+    expect(previewOf({ name: 'a.tsv', mimeType: 'text/plain' }, text('a\tb'))).toEqual({ kind: 'delimited' })
+    expect(previewOf({ name: 'old.doc', mimeType: 'application/msword' }, new Uint8Array(4))).toEqual({ kind: 'none' })
   })
 
   it('shows a page as its text, never running it', () => {

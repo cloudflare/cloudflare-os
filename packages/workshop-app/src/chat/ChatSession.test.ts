@@ -100,6 +100,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
     deleteChat: vi.fn<Overseer['deleteChat']>(async () => {}),
+    getChatAttachmentContent: vi.fn<Overseer['getChatAttachmentContent']>(async (_chatId, id) => new TextEncoder().encode(id)),
   }
 
   const broken = new Set<(error: unknown) => void>()

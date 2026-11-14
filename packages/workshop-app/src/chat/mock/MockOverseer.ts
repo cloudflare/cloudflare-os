@@ -50,7 +50,7 @@ export class MockOverseer {
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
   #listed: NonNullable<Scenario['gadgets']>
-  #files: Record<string, Uint8Array>
+  #files: NonNullable<Scenario['files']>
   #blobs = new Map<GitOid, Uint8Array>()
   #refusals: string[]
   #sendDelay: number
@@ -311,9 +311,9 @@ export class MockOverseer {
   }
 
   async getChatAttachmentContent(_chatId: number, id: string): Promise<Uint8Array> {
-    const bytes = this.#files[id]
-    if (!bytes) throw new Error(`No attachment ${id}`)
-    return bytes
+    const file = this.#files[id]
+    if (!file) throw new Error(`No attachment ${id}`)
+    return typeof file === 'function' ? file() : file
   }
 
   async setChatTitle(_chatId: number, title: string) {

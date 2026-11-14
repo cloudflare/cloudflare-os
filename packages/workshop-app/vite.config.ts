@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import { vitestTask } from '@gadgets/scripts/vitest-task'
+import { pdfjsAssets } from './vite-pdfjs-assets'
 
 const ownDist = { pattern: '!dist/**', base: 'package' } as const
 // The route tree a build uses, which leaves out the development-only pages (see below). Kept out of
@@ -63,6 +64,8 @@ export default defineConfig(({ command, mode }) => {
       react(),
       tailwindcss(),
       tsconfigPaths(),
+      // The files pdf.js fetches by name while it draws a PDF's thumbnail.
+      pdfjsAssets(),
     ],
     resolve: build
       ? { alias: [{ find: /^\.\/routeTree\.gen$/, replacement: fileURLToPath(new URL(BUILD_ROUTE_TREE, import.meta.url)) }] }

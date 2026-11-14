@@ -1422,6 +1422,9 @@ importers:
       '@cloudflare/kumo':
         specifier: ^2.14.0
         version: 2.16.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(@types/react@19.3.0)(date-fns@4.4.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(zod@4.6.7)
+      '@gadgets/office-content':
+        specifier: workspace:*
+        version: link:../office-content
       '@gadgets/workshop-shared':
         specifier: workspace:*
         version: link:../workshop-shared
@@ -1443,6 +1446,9 @@ importers:
       motion:
         specifier: ^13.5.1
         version: 13.5.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      pdfjs-dist:
+        specifier: ^6.5.438
+        version: 6.5.438
       react:
         specifier: ^19.2.8
         version: 19.3.1

@@ -1,5 +1,6 @@
-import { FileIcon, MusicNotesIcon } from '@phosphor-icons/react'
+import { FileIcon, MusicNotesIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { Markdown } from '@/components/Markdown'
+import { OfficePreview, type OfficePreviewKind } from './file-preview/OfficePreview'
 import { PaneNotice } from './PaneNotice'
 
 export type FileViewProps = {
@@ -12,11 +13,13 @@ export type FileViewProps = {
   /** Shown by the browser from `url`, which holds the file's bytes. */
   | { kind: 'image' | 'pdf' | 'audio' | 'video'; url: string }
   | { kind: 'markdown' | 'text'; text: string }
+  /** A Word document, PowerPoint deck, Excel workbook or CSV, drawn here from its bytes. */
+  | { kind: OfficePreviewKind; bytes: Uint8Array; mimeType: string }
   /** Not something that can be shown here. */
   | { kind: 'none' }
 )
 
-/** A file, shown as what it is: an image, a PDF, a recording, a video, a document, text. */
+/** A file, shown as what it is: an image, a PDF, a recording, a video, a document, a deck, a sheet, text. */
 export const FileView = (props: FileViewProps) => {
   const { name, details, onDownload } = props
   switch (props.kind) {
@@ -56,6 +59,22 @@ export const FileView = (props: FileViewProps) => {
       return (
         <div className="appears min-h-0 flex-1 overflow-auto">
           <pre className="p-6 font-mono text-sm/6 break-words whitespace-pre-wrap text-kumo-default">{props.text}</pre>
+        </div>
+      )
+    case 'document':
+    case 'slides':
+    case 'workbook':
+    case 'delimited':
+      return (
+        <div className="appears min-h-0 flex-1 overflow-auto">
+          <OfficePreview
+            kind={props.kind}
+            name={name}
+            mimeType={props.mimeType}
+            bytes={props.bytes}
+            loading={<PaneNotice title="Loading…" />}
+            failed={(message) => <PaneNotice icon={WarningCircleIcon} title={`Couldn’t show ${name}`} description={message} action={{ label: 'Download', onClick: onDownload }} />}
+          />
         </div>
       )
     case 'none':

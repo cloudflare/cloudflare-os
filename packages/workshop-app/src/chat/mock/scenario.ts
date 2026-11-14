@@ -263,8 +263,11 @@ export type Scenario = {
   script: ScriptStep[]
   /** The workspace has read restricted data, so every approval asks for a full read. */
   restricted?: boolean
-  /** The bytes of files sent in the chat that are fetched when opened, rather than sent inline, by id. */
-  files?: Record<string, Uint8Array>
+  /**
+   * The bytes of files sent in the chat that are fetched when opened, rather than sent inline, by
+   * id; or how to make them, for a file that takes a moment to build, such as an Office package.
+   */
+  files?: Record<string, Uint8Array | (() => Promise<Uint8Array>)>
   /** What the workspace says to the first messages sent, which it refuses, in order. */
   refusals?: string[]
   /** How long a message takes to be sent, in milliseconds, so that one on its way can be seen. */
