@@ -27,6 +27,7 @@ import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
 import { ShellPreview } from '@/gallery/ShellPreview'
+import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
@@ -317,6 +318,7 @@ function Gallery() {
       <ToolBlocksPreview />
       <CardBlocksPreview />
       <SystemBlocksPreview />
+      <SettingsPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">

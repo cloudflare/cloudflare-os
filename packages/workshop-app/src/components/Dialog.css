@@ -1,0 +1,44 @@
+/* A dialog arrives the way a card arrives in a conversation (Arrival.css): its size rides a spring
+   that overshoots a touch and settles, while what is in it fades in and comes into focus on a
+   shorter clock of its own. It grows out of the middle of the window, there being nothing it came
+   out of. It leaves faster than it came, with no spring, so what was under it is back at once.
+   The backdrop is a dim, never a blur: what is behind stays readable as where the dialog came from. */
+.dialog-backdrop {
+  transition: opacity 200ms ease-out;
+}
+.dialog-backdrop[data-starting-style],
+.dialog-backdrop[data-ending-style] {
+  opacity: 0;
+}
+
+.dialog-popup {
+  transition:
+    scale 420ms linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1),
+    opacity 200ms 40ms ease-out,
+    filter 200ms 40ms ease-out;
+}
+.dialog-popup[data-starting-style] {
+  scale: 0.9;
+  opacity: 0;
+  filter: blur(3px);
+}
+.dialog-popup[data-ending-style] {
+  scale: 0.96;
+  opacity: 0;
+  transition:
+    scale 150ms ease-in,
+    opacity 150ms ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog-backdrop,
+  .dialog-popup,
+  .dialog-popup[data-ending-style] {
+    transition: opacity 150ms ease-out;
+  }
+  .dialog-popup[data-starting-style],
+  .dialog-popup[data-ending-style] {
+    scale: none;
+    filter: none;
+  }
+}

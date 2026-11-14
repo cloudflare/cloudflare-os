@@ -15,9 +15,10 @@ export type ButtonProps = BaseButtonProps &
     icon?: ElementType | ReactElement
     /**
      * `ghost` drops the fill and ring until hovered, for secondary actions inside another surface.
-     * `primary` is the one action a surface asks for.
+     * `primary` is the one action a surface asks for. `danger` is one that cannot be undone, such
+     * as deleting: the secondary button, in the colour that says so.
      */
-    variant?: 'secondary' | 'ghost' | 'primary'
+    variant?: 'secondary' | 'ghost' | 'primary' | 'danger'
     className?: string
   }
 
@@ -25,6 +26,7 @@ const VARIANT = {
   secondary: 'bg-kumo-base text-kumo-default ring-1 ring-kumo-line not-data-disabled:hover:bg-kumo-tint',
   ghost: 'bg-transparent text-kumo-default not-data-disabled:hover:bg-kumo-tint',
   primary: 'bg-kumo-contrast text-kumo-inverse not-data-disabled:hover:opacity-85',
+  danger: 'bg-kumo-base text-kumo-danger ring-1 ring-kumo-line not-data-disabled:hover:bg-kumo-danger-tint',
 } as const
 
 const renderIcon = (icon: ButtonProps['icon']): ReactNode => {
