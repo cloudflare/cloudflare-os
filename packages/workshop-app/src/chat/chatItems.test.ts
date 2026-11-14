@@ -42,6 +42,8 @@ const edit = (filename: string) => call('editFile', { filename, textToReplace: '
 const run = (rest: { output?: string; error?: string } = { output: 'ok' }) => call('executeCode', { code: 'run()' }, rest)
 const createGadget = (gadgetId: number, title = 'Report') => call('createGadget', { title, bindingName: 'REPORT' }, { output: { gadgetId } })
 const created = (gadgetId: number) => changes({ author: AGENT, createdGadgets: [{ gadgetId, title: 'Report', bindingName: 'REPORT' }] })
+const write = (gadgetId: number, filename = 'client.js') => call('writeFile', { workpiece: 'TIP_JAR', filename, content: 'x' }, { workpieceId: gadgetId })
+const labels = (result: ChatFeed) => result.work.map(({ label }) => label)
 
 const request = (state: 'pending' | 'accepted' | 'denied') =>
   connectionRequest({ vendorName: 'ClickHouse', reason: 'Read error rates.', resourceTitle: 'ClickHouse cluster', state })
@@ -263,6 +265,41 @@ describe('toChatFeed', () => {
         { sections: [{ label: 'Code', text: 'run()' }, { label: 'Output', text: '42' }] },
         { error: 'Timed out' },
       ])
+    })
+
+    describe('in plain words', () => {
+      it('says what code did in the agent’s own words, as a step', () => {
+        const summarised = call('executeCode', { code: 'run()', summary: 'checking this week’s orders.' }, { output: 'ok' })
+        expect(labels(feed(agent({ toolCalls: [summarised, run()] })))).toEqual(['Checking this week’s orders', 'Ran code'])
+      })
+
+      it('names the gadget a file step touched, building one the chat made until it is kept', () => {
+        const making = [agent({ toolCalls: [createGadget(1, 'Tip Jar')] }), created(1), agent({ toolCalls: [write(1), call('readFile', { filename: 'client.js' }, { workpieceId: 1 })] })]
+        expect(labels(feed(...making))).toEqual(['Built Tip Jar', 'Looked over Tip Jar'])
+        // What was built stays built; once it is kept, it is being changed.
+        expect(labels(feed(...making, merge(), agent({ toolCalls: [write(1)] })))).toEqual(['Built Tip Jar', 'Looked over Tip Jar', 'Updated Tip Jar'])
+      })
+
+      it('names a gadget the chat did not make by the workspace’s title for it, which follows a rename', () => {
+        const messages = history([agent({ toolCalls: [write(5)] })])
+        const before = toChatFeed(messages, { gadgets: new Map([[5, { title: 'Tip Jar' }]]) })
+        expect(labels(before)).toEqual(['Updated Tip Jar'])
+        const renamed = toChatFeed(messages, { gadgets: new Map([[5, { title: 'Tips' }]]) }, before)
+        expect(labels(renamed)).toEqual(['Updated Tips'])
+        // A title that did not change leaves the step as it was.
+        expect(toChatFeed(messages, { gadgets: new Map([[5, { title: 'Tips' }]]) }, renamed).work[0]).toBe(renamed.work[0])
+      })
+
+      it('falls back to what a gadget is, and keeps the file in the step’s detail', () => {
+        const { work } = toChatFeed(history([agent({ toolCalls: [write(5)] })]), { gadgets: new Map([[5, { title: '', noun: 'Document' }]]) })
+        expect(work).toMatchObject([{ label: 'Updated the document', sections: [{ label: 'File', text: 'client.js' }, { label: 'Content', text: 'x' }] }])
+      })
+
+      it('names the file when the gadget is not known, as in chats from before it was recorded', () => {
+        const unrecorded = call('writeFile', { filename: 'client.js', content: 'x' })
+        const { work } = feed(agent({ toolCalls: [unrecorded, write(8)] }))
+        expect(work).toMatchObject([{ label: 'Wrote client.js', sections: [{ label: 'Content' }] }, { label: 'Wrote client.js' }])
+      })
     })
 
     it('keeps each step’s key as more are taken, so what was opened stays open', () => {

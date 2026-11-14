@@ -274,6 +274,8 @@ export type Scenario = {
    * discarding it records a merge or revert. Otherwise accepts are scripted, and nothing is proposed.
    */
   keeps?: boolean
+  /** The workspace's gadgets the chat did not make, as the workspace lists them, so steps can name them. */
+  gadgets?: Array<{ id: number; title: string }>
 }
 
 const CHUNK_DELAY = 45
@@ -295,13 +297,13 @@ const stream = (event: AiChatStreamEvent, delay = CHUNK_DELAY): ScriptStep => ({
 
 /**
  * Streams one tool call the way the server does before the call's durable message: it starts and
- * names its file; code to run streams as the call's code and a file's new content as a preview of
+ * names its file, or says what its code does; code to run streams as the call's code and a file's new content as a preview of
  * the edit; then its input is complete. `executeCode` never reports that: it runs, its output
  * streams, and its durable message ends it.
  */
 export const streamTool = (toolCall: AiToolCall, format?: BlueprintOutput): ScriptStep[] => {
   const { toolCallId, toolName } = toolCall
-  const file = 'filename' in toolCall.input ? { workpieceId: 1, filename: toolCall.input.filename } : undefined
+  const file = 'filename' in toolCall.input ? { workpieceId: toolCall.workpieceId ?? 1, filename: toolCall.input.filename } : undefined
   const edit =
     toolCall.toolName === 'editFile' ? { content: toolCall.input.replacement, textToReplace: toolCall.input.textToReplace }
     : toolCall.toolName === 'writeFile' ? { content: toolCall.input.content }
@@ -314,6 +316,7 @@ export const streamTool = (toolCall: AiToolCall, format?: BlueprintOutput): Scri
     ...chunks(edit?.content ?? '', 4).map((delta) => stream({ type: 'editPreviewDelta', toolCallId, delta })),
     ...(toolCall.toolName === 'executeCode'
       ? [
+          ...(toolCall.input.summary ? [stream({ type: 'toolCallSummary', toolCallId, summary: toolCall.input.summary }, 120)] : []),
           ...chunks(toolCall.input.code, 4).map((delta) => stream({ type: 'toolCodeDelta', toolCallId, delta })),
           ...chunks(toolCall.output ?? '', 4).map((delta) => stream({ type: 'toolOutputDelta', toolCallId, delta }, 90)),
         ]

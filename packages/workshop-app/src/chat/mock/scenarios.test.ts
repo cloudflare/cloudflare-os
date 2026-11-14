@@ -72,7 +72,9 @@ describe('scenarios', () => {
   it('tool-run: what each call is doing is said while it runs, and stays behind the reply rather than in the conversation', async () => {
     const { rows, seen } = await watch(scenario('tool-run'), ({ ready }) => [ready().activity])
 
-    expect([...seen]).toEqual(expect.arrayContaining(['Reading src/worker.ts…', 'Writing src/trend.ts…', 'Running code…', 'Writing…', undefined]))
+    // In plain words: the gadget the files are in, and what the code does as the agent put it.
+    expect([...seen]).toEqual(expect.arrayContaining(['Looking over Tickets dashboard…', 'Updating Tickets dashboard…', 'Counting twelve weeks of tickets…', 'Writing…', undefined]))
+    expect([...seen].some((status) => status?.includes('.ts'))).toBe(false)
     expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'assistant'])
     const [, answer] = of(rows(), 'assistant')
     expect(answer.trace.length).toBeGreaterThan(4)

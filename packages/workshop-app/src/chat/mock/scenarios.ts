@@ -60,34 +60,36 @@ const plain: Scenario = {
   ],
 }
 
-const read = (filename: string) => call('readFile', { workpiece: 'DASHBOARD', filename })
+// The dashboard is the workspace's gadget 1, which every recorded file step names.
+const read = (filename: string) => call('readFile', { workpiece: 'DASHBOARD', filename }, { workpieceId: 1 })
 const reads = [read('src/worker.ts'), read('src/chart.tsx'), read('package.json')]
 const edit = call('editFile', {
   workpiece: 'DASHBOARD',
   filename: 'src/chart.tsx',
   textToReplace: 'const WEEKS = 4',
   replacement: 'const WEEKS = 12',
-})
+}, { workpieceId: 1 })
 const write = call('writeFile', {
   workpiece: 'DASHBOARD',
   filename: 'src/trend.ts',
   content: 'export const trend = (points: number[]) =>\n  points.map((point, index) => point - (points[index - 1] ?? point))\n',
-})
+}, { workpieceId: 1 })
 const runCode = 'const tickets = await env.JIRA.search("project = PLAT AND created >= -12w")\nconsole.log(tickets.length, "tickets in 12 weeks")\n'
 const runOutput = '148 tickets in 12 weeks\n'
-const run = call('executeCode', { code: runCode }, { output: runOutput })
+const run = call('executeCode', { code: runCode, summary: 'Counting twelve weeks of tickets' }, { output: runOutput })
 const failedEdit = call(
   'editFile',
   { workpiece: 'DASHBOARD', filename: 'src/worker.ts', textToReplace: 'limit: 50', replacement: 'limit: 200' },
   { error: 'The text to replace was not found in src/worker.ts.' },
 )
-const search = call('grep', { workpiece: 'DASHBOARD', pattern: 'limit:', path: 'src' }, { output: 'src/worker.ts:18:    maxResults: 50,\n' })
+const search = call('grep', { workpiece: 'DASHBOARD', pattern: 'limit:', path: 'src' }, { output: 'src/worker.ts:18:    maxResults: 50,\n', workpieceId: 1 })
 
 const toolRun: Scenario = {
   id: 'tool-run',
   title: 'Jira dashboard',
   description: 'Reads, edits, code with output and a failing tool. The status beside the mascot says what is happening and opens to the steps; none of it stays in the conversation.',
   history: history([user('Show twelve weeks of tickets on the chart instead of four.')]),
+  gadgets: [{ id: 1, title: 'Tickets dashboard' }],
   script: turn(
     say(agent({ text: 'I’ll read the chart code first.' })),
     reads.flatMap((toolCall) => streamTool(toolCall)),
@@ -117,9 +119,9 @@ const toolRun: Scenario = {
 }
 
 const LABEL_KIND = { tag: 'jira.label', label: 'Label an issue' }
-const createTicket = call('executeCode', { code: 'await env.JIRA.createIssue({ project: "PLAT", summary: "Chart shows 4 weeks" })\n' }, { output: 'Queued for approval.\n' })
-const postToSlack = call('executeCode', { code: 'await env.SLACK.post("#platform", "Filed PLAT-212: the tickets chart shows 4 weeks instead of 12.")\n' }, { output: 'Queued for approval.\n' })
-const labelTicket = call('executeCode', { code: 'await env.JIRA.addLabel("PLAT-212", "dashboard")\n' }, { output: 'Queued for approval.\n' })
+const createTicket = call('executeCode', { code: 'await env.JIRA.createIssue({ project: "PLAT", summary: "Chart shows 4 weeks" })\n', summary: 'Filing a ticket about the chart' }, { output: 'Queued for approval.\n' })
+const postToSlack = call('executeCode', { code: 'await env.SLACK.post("#platform", "Filed PLAT-212: the tickets chart shows 4 weeks instead of 12.")\n', summary: 'Telling #platform about the ticket' }, { output: 'Queued for approval.\n' })
+const labelTicket = call('executeCode', { code: 'await env.JIRA.addLabel("PLAT-212", "dashboard")\n', summary: 'Labelling the ticket' }, { output: 'Queued for approval.\n' })
 
 const approval: Scenario = {
   id: 'approval',
@@ -316,7 +318,7 @@ const writeDoc = call('writeFile', {
   workpiece: 'REVIEW',
   filename: 'content.md',
   content: '# Q3 platform review\n\n## Highlights\n\n- Ticket volume down 12%\n- Median time to close: 3.2 days\n',
-})
+}, { workpieceId: 41 })
 
 // A one-page PDF saying `text`, with the offsets a reader looks its parts up by.
 const pdf = (text: string) => {

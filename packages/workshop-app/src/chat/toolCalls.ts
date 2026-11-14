@@ -39,17 +39,40 @@ const host = (url: string) => {
   }
 }
 
-/** What a finished call did and to what, e.g. `Read` + `worker.ts`. */
-const describe = (call: AiToolCall): { verb: string; target?: string } => {
+/**
+ * The gadget a step reads or changes, as far as the chat can name it. Steps say what is happening
+ * to the user's things, not which files the agent opened, wherever the gadget is known.
+ */
+export type StepGadget = {
+  title?: string
+  /** What it is, e.g. "Document", for when it has no title. */
+  noun?: string
+  /** This chat made it and it is not kept yet, so the agent is building it rather than changing it. */
+  isNew?: boolean
+}
+
+const gadgetName = ({ title, noun }: StepGadget) => title || `the ${(noun ?? 'gadget').toLowerCase()}`
+
+/**
+ * The agent's own words for what its code does, as a step: a capital first, and no closing stop,
+ * which the step adds as it needs (`…` while it runs).
+ */
+export const asStep = (summary: string): string | undefined => {
+  const words = summary.trim().replace(/[.…:;,!]+$/u, '').trim()
+  return words ? `${words[0].toUpperCase()}${words.slice(1)}` : undefined
+}
+
+/** What a finished call did and to what, e.g. `Updated` + `Tip Jar`. */
+const describe = (call: AiToolCall, gadget: StepGadget | undefined): { verb: string; target?: string } => {
   switch (call.toolName) {
     case 'readFile':
-      return { verb: 'Read', target: call.input.filename }
+      return gadget ? { verb: 'Looked over', target: gadgetName(gadget) } : { verb: 'Read', target: call.input.filename }
     case 'writeFile':
-      return { verb: 'Wrote', target: call.input.filename }
     case 'editFile':
-      return { verb: 'Edited', target: call.input.filename }
+      if (gadget) return { verb: gadget.isNew ? 'Built' : 'Updated', target: gadgetName(gadget) }
+      return { verb: call.toolName === 'writeFile' ? 'Wrote' : 'Edited', target: call.input.filename }
     case 'grep':
-      return { verb: 'Searched', target: call.input.path ?? call.input.workpiece }
+      return gadget ? { verb: 'Looked through', target: gadgetName(gadget) } : { verb: 'Searched', target: call.input.path ?? call.input.workpiece }
     case 'describeBinding': {
       const name = `${call.input.name} binding`
       return { verb: 'Inspected', target: call.input.gadget === undefined ? name : `${name} of ${call.input.gadget}` }
@@ -67,7 +90,7 @@ const describe = (call: AiToolCall): { verb: string; target?: string } => {
     case 'createWorktree':
       return { verb: 'Created worktree', target: call.input.title }
     case 'executeCode':
-      return { verb: 'Ran code' }
+      return { verb: (call.input.summary && asStep(call.input.summary)) || 'Ran code' }
     case 'giveUp':
       return { verb: 'Stopped' }
     case 'webFetch':
@@ -88,9 +111,13 @@ const describe = (call: AiToolCall): { verb: string; target?: string } => {
   }
 }
 
-/** One finished call as a sentence: "Read worker.ts". */
-export const toolLabel = (call: AiToolCall): string => {
-  const { verb, target } = describe(call)
+/**
+ * One finished call as a sentence: "Updated Tip Jar", or what its code did in the agent's words.
+ * `gadget` is the one the call recorded (`AiToolCall.workpieceId`); without it, as in logs from
+ * before that was recorded, the step names its file.
+ */
+export const toolLabel = (call: AiToolCall, gadget?: StepGadget): string => {
+  const { verb, target } = describe(call, gadget)
   return target ? `${verb} ${target}` : verb
 }
 
@@ -121,42 +148,67 @@ const IN_PROGRESS: Record<ToolName, string> = {
 
 const NEEDS_TARGET: Partial<Record<ToolName, string>> = { readFile: 'file', writeFile: 'file', editFile: 'file', grep: 'files' }
 
+/** As much of a call as has streamed, for its label. */
+export type LiveToolCall = {
+  toolName?: ToolName
+  /** The file it names, once that part of its input has streamed. */
+  target?: string
+  /** What a `createGadget` is making, e.g. "Document". */
+  noun?: string
+  /** What the agent said the code it is running does. */
+  summary?: string
+}
+
 /**
- * A call that is still being written or run: "Writing worker.ts…". Only its name is known at
- * first; `target` is the file it names once that has streamed, and `noun` what a `createGadget`
- * is making ("Document").
+ * A call that is still being written or run: "Updating Tip Jar…", or what its code does in the
+ * agent's words. Only its name is known at first, then the file it names (with `gadget`, the
+ * gadget that file is in), and an `executeCode` call's summary just after it starts.
  */
-export const liveToolLabel = (toolName: ToolName | undefined, target?: string, noun?: string): string => {
+export const liveToolLabel = ({ toolName, target, noun, summary }: LiveToolCall, gadget?: StepGadget): string => {
   if (!toolName) return 'Using a tool…'
+  const said = summary && asStep(summary)
+  if (said) return `${said}…`
   if (toolName === 'createGadget' && noun) return `Creating ${noun}…`
+  if (gadget && (toolName === 'writeFile' || toolName === 'editFile')) return `${gadget.isNew ? 'Building' : 'Updating'} ${gadgetName(gadget)}…`
+  if (gadget && (toolName === 'readFile' || toolName === 'grep')) return `Looking over ${gadgetName(gadget)}…`
   const verb = IN_PROGRESS[toolName] ?? 'Using a tool'
   const object = target ?? NEEDS_TARGET[toolName]
   return `${verb}${object ? ` ${object}` : ''}…`
 }
 
-/** A streaming call's detail so far, under the headings its finished detail will have. */
+/**
+ * A streaming call's detail so far, under the headings its finished detail will have: with its
+ * file, once `named` says the label names the gadget instead.
+ */
 export const liveToolSections = (
-  { toolName, written, replaced, output }: { toolName?: ToolName; written: string; replaced?: string; output: string },
+  { toolName, target, written, replaced, output }: { toolName?: ToolName; target?: string; written: string; replaced?: string; output: string },
+  named = false,
 ): ToolSection[] => [
+  ...(named ? section('File', target) : []),
   ...section('Replaced', replaced),
   ...section(toolName === 'writeFile' ? 'Content' : toolName === 'editFile' ? 'With' : 'Code', written),
   ...section('Output', output),
 ]
 
-/** What a call's row shows when opened: only what the label does not already say. */
-export const toolSections = (call: AiToolCall): ToolSection[] => {
+/**
+ * What a call's row shows when opened: only what the label does not already say. A step that
+ * names its gadget keeps the file it touched here, for whoever wants to know how it was done.
+ */
+export const toolSections = (call: AiToolCall, named = false): ToolSection[] => {
+  const file = (filename: string | undefined) => (named ? section('File', filename) : [])
   switch (call.toolName) {
     case 'executeCode':
       return [...section('Code', call.input.code), ...section('Output', call.output)]
     case 'writeFile':
-      return section('Content', call.input.content)
+      return [...file(call.input.filename), ...section('Content', call.input.content)]
     case 'editFile':
-      return [...section('Replaced', call.input.textToReplace), ...section('With', call.input.replacement)]
+      return [...file(call.input.filename), ...section('Replaced', call.input.textToReplace), ...section('With', call.input.replacement)]
     case 'grep':
-      return [...section('Pattern', call.input.pattern), ...section('Matches', call.output)]
+      return [...file(call.input.path), ...section('Pattern', call.input.pattern), ...section('Matches', call.output)]
     case 'readFile': {
       const { startLine, lineCount } = call.input
-      return startLine === undefined && lineCount === undefined ? [] : section('Lines', `${startLine ?? 1}–${lineCount === undefined ? 'end' : (startLine ?? 1) + lineCount - 1}`)
+      const lines = startLine === undefined && lineCount === undefined ? [] : section('Lines', `${startLine ?? 1}–${lineCount === undefined ? 'end' : (startLine ?? 1) + lineCount - 1}`)
+      return [...file(call.input.filename), ...lines]
     }
     case 'webFetch':
       return [...section('URL', call.input.url), ...section('Response', call.output)]

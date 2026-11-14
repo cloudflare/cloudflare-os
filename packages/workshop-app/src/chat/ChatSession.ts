@@ -2,6 +2,7 @@ import type { RpcStub } from 'capnweb'
 import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
+  gadgetNamer,
   toChatFeed,
   type ActionItem,
   type ChatFeed,
@@ -15,9 +16,9 @@ import {
 import type { GoBack } from './changePoints'
 import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
 import { quotedBy } from './replyQuote'
-import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
+import { liveToolLabel, liveToolSections, toolIcon, type StepGadget } from './toolCalls'
 import { uploadAttachments } from './uploadAttachments'
-import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
+import { ActionUpdates, ChatSubscriber, GadgetTitles, type ChatEvents, type GadgetTitle } from './ChatSubscriber'
 
 /**
  * The chat's changes are waiting for the user to keep or discard them: they could not be kept on
@@ -115,6 +116,7 @@ export type ChatOverseer = Pick<Overseer, Calls> & {
     subscriber: Parameters<RpcStub<Overseer>['subscribeToActions']>[0],
     startAfter?: Date,
   ): ReturnType<Overseer['subscribeToActions']>
+  subscribeToWorkpieces(subscriber: Parameters<RpcStub<Overseer>['subscribeToWorkpieces']>[0]): ReturnType<Overseer['subscribeToWorkpieces']>
 } & Disposable & {
   /** Calls `callback` once the workspace can no longer be reached through this, such as when it restarted. */
   onRpcBroken(callback: (error: unknown) => void): void
@@ -148,6 +150,8 @@ type LiveCall = {
   toolName?: AiToolCall['toolName']
   /** The file it names, once that part of its input has streamed. */
   target?: string
+  /** The gadget that file is in. */
+  workpieceId?: number
   /** What the agent said the code it is running does, in a few words. */
   summary?: string
   /** What a `createGadget` is making, e.g. "Document". */
@@ -161,13 +165,13 @@ type LiveCall = {
   finished: boolean
 }
 
-const liveEntry = (call: LiveCall, reasoning: string | undefined): ToolEntry => ({
+const liveEntry = (call: LiveCall, reasoning: string | undefined, gadget: StepGadget | undefined): ToolEntry => ({
   type: 'call',
   key: call.toolCallId,
   icon: call.toolName ? toolIcon(call.toolName) : 'terminal',
-  label: call.summary ?? liveToolLabel(call.toolName, call.target, call.noun),
+  label: liveToolLabel(call, gadget),
   reasoning,
-  sections: liveToolSections(call),
+  sections: liveToolSections(call, gadget !== undefined),
   running: !call.finished,
 })
 
@@ -233,6 +237,10 @@ export class ChatSession {
   // Formats seen while a createGadget call streamed. The durable call does not carry its format,
   // so this is what lets the card it becomes say what was made.
   #outputFormats = new Map<string, OutputFormat>()
+  // The workspace's gadgets, so steps can name the one they touch, and the namer built from them
+  // and the chat's own creations with the feed.
+  #gadgets: ReadonlyMap<number, GadgetTitle> = new Map()
+  #gadgetOf: (gadgetId: number) => StepGadget | undefined = () => undefined
   // The steps since the last message with the step being written joined on, rebuilt only when
   // either changes.
   #work: WorkEntry[] | undefined
@@ -571,8 +579,10 @@ export class ChatSession {
       steers: this.#steers,
       compactedTo: this.#compactedTo,
       outputFormats: this.#outputFormats,
+      gadgets: this.#gadgets,
     }
     this.#feed = toChatFeed(loaded, context, this.#feed)
+    this.#gadgetOf = gadgetNamer(loaded, context)
     this.#work = undefined
   }
 
@@ -603,14 +613,18 @@ export class ChatSession {
     // It is still thinking only until it starts to write.
     if (this.#reasoning && !withCall) live.push({ type: 'thinking', key: 'live:thinking', text: this.#reasoning, running: this.#streaming === '' })
     if (this.#streaming) live.push({ type: 'writing', key: 'live:writing', text: this.#streaming })
-    this.#calls.forEach((call, index) => live.push(liveEntry(call, index === 0 && withCall ? this.#reasoning || undefined : undefined)))
+    this.#calls.forEach((call, index) => live.push(liveEntry(call, index === 0 && withCall ? this.#reasoning || undefined : undefined, this.#liveGadget(call))))
     return (this.#work = [...work, ...live])
+  }
+
+  #liveGadget(call: LiveCall) {
+    return call.workpieceId === undefined ? undefined : this.#gadgetOf(call.workpieceId)
   }
 
   #activity() {
     if (this.#compacting) return 'Compacting the conversation…'
     const call = this.#calls.at(-1)
-    if (call) return call.summary ? `${call.summary}…` : liveToolLabel(call.toolName, call.target, call.noun)
+    if (call) return liveToolLabel(call, this.#liveGadget(call))
     return this.#streaming === '' ? 'Thinking…' : 'Writing…'
   }
 
@@ -684,7 +698,11 @@ export class ChatSession {
         overseer.subscribeToChat(new ChatSubscriber(this.#eventsFor(run))),
         overseer.subscribeToActions(new ActionUpdates((record) => this.#live(run, () => this.#applyAction(record)))),
       ]
-      this.#leases = leases
+      // Titles only name the steps, so a workspace that will not list its gadgets loses nothing
+      // else: the steps name what the chat made, and files otherwise.
+      const titles = overseer.subscribeToWorkpieces(new GadgetTitles((gadgets) => this.#live(run, () => this.#applyGadgets(gadgets))))
+      titles.catch(() => {})
+      this.#leases = [...leases, titles]
       for (const lease of leases) lease.catch((error) => this.#lost(run, error))
       // Without this, a workspace that restarted would leave the conversation silently still.
       // It can be called at once, for a workspace that cannot be reached.
@@ -904,6 +922,13 @@ export class ChatSession {
     this.#publishReady()
   }
 
+  /** The workspace's gadgets as now listed. Not reset with the chat: a new list replaces them. */
+  #applyGadgets(gadgets: ReadonlyMap<number, GadgetTitle>) {
+    this.#gadgets = gadgets
+    this.#rebuildFeed()
+    this.#publishReady()
+  }
+
   /** Refreshes the copy of an action's record that its chat message carries. */
   #applyAction(record: ActionLogEntry) {
     let changed = false
@@ -929,9 +954,12 @@ export class ChatSession {
       case 'toolCallStarted':
         this.#liveCall(event.toolCallId).toolName = event.toolName
         break
-      case 'toolCallTarget':
-        this.#liveCall(event.toolCallId).target = event.file.filename
+      case 'toolCallTarget': {
+        const call = this.#liveCall(event.toolCallId)
+        call.target = event.file.filename
+        call.workpieceId = event.file.workpieceId
         break
+      }
       case 'toolCallOutputFormat': {
         const { noun, icon } = event.output
         this.#liveCall(event.toolCallId).noun = noun

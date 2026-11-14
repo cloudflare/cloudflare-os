@@ -106,6 +106,15 @@ bubble run with the same 2px spacing and meeting corners. A chevron in its top r
 puts it away again, and so does a click anywhere outside the panel.
 The mascot's room is always kept, so its coming and going moves nothing.
 
+Steps are said in plain words, about the user's things rather than how the agent works
+(`chat/toolCalls.ts`): a code run by the agent's own few words for it (executeCode's `summary`,
+streamed as `toolCallSummary`), and a file step by the gadget it touched ("Updating Tip Jar…",
+"Built Tip Jar", "Looked over Tip Jar"), whose file moves into the step's detail. A gadget the chat
+made is being built until its changes are kept. Live calls learn the gadget from `toolCallTarget`,
+finished ones from `AiToolCall.workpieceId`; `gadgetNamer` names it by the workspace's title
+(`ChatSession` keeps the list through `subscribeToWorkpieces`), else the title the chat gave it.
+Calls recorded before `workpieceId` existed, and failed ones, still name their file.
+
 A turn is everything from one prompt to the next. What a turn produced (an output, a hook) or is
 waiting on the user for (a pending approval or connection request) is shown at the end of the turn,
 never where it happened, so it cannot be left behind by what the agent wrote afterwards. The last

@@ -9,6 +9,7 @@ import type {
   ChatAttachmentRef,
   PresenceSubscriber,
   SlashCommandRequest,
+  WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
 import type { ActionKind, GitOid } from '@gadgets/workshop-shared/gatekeeper'
 import { DISCONNECTED, MockGadget, RESTARTED, type Handle } from './MockGadget'
@@ -48,6 +49,7 @@ export class MockOverseer {
   // Standing approvals, as `gatekeeperId:tag`.
   #rules = new Set<string>()
   #gadgets = new Map<number, MockGadget>()
+  #listed: NonNullable<Scenario['gadgets']>
   #files: Record<string, Uint8Array>
   #blobs = new Map<GitOid, Uint8Array>()
   #refusals: string[]
@@ -73,6 +75,7 @@ export class MockOverseer {
     this.#refusals = [...(scenario.refusals ?? [])]
     this.#sendDelay = scenario.sendDelay ?? 0
     this.#keeps = scenario.keeps === true
+    this.#listed = scenario.gadgets ?? []
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#metadata = {
@@ -125,8 +128,15 @@ export class MockOverseer {
     return gadget
   }
 
-  /** The scenarios' gadgets keep their code. */
-  subscribeToWorkpieces() {
+  /**
+   * The scenarios' gadgets keep their code. A scenario that lists the workspace's gadgets has them
+   * named; the others are never listed, so what opens one waits rather than finding it missing.
+   */
+  subscribeToWorkpieces(subscriber?: WorkpiecesSubscriber) {
+    if (subscriber && this.#listed.length) {
+      for (const { id, title } of this.#listed) subscriber.entry({ id, type: 'gadget', title })
+      subscriber.ready()
+    }
     return lease(() => {})
   }
 

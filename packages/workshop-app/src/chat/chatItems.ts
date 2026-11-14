@@ -3,7 +3,7 @@ import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeepe
 import { webUrl } from '@/components/webUrl'
 import { changePoints, type GoBack } from './changePoints'
 import { splitQuote } from './replyQuote'
-import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
+import { toolIcon, toolLabel, toolSections, type StepGadget, type ToolIcon, type ToolSection } from './toolCalls'
 
 type Message<T extends AiChatMessage['type']> = Extract<AiChatMessage, { type: T }>
 
@@ -212,6 +212,8 @@ export type FeedContext = {
   compactedTo?: number
   /** Formats seen while their `createGadget` call streamed, by tool call id. */
   outputFormats?: ReadonlyMap<string, OutputFormat>
+  /** The workspace's gadgets as last listed, by id, so a step can name one this chat did not make. */
+  gadgets?: ReadonlyMap<number, { title: string; noun?: string }>
 }
 
 /**
@@ -398,13 +400,13 @@ type CallEntry = Extract<ToolEntry, { type: 'call' }>
 type ObservationEntry = Extract<ToolEntry, { type: 'observation' }>
 type ThinkingEntry = Extract<WorkEntry, { type: 'thinking' }>
 
-const callEntry = (call: AiToolCall, reasoning: string | undefined): Omit<CallEntry, 'key'> => ({
+const callEntry = (call: AiToolCall, reasoning: string | undefined, gadget: StepGadget | undefined): Omit<CallEntry, 'key'> => ({
   type: 'call',
   icon: toolIcon(call.toolName),
-  label: toolLabel(call),
+  label: toolLabel(call, gadget),
   error: call.error,
   reasoning,
-  sections: toolSections(call),
+  sections: toolSections(call, gadget !== undefined),
 })
 
 const observationEntry = (log: ActionLogEntry & { type: 'observation' }): Omit<ObservationEntry, 'key'> => ({
@@ -445,6 +447,36 @@ const creationStates = (messages: AiChatMessage[]) => {
   // The record of a creation may not be loaded; a merge after the call accepted it all the same.
   return (gadget: number, createdAt: number): CreationState =>
     states.get(gadget) ?? (merges.some((sequence) => sequence > createdAt) ? 'merged' : 'pending')
+}
+
+/**
+ * Names the gadgets the chat's steps touched: by the workspace's title for it, which follows a
+ * rename, or else the title this chat gave it. One the chat made is new until its changes are
+ * kept, so the steps before that were building it, and those after are changing it.
+ */
+export const gadgetNamer = (messages: readonly AiChatMessage[], context: FeedContext = {}) => {
+  const made = new Map<number, { title: string; noun?: string; at: number }>()
+  const merges: Array<{ at: number; through: number }> = []
+  for (const message of messages) {
+    if (message.type === 'merge') merges.push({ at: message.sequence, through: message.mergeThrough })
+    if (message.type !== 'message') continue
+    for (const call of message.toolCalls ?? []) {
+      if (call.toolName !== 'createGadget' || !call.output || call.error) continue
+      made.set(call.output.gadgetId, { title: call.input.title, noun: context.outputFormats?.get(call.toolCallId)?.noun, at: message.sequence })
+    }
+  }
+  /** `at` is the sequence of the step's message; a step still streaming comes after them all. */
+  return (gadgetId: number, at = Infinity): StepGadget | undefined => {
+    const listed = context.gadgets?.get(gadgetId)
+    const creation = made.get(gadgetId)
+    if (!listed && !creation) return undefined
+    const kept = creation && merges.some((merge) => merge.at > creation.at && merge.at < at && merge.through >= creation.at)
+    return {
+      title: listed?.title || creation?.title,
+      noun: listed?.noun ?? creation?.noun,
+      isNew: creation !== undefined && creation.at <= at && !kept,
+    }
+  }
 }
 
 /** What a call made that the user can open, if it made something. */
@@ -494,6 +526,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     ...(previous?.items ?? []).flatMap((item) => (item.kind === 'assistant' ? item.trace : [])),
   ])
   const creationState = creationStates(messages)
+  const gadgetOf = gadgetNamer(messages, context)
   const { viewerId, compactedTo } = context
   const points = changePoints(messages, viewerId)
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
@@ -636,7 +669,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           const created = creationOf(call, (gadget) => creationState(gadget, id))
           if (!created) {
             const before = reasoning
-            work.push(emitStep<CallEntry>(call.toolCallId, [call, before], () => callEntry(call, before)))
+            const gadget = call.workpieceId === undefined ? undefined : gadgetOf(call.workpieceId, id)
+            // Named by its title now, so a rename shows in the steps too.
+            const name = gadget && `${gadget.title}:${gadget.noun}:${gadget.isNew}`
+            work.push(emitStep<CallEntry>(call.toolCallId, [call, before, name], () => callEntry(call, before, gadget)))
             reasoning = undefined
             continue
           }

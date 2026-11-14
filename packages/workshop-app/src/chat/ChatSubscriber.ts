@@ -1,5 +1,5 @@
 import { RpcTarget } from 'capnweb'
-import type { ActionLogEntry, ActionsSubscriber, AiChatSubscriber } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, ActionsSubscriber, AiChatSubscriber, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 
 /** The notifications this app acts on. Code changes (`changeApplied`) are not part of it. */
 export type ChatEvents = Pick<AiChatSubscriber, 'streamGeneration' | 'metadata' | 'message' | 'stream' | 'deleted'>
@@ -50,4 +50,39 @@ export class ActionUpdates extends RpcTarget implements ActionsSubscriber {
   }
 
   ready() {}
+}
+
+/** A workpiece as a chat's steps name it. */
+export type GadgetTitle = { title: string; noun?: string }
+
+/**
+ * What the server calls as the workspace's workpieces change, kept as their titles. `changed`
+ * hears the whole list once it has all arrived, and again after each change from then on.
+ */
+export class GadgetTitles extends RpcTarget implements WorkpiecesSubscriber {
+  #titles = new Map<WorkpieceId, GadgetTitle>()
+  #ready = false
+
+  constructor(private readonly changed: (titles: ReadonlyMap<WorkpieceId, GadgetTitle>) => void) {
+    super()
+  }
+
+  entry(summary: WorkpieceSummary) {
+    this.#titles.set(summary.id, { title: summary.title, noun: summary.type === 'gadget' ? summary.output?.noun : undefined })
+    this.#publish()
+  }
+
+  removed(id: WorkpieceId) {
+    this.#titles.delete(id)
+    this.#publish()
+  }
+
+  ready() {
+    this.#ready = true
+    this.#publish()
+  }
+
+  #publish() {
+    if (this.#ready) this.changed(new Map(this.#titles))
+  }
 }

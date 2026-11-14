@@ -11,7 +11,7 @@ import type {
   Overseer,
 } from '@gadgets/workshop-shared/api'
 import { ChatSession, type ChatOverseer, type ChatSnapshot } from './ChatSession'
-import { ActionUpdates, ChatSubscriber } from './ChatSubscriber'
+import { ActionUpdates, ChatSubscriber, GadgetTitles } from './ChatSubscriber'
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void
@@ -54,6 +54,7 @@ const page = (...messages: AiChatMessage[]): AiChatHistoryPage => ({ messages })
 const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number, AiChatHistoryPage> = {}) => {
   let subscriber: ChatSubscriber | undefined
   let actionUpdates: ActionUpdates | undefined
+  let gadgetTitles: GadgetTitles | undefined
   const dispose = vi.fn<() => void>()
   const leaseDispose = vi.fn<() => void>()
   const actionsLeaseDispose = vi.fn<() => void>()
@@ -75,6 +76,11 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     if (!(given instanceof ActionUpdates)) throw new Error('subscribeToActions was not given an ActionUpdates')
     actionUpdates = given
     return Promise.resolve(actionsLease)
+  })
+  const subscribeToWorkpieces = vi.fn<ChatOverseer['subscribeToWorkpieces']>((given) => {
+    if (!(given instanceof GadgetTitles)) throw new Error('subscribeToWorkpieces was not given a GadgetTitles')
+    gadgetTitles = given
+    return Promise.resolve({ [Symbol.dispose]: () => {} } as unknown as RpcStub<{}>)
   })
   const sendChatMessage = vi.fn<Overseer['sendChatMessage']>(async () => {})
   const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.byteLength}`)
@@ -102,6 +108,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     getChatHistory,
     subscribeToChat,
     subscribeToActions,
+    subscribeToWorkpieces,
     sendChatMessage,
     uploadBlob,
     ...asked,
@@ -124,6 +131,8 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     server: () => subscriber!,
     /** What the server calls when an action's record changes. */
     actions: () => actionUpdates!,
+    /** What the server calls as the workspace's workpieces change. */
+    workpieces: () => gadgetTitles!,
     /** The workspace can no longer be reached through this overseer, as when it restarted. */
     breaks: (error: unknown = new Error('Durable Object reset')) => broken.forEach((callback) => callback(error)),
   }
@@ -159,7 +168,7 @@ const flush = async () => {
 const working = async (history: AiChatMessage[] = []) => {
   const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]), { 0: page(...history) })
   const session = await started(fake)
-  return { session, stream: (...events: AiChatStreamEvent[]) => events.forEach((event) => fake.server().stream(0, event)), server: fake.server() }
+  return { session, stream: (...events: AiChatStreamEvent[]) => events.forEach((event) => fake.server().stream(0, event)), server: fake.server(), workpieces: fake.workpieces }
 }
 const withCalls = (sequence: number, toolCalls: AiToolCall[], reasoning?: string): AiChatMessage =>
   ({ chatId: 0, sequence, timestamp: new Date(0), author: agentAuthor, type: 'message', message: '', toolCalls, reasoning })
@@ -585,6 +594,28 @@ describe('ChatSession', () => {
 
       stream({ type: 'toolCallFinished', toolCallId: 'w' })
       expect(ready(session).work).toMatchObject([{ running: false }])
+    })
+
+    it('says what is happening to the user’s things: the agent’s words for its code, and the gadget a file is in', async () => {
+      const { session, stream, workpieces } = await working()
+      const titles = workpieces()
+      titles.entry({ id: 1, type: 'gadget', title: 'Tip Jar', commitId: 'a'.repeat(40) })
+      titles.ready()
+
+      stream({ type: 'toolCallStarted', toolCallId: 'x', toolName: 'executeCode' }, { type: 'toolCallSummary', toolCallId: 'x', summary: 'checking this week’s orders' })
+      expect(ready(session)).toMatchObject({ activity: 'Checking this week’s orders…', work: [{ label: 'Checking this week’s orders…' }] })
+
+      stream({ type: 'toolCallStarted', toolCallId: 'w', toolName: 'writeFile' }, { type: 'toolCallTarget', toolCallId: 'w', file })
+      expect(ready(session)).toMatchObject({
+        activity: 'Updating Tip Jar…',
+        work: [{ key: 'x' }, { key: 'w', label: 'Updating Tip Jar…', sections: [{ label: 'File', text: 'worker.ts' }] }],
+      })
+
+      // A rename shows at once, and a gadget the workspace no longer lists is named by its file.
+      titles.entry({ id: 1, type: 'gadget', title: 'Tips', commitId: 'a'.repeat(40) })
+      expect(ready(session).activity).toBe('Updating Tips…')
+      titles.removed(1)
+      expect(ready(session).activity).toBe('Writing worker.ts…')
     })
 
     it('streams the code a call runs, then its output', async () => {

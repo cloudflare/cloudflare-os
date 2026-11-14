@@ -301,3 +301,16 @@ entry for every block). What was decided on the way:
 - **Library.** Items open as their own page, as he does it, not beside the Library. Google files
   can't be starred (there is no kind for them) but can be removed.
 - **Sharing.** Toasts become notes under the invite field. Avatars are initials only.
+
+### Where the port needed the kernel
+
+Balint's app avoids kernel changes. Where ours is the better experience we make the change and
+list it here, so it is known what workshop-app needs from the kernel.
+
+- **Steps in plain words.** His steps name the tool and its file ("Wrote client.js", "Running
+  code…"). Ours say what is happening to the user's things: the agent's summary of a code run
+  (kernel: executeCode `summary` and the `toolCallSummary` stream event, from the prototype) and
+  the gadget a file step touched (kernel: `AiToolCall.workpieceId`, recorded by readFile, grep,
+  writeFile and editFile on success). Without it a finished step knows only the binding name the
+  agent used, which the client cannot resolve.
+
