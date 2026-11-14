@@ -1746,6 +1746,7 @@ async function reloadSheets(ids: string[]) {
     sheetReloads--;
     // Edits refused meanwhile left history at the positions shown then.
     for (const id of ids) { loadingSheets.delete(id); forgetHistoryOf(id); }
+    if (pivotRefreshDeferred && !loadingSheets.size) { pivotRefreshDeferred = false; schedulePivotRefreshes(); }
     // An event held during the reload mustn't undo a save of the same cell acknowledged after it.
     const acked = new Map<string, number>();
     if (!sheetReloads && !connecting) reloadReplacements.length = 0;
@@ -2591,7 +2592,7 @@ function sortSelection(asc: boolean) {
 // ===========================================================================
 // Pivot tables
 // ===========================================================================
-let pivotRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+let pivotRefreshTimer: ReturnType<typeof setTimeout> | undefined, pivotRefreshDeferred = false;
 function pivotSheets(): string[] { return model.sheetOrder.filter((id) => model.sheets[id]?.pivot); }
 function pivotCellValue(sheetId: string, row: number, column: number): Scalar { return engine.computeRef(sheetId, rcToRef(row, column)); }
 function pivotSourceRange(): string {
@@ -2635,7 +2636,8 @@ function refreshPivot(sheetId: string, save = true): boolean {
 function schedulePivotRefreshes() {
   if (!pivotSheets().length) return;
   clearTimeout(pivotRefreshTimer);
-  pivotRefreshTimer = setTimeout(() => refreshPivots(), 320);
+  // A source still loading its moved cells is read once it has (see reloadSheets).
+  pivotRefreshTimer = setTimeout(() => { if (loadingSheets.size) pivotRefreshDeferred = true; else refreshPivots(); }, 320);
 }
 // `save`: false for an export, which prints them as rebuilt without writing them back.
 function refreshPivots(save = true) {
@@ -7295,13 +7297,17 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
     return value;
   };
   // A changed edit is a new entry, so a save already carrying the old one doesn't clear it.
-  let dropped = 0;
+  // Moved in ways unknown (a client that doesn't send its moves), an edit on the sheet, or a
+  // formula reading it, can't be followed: it's dropped rather than saved over another record.
+  let dropped = 0, unplaced = 0;
   const ops = [...pendingCellOps.values()];
+  const names = new Set([sheet.name.toLowerCase()]);
   pendingCellOps.clear();
   for (const was of ops) {
     let op = was;
+    if (!moves && (op.sheetId === sheetId || op.value?.startsWith("=") && formulaReadsSheets(op.value, names))) { unplaced++; continue; }
     if (op.sheetId === sheetId) {
-      const ref = moves ? place(op.ref) : op.ref;
+      const ref = place(op.ref);
       if (!ref) { dropped++; continue; }
       op = { ...op, value: rewrite(op.value, parseRef(op.ref)), ref, addressedIn: sheet.layout };
     } else {
@@ -7314,10 +7320,12 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
   // A cut's source cells are named by where they were; once they've moved, removing them could
   // take another record's cells.
   if (copyFallback?.cut && copyFallback.sheetId === sheetId && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
+  if (unplaced) toast(`${unplaced === 1 ? "An unsaved edit" : `${unplaced} unsaved edits`} couldn't be kept because rows or columns moved meanwhile`, "bad");
   if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
   for (const map of [overtakingWrites, recentCommits]) for (const key of map.keys()) if (key.startsWith(sheetId + "!")) map.delete(key);
   for (let i = reloadAcks.length - 1; i >= 0; i--) if (reloadAcks[i].sheetId === sheetId && reloadAcks[i].revision < revision) reloadAcks.splice(i, 1);
-  if (editing?.sheetId === sheetId && moves) {
+  if (editing?.sheetId === sheetId && !moves) editing.stale = true;
+  else if (editing?.sheetId === sheetId) {
     const ref = place(editing.ref), rc = ref && parseRef(ref);
     if (!rc) cancelEdit();
     else Object.assign(editing, { ref, r: rc.r, c: rc.c });

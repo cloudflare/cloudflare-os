@@ -241,6 +241,18 @@ describe("sync", () => {
     expect([shown("A2"), shown("A3")]).toEqual(["first", "second"]);
   });
 
+  it("drops an unsaved edit on a sheet someone else moved without saying how, rather than save it over another record", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    typeIntoActiveCell("edited");
+    // An older client inserts a row above A1 and sends no moves.
+    h.callbacks.operation(remoteEvent({ ...meta, layout: 2 }, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("first", 2), A3: cell("second", 2) } }, moves: { s1: null } }));
+    await settle();
+    expect(h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? [])).toEqual([]);
+    expect([shown("A2"), shown("A3")]).toEqual(["first", "second"]);
+  });
+
   it("keeps a later move's layout when an older save of its sheet is acknowledged", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first") });
@@ -563,6 +575,23 @@ describe("sync", () => {
       h.callbacks.operation({ ...remoteEvent(data, 6, { senderId: "agent", upserts: [{ sheetId: "s1", ref: "C9", cell: cell("y") }] }), structure: undefined });
       await refreshed();
       expect(pivotWrites(h, "s2")).toBe(opened + 1);
+    });
+
+    it("wait for a source still loading its moved cells before rebuilding", async () => {
+      const data = named("s1", "Data"), pivot = named("s2", "Pivot", pivotOf("s1"));
+      const h = await loadClient(data, {}, { ...book(data, pivot), cells: { s1: { A1: cell("k"), B1: cell("v"), A2: cell("a"), B2: cell("10") }, s2: {} } });
+      await refreshed();
+      const slices = deferred<{ revision: number; slices: { sheetId: string; after: string; from: string; to: string }[] }>();
+      h.gadget.getSheetSlices.mockImplementation(() => slices.promise);
+      h.gadget.getCellsPage.mockResolvedValue({ revision: 5, sheetId: "s1", next: null, packed: { refs: ["A2", "B2", "A3", "B3"], values: ["k", "v", "a", "10"], versions: [5, 5, 5, 5], styles: [-1, -1, -1, -1], fmts: [] } });
+      // An agent inserts a row above the source (too big to send), which moves the pivot's range.
+      const moved = { ...pivot, pivot: { ...pivotOf("s1"), sourceRange: "A2:B3" } };
+      h.callbacks.operation({ ...remoteEvent(data, 5, { senderId: "agent", replacedSheets: ["s1"], replacedCells: { s1: null }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), structure: book({ ...data, layout: 5 }, moved) });
+      await refreshed(); // longer than a refresh's pause, with the pages still out
+      slices.resolve({ revision: 5, slices: [{ sheetId: "s1", after: "", from: "", to: "" }] });
+      await refreshed();
+      const replaced = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).sheetReplacements ?? []).filter((r) => r.sheetId === "s2");
+      for (const r of replaced) expect(JSON.stringify(r)).not.toContain("not found");
     });
 
     it("settle when one reads another later in the tabs", async () => {
