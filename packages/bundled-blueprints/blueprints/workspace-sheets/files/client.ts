@@ -5676,7 +5676,8 @@ interface ClipboardSnapshot {
   trimmed: "rows" | "columns" | "both" | null;
   sheetId: string;
   cut: boolean;
-  cancelled: boolean;
+  /** Why a cut can no longer be pasted (null while it can). */
+  cancelled: string | null;
   token: string;
 }
 let copyFallback: ClipboardSnapshot | null = null;
@@ -5764,7 +5765,7 @@ function prepareClipboard(cut = false) {
     return cell && ref ? { value: cell.value, fmt: cell.fmt, sourceRef: ref, computed: storedValueOf(engine.computeRef(activeSheetId, ref)) } : (ref ? { value: null, fmt: null, sourceRef: ref } : null);
   }));
   const tsv = refs.map((row) => row.map(clipboardCellText).join("\t")).join("\n");
-  copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, cancelled: false, token: Math.random().toString(36).slice(2) };
+  copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, cancelled: null, token: Math.random().toString(36).slice(2) };
   return tsv;
 }
 // Our own clipboard writes carry a token in a private type: a paste whose text merely equals
@@ -5779,7 +5780,7 @@ function writeGridClipboard(event: ClipboardEvent, cut: boolean) {
 }
 function invalidateMissingCutSource() {
   // The token is kept so a native paste can't reinterpret a cancelled cut as an outside copy.
-  if (copyFallback?.cut && !model.sheets[copyFallback.sheetId]) copyFallback.cancelled = true;
+  if (copyFallback?.cut && !model.sheets[copyFallback.sheetId]) copyFallback.cancelled = "That sheet was deleted; copy or cut again";
 }
 function requestGridClipboard(cut = false) {
   armEditorCapture(true);
@@ -5941,7 +5942,7 @@ function pasteText(text: string, { keepFormatting = true, token = null }: { keep
   const clipboard = copyFallback;
   const useSnapshot = clipboard && (token ? token === clipboard.token
     : !clipboard.cut && clipboard.tsv.replace(/\r/g, "") === normalized) ? clipboard : null;
-  if (useSnapshot?.cut && useSnapshot.cancelled) { toast("That sheet was deleted; copy or cut again", "bad"); return; }
+  if (useSnapshot?.cut && useSnapshot.cancelled) { toast(useSnapshot.cancelled, "bad"); return; }
   const moving = !!useSnapshot?.cut;
   const moves = new Map<string, CutTarget>();
   // Checked before any destination is written: overlapping moves overwrite other sources.
@@ -7272,6 +7273,9 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
     if (op !== was) followedEdits.set(was, { next: op, revision });
     pendingCellOps.set(op.sheetId + "!" + op.ref, op);
   }
+  // A cut's source cells are named by where they were; once they've moved, removing them could
+  // take another record's cells.
+  if (copyFallback?.cut && copyFallback.sheetId === sheetId && !copyFallback.cancelled) copyFallback.cancelled = "The cut cells moved; cut them again";
   if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
   for (const map of [overtakingWrites, recentCommits]) for (const key of map.keys()) if (key.startsWith(sheetId + "!")) map.delete(key);
   for (let i = reloadAcks.length - 1; i >= 0; i--) if (reloadAcks[i].sheetId === sheetId && reloadAcks[i].revision < revision) reloadAcks.splice(i, 1);

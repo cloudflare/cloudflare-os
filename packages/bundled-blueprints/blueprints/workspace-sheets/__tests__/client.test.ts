@@ -323,6 +323,32 @@ describe("sync", () => {
     for (const [operation] of h.gadget.applyOperation.mock.calls) for (const op of (operation as Operation).cellOps || []) expect(op.value).toBe('="A1"');
   });
 
+  it("won't paste a cut whose source rows someone else moved, so it can't remove another record's cells", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("same"), B1: cell("first-id"), A2: cell("same"), B2: cell("second-id") });
+    const go = (ref: string) => {
+      const box = document.querySelector<HTMLInputElement>(".namebox")!;
+      box.value = ref;
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    };
+    const clipboard = new Map<string, string>();
+    const clipboardEvent = (type: string) => Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+      clipboardData: { setData: (kind: string, value: string) => { clipboard.set(kind, value); }, getData: (kind: string) => clipboard.get(kind) ?? "" },
+    });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    go("A2");
+    grid.dispatchEvent(clipboardEvent("cut"));
+    // An agent inserts a row above: the cut record is now on row 3, and A2 holds the other one.
+    h.callbacks.operation({ ...remoteEvent({ ...meta, layout: 2 }, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("same"), B2: cell("first-id"), A3: cell("same"), B3: cell("second-id") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), senderId: "agent" });
+    await settle();
+    go("D1");
+    grid.dispatchEvent(clipboardEvent("paste"));
+    await settle();
+    expect(shown("A2")).toBe("same");
+    expect(shown("D1") ?? "").toBe("");
+    expect(h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? [])).toEqual([]);
+  });
+
   it("moves a chart's range with its cells when the whole range is cut and pasted", async () => {
     const chart = { id: "c1", type: "line" as const, range: "A1:B3", title: "", xAxisTitle: "", yAxisTitle: "", legend: true, firstRowHeaders: true, firstColLabels: true, smooth: false, x: 0, y: 0, width: 520, height: 320 };
     const h = await loadClient({ ...sheet("s1"), charts: [chart] }, { A1: cell("x"), B1: cell("y"), A2: cell("a"), B2: cell("1"), A3: cell("b"), B3: cell("2") });
