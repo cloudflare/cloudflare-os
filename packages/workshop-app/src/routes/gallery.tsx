@@ -28,6 +28,7 @@ import { MessageListPreview } from '@/gallery/MessageListPreview'
 import { Section } from '@/gallery/Section'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
+import { SharingPreview } from '@/gallery/SharingPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
@@ -319,6 +320,7 @@ function Gallery() {
       <CardBlocksPreview />
       <SystemBlocksPreview />
       <SettingsPreview />
+      <SharingPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">

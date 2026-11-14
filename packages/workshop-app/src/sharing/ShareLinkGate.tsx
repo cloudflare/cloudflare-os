@@ -4,7 +4,7 @@ import { PaneNotice } from '@/blocks/PaneNotice'
 import { useApi } from '@/rpc/ApiContext'
 import { shareKeyOf, workspaceOfPath } from './sharingRules'
 
-type Redeeming = { status: 'redeeming' } | { status: 'failed'; message: string } | { status: 'done' }
+type Redeeming = { status: 'redeeming' } | { status: 'failed' } | { status: 'done' }
 
 // The fragment goes, so the key is not kept in the history, copied on, or tried again on reload.
 const forgetKey = () => {
@@ -38,10 +38,11 @@ export const ShareLinkGate = ({ children }: { children: ReactNode }) => {
         forgetKey()
         setState({ status: 'done' })
       },
-      (error: unknown) => {
+      // Whatever the server says of a key it will not take is for it, not the viewer.
+      () => {
         if (cancelled) return
         forgetKey()
-        setState({ status: 'failed', message: error instanceof Error ? error.message : String(error) })
+        setState({ status: 'failed' })
       },
     ).finally(() => workspace[Symbol.dispose]())
     return () => {
@@ -56,7 +57,7 @@ export const ShareLinkGate = ({ children }: { children: ReactNode }) => {
       <PaneNotice
         icon={LinkBreakIcon}
         title="This link doesn’t work any more"
-        description={`It may have been turned off, or you may need to ask for access again. ${state.message}`}
+        description="It may have been turned off. Ask whoever sent it to share it with you instead."
         action={{ label: 'Continue', onClick: () => setState({ status: 'done' }) }}
       />
     </div>

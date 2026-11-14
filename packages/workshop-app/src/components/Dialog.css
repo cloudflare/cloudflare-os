@@ -30,6 +30,13 @@
     opacity 150ms ease-in;
 }
 
+/* Under a dialog opened from it, such as a confirmation, it steps back, on the same spring, and
+   dims a little, so the question in front is the one to answer. */
+.dialog-popup[data-nested-dialog-open] {
+  scale: 0.95;
+  filter: brightness(0.97);
+}
+
 @media (prefers-reduced-motion: reduce) {
   .dialog-backdrop,
   .dialog-popup,
@@ -37,7 +44,8 @@
     transition: opacity 150ms ease-out;
   }
   .dialog-popup[data-starting-style],
-  .dialog-popup[data-ending-style] {
+  .dialog-popup[data-ending-style],
+  .dialog-popup[data-nested-dialog-open] {
     scale: none;
     filter: none;
   }

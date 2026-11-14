@@ -20,14 +20,15 @@ const listed = (titles: readonly string[]) =>
 
 /**
  * What someone given it must have their own access to before they can open it: the connections it
- * reads from, which each person connects with an account of their own.
+ * reads from, which each person uses with an account of their own. One line, as most are set up
+ * for them, such as Scheduled Tasks.
  */
 export const RequirementsNote = ({ requirements, what }: { requirements?: readonly ObserverBindingNeed[]; what: ReactNode }) => {
   if (!requirements || requirements.length === 0) return null
   const titles = [...new Set(requirements.map(({ resourceTitle }) => resourceTitle))]
   return (
-    <ShareNote tone="info" detail={`Each person connects their own account for ${listed(titles)} the first time they open ${what}.`}>
-      {requirements.length === 1 ? 'It reads from a connection' : 'It reads from connections'} you have and they may not.
+    <ShareNote tone="info">
+      Whoever opens {what} uses their own {listed(titles)} {titles.length === 1 ? 'account' : 'accounts'} with it, connected the first time.
     </ShareNote>
   )
 }

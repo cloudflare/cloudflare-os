@@ -89,7 +89,8 @@ export const InviteField = ({
           aria-label={suggestions ? 'Name, username or email' : 'Username or email'}
           aria-invalid={invalid || undefined}
           aria-describedby={describedBy}
-          placeholder={suggestions ? 'Add people by name or email' : 'Add people by username or email'}
+          // Shorter beside a choice of access, which takes some of its room.
+          placeholder={`Add ${accessChoice ? '' : 'people '}by ${suggestions ? 'name' : 'username'} or email`}
           value={value}
           readOnly={pending}
           autoComplete="off"

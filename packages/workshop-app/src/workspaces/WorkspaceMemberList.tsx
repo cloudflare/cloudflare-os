@@ -45,7 +45,7 @@ export const WorkspaceMemberList = ({ snapshot, session }: WorkspaceMemberListPr
                 name={profile.name}
                 role={ROLE_LABELS[role]}
                 you={profile.id === user.id}
-                access={removable && (
+                access={removable ? (
                   <AccessMenu
                     label={ROLE_LABELS[role]}
                     of={profile.name}
@@ -54,7 +54,7 @@ export const WorkspaceMemberList = ({ snapshot, session }: WorkspaceMemberListPr
                       onRemove: () => removal.ask({ id: profile.id, name: profile.name }),
                     }}
                   />
-                )}
+                ) : undefined}
               />
             )
           })}
