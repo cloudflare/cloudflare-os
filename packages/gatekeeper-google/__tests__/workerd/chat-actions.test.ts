@@ -1286,6 +1286,34 @@ describe("Google Chat gatekeeper behaviors", () => {
     expect(JSON.stringify((await chat.readQueue()).observations)).toContain("cards");
   });
 
+  it("returns what a message quotes from every read, and never the quoted message itself", async () => {
+    const backend = chatBackend();
+    backend.state.messages.push({
+      ...threadMessage("forward", "A", "2024-01-01T00:00:00Z"),
+      text: "",
+      quotedMessageMetadata: {
+        name: "spaces/OTHER/messages/source",
+        quoteType: "FORWARD",
+        quotedMessageSnapshot: {sender: "Grace Hopper", text: "The build is green"},
+      },
+    });
+    const expected = {
+      id: "spaces/OTHER/messages/source", senderName: "Grace Hopper", text: "The build is green", forwarded: true,
+    };
+    const chat = chatHarness(backend);
+    using space = await chat.session();
+    using messages = await space.listMessages();
+    using page = await messages.next();
+    expect(page![0].info.quotedMessage).toEqual(expected);
+    using entry = await space.getMessage(messageName("forward"));
+    expect(entry.info.quotedMessage).toEqual(expected);
+    expect((await entry.message.getMetadata()).quotedMessage).toEqual(expected);
+    await expect(Promise.resolve(space.getMessage(expected.id))).rejects.toThrow(/different conversation/);
+    // Opening the conversation, then the three reads: each read tells the user it covered the quote.
+    const quoting = expect.objectContaining({description: expect.stringContaining("quoted message")});
+    expect((await chat.readQueue()).observations).toEqual([expect.anything(), quoting, quoting, quoting]);
+  });
+
   it("refuses to queue an edit of someone else's message", async () => {
     const backend = chatBackend();
     backend.state.messages.push(

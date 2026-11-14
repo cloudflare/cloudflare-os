@@ -16,7 +16,7 @@ import { chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
-  ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatPerson, ChatReaction,
+  ChatMembership, ChatMessageInfo, ChatMessageSearch, ChatPerson, ChatQuotedMessage, ChatReaction,
   ChatSpaceInfo, ChatSpaceType, ChatUser, ChatWindow,
 } from "./chat-types";
 
@@ -309,6 +309,12 @@ export type ChatMessageRaw = {
   cardsV2?: { cardId?: string; card?: unknown }[];
   /** The legacy card format, which older Chat apps still send. */
   cards?: unknown[];
+  /** The message this one quotes or forwards, with the copy of it Chat took at that moment. */
+  quotedMessageMetadata?: {
+    name?: string;
+    quoteType?: string;
+    quotedMessageSnapshot?: { sender?: string; text?: string };
+  };
   emojiReactionSummaries?: { emoji?: ChatEmojiRaw; reactionCount?: number }[];
   threadReply?: boolean;
   deletionMetadata?: { deletionType?: string };
@@ -425,6 +431,22 @@ function chatMentionsFromRaw(raw: ChatMessageRaw): ChatUser[] {
   return [...byId.values()];
 }
 
+/**
+ * What a message quotes, from the snapshot Chat returns inside the quoting message. The quoted
+ * message itself is never fetched: it may sit in a conversation this connection cannot read.
+ */
+function chatQuotedMessageFromRaw(raw: ChatMessageRaw): ChatQuotedMessage | undefined {
+  const quoted = raw.quotedMessageMetadata;
+  if (!quoted?.name) return undefined;
+  const snapshot = quoted.quotedMessageSnapshot;
+  return {
+    id: quoted.name,
+    ...(snapshot?.sender ? { senderName: snapshot.sender } : {}),
+    ...(snapshot?.text ? { text: snapshot.text } : {}),
+    ...(quoted.quoteType === "FORWARD" ? { forwarded: true } : {}),
+  };
+}
+
 export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
   // App-authored private messages have a message-level ACL narrower than their containing space.
   // This user-authenticated integration deliberately omits them everywhere rather than exposing
@@ -436,6 +458,7 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
   const createTime = chatTime(raw.createTime);
   const lastUpdateTime = chatTime(raw.lastUpdateTime);
   const sender = chatUserFromRaw(raw.sender);
+  const quotedMessage = chatQuotedMessageFromRaw(raw);
   return {
     id: raw.name,
     spaceId: `spaces/${spaceId}`,
@@ -443,6 +466,7 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
     ...(sender ? { sender } : {}),
     text: raw.text ?? "",
     formattedText: raw.formattedText ?? raw.text ?? "",
+    ...(quotedMessage ? { quotedMessage } : {}),
     mentions: chatMentionsFromRaw(raw),
     createdAt: createTime ?? new Date(0),
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
