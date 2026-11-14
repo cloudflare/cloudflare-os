@@ -1,11 +1,14 @@
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
+import { ChatMark } from '@/components/ChatMark'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 
 export type WorkspaceListItemProps = {
   /** Identifies the row to the sidebar's shared highlight. */
   id?: string
   workspaceLabel: string
+  /** A chat on its own, in no workspace, drawn as a chat rather than with a workspace's folder. */
+  chat?: boolean
   title: string
   /** A line under the title, e.g. when the workspace was last active. */
   subtitle?: string
@@ -20,6 +23,7 @@ export type WorkspaceListItemProps = {
 export const WorkspaceListItem = ({
   id,
   workspaceLabel,
+  chat,
   title,
   subtitle,
   unread,
@@ -39,7 +43,7 @@ export const WorkspaceListItem = ({
       selected && 'not-data-underlay:bg-kumo-fill',
     )}
   >
-    <WorkspaceIcon label={workspaceLabel} />
+    {chat ? <ChatMark /> : <WorkspaceIcon label={workspaceLabel} />}
     <span className="min-w-0 flex-1 leading-snug">
       <span className="block truncate font-medium text-kumo-default">{title}</span>
       {subtitle && <span className="block truncate text-kumo-subtle">{subtitle}</span>}

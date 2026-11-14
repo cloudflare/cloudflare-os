@@ -12940,9 +12940,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let kindSubscriber = {
+      update(value: WorkspaceKind | undefined) {
+        metadata.kind = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
+      this.impl.storage.workspaceKind.unsubscribe(kindSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
@@ -12950,6 +12957,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
+    this.impl.storage.workspaceKind.subscribe(kindSubscriber);
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
@@ -12972,6 +12980,12 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async setTitle(title: string): Promise<void> {
     this.impl.storage.title.put(title);
     await this.#owner.updateTitle(this.impl.ctx.id.toString(), title);
+  }
+
+  async makeWorkspace(title: string): Promise<void> {
+    this.impl.storage.title.put(title);
+    this.impl.storage.workspaceKind.put("workspace");
+    await this.#owner.makeWorkspace(this.impl.ctx.id.toString(), title);
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -14795,6 +14809,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // --- Denied methods (build-only) ---
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
+  async makeWorkspace(_title: string): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async createGadgetFromBlueprint(_blueprintId: string): Promise<RpcStub<GadgetClient>> {

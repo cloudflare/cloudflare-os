@@ -16,6 +16,11 @@ export type NameDialogProps = {
   /** The action, as the button says it: "Rename", "Create". */
   confirm: string
   /**
+   * The name it starts with may be kept, as when naming something for the first time from what it
+   * is called now. Otherwise, as for a rename, it must change.
+   */
+  keepable?: boolean
+  /**
    * Does it with the trimmed name, as `ConfirmDialog`'s `onConfirm` does: held while it is out,
    * open under why if it rejects, and left as it was on `false`.
    */
@@ -25,7 +30,7 @@ export type NameDialogProps = {
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /** Asks for a name, for something new or to rename something, and does it with Enter or the button. */
-export const NameDialog = ({ open, onOpenChange, title, description, label, initial = '', placeholder, confirm, onSubmit }: NameDialogProps) => {
+export const NameDialog = ({ open, onOpenChange, title, description, label, initial = '', placeholder, confirm, keepable = false, onSubmit }: NameDialogProps) => {
   const [name, setName] = useState(initial)
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState<string>()
@@ -57,7 +62,7 @@ export const NameDialog = ({ open, onOpenChange, title, description, label, init
       footer={(
         <>
           <Button disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button variant="primary" disabled={pending || !trimmed || trimmed === initial} onClick={() => void submit()}>{confirm}</Button>
+          <Button variant="primary" disabled={pending || !trimmed || (!keepable && trimmed === initial)} onClick={() => void submit()}>{confirm}</Button>
         </>
       )}
     >

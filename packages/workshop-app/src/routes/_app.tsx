@@ -196,7 +196,8 @@ const AppFrame = () => {
   }
 
   // The recents: each chat on a row of its own, drawn with its workspace's icon and named with it,
-  // and each workspace with no chat to list, by its title and when it was last active.
+  // or as a chat when it is on its own; and each workspace with no chat to list, by its title and
+  // when it was last active.
   const entries = workspacesState.status === 'ready' ? sidebarEntries(workspacesState.workspaces, chatThreads ?? [], chatRef) : []
   const entryHref = ({ workspaceId: inWorkspace, chatId: entryChat }: (typeof entries)[number]) =>
     entryChat === undefined
@@ -206,7 +207,9 @@ const AppFrame = () => {
     id: entry.key,
     title: entry.title,
     workspaceLabel: workspaceLabel(entry.workspaceTitle),
-    subtitle: entry.chatId === undefined ? formatActivity(entry.at) : `${entry.workspaceTitle} · ${formatActivity(entry.at)}`,
+    // A chat on its own is drawn as one, and its workspace, which it alone is in, goes unnamed.
+    chat: entry.chatId !== undefined && !entry.named,
+    subtitle: entry.chatId === undefined || !entry.named ? formatActivity(entry.at) : `${entry.workspaceTitle} · ${formatActivity(entry.at)}`,
     unread: entry.unread,
     href: entryHref(entry),
   }))

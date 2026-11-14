@@ -57,14 +57,15 @@ export const canChange = (person: CollaboratorInfo, standing: ShareStanding, vie
 const sameId = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
 
 /**
- * Why inviting `userId` to the workspace would change nothing, if it would not. The server takes
+ * Why inviting `userId` to the workspace (or the chat on its own it holds) would change nothing, if it would not. The server takes
  * a grant someone already has without complaint, and a typed name gets past any search's
  * exclusions, so this is asked first.
  */
-export const workspaceInviteRefusal = (userId: string, owner: AiChatAuthorInfo, members: readonly CollaboratorInfo[]) => {
-  if (sameId(owner.id, userId)) return `${owner.name} owns this workspace.`
+export const workspaceInviteRefusal = (userId: string, owner: AiChatAuthorInfo, members: readonly CollaboratorInfo[], place: 'workspace' | 'chat' = 'workspace') => {
+  if (sameId(owner.id, userId)) return `${owner.name} owns this ${place}.`
   const member = members.find(({ profile }) => sameId(profile.id, userId))
-  return member ? `${member.profile.name} is already a member of this workspace.` : undefined
+  if (!member) return undefined
+  return place === 'chat' ? `${member.profile.name} already has this chat.` : `${member.profile.name} is already a member of this workspace.`
 }
 
 /** Access someone has that already covers a gadget, which giving them the gadget would not change. */

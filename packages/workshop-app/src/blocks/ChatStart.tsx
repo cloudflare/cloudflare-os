@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Mascot } from '@/components/mascot/Mascot'
 import { Composer, type ComposerProps } from './Composer'
 
@@ -15,10 +16,12 @@ export type ChatStartProps = {
   addActions?: ComposerProps['addActions']
   /** Put the cursor in the composer once it is shown. */
   autoFocus?: boolean
+  /** Under the composer, such as where the chat will go (`WorkspacePicker`). */
+  below?: ReactNode
 }
 
 /** Somewhere to start from nothing: the mascot and a greeting over the composer, in the middle of the page. */
-export const ChatStart = ({ greeting, onSend, initialDraft, commands, problem, addActions, autoFocus }: ChatStartProps) => (
+export const ChatStart = ({ greeting, onSend, initialDraft, commands, problem, addActions, autoFocus, below }: ChatStartProps) => (
   <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-3">
     <div className="flex w-full max-w-md flex-col items-center">
       {/* Small on a page that is mostly empty, so it notices a pointer from well away. */}
@@ -27,6 +30,7 @@ export const ChatStart = ({ greeting, onSend, initialDraft, commands, problem, a
       <div className="mt-7 w-full">
         <Composer onSend={onSend} initialDraft={initialDraft} commands={commands} problem={problem} addActions={addActions} autoFocus={autoFocus} />
       </div>
+      {below && <div className="mt-3 flex justify-center">{below}</div>}
     </div>
   </div>
 )

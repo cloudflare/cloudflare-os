@@ -8,7 +8,7 @@ const thread = (workspaceId: string, chatId: number, chatTitle: string, at: Date
   workspaceId, chatId, chatTitle, latestActivityAt: at, latestSequence: 1, unreadMessageCount: 0, readThroughSequence: 1, ...rest,
 })
 
-const WORKSPACES = [workspace('w', 'Platform', day(9)), workspace('e', 'Empty', day(7))]
+const WORKSPACES = [{ ...workspace('w', 'Platform', day(9)), kind: 'workspace' as const }, workspace('e', 'Empty', day(7))]
 
 describe('sidebarEntries', () => {
   it('lists each chat on its own row, named with its workspace, most recent first, and a workspace with no chats as one row', () => {
@@ -18,6 +18,11 @@ describe('sidebarEntries', () => {
       ['chat:w/1', 'Jira dashboard', 'Platform', false],
       ['workspace:e', 'Empty', 'Empty', false],
     ])
+  })
+
+  it('says which chats are in a named workspace, and which are on their own', () => {
+    const entries = sidebarEntries([...WORKSPACES, workspace('c', 'Meeting brief', day(6))], [thread('w', 1, 'Jira dashboard', day(8)), thread('c', 0, 'Meeting brief', day(6))])
+    expect(entries.map(({ key, named }) => [key, named])).toEqual([['chat:w/1', true], ['workspace:e', false], ['chat:c/0', false]])
   })
 
   it('leaves out archived, unjoined and agent-started chats, unless one is open, and chats of workspaces not listed', () => {

@@ -25,6 +25,11 @@ export type ShareWorkspaceDialogProps = {
   link: string
   open: boolean
   onOpenChange: (open: boolean) => void
+  /**
+   * It is the workspace of a chat on its own, which is never named as a workspace: what is shared
+   * is said to be the chat.
+   */
+  chat?: boolean
 }
 
 /**
@@ -36,7 +41,8 @@ export const ShareWorkspaceDialog = (props: ShareWorkspaceDialogProps) => <Works
 
 const NO_OPTIONS = {}
 
-const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenChange }: ShareWorkspaceDialogProps) => {
+const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenChange, chat = false }: ShareWorkspaceDialogProps) => {
+  const place = chat ? 'chat' : 'workspace'
   const { user } = useApi()
   const { snapshot, session } = useSharing(workspaceId, NO_OPTIONS, open)
   const config = useServerConfig()
@@ -50,7 +56,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
 
   const invite = useInvite({
     session,
-    refusal: (userId) => standing && workspaceInviteRefusal(userId, standing.owner, members),
+    refusal: (userId) => standing && workspaceInviteRefusal(userId, standing.owner, members, place),
     grant: () => 'workspace',
     admitted: ({ profile }) => ({ tone: 'success', message: `${profile.name} can now work on everything in ${title}.` }),
   })
@@ -58,7 +64,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
     ...(standing ? [standing.owner.id] : []),
     ...members.map(({ profile }) => profile.id),
   ])
-  const removal = useRemoval({ session, people: [user, ...(standing ? [standing.owner] : []), ...collaborators], from: 'workspace' })
+  const removal = useRemoval({ session, people: [user, ...(standing ? [standing.owner] : []), ...collaborators], from: place })
 
   const feedbackId = `share-${workspaceId}-feedback`
   const removable = (person: (typeof collaborators)[number]) => standing !== undefined && canChange(person, standing, user.id)
@@ -69,7 +75,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
       onOpenChange={onOpenChange}
       onClosed={invite.reset}
       title={`Invite to ${title}`}
-      description="Members work on everything in it with you: its chats, gadgets and files."
+      description={chat ? 'They carry on the chat with you, and work on what it made.' : 'Members work on everything in it with you: its chats, gadgets and files.'}
       footer={(
         <>
           <CopyLinkButton link={link} title={title} labelled />
@@ -98,7 +104,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
             </div>
           ) : (
             <ShareNote tone="info">
-              {standing?.ownerOnly ? `Only ${standing.owner.name} can invite people to this workspace.` : 'You can use what’s shared with you here, but not share it.'}
+              {standing?.ownerOnly ? `Only ${standing.owner.name} can invite people to this ${place}.` : 'You can use what’s shared with you here, but not share it.'}
             </ShareNote>
           )}
           {standing?.isOwner && ready.metadata.ownerInvitesOnly && (
@@ -108,7 +114,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
           )}
           {ready.metadata.containsRestrictedData && !ready.metadata.ownerInvitesOnly && (
             <ShareNote tone="caution" detail="Anyone you invite can read it, and ask its agent about it.">
-              This workspace has read restricted data
+              This {place} has read restricted data
             </ShareNote>
           )}
           <RequirementsNote requirements={ready.requirements} what="it" />
@@ -128,7 +134,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
                     <AccessMenu
                       label="Can edit"
                       of={person.profile.name}
-                      remove={{ label: 'Remove from workspace', onRemove: () => removal.ask({ id: person.profile.id, name: person.profile.name }) }}
+                      remove={{ label: `Remove from ${place}`, onRemove: () => removal.ask({ id: person.profile.id, name: person.profile.name }) }}
                     />
                   ) : 'Can edit'}
                 />

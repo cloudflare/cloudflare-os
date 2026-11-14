@@ -153,5 +153,15 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
-  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create }}>{children}</WorkspacesContext>
+  const makeWorkspace = async (id: string, title: string) => {
+    const overseer = api.openWorkspace(id)
+    try {
+      await overseer.makeWorkspace(title)
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    mark(id, { title, kind: 'workspace' })
+  }
+
+  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create, makeWorkspace }}>{children}</WorkspacesContext>
 }

@@ -1732,6 +1732,21 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
+  /**
+   * Record that a workspace the user owns was made a named one (`Overseer.makeWorkspace()`), with
+   * its new title. Listed at once, as one created named is.
+   */
+  async makeWorkspace(workspaceId: string, title: string) {
+    let record = this.storage.gadgets.get(workspaceId);
+    if (!record) {
+      throw new Error("No such workspace belonging to user.");
+    }
+    record.title = title;
+    record.kind = "workspace";
+    record.lastActive ??= new Date();
+    this.storage.gadgets.put(record);
+  }
+
   async updatePinned(workspaceId: string, pinned: boolean) {
     let record = this.storage.gadgets.get(workspaceId);
     if (!record) {

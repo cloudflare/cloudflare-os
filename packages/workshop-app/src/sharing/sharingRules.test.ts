@@ -75,6 +75,7 @@ describe('refusals', () => {
   it('says why an invite to the workspace would change nothing', () => {
     expect(workspaceInviteRefusal('ADA', ada, [])).toBe('Ada Lovelace owns this workspace.')
     expect(workspaceInviteRefusal('grace', ada, [member('grace')])).toBe('grace is already a member of this workspace.')
+    expect(workspaceInviteRefusal('grace', ada, [member('grace')], 'chat')).toBe('grace already has this chat.')
     expect(workspaceInviteRefusal('alan', ada, [member('grace')])).toBeUndefined()
   })
 

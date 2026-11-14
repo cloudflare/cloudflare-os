@@ -7,6 +7,7 @@ import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
+import { WorkspacePicker } from '@/blocks/WorkspacePicker'
 import type { ComposerAttachment } from '@/blocks/useComposerAttachments'
 import { MemberListItem } from '@/blocks/MemberListItem'
 import { WorkspaceListItem } from '@/blocks/WorkspaceListItem'
@@ -56,7 +57,7 @@ const previewCommands: ComposerCommand[] = [
 
 const previewWorkspaces: SidebarWorkspace[] = [
   { id: 'greeting', workspaceLabel: 'CG', title: 'Casual Greeting', subtitle: '4 hours ago' },
-  { id: 'assistant', workspaceLabel: 'AA', title: 'Assistant Availability Check', subtitle: 'Oct 28' },
+  { id: 'assistant', workspaceLabel: 'AA', title: 'Assistant Availability Check', subtitle: 'Oct 28', chat: true },
   { id: 'untitled', workspaceLabel: 'UW', title: 'Untitled Workspace' },
   { id: 'dashboard', workspaceLabel: 'JD', title: 'Jira dashboard', subtitle: 'Oct 27', unread: true },
   { id: 'slides', workspaceLabel: 'PS', title: 'Presentation slides', subtitle: 'Oct 26' },
@@ -196,6 +197,11 @@ const DropdownMenuPlayground = () => {
   )
 }
 
+const PREVIEW_PLACES = [
+  { id: 'q3', title: 'Q3 planning', label: 'QP' },
+  { id: 'platform', title: 'Platform team', label: 'PT' },
+]
+
 const PREVIEW_MODELS = [
   { id: 'sonnet', name: 'Claude Sonnet 5.5' },
   { id: 'opus', name: 'Claude Opus 5.5', description: 'Slower, for harder work' },
@@ -206,6 +212,7 @@ function Gallery() {
   const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const [previewModel, setPreviewModel] = useState(PREVIEW_MODELS[0].id)
+  const [place, setPlace] = useState<string>()
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
     model: {
@@ -366,9 +373,23 @@ function Gallery() {
           </div>
         </div>
       </Section>
-      <Section title="ChatStart (the home page, before the first message)">
+      <Section title="ChatStart, WorkspacePicker (the home page, before the first message; under the composer, where the chat goes: on its own, or in one of the user's named workspaces, with the way to make another)">
         <div className="flex h-96 w-full rounded-3xl bg-kumo-base">
-          <ChatStart greeting="Hello Ada, what should we do today?" onSend={previewSend} />
+          <ChatStart
+            greeting="Hello Ada, what should we do today?"
+            onSend={previewSend}
+            below={(
+              <WorkspacePicker
+                workspaces={PREVIEW_PLACES}
+                value={place}
+                onChange={(id) => {
+                  setPlace(id)
+                  setMenuAction(`Preview: the chat starts ${id ? `in ${PREVIEW_PLACES.find((each) => each.id === id)?.title}` : 'on its own'}.`)
+                }}
+                onCreate={() => setMenuAction('Preview: new workspace selected.')}
+              />
+            )}
+          />
         </div>
       </Section>
       <Section title="Composer (replying: a line of the message being answered sits above the draft, with any attachments under it; the cross or Escape makes it an ordinary message again)">

@@ -16,6 +16,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { withCapsules } from './capsules'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
@@ -228,7 +229,7 @@ export const ChatPane = ({
     <ChatLayout
       header={(workspace || title) && (
         <ChatHeader
-          workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace }}
+          workspace={workspace && isNamedWorkspace(workspace) ? { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace } : undefined}
           title={title}
           onOpenSettings={onOpenSettings && (() => onOpenSettings())}
           automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}
@@ -344,7 +345,7 @@ export const ChatPane = ({
         confirm="Always approve"
         onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
       />
-      {shareable && <ShareWorkspaceDialog workspaceId={workspaceId} title={workspace.title} link={workspaceLink} open={sharing} onOpenChange={setSharing} />}
+      {shareable && <ShareWorkspaceDialog workspaceId={workspaceId} title={isNamedWorkspace(workspace) ? workspace.title : (title ?? workspace.title)} link={workspaceLink} open={sharing} onOpenChange={setSharing} chat={!isNamedWorkspace(workspace)} />}
       {builds && (
         <AddConnection
           workspaceId={workspaceId}

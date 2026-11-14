@@ -1,4 +1,5 @@
 import type { UnreadThread, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import { isNamedWorkspace } from './workspaceKind'
 
 /** One row of the sidebar's recents: a chat, or a workspace with no chat of the user's to list. */
 export type SidebarEntry = {
@@ -6,6 +7,11 @@ export type SidebarEntry = {
   key: string
   workspaceId: string
   workspaceTitle: string
+  /**
+   * Its workspace is a named one (`isNamedWorkspace`). A chat in any other is a chat on its own,
+   * drawn and named without it.
+   */
+  named: boolean
   /** The chat's, for a chat; a workspace has none. */
   chatId?: number
   title: string
@@ -19,7 +25,7 @@ export const workspaceEntryKey = (workspaceId: string) => `workspace:${workspace
 
 /**
  * The sidebar's recents, most recently active first: each of the user's chats as a row of its own,
- * named with its workspace, and each workspace with no chat to list as one row, so it can still be
+ * named with its workspace when that is a named one, and each workspace with no chat to list as one row, so it can still be
  * reached. A chat the user archived, has not joined, or that an agent started is left out (they are
  * on its workspace's page), unless it is the one open.
  */
@@ -29,6 +35,7 @@ export const sidebarEntries = (
   open?: { workspaceId: string; chatId: number },
 ): SidebarEntry[] => {
   const titles = new Map(workspaces.map(({ id, title }) => [id, title]))
+  const named = new Set(workspaces.filter(isNamedWorkspace).map(({ id }) => id))
   const isOpen = (thread: UnreadThread) => thread.workspaceId === open?.workspaceId && thread.chatId === open.chatId
   const chats = threads.filter((thread) => titles.has(thread.workspaceId) && (isOpen(thread) || (!thread.archived && !thread.unjoined && !thread.spawnerName)))
   const withChats = new Set(chats.map(({ workspaceId }) => workspaceId))
@@ -37,6 +44,7 @@ export const sidebarEntries = (
       key: chatEntryKey(thread.workspaceId, thread.chatId),
       workspaceId: thread.workspaceId,
       workspaceTitle: titles.get(thread.workspaceId)!,
+      named: named.has(thread.workspaceId),
       chatId: thread.chatId,
       title: thread.chatTitle || 'Untitled chat',
       at: thread.latestActivityAt ?? new Date(0),
@@ -46,6 +54,7 @@ export const sidebarEntries = (
       key: workspaceEntryKey(workspace.id),
       workspaceId: workspace.id,
       workspaceTitle: workspace.title,
+      named: isNamedWorkspace(workspace),
       title: workspace.title,
       at: workspace.lastActive,
       unread: false,

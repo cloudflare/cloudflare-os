@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Switch } from '@cloudflare/kumo'
-import { CaretLeftIcon, TrashIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, FolderPlusIcon, TrashIcon } from '@phosphor-icons/react'
 import { inChat } from '@/automations/automations'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
@@ -9,6 +9,7 @@ import { Button } from '@/components/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EditableTitle } from '@/components/EditableTitle'
 import { HeaderBubble } from '@/components/HeaderBubble'
+import { NameDialog } from '@/components/NameDialog'
 import { Tabs } from '@/components/Tabs'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -16,7 +17,8 @@ import { PageLayout } from '@/layouts/PageLayout'
 import type { LibraryEntry } from '@/library/libraryEntries'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { WorkspaceLibraryList } from '@/workspaces/WorkspaceLibraryList'
-import { isMuted, useSetNotificationMute, useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { isMuted, useMakeWorkspace, useSetNotificationMute, useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatConnectionList } from './ChatConnectionList'
 import { formatUsage } from './usage'
@@ -93,6 +95,10 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
   }
   const [deleting, setDeleting] = useState(false)
   const canBuild = workspace !== undefined && workspace.role !== 'use'
+  // A chat on its own is in a workspace of its own, which is never named; it can be made a named one.
+  const named = isNamedWorkspace(workspace)
+  const makeWorkspace = useMakeWorkspace()
+  const [naming, setNaming] = useState(false)
   // The hooks this chat's cards show, so a gadget's it set up are among its automations.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
   const ownAutomations = useMemo(
@@ -104,7 +110,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
     <PageLayout
       header={(
         <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
-          {workspace && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} onOpen={onOpenWorkspace} />}
+          {workspace && named && <WorkspaceCrumb id={workspaceId} title={workspace.title} label={workspaceLabel(workspace.title)} onOpen={onOpenWorkspace} />}
           <HeaderBubble>
             <Button icon={CaretLeftIcon} onClick={onBack}>Back to chat</Button>
           </HeaderBubble>
@@ -113,7 +119,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
     >
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
         <div className="flex flex-col items-center gap-2 pt-8 text-center">
-          {workspace && (
+          {workspace && named && (
             <span className="flex items-center gap-2 text-base text-kumo-subtle">
               <WorkspaceIcon label={workspaceLabel(workspace.title)} small />
               {workspace.title}
@@ -151,7 +157,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
               <SettingsRow
                 id="notifications"
                 title="Notifications"
-                description={workspace?.title
+                description={workspace?.title && named
                   ? `Get told when something happens here. This is for all of ${workspace.title}, as notifications can’t be muted one chat at a time.`
                   : 'Get told when something happens here.'}
                 control={workspace && (
@@ -163,6 +169,13 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
                   />
                 )}
               />
+              {canBuild && !named && (
+                <SettingsRow
+                  title="Make it a workspace"
+                  description="Give it a name, and it becomes a place to keep more chats, apps and files, and to work on them with others."
+                  control={<Button icon={FolderPlusIcon} onClick={() => setNaming(true)}>Make workspace</Button>}
+                />
+              )}
               {chat.status === 'ready' && chat.usage && (
                 <SettingsRow
                   title="Usage"
@@ -177,7 +190,9 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
                 <SettingsRow
                   danger
                   title="Delete chat"
-                  description="It goes for everyone in the workspace, with all it said. What it made stays in the library. This can’t be undone."
+                  description={named
+                    ? 'It goes for everyone in the workspace, with all it said. What it made stays in the library. This can’t be undone.'
+                    : 'It goes for everyone it’s shared with, with all it said. What it made stays in the library. This can’t be undone.'}
                   control={<Button variant="danger" icon={TrashIcon} disabled={chat.status !== 'ready'} onClick={() => setDeleting(true)}>Delete</Button>}
                 />
               </SettingsGroup>
@@ -185,12 +200,26 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
           </Tabs.Panel>
         </Tabs>
       </div>
+      <NameDialog
+        // Each time, starting from the chat's own name.
+        key={String(naming)}
+        open={naming}
+        onOpenChange={setNaming}
+        title="Make it a workspace"
+        description="This chat, and what it made, will be in it. Start more chats there, and share it to work together."
+        label="Name"
+        initial={title ?? ''}
+        placeholder="Q3 planning"
+        confirm="Make workspace"
+        keepable
+        onSubmit={(name) => makeWorkspace(workspaceId, name)}
+      />
       <ConfirmDialog
         open={deleting}
         onOpenChange={setDeleting}
         destructive
         title={title ? `Delete “${title}”?` : 'Delete this chat?'}
-        description="It goes for everyone in the workspace, and can’t be had back."
+        description={named ? 'It goes for everyone in the workspace, and can’t be had back.' : 'It goes for everyone it’s shared with, and can’t be had back.'}
         confirm="Delete chat"
         onConfirm={async () => {
           await actions.deleteChat()

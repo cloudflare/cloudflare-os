@@ -176,7 +176,21 @@ the prototype. A workspace is made on purpose and named. Home's composer says wh
 in the sidebar with a chat glyph and no workspace name, its crumb is the chat alone, and its
 settings can make it a workspace once it outgrows being one chat.
 
-**Kernel.** `Overseer.makeWorkspace(title)`: names an unnamed workspace and marks it as one.
+As built, the kernel already kept a kind (`WorkspaceMetadata.kind`, set by `newWorkspace({kind})`),
+which only a named workspace has; the old Workshop's prototype read it the same way
+(`isNamedWorkspace`), so a workspace made before kinds were kept is a chat on its own, and its
+settings make it one again. The picker sits under Home's composer rather than in it: the design's
+composer is one line with no room for a chip, and a quiet pill under it ("No workspace", a caret)
+says where the chat goes without competing with what is typed. Its menu has No workspace ("A chat
+on its own"), the user's named workspaces (not those they were only given an app from), starred
+first, and New workspace. A chat on its own is drawn with the cloud mark of the Figma (node
+762:426), a little smaller than the folder so the two weigh the same; its row says only when it
+was active. Its settings' Settings tab has "Make it a workspace", which asks for a name starting
+from the chat's own and may keep it; its sharing says "chat" where a workspace's says
+"workspace". A blueprint used from its page still makes a workspace for itself, as before.
+
+**Kernel.** `Overseer.makeWorkspace(title)`: names an unnamed workspace and marks it as one, in the
+workspace, the owner's list, and its metadata subscribers. Built.
 
 ## 8. Blueprints
 

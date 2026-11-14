@@ -25,6 +25,8 @@ export type WorkspacesContextValue = {
   remove: (id: string) => Promise<void>
   /** Makes a named workspace, listed at once, and resolves to its id. */
   create: (title: string) => Promise<string>
+  /** Makes the workspace a chat on its own is in a named one, titled `title`, once the server has. */
+  makeWorkspace: (id: string, title: string) => Promise<void>
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -58,6 +60,12 @@ export const useDeleteWorkspace = (): WorkspacesContextValue['remove'] => useWor
 
 /** Makes a named workspace (`newWorkspace`, to the server). Rejects with why, making none. */
 export const useCreateWorkspace = (): WorkspacesContextValue['create'] => useWorkspacesContext().create
+
+/**
+ * Makes the workspace a chat on its own is in a named one (`makeWorkspace`, to the server), so the
+ * chat is in it, named with it, from then on. Rejects with why, leaving it as it was.
+ */
+export const useMakeWorkspace = (): WorkspacesContextValue['makeWorkspace'] => useWorkspacesContext().makeWorkspace
 
 /** Whether a workspace's notifications are muted now: for good, or until a time not yet reached. */
 export const isMuted = (mute: NotificationMute | undefined, now = Date.now()) =>

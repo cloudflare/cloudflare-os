@@ -1485,8 +1485,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
       title: "Untitled Workspace",
 
-      // "workspace" if the owner created this as a named workspace (WorkspaceMetadata.kind), set
-      // once at creation. Absent for a workspace made to hold a chat started outside any workspace.
+      // "workspace" if this is a named workspace (WorkspaceMetadata.kind): created as one, or made
+      // one later (Overseer.makeWorkspace()). Absent for a workspace made to hold a chat started
+      // outside any workspace.
       workspaceKind: <WorkspaceKind | undefined>undefined,
 
       // If present, this gadget was migrated from version zero, when a workspace had only one

@@ -14,6 +14,7 @@ import { useSetWorkspacePinned, useWorkspaces } from './WorkspacesContext'
 import { formatActivity } from './formatActivity'
 import { orderStarred } from './starredOrder'
 import { workspaceLabel } from './workspaceLabel'
+import { isNamedWorkspace } from './workspaceKind'
 
 export type WorkspacesPaneProps = {
   onOpenWorkspace: (id: string) => void
@@ -36,7 +37,8 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
   const [starProblem, setStarProblem] = useState<string>()
   useDocumentTitle('Workspaces')
 
-  const all = workspaces.status === 'ready' ? workspaces.workspaces : []
+  // Named ones only: a chat on its own is in a workspace of its own, which is listed as that chat.
+  const all = workspaces.status === 'ready' ? workspaces.workspaces.filter(isNamedWorkspace) : []
   const starred = orderStarred(all.filter(({ pinned }) => pinned), starOrder)
   const starredIds = starred.map(({ id }) => id)
   const groups = groupByTime(all.filter(({ pinned }) => !pinned).map((workspace) => ({ value: workspace, at: workspace.lastActive })))
@@ -94,7 +96,7 @@ export const WorkspacesPane = ({ onOpenWorkspace, workspaceHref, onNewWorkspace 
         {workspaces.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading workspaces…</p>}
         {workspaces.status === 'failed' && <p className="px-4 text-base text-kumo-subtle">Couldn’t load workspaces: {workspaces.message}</p>}
         {workspaces.status === 'ready' && all.length === 0 && (
-          <p className="px-4 text-center text-base text-kumo-subtle">No workspaces yet. Each chat you start makes one.</p>
+          <p className="px-4 text-center text-base text-kumo-subtle">No workspaces yet. Make one to keep chats, apps and files together, and to work on them with others.</p>
         )}
         {starProblem && <p role="alert" className="px-4 text-base text-kumo-subtle">{starProblem}</p>}
         {all.length > 0 && <GroupedList groups={listGroups} />}

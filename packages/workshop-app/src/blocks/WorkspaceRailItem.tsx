@@ -1,6 +1,7 @@
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
 import { Tooltip } from '@/components/Tooltip'
+import { ChatMark } from '@/components/ChatMark'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import type { WorkspaceListItemProps } from './WorkspaceListItem'
 
@@ -11,6 +12,7 @@ import type { WorkspaceListItemProps } from './WorkspaceListItem'
 export const WorkspaceRailItem = ({
   id,
   workspaceLabel,
+  chat,
   title,
   subtitle,
   unread,
@@ -40,7 +42,7 @@ export const WorkspaceRailItem = ({
         selected && 'not-data-underlay:bg-kumo-contrast/8',
       )}
     >
-      <WorkspaceIcon label={workspaceLabel} small />
+      {chat ? <ChatMark small /> : <WorkspaceIcon label={workspaceLabel} small />}
       {unread && <span aria-hidden="true" className="absolute right-1 bottom-1.5 size-2.5 rounded-full bg-kumo-brand ring-2 ring-kumo-canvas" />}
     </LinkButton>
   </Tooltip>

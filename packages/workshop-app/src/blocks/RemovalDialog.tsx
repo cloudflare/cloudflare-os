@@ -24,7 +24,7 @@ export type RemovalDialogProps = {
   /** Why the server could not say what taking it would do, which leaves it untaken. */
   unknown?: string
   /** What it is taken from, which says what they lose. */
-  from: 'workspace' | 'gadget'
+  from: 'workspace' | 'chat' | 'gadget'
   /** What losing it does to them, in place of the plain sentence, such as that it disconnects them. */
   loss?: string
   /** Of those who have it only through them, the ones to take it from too. */
@@ -69,7 +69,9 @@ export const RemovalDialog = ({ open, onOpenChange, name, outcome, unknown, from
       ? `Your own invitation goes. ${name} may still have access some other way.`
       : loss ?? (from === 'workspace'
         ? `${name} will lose access to this workspace and everything in it, including gadgets shared with them on their own.`
-        : `${name} will lose access to this gadget.`)
+        : from === 'chat'
+          ? `${name} will lose access to this chat and everything it made, including gadgets shared with them on their own.`
+          : `${name} will lose access to this gadget.`)
 
   return (
     <Dialog

@@ -3557,6 +3557,13 @@ export interface Overseer extends RpcTarget {
   setTitle(title: string): Promise<void>;
 
   /**
+   * Make a workspace that holds a chat started outside any workspace into a named one
+   * (`WorkspaceMetadata.kind`), titled `title`, so that clients list it as a workspace rather than
+   * as its chat. It keeps everything it holds. Making a named workspace one renames it.
+   */
+  makeWorkspace(title: string): Promise<void>;
+
+  /**
    * Instruct the workspace to delete itself, removing it from the User's workspace list and
    * deleting all data. Further method calls will fail.
    *

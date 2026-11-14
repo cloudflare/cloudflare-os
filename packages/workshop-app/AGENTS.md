@@ -240,7 +240,7 @@ drawn as the conversation it becomes.
 
 ## The Workspaces page
 
-`/workspaces` (the sidebar's folder button) lists every workspace: the starred ones first, then the
+`/workspaces` (the sidebar's folder button) lists every named workspace: the starred ones first, then the
 rest by when they were last active, grouped as the chat settings page groups its files. Starring is
 the server's `pinned`; the starred ones' order is this device's (`prefs/starOrder.ts`), the latest
 starred first until they are dragged, or moved with Alt and an arrow key.
@@ -262,9 +262,17 @@ in place in the history): its chats, what it has made (the library's, as beside 
 as their own pages), its members, the owner first, and its settings: its notifications, what it has
 cost, and, for its owner alone, deleting it. Each tab loads what it lists once chosen.
 
-A workspace is made by starting a chat, or on purpose from the Workspaces page
-(`/workspaces/new`, `NewWorkspacePane`): its title is typed where it will be shown, on a folder
-that takes its initials as they are typed. A named workspace is listed at once.
+A chat started from Home goes, unless the picker under its composer (`WorkspacePicker`) names one
+of the user's workspaces, into a workspace of its own that is never named (no
+`WorkspaceMetadata.kind`; `workspaces/workspaceKind.ts`): it is a chat on its own. The sidebar
+draws it with a chat's mark (`ChatMark`) and when it was last active, its header and settings
+have no workspace crumb, the Workspaces page leaves it out, and its sharing speaks of the chat.
+Its settings can make it a workspace (`useMakeWorkspace`, `Overseer.makeWorkspace`), named in a
+dialog that starts from the chat's title; it is then listed, crumbed and drawn as one. A
+workspace made before kinds were kept is a chat on its own until made one. A workspace is made on
+purpose from the Workspaces page (`/workspaces/new`, `NewWorkspacePane`) or the picker's New
+workspace: its title is typed where it will be shown, on a folder that takes its initials as they
+are typed. A named workspace is listed at once.
 
 Pages other than a chat (`PageLayout`) float their header over the content, unfilled, with the
 content fading under it as a conversation's does (`.chat-fade`).

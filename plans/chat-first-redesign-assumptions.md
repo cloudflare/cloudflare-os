@@ -346,4 +346,9 @@ list it here, so it is known what workshop-app needs from the kernel.
   still accepts it), the scheduler keeps it and its management list returns it, and
   `BoundHookInfo.vendorId` names the hook's service from the vendor the hook record already kept.
   The Automations tabs join the two exactly, falling back to the title for schedules enabled before.
+- **A chat that becomes a workspace.** A workspace's kind (`WorkspaceMetadata.kind`) was set only
+  when it was created, so a chat started on its own could never become the named workspace it grew
+  into. Now `Overseer.makeWorkspace(title)` names it and marks it, the owner's list records both at
+  once (`UserDurableObject.makeWorkspace`), and whoever has its metadata open hears of the kind as
+  of the title. A view-only member is refused it, as a rename is.
 
