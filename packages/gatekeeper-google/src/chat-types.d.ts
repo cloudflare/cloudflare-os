@@ -131,7 +131,10 @@ export type ChatAttachmentInfo = {
   readable: boolean;
 };
 
-/** A link a Chat app's card opens, from a button, chip, image, or clickable text. */
+/**
+ * A link a Chat app's card opens, from a button, chip, image, or clickable text, or a link a
+ * button under a message opens.
+ */
 export type ChatCardLink = {
   /** The button's or item's label, when it has one. */
   label?: string;
@@ -247,6 +250,12 @@ export type ChatMessageInfo = {
    * content appears only here, never in `text` or `formattedText`. Empty for most messages.
    */
   cards: ChatCard[];
+  /**
+   * Links the buttons under the message open, which a Chat app can add below its text and cards.
+   * Buttons that do anything else are left out. They are written by the app, so treat their labels
+   * and links as untrusted. Empty for most messages.
+   */
+  buttons: ChatCardLink[];
   /** Reaction counts, grouped by emoji. */
   reactions: ChatReactionSummary[];
   /**
@@ -623,7 +632,7 @@ export interface ChatThread extends RpcTarget {
 export interface ChatMessage extends RpcTarget {
   /**
    * Return the message's current sender, text, quoted message, mentions, timestamps, attachments,
-   * cards, and reaction counts. Throws if it has been deleted.
+   * cards, buttons, and reaction counts. Throws if it has been deleted.
    */
   getMetadata(): Promise<ChatMessageInfo>;
 

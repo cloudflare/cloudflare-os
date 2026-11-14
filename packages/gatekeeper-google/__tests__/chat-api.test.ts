@@ -370,6 +370,46 @@ describe("Chat response mapping", () => {
     ]);
   });
 
+  // An app's "View incident" or "Open runbook" button sits under the message, outside any card.
+  it("maps the links of the buttons under a message, dropping actions and non-web links", () => {
+    const info = chatMessageInfoFromRaw({
+      name: "spaces/AAAA/messages/BBB",
+      sender: { name: "users/app", displayName: "Alerts", type: "BOT" },
+      createTime: "2024-01-02T03:04:05Z",
+      text: "Deploy finished",
+      accessoryWidgets: [
+        {
+          buttonList: {
+            buttons: [
+              { text: "View deploy", onClick: { openLink: { url: "https://example.com/deploy/1" } } },
+              { text: "Roll back", onClick: { action: { function: "rollback" } } },
+              { text: "Script", onClick: { openLink: { url: "javascript:alert(1)" } } },
+              { altText: "Logs", icon: { materialIcon: { name: "list" } }, onClick: { openLink: { url: "http://example.com/logs" } } },
+            ],
+          },
+        },
+        "not a widget",
+        { columns: { columnItems: [{ widgets: [{ buttonList: { buttons: [
+          { text: "Nested", onClick: { openLink: { url: "https://example.com/nested" } } },
+        ] } }] }] } },
+      ] as unknown[],
+    });
+    expect(info.buttons).toEqual([
+      { label: "View deploy", url: "https://example.com/deploy/1" },
+      { label: "Logs", url: "http://example.com/logs" },
+    ]);
+    expect(info.cards).toEqual([]);
+    expect(info.text).toBe("Deploy finished");
+  });
+
+  it("gives a message without accessory widgets, or with malformed ones, no buttons", () => {
+    const message = { name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hello" };
+    expect(chatMessageInfoFromRaw(message).buttons).toEqual([]);
+    expect(chatMessageInfoFromRaw({
+      ...message, accessoryWidgets: "not a list" as unknown as unknown[],
+    }).buttons).toEqual([]);
+  });
+
   it("gives an ordinary message no cards", () => {
     expect(chatMessageInfoFromRaw({
       name: "spaces/AAAA/messages/BBB", createTime: "2024-01-02T03:04:05Z", text: "hello",

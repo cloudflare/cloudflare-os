@@ -1,8 +1,9 @@
 // Read-only extraction of what Chat apps show in message cards, both the current `cardsV2` and the
-// legacy `cards`. The two formats share their header, section, text paragraph, image, and openLink
-// shapes, and their other widget keys don't collide, so one walker reads either.
+// legacy `cards`, and in the buttons under a message (`accessoryWidgets`). The two card formats
+// share their header, section, text paragraph, image, and openLink shapes, and their other widget
+// keys don't collide, so one walker reads either; accessory widgets are `cardsV2` button lists.
 //
-// Cards are app-authored and loosely shaped, so every field is read as unknown and kept only when
+// All of it is app-authored and loosely shaped, so every field is read as unknown and kept only when
 // it has the expected type. Nothing here follows a link or runs a card action: action callbacks,
 // form inputs, and widgets with nothing to read are dropped, and only http(s) links are kept.
 
@@ -143,4 +144,12 @@ export function chatCardsFromRaw(raw: { cards?: unknown; cardsV2?: unknown }): C
     ...(Array.isArray(raw.cards) ? raw.cards : []),
   ];
   return cards.flatMap(card => chatCardFromRaw(card) ?? []);
+}
+
+/** The links the buttons under a message open (its `accessoryWidgets`); buttons that run an action are left out. */
+export function chatButtonsFromRaw(raw: { accessoryWidgets?: unknown }): ChatCardLink[] {
+  const reader = new CardReader();
+  // Accessory widgets are button lists only, so nothing nested is followed.
+  reader.widgets(raw.accessoryWidgets, true);
+  return reader.links;
 }

@@ -12,7 +12,7 @@
 // user could reach in the Chat UI.
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
-import { chatCardsFromRaw } from "./chat-cards";
+import { chatButtonsFromRaw, chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
@@ -309,6 +309,8 @@ export type ChatMessageRaw = {
   cardsV2?: { cardId?: string; card?: unknown }[];
   /** The legacy card format, which older Chat apps still send. */
   cards?: unknown[];
+  /** Buttons a Chat app put under the message: as untrusted as cards, so read only by `chatButtonsFromRaw`. */
+  accessoryWidgets?: unknown[];
   /** The message this one quotes or forwards, with the copy of it Chat took at that moment. */
   quotedMessageMetadata?: {
     name?: string;
@@ -473,6 +475,7 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
     isReply: raw.threadReply === true,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
     cards: chatCardsFromRaw(raw),
+    buttons: chatButtonsFromRaw(raw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
       emoji: chatEmojiFromRaw(summary.emoji),
       count: summary.reactionCount ?? 0,
