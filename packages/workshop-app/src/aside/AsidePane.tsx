@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from 'react'
+import { useEffect, useRef, useState, type RefObject } from 'react'
 import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { ConnectedFileView } from '@/blocks/ConnectedFileView'
 import { FileView } from '@/blocks/FileView'
@@ -6,6 +6,8 @@ import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
+import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
+import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { asideItemIcon } from './asideItemIcon'
 import type { AsideFile, AsideItem } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
@@ -45,6 +47,14 @@ export type AsidePaneProps = {
       onCollapse?: () => void
     }
 )
+
+// Its own page, as it is opened by anyone: not with the changes a chat proposes, which they may not see.
+const ownPage = (link: string) => {
+  const url = new URL(link)
+  url.search = ''
+  url.hash = ''
+  return url.href
+}
 
 const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: item.key, title, icon: asideItemIcon(item) })
 
@@ -88,6 +98,23 @@ export const AsidePane = (props: AsidePaneProps) => {
   ) : (
     <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
   )
+  // A gadget can be shared on its own, by whoever can share what is in its workspace.
+  const workspaces = useWorkspaces()
+  const [sharing, setSharing] = useState(false)
+  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
+  const listed = gadget && workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === gadget.workspaceId) : undefined
+  const shareable = gadget !== undefined && link !== undefined && listed !== undefined && listed.role !== 'use'
+  const share = shareable && (
+    <ShareGadgetDialog
+      workspaceId={gadget.workspaceId}
+      gadgetId={gadget.workpieceId}
+      title={title}
+      page={ownPage(link)}
+      open={sharing}
+      onOpenChange={setSharing}
+    />
+  )
+
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
@@ -95,6 +122,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
     openIn: connectedKind && editorUrl ? { label: OPEN_IN[connectedKind], href: editorUrl } : undefined,
+    onShare: shareable ? () => setSharing(true) : undefined,
     narrow,
   }
 
@@ -108,10 +136,12 @@ export const AsidePane = (props: AsidePaneProps) => {
       onExpand={props.onExpand}
     >
       {content}
+      {share}
     </SidePane>
   ) : (
     <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
+      {share}
     </SidePane>
   )
 }

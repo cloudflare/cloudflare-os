@@ -11,6 +11,7 @@ import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
@@ -43,6 +44,8 @@ export type ChatPaneProps = {
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onOpenChat?: ChatItemHandlers['onOpenChat']
   chatHref?: ChatItemHandlers['chatHref']
+  /** The address of the chat's workspace, which sharing it copies. Left out, it is not shared from here. */
+  workspaceLink?: string
 }
 
 const LIVE_WORK = 'live:work'
@@ -67,6 +70,7 @@ export const ChatPane = ({
   onSetUpConnection,
   onOpenChat,
   chatHref,
+  workspaceLink,
 }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
@@ -91,6 +95,9 @@ export const ChatPane = ({
   const items = chat.status === 'ready' ? chat.items : undefined
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const restricted = workspace?.containsRestrictedData === true
+  const [sharing, setSharing] = useState(false)
+  // Those who can only use what is in it cannot share it.
+  const shareable = workspace !== undefined && workspace.role !== 'use' && workspaceLink !== undefined
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
@@ -183,6 +190,7 @@ export const ChatPane = ({
           workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace }}
           title={title}
           onOpenSettings={onOpenSettings}
+          onShare={shareable ? () => setSharing(true) : undefined}
         />
       )}
       composer={(
@@ -283,6 +291,7 @@ export const ChatPane = ({
         confirm="Always approve"
         onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
       />
+      {shareable && <ShareWorkspaceDialog workspaceId={workspaceId} title={workspace.title} link={workspaceLink} open={sharing} onOpenChange={setSharing} />}
     </ChatLayout>
   )
 }

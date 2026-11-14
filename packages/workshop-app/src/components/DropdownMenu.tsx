@@ -34,6 +34,8 @@ export type DropdownMenuProps = TriggerContent & {
   keepTrigger?: boolean
   /** How long the opening morph takes, in milliseconds. Every other timing scales with it. */
   duration?: number
+  /** The trigger cannot be pressed, such as while what it changes is being changed. */
+  disabled?: boolean
 }
 
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
@@ -58,6 +60,7 @@ const DropdownMenuRoot = ({
   inPlace = false,
   keepTrigger = false,
   duration = 360,
+  disabled,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const time = { '--menu-time': duration / BASE_DURATION } as CSSProperties
@@ -77,6 +80,7 @@ const DropdownMenuRoot = ({
     <Menu.Root>
       <Menu.Trigger
         ref={triggerRef}
+        disabled={disabled}
         data-in-place={inPlace || undefined}
         render={(props, { open }) => (
           <Button
@@ -151,10 +155,12 @@ type DropdownMenuItemProps = {
   disabled?: boolean
   /** Text for typeahead when the children are not plain text. */
   label?: string
+  /** It takes something away, such as someone's access, which its colour says. */
+  danger?: boolean
 }
 
-const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label }: DropdownMenuItemProps) => (
-  <Menu.Item onClick={onSelect} disabled={disabled} label={label} className={ITEM_CLASS}>
+const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger }: DropdownMenuItemProps) => (
+  <Menu.Item onClick={onSelect} disabled={disabled} label={label} className={cn(ITEM_CLASS, danger && 'text-kumo-danger data-highlighted:bg-kumo-danger-tint')}>
     {Icon && <Icon aria-hidden="true" className="size-4 shrink-0" />}
     {children}
   </Menu.Item>

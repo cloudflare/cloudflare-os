@@ -44,6 +44,7 @@ function Workspace() {
       entryHref={(entry) => router.buildLocation(page(entry)).href}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId } })}
       onDeleted={() => navigate({ to: '/', replace: true })}
+      link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
     />
   )
 }

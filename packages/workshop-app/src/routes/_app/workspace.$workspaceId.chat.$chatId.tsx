@@ -64,6 +64,7 @@ function WorkspaceChat() {
       outputHref={outputHref}
       onOpenChat={openChat}
       chatHref={chatHref}
+      workspaceLink={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
     />
   )
 }

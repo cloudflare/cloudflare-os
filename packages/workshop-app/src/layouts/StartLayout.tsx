@@ -16,8 +16,8 @@ export const StartLayout = ({ header, children }: StartLayoutProps) => (
     {/* Only the header's own content takes the pointer. It starts clear of what the frame puts
         there (`--header-lead`), such as a back button. */}
     {header && (
-      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex p-3 ps-[calc(0.75rem+var(--header-lead,0px))]">
-        <div className="pointer-events-auto min-w-0">{header}</div>
+      <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex gap-1.5 p-3 ps-[calc(0.75rem+var(--header-lead,0px))] *:pointer-events-auto">
+        {header}
       </header>
     )}
   </div>
