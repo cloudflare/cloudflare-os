@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import type { PdfRendering, RenderedBand } from "@gadgets/pdf-renderer/api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pdfToText, type PdfRangeReader } from "../../src/drive-pdf";
+import { READ_AHEAD } from "../../src/pdf-read-ahead";
 import { faxMarks, imagePdf } from "../pdf-fixture";
 import {
   byteStream, eventResponse, fakeAi, markdownJson, sentImage, streamedResponse, tokenEvents,
@@ -76,10 +77,12 @@ async function firstPageBands(): Promise<{ width: number; bands: RenderedBand[] 
 /**
  * A model that converts every PDF to `markdown`, which has no text unless given, and reads each
  * band as its place among `bands`, from 1. `sent` are those places, in the order the bands'
- * requests were read.
+ * requests were read. No band is answered until `together` of them have been sent.
  */
-function bandModel(page: { width: number; bands: RenderedBand[] }, markdown = SCANNED_MARKDOWN) {
+function bandModel(page: { width: number; bands: RenderedBand[] }, markdown = SCANNED_MARKDOWN, together = 0) {
   const sent: number[] = [];
+  let allSent!: () => void;
+  const all = new Promise<void>(resolve => { allSent = resolve; });
   const { ai } = fakeAi(request => {
     if (request.url.includes("markdown")) return streamedResponse(markdownJson(markdown), 64);
     const { mimeType, bytes } = sentImage(request);
@@ -88,7 +91,8 @@ function bandModel(page: { width: number; bands: RenderedBand[] }, markdown = SC
       expect(width).toBe(page.width);
       const place = page.bands.findIndex(band => band.pixels !== undefined && same(band.pixels, rows)) + 1;
       sent.push(place);
-      return eventResponse(tokenEvents([`band ${place}`]));
+      if (sent.length >= together) allSent();
+      return all.then(() => eventResponse(tokenEvents([`band ${place}`])));
     });
     // The fake binding awaits what it is given.
     return answer as unknown as Response;
@@ -110,6 +114,8 @@ function ranges() {
 type LogLine = { event?: string; releasedBy?: string };
 /** What the gatekeeper and the renderer have logged since the test began, by level. */
 let logs: { info: LogLine[]; warn: LogLine[] };
+/** How many pages may be begun and not yet given, before a test sets it. */
+const PAGES_AHEAD = READ_AHEAD.pages;
 
 /** How often the renderer has said that it gave a PDF's room back because its document was disposed. */
 function released(): number {
@@ -124,6 +130,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  READ_AHEAD.pages = PAGES_AHEAD;
   vi.restoreAllMocks();
 });
 
@@ -150,7 +157,27 @@ describe("pdfToText with the renderer Worker behind its binding", () => {
     expect(logs.warn).toEqual([]);
   });
 
+  it("has the bands of both pages before the model before the first page is given, and gives the pages in their order", async () => {
+    const page = await firstPageBands();
+    const inked = page.bands.flatMap((band, i) => band.pixels ? [i + 1] : []);
+    const before = released();
+    // No band is answered until those of both pages have been sent.
+    const { ai, sent } = bandModel(page, SCANNED_MARKDOWN, 2 * inked.length);
+    const { asked, readRange } = ranges();
+
+    const result = await pdfToText(ai, undefined, byteStream(SCAN.bytes).stream, readRange, RENDERER);
+    const text = inked.map(place => `band ${place}`).join("\n");
+    expect(await new Response(result.text).text()).toBe(`### Page 1\n${text}\n\n### Page 2\n${text}`);
+
+    expect(sent.toSorted()).toEqual([...inked, ...inked].toSorted());
+    expect(asked).toEqual([{ offset: 0, length: SCAN.bytes.byteLength }]);
+    await vi.waitFor(() => expect(released()).toBe(before + 1), RENDERER_WAIT);
+    expect(logs.warn).toEqual([]);
+  });
+
   it("lets the document go across the binding when the text is cancelled partway", async () => {
+    // No page is begun ahead, so that the second is not drawn, and the document let go, first.
+    READ_AHEAD.pages = 1;
     const page = await firstPageBands();
     const before = released();
     const { ai, sent } = bandModel(page);
