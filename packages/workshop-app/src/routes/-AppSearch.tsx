@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useNavigate } from '@tanstack/react-router'
-import { CirclesFourIcon, FolderIcon, FolderPlusIcon, NotePencilIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, FolderPlusIcon, NotePencilIcon, PlugsIcon } from '@phosphor-icons/react'
 import { SearchDialog, type SearchEntry } from '@/blocks/SearchDialog'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -32,6 +32,7 @@ export const AppSearch = ({ open, onOpenChange }: { open: boolean; onOpenChange:
     { key: 'new-chat', group: 'Go to', title: 'New chat', keywords: ['home', 'start'], icon: <NotePencilIcon />, onSelect: () => void navigate({ to: '/' }) },
     { key: 'workspaces', group: 'Go to', title: 'Workspaces', icon: <FolderIcon />, onSelect: () => void navigate({ to: '/workspaces' }) },
     { key: 'library', group: 'Go to', title: 'Library', keywords: ['gadgets', 'files'], icon: <CirclesFourIcon />, onSelect: () => void navigate({ to: '/library' }) },
+    { key: 'connections', group: 'Go to', title: 'Connections', keywords: ['accounts', 'services'], icon: <PlugsIcon />, onSelect: () => void navigate({ to: '/connections' }) },
     { key: 'new-workspace', group: 'Go to', title: 'New workspace', keywords: ['create'], icon: <FolderPlusIcon />, onSelect: () => void navigate({ to: '/workspaces/new' }) },
   ]
   // Most recently active first, as the provider keeps them.

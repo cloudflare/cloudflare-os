@@ -17,6 +17,7 @@ import { useServices } from '@/connections/useServices'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { PageLayout } from '@/layouts/PageLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { Listed } from './GadgetSettings'
 import { useBlueprintDescription, useGadgetSettings } from './useGadgetSettings'
@@ -36,13 +37,11 @@ export type GadgetSettingsPaneProps = {
   tab: GadgetSettingsTab
   onTabChange: (tab: GadgetSettingsTab) => void
   onBack: () => void
-  /** Who has the gadget, and who can change it: where that is managed, as its share dialog. */
-  onManageAccess?: () => void
   /** It was deleted: go somewhere that still is. */
   onDeleted: () => void
   /** Where the accounts its connections go through are managed. */
   onOpenConnections: () => void
-  /** Its own address, for whoever has no access to ask for it with. */
+  /** Its own address: what its share link lets people in to, and what whoever has no access asks for. */
   link: string
 }
 
@@ -60,7 +59,7 @@ const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
  * deleting it; and what it is connected to, with the automations that run it.
  */
 export const GadgetSettingsPane = ({
-  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onManageAccess, onDeleted, onOpenConnections, link,
+  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenConnections, link,
 }: GadgetSettingsPaneProps) => {
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
@@ -77,6 +76,7 @@ export const GadgetSettingsPane = ({
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
   const [publishing, setPublishing] = useState(false)
+  const [sharing, setSharing] = useState(false)
   const [deleting, setDeleting] = useState(false)
 
   const rename = (next: string) => {
@@ -135,11 +135,11 @@ export const GadgetSettingsPane = ({
           <Tabs value={tab} onValueChange={onTabChange} tabs={[...GADGET_SETTINGS_TABS]} aria-label="Gadget settings" className="gap-6">
             <Tabs.Panel value="settings" className="flex flex-col gap-2">
               <SettingsGroup label="Gadget">
-                {onManageAccess && (
+                {builds && (
                   <SettingsRow
                     title="Access"
                     description="Choose who can use this gadget, and who can change it."
-                    control={<Button icon={UserCircleGearIcon} onClick={onManageAccess}>Manage</Button>}
+                    control={<Button icon={UserCircleGearIcon} onClick={() => setSharing(true)}>Manage</Button>}
                   />
                 )}
                 {builds && (
@@ -155,7 +155,7 @@ export const GadgetSettingsPane = ({
                   <SettingsRow
                     danger
                     title="Delete gadget"
-                    description={<>Delete it for everyone it’s shared with, so it can’t be opened anymore. <span className="text-kumo-default">This can’t be undone.</span></>}
+                    description="Deletes it for everyone it’s shared with, with its automations."
                     control={<Button variant="danger" icon={TrashIcon} onClick={() => setDeleting(true)}>Delete</Button>}
                   />
                 </SettingsGroup>
@@ -210,6 +210,7 @@ export const GadgetSettingsPane = ({
           </Tabs>
         )}
       </div>
+      {builds && <ShareGadgetDialog workspaceId={workspaceId} gadgetId={workpieceId} title={title ?? 'Gadget'} page={link} open={sharing} onOpenChange={setSharing} />}
       {gadget && (
         <PublishBlueprintDialog
           // Starting from what it is now: a gadget renamed since starts with its new name.
