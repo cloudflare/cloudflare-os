@@ -5,9 +5,8 @@ import { Dialog } from '@/components/Dialog'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { BlueprintNeedRow } from './BlueprintNeedRow'
+import { MenuChooser, type MenuChoice } from './MenuChooser'
 
-/** A model a need can be met with, as a menu lists it. */
-export type NeedModel = { id: string; name: string; description?: string }
 
 /** One thing the blueprint needs, as the dialog asks for it. */
 export type UseBlueprintNeed = {
@@ -27,7 +26,7 @@ export type UseBlueprintNeed = {
    * A model, or the model an agent runs on: `chosen` is its id, or null for none, which only an
    * agent can have, offered as `none` says.
    */
-  | { kind: 'model'; models: readonly NeedModel[]; chosen?: string | null; none?: string; onChoose: (id: string | null) => void }
+  | { kind: 'model'; models: readonly MenuChoice[]; chosen?: string | null; none?: string; onChoose: (id: string | null) => void }
 )
 
 export type UseBlueprintDialogProps = {
@@ -51,44 +50,6 @@ const tick = (on: boolean) => (on
   ? <CheckIcon aria-label="Chosen" weight="bold" className="size-3.5 shrink-0" />
   : <span aria-hidden="true" className="size-3.5 shrink-0" />)
 
-const CHOOSER = 'h-8 max-w-48 px-3 text-sm'
-
-const ModelChooser = ({ need }: { need: Extract<UseBlueprintNeed, { kind: 'model' }> }) => {
-  const chosen = need.chosen === null ? need.none : need.models.find(({ id }) => id === need.chosen)?.name
-  return (
-    <DropdownMenu
-      label={(
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="min-w-0 truncate">{chosen ?? 'Choose'}</span>
-          <CaretDownIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
-        </span>
-      )}
-      aria-label={`${need.title}: ${chosen ?? 'none chosen'}`}
-      triggerClassName={CHOOSER}
-      align="end"
-    >
-      {need.models.map((model) => (
-        <DropdownMenu.Item key={model.id} label={model.name} onSelect={() => need.onChoose(model.id)}>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate">{model.name}</span>
-            {model.description && <span className="block truncate text-sm text-kumo-subtle">{model.description}</span>}
-          </span>
-          {tick(model.id === need.chosen)}
-        </DropdownMenu.Item>
-      ))}
-      {need.none && (
-        <>
-          {need.models.length > 0 && <DropdownMenu.Separator />}
-          <DropdownMenu.Item label={need.none} onSelect={() => need.onChoose(null)}>
-            <span className="min-w-0 flex-1 text-kumo-subtle">{need.none}</span>
-            {tick(need.chosen === null)}
-          </DropdownMenu.Item>
-        </>
-      )}
-    </DropdownMenu>
-  )
-}
-
 const PlaceChooser = ({ place }: { place: NonNullable<UseBlueprintDialogProps['place']> }) => {
   const chosen = place.value === undefined ? undefined : place.workspaces.find(({ id }) => id === place.value)
   return (
@@ -101,7 +62,7 @@ const PlaceChooser = ({ place }: { place: NonNullable<UseBlueprintDialogProps['p
         </span>
       )}
       aria-label={`It goes in: ${chosen?.title ?? 'a new workspace'}`}
-      triggerClassName={CHOOSER}
+      triggerClassName="h-8 max-w-48 px-3 text-sm"
       align="end"
     >
       <DropdownMenu.Item label="A new workspace" onSelect={() => place.onChange(undefined)}>
@@ -186,7 +147,7 @@ export const UseBlueprintDialog = ({ open, onOpenChange, title, needs, place, on
               ) : need.models.length === 0 && !need.none ? (
                 <span className="shrink-0 pe-2 text-sm text-kumo-danger">You have no model of this kind</span>
               ) : (
-                <ModelChooser need={need} />
+                <MenuChooser label={need.title} choices={need.models} value={need.chosen} none={need.none} onChoose={need.onChoose} />
               )}
             />
           ))}

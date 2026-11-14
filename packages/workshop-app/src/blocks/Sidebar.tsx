@@ -29,6 +29,8 @@ export type SidebarProps = {
   library?: { current: boolean; onOpen: () => void }
   /** The page listing every workspace, and whether it is the one showing. */
   workspacesPage?: { current: boolean; onOpen: () => void }
+  /** The user's profile, from the account menu's first row, and whether it is the one showing. */
+  profilePage?: { current: boolean; onOpen: () => void }
   /** Opens search. */
   onSearch?: () => void
   /** Signs the user out of this browser. */
@@ -52,6 +54,7 @@ export const Sidebar = ({
   connectionsPage,
   library,
   workspacesPage,
+  profilePage,
   onSearch,
   onSignOut,
   collapsed = false,
@@ -79,7 +82,17 @@ export const Sidebar = ({
   // Up from the bottom, and out to the side of the rail, so it opens over the page rather than off it.
   const account = (
     <DropdownMenu icon={<Avatar name={user.name} src={user.avatarUrl} />} aria-label="Account" side={collapsed ? 'right' : 'top'} align={collapsed ? 'end' : 'start'}>
-      <div className="px-3 pt-2 pb-1.5 text-sm text-kumo-subtle">Signed in as <span className="text-kumo-default">{user.name}</span></div>
+      {profilePage ? (
+        <DropdownMenu.Item label={`${user.name}, your profile`} onSelect={profilePage.onOpen} current={profilePage.current}>
+          <Avatar name={user.name} src={user.avatarUrl} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate font-medium">{user.name}</span>
+            <span className="block text-sm text-kumo-subtle">Your profile</span>
+          </span>
+        </DropdownMenu.Item>
+      ) : (
+        <div className="px-3 pt-2 pb-1.5 text-sm text-kumo-subtle">Signed in as <span className="text-kumo-default">{user.name}</span></div>
+      )}
       <DropdownMenu.Separator />
       <DropdownMenu.Item icon={SignOutIcon} onSelect={onSignOut} disabled={!onSignOut}>Sign out</DropdownMenu.Item>
     </DropdownMenu>

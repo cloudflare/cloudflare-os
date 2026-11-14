@@ -31,6 +31,7 @@ import { LibraryPreview } from '@/gallery/LibraryPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
+import { ProfilePreview } from '@/gallery/ProfilePreview'
 import { Section } from '@/gallery/Section'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
@@ -358,6 +359,7 @@ function Gallery() {
       <SkillsPreview />
       <AutomationsPreview />
       <BlueprintsPreview />
+      <ProfilePreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">

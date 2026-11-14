@@ -6,6 +6,7 @@ import { greeting } from '@/chat/greeting'
 import { NewChatPane } from '@/chat/NewChatPane'
 import { skillCommandOf } from '@/chat/slashCommands'
 import { startConversation } from '@/chat/startConversation'
+import { useProfile } from '@/profile/ProfileContext'
 import { useApi } from '@/rpc/ApiContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -25,7 +26,9 @@ const blueprintPage = (blueprintId: string) => ({ to: '/blueprints/$blueprintId'
 const allBlueprints = { to: '/library', search: { tab: 'blueprints' } } as const
 
 function Home() {
-  const { api, user } = useApi()
+  const { api } = useApi()
+  // As renamed on the profile page, at once.
+  const { user } = useProfile().snapshot
   const navigate = useNavigate()
   const router = useRouter()
   const location = useLocation()

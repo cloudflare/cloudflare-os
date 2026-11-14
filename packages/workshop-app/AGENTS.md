@@ -40,6 +40,7 @@ src/
   skills/       The user's skills, in Context Library collections
   automations/  What runs by itself: hooks, joined with the scheduler's schedules
   blueprints/   Blueprints: the Library's tab, a blueprint's page, and making a gadget from one
+  profile/      The signed-in user's profile: name, picture, password, usage
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -48,7 +49,7 @@ src/
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
 folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `sharing/`, `gadgets/`,
-`connections/`, `skills/`, `automations/`, `blueprints/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
+`connections/`, `skills/`, `automations/`, `blueprints/`, `profile/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
 and layouts take plain typed props and callbacks.
@@ -296,8 +297,17 @@ Search (`SearchDialog`, from the sidebar or ⌘K/Ctrl+K anywhere, `routes/-AppSe
 app's pages (Connections among them) and every workspace from the list the sidebar already has, so
 opening it reads nothing. What fits is ranked by `blocks/searchMatches.ts`: a title that starts with
 what was typed, then a word in it that does, then anywhere; a single letter only at a word's start.
-The arrow keys move through it and Enter goes. The sidebar's avatar opens the account menu, which
-signs out of this browser.
+The arrow keys move through it and Enter goes. The sidebar's avatar opens the account menu: its first
+row opens the profile, and Sign out signs out of this browser.
+
+The profile is `profile/Profile`, a plain class provided once by `_app` (`ProfileProvider`, read
+with `useProfile`), started from the signed-in `whoami`. The sidebar's avatar and name and Home's
+greeting read it, so a change shows everywhere at once. Each change goes to the server first, then
+shows: the name (`setOwnDisplayName`), the picture (`setAvatar`, cropped and compressed by
+`compressPicture`), and the password (`changePassword`, hashed by `passwordHash`, which loads
+hash-wasm only when it is needed). There is no commit email: nothing in the app shows a commit. `/profile` (`ProfilePane`) lays these out as settings rows, together with the default
+model (`useModels`, through `MenuChooser`) and usage (`usage.ts`: what the user's workspaces cost,
+and today's allowance where the deployment limits use).
 
 ## Sharing
 

@@ -16,13 +16,14 @@ import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
 import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
-import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
 import { clearToken } from '@/rpc/token'
 import { AppSearch } from './-AppSearch'
 import { ShareLinkGate } from '@/sharing/ShareLinkGate'
+import { ProfileProvider } from '@/profile/ProfileProvider'
+import { useProfile } from '@/profile/ProfileContext'
 import { SkillsProvider } from '@/skills/SkillsProvider'
 import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { chatEntryKey, sidebarEntries, workspaceEntryKey } from '@/workspaces/sidebarEntries'
@@ -39,7 +40,9 @@ export const Route = createFileRoute('/_app')({
           <ConnectedAccountsProvider>
             <ChatSessionsProvider>
               <SkillsProvider>
-                <AppFrame />
+                <ProfileProvider>
+                  <AppFrame />
+                </ProfileProvider>
               </SkillsProvider>
             </ChatSessionsProvider>
           </ConnectedAccountsProvider>
@@ -60,7 +63,7 @@ const absolute = (href: string) => new URL(href, window.location.origin).href
  * beneath the page, and what is beside a chat comes over it.
  */
 const AppFrame = () => {
-  const { user } = useApi()
+  const { snapshot: profile } = useProfile()
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
@@ -83,6 +86,7 @@ const AppFrame = () => {
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
   const skillPage = useMatch({ from: '/_app/skills/$skillId', shouldThrow: false })
   const blueprintPage = useMatch({ from: '/_app/blueprints/$blueprintId', shouldThrow: false })
+  const profilePage = useMatch({ from: '/_app/profile', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
@@ -224,7 +228,14 @@ const AppFrame = () => {
 
   const sidebar = (collapsed: boolean) => (
     <Sidebar
-      user={{ name: user.name }}
+      user={{ name: profile.user.name, avatarUrl: profile.picture }}
+      profilePage={{
+        current: profilePage !== undefined,
+        onOpen: () => {
+          leaveSidebar()
+          void navigate({ to: '/profile' })
+        },
+      }}
       workspaces={workspaces}
       selectedWorkspaceId={selectedEntry}
       // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
@@ -306,7 +317,7 @@ const AppFrame = () => {
             onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
             // On the pages the sidebar goes to. Those further in have their way up already, such as
             // a chat's workspace crumb, or an item's own back button.
-            button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage].some((match) => match !== undefined),
+            button: [homePage, workspacePage, libraryPage, workspacesPage, connectionsPage, profilePage].some((match) => match !== undefined),
           }}
           status={status}
           aside={pageItem ? undefined : asideElement}

@@ -8,7 +8,7 @@ const appFolders = (...folders: string[]) =>
   folders.flatMap((folder) => [`@/${folder}/*`, `../${folder}/*`, `../../${folder}/*`, `../../../${folder}/*`])
 
 // workshop-app: the folders that talk to the backend. UI layers must not import them.
-const DATA_FOLDERS = ['rpc', 'chat', 'workspaces', 'aside', 'library', 'sharing', 'gadgets', 'connections', 'skills', 'automations', 'blueprints']
+const DATA_FOLDERS = ['rpc', 'chat', 'workspaces', 'aside', 'library', 'sharing', 'gadgets', 'connections', 'skills', 'automations', 'blueprints', 'profile']
 const DATA_LAYERS = appFolders(...DATA_FOLDERS)
 const DATA_LAYERS_MESSAGE =
   `UI layers take plain props and callbacks. Data and RPC code lives in ${DATA_FOLDERS.map((folder) => `${folder}/`).join(', ')}, and routes connect it.`

@@ -224,8 +224,22 @@ existing `screenshot` argument.
 
 ## 9. The user's profile
 
-**Decision.** The account menu's first row opens the profile: picture, name, commit email, default
-model, usage, and password, as settings rows.
+**Decision.** The account menu's first row opens the profile: picture, name, default model, usage,
+and password, as settings rows.
+
+As built, the account menu's first row is the user's picture, name and "Your profile", and opens
+`/profile`. The page is laid out the way a gadget's settings are. At the top is the picture, large,
+with a camera at its foot that offers Choose a picture (cropped square and compressed to the
+server's 50 KB) and Remove picture. Under it is the name, renamed in place, and "Signed in as"
+with the id. Then come three groups. Chats: the default model (a menu; the same preference a new
+chat's + menu sets).
+Usage: AI spend, the sum of `totalCost` across the workspaces the user builds in, saying where most
+of it went; and, only where the deployment limits use, today's free allowance as a meter, with the
+balance of a Cloudflare account that pays for more. Signing in: Change password (only for an
+account with one; the current password, then the new one twice, at least 8 characters, hashed as
+sign-in hashes it) and Sign out. The profile is one store for the whole app (`ProfileProvider`), so
+a new name or picture shows at once in the sidebar and in Home's greeting. The commit email is
+cut: the classic Workshop doesn't offer it either, and nothing in the new app shows a commit.
 
 **Kernel.** None.
 

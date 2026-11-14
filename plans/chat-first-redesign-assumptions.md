@@ -355,4 +355,8 @@ list it here, so it is known what workshop-app needs from the kernel.
   existing blueprint API. A blueprint used from its page is named as a workspace with
   `makeWorkspace` (above), and the picture it is published with is `getThumbnail()`, sent as
   `createBlueprint()`'s `screenshot`.
+- **The profile needed nothing new.** Name, picture and password use the existing
+  `setOwnDisplayName`, `setAvatar` and `changePassword`. AI spend is the sum of
+  each workspace's `totalCost` from `listWorkspaces`, so it counts the workspaces the user builds in,
+  not their use of gadgets shared with them; a per-user total would need the kernel.
 

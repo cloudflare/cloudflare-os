@@ -55,6 +55,7 @@ export const ShellPreview = () => {
             sidebar={(collapsed) => (
               <Sidebar
                 user={{ name: 'Ada Lovelace' }}
+                profilePage={{ current: false, onOpen: () => {} }}
                 workspaces={WORKSPACES}
                 selectedWorkspaceId={workspace}
                 onSelectWorkspace={(id) => {
