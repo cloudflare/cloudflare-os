@@ -3372,8 +3372,9 @@ async function runAgentPass(
   if (agentContext.scratch) {
     systemPromptSlots[1] += `\n\nThe chat's scratch worktree is env.${agentContext.scratch.bindingName}. ` +
         `Use it for working files and generated outputs. For container tasks, pass this ` +
-        `worktree to mountWorktree() and write outputs inside that mount, then use attachFile ` +
-        `to show them in chat. It is a worktree, not a Gadget; no application needs creating.`;
+        `worktree to mountWorktree() and write outputs inside that mount. ` +
+        (agentContext.spawnerConfig ? "" : `Then use attachFile to show them in chat. `) +
+        `It is a worktree, not a Gadget; no application needs creating.`;
   }
   systemPromptSlots[0] += `\n\n${COMMUNICATION_GUIDANCE}`;
   if (instanceInstructions) {

@@ -81,10 +81,12 @@ async function spawnChat(impl: any, {env, ...config}: AgentSpawnerConfig): Promi
 // the tool names offered at every step.
 async function runScriptedTurn(
     impl: any, chatId: number,
-    steps: ReturnType<typeof fauxAssistantMessage>[]): Promise<string[][]> {
+    steps: ReturnType<typeof fauxAssistantMessage>[],
+    inspect?: (context: TranscriptContext) => void): Promise<string[][]> {
   let faux = createFauxCore({ models: [{ id: "faux-model" }] });
   let offered: string[][] = [];
   faux.setResponses(steps.map(step => (context: TranscriptContext) => {
+    inspect?.(context);
     offered.push(getCurrentTools(context.messages).map(tool => tool.name).toSorted());
     return step;
   }));
@@ -102,6 +104,32 @@ function toolCalls(impl: any, chatId: number): AiToolCall[] {
 }
 
 describe("spawned agent tools", () => {
+  it("keeps uploaded scratch files usable without advertising an unavailable attachFile tool",
+      () => withImpl(async impl => {
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+    let blob = await impl.gitCache.writeBlob(new TextEncoder().encode("working notes"));
+    await impl.sendChatMessage({ id: { toString: () => OWNER_USER_ID } }, { profile: OWNER },
+        chatId, "Read this file", undefined,
+        [{ oid: blob.oid, mimeType: "text/plain", name: "notes.txt" }]);
+    let scratch = impl.getChatAgentContext(chatId).scratch;
+    expect(scratch).toBeDefined();
+
+    let offered = await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage(fauxToolCall("readFile", {
+        workpiece: scratch.bindingName, filename: "notes.txt",
+      }), { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ], context => {
+      let prompt = JSON.stringify(context.messages[0]);
+      expect(prompt).toContain(`env.${scratch.bindingName}`);
+      expect(prompt).not.toContain("attachFile");
+    });
+    expect(offered.flat()).not.toContain("attachFile");
+    let read = toolCalls(impl, chatId).find(call => call.toolName === "readFile");
+    expect(read).toMatchObject({ observedOid: blob.oid });
+    expect(read?.error).toBeUndefined();
+  }));
+
   it("offers file and worktree tools, but nothing that modifies gadgets or requests connections",
       () => withImpl(async impl => {
     seedGadget(impl);

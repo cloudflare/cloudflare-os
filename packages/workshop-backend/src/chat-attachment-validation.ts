@@ -9,12 +9,14 @@ const MAX_CHAT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 /** Maximum number of files attached to one chat message. */
 export const MAX_CHAT_ATTACHMENTS_PER_MESSAGE = 5;
 
+const MAX_CHAT_ATTACHMENT_BATCH_BYTES = 5 * 1024 * 1024;
+
 /** Apply the same per-message bounds to uploaded and assistant-generated attachments. */
 export function assertChatAttachmentBatch(attachments: readonly {size: number}[]): void {
   if (attachments.length > MAX_CHAT_ATTACHMENTS_PER_MESSAGE) {
     throw new Error(`You can attach up to ${MAX_CHAT_ATTACHMENTS_PER_MESSAGE} attachments.`);
   }
-  if (attachments.reduce((total, attachment) => total + attachment.size, 0) > 5 * 1024 * 1024) {
+  if (attachments.reduce((total, attachment) => total + attachment.size, 0) > MAX_CHAT_ATTACHMENT_BATCH_BYTES) {
     throw new Error("Attached files are too large.");
   }
 }
