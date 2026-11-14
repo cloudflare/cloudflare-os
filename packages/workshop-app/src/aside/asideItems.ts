@@ -195,5 +195,15 @@ export const workspaceAsideItems = (workspaceId: string, chatId: number | undefi
       output: { workspaceId, workpieceId: summary.workpieceId, type: 'gadget', format, chatId },
     })
   }
-  return [...found.values()].toSorted((a, b) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0))
+  return [...found.values()].toSorted(byRecency)
 }
+
+const byRecency = (a: AsideItem, b: AsideItem) => (b.at?.getTime() ?? 0) - (a.at?.getTime() ?? 0)
+
+/**
+ * Everything that can be switched to beside a chat, most recent first: what the workspace made
+ * (`workspaceAsideItems`) and every file sent in what has been loaded of the chat, so that the
+ * file shown is always among them and the count says how many there are.
+ */
+export const besideChatItems = (workspace: AsideItem[], chat: AsideItem[]): AsideItem[] =>
+  [...workspace, ...chat.filter(({ kind }) => kind === 'file')].toSorted(byRecency)

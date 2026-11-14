@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatItem, OutputItem, UserItem } from '@/chat/chatItems'
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
-import { asideItemFor, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems } from './asideItems'
+import { asideItemFor, chatAsideItems, formatAsideRef, itemPageId, parseAsideRef, parseItemPageId, validateAsideParam, workspaceAsideItems, besideChatItems } from './asideItems'
 
 const output = (id: number, workpieceId: number, title: string): OutputItem => ({
   kind: 'output', id, key: `output:${id}`, workpieceId, title, type: 'gadget', draft: false,
@@ -103,6 +103,15 @@ describe('workspaceAsideItems', () => {
       ['7', 'Report', wednesday],
       ['9', 'App', tuesday],
     ])
+  })
+})
+
+describe('besideChatItems', () => {
+  it('lists the chat’s files among what the workspace made, most recent first, so the file shown is always one of them', () => {
+    const [monday, tuesday] = [new Date('2026-11-09T10:00'), new Date('2026-11-10T10:00')]
+    const chat = chatAsideItems('w', 3, ready([user(1, ['brief.pdf'], monday), user(2, ['deck.pptx', 'notes.txt'], tuesday), output(3, 7, 'Report')]))
+    const items = besideChatItems(workspaceAsideItems('w', 3, [summary('w', 7, 'Report', monday)], chat), chat)
+    expect(items.map(({ key }) => key)).toEqual(['7', 'file-notes.txt', 'file-deck.pptx', 'file-brief.pdf'])
   })
 })
 

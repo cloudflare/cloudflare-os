@@ -1,16 +1,13 @@
 import { useMemo } from 'react'
 import { useChatBeside } from '@/chat/useChatSession'
 import { useLibrary } from '@/library/useLibrary'
-import { chatAsideItems, workspaceAsideItems, type AsideItem } from './asideItems'
+import { besideChatItems, chatAsideItems, workspaceAsideItems, type AsideItem } from './asideItems'
 import type { ChatRef } from './useAsideNavigation'
 
 export type ChatLibrary = {
-  /** What the chat's workspace has made, most recent first (see `workspaceAsideItems`). */
+  /** What the chat's workspace has made and the files sent in the chat, most recent first (see `besideChatItems`). */
   items: AsideItem[]
-  /**
-   * What is known of anything that can be shown from the chat, to describe the one shown: the
-   * items, and the files sent in what has been loaded of the chat, which are not listed.
-   */
+  /** What is known of anything that can be shown from the chat, to describe the one shown: the items. */
   known: AsideItem[]
   /** The library is being read. */
   reading: boolean
@@ -36,10 +33,10 @@ export const useChatLibrary = (chat: ChatRef | undefined): ChatLibrary => {
     [workspaceId, chatId, snapshot],
   )
   const items = useMemo(
-    () => (workspaceId === undefined ? [] : workspaceAsideItems(workspaceId, chatId, outputs ?? [], fromChat)),
+    () => (workspaceId === undefined ? [] : besideChatItems(workspaceAsideItems(workspaceId, chatId, outputs ?? [], fromChat), fromChat)),
     [workspaceId, chatId, outputs, fromChat],
   )
-  const known = useMemo(() => [...items, ...fromChat.filter(({ kind }) => kind === 'file')], [items, fromChat])
+  const known = items
   return {
     items,
     known,

@@ -301,6 +301,9 @@ entry for every block). What was decided on the way:
 - **Library.** Items open as their own page, as he does it, not beside the Library. Google files
   can't be starred (there is no kind for them) but can be removed.
 - **Sharing.** Toasts become notes under the invite field. Avatars are initials only.
+- **Switching beside a chat.** His switcher lists what the workspace made and leaves out the files
+  sent in the chat, but a file that was open was put in front of the list anyway, so it appeared
+  with a count that left it out. It lists the chat's files too, newest first, and counts them.
 
 ### Where the port needed the kernel
 
