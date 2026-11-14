@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { NotificationMute, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 
 export type WorkspacesState =
   | { status: 'loading' }
@@ -14,6 +14,8 @@ export type WorkspacesContextValue = {
   setPinned: (id: string, pinned: boolean) => Promise<void>
   /** Renames a workspace, shown at once and undone if the server refuses. */
   rename: (id: string, title: string) => Promise<void>
+  /** Mutes or unmutes a workspace's notifications (`null` unmutes), shown at once and undone if the server refuses. */
+  setNotificationMute: (id: string, mute: NotificationMute | null) => Promise<void>
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -35,3 +37,10 @@ export const useSetWorkspacePinned = (): WorkspacesContextValue['setPinned'] => 
 
 /** Renames a workspace (`setTitle`, to the server). Rejects with why, once it is undone. */
 export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWorkspacesContext().rename
+
+/** Mutes or unmutes a workspace's notifications. Rejects with why, once it is undone. */
+export const useSetNotificationMute = (): WorkspacesContextValue['setNotificationMute'] => useWorkspacesContext().setNotificationMute
+
+/** Whether a workspace's notifications are muted now: for good, or until a time not yet reached. */
+export const isMuted = (mute: NotificationMute | undefined, now = Date.now()) =>
+  mute !== undefined && (mute.indefinite === true || mute.until.getTime() > now)

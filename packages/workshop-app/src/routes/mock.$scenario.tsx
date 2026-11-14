@@ -5,7 +5,7 @@ import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
-import { ChatSettingsPane } from '@/chat/ChatSettingsPane'
+import { ChatSettingsPane, type ChatSettingsTab } from '@/chat/ChatSettingsPane'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
 import { MockControls } from '@/chat/mock/MockControls'
 import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
@@ -143,6 +143,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
   }, [firstFound])
   // The chat's settings, in the chat's place, with nothing beside them.
   const [settings, setSettings] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<ChatSettingsTab>('library')
   // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
   const [expanded, setExpanded] = useState(false)
   // Made once, so the chat's rows are not rendered again for them.
@@ -187,6 +188,9 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
       {asPage ? null : settings ? (
         <ChatSettingsPane
           {...CHAT}
+          tab={settingsTab}
+          onTabChange={setSettingsTab}
+          onDeleted={() => setSettings(false)}
           onBack={() => setSettings(false)}
           onOpenWorkspace={onOpenScenarios}
           onOpenItem={(item) => {

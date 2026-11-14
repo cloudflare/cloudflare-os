@@ -2,10 +2,14 @@ import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '
 import type { AsideItem } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
 import { asideFor } from '@/aside/useAsideNavigation'
-import { ChatSettingsPane } from '@/chat/ChatSettingsPane'
+import { CHAT_SETTINGS_TABS, ChatSettingsPane, type ChatSettingsTab } from '@/chat/ChatSettingsPane'
+import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { writeLayoutPrefs } from '@/prefs/layoutPrefs'
 
-/** A chat's settings, opened from its title: for now, what was sent and made in it. */
+const validateTab = (value: unknown): ChatSettingsTab | undefined =>
+  CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'library')?.value
+
+/** A chat's settings, opened from its title: what was made beside it, or with `?tab=`, its settings. */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/chat/$chatId_/settings')({
   params: {
     parse: ({ workspaceId, chatId }) => {
@@ -15,11 +19,14 @@ export const Route = createFileRoute('/_app/workspace/$workspaceId/chat/$chatId_
     },
     stringify: ({ workspaceId, chatId }) => ({ workspaceId, chatId: String(chatId) }),
   },
+  validateSearch: (search: Record<string, unknown>): { tab?: ChatSettingsTab } => ({ tab: validateTab(search.tab) }),
   component: ChatSettings,
 })
 
 function ChatSettings() {
   const { workspaceId, chatId } = Route.useParams()
+  const { tab = 'library' } = Route.useSearch()
+  const refreshWorkspaces = useRefreshWorkspaces()
   const initialTitle = useLocation({ select: (location) => location.state.chatTitle })
   const navigate = useNavigate()
   const router = useRouter()
@@ -33,6 +40,21 @@ function ChatSettings() {
       workspaceId={workspaceId}
       chatId={chatId}
       initialTitle={initialTitle}
+      tab={tab}
+      // In place, so that going back leaves the settings rather than going through their tabs.
+      onTabChange={(next) =>
+        navigate({
+          to: '/workspace/$workspaceId/chat/$chatId/settings',
+          params: { workspaceId, chatId },
+          search: { tab: next === 'library' ? undefined : next },
+          replace: true,
+          state: router.state.location.state,
+        })
+      }
+      onDeleted={() => {
+        refreshWorkspaces()
+        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, replace: true })
+      }}
       onBack={() => {
         if (router.state.location.state.fromChat) return router.history.back()
         void navigate(chat(asideFor({ workspaceId, chatId })))

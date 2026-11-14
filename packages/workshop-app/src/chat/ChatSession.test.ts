@@ -91,6 +91,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     mergeChanges: vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' })),
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
+    deleteChat: vi.fn<Overseer['deleteChat']>(async () => {}),
   }
 
   const broken = new Set<(error: unknown) => void>()

@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { NotificationMute, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
 
@@ -63,5 +63,16 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename }}>{children}</WorkspacesContext>
+  const setNotificationMute = async (id: string, mute: NotificationMute | null) => {
+    const before = state.status === 'ready' ? state.workspaces.find((workspace) => workspace.id === id)?.notificationMute : undefined
+    mark(id, { notificationMute: mute ?? undefined })
+    try {
+      await api.setWorkspaceNotificationMute(id, mute)
+    } catch (error) {
+      mark(id, { notificationMute: before })
+      throw error
+    }
+  }
+
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setNotificationMute }}>{children}</WorkspacesContext>
 }

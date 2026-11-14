@@ -63,6 +63,8 @@ export type ChatSnapshot =
        * below everything else in the turn.
        */
       pinned: ChatFeed['pinned']
+      /** What the AI has used in the chat so far, once there is something to say. */
+      usage: { tokens: number; cost?: number } | undefined
       /** The chat's changes wait for the user to keep them. Undefined while the agent works. */
       keep: KeepAsk | undefined
       /** Why the last send failed, until the next send. */
@@ -93,6 +95,7 @@ type Calls =
   | 'mergeChanges'
   | 'revertChanges'
   | 'updateChatFromMainline'
+  | 'deleteChat'
 
 /**
  * The part of a workspace's Overseer a session uses, and the lease that must be disposed. The
@@ -208,6 +211,7 @@ export class ChatSession {
   #early: Array<() => void> = []
 
   #title: string | undefined
+  #usage: { tokens: number; cost?: number } | undefined
   #agentActive = false
   // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
   #liveMetadata = false
@@ -430,6 +434,17 @@ export class ChatSession {
   discardChanges = () => this.#ask((overseer) => overseer.revertChanges(this.chatId, 0))
 
   /**
+   * Deletes the chat, for everyone in the workspace. Rejects with why, when it could not be, and
+   * asks nothing while the connection is down.
+   */
+  deleteChat = async () => {
+    if (this.options.connection?.blocked()) throw new Error('The connection is being made again.')
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) throw new Error('The chat is still loading.')
+    await overseer.deleteChat(this.chatId)
+  }
+
+  /**
    * Gives the chat a title of its own. It is shown at once, and put back, with the promise
    * rejected, when the workspace refuses it.
    */
@@ -588,6 +603,7 @@ export class ChatSession {
     this.#loaded = false
     this.#early = []
     this.#title = undefined
+    this.#usage = undefined
     this.#agentActive = false
     this.#liveMetadata = false
     this.#messages = new Map()
@@ -632,6 +648,7 @@ export class ChatSession {
       waiting: this.#steers.filter(({ unread }) => unread).map(({ text }) => text),
       pinned: this.#feed.pinned,
       keep: this.#agentActive ? undefined : this.#keep,
+      usage: this.#usage,
       sendError: this.#sendError,
       actionError: this.#actionError,
       hasEarlier: this.#nextBeforeSequence !== undefined,
@@ -834,6 +851,7 @@ export class ChatSession {
 
   #readMetadata(chat: AiChatMetadata) {
     this.#title = chat.title
+    this.#usage = chat.totalTokens ? { tokens: chat.totalTokens, cost: chat.totalCost || undefined } : undefined
     this.#agentActive = chat.activeAgent !== undefined
     this.#compactedTo = chat.compactedTo
     const { viewerId } = this.options
