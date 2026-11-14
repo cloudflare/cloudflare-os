@@ -1,16 +1,29 @@
 import { useState } from 'react'
 import { Switch } from '@cloudflare/kumo'
-import { ArchiveIcon, TrashIcon } from '@phosphor-icons/react'
+import { ArchiveIcon, CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, NotePencilIcon, TrashIcon } from '@phosphor-icons/react'
+import { SearchDialog, type SearchEntry } from '@/blocks/SearchDialog'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { Button } from '@/components/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Dialog } from '@/components/Dialog'
+import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useReport } from './previewState'
 import { Section } from './Section'
 
-/** Settings pages' rows, and the dialogs that ask before something is done. */
+const workspace = (title: string, label: string, detail: string) => ({ title, group: 'Workspaces', detail, icon: <WorkspaceIcon label={label} small /> })
+
+/** Settings pages' rows, the dialogs that ask before something is done, and search. */
 export const SettingsPreview = () => {
-  const { report, after } = useReport()
+  const { report, say, after } = useReport()
+  const [searching, setSearching] = useState(false)
+  const entries: SearchEntry[] = [
+    { title: 'New chat', group: 'Go to', icon: <NotePencilIcon /> },
+    { title: 'Workspaces', group: 'Go to', icon: <FolderIcon /> },
+    { title: 'Library', group: 'Go to', keywords: ['gadgets', 'files'], icon: <CirclesFourIcon /> },
+    workspace('Garden planning', 'GP', 'Just now'),
+    workspace('Launch readiness', 'LR', 'Yesterday'),
+    workspace('Weekly digest', 'WD', 'Monday'),
+  ].map((entry) => ({ ...entry, key: entry.title, onSelect: () => say(`went to ${entry.title}`) }))
   const [notify, setNotify] = useState(true)
   const [confirming, setConfirming] = useState(false)
   const [failing, setFailing] = useState(false)
@@ -47,6 +60,16 @@ export const SettingsPreview = () => {
         <Button variant="danger" icon={TrashIcon} onClick={() => setConfirming(true)}>Confirm</Button>
         <Button variant="danger" onClick={() => setFailing(true)}>Confirm that fails</Button>
       </Section>
+      <Section title="SearchDialog (type to narrow it; arrows and Enter, or a click, to go)">
+        <Button icon={MagnifyingGlassIcon} onClick={() => setSearching(true)}>Search</Button>
+      </Section>
+      <SearchDialog
+        open={searching}
+        onOpenChange={setSearching}
+        entries={entries}
+        suggested={[...entries.slice(3, 5), ...entries.slice(0, 3)]}
+        placeholder="Search workspaces and pages"
+      />
       <Dialog
         open={dialog}
         onOpenChange={setDialog}

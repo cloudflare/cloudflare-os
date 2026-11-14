@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
-import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, SignOutIcon } from '@phosphor-icons/react'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton } from '@/components/ConnectButton'
+import { DropdownMenu } from '@/components/DropdownMenu'
 import { LogoIcon } from '@/components/LogoIcon'
 import { WorkspaceNav, type SidebarWorkspace } from './WorkspaceNav'
 
@@ -23,6 +24,10 @@ export type SidebarProps = {
   library?: { current: boolean; onOpen: () => void }
   /** The page listing every workspace, and whether it is the one showing. */
   workspacesPage?: { current: boolean; onOpen: () => void }
+  /** Opens search. */
+  onSearch?: () => void
+  /** Signs the user out of this browser. */
+  onSignOut?: () => void
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
   collapsed?: boolean
 }
@@ -40,6 +45,8 @@ export const Sidebar = ({
   connections,
   library,
   workspacesPage,
+  onSearch,
+  onSignOut,
   collapsed = false,
 }: SidebarProps) => {
   const home = <Button icon={<LogoIcon />} aria-label="Home" onClick={onGoHome} className="[&>svg]:size-[1.5em]" />
@@ -61,8 +68,15 @@ export const Sidebar = ({
       className="aria-[current=page]:bg-kumo-tint"
     />
   )
-  const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" />
-  const account = <Button icon={<Avatar name={user.name} src={user.avatarUrl} />} aria-label="Account" />
+  const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" title="Search (⌘K)" aria-haspopup="dialog" onClick={onSearch} />
+  // Up from the bottom, and out to the side of the rail, so it opens over the page rather than off it.
+  const account = (
+    <DropdownMenu icon={<Avatar name={user.name} src={user.avatarUrl} />} aria-label="Account" side={collapsed ? 'right' : 'top'} align={collapsed ? 'end' : 'start'}>
+      <div className="px-3 pt-2 pb-1.5 text-sm text-kumo-subtle">Signed in as <span className="text-kumo-default">{user.name}</span></div>
+      <DropdownMenu.Separator />
+      <DropdownMenu.Item icon={SignOutIcon} onSelect={onSignOut} disabled={!onSignOut}>Sign out</DropdownMenu.Item>
+    </DropdownMenu>
+  )
   const nav = (
     <WorkspaceNav
       key={collapsed ? 'rail' : 'list'}

@@ -16,6 +16,8 @@ import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { clearToken } from '@/rpc/token'
+import { AppSearch } from './-AppSearch'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
@@ -108,6 +110,7 @@ const AppFrame = () => {
   // The sidebar out over a narrow screen, which, like full screen, is left behind with the page:
   // going anywhere puts it away.
   const [sidebarAt, setSidebarAt] = useState<string>()
+  const [searching, setSearching] = useState(false)
   const sidebarOpen = sidebarAt === pathname
   const leaveSidebar = () => setSidebarAt(undefined)
   // Up from an item's own page on a narrow screen, to what it is in: the chat it was shown from,
@@ -201,6 +204,12 @@ const AppFrame = () => {
         void navigate({ to: '/' })
       }}
       notice={notice}
+      onSearch={() => setSearching(true)}
+      // Forgets the session here and starts again from nothing, so no one else at this browser sees it.
+      onSignOut={() => {
+        clearToken()
+        window.location.assign('/')
+      }}
       connections={placeholderLogos}
       library={{
         current: libraryPage !== undefined || libraryItemPage !== undefined,
@@ -237,42 +246,50 @@ const AppFrame = () => {
     : undefined
   const closeAside = besideOf && named ? aside.hide : openedEmpty ? hideEmpty : undefined
 
+  const search = <AppSearch open={searching} onOpenChange={setSearching} />
+
   if (narrow) {
     return (
-      <NarrowShell
-        sidebar={{
-          content: sidebar(false),
-          open: sidebarOpen,
-          onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
-          // On the pages the sidebar goes to. Those further in have their way up already, such as
-          // a chat's workspace crumb, or an item's own back button.
-          button: [homePage, workspacePage, libraryPage, workspacesPage].some((match) => match !== undefined),
-        }}
-        status={status}
-        aside={pageItem ? undefined : asideElement}
-        onOpenAside={openAside}
-        onCloseAside={closeAside}
-      >
-        {pageItem ? asideElement : <Outlet />}
-      </NarrowShell>
+      <>
+        <NarrowShell
+          sidebar={{
+            content: sidebar(false),
+            open: sidebarOpen,
+            onOpenChange: (open) => setSidebarAt(open ? router.state.location.pathname : undefined),
+            // On the pages the sidebar goes to. Those further in have their way up already, such as
+            // a chat's workspace crumb, or an item's own back button.
+            button: [homePage, workspacePage, libraryPage, workspacesPage].some((match) => match !== undefined),
+          }}
+          status={status}
+          aside={pageItem ? undefined : asideElement}
+          onOpenAside={openAside}
+          onCloseAside={closeAside}
+        >
+          {pageItem ? asideElement : <Outlet />}
+        </NarrowShell>
+        {search}
+      </>
     )
   }
 
   return (
-    <AppShell
-      sidebar={sidebar}
-      status={status}
-      initialSidebar={prefs.sidebar}
-      onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}
-      initialAsideShare={prefs.asideShare}
-      onAsideShareChange={(asideShare) => writeLayoutPrefs({ asideShare })}
-      aside={asideElement}
-      asideAlone={pageItem !== undefined}
-      asideFullScreen={fullScreen}
-      onOpenAside={openAside}
-      onCloseAside={closeAside}
-    >
-      <Outlet />
-    </AppShell>
+    <>
+      <AppShell
+        sidebar={sidebar}
+        status={status}
+        initialSidebar={prefs.sidebar}
+        onSidebarChange={(size) => writeLayoutPrefs({ sidebar: size })}
+        initialAsideShare={prefs.asideShare}
+        onAsideShareChange={(asideShare) => writeLayoutPrefs({ asideShare })}
+        aside={asideElement}
+        asideAlone={pageItem !== undefined}
+        asideFullScreen={fullScreen}
+        onOpenAside={openAside}
+        onCloseAside={closeAside}
+      >
+        <Outlet />
+      </AppShell>
+      {search}
+    </>
   )
 }

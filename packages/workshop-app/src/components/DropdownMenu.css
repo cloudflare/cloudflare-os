@@ -40,6 +40,11 @@
   color: transparent;
 }
 
+/* An icon that brings its own colours, such as an avatar, is not hidden by the text colour. */
+.dropdown-menu-trigger:not([data-in-place])[data-menu-morphing] > :not(.dropdown-menu-close) {
+  opacity: 0;
+}
+
 /* While open only the × circle is hit-testable; the rest of the trigger's box
    counts as outside the menu. Clicks on the × bubble to the trigger. */
 .dropdown-menu-trigger:not([data-in-place])[data-menu-morphing][data-popup-open] {
