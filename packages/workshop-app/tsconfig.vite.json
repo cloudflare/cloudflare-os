@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    // Explicit because this config is standalone. Emitting would leave a compiled `vite.config.js`,
+    // which Vite resolves ahead of `vite.config.ts`.
+    "noEmit": true
+  },
+  "include": ["vite.config.ts"]
+}

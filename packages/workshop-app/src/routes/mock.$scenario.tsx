@@ -1,0 +1,235 @@
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { createFileRoute, notFound, useNavigate } from '@tanstack/react-router'
+import { asideItemFor, formatAsideRef, parseAsideRef } from '@/aside/asideItems'
+import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
+import { useChatLibrary } from '@/aside/useChatLibrary'
+import { ConnectionIsland } from '@/blocks/ConnectionIsland'
+import { ChatPane, type ChatPaneProps } from '@/chat/ChatPane'
+import { ChatSettingsPane } from '@/chat/ChatSettingsPane'
+import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
+import { MockControls } from '@/chat/mock/MockControls'
+import { createMockApi, MOCK_WORKSPACE_ID } from '@/chat/mock/mockApi'
+import type { Scenario } from '@/chat/mock/scenario'
+import { SCENARIOS } from '@/chat/mock/scenarios'
+import { useNarrowScreen } from '@/hooks/useNarrowScreen'
+import { NarrowShell } from '@/layouts/NarrowShell'
+import { SplitLayout } from '@/layouts/SplitLayout'
+import { ApiContext } from '@/rpc/ApiContext'
+import { ConnectionNotice } from '@/rpc/ConnectionNotice'
+import { ConnectionNoticeContext } from '@/rpc/ConnectionNoticeContext'
+import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
+
+/** One scripted chat: the real `ChatPane` over a fake backend, so it needs no server. */
+export const Route = createFileRoute('/mock/$scenario')({
+  loader: ({ params }) => {
+    const scenario = SCENARIOS.find(({ id }) => id === params.scenario)
+    if (!scenario) throw notFound()
+    return scenario
+  },
+  component: MockRoute,
+})
+
+function MockRoute() {
+  const scenario = Route.useLoaderData()
+  const navigate = useNavigate()
+  // Bumped to start the scenario again from its recorded history.
+  const [attempt, setAttempt] = useState(0)
+
+  return (
+    <MockChat
+      key={`${scenario.id}/${attempt}`}
+      scenario={scenario}
+      onSelectScenario={(id) => navigate({ to: '/mock/$scenario', params: { scenario: id } })}
+      onOpenScenarios={() => navigate({ to: '/mock' })}
+      onRestart={() => setAttempt((current) => current + 1)}
+    />
+  )
+}
+
+const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
+  scenario: Scenario
+  onSelectScenario: (id: string) => void
+  /** The list of scenarios stands in for the workspace's page, which the fake backend does not have. */
+  onOpenScenarios: () => void
+  onRestart: () => void
+}) => {
+  // Made once, so the callbacks handed to the chat stay the same.
+  const [{ session: signedIn, overseer, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
+    const mock = createMockApi(scenario)
+    return {
+      ...mock,
+      notice: new ConnectionNotice(),
+      // What the real connect flow ends with, and what confirming a standing approval does.
+      onSetUpConnection: (requestId: string) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
+      onAlwaysApprove: ({ gatekeeperId, actionKind }: Parameters<NonNullable<ChatPaneProps['onAlwaysApprove']>>[0]) =>
+        mock.overseer.setAutoApprovedActionKind(gatekeeperId, actionKind),
+    }
+  })
+  // The fake backend's connection, standing in for the app's: down for a `disconnect` step, and
+  // back with a new API, as a new connection brings, which connects whatever holds stubs again.
+  const [session, setSession] = useState(signedIn)
+  const connectionState = useSyncExternalStore(notice.subscribe, notice.getSnapshot)
+
+  useEffect(() => {
+    overseer.onConnection = (connected) => {
+      setSession((current) => connected ? { ...current, api: new Proxy(current.api, {}), reconnecting: false } : { ...current, reconnecting: true })
+    }
+    overseer.player.play()
+    return () => {
+      overseer.onConnection = undefined
+      overseer.player.pause()
+    }
+  }, [overseer, notice])
+
+  // As the app's gate does, before the passive effects beneath, which may ask whether it is down.
+  const { reconnecting } = session
+  useLayoutEffect(() => {
+    if (reconnecting) notice.lost()
+    else notice.restored()
+  }, [notice, reconnecting])
+
+  return (
+    <ConnectionNoticeContext value={notice}>
+      <ApiContext value={session}>
+        <WorkspacesProvider>
+          <ChatSessionsProvider>
+            <MockLayout
+              onOpenScenarios={onOpenScenarios}
+              onSetUpConnection={onSetUpConnection}
+              onAlwaysApprove={onAlwaysApprove}
+              status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
+            >
+              <MockControls
+                scenarios={SCENARIOS}
+                scenario={scenario}
+                player={overseer.player}
+                onSelectScenario={onSelectScenario}
+                onRestart={onRestart}
+              />
+            </MockLayout>
+          </ChatSessionsProvider>
+        </WorkspacesProvider>
+      </ApiContext>
+    </ConnectionNoticeContext>
+  )
+}
+
+const CHAT = { workspaceId: MOCK_WORKSPACE_ID, chatId: 0 }
+
+/**
+ * Laid out as the app lays out a chat, without the sidebar, so what it opens shows beside it. What
+ * is shown is kept here rather than in the URL, which belongs to the scenario.
+ */
+const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, status, children }: {
+  onOpenScenarios: () => void
+  onSetUpConnection: ChatPaneProps['onSetUpConnection']
+  onAlwaysApprove: ChatPaneProps['onAlwaysApprove']
+  /** Said over the chat at the top of the window, as the app's frame does: the connection island. */
+  status: ReactNode
+  /** Over the chat, such as the player's controls. */
+  children: ReactNode
+}) => {
+  const [open, setOpen] = useState<string>()
+  const named = parseAsideRef(open)
+  // Had back before what the workspace has made is known: open empty while the library is read.
+  const [askedEmpty, setAskedEmpty] = useState(false)
+  if (askedEmpty && named) setAskedEmpty(false)
+  const openedEmpty = askedEmpty && !named
+  const library = useChatLibrary(CHAT)
+  const { items, known } = library
+  const firstFound = openedEmpty ? items[0]?.key : undefined
+  useEffect(() => {
+    if (firstFound !== undefined) setOpen(firstFound)
+  }, [firstFound])
+  // The chat's settings, in the chat's place, with nothing beside them.
+  const [settings, setSettings] = useState(false)
+  // What is beside the chat, as a page of its own: the chat is gone meanwhile, as it is in the app.
+  const [expanded, setExpanded] = useState(false)
+  // Made once, so the chat's rows are not rendered again for them.
+  const [handlers] = useState(() => ({
+    onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
+    onOpenOutput: (output: { workpieceId: number }) => setOpen(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId })),
+    onFullScreenChange: () => {},
+  }))
+
+  const narrow = useNarrowScreen()
+  // Nothing to expand into on a narrow screen, where it fills the window already.
+  const asPage = expanded && named !== undefined && !narrow
+  const aside = !settings && openedEmpty ? (
+    <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={() => setAskedEmpty(false)} narrow={narrow} />
+  ) : named && !settings && (asPage ? (
+    <AsidePane
+      placement="page"
+      item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
+      fullScreen={false}
+      onFullScreenChange={handlers.onFullScreenChange}
+      onCollapse={() => setExpanded(false)}
+    />
+  ) : (
+    <AsidePane
+      placement="beside"
+      item={asideItemFor(CHAT.workspaceId, named, CHAT.chatId, known)}
+      items={items}
+      onSelect={setOpen}
+      onHide={() => setOpen(undefined)}
+      onExpand={() => setExpanded(true)}
+      onFullScreenChange={handlers.onFullScreenChange}
+      narrow={narrow}
+    />
+  ))
+  const openAside = !named && !settings && !openedEmpty ? () => (items.length > 0 ? setOpen(items[0].key) : setAskedEmpty(true)) : undefined
+  const closeAside = () => {
+    setOpen(undefined)
+    setAskedEmpty(false)
+  }
+  const page = (
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {asPage ? null : settings ? (
+        <ChatSettingsPane
+          {...CHAT}
+          onBack={() => setSettings(false)}
+          onOpenWorkspace={onOpenScenarios}
+          onOpenItem={(item) => {
+            setOpen(item.key)
+            setSettings(false)
+          }}
+        />
+      ) : (
+        <ChatPane
+          {...CHAT}
+          onOpenWorkspace={onOpenScenarios}
+          onOpenSettings={() => setSettings(true)}
+          onOpenAttachment={handlers.onOpenAttachment}
+          onOpenOutput={handlers.onOpenOutput}
+          onSetUpConnection={onSetUpConnection}
+          onAlwaysApprove={onAlwaysApprove}
+        />
+      )}
+      {children}
+    </div>
+  )
+
+  // As the app is laid out on a narrow screen, without the sidebar.
+  if (narrow) {
+    return (
+      <NarrowShell status={status} aside={aside} onOpenAside={openAside} onCloseAside={closeAside}>
+        {page}
+      </NarrowShell>
+    )
+  }
+
+  return (
+    <div className="flex h-full p-2">
+      <SplitLayout
+        asideAlone={asPage}
+        aside={aside}
+        onOpenAside={openAside}
+        onCloseAside={closeAside}
+        edgeInset={8}
+        status={status}
+      >
+        {page}
+      </SplitLayout>
+    </div>
+  )
+}
