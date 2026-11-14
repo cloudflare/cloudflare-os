@@ -6,6 +6,7 @@
 // shorter than the band's writing would make is cut in two, and its halves asked for.
 
 import type { RenderedBand, RenderedPage } from "@gadgets/pdf-renderer/api";
+import { partsColumns } from "@gadgets/pdf-renderer/columns";
 import type { PageSlots } from "./pdf-read-ahead";
 import { refusedFor, TranscriptionError, type Transcription } from "./workers-ai-vision";
 
@@ -252,12 +253,13 @@ export async function readBands(
   };
   /**
    * What the halves of `read`'s band that have ink say, the top first, as one answer, which did
-   * not end whole when either did not. `undefined` when neither half has ink, and when a half's
-   * call failed, after which the other is not asked for.
+   * not end whole when either did not. `undefined` when the band cannot be cut without parting
+   * its columns, when neither half has ink, and when a half's call failed, after which the other
+   * is not asked for.
    */
   let recut = async (read: BandRead, why: BandEvent["askedAgain"]): Promise<Answer | undefined> => {
     let said: Answer | undefined;
-    for (let half of halves(read.rendered, page.width)) {
+    for (let half of halves(read.rendered, page.width, page.height) ?? []) {
       if (half.ink <= 0) continue;
       let asked = await ask(read, why, half);
       if ("failure" in asked) return undefined;
@@ -340,15 +342,22 @@ function keep(read: BandRead, answer: Answer): void {
 }
 
 /**
- * `band`, of a page `width` pixels wide, cut in two at the least inked row of its middle third:
- * the top half, and the bottom, which begins with that row. A row's ink is measured as the
+ * `band`, of a page `width` pixels wide and `pageHeight` rows high, cut in two at the least inked
+ * row of its middle third: the top half, and the bottom, which begins with that row. A row's ink is measured as the
  * renderer measures it: how far its pixels are from the row's ground, the level that half of
  * them are at or under, summed. So a row between two lines of writing has the least whether the
  * page is dark on light or light on dark, and on a white ground it is the darkness of the row's
  * pixels. Of the rows with the least, the one nearest the band's middle is taken. Each half is a
  * view of the band's rows, and its `ink` is its rows'.
+ *
+ * `undefined` when a cut above that row would part the columns of a page set in columns, as the
+ * renderer leaves out such a cut of its own, which is how it comes to hand such a page over in
+ * one band: the halves' texts are joined one after the other, so the columns would come back in
+ * pieces, turn about.
  */
-function halves(band: RenderedBand, width: number): [RenderedBand, RenderedBand] {
+function halves(
+  band: RenderedBand, width: number, pageHeight: number,
+): [RenderedBand, RenderedBand] | undefined {
   let pixels = band.pixels!;
   let inks = new Float64Array(band.rows);
   let levels = new Uint32Array(256);
@@ -368,6 +377,7 @@ function halves(band: RenderedBand, width: number): [RenderedBand, RenderedBand]
     if (inks[row]! < inks[cut]! ||
       (inks[row] === inks[cut] && Math.abs(row - middle) < Math.abs(cut - middle))) cut = row;
   }
+  if (partsColumns(pixels, width, band.rows, cut, pageHeight)) return undefined;
   let inked = (from: number, to: number) => inks.subarray(from, to).reduce((sum, ink) => sum + ink, 0);
   return [
     { top: band.top, rows: cut, ink: inked(0, cut), pixels: pixels.subarray(0, cut * width) },

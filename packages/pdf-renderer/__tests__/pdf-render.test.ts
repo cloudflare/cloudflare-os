@@ -7,7 +7,8 @@ import { describe, expect, it } from "vitest";
 import {
   HOLD_IDLE_MS, RENDER_LIMITS, type RenderedPage, type RenderLimits, type RenderOptions, type RenderRefusalReason,
 } from "../src/api";
-import { cutDense, cutRows, partsColumns, pdfRenderer, RenderRefusal, type RenderHold } from "../src/renderer";
+import { partsColumns } from "../src/columns";
+import { cutDense, cutRows, pdfRenderer, RenderRefusal, type RenderHold } from "../src/renderer";
 import { instantiatePdfium, PdfiumAbort, type PdfiumExports, type PdfiumInstance } from "../src/pdfium-loader";
 import type { PdfiumModules } from "../src/pdfium-module";
 import {
@@ -1721,6 +1722,18 @@ describe("partsColumns", () => {
     expect(parts(twoColumns())).toBe(true);
     expect(parts(sheet(fill => lines(fill, 20, 180)))).toBe(false);
     expect(parts(sheet(() => undefined))).toBe(false);
+  });
+
+  it("takes how far the space between columns has to run from the page's height, when given a band of it", () => {
+    // Rows 80 to 119 of the page, as a band of it. A cut between two lines 18 rows down has the
+    // space run 18 rows above it and 22 below, which is far enough by either height.
+    let band = twoColumns().subarray(80 * SIDE, 120 * SIDE);
+    expect(partsColumns(band, SIDE, 40, CUT - 80)).toBe(true);
+    expect(partsColumns(band, SIDE, 40, CUT - 80, SIDE)).toBe(true);
+    // One 6 rows down has it run 6 above: enough by the band's own height, of which 5% is 2
+    // rows, and not by the page's, of which it is 10.
+    expect(partsColumns(band, SIDE, 40, 6)).toBe(true);
+    expect(partsColumns(band, SIDE, 40, 6, SIDE)).toBe(false);
   });
 
   it("is so whatever the page's writing stands on", () => {

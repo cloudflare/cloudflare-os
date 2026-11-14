@@ -891,6 +891,59 @@ describe("readBands", () => {
       ]);
     });
 
+    /** The side of the square page of {@link written}: the space between its columns has to run 10 rows each way. */
+    const SIDE = 200;
+    /** Writes black on such a page from pixel `from` up to `to`, in rows `top` up to `bottom`. */
+    type Fill = (from: number, to: number, top: number, bottom: number) => void;
+
+    /** A page of one band, `SIDE` rows of `SIDE` white pixels, for `paint` to write on. */
+    function written(paint: (fill: Fill) => void): RenderedPage {
+      let pixels = new Uint8Array(SIDE * SIDE).fill(255);
+      paint((from, to, top, bottom) => {
+        for (let row = top; row < bottom; row++) pixels.fill(0, row * SIDE + from, row * SIDE + to);
+      });
+      let ink = pixels.reduce((sum, pixel) => sum + 255 - pixel, 0);
+      return { ...page([]), width: SIDE, height: SIDE, bands: [{ top: 0, rows: SIDE, ink, pixels }] };
+    }
+
+    /** Lines of writing across pixels `from` up to `to`, in rows `top` up to `bottom`: six rows written, then four not. */
+    function lines(fill: Fill, from: number, to: number, top: number, bottom: number): void {
+      for (let row = top; row + 6 <= bottom; row += 10) fill(from, to, row, row + 6);
+    }
+
+    it("is not cut across the columns of a page set in columns, and keeps its first answer, cut off", async () => {
+      // Two columns down the whole band, which is how the renderer hands such a page over: whole.
+      let sheet = written(fill => {
+        lines(fill, 20, 90, 10, 190);
+        lines(fill, 110, 180, 10, 190);
+      });
+      let run = reading(sheet, [[CUT, says("never asked for")]]);
+      expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });
+      expect(partsAsked(run)).toEqual([{ top: 0, rows: SIDE }]);
+      expect(run.seen.events).toEqual([{ band: 1, bands: 1, imageBytes: SENT, asks: 1 }]);
+    });
+
+    it("is cut below where its columns end, at a row with lines across the page beneath it", async () => {
+      // Two columns down to row 76, then lines across the page from row 90: the least inked
+      // row nearest the middle lies among those lines, and parts no column.
+      let sheet = written(fill => {
+        lines(fill, 20, 90, 10, 80);
+        lines(fill, 110, 180, 10, 80);
+        lines(fill, 20, 180, 90, 190);
+      });
+      let run = reading(sheet, [[CUT, says("the columns and a line"), says("the lines below")]]);
+      expect(await run.done).toEqual({ text: "the columns and a line\nthe lines below", cutOff: false });
+      expect(partsAsked(run)).toEqual([{ top: 0, rows: SIDE }, { top: 0, rows: 99 }, { top: 99, rows: 101 }]);
+    });
+
+    it("is cut at its least inked row when what is beside a strip of ground is no column", async () => {
+      // One column of writing with a wide margin: nothing to part.
+      let sheet = written(fill => lines(fill, 20, 90, 10, 190));
+      let run = reading(sheet, [[CUT, says("top"), says("bottom")]]);
+      expect(await run.done).toEqual({ text: "top\nbottom", cutOff: false });
+      expect(partsAsked(run)).toEqual([{ top: 0, rows: SIDE }, { top: 0, rows: 99 }, { top: 99, rows: 101 }]);
+    });
+
     it("keeps its first answer, cut off, when neither half has ink, and asks for nothing more", async () => {
       let run = reading(tall([rowsOf(90, 0)]), [[CUT, says("never asked for")]]);
       expect(await run.done).toEqual({ text: "as far as the limit", cutOff: true });

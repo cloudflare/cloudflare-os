@@ -5,7 +5,8 @@
   "main": "./src/worker.ts",
   "exports": {
     ".": "./src/worker.ts",
-    "./api": "./src/api.ts"
+    "./api": "./src/api.ts",
+    "./columns": "./src/columns.ts"
   },
   "scripts": {
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
