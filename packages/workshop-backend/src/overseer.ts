@@ -3,12 +3,13 @@ import type { ChatTimelineHead } from "@gadgets/workshop-shared/api";
 import { validateRpc } from "capnweb-validate";
 import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, AGENT_SPAWNER_CONNECTION_ID, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, CollaboratorAccess, CollaboratorGrant, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, createGatekeeperError, GATEKEEPER_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import {
-  ADMIN_ACCESS_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, MAX_ADMIN_AUDIT_ARG_LENGTH,
+  MAX_ADMIN_REJECTED_ACTIONS, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  createAdminWriteError,
   type AdminAccessRecord, type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics, type AdminWorkspaceMethod,
-  type AdminWorkspaceView,
+  type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -67,13 +68,17 @@ import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
-  adminAccessPolicy, adminCommitLogDepth, assertAdminViewLive, cutAdminAuditText,
-  redactAdminAuditArgs, validateAdminAccessReason, withholdActionContent,
-  withholdBlueprintContent, withholdChatContent, withholdCommitContent, withholdCreationContent,
-  withholdHookContent,
+  adminAccessPolicy, adminCommitLogDepth, adminWorkspaceWritesEnabled, assertAdminViewLive,
+  auditOwnerId, cutAdminAuditText, redactAdminAuditArgs, validateAdminAccessReason,
+  withholdActionContent, withholdBlueprintContent, withholdChatContent, withholdCommitContent,
+  withholdCreationContent, withholdHookContent,
   type AdminViewTerms,
 } from "./admin-access";
 import type { AdminAuditDurableObject } from "./admin-audit";
+import {
+  adminWriteArgs, adminWriteTitle, type AdminWriteGrant,
+} from "./admin-writes";
+import { isDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
@@ -489,11 +494,11 @@ function validateChatAttachmentId(id: string): string {
   return id;
 }
 
-// Sentinel gatekeeperId used on ActionRecords that originated from built-in agent tools
-// (e.g. webFetch) rather than from a real gatekeeper. Real gatekeeper IDs are assigned
-// starting at 1, so -1 is a safe out-of-band marker. Only "observation" records ever carry
-// this value; observations never go through the approve/reject paths that would dereference
-// the gatekeeper, so no lookup is ever attempted.
+// Sentinel gatekeeperId used on ActionRecords that no gatekeeper made: an observation by a
+// built-in agent tool (e.g. webFetch), or the entry of a deployment admin's write (see
+// OverseerImpl.recordAdminWrite()). Real gatekeeper IDs are assigned starting at 1, so -1 is a
+// safe out-of-band marker. Neither kind of record is ever pending, so neither goes through the
+// approve/reject paths that would dereference the gatekeeper, and no lookup is ever attempted.
 const BUILTIN_TOOL_GATEKEEPER_ID = -1;
 
 type ExternalMessageResponseTargetRegistration = {
@@ -633,7 +638,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // the two match more -- just `action` needs to be different.
 
   // ActionLogEntry omits the gatekeeperId for records that didn't come from a real gatekeeper
-  // (built-in agent tools use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
+  // (built-in agent tools and admin writes use the BUILTIN_TOOL_GATEKEEPER_ID sentinel).
   let gatekeeperId = record.gatekeeperId >= 0 ? record.gatekeeperId : undefined;
   let chatId = record.caller.from === "hook" ? undefined : record.caller.chatId;
 
@@ -671,6 +676,7 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
+        byAdmin: record.byAdmin,
       };
     case "bindHook":
       return {
@@ -5630,6 +5636,78 @@ class OverseerImpl implements AgentHooks {
     this.traceAgentActionApproval(record, "approved");
   }
 
+  // Rejects one pending action (see Overseer.rejectAction()). `resolver` reads the profile of
+  // whoever rejects it, and is called only once the action is known to be one that can be
+  // rejected. Resolves the connection whose auto-approvals the caller may now drain, or undefined
+  // when there is none: for a creation, whose connection is removed, and for an action whose
+  // connection had already been removed, which is rejected with no gatekeeper to notify.
+  async rejectAction(id: number, resolver: () => Promise<AiChatAuthorInfo>)
+      : Promise<WorkpieceId | undefined> {
+    let action = this.storage.actions.get(id);
+    if (!action) {
+      throw new Error(`No such action: ${id}`);
+    }
+
+    if (action.state !== "pending") {
+      throw new Error(`Action is not pending: ${id}`);
+    }
+
+    if (action.type !== "action") {
+      throw new Error(`Can't reject an observation: ${id}`);
+    }
+
+    if (action.action === "create") {
+      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
+      // pushes' marks), and rejects every action queued against the simulated resource: none can
+      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
+      // is called.
+      let profile = await resolver();
+      using _decision = this.claimDecision(id);
+      let queued = Array.from(
+          this.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
+      this.removeGatekeeper(action.gatekeeperId);
+      for (let record of queued) {
+        if (record.type !== "action") continue;
+        record.state = "rejected";
+        record.appliedAt = new Date();
+        record.resolvedBy = profile;
+        this.storage.actions.put(record);
+        this.traceAgentActionApproval(record, "denied");
+        if (record.caller.from === "agent") {
+          this.resumeAgentAfterDecision(record.caller.chatId, record.id);
+        }
+      }
+      return undefined;
+    }
+
+    // A removed connection has no gatekeeper left to tell: removeGatekeeper() deleted its facet,
+    // and with it whatever the gatekeeper held for this action.
+    let removed = this.storage.gatekeepers.get(action.gatekeeperId) === undefined;
+    let gatekeeper = removed ? undefined : await this.getGatekeeperFacet(action.gatekeeperId);
+
+    // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
+    // can't leave the action rejected with the gatekeeper but still "pending" in storage.
+    let profile = await resolver();
+
+    using _decision = this.claimDecision(id);
+    await gatekeeper?.rejectAction(action.action);
+
+    action.state = "rejected";
+    action.appliedAt = new Date();
+    action.resolvedBy = profile;
+    // A rejected push's pending-push marks are removed in the same durable step as the state
+    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
+    this.storage.transaction(() => {
+      this.gitCache.clearPushMarks(action.id);
+      this.storage.actions.put(action);
+    });
+    this.traceAgentActionApproval(action, "denied");
+    if (action.caller.from === "agent") {
+      this.resumeAgentAfterDecision(action.caller.chatId, action.id);
+    }
+    return removed ? undefined : action.gatekeeperId;
+  }
+
   // Traces an approval step for an action an agent turn submitted.
   traceAgentActionApproval(record: ActionRecord, state: "requested" | "approved" | "denied") {
     if (record.caller.from !== "agent") return;
@@ -6609,11 +6687,63 @@ class OverseerImpl implements AgentHooks {
     this.#associateAction(caller, actionId);
   }
 
+  // Puts the entry the action log keeps of a deployment admin's approved write (see
+  // ActionLogEntry.byAdmin) and returns its id. It is put "approved" before the write runs, so it
+  // names the write and never reports it done (see failAdminWrite()). No gatekeeper made it, so it
+  // carries the BUILTIN_TOOL_GATEKEEPER_ID sentinel. The reason is text the requester wrote: it is
+  // a field, shown exactly as written, and never part of the title. Every open "build" session is
+  // delivered the put (see Overseer.subscribeToActions()), and Overseer.listActions() pages it for
+  // them.
+  recordAdminWrite(action: AdminWriteAction, args: AdminWriteArgs, reason: string,
+                   requestId: string, admin: AiChatAuthorInfo): number {
+    let id = this.storage.nextActionId.get();
+    this.storage.nextActionId.put(id + 1);
+
+    let now = new Date();
+    this.storage.actions.put({
+      id,
+      gatekeeperId: BUILTIN_TOOL_GATEKEEPER_ID,
+      caller: {from: "user"},
+      resourceTitle: "Deployment admin",
+      createdAt: now,
+      appliedAt: now,
+      state: "approved",
+      type: "action",
+      action: 0,
+      byAdmin: true,
+      resolvedBy: admin,
+      description: {
+        title: adminWriteTitle(action, args),
+        description:
+            "A deployment admin's change to this workspace, through an approved write request.",
+        fields: [
+          {label: "Reason", kind: "text", value: reason},
+          {label: "Request", kind: "inline", value: requestId},
+        ],
+        descriptionIsComplete: true,
+        implementsRevert: false,
+        autoApprovable: false,
+      },
+    });
+    return id;
+  }
+
+  // Marks an admin write's entry (see recordAdminWrite()) "rejected": the workspace could not
+  // run the write. Writes nothing once the entry is gone, as when the workspace was deleted while
+  // the write ran.
+  failAdminWrite(id: number): void {
+    let record = this.storage.actions.get(id);
+    if (!record) return;
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    this.storage.actions.put(record);
+  }
+
   async submitAction(gatekeeperId: number, action: number | "create",
                      description: ActionDescription, caller: GatekeeperCaller)
       : Promise<void> {
     // An in-flight facet RPC can outlive removeGatekeeper, and a pending action on a removed
-    // connection could never be approved or rejected (both dereference the facet).
+    // connection could never be approved: nothing is left to apply it.
     let gatekeeper = this.storage.gatekeepers.get(gatekeeperId);
     if (!gatekeeper) {
       throw new Error(
@@ -7976,6 +8106,87 @@ class OverseerImpl implements AgentHooks {
       if (result.status === "rejected") throw result.reason;
     }
     this.#updateAlarm();
+  }
+
+  // Deletes a chat (see Overseer.deleteChat()).
+  async deleteChat(chatId: number): Promise<void> {
+    let startedAt = Date.now();
+    let response = this.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
+    if (response?.status === "waiting") {
+      this.deliverExternalMessageResponse(response, "The chat was deleted before the agent responded.");
+    }
+
+    // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
+    // and provisional binding edges.
+    await this.removeChatWorkpieces(chatId);
+    this.storage.chatMeta.delete(chatId);
+    this.storage.chatContext.delete(chatId);
+    for (let event of Array.from(this.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatNotifications.deleteRecord(event);
+    }
+    // Buffer the checkpoints first: deleting invalidates the list cursor.
+    for (let checkpoint of Array.from(
+        this.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatCompactions.deleteRecord(checkpoint);
+    }
+
+    // The chat's change stream: rows (retired included), the straggler-bridge boundary, and the
+    // per-client dedupe records (which live exactly as long as the chat -- see submitCodeChange).
+    this.deleteAllChatChanges(chatId);
+    for (let record of Array.from(this.storage.chatChangeClients.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatChangeClients.deleteRecord(record);
+    }
+
+    // Any pre-conversion legacy drafts (see ChatDraftUpdateRecord).
+    for (let draft of Array.from(this.storage.chatDraftUpdates.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.chatDraftUpdates.deleteRecord(draft);
+    }
+
+    // Delete the chat's messages and the attachment content referenced by them. Attachment metadata
+    // is canonical in each message's ChatAttachmentRef, so no separate attachment index is needed.
+    this.ctx.storage.transactionSync(() => {
+      for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
+        if (msg.type === "message") {
+          for (let attachment of msg.attachments ?? []) {
+            let content = this.storage.chatAttachmentContent.get(attachment.id);
+            if (content?.state.type === "committed" && content.state.chatId === chatId) {
+              this.storage.chatAttachmentContent.delete(attachment.id);
+            }
+          }
+        }
+        this.storage.chats.deleteRecord(msg);
+      }
+    });
+
+    // Clean up agentCallbackArgs for this chat, and any calls to its agent not yet delivered.
+    for (let entry of this.storage.agentCallbackArgs.list(
+        {prefix: chatKeyPrefix(chatId)})) {
+      this.storage.agentCallbackArgs.deleteRecord(entry);
+    }
+    for (let entry of Array.from(this.storage.pendingAgentCalls.list(
+        {prefix: chatKeyPrefix(chatId)}))) {
+      this.storage.pendingAgentCalls.deleteRecord(entry);
+    }
+
+    // Clean up the chat's model-facing snapshots.
+    for (let entry of this.storage.chatModelData.list(
+        {prefix: chatKeyPrefix(chatId)})) {
+      this.storage.chatModelData.deleteRecord(entry);
+    }
+
+    // Defensively drop any resume record so a deleted chat is never resumed. (Aborting the agent
+    // below also clears this via the tracked promise's finally, but the chat may have no live
+    // agent in memory, e.g. after a restart before resumption ran.)
+    this.storage.activeAgents.delete(chatId);
+
+    // Clean up all in-memory live state for this chat.
+    this.destroyLiveChat(chatId);
+
+    this.logger.info("deleted chat", {
+      event: "chat.delete.completed", chatId, durationMs: Date.now() - startedAt,
+    });
   }
 
   // Stops the chat's running agent. Its queued steers are dropped: the client that stops puts them
@@ -11894,6 +12105,148 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return view;
   }
 
+  /**
+   * Run an approved admin write (AdminApiImpl.approveWorkspaceWrite()). Reachable only over the
+   * Workshop's Durable Object binding, never through a capability a user holds. Reads its
+   * environment only through the OverseerImpl.
+   *
+   * As for openForAdmin(), by explicit policy the admin is not checked by authorizeCollaborator()
+   * or observer verification and joins no session, presence or outputs fan-out. Unlike
+   * openForAdmin(), a write does to the workspace what its operation does for a member, gatekeeper
+   * calls included: a rejected action is reported to its connection's gatekeeper.
+   *
+   * Refuses, writing and recording nothing:
+   *   - a workspace never initialised or since deleted (`workspaceNotFound`), before anything else
+   *     and again once its owner and the approver have been read;
+   *   - a malformed grant (TypeError): a blank or over-long reason, a `via` that is not "api" or
+   *     "cli", arguments that are not the action's, a `workspaceOwner` that is not a non-empty
+   *     string, a `passkey` that is not one of 1 to MAX_ADMIN_AUDIT_ARG_LENGTH characters, or an
+   *     `expiresAt` that is not a valid Date;
+   *   - a request that expired more than a minute ago, the allowance for clock skew
+   *     (`requestNotPending`);
+   *   - an approver or a requester who is no longer a deployment admin (`notAdmin`), and writes
+   *     turned off (`writesOff`);
+   *   - a grant whose `workspaceOwner` is not this workspace's owner (`workspaceChanged`): the
+   *     approver confirmed a write to that owner's workspace, and a deleted workspace's id can be
+   *     initialised again for someone else. Not `workspaceNotFound`, on which the caller drops the
+   *     workspace from the directory: this workspace is alive.
+   *
+   * Then, in this order:
+   *   1. The "approved" AdminWriteRecord is appended to the deployment-wide log. A write whose
+   *      record cannot be written does not happen. Nor does one whose workspace was deleted while
+   *      the record was appended (`workspaceNotFound`): the record is kept, and nothing follows it.
+   *   2. The write's entry is put in the workspace's action log (see ActionLogEntry.byAdmin), for
+   *      every action, so that no admin write can exist that its workspace's action log lacks.
+   *      The log is read by the workspace's owner and its "build" collaborators only.
+   *   3. The operation runs (see runAdminWrite()). If it throws, the entry is turned "rejected"
+   *      and the error is rethrown.
+   * The entry is "approved" before the operation runs, so an object that dies midway leaves an
+   * "approved" entry for a write done in part.
+   *
+   * Resolves what the write reports (`outcome`), which only "rejectPendingActions" does.
+   */
+  async applyAdminWrite(grant: AdminWriteGrant): Promise<{ outcome?: string }> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let reason = validateAdminAccessReason(grant.reason);
+    if (grant.via !== "api" && grant.via !== "cli") {
+      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    }
+    let args = adminWriteArgs(grant.action, grant.args);
+    // A request is never stored without an owner, so a grant without one is malformed, not a
+    // reason to skip the comparison below.
+    if (typeof grant.workspaceOwner !== "string" || !grant.workspaceOwner) {
+      throw new TypeError("An admin write must name the workspace's owner.");
+    }
+    // An approval always names the passkey that signed, in the form the record keeps.
+    if (typeof grant.passkey !== "string" || !grant.passkey ||
+        grant.passkey.length > MAX_ADMIN_AUDIT_ARG_LENGTH) {
+      throw new TypeError("An admin write must name the passkey that approved it.");
+    }
+    let expiresAt = grant.expiresAt instanceof Date ? grant.expiresAt.getTime() : NaN;
+    if (Number.isNaN(expiresAt)) {
+      throw new TypeError("An admin write's expiry must be a valid time.");
+    }
+    if (expiresAt < Date.now() - 60 * 1000) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
+    }
+
+    // Neither the approver nor the requester may have stopped being an admin. Read from the
+    // OverseerImpl's environment, so that the checks hold for this workspace's isolate even if
+    // the Worker that approved ran an older config.
+    if (!isDeploymentAdmin(impl.env, grant.admin) ||
+        !isDeploymentAdmin(impl.env, grant.requestedBy)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    if (!adminWorkspaceWritesEnabled(impl.env)) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.writesOff);
+    }
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    let admin: AiChatAuthorInfo = await retryOnDoReset(
+        () => impl.users.getByName(grant.admin).whoamiIfExists(), impl.logger) ??
+        {type: "user", id: grant.admin, name: grant.admin};
+    // Deleted during those reads: a deleted workspace gets no record, as for a view's call.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    if (grant.workspaceOwner !== auditOwnerId(ownerId)) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.workspaceChanged);
+    }
+
+    let record: AdminWriteRecord = {
+      kind: "write",
+      at: new Date(),
+      admin: grant.admin,
+      sessionId: grant.sessionId,
+      via: grant.via,
+      requestId: grant.requestId,
+      event: "approved",
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      method: grant.action,
+      args: redactAdminAuditArgs(args),
+      reason,
+      requestedBy: grant.requestedBy,
+      passkey: grant.passkey,
+    };
+    try {
+      // No retention, as for a view's call (see AdminWorkspaceViewImpl).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: grant.action, error: err,
+      });
+      throw err;
+    }
+    // Deleted while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    // Synchronously after that check and before the effect.
+    let entryId = impl.recordAdminWrite(grant.action, args, reason, grant.requestId, admin);
+    let outcome: string | undefined;
+    try {
+      outcome = await runAdminWrite(impl, grant.action, args, admin);
+    } catch (err) {
+      impl.failAdminWrite(entryId);
+      throw err;
+    }
+    // Never the reason or the arguments.
+    impl.logger.info("admin write applied", {
+      event: "admin.write.applied", operation: grant.action,
+    });
+    return {outcome};
+  }
+
   #getExternalChat(externalChatKey: string): ExternalChatRecord | undefined {
     let externalChat = this.impl.storage.externalChats.get(externalChatKey);
     if (externalChat && !this.impl.storage.chatMeta.get(externalChat.chatId)) {
@@ -13134,70 +13487,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
 
   async rejectAction(id: number): Promise<void> {
-    let action = this.impl.storage.actions.get(id);
-    if (!action) {
-      throw new Error(`No such action: ${id}`);
-    }
-
-    if (action.state !== "pending") {
-      throw new Error(`Action is not pending: ${id}`);
-    }
-
-    if (action.type !== "action") {
-      throw new Error(`Can't reject an observation: ${id}`);
-    }
-
-    if (action.action === "create") {
-      // Rejecting a creation removes its connection, as disconnecting would (clearing queued
-      // pushes' marks), and rejects every action queued against the simulated resource: none can
-      // apply now. Their gatekeeper-side state goes with the facet's storage, so no rejectAction()
-      // is called.
-      let profile = await this.#getClientProfile();
-      using _decision = this.impl.claimDecision(id);
-      let queued = Array.from(
-          this.impl.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
-      this.impl.removeGatekeeper(action.gatekeeperId);
-      for (let record of queued) {
-        if (record.type !== "action") continue;
-        record.state = "rejected";
-        record.appliedAt = new Date();
-        record.resolvedBy = profile;
-        this.impl.storage.actions.put(record);
-        this.impl.traceAgentActionApproval(record, "denied");
-        if (record.caller.from === "agent") {
-          this.impl.resumeAgentAfterDecision(record.caller.chatId, record.id);
-        }
-      }
-      return;
-    }
-
-    let gatekeeper = await this.impl.getGatekeeperFacet(action.gatekeeperId);
-
-    // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
-    // can't leave the action rejected with the gatekeeper but still "pending" in storage.
-    let profile = await this.#getClientProfile();
-
-    using _decision = this.impl.claimDecision(id);
-    await gatekeeper.rejectAction(action.action);
-
-    action.state = "rejected";
-    action.appliedAt = new Date();
-    action.resolvedBy = profile;
-    // A rejected push's pending-push marks are removed in the same durable step as the state
-    // change (nothing was transmitted, so nothing became proven). No-op for pushless actions.
-    this.impl.storage.transaction(() => {
-      this.impl.gitCache.clearPushMarks(action.id);
-      this.impl.storage.actions.put(action);
-    });
-    this.impl.traceAgentActionApproval(action, "denied");
-    if (action.caller.from === "agent") {
-      this.impl.resumeAgentAfterDecision(action.caller.chatId, action.id);
-    }
+    let gatekeeperId = await this.impl.rejectAction(id, () => this.#getClientProfile());
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
     // may unblock later auto-eligible pending actions, whose turns do resume.
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(action.gatekeeperId));
+    if (gatekeeperId !== undefined) {
+      this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(gatekeeperId));
+    }
   }
 
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
@@ -13686,83 +13983,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async deleteChat(chatId: number): Promise<void> {
-    let startedAt = Date.now();
-    let response = this.impl.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
-    if (response?.status === "waiting") {
-      this.impl.deliverExternalMessageResponse(response, "The chat was deleted before the agent responded.");
-    }
-
-    // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
-    // and provisional binding edges.
-    await this.impl.removeChatWorkpieces(chatId);
-    this.impl.storage.chatMeta.delete(chatId);
-    this.impl.storage.chatContext.delete(chatId);
-    for (let event of Array.from(this.impl.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatNotifications.deleteRecord(event);
-    }
-    // Buffer the checkpoints first: deleting invalidates the list cursor.
-    for (let checkpoint of Array.from(
-        this.impl.storage.chatCompactions.list({prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatCompactions.deleteRecord(checkpoint);
-    }
-
-    // The chat's change stream: rows (retired included), the straggler-bridge boundary, and the
-    // per-client dedupe records (which live exactly as long as the chat -- see submitCodeChange).
-    this.impl.deleteAllChatChanges(chatId);
-    for (let record of Array.from(this.impl.storage.chatChangeClients.list(
-        {prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatChangeClients.deleteRecord(record);
-    }
-
-    // Any pre-conversion legacy drafts (see ChatDraftUpdateRecord).
-    for (let draft of Array.from(this.impl.storage.chatDraftUpdates.list(
-        {prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.chatDraftUpdates.deleteRecord(draft);
-    }
-
-    // Delete the chat's messages and the attachment content referenced by them. Attachment metadata
-    // is canonical in each message's ChatAttachmentRef, so no separate attachment index is needed.
-    this.impl.ctx.storage.transactionSync(() => {
-      for (let msg of this.impl.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
-        if (msg.type === "message") {
-          for (let attachment of msg.attachments ?? []) {
-            let content = this.impl.storage.chatAttachmentContent.get(attachment.id);
-            if (content?.state.type === "committed" && content.state.chatId === chatId) {
-              this.impl.storage.chatAttachmentContent.delete(attachment.id);
-            }
-          }
-        }
-        this.impl.storage.chats.deleteRecord(msg);
-      }
-    });
-
-    // Clean up agentCallbackArgs for this chat, and any calls to its agent not yet delivered.
-    for (let entry of this.impl.storage.agentCallbackArgs.list(
-        {prefix: chatKeyPrefix(chatId)})) {
-      this.impl.storage.agentCallbackArgs.deleteRecord(entry);
-    }
-    for (let entry of Array.from(this.impl.storage.pendingAgentCalls.list(
-        {prefix: chatKeyPrefix(chatId)}))) {
-      this.impl.storage.pendingAgentCalls.deleteRecord(entry);
-    }
-
-    // Clean up the chat's model-facing snapshots.
-    for (let entry of this.impl.storage.chatModelData.list(
-        {prefix: chatKeyPrefix(chatId)})) {
-      this.impl.storage.chatModelData.deleteRecord(entry);
-    }
-
-    // Defensively drop any resume record so a deleted chat is never resumed. (Aborting the agent
-    // below also clears this via the tracked promise's finally, but the chat may have no live
-    // agent in memory, e.g. after a restart before resumption ran.)
-    this.impl.storage.activeAgents.delete(chatId);
-
-    // Clean up all in-memory live state for this chat.
-    this.impl.destroyLiveChat(chatId);
-
-    this.impl.logger.info("deleted chat", {
-      event: "chat.delete.completed", chatId, durationMs: Date.now() - startedAt,
-    });
+    return this.impl.deleteChat(chatId);
   }
 
   async stopAgent(chatId: number): Promise<void> {
@@ -14757,6 +14978,98 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
       };
     });
   }
+}
+
+// Runs the operation of an approved admin write (see OverseerDurableObject.applyAdminWrite()):
+// for each action, the one a member's session runs for it (see AdminApi.requestWorkspaceWrite()).
+// `args` are as adminWriteArgs() kept them, and `admin` is the profile of the admin who approved
+// it. Resolves what the write reports, which only "rejectPendingActions" does.
+async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs,
+    admin: AiChatAuthorInfo): Promise<string | undefined> {
+  // adminWriteArgs() checked that every argument the action needs was given.
+  let {chatId} = args as Required<AdminWriteArgs>;
+
+  switch (action) {
+    case "stopAgent":
+      impl.getChatMetaOrThrow(chatId);
+      // A stop drops the chat's queued steers, which the client that stops puts in its draft. No
+      // client stops this turn, so they are logged first, as when a turn fails: they stay in the
+      // chat as their senders' messages, and the agent reads them when it next runs.
+      impl.takeSteers(chatId);
+      impl.cancelAgent(chatId);
+      return undefined;
+
+    case "restartWorkspace":
+      // Not awaited: the restart ends every call on the workspace, and this one is answered
+      // first.
+      impl.scheduleAccessRestart("Gadget restarted by a deployment admin.");
+      return undefined;
+
+    case "deleteChat":
+      impl.getChatMetaOrThrow(chatId);
+      await impl.deleteChat(chatId);
+      return undefined;
+
+    case "rejectPendingActions": {
+      // The pending actions of one connection, or of the whole workspace, oldest first.
+      let pendingActions = function* (connection: WorkpieceId | undefined) {
+        for (let record of connection === undefined
+            ? impl.storage.actions.byHistoryFilter.get("pending")
+            : impl.storage.actions.pendingByGatekeeper.get(connection)) {
+          if (record.type === "action") yield record;
+        }
+      };
+      let countPending = (connection: WorkpieceId | undefined) => {
+        let count = 0;
+        for (let _record of pendingActions(connection)) count++;
+        return count;
+      };
+
+      // Buffered, so that no storage cursor stays open across an await.
+      let queue: number[] = [];
+      for (let {id} of pendingActions(args.gatekeeperId)) {
+        if (queue.push(id) === MAX_ADMIN_REJECTED_ACTIONS) break;
+      }
+
+      let rejected = 0;
+      let connectionsRemoved = 0;
+      let failed = 0;
+      let firstError: string | undefined;
+      for (let id of queue) {
+        // An earlier creation may have taken this action along.
+        let record = impl.storage.actions.get(id);
+        if (record?.type !== "action" || record.state !== "pending") continue;
+        // Rejecting a creation removes its connection, which was never created, and rejects
+        // everything queued on it, as a member's rejection of it does: all of it is counted.
+        let creation = record.action === "create";
+        let taken = creation ? countPending(record.gatekeeperId) : 1;
+        try {
+          // No auto-approval drain follows, as one follows a session's rejection: a drain applies
+          // actions and resumes turns for whoever cleared the gate, and an admin applies nothing.
+          await impl.rejectAction(id, async () => admin);
+        } catch (err) {
+          // Left pending, and the run goes on: the queue is read oldest first, so one action a
+          // gatekeeper refuses to reject would otherwise stop every later request at the same
+          // place.
+          failed++;
+          firstError ??= cutAdminAuditText(
+              err instanceof Error ? err.message : String(err), MAX_ADMIN_AUDIT_ARG_LENGTH);
+          continue;
+        }
+        rejected += taken;
+        if (creation) connectionsRemoved++;
+      }
+      if (rejected === 0 && failed > 0) {
+        throw new Error(`No pending action could be rejected: ${firstError}`);
+      }
+      return `Rejected ${rejected} pending actions; ${countPending(args.gatekeeperId)} remain.` +
+          (connectionsRemoved > 0
+              ? ` Connections removed with a rejected creation: ${connectionsRemoved}.` : "") +
+          (failed > 0 ? ` ${failed} could not be rejected: ${firstError}.` : "");
+    }
+  }
+  // Reached by no action: one without an operation above does not compile.
+  return action satisfies never;
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via

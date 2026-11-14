@@ -1,11 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  createAdminAccessError, getAdminAccessErrorCode,
-  type AdminAccessRecord, type AdminVia,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS,
+  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
+  createAdminWriteError, getAdminAccessErrorCode, getAdminWriteErrorCode,
+  type AdminAccessRecord, type AdminPasskeyAssertion, type AdminPasskeyRegistration,
+  type AdminVia, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
 import { AdminApiImpl } from "../src/admin-settings.js";
+import type { AdminWriteApprover, StoredAdminWrite } from "../src/admin-writes.js";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import {
   DEFAULT_ADMIN_CONFIG, type AdminConfig,
@@ -19,6 +22,9 @@ declare module "cloudflare:workers" {
 
 const ADMIN = "admin@example.test";
 const REASON = "Investigating a support ticket";
+// An answer of the right shape: the fake AdminSettings object decides what it is worth.
+const ASSERTION: AdminPasskeyAssertion =
+    { credentialId: "AA", clientDataJSON: "AA", authenticatorData: "AA", signature: "AA" };
 
 type Call = { target: string; method: string; args: unknown[] };
 type Handler = (...args: any[]) => unknown;
@@ -27,7 +33,8 @@ type Handler = (...args: any[]) => unknown;
  * An AdminApiImpl over fake namespaces, with ADMINS listing ADMIN and `vars` beside it. `calls`
  * lists every namespace and stub call made after the capability was minted, in order; a stub
  * method answers from `handlers[target][method]`, else with undefined. The AdminSettings stub
- * answers committedAdminConfig() with `config` over the defaults.
+ * answers committedAdminConfig() with `config` over the defaults. `waitUntil` is the execution
+ * context's, which records the promises it is given.
  */
 function deployment(options: {
   config?: Partial<AdminConfig>;
@@ -54,7 +61,8 @@ function deployment(options: {
       return stub(target);
     },
   });
-  const ctx = { exports: {
+  const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+  const ctx = { waitUntil, exports: {
     AdminSettings: namespace("admin"),
     UserDirectoryDurableObject: namespace("directory"),
     AdminAuditDurableObject: namespace("audit"),
@@ -77,7 +85,7 @@ function deployment(options: {
   };
   const callsTo = (target: string, method: string) =>
       calls.filter(call => call.target === target && call.method === method);
-  return { mint, calls, callsTo };
+  return { mint, calls, callsTo, waitUntil };
 }
 
 async function rejection(call: Promise<unknown>): Promise<unknown> {
@@ -90,6 +98,9 @@ async function rejection(call: Promise<unknown>): Promise<unknown> {
 }
 
 const workspaceId = () => env.TEST_OVERSEER.newUniqueId().toString();
+
+/** `calls` as "target.method", in order. */
+const named = (calls: Call[]) => calls.map(call => `${call.target}.${call.method}`);
 
 describe("AdminApiImpl.inspectWorkspace", () => {
   it("rejects a bad reason or lifetime before touching anything", async () => {
@@ -384,5 +395,525 @@ describe("AdminApiImpl audit log", () => {
     for (let days of [0, 367, 2.5]) {
       expect(await rejection(api.getAdminAuditStats({ days }))).toBeInstanceOf(TypeError);
     }
+  });
+});
+
+describe("AdminApiImpl passkeys", () => {
+  const REGISTRATION: AdminPasskeyRegistration = {
+    credentialId: "AA", clientDataJSON: "AA", authenticatorData: "AA", publicKey: "AA",
+    publicKeyAlgorithm: -7,
+  };
+  const ON = { ADMIN_WORKSPACE_WRITES: "on" };
+
+  // What the AdminSettings stub answers each method with.
+  const answers = {
+    listAdminPasskeys: [{ id: "AA" }],
+    beginAdminPasskeyEnrolment: { challenge: "enrol" },
+    addAdminPasskey: { id: "AA", name: "Laptop" },
+    beginAdminPasskeyRemoval: { challenge: "remove" },
+    removeAdminPasskey: undefined,
+  };
+  type Method = keyof typeof answers;
+  const NEEDS_WRITES: Method[] = ["beginAdminPasskeyEnrolment", "addAdminPasskey"];
+  const NEEDS_ADMIN: Method[] =
+      ["listAdminPasskeys", "beginAdminPasskeyRemoval", "removeAdminPasskey"];
+
+  const passkeyDeployment = (vars: object) => deployment({
+    vars,
+    handlers: { admin: Object.fromEntries(
+        Object.entries(answers).map(([method, answer]) => [method, () => answer])) },
+  });
+
+  const call = (api: AdminApiImpl, method: Method): Promise<unknown> => ({
+    listAdminPasskeys: () => api.listAdminPasskeys(),
+    beginAdminPasskeyEnrolment: () => api.beginAdminPasskeyEnrolment(),
+    addAdminPasskey: () => api.addAdminPasskey("Laptop", REGISTRATION),
+    beginAdminPasskeyRemoval: () => api.beginAdminPasskeyRemoval("credential"),
+    removeAdminPasskey: () => api.removeAdminPasskey("credential", ASSERTION),
+  })[method]();
+
+  const actor = (method: string) =>
+      ({ admin: ADMIN, sessionId: expect.any(String), via: "cli", method });
+  // What each method forwards to the AdminSettings object: the caller's id, or the actor.
+  const forwarded: Record<Method, unknown[]> = {
+    listAdminPasskeys: [],
+    beginAdminPasskeyEnrolment: [ADMIN],
+    addAdminPasskey: ["Laptop", REGISTRATION, actor("addAdminPasskey")],
+    beginAdminPasskeyRemoval: ["credential", ADMIN],
+    removeAdminPasskey: ["credential", ASSERTION, actor("removeAdminPasskey")],
+  };
+
+  it("forwards each method with the caller's id or its actor while writes are on", async () => {
+    const { mint, calls } = passkeyDeployment(ON);
+    const api = mint();
+    for (let method of [...NEEDS_ADMIN, ...NEEDS_WRITES]) {
+      calls.length = 0;
+      expect(await call(api, method)).toBe(answers[method]);
+      expect(calls).toStrictEqual([{ target: "admin", method, args: forwarded[method] }]);
+    }
+  });
+
+  it.each([
+    ["unset", {}],
+    ["\"off\"", { ADMIN_WORKSPACE_WRITES: "off" }],
+    ["\"true\"", { ADMIN_WORKSPACE_WRITES: "true" }],
+  ])("refuses enrolment, and still lists and removes, while ADMIN_WORKSPACE_WRITES is %s",
+      async (_label, vars) => {
+    // A value that is neither "on" nor "off" is reported once, as an error.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { mint, calls } = passkeyDeployment(vars);
+    const api = mint();
+    for (let method of NEEDS_WRITES) {
+      expect(getAdminWriteErrorCode(await rejection(call(api, method))))
+          .toBe(ADMIN_WRITE_ERROR_CODES.writesOff);
+    }
+    expect(calls).toEqual([]);
+
+    for (let method of NEEDS_ADMIN) {
+      calls.length = 0;
+      expect(await call(api, method)).toBe(answers[method]);
+      expect(calls).toStrictEqual([{ target: "admin", method, args: forwarded[method] }]);
+    }
+    vi.restoreAllMocks();
+  });
+
+  it.each([["on", ON], ["unset", {}]])(
+      "refuses a caller no longer an admin before touching anything, with writes %s",
+      async (_label, vars) => {
+    const { mint, calls } = passkeyDeployment(vars);
+    const api = mint("former@example.test");
+    for (let method of [...NEEDS_ADMIN, ...NEEDS_WRITES]) {
+      expect(getAdminAccessErrorCode(await rejection(call(api, method))))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("AdminApiImpl write requests", () => {
+  const ON = { ADMIN_WORKSPACE_WRITES: "on", PUBLIC_BASE_URL: "https://workshop.example/" };
+  const REQUEST_ID = "4c1d2a0e-8a53-4c59-9a0e-3d7f1b6c2e11";
+  const LISTING = { title: "Quarterly report", ownerId: "bob@example.test" };
+
+  // A request as the AdminSettings stub answers getWorkspaceWrite() with.
+  const STORED: StoredAdminWrite = {
+    id: REQUEST_ID, workspaceId: "a".repeat(64), workspaceTitle: "Quarterly report",
+    workspaceOwner: "bob@example.test", action: "deleteChat", args: { chatId: 3 }, reason: REASON,
+    requestedBy: "other-admin@example.test", via: "api", sessionId: "the requester's session",
+    requestedAt: new Date("2026-01-02T03:04:05.000Z"),
+    expiresAt: new Date("2026-01-02T03:14:05.000Z"), state: "denied",
+    resolvedBy: ADMIN, resolvedAt: new Date("2026-01-02T03:05:00.000Z"),
+  };
+
+  const writesDeployment = (vars: object = ON,
+      workspaceListing: Handler = () => LISTING) => deployment({
+    vars,
+    handlers: {
+      admin: { getWorkspaceWrite: () => STORED },
+      directory: { workspaceListing },
+    },
+  });
+
+  // A deployment whose AdminSettings stub approves `request` and settles it as the object would,
+  // the answer marked as still to be recorded and a refusal's record still owed, and whose
+  // workspace reports an outcome. `handlers` replace any of that.
+  const approvalDeployment = (request: StoredAdminWrite,
+      handlers: Record<string, Record<string, Handler>> = {}) => deployment({
+    vars: ON,
+    handlers: {
+      admin: {
+        approveWorkspaceWrite: () => request,
+        settleWorkspaceWrite: (_id: string, result: { outcome?: string; error?: string }) => ({
+          ...request, state: "error" in result ? "failed" : "applied", ...result,
+          unrecorded: true,
+          refusals: [{ admin: ADMIN, sessionId: "another session", via: "api", refusal: "challenge" }],
+        }),
+        ...handlers.admin,
+      },
+      overseer: { applyAdminWrite: () => ({ outcome: "3 rejected" }), ...handlers.overseer },
+      directory: { ...handlers.directory },
+    },
+  });
+
+  const methods: Record<string, (api: AdminApiImpl) => Promise<unknown>> = {
+    requestWorkspaceWrite: api =>
+        api.requestWorkspaceWrite(workspaceId(), "deleteChat", { chatId: 3 }, REASON),
+    getWorkspaceWrite: api => api.getWorkspaceWrite(REQUEST_ID),
+    denyWorkspaceWrite: api => api.denyWorkspaceWrite(REQUEST_ID),
+    beginWorkspaceWriteApproval: api => api.beginWorkspaceWriteApproval(REQUEST_ID),
+    approveWorkspaceWrite: api => api.approveWorkspaceWrite(REQUEST_ID, ASSERTION),
+  };
+
+  it.each([
+    ["unset", {}],
+    ["\"off\"", { ADMIN_WORKSPACE_WRITES: "off" }],
+    ["\"true\"", { ADMIN_WORKSPACE_WRITES: "true" }],
+  ])("refuses every method before touching anything while ADMIN_WORKSPACE_WRITES is %s",
+      async (_label, vars) => {
+    // A value that is neither "on" nor "off" is reported once, as an error.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { mint, calls } = writesDeployment({ ...ON, ADMIN_WORKSPACE_WRITES: undefined, ...vars });
+    const api = mint();
+    for (let call of Object.values(methods)) {
+      expect(getAdminWriteErrorCode(await rejection(call(api))))
+          .toBe(ADMIN_WRITE_ERROR_CODES.writesOff);
+    }
+    expect(calls).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("refuses a caller no longer an admin before touching anything", async () => {
+    const { mint, calls } = writesDeployment();
+    const api = mint("former@example.test");
+    for (let call of Object.values(methods)) {
+      expect(getAdminAccessErrorCode(await rejection(call(api))))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a bad reason or bad arguments before touching anything", async () => {
+    const { mint, calls } = writesDeployment();
+    const api = mint();
+    const id = workspaceId();
+    for (let reason of ["", "   ", "r".repeat(501)]) {
+      expect(await rejection(api.requestWorkspaceWrite(id, "deleteChat", { chatId: 3 }, reason)))
+          .toBeInstanceOf(TypeError);
+    }
+    const refused: [Parameters<AdminApiImpl["requestWorkspaceWrite"]>[1], AdminWriteArgs][] = [
+      ["restartWorkspace", { chatId: 1 }],
+      ["deleteChat", {}],
+      ["deleteChat", { chatId: -1 }],
+      ["rejectPendingActions", { gatekeeperId: 1.5 }],
+    ];
+    for (let [action, args] of refused) {
+      const error = await rejection(api.requestWorkspaceWrite(id, action, args, REASON));
+      expect(error).toBeInstanceOf(TypeError);
+      expect(getAdminWriteErrorCode(error)).toBeUndefined();
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("never runs with an action that is not one of ADMIN_WRITE_ACTIONS", () => {
+    // The validator refuses it before the method's body runs: synchronously, on a direct call.
+    const { mint, calls } = writesDeployment();
+    const api = mint();
+    expect(() => api.requestWorkspaceWrite(workspaceId(), "bogus" as any, {}, REASON))
+        .toThrow(TypeError);
+    expect(calls).toEqual([]);
+  });
+
+  it("refuses a malformed id as not found, before the directory is asked", async () => {
+    const { mint, calls } = writesDeployment();
+    const error = await rejection(
+        mint().requestWorkspaceWrite("not-an-id", "restartWorkspace", {}, REASON));
+    expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    expect(calls).toEqual([{ target: "overseers", method: "idFromString", args: ["not-an-id"] }]);
+  });
+
+  it("refuses a request no page could approve: PUBLIC_BASE_URL is unset", async () => {
+    const { mint, calls, callsTo } = writesDeployment({ ADMIN_WORKSPACE_WRITES: "on" });
+    const api = mint();
+    const error = await rejection(
+        api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON));
+    expect(getAdminWriteErrorCode(error)).toBe(ADMIN_WRITE_ERROR_CODES.originUnset);
+    expect(calls).toEqual([callsTo("overseers", "idFromString")[0]]);
+
+    expect(getAdminWriteErrorCode(await rejection(api.getWorkspaceWrite(REQUEST_ID))))
+        .toBe(ADMIN_WRITE_ERROR_CODES.originUnset);
+  });
+
+  it.each<[string, Handler]>([
+    ["lists no such workspace", () => null],
+    ["lists it with no owner", () => ({ title: "Orphan", ownerId: "" })],
+    ["cannot be asked", () => { throw new Error("directory unavailable"); }],
+  ])("stores nothing for a workspace the directory %s", async (_label, workspaceListing) => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { mint, calls, callsTo } = writesDeployment(ON, workspaceListing);
+    const id = workspaceId();
+    const error = await rejection(
+        mint().requestWorkspaceWrite(id, "restartWorkspace", {}, REASON));
+    expect(getAdminWriteErrorCode(error)).toBe(ADMIN_WRITE_ERROR_CODES.workspaceUnlisted);
+    expect(callsTo("directory", "workspaceListing")).toEqual(
+        [{ target: "directory", method: "workspaceListing", args: [id] }]);
+    expect(calls.filter(call => call.target === "admin" || call.target === "audit")).toEqual([]);
+    expect(callsTo("overseers", "get")).toEqual([]);
+    vi.restoreAllMocks();
+  });
+
+  it("stores the request with the directory's title and owner, never reaching the workspace",
+      async () => {
+    const longTitle = "t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH + 40);
+    const longOwner = `${"o".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH)}@example.test`;
+    const { mint, calls, callsTo } =
+        writesDeployment(ON, () => ({ title: longTitle, ownerId: longOwner }));
+    const id = workspaceId();
+    const before = Date.now();
+    // An argument given as undefined is one not given, and is not stored.
+    const view = await mint(ADMIN, "api").requestWorkspaceWrite(
+        id, "deleteChat", { chatId: 3, gatekeeperId: undefined }, `  ${REASON}  `);
+
+    // In order: the id, the directory, then the one call that records and stores.
+    expect(calls.map(call => `${call.target}.${call.method}`)).toEqual([
+      "overseers.idFromString", "directorys.getByName", "directory.workspaceListing",
+      "admin.requestWorkspaceWrite",
+    ]);
+    expect(callsTo("overseers", "get")).toEqual([]);
+
+    const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+    expect(stored).toStrictEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/), workspaceId: id,
+      workspaceTitle: `${"t".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH - 1)}…`,
+      workspaceOwner: expect.stringMatching(/^o+…#[0-9a-f]{20}$/),
+      action: "deleteChat", args: { chatId: 3 },
+      reason: REASON, requestedBy: ADMIN, via: "api", sessionId: expect.any(String),
+      requestedAt: expect.any(Date), expiresAt: expect.any(Date), state: "pending",
+    });
+    expect(stored.workspaceOwner).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(stored.requestedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(stored.requestedAt.getTime()).toBeLessThanOrEqual(Date.now());
+    expect(stored.expiresAt.getTime() - stored.requestedAt.getTime())
+        .toBe(ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000);
+    expect(ADMIN_WRITE_REQUEST_LIFETIME_SECONDS).toBe(600);
+
+    // The view is the stored request without the session, plus the page that approves it.
+    const { sessionId, ...shown } = stored;
+    expect(view).toStrictEqual(
+        { ...shown, approvalUrl: `https://workshop.example/admin/approve/${stored.id}` });
+    expect(view).not.toHaveProperty("sessionId");
+    expect(view.via).toBe("api");
+  });
+
+  it("stores the workspace's id as the id itself prints it, however the caller wrote it",
+      async () => {
+    const { mint, callsTo } = writesDeployment();
+    const id = workspaceId();
+    const written = id.toUpperCase();
+    expect(written).not.toBe(id);
+    const view = await mint().requestWorkspaceWrite(written, "restartWorkspace", {}, REASON);
+
+    expect(callsTo("directory", "workspaceListing")[0].args).toEqual([id]);
+    const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+    expect(stored.workspaceId).toBe(id);
+    expect(view.workspaceId).toBe(id);
+  });
+
+  it("requests and denies through the capability's own session and `via`", async () => {
+    const { mint, callsTo } = writesDeployment();
+    const api = mint(ADMIN, "cli");
+    await api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON);
+    await api.denyWorkspaceWrite(REQUEST_ID);
+    const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+    expect(stored.via).toBe("cli");
+    expect(callsTo("admin", "denyWorkspaceWrite")[0].args).toStrictEqual(
+        [REQUEST_ID, { admin: ADMIN, sessionId: stored.sessionId, via: "cli" }]);
+
+    // Another capability of the same admin is another session, with a `via` of its own.
+    await mint(ADMIN, "api").denyWorkspaceWrite(REQUEST_ID);
+    const [, later] = callsTo("admin", "denyWorkspaceWrite")[0].args;
+    expect(later).toStrictEqual({ admin: ADMIN, sessionId: expect.any(String), via: "api" });
+    expect((later as { sessionId: string }).sessionId).not.toBe(stored.sessionId);
+  });
+
+  it("reads a request by id, as its view", async () => {
+    const { mint, calls } = writesDeployment();
+    const view = await mint().getWorkspaceWrite(REQUEST_ID);
+    expect(calls).toStrictEqual(
+        [{ target: "admin", method: "getWorkspaceWrite", args: [REQUEST_ID] }]);
+    const { sessionId, ...shown } = STORED;
+    expect(view).toStrictEqual(
+        { ...shown, approvalUrl: `https://workshop.example/admin/approve/${REQUEST_ID}` });
+    expect(view).not.toHaveProperty("sessionId");
+  });
+
+  it("forwards a failure of the AdminSettings object as it is", async () => {
+    const refusal = new Error("refused by the settings object");
+    const { mint } = deployment({
+      vars: ON,
+      handlers: {
+        admin: {
+          requestWorkspaceWrite: () => { throw refusal; },
+          denyWorkspaceWrite: () => { throw refusal; },
+        },
+        directory: { workspaceListing: () => LISTING },
+      },
+    });
+    const api = mint();
+    expect(await rejection(
+        api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON))).toBe(refusal);
+    expect(await rejection(api.denyWorkspaceWrite(REQUEST_ID))).toBe(refusal);
+  });
+
+  describe("approval", () => {
+    const { passkeyRefused, requestNotFound, requestNotPending, workspaceChanged } =
+        ADMIN_WRITE_ERROR_CODES;
+    // Who approved, as AdminSettings stored it: not the capability the tests call through.
+    const APPROVER: AdminWriteApprover = {
+      admin: "approver@example.test", sessionId: "the approver's session", via: "api",
+      passkey: "credential-id",
+    };
+
+    // A request as the AdminSettings stub answers approveWorkspaceWrite() with, for a workspace
+    // id of this deployment.
+    const approvedWrite = (): StoredAdminWrite & { approver: AdminWriteApprover } => ({
+      ...STORED, workspaceId: workspaceId(), state: "approved", approver: APPROVER,
+    });
+
+    it("begins an approval for the caller", async () => {
+      const challenge = { challenge: "approve" };
+      const { mint, calls } = deployment({
+        vars: ON, handlers: { admin: { beginWorkspaceWriteApproval: () => challenge } },
+      });
+      expect(await mint().beginWorkspaceWriteApproval(REQUEST_ID)).toBe(challenge);
+      expect(calls).toStrictEqual(
+          [{ target: "admin", method: "beginWorkspaceWriteApproval", args: [REQUEST_ID, ADMIN] }]);
+    });
+
+    it("approves, has the workspace run the write and settles it, in that order", async () => {
+      const request = approvedWrite();
+      const release = Promise.withResolvers<void>();
+      const { mint, calls, callsTo, waitUntil } = approvalDeployment(request, { admin: {
+        settleWorkspaceWrite: async () => {
+          await release.promise;
+          return { ...request, state: "applied", outcome: "3 rejected", unrecorded: true };
+        },
+      } });
+      const approving = mint(ADMIN, "cli").approveWorkspaceWrite(REQUEST_ID, ASSERTION);
+      await vi.waitFor(() => expect(callsTo("admin", "settleWorkspaceWrite")).toHaveLength(1));
+
+      expect(named(calls)).toEqual([
+        "admin.approveWorkspaceWrite", "overseers.idFromString", "overseers.get",
+        "overseer.applyAdminWrite", "admin.settleWorkspaceWrite",
+      ]);
+      // The ceremony is this capability's.
+      expect(callsTo("admin", "approveWorkspaceWrite")[0].args).toStrictEqual(
+          [REQUEST_ID, ASSERTION, { admin: ADMIN, sessionId: expect.any(String), via: "cli" }]);
+      // The grant is the request's fields and the approver AdminSettings stored: its actor and
+      // its passkey, so the workspace's record and the closing record name the same ones.
+      expect(callsTo("overseers", "get")[0].args).toEqual([request.workspaceId]);
+      expect(callsTo("overseer", "applyAdminWrite")[0].args).toStrictEqual([{
+        requestId: REQUEST_ID, action: "deleteChat", args: { chatId: 3 }, reason: REASON,
+        requestedBy: "other-admin@example.test", expiresAt: request.expiresAt,
+        workspaceOwner: "bob@example.test", ...APPROVER,
+      }]);
+      expect(callsTo("admin", "settleWorkspaceWrite")[0].args)
+          .toStrictEqual([REQUEST_ID, { outcome: "3 rejected" }]);
+
+      // The run is kept alive until the request is settled, whatever becomes of the client.
+      expect(waitUntil).toHaveBeenCalledTimes(1);
+      let kept = false;
+      const running = waitUntil.mock.calls[0][0].then(() => { kept = true; });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      expect(kept).toBe(false);
+      release.resolve();
+      await running;
+      expect(kept).toBe(true);
+
+      // The view is the settled request, without what only the server keeps.
+      const { sessionId, approver, ...shown } = request;
+      expect(await approving).toStrictEqual({
+        ...shown, state: "applied", outcome: "3 rejected",
+        approvalUrl: `https://workshop.example/admin/approve/${REQUEST_ID}`,
+      });
+    });
+
+    it.each<[string, () => unknown, string, boolean]>([
+      ["drops a workspace found missing from the directory",
+        () => createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound),
+        "Workspace not found.", true],
+      ["leaves a workspace that changed owner listed",
+        () => createAdminWriteError(workspaceChanged),
+        "This workspace no longer belongs to the owner the request named, so the write was " +
+            "not run. Request it again.", false],
+      ["leaves the workspace listed after any other failure",
+        () => new Error("No such chat."), "No such chat.", false],
+      ["takes a thrown value that is no Error as its text", () => "unreachable", "unreachable",
+        false],
+    ])("settles a write the workspace did not run with its message, and %s",
+        async (_label, thrown, message, dropped) => {
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const request = approvedWrite();
+      const { mint, calls, callsTo, waitUntil } = approvalDeployment(request, {
+        overseer: { applyAdminWrite: () => { throw thrown(); } },
+      });
+      // The ceremony succeeded, so the call resolves, with the workspace's answer.
+      const view = await mint().approveWorkspaceWrite(REQUEST_ID, ASSERTION);
+      expect(view).toMatchObject({ state: "failed", error: message });
+      expect(view).not.toHaveProperty("unrecorded");
+      expect(view).not.toHaveProperty("refusals");
+
+      expect(callsTo("admin", "settleWorkspaceWrite").map(call => call.args))
+          .toStrictEqual([[REQUEST_ID, { error: message }]]);
+      expect(callsTo("directory", "removeWorkspace").map(call => call.args))
+          .toEqual(dropped ? [[request.workspaceId]] : []);
+      // The workspace is asked once, and the directory is healed before the request is settled.
+      expect(callsTo("overseer", "applyAdminWrite")).toHaveLength(1);
+      expect(named(calls).at(-1)).toBe("admin.settleWorkspaceWrite");
+      expect(waitUntil).toHaveBeenCalledTimes(1);
+      vi.restoreAllMocks();
+    });
+
+    it("settles a write to a missing workspace though the directory cannot be healed",
+        async () => {
+      const warned = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const { mint, callsTo } = approvalDeployment(approvedWrite(), {
+        overseer: { applyAdminWrite: () => {
+          throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+        } },
+        directory: { removeWorkspace: () => { throw new Error("directory unavailable"); } },
+      });
+      expect((await mint().approveWorkspaceWrite(REQUEST_ID, ASSERTION)).state).toBe("failed");
+      expect(callsTo("admin", "settleWorkspaceWrite")).toHaveLength(1);
+      expect(warned.mock.calls.map(([entry]) => (entry as { event?: string }).event))
+          .toEqual(["admin.directory.heal.failed", "admin.write.failed"]);
+      vi.restoreAllMocks();
+    });
+
+    it.each([passkeyRefused, requestNotPending, requestNotFound])(
+        "never reaches the workspace when the approval is refused %s", async code => {
+      const { mint, calls, waitUntil } = approvalDeployment(approvedWrite(), {
+        admin: { approveWorkspaceWrite: () => { throw createAdminWriteError(code); } },
+      });
+      const error = await rejection(mint().approveWorkspaceWrite(REQUEST_ID, ASSERTION));
+      expect(getAdminWriteErrorCode(error)).toBe(code);
+      expect(named(calls)).toEqual(["admin.approveWorkspaceWrite"]);
+      expect(waitUntil).not.toHaveBeenCalled();
+    });
+
+    it("runs a request once when two capabilities approve it", async () => {
+      const request = approvedWrite();
+      let approvals = 0;
+      const { mint, callsTo, waitUntil } = approvalDeployment(request, { admin: {
+        approveWorkspaceWrite: () => {
+          if (++approvals > 1) throw createAdminWriteError(requestNotPending);
+          return request;
+        },
+      } });
+      const first = mint(ADMIN, "api");
+      const second = mint(ADMIN, "cli");
+      const [won, lost] = await Promise.allSettled([
+        first.approveWorkspaceWrite(REQUEST_ID, ASSERTION),
+        second.approveWorkspaceWrite(REQUEST_ID, ASSERTION),
+      ]);
+      expect(won).toMatchObject({ status: "fulfilled", value: { state: "applied" } });
+      expect(lost.status).toBe("rejected");
+      expect(getAdminWriteErrorCode((lost as PromiseRejectedResult).reason))
+          .toBe(requestNotPending);
+      expect(callsTo("admin", "approveWorkspaceWrite")).toHaveLength(2);
+      expect(callsTo("overseer", "applyAdminWrite")).toHaveLength(1);
+      expect(callsTo("admin", "settleWorkspaceWrite")).toHaveLength(1);
+      expect(waitUntil).toHaveBeenCalledTimes(1);
+    });
+
+    it("forwards a failure to settle as it is, having asked the workspace once", async () => {
+      const failure = new Error("the settings object is unreachable");
+      const { mint, callsTo, waitUntil } = approvalDeployment(approvedWrite(), {
+        admin: { settleWorkspaceWrite: () => { throw failure; } },
+      });
+      expect(await rejection(mint().approveWorkspaceWrite(REQUEST_ID, ASSERTION))).toBe(failure);
+      expect(callsTo("overseer", "applyAdminWrite")).toHaveLength(1);
+      // The same promise was given to waitUntil(), which the caller's own rejection handles.
+      expect(await rejection(waitUntil.mock.calls[0][0])).toBe(failure);
+    });
   });
 });

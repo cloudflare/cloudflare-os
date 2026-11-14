@@ -363,7 +363,8 @@ it("counts the log across two admins", async () => {
     expect(admins.get(ADMIN_USERNAME)).toBe(5);
     expect(admins.get(AUDITOR_USERNAME)).toBe(2);
     // The statistics count records, and say nothing of what a recorded call returned.
-    expect(Object.keys(after).toSorted()).toEqual(["byDay", "days", "topAdmins", "totalEvents"]);
+    expect(Object.keys(after).toSorted())
+        .toEqual(["byDay", "days", "topAdmins", "totalEvents", "writes"]);
     for (const entry of after.topAdmins) {
       expect(Object.keys(entry).toSorted()).toEqual(["admin", "count"]);
     }

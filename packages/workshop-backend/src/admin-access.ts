@@ -6,21 +6,26 @@
 // admin session can change neither: admins choose an access level and a retention within them (in
 // AdminConfig), and adminAccessPolicy() holds that choice inside them wherever it is enforced. This
 // is the reason authentication config stays in auth/config.ts rather than in AdminConfig.
+//
+// Whether admins may change a workspace at all is a third bound read from the environment
+// (adminWorkspaceWritesEnabled()): a switch, with no admin setting under it.
 
 import { createHash } from "node:crypto";
 import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_LIST_DEFAULT_LIMIT, ADMIN_LIST_MAX_LIMIT,
-  ADMIN_WORKSPACE_ACCESS_LEVELS, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS, DEFAULT_ADMIN_COMMIT_LOG_DEPTH,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH,
-  MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH,
-  MAX_ADMIN_COMMIT_LOG_DEPTH, MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError,
+  ADMIN_WORKSPACE_ACCESS_LEVELS, ADMIN_WRITE_ERROR_CODES, DEFAULT_ADMIN_AUDIT_RETENTION_DAYS,
+  DEFAULT_ADMIN_COMMIT_LOG_DEPTH, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  MAX_ADMIN_ACCESS_REASON_LENGTH, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS,
+  MAX_ADMIN_AUDIT_STATS_DAYS, MAX_ADMIN_AUDIT_VALUE_LENGTH, MAX_ADMIN_COMMIT_LOG_DEPTH,
+  MAX_ADMIN_VIEW_LIFETIME_SECONDS, createAdminAccessError, createAdminWriteError,
   isAdminWorkspaceAccess,
   type ActionLogEntry, type AdminSettingChange, type AdminSettingRecord, type AdminVia,
-  type AdminWorkspaceAccess, type AiChatMetadata, type BlueprintGadgetSummary, type BoundHookInfo,
-  type CommitInfo, type GatekeeperCreationSpec,
+  type AdminWorkspaceAccess, type AdminWriteRecord, type AiChatMetadata,
+  type BlueprintGadgetSummary, type BoundHookInfo, type CommitInfo, type GatekeeperCreationSpec,
 } from "@gadgets/workshop-shared/api";
 import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 import { isDeploymentAdmin } from "./auth/config.js";
+import { handoffTargetOrigin } from "./connect-handoff.js";
 import { createWorkshopLogger } from "./observability";
 
 const logger = createWorkshopLogger("workshop.admin.access");
@@ -31,6 +36,7 @@ const logger = createWorkshopLogger("workshop.admin.access");
 // on every request that reads it.
 const reportedInvalidAccessMax = new Set<unknown>();
 const reportedInvalidRetentionMin = new Set<unknown>();
+const reportedInvalidWrites = new Set<unknown>();
 
 function isBlank(raw: unknown): boolean {
   return raw === undefined || raw === null || String(raw).trim() === "";
@@ -79,6 +85,42 @@ export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
   return DEFAULT_ADMIN_AUDIT_RETENTION_DAYS;
 }
 
+/** Whether ADMIN_WORKSPACE_WRITES lets admins change workspaces: only "on", in any case and
+ * trimmed. Unset, blank and "off" are off. Any other value misconfigures a security bound, so it
+ * is off too, logged as an error (once per isolate per value, never the value itself). A bound of
+ * its own: neither ADMIN_WORKSPACE_ACCESS_MAX nor the level admins chose holds a write back. */
+export function adminWorkspaceWritesEnabled(env: Cloudflare.Env): boolean {
+  let raw: unknown = env.ADMIN_WORKSPACE_WRITES;
+  if (isBlank(raw)) return false;
+  let value = String(raw).trim().toLowerCase();
+  if (value === "on") return true;
+
+  // This turns on a privileged surface, so only its one documented value does: "true", "1" and a
+  // typo of "on" all leave writes off.
+  if (value !== "off" && !reportedInvalidWrites.has(raw)) {
+    reportedInvalidWrites.add(raw);
+    logger.error(
+        "ADMIN_WORKSPACE_WRITES is not on or off, so admin writes to workspaces are off",
+        { event: "admin.access.config.invalid" });
+  }
+  return false;
+}
+
+/** The Workshop's origin and its WebAuthn relying party id, from PUBLIC_BASE_URL alone, as
+ * handoffTargetOrigin() reads it: no request header is consulted. The relying party id is the
+ * origin's host name (`URL.hostname`, never `URL.host`: a port is not part of one, so
+ * `http://localhost:3000` gives "localhost"). Throws `originUnset` (ADMIN_WRITE_ERROR_CODES)
+ * while it is unset. */
+export function adminPasskeyRelyingParty(env: Cloudflare.Env): { origin: string; rpId: string } {
+  let origin: string;
+  try {
+    origin = handoffTargetOrigin(env);
+  } catch {
+    throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.originUnset);
+  }
+  return { origin, rpId: new URL(origin).hostname };
+}
+
 /** The lower of two access levels (ADMIN_WORKSPACE_ACCESS_LEVELS lists them in order). */
 export function lowerAdminWorkspaceAccess(a: AdminWorkspaceAccess, b: AdminWorkspaceAccess)
     : AdminWorkspaceAccess {
@@ -116,6 +158,9 @@ export function adminAccessPolicy(
  * the call besides its time and changes. AdminApiImpl passes one with every AdminSettings
  * mutation. */
 export type AdminSettingActor = Pick<AdminSettingRecord, "admin" | "sessionId" | "via" | "method">;
+
+/** Who takes a step in a write request, as its AdminWriteRecord says. */
+export type AdminWriteActor = Pick<AdminWriteRecord, "admin" | "sessionId" | "via">;
 
 /** What an AdminWorkspaceView is minted with (see OverseerDurableObject.openForAdmin()), fixed for
  * the view's life. */

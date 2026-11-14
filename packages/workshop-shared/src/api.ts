@@ -616,7 +616,8 @@ export const getGatekeeperErrorCode = gatekeeperErrors.getCode;
 
 /**
  * Stable error codes attached to expected refusals of AdminApi.inspectWorkspace() and of
- * AdminWorkspaceView calls.
+ * AdminWorkspaceView calls. The write-request and passkey methods refuse with its `notAdmin` and
+ * `workspaceNotFound` too (see ADMIN_WRITE_ERROR_CODES).
  */
 export const ADMIN_ACCESS_ERROR_CODES = {
   workspaceNotFound: "ADMIN_WORKSPACE_NOT_FOUND",
@@ -635,7 +636,8 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "Admin access to workspaces is turned off on this deployment.",
   [ADMIN_ACCESS_ERROR_CODES.viewExpired]:
       "This admin view has expired. Inspect the workspace again.",
-  [ADMIN_ACCESS_ERROR_CODES.notAdmin]: "Only a deployment admin can inspect a workspace.",
+  [ADMIN_ACCESS_ERROR_CODES.notAdmin]:
+      "Only a deployment admin can inspect or change a workspace.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -643,6 +645,57 @@ export const createAdminAccessError = adminAccessErrors.create;
 
 /** Reads the machine-readable code from an expected admin-access refusal. */
 export const getAdminAccessErrorCode = adminAccessErrors.getCode;
+
+/**
+ * Stable error codes attached to expected refusals of the AdminApi write-request and passkey
+ * methods. A caller who is no longer a deployment admin, and a workspace id that names no
+ * workspace, are refused with ADMIN_ACCESS_ERROR_CODES' `notAdmin` and `workspaceNotFound`.
+ */
+export const ADMIN_WRITE_ERROR_CODES = {
+  writesOff: "ADMIN_WORKSPACE_WRITES_OFF",
+  originUnset: "ADMIN_WRITE_ORIGIN_UNSET",
+  workspaceUnlisted: "ADMIN_WRITE_WORKSPACE_UNLISTED",
+  workspaceChanged: "ADMIN_WRITE_WORKSPACE_CHANGED",
+  requestNotFound: "ADMIN_WRITE_REQUEST_NOT_FOUND",
+  requestNotPending: "ADMIN_WRITE_REQUEST_NOT_PENDING",
+  tooManyRequests: "ADMIN_WRITE_TOO_MANY_REQUESTS",
+  passkeyRequired: "ADMIN_WRITE_PASSKEY_REQUIRED",
+  passkeyRefused: "ADMIN_WRITE_PASSKEY_REFUSED",
+} as const;
+
+/** An expected refusal code from ADMIN_WRITE_ERROR_CODES. */
+export type AdminWriteErrorCode =
+    typeof ADMIN_WRITE_ERROR_CODES[keyof typeof ADMIN_WRITE_ERROR_CODES];
+
+const adminWriteErrors = codedErrorFamily<AdminWriteErrorCode>({
+  [ADMIN_WRITE_ERROR_CODES.writesOff]:
+      "Admin writes to workspaces are turned off on this deployment. Only its " +
+      "ADMIN_WORKSPACE_WRITES environment variable can turn them on.",
+  [ADMIN_WRITE_ERROR_CODES.originUnset]:
+      "This deployment's PUBLIC_BASE_URL is not set, so a write cannot be approved.",
+  [ADMIN_WRITE_ERROR_CODES.workspaceUnlisted]:
+      "The deployment directory lists no such workspace, so a write to it cannot be requested: " +
+      "its approval must show the workspace's owner. A workspace is listed once one of its " +
+      "members has opened it.",
+  [ADMIN_WRITE_ERROR_CODES.workspaceChanged]:
+      "This workspace no longer belongs to the owner the request named, so the write was not " +
+      "run. Request it again.",
+  [ADMIN_WRITE_ERROR_CODES.requestNotFound]: "No such write request.",
+  [ADMIN_WRITE_ERROR_CODES.requestNotPending]:
+      "This write request is no longer pending: it was approved, denied or has expired.",
+  [ADMIN_WRITE_ERROR_CODES.tooManyRequests]:
+      "Too many write requests are pending. Deny some, or wait for them to expire.",
+  [ADMIN_WRITE_ERROR_CODES.passkeyRequired]:
+      "This needs a passkey of your own. Enrol one in the admin panel first.",
+  [ADMIN_WRITE_ERROR_CODES.passkeyRefused]:
+      "The passkey confirmation was not accepted. Start again.",
+});
+
+/** Creates an expected admin-write refusal with a machine-readable code. */
+export const createAdminWriteError = adminWriteErrors.create;
+
+/** Reads the machine-readable code from an expected admin-write refusal. */
+export const getAdminWriteErrorCode = adminWriteErrors.getCode;
 
 /**
  * The most characters of a display name or a workspace title the deployment directory keeps (see
@@ -1495,6 +1548,13 @@ export type AdminSettingsView = {
      * positive whole number. */
     min: number;
   };
+  /**
+   * Whether admins may change a workspace through AdminApi.requestWorkspaceWrite(): true only
+   * while the deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". Unset, blank,
+   * "off" and any other value are false, so a misconfiguration never enables writes, and no admin
+   * setting can. This switch alone bounds writes: `adminWorkspaceAccess` does not.
+   */
+  adminWorkspaceWrites: boolean;
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
   siteName: string;
   /** Custom deployment logo, or undefined to use the default Cloudflare OS mark. */
@@ -1822,10 +1882,15 @@ export type AdminWorkspaceMethod = typeof ADMIN_WORKSPACE_METHODS[number];
 
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
- * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord. The rest
- * change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
- * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats), the gateway
- * tests, and checkForUpdates.
+ * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord, and
+ * requestWorkspaceWrite(), denyWorkspaceWrite() and approveWorkspaceWrite() as AdminWriteRecords.
+ * The rest change no setting and are not recorded: the reads (getSettings, isBlueprintFeatured,
+ * getUpdateStatus, listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats,
+ * getWorkspaceWrite, listAdminPasskeys), the passkey challenges (beginAdminPasskeyEnrolment,
+ * beginAdminPasskeyRemoval, beginWorkspaceWriteApproval), the gateway tests, and checkForUpdates.
+ * A call that is not recorded can still leave a record that is not its own: getWorkspaceWrite()
+ * and beginWorkspaceWriteApproval(), like every write-request method, first end the requests that
+ * have run out, each recorded "expired" (see AdminWriteRecord).
  */
 export const ADMIN_SETTING_METHODS = [
   "setSignupsEnabled", "setUserSearchEnabled", "setSiteName", "setSiteLogo",
@@ -1837,7 +1902,7 @@ export const ADMIN_SETTING_METHODS = [
   "setUpdateChecksEnabled", "setUpdateCheckIntervalMinutes", "setUpdateMinimumAgeHours",
   "setUpdateNoticeSnoozeHours", "setRestrictedWebFetchHosts", "setRestrictedWebFetchApprovals",
   "setAdminWorkspaceAccess", "setAdminAuditRetentionDays", "setGatewayProviderOrder",
-  "setGatewayModelOrder",
+  "setGatewayModelOrder", "addAdminPasskey", "removeAdminPasskey",
 ] as const satisfies readonly (keyof AdminApi)[];
 
 /** One of ADMIN_SETTING_METHODS. */
@@ -1845,7 +1910,8 @@ export type AdminSettingMethod = typeof ADMIN_SETTING_METHODS[number];
 
 /** The longest string an audit record keeps as a call's argument, a workspace's title or a
  * setting entry's key, in characters: a longer one is cut to this, its last character replaced
- * with "…". */
+ * with "…". A passkey's credential id is the one key not cut that way (see
+ * AdminSettingChange.key). */
 export const MAX_ADMIN_AUDIT_ARG_LENGTH = 256;
 
 /** The longest value an AdminSettingChange keeps whole, in characters: more than any bounded
@@ -1910,9 +1976,9 @@ export type AdminAccessRecord = {
 
 /**
  * One setting an AdminSettingRecord changed, with its value before and after. `setting` names a
- * field of the deployment's stored settings ("siteName", "modelModes", ...) or one of the two kept
- * apart from them, "siteLogo" and "featured". The names are those the settings are stored under: a
- * diagnostic vocabulary, not a schema clients may depend on.
+ * field of the deployment's stored settings ("siteName", "modelModes", ...) or one of the three
+ * kept apart from them, "siteLogo", "featured" and "adminPasskeys". The names are those the
+ * settings are stored under: a diagnostic vocabulary, not a schema clients may depend on.
  *
  * A setting holding a map (an object keyed by id or name, such as "modelModes" or "banner") or a
  * list of entries with ids ("formats", by blueprint id; "addedModels", by model id) is recorded
@@ -1922,16 +1988,20 @@ export type AdminAccessRecord = {
  *
  * A string is recorded as itself, any other value as JSON with object keys sorted. A value is kept
  * whole up to MAX_ADMIN_AUDIT_VALUE_LENGTH characters, more than any bounded setting holds; past
- * that both values are excerpts (see `excerpt`). A key is cut like an argument (see
- * MAX_ADMIN_AUDIT_ARG_LENGTH). No credential is a setting (provider keys and tokens live in the
- * environment), but a free-text setting such as the agent instructions is recorded as an admin
- * entered it. A logo is recorded as its size and SHA-256, never its bytes.
+ * that both values are excerpts (see `excerpt`). A key is bounded like an argument (see `key`). No
+ * credential is a setting (provider keys and tokens live in the environment), but a free-text
+ * setting such as the agent instructions is recorded as an admin entered it. A logo is recorded as
+ * its size and SHA-256, never its bytes. A passkey is recorded under its credential id as the
+ * admin it belongs to, its name and its algorithm, never its public key.
  */
 export type AdminSettingChange = {
   /** The setting. */
   setting: string;
-  /** The entry of a map or list setting: a model id, a vendor id, a blueprint id, a field name;
-   * cut past MAX_ADMIN_AUDIT_ARG_LENGTH characters, a length no real entry's id reaches. */
+  /** The entry of a map or list setting: a model id, a vendor id, a blueprint id, a field name, a
+   * passkey's credential id. At most MAX_ADMIN_AUDIT_ARG_LENGTH characters. Of real entries only
+   * a credential id can be longer, and it is an identity, so it is kept as
+   * AdminAccessRecord.workspaceOwner keeps a long owner id: as its start, "…#" and a digest of
+   * the whole id, which keeps two passkeys apart. Any other key that long is cut. */
   key?: string;
   /** The value before; absent when there was none. */
   before?: string;
@@ -1979,10 +2049,10 @@ export type AdminSettingRecord = {
 
 /** One record of the deployment-wide admin audit log, kept for the deployment's retention
  * (AdminSettingsView.adminAuditRetentionDays). */
-export type AdminAuditRecord = AdminAccessRecord | AdminSettingRecord;
+export type AdminAuditRecord = AdminAccessRecord | AdminSettingRecord | AdminWriteRecord;
 
 /** The kinds of AdminAuditRecord: "workspace" for access to a workspace, "setting" for a change to
- * the deployment's settings. */
+ * the deployment's settings, "write" for a step in a write to a workspace. */
 export type AdminAuditKind = AdminAuditRecord["kind"];
 
 /** Options for AdminApi.listAdminAudit(). The filters combine. */
@@ -1991,12 +2061,14 @@ export type AdminAuditQuery = {
   kind?: AdminAuditKind;
   /** Only this admin's records, by canonical user id. At most 1000 characters. */
   admin?: string;
-  /** Only records of calls to this method. */
+  /** Only records of calls to this method or, for write records, of steps in a request for this
+   * action (see AdminWriteRecord.method). */
   method?: AdminAuditRecord["method"];
-  /** Only records of access to this workspace. At most 1000 characters. */
+  /** Only records of access to, or a write to, this workspace. At most 1000 characters. */
   workspace?: string;
-  /** Only records of access to workspaces this user owns (see AdminAccessRecord.workspaceOwner), by
-   * canonical user id, whole or as the records keep it. At most 1000 characters. */
+  /** Only records of access to, or a write to, workspaces this user owns (see
+   * AdminAccessRecord.workspaceOwner), by canonical user id, whole or as the records keep it. At
+   * most 1000 characters. */
   owner?: string;
   /** Only records made at or after this time. */
   since?: Date;
@@ -2023,14 +2095,15 @@ export type AdminAuditStatsQuery = {
   /** The window: the last `days` UTC days, today included. A whole number from 1 to
    * MAX_ADMIN_AUDIT_STATS_DAYS, 7 when absent. */
   days?: number;
-  /** Only records of this kind; both kinds when absent. */
+  /** Only records of this kind; every kind when absent. */
   kind?: AdminAuditKind;
 };
 
 /**
  * What the admin audit log holds for one window, from AdminApi.getAdminAuditStats(). Every count
- * covers the records of the queried kind (both kinds when none is given). A record older than the
- * retention is gone, so a window reaching past it counts nothing there.
+ * covers the records of the queried kind (every kind when none is given). Only AdminWriteRecords
+ * can be writes, so that count is zero for any other kind. A record older than the retention is
+ * gone, so a window reaching past it counts nothing there.
  */
 export type AdminAuditStats = {
   /** The window's length in UTC days, today included. */
@@ -2042,18 +2115,307 @@ export type AdminAuditStats = {
   byDay: { day: string; count: number }[];
   /** The admins with the most records in the window, most first (ties by id), at most 10. */
   topAdmins: { admin: string; count: number }[];
+  /** The writes to workspaces approved in the window: the records whose `event` is "approved". */
+  writes: number;
+};
+
+/**
+ * What a deployment admin may do to a workspace through an approved write request. What each
+ * action does is said where one is requested: see AdminApi.requestWorkspaceWrite().
+ */
+export const ADMIN_WRITE_ACTIONS = [
+  "stopAgent", "restartWorkspace", "deleteChat", "rejectPendingActions",
+] as const;
+
+/** One of ADMIN_WRITE_ACTIONS. */
+export type AdminWriteAction = typeof ADMIN_WRITE_ACTIONS[number];
+
+/**
+ * The arguments of a write request. Each action takes only its own, and a request naming any
+ * other, or missing a required one, is rejected:
+ *   - stopAgent, deleteChat: `chatId`;
+ *   - rejectPendingActions: `gatekeeperId`, optional;
+ *   - restartWorkspace: none.
+ */
+export type AdminWriteArgs = {
+  /** The chat, by AiChatMetadata.id. */
+  chatId?: number;
+  /** The connection, by workpiece id. */
+  gatekeeperId?: WorkpieceId;
+};
+
+/** How long a write request stays pending before it expires, in seconds: ten minutes. */
+export const ADMIN_WRITE_REQUEST_LIFETIME_SECONDS = 600;
+
+/** How long an approved write request waits for its workspace's answer, in seconds: fifteen
+ * minutes, far longer than any write runs. A request still "approved" then is settled as "failed",
+ * its outcome unknown (see AdminWriteState). */
+export const ADMIN_WRITE_SETTLE_SECONDS = 900;
+
+/** How long a passkey challenge can be answered, in seconds: five minutes, and never past the
+ * expiry of the request it approves. */
+export const ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS = 300;
+
+/** The most write requests that may be pending at once, across the deployment. */
+export const MAX_PENDING_ADMIN_WRITES = 50;
+
+/** The most pending actions one "rejectPendingActions" request rejects one by one. A creation
+ * among them takes everything queued on its connection with it, however much that is. */
+export const MAX_ADMIN_REJECTED_ACTIONS = 500;
+
+/** The longest name an admin may give a passkey, in characters, once trimmed. */
+export const MAX_ADMIN_PASSKEY_NAME_LENGTH = 64;
+
+/** The most passkeys one admin may have enrolled at once. */
+export const MAX_ADMIN_PASSKEYS = 10;
+
+/**
+ * Where a write request stands:
+ *   - "pending":  waiting for an admin to approve it with a passkey, or to deny it;
+ *   - "approved": a passkey approved it, and the workspace is being asked to run it. It stays
+ *                 here until the workspace answers, at most ADMIN_WRITE_SETTLE_SECONDS;
+ *   - "applied":  the workspace ran it (`outcome`);
+ *   - "failed":   it was approved, and the workspace refused it or failed to run it, or its
+ *                 answer never arrived (`error`);
+ *   - "denied":   an admin denied it;
+ *   - "expired":  nobody approved or denied it before `expiresAt`, or its requester stopped being
+ *                 a deployment admin first.
+ * A request leaves "pending" once, and is never run twice. Whether a failed request changed the
+ * workspace is what the audit log says: the workspace records "approved" before it changes
+ * anything, so a request with no such record changed nothing (see AdminWriteRecord).
+ */
+export type AdminWriteState = "pending" | "approved" | "applied" | "failed" | "denied" | "expired";
+
+/** One write request, as AdminApi.requestWorkspaceWrite() and getWorkspaceWrite() return it. */
+export type AdminWriteRequest = {
+  /** Opaque. Names the request in its approval URL and in its audit records. */
+  id: string;
+  /** The workspace it would change. */
+  workspaceId: string;
+  /** The workspace's title as the deployment directory listed it when the request was made, cut
+   * as an audit record cuts it (see AdminAccessRecord.workspaceTitle); "" for an untitled one.
+   * The request never reads the workspace. */
+  workspaceTitle: string;
+  /** The workspace's owner as the deployment directory listed them then, by canonical user id,
+   * kept as an audit record keeps it (see AdminAccessRecord.workspaceOwner). Never empty: a
+   * workspace the directory does not list cannot be requested. A request is run only while the
+   * workspace still has this owner. */
+  workspaceOwner: string;
+  /** What it would do (see AdminApi.requestWorkspaceWrite()). */
+  action: AdminWriteAction;
+  /** The action's arguments (see AdminWriteArgs). */
+  args: AdminWriteArgs;
+  /** Why, as the requester gave it. Once the write is approved, the workspace's owner and its
+   * "build" collaborators read it, word for word, in the workspace's action log (see
+   * ActionLogEntry.byAdmin). */
+  reason: string;
+  /** The admin who made the request, by canonical user id. */
+  requestedBy: string;
+  /** How the requester's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** When it was made. */
+  requestedAt: Date;
+  /** When it stops being approvable. */
+  expiresAt: Date;
+  /** The Workshop page on which an admin approves it with a passkey, or denies it: a page of the
+   * deployment's PUBLIC_BASE_URL. Opening it needs an admin's session, and grants nothing. */
+  approvalUrl: string;
+  /** Where it stands (see AdminWriteState). */
+  state: AdminWriteState;
+  /** The admin who approved or denied it, once one has. */
+  resolvedBy?: string;
+  /** When it left "pending". */
+  resolvedAt?: Date;
+  /** What the workspace reported once it ran: for "rejectPendingActions", how many actions were
+   * rejected, how many connections were removed with a rejected creation, how many actions could
+   * not be rejected, and how many remain pending. */
+  outcome?: string;
+  /** Why it failed, or why it expired before `expiresAt`, cut to MAX_ADMIN_AUDIT_ARG_LENGTH
+   * characters. */
+  error?: string;
+};
+
+/**
+ * Why a passkey answer was refused. Its caller is told only `passkeyRefused`
+ * (ADMIN_WRITE_ERROR_CODES); the audit record of a refused approval says which
+ * (AdminWriteRecord.refusal):
+ *   - "malformed":        a value is not what its field holds, or is too long;
+ *   - "type":             the answer is to the other kind of ceremony;
+ *   - "challenge":        the caller has no challenge outstanding for this (none was issued, it
+ *                         has expired, it was already answered, or the request it approves is
+ *                         no longer pending), or the answer signs another;
+ *   - "origin":           the answer was made on another origin, or in a cross-origin frame;
+ *   - "relyingParty":     the authenticator signed for another relying party;
+ *   - "userPresence":     the authenticator did not report that a user was present;
+ *   - "userVerification": the authenticator did not report that it verified the user;
+ *   - "credential":       the passkey is not one the caller enrolled;
+ *   - "algorithm":        the key is neither ES256 nor RS256, or is too short;
+ *   - "signature":        the signature does not verify under the passkey's key;
+ *   - "counter":          the authenticator's signature counter did not rise.
+ */
+export type AdminPasskeyRefusal =
+    "malformed" | "type" | "challenge" | "origin" | "relyingParty" | "userPresence" |
+    "userVerification" | "credential" | "algorithm" | "signature" | "counter";
+
+/**
+ * One step in the life of a write request, in the deployment-wide audit log:
+ *   - "requested": an admin asked for the write. Recorded before the request is stored;
+ *   - "refused":   an admin's attempt to approve the request was not accepted (`refusal`). Either
+ *                  the answer failed a passkey check, which leaves a pending request pending, or
+ *                  the request was no longer pending, as when an approval is sent again;
+ *   - "approved":  an admin confirmed it with a passkey. Recorded by the workspace itself, before
+ *                  it changes anything, so that a write whose record cannot be written does not
+ *                  happen;
+ *   - "applied":   the workspace ran the approved write (`outcome`);
+ *   - "failed":    the workspace refused the approved write or failed to run it, or its answer
+ *                  never arrived (`error`). With no "approved" record before it, nothing changed;
+ *                  after one, the workspace may have changed in part or in whole;
+ *   - "denied":    an admin denied the request;
+ *   - "expired":   the request ran out unapproved, or its requester stopped being a deployment
+ *                  admin first (`error`).
+ * Every approved request is closed by "applied" or "failed". Those two are recorded after the
+ * fact, so they are written at least once: a retry after a lost acknowledgement can repeat one.
+ * A "refused" step can follow any other, a closing one included: it is how a replayed approval
+ * shows. It is recorded after the fact too, so one whose record could not be written when the
+ * attempt was refused is written later, at least once.
+ * Unlike an AdminAccessRecord, an approved write is also shown in the workspace: as an entry of
+ * its action log (see ActionLogEntry.byAdmin), which the workspace's owner and its "build"
+ * collaborators read. A collaborator who only uses a gadget is given no action log, so is shown
+ * nothing.
+ */
+export type AdminWriteRecord = {
+  /** Distinguishes this from an AdminAccessRecord and an AdminSettingRecord. */
+  kind: "write";
+  /** When the step was recorded. */
+  at: Date;
+  /** The admin whose step it is: the requester for "requested" and "expired", the admin who
+   * tried for "refused", the approver for "approved", "applied" and "failed", the denier for
+   * "denied". */
+  admin: string;
+  /** Opaque. The AuthenticatedApi.getAdminApi() capability the step was made through: the
+   * request's own for "expired", the approval's for "applied" and "failed". */
+  sessionId: string;
+  /** How that admin's calls reached the deployment (see AdminVia). */
+  via: AdminVia;
+  /** The request (AdminWriteRequest.id). */
+  requestId: string;
+  /** The step. */
+  event: "requested" | "refused" | "approved" | "applied" | "failed" | "denied" | "expired";
+  /** The workspace. */
+  workspaceId: string;
+  /** The workspace's owner, kept as an AdminAccessRecord keeps it: as the workspace itself gives
+   * them for "approved", as the deployment directory listed them when the request was made for
+   * the other steps. */
+  workspaceOwner: string;
+  /** The workspace's title, cut as an AdminAccessRecord cuts it, from the same source as
+   * `workspaceOwner`. */
+  workspaceTitle: string;
+  /** The action requested. Named `method` as on the other records, so that
+   * AdminAuditQuery.method filters all three. */
+  method: AdminWriteAction;
+  /** The request's arguments by name. */
+  args: Record<string, string | number>;
+  /** The reason the requester gave. */
+  reason: string;
+  /** The admin who made the request. */
+  requestedBy: string;
+  /** The passkey behind the step, by credential id as the setting record of its enrolment keys
+   * it (AdminSettingChange.key): for "approved", "applied" and "failed", the one whose assertion
+   * approved the request; for "refused", the one the answer named, when it is one of that
+   * admin's own, whether or not it signed the answer (see `refusal`). */
+  passkey?: string;
+  /** For "refused": the check the attempt failed. An attempt on a request that was no longer
+   * pending is refused "challenge". */
+  refusal?: AdminPasskeyRefusal;
+  /** For "applied": what the workspace reported, when it reports anything (see
+   * AdminWriteRequest.outcome). */
+  outcome?: string;
+  /** For "failed": why. For "expired": why it ended before its time, absent when it simply ran
+   * out. Cut to MAX_ADMIN_AUDIT_ARG_LENGTH characters. */
+  error?: string;
+};
+
+/** One passkey an admin enrolled to approve writes with, as AdminApi.listAdminPasskeys() lists it.
+ * Its public key never leaves the server. */
+export type AdminPasskey = {
+  /** Its WebAuthn credential id, as unpadded base64url. */
+  id: string;
+  /** The admin it belongs to, by canonical user id. Only they can confirm anything with it, only
+   * they can remove it, and it confirms nothing while they are not a deployment admin. */
+  admin: string;
+  /** The name they gave it. */
+  name: string;
+  /** When it was enrolled. */
+  created: Date;
+  /** When it last approved a write or confirmed a passkey's removal. Absent until it has. */
+  lastUsed?: Date;
+};
+
+/**
+ * What a browser needs for one WebAuthn ceremony on the Workshop's own origin: creating a passkey
+ * (AdminApi.beginAdminPasskeyEnrolment()), or confirming with one the removal of a passkey
+ * (AdminApi.beginAdminPasskeyRemoval()) or the approval of a write request
+ * (AdminApi.beginWorkspaceWriteApproval()). User verification is always required.
+ */
+export type AdminPasskeyChallenge = {
+  /** The challenge, as unpadded base64url. Single-use: starting another ceremony of the same kind
+   * replaces it, and answering it spends it whatever the answer. An approval's ends with the
+   * SHA-256 of the request it approves, and a removal's with that of the credential id it
+   * removes, so the passkey signs what it confirms. */
+  challenge: string;
+  /** The relying party: the host name of the deployment's PUBLIC_BASE_URL, without its port. */
+  rpId: string;
+  /** The credential ids of the caller's own passkeys, as unpadded base64url: the ones to offer
+   * for an approval or a removal, the ones to exclude from an enrolment. */
+  credentialIds: string[];
+  /** When the challenge stops being answerable. */
+  expiresAt: Date;
+};
+
+/**
+ * A browser's answer to an enrolment challenge, read from the PublicKeyCredential that
+ * navigator.credentials.create() returned. Binary values are unpadded base64url.
+ */
+export type AdminPasskeyRegistration = {
+  /** The credential's rawId. */
+  credentialId: string;
+  /** response.clientDataJSON. */
+  clientDataJSON: string;
+  /** response.getAuthenticatorData(). */
+  authenticatorData: string;
+  /** response.getPublicKey(): the public key as DER SubjectPublicKeyInfo. */
+  publicKey: string;
+  /** response.getPublicKeyAlgorithm(): -7 (ES256) or -257 (RS256). */
+  publicKeyAlgorithm: number;
+};
+
+/**
+ * A browser's answer to an approval or a removal challenge, read from the PublicKeyCredential
+ * that navigator.credentials.get() returned. Binary values are unpadded base64url.
+ */
+export type AdminPasskeyAssertion = {
+  /** The credential's rawId. */
+  credentialId: string;
+  /** response.clientDataJSON. */
+  clientDataJSON: string;
+  /** response.authenticatorData. */
+  authenticatorData: string;
+  /** response.signature. */
+  signature: string;
 };
 
 /**
  * Capability for managing and investigating the deployment, obtained via
  * AuthenticatedApi.getAdminApi() (which is null for non-admins). The access check happens when the
- * capability is minted, so these methods don't re-check, with one exception: inspectWorkspace()
- * re-checks, and so does every call on the AdminWorkspaceView it mints, since a view is the one
- * thing an admin holds that reads users' data. Covers branding, agent instructions, which
+ * capability is minted, so these methods don't re-check, with two exceptions. inspectWorkspace()
+ * re-checks, and so does every call on the AdminWorkspaceView it mints, since a view is what an
+ * admin holds that reads users' data. The write-request and passkey methods re-check too, since
+ * they lead to a change in a user's workspace. Covers branding, agent instructions, which
  * gatekeeper connectors/resources are offered, the models an AI Gateway deployment provides, the
- * user and workspace directory, and admin access to workspaces — NOT authentication config (that's
- * env-var driven). Each setter throws on invalid input, and records the change it makes in the
- * deployment's audit log before making it (see AdminSettingRecord).
+ * user and workspace directory, admin access to workspaces, and writes to them approved with a
+ * passkey — NOT authentication config (that's env-var driven). Each setter throws on invalid
+ * input, and records the change it makes in the deployment's audit log before making it (see
+ * AdminSettingRecord).
  */
 export interface AdminApi {
   /** Read all admin-managed settings for the admin UI in one call. */
@@ -2423,8 +2785,9 @@ export interface AdminApi {
 
   /**
    * One page of the deployment-wide admin audit log, newest first, filtered as `options` says. It
-   * holds access to workspaces and changes to settings. Rejects a `limit` that is not a whole
-   * number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000 characters, and a malformed `cursor`.
+   * holds access to workspaces, changes to settings and the steps of writes to workspaces. Rejects
+   * a `limit` that is not a whole number from 1 to ADMIN_LIST_MAX_LIMIT, a filter over 1000
+   * characters, and a malformed `cursor`.
    */
   listAdminAudit(options?: AdminAuditQuery): Promise<AdminAuditPage>;
 
@@ -2452,6 +2815,122 @@ export interface AdminApi {
    * environment variable) to MAX_ADMIN_AUDIT_RETENTION_DAYS.
    */
   setAdminAuditRetentionDays(days: number): Promise<void>;
+
+  // --- Writes to workspaces, approved with a passkey ---
+  //
+  // Off unless the deployment's ADMIN_WORKSPACE_WRITES environment variable is "on": the methods
+  // below are then refused `writesOff`, all but listAdminPasskeys(), beginAdminPasskeyRemoval()
+  // and removeAdminPasskey(), so that a passkey can still be seen, and removed by its own admin,
+  // while it can approve nothing. Each also refuses a caller who is no longer a deployment admin
+  // (`notAdmin`).
+  // Any admin session may request a write, an agent's or the CLI's included. A request is run
+  // only once the server has verified an assertion by one of the approving admin's enrolled
+  // passkeys over that request's challenge, the deployment's origin and its relying party, with
+  // user verification. Enrolling a passkey needs only an admin's session, an admin removes only
+  // their own, and every enrolment and removal is recorded.
+
+  /**
+   * Ask for a write to a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. A
+   * reason is required, as for inspectWorkspace(), but unlike an inspection's it does not stay in
+   * the admins' log: once the write is approved, everyone who reads the workspace's action log,
+   * its owner and its "build" collaborators, reads it word for word, so write it for them.
+   *
+   * Nothing in the workspace is read or changed: its title and owner are the deployment
+   * directory's. The request is recorded ("requested") before it is stored, so a request whose
+   * record cannot be written is refused. It stays pending for
+   * ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, and is run once an admin approves it at its
+   * `approvalUrl`. Its arguments are checked against the workspace only then.
+   *
+   * Each action then runs the operation a member would:
+   *   - "stopAgent": Overseer.stopAgent(chatId), except that the chat's queued steers are kept:
+   *     no client stops the turn to put them in its draft, so they go into the chat as their
+   *     senders' messages (see `steered` of AiChatMessageBody).
+   *   - "restartWorkspace": ends every session on the workspace, as a revoked collaborator does.
+   *   - "deleteChat": Overseer.deleteChat(chatId).
+   *   - "rejectPendingActions": Overseer.rejectAction() for each pending action, oldest first, of
+   *     connection `gatekeeperId` when given; at most MAX_ADMIN_REJECTED_ACTIONS a request. One
+   *     that cannot be rejected is left pending and counted in the request's `outcome`, and the
+   *     rest are still rejected. A pending creation (see ActionLogEntry.creation) is rejected as
+   *     a member's rejection of it is: its connection, not yet created, is removed, and
+   *     everything queued on that connection is rejected with it.
+   *
+   * Refused `notAdmin` for a caller who is no longer a deployment admin, `writesOff` unless the
+   * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on", `workspaceNotFound` for a
+   * malformed id, `workspaceUnlisted` for a workspace the directory does not list (see
+   * listWorkspaces()), `originUnset` while the deployment has no PUBLIC_BASE_URL, and
+   * `tooManyRequests` while MAX_PENDING_ADMIN_WRITES are pending. Rejects arguments the action
+   * does not take.
+   */
+  requestWorkspaceWrite(workspaceId: string, action: AdminWriteAction, args: AdminWriteArgs,
+                        reason: string): Promise<AdminWriteRequest>;
+
+  /** One write request, by id, for a day after it is resolved. Refused `requestNotFound`. */
+  getWorkspaceWrite(requestId: string): Promise<AdminWriteRequest>;
+
+  /** Deny a pending write request, recorded ("denied") before it is. Refused `requestNotFound`,
+   * and `requestNotPending` once it is approved, denied or expired. */
+  denyWorkspaceWrite(requestId: string): Promise<void>;
+
+  /**
+   * Start approving a pending write request: the challenge the caller's passkey must sign. Refused
+   * `passkeyRequired` while the caller has enrolled none, `requestNotFound`, `requestNotPending`
+   * and `originUnset`.
+   */
+  beginWorkspaceWriteApproval(requestId: string): Promise<AdminPasskeyChallenge>;
+
+  /**
+   * Approve a pending write request with the caller's passkey, and run it. The assertion must
+   * answer the challenge beginWorkspaceWriteApproval() last gave this caller for this request, on
+   * the deployment's origin and relying party, with user verification, by one of the caller's own
+   * passkeys. Anything else is refused `passkeyRefused`, leaving the request pending and the
+   * challenge spent; an attempt on a request that is no longer pending, such as an approval sent
+   * a second time, is refused `requestNotPending`. Either refusal is recorded ("refused", with
+   * the check that failed); an id that names no request is refused `requestNotFound`, which has
+   * no request to be recorded against. The workspace then records the write ("approved") in the
+   * deployment-wide log, enters it in its action log, which its owner and "build" collaborators
+   * read, and only then runs it; what came of it is recorded too ("applied" or "failed"). Returns
+   * the request as it stands: "applied", or "failed" with the workspace's error.
+   */
+  approveWorkspaceWrite(requestId: string, assertion: AdminPasskeyAssertion)
+      : Promise<AdminWriteRequest>;
+
+  /** Every passkey enrolled on the deployment, by admin and then by enrolment time, those of
+   * accounts that are no longer deployment admins included: they stay stored, and approve
+   * nothing. Answers while writes are off too. */
+  listAdminPasskeys(): Promise<AdminPasskey[]>;
+
+  /** Start enrolling a passkey for the caller: the challenge navigator.credentials.create() is
+   * given. Refused `originUnset`. Throws once the caller has MAX_ADMIN_PASSKEYS enrolled, so that
+   * no authenticator makes a credential addAdminPasskey() would refuse. */
+  beginAdminPasskeyEnrolment(): Promise<AdminPasskeyChallenge>;
+
+  /**
+   * Enrol the passkey `registration` describes for the caller, named `name` (non-blank, at most
+   * MAX_ADMIN_PASSKEY_NAME_LENGTH characters once trimmed). It must answer the challenge
+   * beginAdminPasskeyEnrolment() last gave this caller, with user verification, and use ES256 or
+   * RS256; anything else is refused `passkeyRefused`. No attestation is asked for or checked, so
+   * the passkey is whatever key the caller's session presents. Recorded as a setting change before
+   * it is stored. Throws once the caller has MAX_ADMIN_PASSKEYS enrolled.
+   */
+  addAdminPasskey(name: string, registration: AdminPasskeyRegistration): Promise<AdminPasskey>;
+
+  /**
+   * Start removing one of the caller's own passkeys, by credential id: the challenge one of the
+   * caller's passkeys, which may be the one removed, must sign. An admin removes only their own:
+   * throws for an id that names no passkey of the caller's, another admin's included. Refused
+   * `originUnset`. Works while writes are off, as removeAdminPasskey() does.
+   */
+  beginAdminPasskeyRemoval(id: string): Promise<AdminPasskeyChallenge>;
+
+  /**
+   * Remove the caller's own passkey `id`. The assertion must answer the challenge
+   * beginAdminPasskeyRemoval() last gave this caller for this passkey, with user verification, by
+   * one of the caller's own passkeys, which may be the one removed; anything else is refused
+   * `passkeyRefused`. Recorded as a setting change before the passkey is removed. Throws for an
+   * id that names no passkey of the caller's. Nobody removes another admin's passkey: one whose
+   * admin is no longer a deployment admin stays stored, and approves nothing.
+   */
+  removeAdminPasskey(id: string, assertion: AdminPasskeyAssertion): Promise<void>;
 }
 
 /** A workspace as AdminWorkspaceView.describe() presents it. */
@@ -3782,12 +4261,17 @@ export const READ_FILES_RESPONSE_BUDGET = 8 * 1024 * 1024;
  * * pending: Action has not been applied yet. It is waiting for approval.
  * * approved: Action was approved and applied.
  * * rejected: Action was rejected by the user.
+ *
+ * For a deployment admin's write (see ActionLogEntry.byAdmin), which is never pending, "approved"
+ * means the write was approved and the workspace set about running it, and "rejected" that the
+ * workspace could not run it: no user rejected it.
  */
 export type ActionState = "pending" | "approved" | "rejected";
 
 /**
  * One entry in a workspace's action log, discriminated by `type`: an action a gadget asked a
- * gatekeeper to take, an observation it made, or a hook it bound.
+ * gatekeeper to take, an observation it made, or a hook it bound. An "action" entry marked
+ * `byAdmin` is none of these: it is a change a deployment admin made to the workspace itself.
  */
 export type ActionLogEntry = {
   /** Sequential ID number for the action. Counts up from when the workspace was created. */
@@ -3835,6 +4319,20 @@ export type ActionLogEntry = {
    * which the resource is created.
    */
   creation?: true;
+
+  /**
+   * True when the entry is a deployment admin's write to the workspace, made through an approved
+   * write request (see AdminApi.requestWorkspaceWrite()), rather than a gatekeeper's action on a
+   * gadget's or an agent's behalf. Such an entry has no `gatekeeperId`; `resolvedBy` is the admin
+   * who approved it, `description.title` names the write, and its fields give the admin's reason
+   * and the request. It is written before the workspace changes, so that no admin write is
+   * missing from the log: its `state` is "approved" from then on, and becomes "rejected" if the
+   * workspace then could not run the write. An entry still "approved" can therefore stand for a
+   * write that was cut short and done only in part. Like the rest of the action log it reaches
+   * the workspace's owner and its "build" collaborators only: a collaborator who only uses a
+   * gadget is given no action log, and no other notice of the write.
+   */
+  byAdmin?: true;
 } | {
   type: "observation";
   description: ObservationDescription;
@@ -4191,7 +4689,8 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
-   * be approved in the future.
+   * be approved in the future. An action whose connection has since been removed is rejected with
+   * no gatekeeper left to notify: removing the connection discarded what it held for the action.
    */
   rejectAction(id: number): Promise<void>;
 
@@ -4805,7 +5304,8 @@ export type AiChatMetadata = {
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`). Absent when none.
+   * `Overseer.stopAgent`), unless a deployment admin's write stops it, which keeps them as
+   * `steered` messages. Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
 
@@ -5245,7 +5745,8 @@ export type AiChatMessageBody = {
   /**
    * Sent while the agent was working, so it steers that turn rather than prompting one. The agent
    * reads it before its next model request, or, if the turn ended before it could and started no
-   * other (it failed, or stopped to wait on the user's decision), when the agent next runs.
+   * other (it failed, stopped to wait on the user's decision, or was stopped by a deployment
+   * admin's write), when the agent next runs.
    */
   steered?: true;
 } | {

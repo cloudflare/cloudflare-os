@@ -81,11 +81,19 @@ methods are the vendor's `*ConfiguratorUI` class in `packages/gatekeeper-<vendor
 iframe to hand back a resource URL, build it from the resource type's `urlPattern` and pass it to
 `open-workspace <id> new-gatekeeper <accountId> <resourceUrl>`.
 
-Two things only a browser can finish. Connecting an account (`connect-account`, `reconnect-account`,
-`ensure-account-resources`) ends on the Workshop's handoff page
+Two things only a browser can finish. Connecting an account (`connect-account`,
+`reconnect-account`, `ensure-account-resources`) ends on the Workshop's handoff page
 ([docs/connect-handoff.md](../../docs/connect-handoff.md)). Signing in through a gatekeeper confirms
 in a popup. Connect the account in the Workshop as the same user, and the CLI then sees it in
 `subscribe-connected-accounts`.
+
+Approving an admin's write to a workspace is left to a browser as well, since the CLI drives no
+authenticator: `get-admin-api request-workspace-write <workspaceId> <action> <args> <reason>` prints
+the request with its `approvalUrl`, an admin opens that page and confirms with a passkey, and
+`get-admin-api get-workspace-write <requestId>` then shows whether it was applied. Passkeys are
+enrolled and removed in the admin panel. That is a convenience and not the boundary: the server
+takes the passkey ceremonies' methods from any admin session, the CLI's included, and what it
+verifies is the passkey's assertion ([docs/admin-access.md](../../docs/admin-access.md)).
 
 ## Arguments, results and exit codes
 
@@ -137,9 +145,11 @@ The instance is `--url <origin>`, else `CFOS_API_URL`, else `http://localhost:87
 instances with signups or password sign-in off.
 
 Secrets come only from the environment or `cloudflared`, never from argv, which is why the API's
-credential methods are not commands. `--dry-run` prints the instance, sign-in mode and decoded calls
-without connecting, with every `@secret`-tagged value shown as `{"$secret": true}`. Pass arguments
-that hold secrets (the help names them) from `@file` or `-`.
+credential methods are not commands. `AdminApi`'s six passkey ceremony methods are not commands
+either, for another reason: the CLI drives no authenticator (see
+[what needs a browser](#gatekeeper-app-uis-and-what-needs-a-browser)). `--dry-run` prints the
+instance, sign-in mode and decoded calls without connecting, with every `@secret`-tagged value shown
+as `{"$secret": true}`. Pass arguments that hold secrets (the help names them) from `@file` or `-`.
 
 ## Deployment admins only
 

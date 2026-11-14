@@ -42,6 +42,15 @@ const dayName = (day: string) => {
 // The answer to one load of the statistics, for the value of `loads` it answered.
 type StatsAnswer = { loads: number } & ({ stats: AdminAuditStats } | { failed: true })
 
+// The window's approved writes. The router can serve this frontend beside a backend older than
+// admin writes, whose statistics count none: nothing is shown then, rather than a figure the
+// backend never gave.
+const ApprovedWrites = ({ count }: { count: unknown }) => typeof count !== 'number' ? null : (
+  <span className="block mt-1">
+    {NUMBER.format(count)} {count === 1 ? 'approved write' : 'approved writes'}
+  </span>
+)
+
 const StatsCards = ({ stats, onFilterBy }: {
   stats: AdminAuditStats
   onFilterBy: (filter: AuditFilter) => void
@@ -52,6 +61,7 @@ const StatsCards = ({ stats, onFilterBy }: {
       <p className="text-sm text-kumo-subtle mb-4">
         <span className="text-2xl font-semibold text-kumo-default tabular-nums">{NUMBER.format(stats.totalEvents)}</span>
         {' '}{stats.totalEvents === 1 ? 'action' : 'actions'}, by UTC day
+        <ApprovedWrites count={stats.writes} />
       </p>
       <Table>
         <Table.Header>
@@ -234,8 +244,9 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
           <div className="min-w-0 flex-1">
             <h2 id={activityHeading} className="text-lg font-semibold text-kumo-strong">Admin activity</h2>
             <p className="text-sm text-kumo-subtle mt-0.5">
-              Every change an admin makes to the deployment&rsquo;s settings, and every admin call into a
-              workspace, kept for {NUMBER.format(retention.effective)} days.
+              Every change an admin makes to the deployment&rsquo;s settings, every admin call into a
+              workspace, and every step of an admin write to one, kept for{' '}
+              {NUMBER.format(retention.effective)} days.
             </p>
           </div>
           <Button
