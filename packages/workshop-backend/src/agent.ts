@@ -3534,7 +3534,10 @@ async function runAgentPass(
           }
           let shown = readFileWindow(file.source, window, filename, MAX_TOOL_RESULT_CHARS);
           markFileRead(resolved.workpieceId, filename, file.oid);
-          return toolResult(shown, file.oid === undefined ? {} : {observedOid: file.oid});
+          return toolResult(shown, {
+            workpieceId: resolved.workpieceId,
+            ...(file.oid === undefined ? {} : {observedOid: file.oid}),
+          });
         } catch (error) {
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
@@ -3572,7 +3575,7 @@ async function runAgentPass(
           // Recorded as shown: replay reads this text back, and a broad match over several
           // large files could otherwise exceed a storage record.
           let output = formatGrep(scan, MAX_TOOL_RESULT_CHARS);
-          return toolResult(output, {output} as Partial<AiToolCall>);
+          return toolResult(output, {output, workpieceId} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
           throw error;
@@ -3633,7 +3636,8 @@ async function runAgentPass(
           // that it can make further edits without rewriting.
           markFileRead(resolved.workpieceId, filename);
 
-          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
+          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}),
+                            {workpieceId: resolved.workpieceId});
         } catch (error) {
           // (The preview of a failed edit is withdrawn centrally at tool_execution_end, which
           // also covers failures that never reach this execute.)
@@ -3736,7 +3740,8 @@ async function runAgentPass(
             codePreviewManager.clearPreview(toolCallId);
           }
 
-          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}));
+          return toolResult(jsonToolResultText({success: true, changeId: nextChangeId}),
+                            {workpieceId: resolved.workpieceId});
         } catch (error) {
           // (Failed edits' previews are withdrawn centrally at tool_execution_end.)
           toolCallNotes.set(toolCallId, {
@@ -4440,7 +4445,8 @@ async function runAgentPass(
                     .map(part => part.type === "text" ? part.text : "").join("") ||
                     "Tool call failed.";
               } else if (toolResultMsg.details) {
-                // Success notes (observedCodeVersion, recorded output) ride the result's details.
+                // Success notes (observedOid, workpieceId, recorded output) ride the result's
+                // details.
                 Object.assign(result, toolResultMsg.details);
               }
               let notes = toolCallNotes.get(block.id);

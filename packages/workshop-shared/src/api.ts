@@ -5439,6 +5439,14 @@ export type AiToolCall = {
    */
   observedCodeVersion?: number;
 
+  /**
+   * The workpiece a successful file tool call (readFile, grep, writeFile, editFile) resolved its
+   * `workpiece` binding name to, so the UI can name the gadget a step touched without knowing
+   * the chat's bindings. Display only: replay resolves the binding name, as the live call did.
+   * Absent on failed calls and in logs persisted before it was recorded.
+   */
+  workpieceId?: WorkpieceId;
+
   /** If the tool failed, the error. */
   error?: string;
 } & ({
