@@ -735,6 +735,22 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
     return value;
   }
 
+  /**
+   * Runs `use`, which replays pending edits, over the snapshot `snapshot` resolves to, with the
+   * same writes landed as when the snapshot was asked for: a write that lands meanwhile leaves the
+   * queue without its edit while the snapshot predates it, so the snapshot is asked for again.
+   * Nothing is awaited between that check and `use`.
+   */
+  async #settled<T>(
+    snapshot: () => Promise<GoogleDocSnapshot>, use: (snapshot: GoogleDocSnapshot) => T,
+  ): Promise<T> {
+    for (;;) {
+      let writes = this.#changes.cache.writes;
+      let taken = await snapshot();
+      if (writes === this.#changes.cache.writes) return use(taken);
+    }
+  }
+
   /** `snapshot` with every pending edit replayed over it, or as it is for a read-only session. */
   #replay(snapshot: GoogleDocSnapshot): GoogleDocSimulation {
     if (!this.#changes.simulates) return { tabs: snapshot.tabs, contentByTabId: new Map() };
@@ -781,7 +797,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
   async #getSimulatedContent(
     tabId: string | undefined, operation: "getContent" | "replaceText" | "appendText",
   ): Promise<GoogleDocSelectedContent> {
-    return this.#simulate(await this.#source.snapshot(), tabId, operation);
+    return this.#settled(() => this.#source.snapshot(), taken => this.#simulate(taken, tabId, operation));
   }
 
   /**
@@ -797,10 +813,12 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
     let checkedOver: string | undefined;
     let fetch = async (snapshot: () => Promise<GoogleDocSnapshot>) => {
       try {
-        let selected = this.#simulate(await snapshot(), tabId, operation);
-        let value = check(selected);
-        checkedOver = googleDocPendingFingerprint(this.#changes.pending());
-        return { selected, value };
+        return await this.#settled(snapshot, taken => {
+          let selected = this.#simulate(taken, tabId, operation);
+          let value = check(selected);
+          checkedOver = googleDocPendingFingerprint(this.#changes.pending());
+          return { selected, value };
+        });
       } catch (error) {
         return new ReadFailure(error);
       }
@@ -848,7 +866,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
   async listTabs(): Promise<GoogleDocTab[]> {
     await this.#changes.afterTurns();
     return this.#readDocument(
-      async snapshot => this.#replay(await snapshot()).tabs.map(googleDocTabMetadata),
+      snapshot => this.#settled(snapshot, taken => this.#replay(taken).tabs.map(googleDocTabMetadata)),
       () => DOC_TABS_OBSERVATION);
   }
 
@@ -860,8 +878,8 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
     return this.#changes.queue(async () => {
       let snapshot, simulation, action: GoogleDocAddTabAction, tabs, simulatedParent;
       try {
-        snapshot = await this.#source.snapshot();
-        simulation = this.#replay(snapshot);
+        ({ snapshot, simulation } = await this.#settled(() => this.#source.snapshot(),
+          taken => ({ snapshot: taken, simulation: this.#replay(taken) })));
         simulatedParent = this.#simulatedTabId(simulation.tabs, options.parentTabId);
         tabs = insertDocTab(simulation.tabs, newGoogleDocTab({ provisionalTabId, title }),
           { parentTabId: simulatedParent, index });
@@ -898,7 +916,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
     await this.#changes.afterTurns();
     let selected = await this.#readDocument(async snapshot => {
       try {
-        return this.#simulate(await snapshot(), tabId, "getContent");
+        return await this.#settled(snapshot, taken => this.#simulate(taken, tabId, "getContent"));
       } catch (error) {
         return new ReadFailure(error);
       }

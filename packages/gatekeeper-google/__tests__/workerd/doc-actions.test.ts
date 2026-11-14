@@ -242,3 +242,60 @@ describe("a Drive binding's Doc snapshot", () => {
     expect(calls).toBe(2);
   });
 });
+
+describe("a Doc read a write lands during", () => {
+  // The source checks the writes landed while it fetches, but the session's replay runs after the
+  // source has answered: a write landing in between leaves the queue without its edit, and the
+  // edits built on it would not replay over the older snapshot.
+  it("takes the snapshot again when a write lands after the source answered", async () => {
+    let replace: Replace = {
+      ...BASE, type: "replaceText", oldMarkdown: "More", newMarkdown: "Final", display: { tab: "x" },
+    };
+    let pending = [{ id: 1, action: APPEND as GoogleDocAction }, { id: 2, action: replace }];
+    let cache = { writes: 0 };
+    let invalidated: number[] = [];
+    let before = document("Draft");
+    let after = {
+      ...before, revisionId: "r2",
+      tabs: [{ ...buildTab([{ runs: ["Draft\n"] }, { runs: ["More\n"] }]), title: "Main" }],
+    };
+    let snapshots = 0;
+    let docs = new GoogleDocSessionImpl({
+      docsApi: {} as GoogleDocsApi,
+      driveApi: {} as DriveApi,
+      documentId: "doc-1",
+      approvalQueue: {} as RpcStub<ApprovalQueue>,
+      read: async (fetch, observe) => {
+        let value = await fetch();
+        observe(value);
+        return value;
+      },
+      changes: {
+        pending: () => pending,
+        invalidate: ({ id }) => { invalidated.push(id); },
+        cache,
+        queue: () => Promise.reject(new Error("nothing is queued here")),
+        afterTurns: async () => {},
+        adoptedTabId: tabId => tabId,
+        authorizesPreparation: false,
+        simulates: true,
+      },
+      source: {
+        snapshot: async () => {
+          snapshots++;
+          if (snapshots > 1) return googleDocSnapshot(structuredClone(after));
+          // The append lands, and leaves the queue, once the source has answered.
+          queueMicrotask(() => { cache.writes++; pending.splice(0, 1); });
+          return googleDocSnapshot(structuredClone(before));
+        },
+        approved: () => {},
+        metadata: async () => ({ title: "Plan", modifiedAt: 0 }),
+        metadataObservation: { title: "t", description: "d" },
+      },
+    });
+
+    expect(await docs.getContent()).toContain("Final");
+    expect(snapshots).toBe(2);
+    expect(invalidated).toEqual([]);
+  });
+});
