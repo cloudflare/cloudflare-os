@@ -69,7 +69,8 @@ export function addAggregate(state: AggregateState, value: Scalar) {
   // A blank isn't a value: it counts as nothing, not as 0.
   if (value == null || value === "" || isErr(value)) return;
   state.count++;
-  const number = typeof value === "number" ? value : Number(value);
+  // As in Excel, only numbers (and text that reads as one) are summed: not booleans or spaces.
+  const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
   if (Number.isFinite(number)) { state.sum += number; state.numericCount++; state.min = Math.min(state.min, number); state.max = Math.max(state.max, number); }
 }
 export function finishAggregate(state: AggregateState, kind: PivotAggregate): number {

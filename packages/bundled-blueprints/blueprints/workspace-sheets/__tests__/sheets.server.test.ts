@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ExportHandler, Gadget } from "../files/server.ts";
 import { workbookToXlsx } from "../files/lib/xlsx.ts";
+import { addAggregate, aggregateState, finishAggregate } from "../files/lib/pivot.ts";
 import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, MAX_EXPORT_TEXT, loadExportWorkbook } from "../files/lib/export-data.ts";
 import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/protocol.ts";
 
@@ -55,6 +56,17 @@ function failure(call: () => Promise<unknown>): Promise<unknown> {
 async function values(gadget: Gadget, range: string, sheet?: string): Promise<string[][]> {
   return (await gadget.readRange({ sheet, range })).values;
 }
+
+describe("pivot aggregation", () => {
+  it("sums numbers and numeric text, but counts booleans and spaces only toward Count, as Excel does", () => {
+    const state = aggregateState();
+    for (const value of [4, "6", "  ", true, "text", null]) addAggregate(state, value);
+    expect(finishAggregate(state, "sum")).toBe(10);
+    expect(finishAggregate(state, "min")).toBe(4);
+    expect(finishAggregate(state, "average")).toBe(5);
+    expect(finishAggregate(state, "count")).toBe(5);
+  });
+});
 
 describe("cell storage", () => {
   it("reads and rewrites a block stored in more parts than one storage call takes", async () => {

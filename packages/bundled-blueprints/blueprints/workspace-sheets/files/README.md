@@ -57,7 +57,7 @@ Every write runs in the Durable Object's mutation queue, bumps versions only for
 | `addChart({ sheet?, range, type = "line", title?, xAxisTitle?, yAxisTitle?, legend?, firstRowHeaders?, firstColLabels?, x?, y?, width?, height? })` | Returns `{ chartId }`. `type` is `line`, `pie`, `area` or `stackedBar`. `legend`, `firstRowHeaders` and `firstColLabels` default to true. Size is clamped to 280–1200 × 200–900 px (default 520 × 320). Without `x`/`y` it's placed beside the data, past any filled columns next to it, or under it when there's no room. At most 50 charts per sheet. |
 | `setColumnWidths({ sheet?, widths: { A: 180, C: 120 } })` | In px, 24–2000; `null` resets a column to the default (92). |
 
-There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses). A pivot table's cells are rebuilt from its source by an open grid, and by every export, so an export is never behind its source data.
+There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses). A pivot table's cells are rebuilt from its source by an open grid, and by every export, so an export isn't behind its source data, except when the workbook's formulas run past the export's evaluation budget: then the export keeps the pivot as the grid last built it.
 
 **Formats** (`fmt`):
 
