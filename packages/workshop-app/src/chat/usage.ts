@@ -9,3 +9,6 @@ export const formatUsage = ({ tokens, cost }: { tokens: number; cost?: number })
   const used = `${compact.format(tokens)} ${tokens === 1 ? 'token' : 'tokens'}`
   return cost !== undefined && cost >= 0.005 ? `${used} · ${dollars.format(cost)}` : used
 }
+
+/** What the AI has cost, to the cent; under half a cent says so rather than rounding to nothing. */
+export const formatCost = (cost: number) => (cost >= 0.005 ? dollars.format(cost) : 'Under a cent')

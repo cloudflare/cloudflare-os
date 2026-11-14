@@ -6,7 +6,7 @@ import { WORKSPACE_TABS, WorkspacePane, type WorkspaceTab } from '@/workspaces/W
 const validateTab = (value: unknown): WorkspaceTab | undefined =>
   WORKSPACE_TABS.find((tab) => tab.value === value && value !== 'chats')?.value
 
-/** One workspace: its chats, or with `?tab=`, what it has made or who has access to it. */
+/** One workspace: its chats, or with `?tab=`, what it has made, who has access to it, or its settings. */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/')({
   validateSearch: (search: Record<string, unknown>): { tab?: WorkspaceTab } => ({ tab: validateTab(search.tab) }),
   component: Workspace,
@@ -39,6 +39,7 @@ function Workspace() {
       onOpenItem={(item) => navigate(pageOf(workspaceId, item))}
       itemHref={(item) => router.buildLocation(pageOf(workspaceId, item)).href}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId } })}
+      onDeleted={() => navigate({ to: '/', replace: true })}
     />
   )
 }

@@ -16,6 +16,8 @@ export type WorkspacesContextValue = {
   rename: (id: string, title: string) => Promise<void>
   /** Mutes or unmutes a workspace's notifications (`null` unmutes), shown at once and undone if the server refuses. */
   setNotificationMute: (id: string, mute: NotificationMute | null) => Promise<void>
+  /** Deletes a workspace and all it holds, taking it off the list once it has gone. */
+  remove: (id: string) => Promise<void>
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -40,6 +42,9 @@ export const useRenameWorkspace = (): WorkspacesContextValue['rename'] => useWor
 
 /** Mutes or unmutes a workspace's notifications. Rejects with why, once it is undone. */
 export const useSetNotificationMute = (): WorkspacesContextValue['setNotificationMute'] => useWorkspacesContext().setNotificationMute
+
+/** Deletes a workspace (`deleteSelf`, to the server). Rejects with why, leaving it listed. */
+export const useDeleteWorkspace = (): WorkspacesContextValue['remove'] => useWorkspacesContext().remove
 
 /** Whether a workspace's notifications are muted now: for good, or until a time not yet reached. */
 export const isMuted = (mute: NotificationMute | undefined, now = Date.now()) =>

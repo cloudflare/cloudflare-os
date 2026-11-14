@@ -74,5 +74,17 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setNotificationMute }}>{children}</WorkspacesContext>
+  const remove = async (id: string) => {
+    const overseer = api.openWorkspace(id)
+    try {
+      await overseer.deleteSelf()
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+    setState((current) =>
+      current.status === 'ready' ? { ...current, workspaces: current.workspaces.filter((workspace) => workspace.id !== id) } : current,
+    )
+  }
+
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setNotificationMute, remove }}>{children}</WorkspacesContext>
 }

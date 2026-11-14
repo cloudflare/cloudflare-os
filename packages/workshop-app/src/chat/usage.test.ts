@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatUsage } from './usage'
+import { formatCost, formatUsage } from './usage'
 
 describe('formatUsage', () => {
   it('rounds the tokens as people say them', () => {
@@ -11,5 +11,12 @@ describe('formatUsage', () => {
   it('adds the cost once it comes to a cent', () => {
     expect(formatUsage({ tokens: 2_000_000, cost: 1.234 })).toBe('2M tokens · $1.23')
     expect(formatUsage({ tokens: 300, cost: 0.001 })).toBe('300 tokens')
+  })
+})
+
+describe('formatCost', () => {
+  it('says the cost to the cent, and a fraction of one as less than one', () => {
+    expect(formatCost(3.456)).toBe('$3.46')
+    expect(formatCost(0.002)).toBe('Under a cent')
   })
 })

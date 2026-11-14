@@ -46,6 +46,15 @@ const created = (gadgetId: number) => changes({ author: AGENT, createdGadgets: [
 const request = (state: 'pending' | 'accepted' | 'denied') =>
   connectionRequest({ vendorName: 'ClickHouse', reason: 'Read error rates.', resourceTitle: 'ClickHouse cluster', state })
 const LABEL = { tag: 'jira.label', label: 'Label an issue' }
+const restore = (to: 'before' | 'after', removed?: string) => ({
+  type: 'restore' as const,
+  from: 1,
+  to,
+  commits: [],
+  removedGadgets: removed ? [{ gadgetId: 4, title: removed }] : undefined,
+  author: VIEWER,
+})
+const dividerLabels = (result: ChatFeed) => only(result, 'divider').map(({ label }) => label)
 const noFallback = (result: ChatFeed) => only(result, 'notice').filter(({ notice }) => notice === 'unknown')
 
 describe('toChatFeed', () => {
@@ -441,18 +450,9 @@ describe('toChatFeed', () => {
     })
 
     it('marks going back to an earlier point, and undoing one that made a gadget', () => {
-      const restore = (to: 'before' | 'after', removed?: string) => ({
-        type: 'restore' as const,
-        from: 1,
-        to,
-        commits: [],
-        removedGadgets: removed ? [{ gadgetId: 4, title: removed }] : undefined,
-        author: VIEWER,
-      })
-      const labels = (result: ChatFeed) => only(result, 'divider').map(({ label }) => label)
-      expect(labels(feed(user('undo it'), restore('before')))).toEqual(['You undid changes'])
-      expect(labels(feed(user('undo it'), restore('before', 'Tip Jar')))).toEqual(['You undid creating “Tip Jar”'])
-      expect(labels(feed(user('go back'), restore('after')))).toEqual(['You went back to an earlier version'])
+      expect(dividerLabels(feed(user('undo it'), restore('before')))).toEqual(['You undid changes'])
+      expect(dividerLabels(feed(user('undo it'), restore('before', 'Tip Jar')))).toEqual(['You undid creating “Tip Jar”'])
+      expect(dividerLabels(feed(user('go back'), restore('after')))).toEqual(['You went back to an earlier version'])
       expect(noFallback(feed(restore('after')))).toEqual([])
     })
 
