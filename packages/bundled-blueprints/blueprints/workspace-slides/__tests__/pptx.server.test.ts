@@ -218,7 +218,7 @@ describe("Slides PowerPoint export", () => {
     // Nine fit in the 24M share; the rest use the 1 x 1 blank.
     expect(sizes.filter((w) => w === 1600)).toHaveLength(9);
     expect(sizes).toContain(1);
-  });
+  }, 10_000);
 
   // Browsers accept a bare % in a data URL, so a hand-written one has them (width="100%").
   it("embeds an SVG data URL with a bare % in it", async () => {

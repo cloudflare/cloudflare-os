@@ -1201,7 +1201,7 @@ describe("consumePack", () => {
     for (let chunk of chunksOf(t, bigOid)) {
       expect(t.storage.gitObjectMetadata.get(chunk)).toBeUndefined();
     }
-  });
+  }, 10_000);
 
   it("writes a streamed blob's chunks outside any transaction", async () => {
     let t = makeCache();

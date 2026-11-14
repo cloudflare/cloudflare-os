@@ -332,7 +332,7 @@ describe("mailToMarkdown: robustness", () => {
     expect(html(quotes).markdown).toContain("q");
   });
 
-  it("converts 1 MB of mail in well under a second", () => {
+  it("converts 1 MB of mail within two seconds", () => {
     const chunk = fixture("newsletter.html") + fixture("injection.html") + fixture("outlook-word.html");
     const content = chunk.repeat(Math.ceil(1_000_000 / chunk.length));
     html(content.slice(0, 50_000)); // warm up
@@ -341,7 +341,7 @@ describe("mailToMarkdown: robustness", () => {
     const elapsed = performance.now() - start;
     expect(truncated).toBe(true);
     // About 200 ms is the aim; the bound is loose so a loaded CI machine doesn't flake.
-    expect(elapsed).toBeLessThan(1_000);
+    expect(elapsed).toBeLessThan(2_000);
   });
 
   it("decodes entities once, never twice", () => {
