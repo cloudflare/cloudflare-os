@@ -1,0 +1,204 @@
+diff --git a/packages/gatekeeper-context/app/styles.css b/packages/gatekeeper-context/app/styles.css
+index 771fe9531..94d7b03b5 100644
+--- a/packages/gatekeeper-context/app/styles.css
++++ b/packages/gatekeeper-context/app/styles.css
+@@ -67 +67,2 @@ body,
+-  --color-kumo-tip-stroke: transparent;
++  --color-kumo-arrow-edge: var(--color-kumo-line);
++  --color-kumo-arrow-stroke: transparent;
+@@ -172 +173,2 @@ body,
+-  --color-kumo-tip-stroke: oklch(0.34 0.022 285);
++  --color-kumo-arrow-edge: transparent;
++  --color-kumo-arrow-stroke: var(--color-kumo-line);
+diff --git a/packages/gatekeeper-context/package.json b/packages/gatekeeper-context/package.json
+index e91a7b227..04a01f067 100644
+--- a/packages/gatekeeper-context/package.json
++++ b/packages/gatekeeper-context/package.json
+@@ -26 +26 @@
+-    "@cloudflare/kumo": "^2.9.2",
++    "@cloudflare/kumo": "^2.12.0",
+@@ -42 +42 @@
+-    "@types/react-dom": "^19.2.4",
++    "@types/react-dom": "^19.2.5",
+diff --git a/packages/gatekeeper-scheduler/package.json b/packages/gatekeeper-scheduler/package.json
+index 3a5fe83df..2590a87e3 100644
+--- a/packages/gatekeeper-scheduler/package.json
++++ b/packages/gatekeeper-scheduler/package.json
+@@ -23 +23 @@
+-    "@cloudflare/kumo": "^2.9.2",
++    "@cloudflare/kumo": "^2.12.0",
+@@ -29 +29 @@
+-    "@types/react-dom": "^19.2.4",
++    "@types/react-dom": "^19.2.5",
+diff --git a/packages/workshop-frontend/package.json b/packages/workshop-frontend/package.json
+index c13e5e083..4af6105f8 100644
+--- a/packages/workshop-frontend/package.json
++++ b/packages/workshop-frontend/package.json
+@@ -12 +12 @@
+-    "@cloudflare/kumo": "^2.9.2",
++    "@cloudflare/kumo": "^2.12.0",
+@@ -38 +38 @@
+-    "@tanstack/react-router": "^1.170.23",
++    "@tanstack/react-router": "^1.170.32",
+@@ -49 +49 @@
+-    "@tanstack/router-plugin": "^1.168.27",
++    "@tanstack/router-plugin": "^1.168.35",
+@@ -51 +51 @@
+-    "@types/react-dom": "^19.2.4",
++    "@types/react-dom": "^19.2.5",
+diff --git a/packages/workshop-frontend/src/styles.css b/packages/workshop-frontend/src/styles.css
+index c85c50df8..ea726253c 100644
+--- a/packages/workshop-frontend/src/styles.css
++++ b/packages/workshop-frontend/src/styles.css
+@@ -62 +62,2 @@
+-  --color-kumo-tip-stroke: transparent;
++  --color-kumo-arrow-edge: var(--color-kumo-line);
++  --color-kumo-arrow-stroke: transparent;
+@@ -173 +174,2 @@
+-  --color-kumo-tip-stroke: oklch(0.34 0.022 285);
++  --color-kumo-arrow-edge: transparent;
++  --color-kumo-arrow-stroke: var(--color-kumo-line);
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 9f1543cd1..90f526e8b 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -195,2 +195,2 @@ importers:
+-        specifier: ^2.9.2
+-        version: 2.9.2(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
++        specifier: ^2.12.0
++        version: 2.12.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+@@ -243,2 +243,2 @@ importers:
+-        specifier: ^19.2.4
+-        version: 19.2.4(@types/react@19.2.18)
++        specifier: ^19.2.5
++        version: 19.2.5(@types/react@19.2.18)
+@@ -540,2 +540,2 @@ importers:
+-        specifier: ^2.9.2
+-        version: 2.9.2(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
++        specifier: ^2.12.0
++        version: 2.12.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+@@ -558,2 +558,2 @@ importers:
+-        specifier: ^19.2.4
+-        version: 19.2.4(@types/react@19.2.18)
++        specifier: ^19.2.5
++        version: 19.2.5(@types/react@19.2.18)
+@@ -853,2 +853,2 @@ importers:
+-        specifier: ^2.9.2
+-        version: 2.9.2(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
++        specifier: ^2.12.0
++        version: 2.12.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)
+@@ -931,2 +931,2 @@ importers:
+-        specifier: ^1.170.23
+-        version: 1.170.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
++        specifier: ^1.170.32
++        version: 1.170.32(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+@@ -959,2 +959,2 @@ importers:
+-        specifier: ^1.168.27
+-        version: 1.168.27(@tanstack/react-router@1.170.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(esbuild@0.28.1)(rollup@4.62.3)(supports-color@10.2.2)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
++        specifier: ^1.168.35
++        version: 1.168.35(@tanstack/react-router@1.170.32(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(esbuild@0.28.1)(rollup@4.62.3)(supports-color@10.2.2)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))
+@@ -965,2 +965,2 @@ importers:
+-        specifier: ^19.2.4
+-        version: 19.2.4(@types/react@19.2.18)
++        specifier: ^19.2.5
++        version: 19.2.5(@types/react@19.2.18)
+@@ -1246,2 +1246,2 @@ packages:
+-  '@cloudflare/kumo@2.9.2':
+-    resolution: {integrity: sha512-c3RZBmx0TqxTKAPT4PWyTgVwPcDVW+KrFmf4mKCnwWBe6OIc0vWn+wMhnaARarJz/2kvsx87tMGmNRBsCn7pUA==}
++  '@cloudflare/kumo@2.12.0':
++    resolution: {integrity: sha512-ZMT5mS6Zc86OUn4mMu2OPDHZcJfxYasWjEthhJ6OzQwCu9gHbt0Z6J/aA0yhJ03bxn0eW+2QCeLzAhfKTQmtNg==}
+@@ -2582,2 +2582,2 @@ packages:
+-  '@tanstack/react-router@1.170.23':
+-    resolution: {integrity: sha512-iKyHk7vGVaTdk7wukFZLjzlOs4TQbQJiRMkvFsphpysOlxzLaqWSlWHKU4gVPW3WjJ19k7EjVUCD4q3DJqZpZg==}
++  '@tanstack/react-router@1.170.32':
++    resolution: {integrity: sha512-SIpxvaTKco100a5ZR3ePmArbhtm3XOx+w1dpGYY9gxHDta4iXSKDdQuhLonwJbIMkVJsU1rwXf0UDHMrF/1snw==}
+@@ -2595,2 +2595,2 @@ packages:
+-  '@tanstack/router-core@1.171.19':
+-    resolution: {integrity: sha512-uCZhgnfmuBA3PoRLIVSjUhQpJQd/HA7p0XxG1IFKnvXU9lIMZ7gIqx45hyuf9JopxXZI8k7qaz9/6PC7mZLdfQ==}
++  '@tanstack/router-core@1.171.27':
++    resolution: {integrity: sha512-wDwSLvoLwIaNcnx9UNcN9Mb7Y8QwCYq1U1RQZwyN186gnkIoIYI2SOxy8VqH1vFigbkHkk4FmwMAQlghPgDK2g==}
+@@ -2599,2 +2599,2 @@ packages:
+-  '@tanstack/router-generator@1.167.25':
+-    resolution: {integrity: sha512-M+S+QvGicfiH7kMkjrm6q+UMWXTdl7v9+pvMVnzA+lFm7whe8qmVOY72h/O8GGnejNn14jxdPrnLXv97NJjlWQ==}
++  '@tanstack/router-generator@1.167.33':
++    resolution: {integrity: sha512-Z3lCWIPuRUMPmuI8Mm48x/s49TxmHOaFVZ52j1W1QKYrsFHyT6U/h9bqfHJDxfQ8kz7y9q+W1YPKZ15Ee7yuCA==}
+@@ -2603,2 +2603,2 @@ packages:
+-  '@tanstack/router-plugin@1.168.27':
+-    resolution: {integrity: sha512-M/3XG6RIxid8+f5VKXILtPpapQPjIgKRKV1JxuvYJwQM811iSUzK9onrZnezUktZcHaWJN+wD7FR5HedH/WY7Q==}
++  '@tanstack/router-plugin@1.168.35':
++    resolution: {integrity: sha512-foDAZKFqHXae+oFbIgcsSvy2QCVRn7XdS3nhwcRvD+ed6JrKPUP/1lQMsZLJqWycgR1vkZF7gs955KGa0NZQ0w==}
+@@ -2608 +2608 @@ packages:
+-      '@tanstack/react-router': ^1.170.22
++      '@tanstack/react-router': ^1.170.32
+@@ -2690,2 +2690,2 @@ packages:
+-  '@types/react-dom@19.2.4':
+-    resolution: {integrity: sha512-Bsc+QHgp+P/F02XDzNCY9jnZNCUuLki36KT7VKrTXXLdHf+vHMNZnW1rVu5DNW/rCK+fya3DATySbLM4yhtKUw==}
++  '@types/react-dom@19.2.5':
++    resolution: {integrity: sha512-fMPwH9v7r/pp43yUd2/Mbiex5KouJwwR3dzHkhLREUC6764VyDsqxhAxv6OFEYR1RhjOyD1naqba8ECDBe7ZQg==}
+@@ -4510,2 +4510,2 @@ packages:
+-  reselect@5.2.0:
+-    resolution: {integrity: sha512-AgZ3UOZm3YndfrJ4OYjgrT7bmCm/1iqkjvEfH/oYjzh6PD2qw4QuT3jjnXIrpdt4MTpMXclMT3lXbmRY+XRakw==}
++  reselect@5.3.0:
++    resolution: {integrity: sha512-XGoLeRAVzUTcJ1qkxPQhDJyIZ5d6zzZD9nT7AEZOaaU9UbWclhycElmhO+VD5bFeLuzhPBaOV2oXC8uG35ZSpg==}
+@@ -4547,2 +4547,2 @@ packages:
+-  seroval-plugins@1.6.2:
+-    resolution: {integrity: sha512-TfxuUjlbBESzUOWdTkTKqvSmav0ABym+itetDXLK6mDz8SmrpdI30aF8RTXE8Bvq+tH/1yIDkvy3W0lfQb1ipQ==}
++  seroval-plugins@1.6.4:
++    resolution: {integrity: sha512-R0f1U9hmn38+dFMz6b6ab8lwucmw4AtiY7St+JPWudy1dm+Bs3g884nyrsH9Cy6rKpZKLYayXuMda9GZ/fl8JQ==}
+@@ -4553,2 +4553,2 @@ packages:
+-  seroval@1.6.2:
+-    resolution: {integrity: sha512-mPT+SD2TrlB6wvte1KkYOYUkubaTbd6pZ/6Kk3C9nxzrHmCZyhxOO7XGAeL7f+yLKZglzGtM9odUVvg/EhO+vQ==}
++  seroval@1.6.4:
++    resolution: {integrity: sha512-LErWMNS2RRFdu2RMA5u/PA59/IWs0XsikyEXGQ2/36iEWFrdG0ABmg17E17cikrv76891kOAMq3TkTFXpwAHXw==}
+@@ -5516 +5516 @@ snapshots:
+-      reselect: 5.2.0
++      reselect: 5.3.0
+@@ -5523 +5523 @@ snapshots:
+-  '@cloudflare/kumo@2.9.2(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
++  '@cloudflare/kumo@2.12.0(@date-fns/tz@1.5.0)(@phosphor-icons/react@2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(@types/react@19.2.18)(date-fns@4.4.0)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@4.4.3)':
+@@ -6650 +6650 @@ snapshots:
+-  '@tanstack/react-router@1.170.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
++  '@tanstack/react-router@1.170.32(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+@@ -6654 +6654 @@ snapshots:
+-      '@tanstack/router-core': 1.171.19
++      '@tanstack/router-core': 1.171.27
+@@ -6666 +6666 @@ snapshots:
+-  '@tanstack/router-core@1.171.19':
++  '@tanstack/router-core@1.171.27':
+@@ -6670,2 +6670,2 @@ snapshots:
+-      seroval: 1.6.2
+-      seroval-plugins: 1.6.2(seroval@1.6.2)
++      seroval: 1.6.4
++      seroval-plugins: 1.6.4(seroval@1.6.4)
+@@ -6673 +6673 @@ snapshots:
+-  '@tanstack/router-generator@1.167.25(supports-color@10.2.2)':
++  '@tanstack/router-generator@1.167.33(supports-color@10.2.2)':
+@@ -6676 +6676 @@ snapshots:
+-      '@tanstack/router-core': 1.171.19
++      '@tanstack/router-core': 1.171.27
+@@ -6686 +6686 @@ snapshots:
+-  '@tanstack/router-plugin@1.168.27(@tanstack/react-router@1.170.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(esbuild@0.28.1)(rollup@4.62.3)(supports-color@10.2.2)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))':
++  '@tanstack/router-plugin@1.168.35(@tanstack/react-router@1.170.32(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(esbuild@0.28.1)(rollup@4.62.3)(supports-color@10.2.2)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.49.2)(yaml@2.9.0))':
+@@ -6691,2 +6691,2 @@ snapshots:
+-      '@tanstack/router-core': 1.171.19
+-      '@tanstack/router-generator': 1.167.25(supports-color@10.2.2)
++      '@tanstack/router-core': 1.171.27
++      '@tanstack/router-generator': 1.167.33(supports-color@10.2.2)
+@@ -6698 +6698 @@ snapshots:
+-      '@tanstack/react-router': 1.170.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
++      '@tanstack/react-router': 1.170.32(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+@@ -6798 +6798 @@ snapshots:
+-  '@types/react-dom@19.2.4(@types/react@19.2.18)':
++  '@types/react-dom@19.2.5(@types/react@19.2.18)':
+@@ -8705 +8705 @@ snapshots:
+-  reselect@5.2.0: {}
++  reselect@5.3.0: {}
+@@ -8756 +8756 @@ snapshots:
+-  seroval-plugins@1.6.2(seroval@1.6.2):
++  seroval-plugins@1.6.4(seroval@1.6.4):
+@@ -8758 +8758 @@ snapshots:
+-      seroval: 1.6.2
++      seroval: 1.6.4
+@@ -8760 +8760 @@ snapshots:
+-  seroval@1.6.2: {}
++  seroval@1.6.4: {}

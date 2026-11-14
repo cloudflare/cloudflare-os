@@ -1,0 +1,160 @@
+{
+  "numTotalTestSuites": 3,
+  "numPassedTestSuites": 0,
+  "numFailedTestSuites": 3,
+  "numPendingTestSuites": 0,
+  "numTotalTests": 10,
+  "numPassedTests": 0,
+  "numFailedTests": 0,
+  "numPendingTests": 10,
+  "numTodoTests": 0,
+  "snapshot": {
+    "added": 0,
+    "failure": false,
+    "filesAdded": 0,
+    "filesRemoved": 0,
+    "filesRemovedList": [],
+    "filesUnmatched": 0,
+    "filesUpdated": 0,
+    "matched": 0,
+    "total": 0,
+    "unchecked": 0,
+    "uncheckedKeysByFile": [],
+    "unmatched": 0,
+    "updated": 0,
+    "didUpdate": false
+  },
+  "startTime": 1793643846690,
+  "success": false,
+  "testResults": [
+    {
+      "assertionResults": [
+        {
+          "ancestorTitles": [
+            "Workshop on a desktop"
+          ],
+          "fullName": "Workshop on a desktop signs in and lands on Home with the composer",
+          "status": "skipped",
+          "title": "signs in and lands on Home with the composer",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a desktop"
+          ],
+          "fullName": "Workshop on a desktop opens Workspaces from the navigation",
+          "status": "skipped",
+          "title": "opens Workspaces from the navigation",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a desktop"
+          ],
+          "fullName": "Workshop on a desktop opens Profile from the profile menu",
+          "status": "skipped",
+          "title": "opens Profile from the profile menu",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a desktop"
+          ],
+          "fullName": "Workshop on a desktop lists Gatekeepers",
+          "status": "skipped",
+          "title": "lists Gatekeepers",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a desktop"
+          ],
+          "fullName": "Workshop on a desktop drafts a message on Home",
+          "status": "skipped",
+          "title": "drafts a message on Home",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a phone"
+          ],
+          "fullName": "Workshop on a phone signs in and lands on Home with the composer",
+          "status": "skipped",
+          "title": "signs in and lands on Home with the composer",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a phone"
+          ],
+          "fullName": "Workshop on a phone opens Workspaces from the navigation",
+          "status": "skipped",
+          "title": "opens Workspaces from the navigation",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a phone"
+          ],
+          "fullName": "Workshop on a phone opens Profile from the profile menu",
+          "status": "skipped",
+          "title": "opens Profile from the profile menu",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a phone"
+          ],
+          "fullName": "Workshop on a phone lists Gatekeepers",
+          "status": "skipped",
+          "title": "lists Gatekeepers",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        },
+        {
+          "ancestorTitles": [
+            "Workshop on a phone"
+          ],
+          "fullName": "Workshop on a phone drafts a message on Home",
+          "status": "skipped",
+          "title": "drafts a message on Home",
+          "failureMessages": [],
+          "meta": {},
+          "tags": [],
+          "benchmarks": []
+        }
+      ],
+      "startTime": 1793643846690,
+      "endTime": 1793643846690,
+      "status": "failed",
+      "message": "",
+      "name": "/workspace/packages/workshop-frontend/e2e/workshop.e2e.ts"
+    }
+  ]
+}

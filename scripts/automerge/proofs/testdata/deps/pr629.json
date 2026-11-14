@@ -1,0 +1,40 @@
+{
+  "pull_request": 629,
+  "base": "79d28d1b614b26347edb012da3c85db26415072a",
+  "head": "348d62df4d489c7f6c32d3a0e08d987b5fcfd1a6",
+  "recorded": "2026-11-02T17:22:35.068Z",
+  "now": "2026-10-01T11:58:32-05:00",
+  "minimum_release_age_minutes": 1440,
+  "manifests": [
+    {
+      "path": "packages/gatekeeper-confluence/package.json",
+      "base": "{\n  \"name\": \"@gadgets/confluence-gatekeeper\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/confluence.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:configurator && wrangler deploy\",\n    \"clean\": \"rm -rf dist src/generated\",\n    \"test:run\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@gadgets/configurator-ui\": \"workspace:*\",\n    \"@gadgets/gatekeeper-kit\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"node-html-parser\": \"^7.1.0\"\n  },\n  \"devDependencies\": {\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"typescript\": \"catalog:\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n",
+      "head": "{\n  \"name\": \"@gadgets/confluence-gatekeeper\",\n  \"version\": \"1.0.0\",\n  \"type\": \"module\",\n  \"main\": \"./src/confluence.ts\",\n  \"scripts\": {\n    \"dev\": \"echo \\\"run 'pnpm dev-server' in the root directory instead\\\" >&2 && exit 1\",\n    \"deploy\": \"vp run --no-cache build:configurator && wrangler deploy\",\n    \"clean\": \"rm -rf dist src/generated\",\n    \"test:run\": \"vitest run\"\n  },\n  \"dependencies\": {\n    \"@gadgets/configurator-ui\": \"workspace:*\",\n    \"@gadgets/gatekeeper-kit\": \"workspace:*\",\n    \"@gadgets/workshop-shared\": \"workspace:*\",\n    \"capnweb\": \"catalog:\",\n    \"capnweb-validate\": \"catalog:\",\n    \"node-html-parser\": \"^9.0.4\"\n  },\n  \"devDependencies\": {\n    \"@gadgets/scripts\": \"workspace:*\",\n    \"typescript\": \"catalog:\",\n    \"vitest\": \"catalog:\",\n    \"wrangler\": \"catalog:\"\n  }\n}\n"
+    }
+  ],
+  "base_lock_names": [
+    "entities",
+    "node-html-parser"
+  ],
+  "published": {
+    "entities@8.1.0": "2026-09-07T22:42:04.929Z",
+    "node-html-parser@9.0.4": "2026-09-07T02:18:06.623Z"
+  },
+  "osv_queries": [
+    "entities@8.1.0",
+    "node-html-parser@9.0.4",
+    "he@1.2.0",
+    "node-html-parser@7.1.0",
+    "css-select@5.2.2"
+  ],
+  "osv_response": {
+    "results": [
+      {},
+      {},
+      {},
+      {},
+      {}
+    ]
+  },
+  "osv_recorded_again": "2026-11-06: added the versions importer, catalog and snapshot entries move to or from"
+}

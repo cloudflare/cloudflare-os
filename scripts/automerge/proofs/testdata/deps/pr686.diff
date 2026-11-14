@@ -1,0 +1,35 @@
+diff --git a/packages/mcp-shared/package.json b/packages/mcp-shared/package.json
+index 2349c2a86..02512556a 100644
+--- a/packages/mcp-shared/package.json
++++ b/packages/mcp-shared/package.json
+@@ -36 +36 @@
+-    "@modelcontextprotocol/client": "2.0.0"
++    "@modelcontextprotocol/client": "2.2.0"
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index 68027aa1d..5678d5a6f 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -905,2 +905,2 @@ importers:
+-        specifier: 2.0.0
+-        version: 2.0.0
++        specifier: 2.2.0
++        version: 2.2.0
+@@ -2313,2 +2313,2 @@ packages:
+-  '@modelcontextprotocol/client@2.0.0':
+-    resolution: {integrity: sha512-8f1OghQ2rjzIOfqgUCP+8GiUWqRs89njoWLNqAe8kWmDePv3s1fZXseej+QXemssEuuOvLLmLO/kqM3IQHtISw==}
++  '@modelcontextprotocol/client@2.2.0':
++    resolution: {integrity: sha512-LxCou/CSYQ6dwEnjhLZY0KnEuc8V4UJ3IEQCl/uR2yHobSQIEdJKUlKLRYRF5i5FqRGHy1eK7une3aAWDHLtig==}
+@@ -2317,2 +2317,2 @@ packages:
+-  '@modelcontextprotocol/core@2.0.0':
+-    resolution: {integrity: sha512-pJCEwGG7Lfr/+PQp9ZTwKXNeO5wzbfKL7H3MYpCorM4oFBoQrdjnBgEoqG+RjhsvS1FKrDbKux+M1HhlnGWqcA==}
++  '@modelcontextprotocol/core@2.2.0':
++    resolution: {integrity: sha512-iLhmprRmWI8EcosOA3wVvww22z02NkgqhV4fBH6f/odQBsi7xnJc0HGmi21yWO+/iKw2yzqVE127Zhna5/+JXw==}
+@@ -6867 +6867 @@ snapshots:
+-  '@modelcontextprotocol/client@2.0.0':
++  '@modelcontextprotocol/client@2.2.0':
+@@ -6869 +6869 @@ snapshots:
+-      '@modelcontextprotocol/core': 2.0.0
++      '@modelcontextprotocol/core': 2.2.0
+@@ -6877 +6877 @@ snapshots:
+-  '@modelcontextprotocol/core@2.0.0':
++  '@modelcontextprotocol/core@2.2.0':
