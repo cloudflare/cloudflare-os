@@ -651,6 +651,13 @@ export type StoredChatMessage =
       visibleThroughSequence?: number;
     };
 
+/** Human messages and slash commands count as participation; automated activity does not. */
+export function isChatParticipation(message: StoredChatMessage): boolean {
+  return message.author.type === "user" &&
+    (message.type === "slashCommand" ||
+      (message.type === "message" && message.generatedBySlashCommandSequence === undefined));
+}
+
 /** Additional per-chat-thread info needed by the AI agent but not by the client. */
 export type AiChatAgentContext = {
   /** Chat ID, corresponds to `chatMeta`. */
@@ -1729,6 +1736,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       nextChatSequences: collection<{
         chatId: number;
         nextSequence: number;
+        /**
+         * Notification participants for newly created chats. Initialized empty at creation and
+         * populated by human messages. Absent on existing chats, which stay subscribed by default.
+         */
+        notificationParticipants?: string[];
         /**
          * Number of visible messages written to the chat since unread tracking began; older history
          * isn't counted. Equal to the `visibleThroughSequence` of the chat's latest record.

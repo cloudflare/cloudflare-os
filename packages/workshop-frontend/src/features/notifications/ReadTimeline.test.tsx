@@ -400,6 +400,40 @@ describe("timeline read/unread experience", () => {
     expect(navigate).not.toHaveBeenCalledWith(true);
   });
 
+  it("keeps a muted chat's catch-up divider while notifications are toggled", async () => {
+    const state = (enabled: boolean, readThrough = -1) => {
+      const value = snapshot(1, readThrough);
+      return {...value, unreadChatCount: 0, unreadMessageCount: 0,
+        chats: value.chats.map(chat => ({...chat, notificationsEnabled: enabled}))};
+    };
+    await render(); await update(state(false)); await settle();
+    expect(container.querySelector('[role="separator"]')?.textContent).toContain("New");
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 0);
+    await updateChat(state(false, 0));
+    await updateChat(state(true, 0));
+    await updateChat(state(false, 0));
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("0");
+    visibleBottom = 350;
+    await act(async () => container.querySelector("[data-viewport]")!.dispatchEvent(new Event("scroll")));
+    await settle();
+    expect(markChatRead).toHaveBeenLastCalledWith(1, 2);
+  });
+
+  it("allows marking a muted chat unread without clearing the selected divider", async () => {
+    const state = (readThrough: number) => {
+      const value = snapshot(1, readThrough);
+      return {...value, unreadChatCount: 0, unreadMessageCount: 0,
+        chats: value.chats.map(chat => ({...chat, notificationsEnabled: false}))};
+    };
+    await render(); await update(state(2)); await settle();
+    await markUnreadFrom(1);
+    expect(markChatUnread).toHaveBeenCalledExactlyOnceWith(1, 1);
+    await updateChat(state(0));
+    expect(container.querySelector("[data-unread-divider]")?.closest<HTMLElement>("[data-read-start]")?.dataset.readStart).toBe("1");
+    expect(container.textContent).toContain("automatic reading paused");
+    expect(markChatRead).not.toHaveBeenCalled();
+  });
+
   it.each(["before read", "before arrival", "after arrival"])("resumes after a remote read clears a no-op unread selection (ACK: %s)", async ackAt => {
     await render(); await update(snapshot(1, 0)); await settle();
     const ack = Promise.withResolvers<boolean>();

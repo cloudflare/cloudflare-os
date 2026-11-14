@@ -246,7 +246,7 @@ export type ChatReadState = {
   workspaceId: string;
   /** The chat's ID within its workspace. */
   chatId: number;
-  /** How many visible messages in the chat the user hasn't read. Zero means the chat is fully read. */
+  /** Visible messages the user hasn't read, including in muted chats. Zero means fully read. */
   unreadMessageCount: number;
   /**
    * Sequence of the last timeline record the user has read, inclusive: any visible messages after
@@ -254,6 +254,17 @@ export type ChatReadState = {
    * to place a "new messages" divider.
    */
   readThroughSequence: number;
+  /**
+   * Whether this chat appears in the unread inbox and contributes badges and completion alerts
+   * for this user. Approval alerts bypass the default-off state, but honor an explicit mute.
+   * Absent on older servers.
+   */
+  notificationsEnabled?: boolean;
+  /**
+   * The user's explicit notification preference. Absent when using the participation default,
+   * or on older servers. A false override suppresses approval alerts as well as completion alerts.
+   */
+  notificationsEnabledOverride?: boolean;
 };
 
 /**
@@ -279,30 +290,31 @@ export type ChatTimelineHead = {
 };
 
 /**
- * One row of the user's unread inbox: a chat with unread messages, plus what's needed to display it.
+ * One row of the user's unread inbox: a chat with notifications enabled and unread messages,
+ * plus what's needed to display it.
  * Returned by `AuthenticatedApi.getUnreadThreads()`.
  */
 export interface UnreadThread extends ChatReadState, ChatTimelineHead {}
 
-/** Unread totals for one workspace, e.g. for a badge next to it in the workspace list. */
+/** Unread totals excluding muted chats, e.g. for a badge next to a workspace. */
 export type WorkspaceUnreadSummary = {
   /** The workspace these totals are for. */
   workspaceId: string;
-  /** Number of chats in the workspace with at least one unread message. */
+  /** Number of unmuted chats in the workspace with at least one unread message. */
   unreadChatCount: number;
-  /** Total number of unread messages across all chats in the workspace. */
+  /** Total unread messages in the workspace's unmuted chats. */
   unreadMessageCount: number;
 };
 
-/** The user's unread totals for badges: overall and per workspace, without per-chat details. */
+/** Unread badge totals excluding muted chats: overall and per workspace, without per-chat details. */
 export type UserUnreadSummary = {
-  /** Number of chats with at least one unread message, across all of the user's workspaces. */
+  /** Number of unmuted chats with unread messages across all of the user's workspaces. */
   unreadChatCount: number;
-  /** Total number of unread messages across all of the user's workspaces. */
+  /** Total unread messages in unmuted chats across all of the user's workspaces. */
   unreadMessageCount: number;
   /**
-   * Totals for each workspace that has unread messages. Fully read workspaces are left out, so a
-   * workspace that isn't listed has nothing unread.
+   * Totals for each workspace with unread messages in unmuted chats. Workspaces with only muted
+   * unread chats or no unread messages are left out.
    */
   workspaces: WorkspaceUnreadSummary[];
 };
@@ -312,14 +324,14 @@ export type UserUnreadSummary = {
  * this has the new overall totals but only the one workspace whose totals changed, not all of them.
  */
 export type UnreadSummaryUpdate = {
-  /** Number of chats with unread messages across all of the user's workspaces. */
+  /** Number of unmuted chats with unread messages across all of the user's workspaces. */
   unreadChatCount: number;
-  /** Total unread messages across all of the user's workspaces. */
+  /** Total unread messages in unmuted chats across all of the user's workspaces. */
   unreadMessageCount: number;
   /**
    * New totals for the workspace that changed; replace your copy of that workspace's totals with
-   * these. If the counts are zero, the workspace now has nothing unread and should be dropped from
-   * your `UserUnreadSummary.workspaces` list.
+   * these. Zero counts mean there are no unread messages in unmuted chats; drop the workspace
+   * from your `UserUnreadSummary.workspaces` list.
    */
   workspace: WorkspaceUnreadSummary;
 };
@@ -329,7 +341,7 @@ export type UnreadSummaryUpdate = {
  * updates for. Every scope receives the overall and per-workspace totals. The scope only controls
  * which chat rows are sent:
  * - `"summary"`: no chats, only totals (e.g. for badges).
- * - `"unread"`: every chat that has unread messages (e.g. for the unread inbox).
+ * - `"unread"`: chats with unread messages and notifications enabled (e.g. for the unread inbox).
  * - `{workspaceId}`: the chats in one workspace, read or unread (e.g. for that workspace's chat
  *   list).
  */
@@ -725,8 +737,8 @@ export interface AuthenticatedApi extends RpcTarget {
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>>;
 
   /**
-   * List the chats with unread messages across all of the user's workspaces, most recently active
-   * first: the unread inbox. Each row includes the chat's title and a preview of its latest message,
+   * List the chats with notifications enabled and unread messages across the user's workspaces,
+   * most recently active first: the unread inbox. Each row includes the chat's title and a preview of its latest message,
    * so the inbox can be shown without opening any workspace. See "Unread tracking" above
    * `ChatReadState`.
    */
@@ -3667,6 +3679,17 @@ export interface Overseer extends RpcTarget {
    */
   markChatUnread(chatId: number, fromSequence?: number): Promise<boolean>;
 
+  /**
+   * Enable or mute this chat's unread inbox entry, badges and alerts for the current user. Sending
+   * a first message or slash command enables notifications by default in new chats. Approval alerts
+   * bypass that default-off state, but honor an explicit mute. Existing chats stay subscribed by
+   * default; an explicit preference always takes precedence. Read history and unread dividers
+   * are preserved. Changing the preference clears queued alerts, so enabling
+   * only alerts about future activity. Throws if the chat or workspace is no longer available.
+   * Not available in use-only sessions.
+   */
+  setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void>;
+
   /** List past AI chats, with each one's id and title. */
   listChats(): Promise<AiChatMetadata[]>;
 
@@ -4151,6 +4174,13 @@ export type AiChatMetadata = {
    * `Overseer.stopAgent`). Absent when none.
    */
   queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
+
+  /**
+   * True when notifications default off until each user's first participation. Absent on
+   * legacy chats, which stay subscribed. This source policy is available before unread tracking
+   * starts; the user's effective preference and explicit override come from `ChatReadState`.
+   */
+  notificationsRequireParticipation?: boolean;
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;

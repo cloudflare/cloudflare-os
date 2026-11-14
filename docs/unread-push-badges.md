@@ -30,8 +30,9 @@ Explicit logout invokes optional `sessionEnded()` so the shell can remove that i
 5. APNs applies `aps.badge`, including zero, without a banner or sound. FCM delivers a data-only
    `badge_updated` message to Android's existing opt-in notification receiver.
 
-Badge delivery is independent of visible-browser alert acknowledgement and notification mute settings:
-reading on another device must clear an icon even when no alert is sent.
+Badge totals exclude chats with notifications muted for the user. Workspace-level completion-alert
+mute does not change those totals. Badge delivery is independent of visible-browser alert
+acknowledgement: reading on another device must clear an icon even when no alert is sent.
 
 ## Recovery and rollout
 

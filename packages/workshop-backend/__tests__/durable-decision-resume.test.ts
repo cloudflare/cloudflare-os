@@ -135,6 +135,7 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
         getChatContext: async () => ({profile: USER, aiModel: MODEL}), recordSharedWorkspaceOpen: async () => {}})},
     nextChatSequencePeek: impl.nextChatSequencePeek.bind(impl),
     chatHead: impl.chatHead.bind(impl),
+    hasChatParticipation: impl.hasChatParticipation.bind(impl),
     rememberDecisionInitiator: impl.rememberDecisionInitiator.bind(impl),
     resumeAgentAfterDecision: impl.resumeAgentAfterDecision.bind(impl),
     getChatTimestamp: impl.getChatTimestamp.bind(impl),
@@ -152,6 +153,7 @@ function modelLookup(impl: Impl, lookup: () => Promise<{profile: typeof USER, ai
   impl.users = new Proxy(impl.users, {
     get(target, key) {
       if (key === "idFromString") return (id: string) => target.idFromString(id);
+      if (key === "idFromName") return (name: string) => target.idFromName(name);
       if (key === "get") return (id: DurableObjectId) => new Proxy(target.get(id), {
         get(user, method) {
           if (method === "getChatContext") return lookup;

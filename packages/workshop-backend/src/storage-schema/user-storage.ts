@@ -135,6 +135,10 @@ export type GadgetRecord = WorkspaceMetadata & {
 export type ChatReadCursor = {
   workspaceId: string;
   chatId: number;
+  /** Explicit user preference; absent means use the workspace-provided default. */
+  notificationsEnabled?: boolean;
+  /** Participation default for new chats; absent on existing chats, which stay subscribed by default. */
+  hasParticipated?: boolean;
   /** Sequence of the last record the user has read, inclusive; -1 if they haven't read anything. */
   readThroughSequence: number;
   /**
@@ -164,7 +168,8 @@ export type ChatReadCursor = {
   notifiedEventIds?: string[];
   /**
    * The chat's title and latest-message preview, copied from the workspace so the inbox can show it
-   * without asking the workspace. Always present, except on rows for deleted chats.
+   * without asking the workspace. Absent on deleted chats and preference-only rows whose read
+   * tracking has not started.
    */
   head?: ChatTimelineHead;
   /**

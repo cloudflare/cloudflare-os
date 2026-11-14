@@ -4,6 +4,30 @@ The workspace owns the timeline and message ordering. Each User DO owns its user
 horizons, unread counts and outbound alert queue. No read receipts are exposed to other users. See [the UI consumers](user-unread-ui.md)
 for inbox, viewport and native bridge behavior.
 
+For newly created chats, notifications default to off until each user sends their first message
+or slash command, whether the chat was created normally or by an agent. Existing chats stay
+subscribed by default; there is no history scan or backfill migration. Each user can change this
+with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO stores the explicit
+override on its private read cursor; participation never overrides that choice. Source fanout
+carries participation from the workspace's persisted per-chat participant IDs, including when a
+batch coalesces a user's message with a later agent response. Only new chats initialize the
+participant list; ordinary writes maintain it alongside the visible counter. An absent list keeps
+the existing-chat default enabled, including after later messages.
+
+Approval requests bypass the default-off state so an unattended agent can ask for help, without
+subscribing the user or adding the chat to the unread inbox or badge totals. An explicit chat mute
+suppresses approval alerts too. Before participation, the thread menu offers **Enable notifications**
+and **Mute notifications**, so silencing approvals takes one action. An explicitly muted chat offers
+**Unmute notifications**. The private read state reports the explicit override separately from the
+effective preference. Approval alerts use the ordinary durable outbox and local retries;
+read commands, later automated messages and collaborator reopens do not discard them.
+
+Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,
+without advancing its read horizon or clearing its unread count. Muted chats keep their catch-up
+divider, ordinary reading receipts and explicit read/unread actions. Unmuting restores the inbox
+entry and badges for still-unread activity. Changing the preference consumes known alert positions,
+so enabling only alerts about future activity while preserving unread history.
+
 ```mermaid
 flowchart LR
   Message[New timeline record] --> Workspace[Workspace DO]
@@ -32,11 +56,14 @@ the latest preview/time by key without scanning past internal activity. The coun
 the typed-storage write transaction. Raw sequence allocation preserves the visible counter.
 Fanout carries an absolute visible head, so duplicate/older deliveries never increment counts.
 
-There is **no historical backfill**, workspace enumeration or rollout-time recipient RPC. Old
+There is **no unread-history backfill**, workspace enumeration or rollout-time recipient RPC. Old
 records remain unnumbered and are treated as already read. If the first delivered visible message
 is 4, the User DO initializes its read-visible horizon to 3. For a coalesced first batch 4..6,
 the source's durable dirty row retains 4 and the resulting unread count is 3. Metadata-only updates
-do not initialize missing cursors. An explicit “mark unread” in unnumbered history counts only
+do not initialize missing cursors. Chat metadata separately reports whether the source requires
+participation for notifications, so an empty chat can offer **Enable notifications** before its
+first result without creating a read horizon. Legacy chats omit that flag and retain their
+subscribed default. An explicit “mark unread” in unnumbered history counts only
 newly numbered messages, not that history.
 
 ## User storage and local reads
@@ -48,6 +75,8 @@ Each `chatReadCursors` row contains:
 - `readThroughVisibleSequence`: corresponding dense visible horizon, initialized immediately before the first delivered visible position
 - `latestVisibleSequence`: latest accepted visible head, monotonic
 - `unreadCount`: `latestVisibleSequence - readThroughVisibleSequence`
+- `notificationsEnabled`: optional explicit per-user override
+- `hasParticipated`: participation default for new chats; absent on existing chats, which stay subscribed
 - `notifiedThroughSequence`: completed-alert deduplication receipt, in raw coordinates
 - `notifiedEventIds`: completed alert UUIDs at that position; absent when admission skips the whole position
 - `head`: copied thread title, latest visible raw position, bounded one-line preview and activity time
@@ -64,24 +93,27 @@ Counts and queue headers hydrate from local storage once per User DO lifetime. S
 and subscriptions use that memory, never list threads on other DOs, and never write read rows.
 The existing source fanout carries inbox metadata with the count; title changes already dirty the
 same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
-change read horizons. The existing admission callback can repair metadata skipped during denied
-admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
+change read horizons, including on preference-only rows whose read tracking has not started.
+Preference changes accept only the source default and alert receipt, leaving the read positions,
+count and paired inbox head to ordinary fanout. The existing admission callback can repair metadata
+skipped during denied admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
 Every live tracked cursor stores a head and both visible positions, supplied by message fanout,
-first admission or an open-session read command. Tombstones may omit a head. Bulk actions rely
-on this invariant; there is no metadata lookup fallback.
+first admission or an open-session read command. Tombstones and preference-only rows may omit a
+head. Bulk actions rely on this invariant; there is no metadata lookup fallback.
 
 Three targeted local queries avoid transferring the full thread state for every consumer:
 
-- `getUnreadThreads()` returns only unread rows, including display metadata, newest first.
+- `getUnreadThreads()` returns unread rows with notifications enabled, including display metadata, newest first.
 - `getWorkspaceUnreadState(workspaceId)` returns tracked thread horizons/counts for that workspace,
   including read rows, to merge into the Workspace DO's ordinary thread list. Missing rows are read.
-- `getUnreadSummary()` returns instance totals and nonzero per-workspace rollups, without thread rows.
+- `getUnreadSummary()` returns badge totals and nonzero per-workspace rollups, excluding muted chats
+  and without thread rows. Per-chat queries still return actual unread counts for muted chats.
 
 All three use hydrated local rows, write nothing, and query no other DO.
 `subscribeToUnreadState(scope, subscriber)` requires an explicit scope: `"summary"` sends no
-thread rows, `"unread"` sends only unread rows, and `{workspaceId}` sends read/unread statuses only
+thread rows, `"unread"` sends only unread rows with notifications enabled, and `{workspaceId}` sends read/unread statuses only
 for that workspace. Every scope includes global and per-workspace badge rollups. In-scope changes
-send one thread delta (null removes a now-read inbox row); out-of-scope changes send only rollups.
+send one thread delta (null removes a read or muted inbox row); out-of-scope changes send only rollups.
 Each delta carries just the changed workspace's rollup and global totals, not every workspace.
 Bulk replacements and reconnects retain the same scope, never the full historical thread list.
 The web app uses one subscription, switching its scope with the active view. The inbox refreshes
@@ -209,15 +241,17 @@ storage is retained until every callback ACKs, then physically wiped. A reset af
 still resumes that wipe. No recipient fetches the source during removal.
 
 Successful first admission seeds the captured existing tails as read. Ordinary reopen does not
-initialize missing cursors or consume pending new-thread arrivals. Initial join remains the
-existing best-effort flow: events racing the registration callback need not be covered. Once
+initialize missing or preference-only cursors or consume pending new-thread arrivals. Initial join
+remains the existing best-effort flow: events racing the registration callback need not be covered. Once
 registration completes, new events follow the durable handoff above. There is no extra enrollment
 catch-up RPC or background admission lifecycle.
 
 ## Consumers and verification
 
 Notification policy remains task completion and permission requests, not an alert for every
-visible message. Browser acknowledgement, mute and native fallback are unchanged; see
+visible message. Workspace mutes still suppress completion alerts only; explicit chat mutes suppress
+all alerts and badges. Before first participation, permission requests still alert without enabling
+completion alerts, inbox entries or badges. Browser acknowledgement and native fallback are unchanged; see
 [notifications](notifications.md). Native/push badge consumers are added by the
 [stacked consumer PR](https://github.com/cloudflare/cloudflare-os/pull/842).
 
