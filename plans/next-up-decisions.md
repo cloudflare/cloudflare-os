@@ -245,4 +245,36 @@ cut: the classic Workshop doesn't offer it either, and nothing in the new app sh
 
 ## 10. Not in the design yet
 
-See the end of this file, which lists what the product has and the new app leaves out.
+What the classic Workshop has that the new app leaves out, and what to do about each. None of it
+is needed for the chat-first flows built above, and nothing here was dropped by accident.
+
+- **Signing in and signing up.** The app uses the session the classic Workshop left, or the dev
+  account. It needs its own sign-in page before the router serves it. *Later, required.*
+- **AI providers and models of one's own** (`addModel`, keys, the gateway's providers). The profile
+  picks among the models there are. Adding one belongs on the profile as a Models group. *Later.*
+- **Code**: a gadget's files, its commits and diffs, and going back to a commit. The agent changes
+  code and a chat's cards show what it did. A read-only Code tab on a gadget's page fits the design
+  when it is wanted. *Later.*
+- **Keeping a gadget up to date with its blueprint** (`applyBlueprint`, the update offer), and
+  managing a published blueprint (update it, retry a failed publish, delete it). Publishing is
+  built. These belong on a gadget's Settings tab. *Later.*
+- **Activity and agent runs**: the workspace's action history and the runs of agents a gadget
+  starts. A chat's cards and the Automations tabs cover what most people look for. *Later, as a
+  workspace tab.*
+- **Standing approval rules** (always allow this action), set from a card and managed in a list.
+  Cards offer it already; there is no list of the rules yet. *Later, on the Connections page.*
+- **Gatekeeper management apps** other than Skills and Scheduled Tasks (`/gatekeepers/<app>`), and
+  observer configuration. *Classic Workshop for now.*
+- **A gadget's console log.** A developer tool. *Cut from the new app.*
+- **Choosing which Cloudflare account pays, and topping up.** The profile shows the allowance and
+  the balance. *Classic Workshop for now.*
+- **Pinning blueprints to Home** (`setBlueprintPinned`). Home shows featured blueprints, and saving
+  keeps one in the Library. *Cut.*
+- **Dismissing a workspace shared with you** from the list (`dismissSharedWorkspace`). *Later, in a
+  workspace row's menu.*
+- **The unread page** (`/unread`). The sidebar's unread marks cover it. *Cut.*
+- **Onboarding.** Home's greeting and its featured blueprints are the start. *Cut.*
+- **Admin settings, deployment updates and the admin audit.** *Classic Workshop.*
+- **Browser push and the native app's device handoff.** *Later.*
+- **The blueprint card on "You don't have access".** The kernel does not say which blueprint a
+  gadget the viewer cannot open came from. *Needs the kernel, so it waits.*
