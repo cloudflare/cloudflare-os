@@ -81,7 +81,7 @@ it("shows generated images whole at answer size and downloads their original byt
   const canvas = document.createElement("canvas");
   canvas.width = 1024;
   canvas.height = 512;
-  const bytes = Uint8Array.fromBase64(canvas.toDataURL("image/png").split(",")[1]);
+  const bytes = Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]), c => c.charCodeAt(0));
   const loadContent = await mount([
     ref("landscape.png", "image/png", bytes), ref("second.png", "image/png", bytes),
   ], {}, true);
