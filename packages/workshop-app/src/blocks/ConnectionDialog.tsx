@@ -151,7 +151,8 @@ export const ConnectionDialog = (props: ConnectionDialogProps) => {
       <Dialog
         open={open}
         onOpenChange={onOpenChange}
-        size="md"
+        size="xl"
+        focusSelf
         title={(
           <span className="flex items-center gap-3">
             <ServiceLogo name={service.name} src={service.logoUrl} color={service.color} size="lg" />
@@ -180,7 +181,7 @@ export const ConnectionDialog = (props: ConnectionDialogProps) => {
                     <ServiceLogo name={resource.title} src={resource.iconUrl ?? service.logoUrl} />
                     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                       <span className="font-medium text-kumo-default">{resource.title}</span>
-                      <span className="text-sm/5 text-kumo-subtle">{resource.description}</span>
+                      <span title={resource.description} className="line-clamp-2 text-sm/5 text-kumo-subtle">{resource.description}</span>
                     </div>
                     {resource.grantable && (
                       <Switch

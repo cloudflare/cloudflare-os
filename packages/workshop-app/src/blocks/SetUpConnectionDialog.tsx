@@ -89,7 +89,7 @@ export const SetUpConnectionDialog = ({
     <Dialog
       open={open}
       onOpenChange={(next) => { if (pending !== 'accept') onOpenChange(next) }}
-      size="lg"
+      size="xl"
       title={(
         <span className="flex items-center gap-3">
           <ServiceLogo name={service.name} src={service.logoUrl} color={service.color} size="lg" />
