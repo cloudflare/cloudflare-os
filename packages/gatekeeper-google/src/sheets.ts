@@ -18,6 +18,7 @@ import { obsContext } from "./observability";
 import { explainUnopenedFile } from "./office-conversion";
 import { checkQueuedSize, QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
 import { batchKind, retainedMarkers, SHEETS_ACTIONS, type MarkerEntry } from "./sheets-actions";
 import {
   BlankSpreadsheet, GoogleSheetsApi, parseFormatRange, validateRanges,
@@ -47,6 +48,8 @@ import SHEETS_READ_TYPES_CODE from "./sheets-read-types.txt";
 import SHEETS_TYPES_CODE from "./sheets-types.txt";
 
 // A format read's result, in UTF-16 units of its JSON: Google's own answer is capped at 5 MiB.
+const logger = obsContext.createLogger({ component: "gatekeeper.google.sheets", vendorId: "google" });
+
 const MAX_FORMATS_READ_LENGTH = 5 * 1024 * 1024;
 // The markers batches left, each deleted by a later batch once no send of it can still commit.
 // Outside the journal's `sheets:action:` prefix and its counter.
@@ -186,6 +189,22 @@ export class GoogleSheetsGatekeeperImpl
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return this.#actions.autoApprovableKinds();
+  }
+
+  /**
+   * The spreadsheet as its queued changes leave it, for the person deciding them; see
+   * `previewSpreadsheet`. Read as a session reads, while no change is being applied or rejected,
+   * but not recorded as an observation: it is shown to the approver, never to the agent.
+   */
+  async previewResource(subject?: string): Promise<ResourcePreview | null> {
+    let props = this.ctx.props;
+    // A spreadsheet not yet created has no change queued, and nothing to draw.
+    if (isSimulated(props)) return null;
+    let { spreadsheetId } = props;
+    if (subject !== undefined && subject !== spreadsheetId) return null;
+    return this.#changes.snapshot(async pending => previewSpreadsheet(
+      await this.#api.getMetadata(spreadsheetId), pending, googleFileUrl("spreadsheet", spreadsheetId),
+      areas => this.#api.readPreviewCells(spreadsheetId, areas)));
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GoogleSpreadsheetSession> {

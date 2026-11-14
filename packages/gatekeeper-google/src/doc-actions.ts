@@ -91,7 +91,8 @@ export type GoogleDocAddTabAction = GoogleDocActionBase & DocTabPlacement & {
   display?: GoogleDocAddTabDisplay;
 }
 
-type GoogleDocEditAction = GoogleDocReplaceAction | GoogleDocAppendAction;
+/** A change to the text of one tab, as against the add of one. */
+export type GoogleDocEditAction = GoogleDocReplaceAction | GoogleDocAppendAction;
 export type GoogleDocAction = GoogleDocEditAction | GoogleDocAddTabAction;
 
 export const DOC_WRITE_RECEIPT_KEY = "docWriteReceipt";
@@ -499,7 +500,8 @@ function assertGoogleDocActionReplayable(action: GoogleDocAction): void {
   }
 }
 
-function applyGoogleDocActionToContent(
+/** What text edit `action` leaves of a tab's `content`, as a replay applies it. */
+export function applyGoogleDocActionToContent(
   content: GoogleDocSimulatedContent,
   action: GoogleDocEditAction,
   tabId: string,
@@ -556,7 +558,7 @@ function googleDocActionTabs<T extends { tabId: string }>(tabs: T[], action: Goo
 }
 
 /** Whether `snapshot` already holds `action`'s write, which landed though its reply was lost. */
-function googleDocActionCommitted(snapshot: GoogleDocSnapshot, action: GoogleDocAction): boolean {
+export function googleDocActionCommitted(snapshot: GoogleDocSnapshot, action: GoogleDocAction): boolean {
   let { writeId } = action;
   return writeId !== undefined && googleDocActionTabs(snapshot.tabs, action)
     .some(tab => tab.committedWriteIds.includes(writeId));

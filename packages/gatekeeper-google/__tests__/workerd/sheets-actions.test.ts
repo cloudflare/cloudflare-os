@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { ActionJournal, APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ActionDescription, ActionField, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import type { ActionDescription, ActionField, ActionKind, SpreadsheetPreview } from "@gadgets/workshop-shared/gatekeeper";
 import { EDIT_OUT_OF_ORDER, SHEETS_STATE_PREFIX } from "../../src/drive-editors";
 import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
 import { DriveFiles, DOC_MIME, FOLDER_MIME, SHEET_MIME } from "../drive-files";
@@ -196,7 +196,9 @@ class SheetsProvider {
         ? this.#gridData(url, await request.json())
         : this.#formatsByDataFilter(url, await request.json());
     }
-    if (path === "" && url.searchParams.has("ranges")) return this.#formatRead(url);
+    if (path === "" && url.searchParams.has("ranges")) {
+      return url.searchParams.get("fields")?.includes("formattedValue") ? this.#previewRead(url) : this.#formatRead(url);
+    }
     if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
     if (path === "/values:batchGet") return this.#batchGet(url);
     let metadataId = path.match(/^\/developerMetadata\/(\d+)$/)?.[1];
@@ -2444,6 +2446,60 @@ describe.each(RUNS)("Google Sheets formatting ($name)", run => {
 
 // What a bound spreadsheet stores, by its literal keys, so that moving its code cannot move its
 // storage.
+describe("Google Sheets previews for the approver", () => {
+  const SUBJECT = {
+    id: "sheet-1", title: "Budget", url: "https://docs.google.com/spreadsheets/d/sheet-1/edit",
+    mediaType: "application/vnd.google-apps.spreadsheet",
+  };
+  const preview = (sheets: ReturnType<typeof gatekeeper>, subject?: string) =>
+    hooks().previewSheets(sheets.facet, subject);
+
+  it("draws the top left of the first sheet when nothing is queued, in one read", async () => {
+    let provider = budget();
+    provider.setFormat("Sales!A1", { textFormat: { bold: true } });
+    let sheets = gatekeeper();
+    let drawn = await preview(sheets);
+    expect(drawn).toMatchObject({ title: "Budget", url: SUBJECT.url, actions: [] });
+    let content = drawn!.content as SpreadsheetPreview;
+    expect(content.sheets).toEqual([{ id: 0, title: "Sales" }, { id: 7, title: "Q3 Plan" }]);
+    let [area] = content.areas;
+    expect(area).toMatchObject({ sheetId: 0, row: 0, column: 0 });
+    expect([area.cells.length, area.cells[0].length]).toEqual([20, 6]);
+    expect(area.cells[0][0]).toEqual({ text: "Region", format: { bold: true } });
+    expect(area.cells[1][2]).toEqual({ text: "0", formula: "=B2*2" });
+    expect(area.columnWidths).toEqual([100, 150, 100, 100, 100, 100]);
+    // The metadata, then the cells: nothing is observed or queued.
+    expect(provider.requests.map(url => url.searchParams.has("ranges"))).toEqual([false, true]);
+  });
+
+  it("draws a queued change where it lands, naming the spreadsheet in its description", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let { actionId, action } = await sheets.queued([
+      { op: "writeCells", range: "Sales!B2:C2", values: [[6, "=B2*3"]] },
+    ]);
+    expect(action!.subject).toEqual({ ...SUBJECT, role: "edited" });
+
+    let drawn = await preview(sheets, "sheet-1");
+    expect(drawn!.actions).toEqual([actionId]);
+    let [area] = (drawn!.content as SpreadsheetPreview).areas;
+    let at = (row: number, column: number) => area.cells[row - area.row][column - area.column];
+    // Sheets right-aligns a number.
+    expect(at(1, 1)).toEqual({ text: "6", change: 0, previous: "4", format: { horizontalAlignment: "right" } });
+    expect(at(1, 2)).toEqual({ formula: "=B2*3", change: 0, previous: "0" });
+    expect(at(1, 0)).toEqual({ text: "EMEA" });
+    expect(provider.batches).toEqual([]);
+
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect((await preview(sheets))!.actions).toEqual([]);
+  });
+
+  it("draws nothing for an item it does not hold", async () => {
+    budget();
+    expect(await preview(gatekeeper(), "another-file")).toBeNull();
+  });
+});
+
 describe("Google Sheets stored layout", () => {
   /** The value under `key`, as the synchronous KV reads it. */
   async function stored(facet: string, key: string): Promise<unknown> {
@@ -2466,6 +2522,8 @@ describe("Google Sheets stored layout", () => {
           changes: [expect.objectContaining({ op: "writeCells", sheetId: 0 })],
           sheets: { 0: "Sales" }, guard: expect.any(Object),
           marker: { id: expect.any(Number), token: expect.any(String) },
+          // The spreadsheet's title, which its card names the file by.
+          title: "Budget",
         },
       },
     });

@@ -53,7 +53,9 @@ describe("Slides definitions reused through Drive", () => {
   });
 
   it("show the editor's card with the file's ID and name first", async () => {
-    let own = await SLIDES_DEFINITIONS.skipSlides.describe(SKIP, undefined as never);
+    // The presentation as the Drive binding's host names it, which a card names its file by.
+    let own = await SLIDES_DEFINITIONS.skipSlides.describe(
+      SKIP, { api: {} as SlidesHost["api"], presentationId: TARGET.fileId });
     let card = await DRIVE_SLIDES_DEFINITIONS.skipSlides.describe(
       { target: TARGET, change: SKIP }, NO_SLIDES);
 

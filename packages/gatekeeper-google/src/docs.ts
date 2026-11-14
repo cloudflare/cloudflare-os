@@ -7,6 +7,7 @@ import { DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { validateRpc } from "capnweb-validate";
 import {
   GatekeeperUserVerifier, Gatekeeper, ResourceDescription, ApprovalQueue, ActionKind, GitCache,
+  type ResourcePreview, type ResourceSubject, type ResourceSubjectRole,
 } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import {
@@ -40,6 +41,8 @@ import { AccessTokenCache, AccessTokenRequest } from "./auth-retry";
 import { Mutex } from "./mutex";
 import { ReadGate } from "./read-gate";
 import { nativeFileUrl } from "./resources";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
+import { googleDocPreview } from "./docs-preview";
 import { officeFileError, officeLabel } from "./office-conversion";
 import { DOCS_TYPES_MODULE_PREFIX, stripTypeModulePrefix } from "./type-bundle";
 import { PENDING_NEXT_ACTION_ID_KEY, PendingActionStore } from "./pending-actions";
@@ -256,9 +259,42 @@ export class GoogleDocGatekeeperImpl
     return [EDIT_DOCUMENT_ACTION, ADD_DOCUMENT_TAB_ACTION, ...this.#comments.autoApprovableKinds()];
   }
 
+  /**
+   * What this binding reads its document through, and the document: a blank stand-in, which
+   * always has a revision and so never reaches Drive for one, until it is created.
+   */
+  #docReader(): { docsApi: GoogleDocReader; documentId: string } {
+    let props = this.ctx.props;
+    return isSimulated(props)
+      ? { docsApi: new BlankGoogleDoc(props.creation.title), documentId: UNCREATED_FILE_ID }
+      : { docsApi: new GoogleDocsApi(opts => this.#getAccessToken(opts)), documentId: props.documentId };
+  }
+
+  /**
+   * The document with every pending edit drawn applied (see googleDocPreview), read through the
+   * snapshot and replay its sessions use, so it may invalidate an edit that no longer applies, as
+   * any read does. Not authorized as an observation: only the approver sees it. `subject` names
+   * the document by its Drive ID; one not yet created has none to name.
+   */
+  async previewResource(subject?: string): Promise<ResourcePreview | null> {
+    let { docsApi, documentId } = this.#docReader();
+    let created = documentId !== UNCREATED_FILE_ID;
+    if (subject !== undefined && (!created || subject !== documentId)) return null;
+    let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
+    let cache = this.#simulationCache;
+    let source = storedDocSource(
+      docsApi, new DriveApi(opts => this.#getAccessToken(opts)), documentId, this.ctx.storage, cache);
+    let snapshot = await source.snapshot();
+    let simulation = replayDocChanges({
+      pending: () => pendingActions.list(), invalidate: storeInvalidator(pendingActions), cache,
+      simulates: true,
+    }, snapshot);
+    return googleDocPreview(snapshot, simulation, pendingActions.list(),
+      created ? googleFileUrl("document", documentId) : undefined);
+  }
+
   async startSession(approvalQueue: RpcStub<ApprovalQueue>)
       : Promise<GoogleDocSession> {
-    let props = this.ctx.props;
     let pendingActions = new PendingActionStore<GoogleDocAction>(this.ctx.storage.kv);
     // Only an undecided or claimed comment write can be applied again, so no other marker is read.
     this.#commentAttempts.sweep(new Set(this.#commentJournal.listPending().map(({ id }) => id)));
@@ -266,12 +302,8 @@ export class GoogleDocGatekeeperImpl
       submit: (queue, kind, payload) => this.#comments.submit(queue, kind, payload),
       undecided: read => this.#reads.read(() => read(this.#commentJournal.listUndecided())),
     };
-    // A blank document always has a revision, so the session never reaches Drive for one.
-    let docsApi = isSimulated(props)
-      ? new BlankGoogleDoc(props.creation.title)
-      : new GoogleDocsApi(opts => this.#getAccessToken(opts));
+    let { docsApi, documentId } = this.#docReader();
     let driveApi = new DriveApi(opts => this.#getAccessToken(opts));
-    let documentId = isSimulated(props) ? UNCREATED_FILE_ID : props.documentId;
     let queue = approvalQueue.dup();
     let cache = this.#simulationCache;
     let { kv } = this.ctx.storage;
@@ -290,8 +322,10 @@ export class GoogleDocGatekeeperImpl
         invalidate: storeInvalidator(pendingActions),
         cache,
         queue: async prepare => {
-          let { action, result } = await prepare();
-          await submitGoogleDocEdit(queue, pendingActions, cache, action);
+          let { action, result, title } = await prepare();
+          let subject = documentId === UNCREATED_FILE_ID || title === undefined
+            ? undefined : googleFileSubject("document", documentId, title, "edited");
+          await submitGoogleDocEdit(queue, pendingActions, cache, action, subject);
           return result;
         },
         afterTurns: async () => {},
@@ -519,6 +553,7 @@ async function submitGoogleDocEdit(
   pendingActions: PendingActionStore<GoogleDocAction>,
   cache: GoogleDocSimulationCacheHolder,
   action: GoogleDocAction,
+  subject: ResourceSubject | undefined,
 ): Promise<void> {
   let definition = docDefinition(action);
   let presentation = describeDocEdit(action);
@@ -528,6 +563,7 @@ async function submitGoogleDocEdit(
   try {
     await approvalQueue.submitAction(actionId, {
       ...presentation,
+      ...subject ? { subject } : {},
       actionKind: definition.kind,
       autoApprovable: definition.autoApprovable,
     });
@@ -552,9 +588,10 @@ export type DocChangeQueue = {
   /**
    * Runs `prepare` as a write's turn: after the writes called before it, and before those called
    * after it, whether or not the caller awaits each. Then queues the edit it returns for approval
-   * before the next turn starts.
+   * before the next turn starts. `title` is the document's as the edit was checked against it,
+   * which a directly bound Doc's card names the file by.
    */
-  queue<T>(prepare: () => Promise<{ action: GoogleDocAction; result: T }>): Promise<T>;
+  queue<T>(prepare: () => Promise<{ action: GoogleDocAction; result: T; title?: string }>): Promise<T>;
   /**
    * Resolves once the writes called before this have had their turn, so that a read sent behind
    * them shows them. Never awaited from inside a turn, which would wait for itself.
@@ -756,28 +793,13 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
 
   /** `snapshot` with every pending edit replayed over it, or as it is for a read-only session. */
   #replay(snapshot: GoogleDocSnapshot): GoogleDocSimulation {
-    if (!this.#changes.simulates) return { tabs: snapshot.tabs, contentByTabId: new Map() };
-    let { cache } = this.#changes;
-    let pending = this.#changes.pending();
-    let cached = cache.current;
-    // An unknown revision cannot be shown to match, so the replay is recomputed.
-    if (cached && cached.baseRevisionId !== undefined &&
-        cached.baseRevisionId === snapshot.revisionId &&
-        cached.pendingFingerprint === googleDocPendingFingerprint(pending)) {
-      return cached.simulation;
-    }
+    return replayDocChanges(this.#changes, snapshot);
+  }
 
-    let simulation = invalidateUnreplayableGoogleDocActions(
-        (record, reason) => this.#changes.invalidate(record, reason),
-        snapshot,
-        pending,
-        "Pending Google Doc edit could not be replayed against the current document");
-    cache.current = {
-      baseRevisionId: snapshot.revisionId,
-      pendingFingerprint: googleDocPendingFingerprint(this.#changes.pending()),
-      simulation,
-    };
-    return simulation;
+  /** `{subject}` naming this document for a log entry, or nothing while it is not yet created. */
+  #subject(title: string | undefined, role: ResourceSubjectRole): { subject?: ResourceSubject } {
+    return this.#documentId === UNCREATED_FILE_ID || title === undefined
+      ? {} : { subject: googleFileSubject("document", this.#documentId, title, role) };
   }
 
   /**
@@ -834,6 +856,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
       let prepared = await this.#readDocument(fetch, ({ selected }) => ({
         title: "Read Google Doc content",
         description: `Read tab ${googleDocTabLabel(selected.tab)} to change it.`,
+        ...this.#subject(selected.snapshot.title, "read"),
       }));
       if (checkedOver !== googleDocPendingFingerprint(this.#changes.pending())) {
         throw new Error(`${operation}: an edit queued on this Doc was approved or rejected while ` +
@@ -863,14 +886,18 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
         .reduce((latest, action) => Math.max(latest, action.submittedAt), modifiedAt);
       // UNCREATED_FILE_ID, empty, until the document is created.
       return { id: this.#documentId, title, lastModified: new Date(lastModified) };
-    }, () => this.#source.metadataObservation);
+    }, ({ title }) => ({ ...this.#source.metadataObservation, ...this.#subject(title, "read") }));
   }
 
   async listTabs(): Promise<GoogleDocTab[]> {
     await this.#changes.afterTurns();
+    let title: string | undefined;
     return this.#readDocument(
-      snapshot => this.#settled(snapshot, taken => this.#replay(taken).tabs.map(googleDocTabMetadata)),
-      () => DOC_TABS_OBSERVATION);
+      snapshot => this.#settled(snapshot, taken => {
+        title = taken.title;
+        return this.#replay(taken).tabs.map(googleDocTabMetadata);
+      }),
+      () => ({ ...DOC_TABS_OBSERVATION, ...this.#subject(title, "read") }));
   }
 
   async addTab(title: string, options: { parentTabId?: string; index?: number } = {})
@@ -911,7 +938,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
           (index === undefined ? ", after the tabs already there." :
             `, at position ${index + 1} of ${siblings}.`),
       };
-      return { action, result: provisionalTabId };
+      return { action, result: provisionalTabId, title: snapshot.title };
     });
   }
 
@@ -928,6 +955,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
       description: this.#changes.simulates
         ? `Read the full simulated content of tab ${googleDocTabLabel(result.tab)} as Markdown.`
         : `Read the current content of tab ${googleDocTabLabel(result.tab)} as Markdown.`,
+      ...this.#subject(result.snapshot.title, "read"),
     }));
     return selected.markdown;
   }
@@ -970,7 +998,7 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
           ...(renderedNewMarkdown === newMarkdown ? {} : { rendered: renderedNewMarkdown }),
         },
       };
-      return { action, result: undefined };
+      return { action, result: undefined, title: snapshot.title };
     });
   }
 
@@ -993,9 +1021,42 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
         markdown,
         display: { tab: googleDocTabLabel(tab) },
       };
-      return { action, result: undefined };
+      return { action, result: undefined, title: snapshot.title };
     });
   }
+}
+
+/**
+ * `snapshot` with every edit `changes` holds replayed over it, invalidating any that no longer
+ * applies, or as it is where `changes` does not simulate. The replay is kept in `changes.cache`,
+ * and reused while the revision and the queue stay the same.
+ */
+export function replayDocChanges(
+  changes: Pick<DocChangeQueue, "pending" | "invalidate" | "cache" | "simulates">,
+  snapshot: GoogleDocSnapshot,
+): GoogleDocSimulation {
+  if (!changes.simulates) return { tabs: snapshot.tabs, contentByTabId: new Map() };
+  let { cache } = changes;
+  let pending = changes.pending();
+  let cached = cache.current;
+  // An unknown revision cannot be shown to match, so the replay is recomputed.
+  if (cached && cached.baseRevisionId !== undefined &&
+      cached.baseRevisionId === snapshot.revisionId &&
+      cached.pendingFingerprint === googleDocPendingFingerprint(pending)) {
+    return cached.simulation;
+  }
+
+  let simulation = invalidateUnreplayableGoogleDocActions(
+      (record, reason) => changes.invalidate(record, reason),
+      snapshot,
+      pending,
+      "Pending Google Doc edit could not be replayed against the current document");
+  cache.current = {
+    baseRevisionId: snapshot.revisionId,
+    pendingFingerprint: googleDocPendingFingerprint(changes.pending()),
+    simulation,
+  };
+  return simulation;
 }
 
 /**

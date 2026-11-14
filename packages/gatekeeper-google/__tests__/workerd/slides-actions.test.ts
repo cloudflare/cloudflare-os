@@ -1361,6 +1361,139 @@ describe.each(RUNS)("Google Slides backgrounds and theme ($name)", run => {
 
 // What a bound presentation stores, by its literal keys, so that moving its code cannot move its
 // storage.
+/** A length in points, as Google reports it. */
+function emuPt(points: number) {
+  return { magnitude: points * 12_700, unit: "EMU" as const };
+}
+
+/**
+ * `deck()` styled as Google reads a themed deck through the preview's masks: a master whose title
+ * placeholder sets the text style a slide's title inherits, and whose background is a picture
+ * served from Google's image host; and on slide 2 a callout, a cropped picture and a bordered
+ * table, each property as Google reports it, defaults and all.
+ */
+function styledDeck(): RestPresentation {
+  let styled = deck();
+  let notRendered = { propertyState: "NOT_RENDERED" as const };
+  styled.masters![0].pageProperties!.pageBackgroundFill = {
+    stretchedPictureFill: { contentUrl: PICTURE_COPY, size: { width: emuPt(720), height: emuPt(405) } },
+  };
+  styled.masters![0].pageElements = [{
+    objectId: "m-title", ...BOX,
+    shape: {
+      shapeType: "TEXT_BOX", placeholder: { type: "TITLE" },
+      shapeProperties: { contentAlignment: "BOTTOM", outline: notRendered, shadow: { ...notRendered, type: "OUTER" } },
+      text: { textElements: [
+        { endIndex: 1, paragraphMarker: { style: { alignment: "START", lineSpacing: 100, direction: "LEFT_TO_RIGHT" } } },
+        { endIndex: 1, textRun: { content: "\n", style: {
+          fontFamily: "Montserrat", weightedFontFamily: { fontFamily: "Montserrat", weight: 700 },
+          fontSize: { magnitude: 32, unit: "PT" }, foregroundColor: { opaqueColor: { themeColor: "DARK2" } },
+        } } },
+      ] },
+    },
+  }];
+  styled.layouts![1].pageElements = [{
+    objectId: "l-title", ...BOX, shape: { shapeType: "TEXT_BOX", placeholder: { type: "TITLE", parentObjectId: "m-title" } },
+  }];
+  let s2 = styled.slides![1];
+  s2.pageElements![0].shape!.placeholder!.parentObjectId = "l-title";
+  s2.pageElements!.push(
+    {
+      objectId: "callout", ...BOX,
+      shape: {
+        shapeType: "WEDGE_ROUND_RECTANGLE_CALLOUT",
+        shapeProperties: {
+          shapeBackgroundFill: { propertyState: "RENDERED", solidFill: { color: { themeColor: "ACCENT4" }, alpha: 1 } },
+          outline: {
+            propertyState: "RENDERED", outlineFill: { solidFill: { color: { rgbColor: {} }, alpha: 1 } },
+            weight: { magnitude: 9525, unit: "EMU" }, dashStyle: "DOT",
+          },
+          shadow: { ...notRendered, type: "OUTER", alpha: 1, color: { rgbColor: {} }, rotateWithShape: false },
+          contentAlignment: "MIDDLE",
+          autofit: { autofitType: "NONE", fontScale: 1 },
+        },
+        text: text(["Ships Friday"]),
+      },
+    },
+    {
+      objectId: "photo", ...BOX,
+      image: {
+        contentUrl: "https://docs.google.com/upload-image/photo",
+        imageProperties: {
+          cropProperties: { leftOffset: 0.25, rightOffset: 0.25 },
+          transparency: 0, outline: { ...notRendered, outlineFill: { solidFill: { color: { rgbColor: {} }, alpha: 1 } } },
+          shadow: { ...notRendered, type: "OUTER" },
+        },
+      },
+    },
+  );
+  let grid = s2.pageElements!.find(element => element.objectId === "tb2")!;
+  let edge = (rowIndex: number, columnIndex: number) => ({
+    location: { ...(rowIndex ? { rowIndex } : {}), ...(columnIndex ? { columnIndex } : {}) },
+    tableBorderProperties: {
+      tableBorderFill: { solidFill: { color: { rgbColor: {} }, alpha: 1 } }, weight: emuPt(1), dashStyle: "SOLID",
+    },
+  });
+  Object.assign(grid, { transform: BOX.transform });
+  Object.assign(grid.table!, {
+    tableColumns: [{ columnWidth: emuPt(120) }, { columnWidth: emuPt(80) }],
+    horizontalBorderRows: [0, 1, 2].map(r => ({ tableBorderCells: [edge(r, 0), edge(r, 1)] })),
+    verticalBorderRows: [0, 1].map(r => ({ tableBorderCells: [edge(r, 0), edge(r, 1), edge(r, 2)] })),
+  });
+  grid.table!.tableRows!.forEach(row => { row.rowHeight = emuPt(20); });
+  return styled;
+}
+
+describe("Google Slides preview", () => {
+  it("draws a queued edit over a themed deck with every property resolved, pictures inlined", async () => {
+    let provider = new SlidesProvider(styledDeck()).install();
+    let slides = gatekeeper();
+    await slides.edit([{ slideId: "s2", elementId: "callout", find: "Friday", replace: "Monday" }]);
+    let fetches = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => new URL(String(input)));
+
+    let preview = await hooks().previewSlides(slides.facet);
+
+    let content = preview!.content as PresentationPreview;
+    let s2 = content.slides.find(({ id }) => id === "s2")!;
+    let byId = new Map(s2.elements.map(element => [element.id, element]));
+    expect(s2.backgroundImage).toMatch(/^data:image\/png;base64,/);
+    expect(byId.get("t2")).toMatchObject({
+      verticalAlign: "bottom",
+      text: [{ align: "start", runs: [{ text: "Revenue", bold: true, fontFamily: "Montserrat", fontSize: 32, color: "#595959" }] }],
+    });
+    expect(byId.get("callout")).toMatchObject({
+      geometry: "WEDGE_ROUND_RECTANGLE_CALLOUT", fill: "#ffab40", verticalAlign: "middle",
+      outline: { color: "#000000", weight: 0.75, dash: "dot" }, change: 0,
+      text: [{ runs: [{ text: "Ships Monday" }] }],
+    });
+    expect(byId.get("callout")).not.toHaveProperty("shadow");
+    expect(byId.get("photo")).toMatchObject({
+      kind: "image", crop: { left: 0.25, top: 0, right: 0.25, bottom: 0 }, image: expect.stringMatching(/^data:image\/png/),
+    });
+    expect(byId.get("photo")).not.toHaveProperty("outline");
+    // Followed to the image host, and fetched only as wide as it is drawn.
+    let photoFetches = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => new URL(String(input)))
+      .filter(url => url.pathname.includes("photo"));
+    expect(photoFetches.map(url => `${url.hostname}${url.pathname}`)).toEqual([
+      "docs.google.com/upload-image/photo",
+      `lh7-rt.googleusercontent.com/rd-slides-images-rt/photo=s${picturePixels(500, 720)}-l85`,
+    ]);
+    let black = { color: "#000000", weight: 1 };
+    expect(byId.get("tb2")!.table).toMatchObject({
+      columns: [120, 80], rows: [20, 20],
+      horizontalBorders: Array.from({ length: 3 }, () => [black, black]),
+      verticalBorders: Array.from({ length: 2 }, () => [black, black, black]),
+    });
+    // Only the preview asks for a picture background's URL; no Google URL reaches the approver.
+    let previewReads = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => new URL(String(input)))
+      .slice(fetches.length).filter(url => url.hostname === "slides.googleapis.com");
+    expect(previewReads.every(url => url.searchParams.get("fields")!.includes("stretchedPictureFill)"))).toBe(true);
+    expect(fetches.some(url => url.searchParams.get("fields")?.includes("stretchedPictureFill)"))).toBe(false);
+    expect(JSON.stringify(preview)).not.toContain("googleusercontent");
+    expect(provider.batches).toEqual([]);
+  });
+});
+
 describe("Google Slides stored layout", () => {
   /** The value under `key`, as the synchronous KV reads it. */
   async function stored(facet: string, key: string): Promise<unknown> {
@@ -1384,6 +1517,8 @@ describe("Google Slides stored layout", () => {
         kind: "editText",
         payload: {
           changes: [{ op: "editText", ...EDIT }], slides: { s2: { number: 2, title: "Revenue" } },
+          // The presentation's title, which its card names the file by.
+          presentation: "Quarterly review",
         },
       },
     });

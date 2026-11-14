@@ -106,6 +106,9 @@ function masked(value: unknown, mask: Mask | true): unknown {
 /** Where Google serves the copy it keeps of a picture background: a bearer URL. */
 export const PICTURE_COPY = "https://lh7-rt.googleusercontent.com/slidesz/picture-copy";
 
+// A picture's first bytes, which are all a preview checks of what Google's image host serves.
+const PNG_PIXEL = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 /**
  * A background as Google stores it from a request: `RENDERED`, the default, is omitted, and a
  * picture is downloaded once and served from Google's own host.
@@ -163,6 +166,15 @@ export class SlidesProvider {
   /** Google Slides' answer to `request`, or `undefined` for a request about another file. */
   async handle(request: Request): Promise<Response | undefined> {
     let url = new URL(request.url);
+    if (url.hostname.endsWith(".googleusercontent.com")) return new Response(PNG_PIXEL);
+    // An uploaded picture, as Docs serves it: one redirect to the image host, at full size.
+    if (url.hostname === "docs.google.com" && url.pathname.startsWith("/upload-image/")) {
+      let name = url.pathname.slice("/upload-image/".length);
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://lh7-rt.googleusercontent.com/rd-slides-images-rt/${name}=s2048?key=k` },
+      });
+    }
     if (url.hostname !== "slides.googleapis.com") return undefined;
     let base = `/v1/presentations/${this.presentationId}`;
     if (url.pathname === `${base}:batchUpdate`) return this.#batch(await request.json());

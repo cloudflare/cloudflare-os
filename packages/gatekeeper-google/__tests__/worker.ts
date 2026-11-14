@@ -211,6 +211,8 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   actionDescription?: string;
   actionFields: ActionField[] = [];
   readonly observations: string[] = [];
+  /** The `subject` of each of `observations`, in order. */
+  readonly observationSubjects: (ResourceSubject | undefined)[] = [];
   /** What each observation reported, in order. */
   readonly reports: { title: string; subresources?: string[] }[] = [];
   /** Every action submitted, in the order the calls arrived. */
@@ -220,6 +222,7 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description.description);
+    this.observationSubjects.push(description.subject);
     this.reports.push({
       title: description.title,
       ...(description.subresources ? { subresources: description.subresources } : {}),

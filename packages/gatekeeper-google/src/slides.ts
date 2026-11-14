@@ -14,9 +14,11 @@ import { unguardedNativeRead, type NativeRead } from "./drive-session";
 import { requireFileSubresources } from "./file-subresources";
 import { verifyGoogleSubresourceAccess, type GoogleVerifierApi } from "./google-verifier-types";
 import { Mutex } from "./mutex";
+import { obsContext } from "./observability";
 import { explainUnopenedFile } from "./office-conversion";
 import { QueuedChanges } from "./queued-changes";
 import { nativeFileUrl } from "./resources";
+import { googleFileSubject, googleFileUrl } from "./resource-subject";
 import { batchKind, SLIDES_ACTIONS } from "./slides-actions";
 import {
   BlankPresentation, downloadContentImage, GoogleSlidesApi, type PresentationReader,
@@ -55,6 +57,8 @@ const THUMBNAIL_SIZES = {
 } as const satisfies Record<SlideThumbnailSize, ThumbnailSize>;
 // A move or skip names each of its slides to the approver.
 const MAX_SLIDES_PER_CHANGE = 100;
+// The most slides one preview has Google render, for what their reads cannot describe.
+const MAX_PREVIEW_RENDERS = 4;
 
 type Env = Cloudflare.Env;
 
@@ -153,6 +157,55 @@ export class GoogleSlidesGatekeeperImpl
 
   async getAutoApprovableActions(): Promise<ActionKind[]> {
     return this.#actions.autoApprovableKinds();
+  }
+
+  /**
+   * The presentation as it will be once every queued change applies (see `slides-preview.ts`),
+   * read from Google and replayed as the agent's reads are, while no change is being applied. Not
+   * authorized as an observation: only the approver sees it. A presentation not yet created is
+   * drawn from the recording of a new one, and has no ID for `subject` to name.
+   */
+  async previewResource(subject?: string): Promise<ResourcePreview | null> {
+    let props = this.ctx.props;
+    let simulated = isSimulated(props);
+    if (subject !== undefined && (simulated || subject !== this.#presentationId)) return null;
+    let reader: PreviewReader = isSimulated(props) ? new BlankPresentation(props.creation.title) : this.#api;
+    let id = this.#presentationId;
+    let { preview, images, renders } = await this.#changes.snapshot(async changes => {
+      let outline = await reader.getPreviewOutline(id);
+      let order = slideIds(outline);
+      return presentationPreview({
+        outline,
+        slides: await reader.getPreviewSlides(id, previewSlideIds(order, changes), order),
+        changes,
+        ...(simulated ? {} : { url: googleFileUrl("presentation", id) }),
+      });
+    });
+    let rendered = simulated ? [] : await this.#slideRenders(renders);
+    await inlineImages([...images, ...rendered], downloadContentImage, error => logger.debug(
+      "preview image not inlined", { event: "slides.preview.image.skipped", error }));
+    return preview;
+  }
+
+  /**
+   * The pictures `renders` ask for, each slide's render fetched once. As Google counts a render as
+   * an expensive read, a preview asks for few; the rest are drawn as their reads allow.
+   */
+  async #slideRenders(renders: PreviewRender[]): Promise<PreviewImage[]> {
+    let bySlide = Map.groupBy(renders, ({ slideId }) => slideId);
+    let wanted = [...bySlide.keys()].slice(0, MAX_PREVIEW_RENDERS);
+    let urls = await Promise.all(wanted.map(slideId =>
+      this.#api.getThumbnailUrl(this.#presentationId, slideId, "LARGE").catch((error: unknown) => {
+        logger.debug("slide render not fetched", { event: "slides.preview.render.skipped", error });
+        return undefined;
+      })));
+    return wanted.flatMap((slideId, i) => {
+      let contentUrl = urls[i];
+      let places = bySlide.get(slideId)!;
+      return contentUrl
+        ? [{ contentUrl, pixels: PREVIEW_SLIDE_PIXELS, place: (url: string) => places.forEach(({ place }) => place(url)) }]
+        : [];
+    });
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<GooglePresentationSession> {
