@@ -628,6 +628,8 @@ function getToolCallSummary(
   switch (tc.toolName) {
     case "readFile":
       return { verb: "Read", target: tc.input.filename };
+    case "attachFile":
+      return { verb: "Attached", target: tc.input.path };
     case "writeFile":
       return { verb: "Wrote", target: tc.input.filename };
     case "editFile":
@@ -767,6 +769,8 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
   switch (toolName) {
     case "readFile":
       return `Read ${pluralize(count, "file")}`;
+    case "attachFile":
+      return `Attached ${pluralize(count, "file")}`;
     case "writeFile":
       return `Wrote ${pluralize(count, "file")}`;
     case "editFile":
@@ -815,6 +819,7 @@ function getToolIcon(
   switch (toolName) {
     case "readFile":
     case "writeFile":
+    case "attachFile":
       return FileIcon;
     case "editFile":
       return PencilSimple;
@@ -850,6 +855,8 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
   switch (toolName) {
     case "readFile":
       return "Reading file";
+    case "attachFile":
+      return "Attaching file";
     case "writeFile":
       return "Writing file";
     case "editFile":
@@ -889,6 +896,7 @@ function getToolTarget(tc: AiToolCall): string | undefined {
 function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
   switch (toolName) {
     case "readFile": return "Reading";
+    case "attachFile": return "Attaching";
     case "writeFile": return "Writing";
     case "editFile": return "Editing";
     case "grep": return "Searching";
@@ -916,6 +924,7 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
   if (count <= 1) return getProvisionalToolLabel(toolName);
   switch (toolName) {
     case "readFile": return `Reading ${pluralize(count, "file")}`;
+    case "attachFile": return `Attaching ${pluralize(count, "file")}`;
     case "writeFile": return `Writing ${pluralize(count, "file")}`;
     case "editFile": return `Making ${count} edits`;
     case "grep": return `Searching files ${formatTimes(count)}`;
@@ -1731,7 +1740,8 @@ function isAssistantMessageWithoutVisibleText(msg: AiChatMessage): msg is Extrac
     msg.type === "message" &&
     msg.author.type !== "user" &&
     !msg.message.trim() &&
-    !msg.reasoning?.trim()
+    !msg.reasoning?.trim() &&
+    !msg.attachments?.length
   );
 }
 
@@ -6324,6 +6334,15 @@ function ChatInterface({
                                     />
                                   )}
                                 </div>
+                              )}
+
+                              {!!msg.attachments?.length && (
+                                <ChatAttachmentGrid
+                                  attachments={msg.attachments}
+                                  inlineImages
+                                  loadContent={(attachment) =>
+                                    overseer.getChatAttachmentContent(msg.chatId, attachment.id)}
+                                />
                               )}
 
                               {showActions && (

@@ -48,11 +48,13 @@ let root: Root | undefined;
 afterEach(async () => {
   await act(async () => root?.unmount());
   host?.remove();
+  vi.restoreAllMocks();
 });
 
 const mount = async (
   attachments: ChatAttachmentRef[],
   files: Record<string, Uint8Array | Error | Promise<Uint8Array>>,
+  inlineImages = false,
 ) => {
   const loadContent = vi.fn<(attachment: ChatAttachmentRef) => Promise<Uint8Array>>(async (attachment) => {
     const file = files[attachment.id];
@@ -67,13 +69,44 @@ const mount = async (
     <ThemeProvider>
       <Toasty>
         <div className="flex flex-col items-end p-6">
-          <ChatAttachmentGrid attachments={attachments} loadContent={loadContent} />
+          <ChatAttachmentGrid attachments={attachments} loadContent={loadContent} inlineImages={inlineImages} />
         </div>
       </Toasty>
     </ThemeProvider>,
   ));
   return loadContent;
 };
+
+it("shows generated images whole at answer size and downloads their original bytes", async () => {
+  const canvas = document.createElement("canvas");
+  canvas.width = 1024;
+  canvas.height = 512;
+  const bytes = Uint8Array.from(atob(canvas.toDataURL("image/png").split(",")[1]), c => c.charCodeAt(0));
+  const loadContent = await mount([
+    ref("landscape.png", "image/png", bytes), ref("second.png", "image/png", bytes),
+  ], {}, true);
+  const card = page.getByRole("button", { name: "Preview landscape.png" });
+  const image = card.element().parentElement!.querySelector("img")!;
+  await expect.poll(() => image.naturalWidth).toBe(1024);
+  const bounds = image.getBoundingClientRect();
+  expect(bounds.width).toBe(Math.min(512, image.closest("ul")!.getBoundingClientRect().width));
+  expect(bounds.height).toBe(bounds.width / 2);
+  expect(getComputedStyle(image).objectFit).toBe("contain");
+  await userEvent.click(card);
+
+  await expect.element(page.getByRole("dialog").getByRole("img", { name: "landscape.png" })).toBeVisible();
+  const download = page.getByRole("button", { name: "Download", exact: true });
+  await expect.element(download).toBeVisible();
+  let saved: Promise<ArrayBuffer> | undefined;
+  const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function(this: HTMLAnchorElement) {
+    expect(this.download).toBe("landscape.png");
+    saved = fetch(this.href).then(response => response.arrayBuffer());
+  });
+  await userEvent.click(download);
+  expect(click).toHaveBeenCalledOnce();
+  expect(new Uint8Array(await saved!)).toEqual(bytes);
+  expect(loadContent).not.toHaveBeenCalled();
+});
 
 it("draws a PDF's pages with selectable text", async () => {
   await mount([ref("report.pdf", "application/pdf")], { "report.pdf": buildPdf("Quarterly report") });

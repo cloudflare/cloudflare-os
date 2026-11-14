@@ -10,10 +10,13 @@ const AttachmentViewer = lazy(() =>
 export const ChatAttachmentGrid = ({
   attachments,
   loadContent,
+  inlineImages = false,
 }: {
   attachments: readonly ChatAttachmentRef[];
   /** Fetches the bytes of an attachment the message does not carry inline. */
   loadContent: (attachment: ChatAttachmentRef) => Promise<Uint8Array>;
+  /** Display generated images at answer size, aligned with the assistant's prose. */
+  inlineImages?: boolean;
 }) => {
   const [openId, setOpenId] = useState<string | null>(null);
   const { content, forgetFailures } = useAttachmentContents(async (id) => {
@@ -26,13 +29,14 @@ export const ChatAttachmentGrid = ({
     <>
       <ul
         aria-label="Attachments"
-        className="m-0 mb-1.5 flex max-w-[min(680px,78%)] list-none flex-wrap justify-end gap-2 p-0"
+        className={`m-0 mb-1.5 flex list-none flex-wrap gap-2 p-0 ${inlineImages ? "max-w-full justify-start" : "max-w-[min(680px,78%)] justify-end"}`}
       >
         {attachments.map((attachment) => (
           <li key={attachment.id} className="min-w-0">
             <ChatAttachmentCard
               attachment={attachment}
               prominent={attachments.length === 1}
+              inlineImages={inlineImages}
               loadContent={() => content(attachment.id)}
               onOpen={() => {
                 forgetFailures();

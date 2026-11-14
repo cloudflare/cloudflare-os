@@ -61,6 +61,7 @@ function storedOids(impl: any): string[] {
 function seedGadget(impl: any, id: number, bindings: Record<string, unknown> = {}): void {
   impl.storage.gadgets.put(
       { type: "gadget", id, title: "G", created: new Date(0), bindingName: `G${id}`, bindings });
+  impl.storage.nextGatekeeperId.put(Math.max(impl.storage.nextGatekeeperId.get(), id + 1));
 }
 
 describe("env.GIT worktrees", () => {
@@ -386,7 +387,9 @@ describe("env.GIT presence", () => {
     }
 
     await impl.prepareChatBindings(1, []);
-    expect(impl.getChatAgentContext(1).bindings).toEqual({ G100: 100, GIT_2: 1, GIT_3: 2 });
+    let context = impl.getChatAgentContext(1);
+    expect(context.bindings).toEqual(
+        { G100: 100, GIT_2: 1, GIT_3: 2, SCRATCH: context.scratch.worktreeId });
     expect(impl.chatScopeNames(1)).toContain("GIT");
 
     // A chat seeded before the reservation keeps its GIT binding.

@@ -1071,7 +1071,8 @@ async function runScriptedTurn(
 }
 
 function theGadget(impl: any): any {
-  let [gadget, ...others] = [...impl.storage.gadgets.list()];
+  let [gadget, ...others] = [...impl.storage.gadgets.list()]
+      .filter(record => record.type === "gadget");
   expect(others).toEqual([]);
   return gadget;
 }
@@ -1782,21 +1783,22 @@ describe("applying a blueprint to a gadget", () => {
             { title: "Agent's", bindingName: "AGENTS" })], { stopReason: "toolUse" }),
         fauxAssistantMessage(fauxText("Done.")),
       ]);
-      let created = [...impl.storage.gadgets.list()];
+      let created = [...impl.storage.gadgets.list()].filter(record => record.type === "gadget");
       expect(created.map((gadget: any) => gadget.title)).toEqual(["Direct", "In chat", "Agent's"]);
       expect(created.map((gadget: any) => gadget.upstream)).toEqual([{}, {}, {}]);
       expect(created.map((gadget: any) => gadget.pending !== undefined))
           .toEqual([false, true, true]);
 
       // A builder is told so, which is what the UI goes by to offer such a gadget no update.
-      expect(summaries(impl, "build").map(summary => (summary as any).upstream))
+      expect(summaries(impl, "build").filter(summary => summary.type === "gadget")
+          .map(summary => (summary as any).upstream))
           .toEqual([{}, {}, {}]);
       expect(summaries(impl, "use").map(summary => (summary as any).upstream))
           .toEqual([undefined]);
 
       // It stays so when the creation is accepted.
       expect(await client.mergeChanges(1)).toEqual({ outcome: "merged" });
-      created = [...impl.storage.gadgets.list()];
+      created = [...impl.storage.gadgets.list()].filter(record => record.type === "gadget");
       expect(created.map((gadget: any) => gadget.upstream)).toEqual([{}, {}, {}]);
 
       // Applying a blueprint is not refused for it. The gadget is treated as any other that

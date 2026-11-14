@@ -3,7 +3,8 @@ import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replac
   validateCodeChangeContent, type FileContent, type CodeContent, type CodeChange,
   type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
-import { canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import { assertChatAttachmentBatch, assertChatAttachmentSize, canInlineChatAttachmentImage, decodeChatAttachmentText, isAllowedChatAttachmentImageMimeType } from './chat-attachment-validation';
+import type {ChatAttachmentRef} from '@gadgets/workshop-shared/api';
 import { AgentCatalog, ObservationDescription } from '@gadgets/workshop-shared/gatekeeper';
 import { createWorkshopLogger, obsContext } from "./observability";
 import { createTracer } from "@gadgets/observability/tracing";
@@ -611,6 +612,9 @@ export interface AgentHooks {
   /** Returns the bytes of a committed attachment owned by this chat for inclusion in model input. */
   getChatAttachmentData(chatId: number, id: string): Promise<Uint8Array>;
 
+  /** Store a bounded file as an immutable blob; its attachment is published with the step. */
+  prepareFileAttachment(name: string, content: Uint8Array): ChatAttachmentRef;
+
   /**
    * Returns the resources needed by `webFetch` to delegate document-to-Markdown conversion
    * to Workers AI, and the hosts it may reach in a workspace that has observed restricted data.
@@ -737,6 +741,13 @@ Note that users rarely ask for "a Gadget" in those words. They ask for a thing: 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
 
 # Live views in your answers
+
+To show a generated image or give the user a file, use \`attachFile\` with its worktree binding
+and relative path. It displays images directly in chat and offers files for download; no Gadget
+or base64 text is needed. For one-off container tasks, mount the chat's scratch worktree and
+write outputs inside that mount. Ignored files and files outside mounts stay in the container.
+After an \`executeCode\` call changes files, finish that step and attach them in your next step.
+Do not create a Gadget just to display or download a generated file.
 
 You can draw an interactive view inside your answer, with no tool call, by writing HTML between \`<inline-html>\` tags. The Workshop draws it in place, in a sandboxed frame, as you write it, and runs its module scripts as soon as its closing tag arrives, while the rest of your answer streams. Show a view when it beats prose: comparisons, choices between options, numbers over time, or a one-off demo or tool. A short answer or an explanation stays plain text.
 
@@ -1641,6 +1652,8 @@ async function runAgentPass(
   let pendingCreatedWorktrees: {worktreeId: WorkpieceId, title: string, bindingName: string}[] =
       [];
 
+  let pendingAttachments: ChatAttachmentRef[] = [];
+
   // Binding edges added this step (via the setGadgetBinding tool), likewise awaiting the
   // barrier's "changes" message (see `addedBindings`), which sequence-stamps the pending edge.
   let pendingAddedBindings: {gadgetId: WorkpieceId, name: string, target: WorkpieceId}[] = [];
@@ -2252,7 +2265,8 @@ async function runAgentPass(
 
   // Count across the whole replay, not just the latest upload batch. PDFs also count on some
   // providers; conservatively include candidate parts even if their headers later rule them out.
-  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message"
+  const attachmentImageCount = chatMessages.reduce((count, msg) => count + (msg.type === "message" &&
+      msg.author.type !== "agent"
     ? msg.attachments?.filter(attachment => isAllowedChatAttachmentImageMimeType(attachment.mimeType) ||
         (attachment.mimeType === PDF_MIME_TYPE && modelApiSupportsPdfAttachments(handle.model.api))).length ?? 0
     : 0), 0);
@@ -2623,6 +2637,9 @@ async function runAgentPass(
                   toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
                 }
+                case "attachFile":
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
                 case "executeCode":
                   toolOutput = {text: toolCall.output!};
                   break;
@@ -3352,6 +3369,13 @@ async function runAgentPass(
   }
 
   // Shared guidance precedes deployment instructions for both agent types.
+  if (agentContext.scratch) {
+    systemPromptSlots[1] += `\n\nThe chat's scratch worktree is env.${agentContext.scratch.bindingName}. ` +
+        `Use it for working files and generated outputs. For container tasks, pass this ` +
+        `worktree to mountWorktree() and write outputs inside that mount. ` +
+        (agentContext.spawnerConfig ? "" : `Then use attachFile to show them in chat. `) +
+        `It is a worktree, not a Gadget; no application needs creating.`;
+  }
   systemPromptSlots[0] += `\n\n${COMMUNICATION_GUIDANCE}`;
   if (instanceInstructions) {
     systemPromptSlots[0] += `\n\n${instanceInstructions}`;
@@ -3407,6 +3431,41 @@ async function runAgentPass(
   });
 
   let tools: Record<string, AgentTool> = {
+    attachFile: defineTool({
+      name: "attachFile",
+      label: "Attach file",
+      description: "Display an existing worktree file in chat: images appear inline, other " +
+          "files are downloadable. Captures this version even if the file is later edited or " +
+          "deleted. Pass a worktree binding and a relative path, never container paths or " +
+          "base64. Maximum 4 MiB per file, 5 files and 5 MiB total per step. After executeCode " +
+          "changes files, call this in your next step.",
+      parameters: Type.Object({
+        worktree: Type.String({description: "Worktree env binding name, e.g. SCRATCH."}),
+        path: Type.String({description: "File path relative to the worktree root."}),
+      }),
+      execute: async (toolCallId, {worktree, path}) => {
+        try {
+          assertNoExecutedChanges();
+          const {workpieceId} = hooks.resolveWorkpieceRoot(
+              resolveToolWorkpieceId(worktree), true, chatId);
+          if (!hooks.isWorktree(workpieceId)) throw new Error("Attach a file from a worktree.");
+          const file = await readToolFile(workpieceId, path);
+          if (!file) throw new Error("File does not exist.");
+          if (file.source.kind === "blob") assertChatAttachmentSize(file.source.reader.size);
+          const bytes = file.source.kind === "blob"
+              ? file.source.reader.read(0, file.source.reader.size)
+              : new TextEncoder().encode(file.source.text);
+          assertChatAttachmentSize(bytes.byteLength);
+          const attachment = hooks.prepareFileAttachment(path.split("/").at(-1)!, bytes);
+          assertChatAttachmentBatch([...pendingAttachments, attachment]);
+          pendingAttachments.push(attachment);
+          return toolResult(jsonToolResultText(attachment), {output: attachment});
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      },
+    }),
     readFile: defineTool({
       name: "readFile",
       label: "Read file",
@@ -4299,6 +4358,10 @@ async function runAgentPass(
             message: message.content.filter(block => block.type === "text")
                 .map(block => block.text).join(""),
           };
+          if (pendingAttachments.length) {
+            msg.attachments = pendingAttachments;
+            pendingAttachments = [];
+          }
           let reasoning = message.content
               .flatMap(block =>
                   block.type === "thinking" && !block.redacted ? [block.thinking] : [])

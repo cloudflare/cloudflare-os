@@ -6,8 +6,10 @@ unknown formats, empty binary files, and invalid UTF-8 are supported. Upload pre
 preserves the original bytes, including images; it does not resize or transcode them.
 This intentionally removes the old image-only path that accepted source images up to 25 MiB
 and resized them to fit: source images, like every other upload, must now fit the 4 MiB limit.
-The scratch worktree is created on the first upload and reused for later uploads, plans,
-and other agent working files.
+Normal agent chats get an empty scratch worktree when their bindings are prepared, even without
+uploads. Spawned chats create it on their first upload. The same worktree is reused for later
+uploads, plans, generated outputs, and other agent working files. Its binding is normally `SCRATCH`,
+with a suffix if that name is already taken; use the binding name listed in the chat.
 
 `Overseer.uploadBlob(bytes)` durably stores a raw Git blob and returns its OID; the composer
 sends `{stream, byteLength}` instead, which the backend stores as it arrives and checks

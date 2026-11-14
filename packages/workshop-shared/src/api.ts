@@ -5017,7 +5017,7 @@ export type ChatAttachmentHandle = {
 export type ChatAttachmentRef = {
   /** Chat-owned attachment identity used for downloads and message rendering. */
   id: string;
-  /** Original immutable upload blob. Absent on legacy attachments. */
+  /** Immutable Git blob captured for this attachment. Absent on legacy attachments. */
   oid?: GitOid;
   mimeType: string;
   name?: string;
@@ -5025,7 +5025,7 @@ export type ChatAttachmentRef = {
 
   /**
    * Path in the chat's scratch worktree, preserving uploaded bytes for every file format.
-   * Absent only on legacy attachments committed before workspace ingress was introduced.
+   * Absent for assistant output attachments and legacy attachments without workspace ingress.
    */
   workspacePath?: string;
 
@@ -5116,6 +5116,17 @@ export type AiToolCall = {
     path?: string;
   };
   output?: string;
+} | {
+  /** Attach an immutable version of a worktree file to the assistant's message. */
+  toolName: "attachFile";
+  input: {
+    /** The chat's worktree binding name. */
+    worktree: string;
+    /** File path relative to that worktree's root. */
+    path: string;
+  };
+  /** The captured attachment metadata, without its bytes. Replayed without reading the path. */
+  output?: ChatAttachmentRef;
 } | {
   toolName: "writeFile";
   input: {
