@@ -810,7 +810,7 @@ client.js and server.js may import other .js files in the Gadget. Each file has 
 
 * A relative import names the exact file, extension included (\`./ui/list.js\`, not \`./ui/list\`), resolves against the importing file, and cannot reach outside the Gadget. Only .js files can be imported.
 * Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm), or URLs other than \`data:\` URLs.
-* In client code, \`import()\` works with a string literal; a computed specifier, such as \`import("./pages/" + name)\`, fails at runtime. Do not build URLs from \`import.meta.url\`.
+* Client code cannot use \`import()\`; import modules statically. Do not build URLs from \`import.meta.url\`.
 * Everything client.js reaches through imports is sent to anyone who can use the Gadget, including people who can use it but not edit it. Keep secrets and server-only logic in modules that only server.js imports.
 * Import problems in the UI are reported in the Gadget console.
 

@@ -270,6 +270,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     if (reloadTrigger !== undefined && reloadTrigger !== prevReloadTriggerRef.current && reloadTrigger > 0) {
       // Mark as invalidated but don't reload unless visible
       setIsInvalidated(true)
+      // After a failed load the view is still invalidated, so the flag alone wouldn't reload it.
+      setRetryNonce(nonce => nonce + 1)
       if (!isVisible) {
         // If not visible, just clear the current state
         setSandboxedHtml(null)
@@ -320,6 +322,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         } else {
           setSandboxedHtml(null)
         }
+        // A failed load stays unloaded, so a replacement gadget client retries it.
+        setHasLoaded(true)
+        setIsInvalidated(false)
       } catch (err) {
         if (!isCurrent()) return
         console.error('Failed to load UI bundle:', err)
@@ -331,9 +336,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (isCurrent()) setLoading(false)
         clearTimeout(giveUp)
       }
-      // A failed load counts too, so the next code change reloads.
-      setHasLoaded(true)
-      setIsInvalidated(false)
     }
 
     loadUiBundle()

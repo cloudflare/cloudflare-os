@@ -482,6 +482,21 @@ describe('GadgetUI RPC recovery', () => {
     expect(loadedCode(container)).not.toContain('stale')
   })
 
+  it('retries a failed bundle load on the replacement gadget client', async () => {
+    const first = fakeGadget('first', 'unused')
+    first.getUiBundle.mockRejectedValue(new Error('RPC session was disconnected'))
+    await act(async () => {
+      root.render(<GadgetUI gadget={first.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('RPC session was disconnected'))
+
+    const replacement = fakeGadget('replacement', 'document.body.textContent = "recovered"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={replacement.stub} height="100px" />)
+    })
+    await vi.waitFor(() => expect(loadedCode(container)).toContain('recovered'))
+  })
+
   it('ignores an old bundle while its replacement is hidden', async () => {
     const oldBundle = deferred<UiBundle>()
     const first = fakeGadget('first', 'unused')

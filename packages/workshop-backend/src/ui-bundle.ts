@@ -9,11 +9,10 @@ import { uiModuleKey } from "@gadgets/workshop-shared/ui-page";
 const UNSAFE_PATH = /["'`\\\s\p{Cc}]/u;
 
 /**
- * Collects the UI modules `client.js` reaches through relative static imports and string-literal
- * `import()`, rewriting each such specifier to the module's `uiModuleKey`. Anyone who can use the
- * gadget receives the bundle, so nothing `client.js` doesn't reach is included. A pure function of
- * the gadget's file tree. Returns null when there's no `client.js`, and throws on the first import
- * that breaks the UI import rules, except that a bad `import()` only rejects when it runs.
+ * Collects the UI modules `client.js` reaches through relative static imports, rewriting each such
+ * specifier to the module's `uiModuleKey`. Anyone who can use the gadget receives the bundle, so
+ * nothing `client.js` doesn't reach is included. A pure function of the gadget's file tree. Returns
+ * null when there's no `client.js`, and throws on the first import that breaks the UI import rules.
  */
 export function buildUiBundle(files: ReadonlyMap<string, string>): UiBundle | null {
   if (!files.has("client.js")) return null;
@@ -38,51 +37,49 @@ export function buildUiBundle(files: ReadonlyMap<string, string>): UiBundle | nu
       rewritten += code.slice(copied, s) + text;
       copied = e;
     };
-    // `s`/`e` cover a static import's specifier without its quotes, and a dynamic one's with them.
+    // `s`/`e` cover a static import's specifier, without its quotes.
     for (let {n: spec, s, e, d} of imports) {
-      // import.meta, or an import() with a computed specifier, which can't be followed.
-      if (d === -2 || spec === undefined) continue;
-      let dynamic = d >= 0;
+      let fail = (problem: string) => new Error(messageAt(s, problem));
+      if (d === -2) continue;  // import.meta
+      // Refused even with a literal specifier, which could be followed, so that whether and how
+      // import() is supported stays open.
+      if (d >= 0) {
+        throw fail(`import() isn't supported in UI code. Import the module statically instead, ` +
+            `like \`import { list } from "./ui/list.js";\`.`);
+      }
+      // A specifier the lexer can't unescape is invalid JavaScript, which the browser reports.
+      if (spec === undefined) continue;
       let quoted = JSON.stringify(spec);
       if (spec.startsWith(uiModuleKey(""))) {
-        throw new Error(messageAt(s, `${quoted} can't be imported: import the gadget's own files ` +
-            `by relative path, like "./ui/list.js".`));
+        throw fail(`${quoted} can't be imported: import the gadget's own files by relative path, ` +
+            `like "./ui/list.js".`);
       }
       if (spec.startsWith("data:")) continue;
       if (!spec.startsWith("./") && !spec.startsWith("../")) {
-        // A dynamic one is left for the browser to reject when it runs.
-        if (dynamic) continue;
-        throw new Error(messageAt(s, `${quoted} can't be imported: UI code can import only the ` +
-            `gadget's own .js files, by relative path like "./ui/list.js", and data: URLs. ` +
-            `gadget, RpcTarget and RpcStub are globals in every UI module; don't import them.`));
+        throw fail(`${quoted} can't be imported: UI code can import only the gadget's own .js ` +
+            `files, by relative path like "./ui/list.js", and data: URLs. gadget, RpcTarget and ` +
+            `RpcStub are globals in every UI module; don't import them.`);
       }
 
       let resolved = resolve(path, spec);
-      let problem: string;
-      if (resolved === null) {
-        problem = `${quoted} points outside the gadget's files.`;
-      } else if (UNSAFE_PATH.test(resolved)) {
-        throw new Error(messageAt(s, `${quoted} resolves to ${JSON.stringify(resolved)}; an ` +
-            `imported path can't contain quotes, backslashes, whitespace or control characters.`));
-      } else if (!resolved.endsWith(".js")) {
-        problem = `${quoted} resolves to ${resolved}, which can't be imported: only .js files can.`;
-      } else if (resolved === "server.js") {
-        problem = `${quoted} resolves to server.js, which runs only on the server and can't be ` +
-            `imported by UI code.`;
-      } else if (!files.has(resolved)) {
-        problem = `${quoted} resolves to ${resolved}, which doesn't exist.`;
-      } else {
-        let key = uiModuleKey(resolved);
-        replace(s, e, dynamic ? JSON.stringify(key) : key);
-        reached.add(resolved);
-        continue;
+      if (resolved === null) throw fail(`${quoted} points outside the gadget's files.`);
+      if (UNSAFE_PATH.test(resolved)) {
+        throw fail(`${quoted} resolves to ${JSON.stringify(resolved)}; an imported path can't ` +
+            `contain quotes, backslashes, whitespace or control characters.`);
       }
-
-      if (!dynamic) throw new Error(messageAt(s, problem));
-      // The import() may never run, so rather than failing the UI it rejects with the message
-      // when it does. No file content ships.
-      let thrower = `throw new Error(${JSON.stringify(messageAt(s, problem))});`;
-      replace(s, e, JSON.stringify(`data:text/javascript,${encodeURIComponent(thrower)}`));
+      if (!resolved.endsWith(".js")) {
+        throw fail(`${quoted} resolves to ${resolved}, which can't be imported: only .js files ` +
+            `can.`);
+      }
+      if (resolved === "server.js") {
+        throw fail(`${quoted} resolves to server.js, which runs only on the server and can't be ` +
+            `imported by UI code.`);
+      }
+      if (!files.has(resolved)) {
+        throw fail(`${quoted} resolves to ${resolved}, which doesn't exist.`);
+      }
+      replace(s, e, uiModuleKey(resolved));
+      reached.add(resolved);
     }
     shipped.set(path, rewritten + code.slice(copied));
   }
