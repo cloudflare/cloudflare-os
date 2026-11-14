@@ -18,10 +18,14 @@ export type SetUpConnectionDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   service: { name: string; logoUrl?: string; color?: string }
-  /** What the agent asked for: the kind of resource, or its address. */
+  /** What is being connected: the kind of resource, or its address. */
   resource?: string
-  /** Why the agent asked for it, in its own words. */
-  reason: string
+  /** Under the title: what it is for, such as "The agent asked for a spreadsheet." */
+  description?: string
+  /** Why the agent asked for it, in its own words. Absent when the user asked for it themselves. */
+  reason?: string
+  /** Goes back to choosing what to connect, for a dialog that was opened from that choice. */
+  onBack?: () => void
   /** The user's accounts on the service; none given, they are still loading. */
   accounts?: SetUpConnectionAccount[]
   selectedAccountId?: number
@@ -39,20 +43,21 @@ export type SetUpConnectionDialogProps = {
   configurator?: ReactNode
   /** What the form has chosen can be connected. */
   ready: boolean
-  /** Connects what was chosen and hands it to the agent, which resolves once it has. */
+  /** Connects what was chosen and hands it over, which resolves once it has. */
   onAccept: () => Promise<boolean>
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
- * What an agent's connection request asks for, set up (`ConnectionRequestCard`'s Set up): the
- * service's account to use, connecting one first where there is none, then which resource, in the
- * service's own form, filled in with as much as the agent knew. Each step that goes on in a window
- * of the service's waits for it, saying so, and can open it again.
+ * A connection, set up: what an agent's request asks for (`ConnectionRequestCard`'s Set up), or
+ * what the user chose to add to a chat or a gadget. The service's account to use, connecting one
+ * first where there is none, then which resource, in the service's own form, filled in with as
+ * much as the agent knew. Each step that goes on in a window of the service's waits for it, saying
+ * so, and can open it again.
  */
 export const SetUpConnectionDialog = ({
-  open, onOpenChange, service, resource, reason, accounts, selectedAccountId, onSelectAccount,
+  open, onOpenChange, service, resource, description, reason, onBack, accounts, selectedAccountId, onSelectAccount,
   onConnectAccount, onReconnect, onGrant, configurator, ready, onAccept,
 }: SetUpConnectionDialogProps) => {
   const [pending, setPending] = useState<'connect' | 'reconnect' | 'grant' | 'accept'>()
@@ -96,9 +101,10 @@ export const SetUpConnectionDialog = ({
           Connect {service.name}
         </span>
       )}
-      description={resource ? `The agent asked for ${resource}.` : undefined}
+      description={description}
       footer={(
         <>
+          {onBack && <Button variant="ghost" className="me-auto" disabled={pending === 'accept'} onClick={onBack}>Back</Button>}
           <Button disabled={pending === 'accept'} onClick={() => onOpenChange(false)}>Cancel</Button>
           {none ? (
             <Button variant="primary" disabled={pending !== undefined} onClick={() => void run('connect', onConnectAccount)}>
@@ -112,11 +118,11 @@ export const SetUpConnectionDialog = ({
         </>
       )}
     >
-      <blockquote className="rounded-2xl bg-kumo-tint px-4 py-3 text-base/5 text-kumo-default">{reason}</blockquote>
+      {reason && <blockquote className="rounded-2xl bg-kumo-tint px-4 py-3 text-base/5 text-kumo-default">{reason}</blockquote>}
       {accounts === undefined && <p role="status" className="appears-late text-base text-kumo-subtle">Loading your accounts…</p>}
       {none && (
         <p className="text-base/5 text-kumo-subtle">
-          Connect your {service.name} account first. You choose what the agent can reach once it is connected.
+          Connect your {service.name} account first. You choose what is reached through it once it is connected.
         </p>
       )}
       {accounts && accounts.length > 0 && (

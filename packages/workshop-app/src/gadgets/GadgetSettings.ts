@@ -30,7 +30,7 @@ export type GadgetSettingsSnapshot =
   }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'unbind' | 'createBlueprint'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'bindWithSuggestedName' | 'unbind' | 'createBlueprint'> & Disposable
 
 /** The part of a workspace's Overseer the settings use, and the lease that must be disposed. */
 export type SettingsOverseer = {
@@ -166,6 +166,13 @@ export class GadgetSettings {
 
   /** Publishes its code as a blueprint, which anyone can start their own from. */
   publish = (title: string, description: string) => this.#with((gadget) => gadget.createBlueprint(title, description))
+
+  /** Binds a connection of the workspace's into it, under the name its resource suggests; resolves to that name. */
+  bind = async (gatekeeperId: number) => {
+    const name = await this.#with((gadget) => gadget.bindWithSuggestedName(gatekeeperId))
+    this.#readLists(this.#run)
+    return name
+  }
 
   /** Takes a binding away from it, leaving what it was bound to in the workspace. */
   unbind = async (name: string) => {

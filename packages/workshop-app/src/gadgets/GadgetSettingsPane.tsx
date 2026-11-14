@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { CaretLeftIcon, ExportIcon, ShapesIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { CaretLeftIcon, ExportIcon, PlusIcon, ShapesIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { ofGadget } from '@/automations/automations'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BindingRow } from '@/blocks/BindingRow'
@@ -15,6 +15,7 @@ import { EditableTitle } from '@/components/EditableTitle'
 import { FormatIcon } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { Tabs } from '@/components/Tabs'
+import { AddConnection } from '@/connections/AddConnection'
 import { useServices } from '@/connections/useServices'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { PageLayout } from '@/layouts/PageLayout'
@@ -85,6 +86,7 @@ export const GadgetSettingsPane = ({
   const [sharing, setSharing] = useState(false)
   const [choosingKind, setChoosingKind] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const [addingConnection, setAddingConnection] = useState(false)
 
   const rename = (next: string) => {
     setRenameProblem(undefined)
@@ -179,10 +181,17 @@ export const GadgetSettingsPane = ({
             </Tabs.Panel>
             <Tabs.Panel value="connections" className="flex flex-col gap-8">
               <section className="flex flex-col gap-2">
-                <h2 className="px-4 text-sm font-medium text-kumo-subtle">Connected to</h2>
+                <div className="flex items-center justify-between gap-3 ps-4">
+                  <h2 className="text-sm font-medium text-kumo-subtle">Connected to</h2>
+                  {builds && (
+                    <Button variant="ghost" icon={PlusIcon} onClick={() => {
+                      if (!connection?.blocked()) setAddingConnection(true)
+                    }}>Add</Button>
+                  )}
+                </div>
                 <ListState list={snapshot.bindings} what="its connections" />
                 {snapshot.bindings.status === 'ready' && (snapshot.bindings.items.length === 0 ? (
-                  <p className="px-4 text-base text-kumo-subtle">Nothing yet. When the agent connects it to a service, it shows here.</p>
+                  <p className="px-4 text-base text-kumo-subtle">Nothing yet. Add a connection, or ask the agent to connect it to a service.</p>
                 ) : (
                   <ListGroup label="Connected to">
                     {snapshot.bindings.items.map((binding) => (
@@ -232,6 +241,16 @@ export const GadgetSettingsPane = ({
             await settings.setKind(kind && { ...kind, plural })
             return true
           }}
+        />
+      )}
+      {builds && (
+        <AddConnection
+          workspaceId={workspaceId}
+          open={addingConnection}
+          onOpenChange={setAddingConnection}
+          to={title || 'the gadget'}
+          // Bound at once, not proposed in a chat: whoever builds here chose it.
+          onAdded={async ({ gatekeeperId }) => void await settings.bind(gatekeeperId)}
         />
       )}
       {builds && <ShareGadgetDialog workspaceId={workspaceId} gadgetId={workpieceId} title={title ?? 'Gadget'} page={link} open={sharing} onOpenChange={setSharing} />}

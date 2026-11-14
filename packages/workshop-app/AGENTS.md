@@ -366,6 +366,17 @@ the backend with `PUBLIC_BASE_URL=http://localhost:<app port>` so the gatekeeper
 app rather than workshop-frontend. What an agent asks to be connected to is set up from its card in
 the chat (`SetUpConnection`), with an account of the service and the gatekeeper's own form.
 
+The user adds one themselves with `AddConnection`: `AddConnectionDialog` lists every connectable
+kind of resource of the services that are not built in, those with an account first, then
+`ConnectResource` (the account, grant and form half of `SetUpConnection`, with Back) makes it in
+the workspace (`newGatekeeper`). From a chat's + menu (an existing chat, for whoever builds in it)
+the connection becomes a line above the draft (`ComposerConnectionLines`) and goes with the message
+as a capsule (`chat/capsules.ts`), so the chat has it from then on; a skill goes alone, so the two
+refuse each other, and none go while the agent works. From a gadget's Connections tab Add binds it
+to the gadget (`GadgetSettings.bind`, with the name the gatekeeper suggests). A chat's settings
+have a Connections tab (`ChatConnectionList`, from `listChatConnections`): what is in the chat,
+what the workspace's gadgets hold, and what every chat has.
+
 ## A gadget's own pages
 
 `/app/<id>/settings` is a gadget's settings, from its More and from full screen. `GadgetSettings`

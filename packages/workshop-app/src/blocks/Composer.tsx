@@ -6,6 +6,7 @@ import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
 import { ComposerCommandLine } from './ComposerCommandLine'
 import { ComposerCommandPicker, type ComposerCommand } from './ComposerCommandPicker'
+import { ComposerConnectionLines, type ComposerConnection } from './ComposerConnectionLines'
 import { ComposerProblem } from './ComposerProblem'
 import { ComposerReply } from './ComposerReply'
 import { leadingCommand, matchCommands, slashTokenAt, type SlashToken } from './slashCommands'
@@ -16,6 +17,8 @@ import './Composer.css'
 export type ComposerHandle = {
   /** Put the cursor in the message, e.g. once something outside has set up a reply. */
   focus: () => void
+  /** Adds a connection to the draft (from the add menu's Add a connection, once it is made). */
+  addConnection: (connection: ComposerConnection) => void
 }
 
 export type ComposerProps = {
@@ -24,7 +27,7 @@ export type ComposerProps = {
    * whether the message went: the draft is cleared only once it has, and is kept, unsendable,
    * while it is going.
    */
-  onSend: (text: string, files: File[], command?: ComposerCommand) => boolean | Promise<boolean>
+  onSend: (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => boolean | Promise<boolean>
   /**
    * What the draft starts with, such as a message that did not go from a composer that has since
    * gone, or a skill chosen elsewhere to use.
@@ -67,6 +70,8 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
   const [text, setText] = useState(initialDraft?.text ?? '')
   // The skill or command the draft goes with, once chosen.
   const [command, setCommand] = useState(initialDraft?.command)
+  // The connections the draft goes with, added through the handle.
+  const [connections, setConnections] = useState<ComposerConnection[]>([])
   // The slash being typed, where the cursor is, and which of what fits it Enter would choose.
   const [slash, setSlash] = useState<SlashToken>()
   const [highlighted, setHighlighted] = useState(0)
@@ -95,8 +100,10 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
   const trimmed = text.trim()
   // A command goes on its own, with words alone, once the agent has finished.
   const filesRefused = !!command && attachments.length > 0
-  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0 && !command
-  const canSend = !sending && !filesRefused && (stop ? canSteer : !!command || !!trimmed || attachments.length > 0)
+  const connectionsRefused = !!command && connections.length > 0
+  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0 && connections.length === 0 && !command
+  const canSend = !sending && !filesRefused && !connectionsRefused &&
+    (stop ? canSteer : !!command || !!trimmed || attachments.length > 0 || connections.length > 0)
   const showSend = !stop || canSteer
   const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(commands, slash.query) : []
   const picking = matches.length > 0
@@ -138,13 +145,20 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
     setCommand(chosen)
     field?.focus()
   }
-  useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), [])
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current?.focus(),
+    addConnection: (connection) => {
+      setConnections((current) => (current.some(({ key }) => key === connection.key) ? current : [...current, connection]))
+      inputRef.current?.focus()
+    },
+  }), [])
 
   // The message went, so its draft is done with: unless stopping the agent has put what was
   // waiting for it in the draft meanwhile.
-  const clearSent = (sentText: string, sentCommand: ComposerCommand | undefined) => {
+  const clearSent = (sentText: string, sentCommand: ComposerCommand | undefined, sentConnections: readonly ComposerConnection[]) => {
     setText((current) => (current === sentText ? '' : current))
     setCommand((current) => (current === sentCommand ? undefined : current))
+    setConnections((current) => current.filter((connection) => !sentConnections.includes(connection)))
     clearAttachments()
   }
 
@@ -202,18 +216,19 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
           if (!canSend) return
           inputRef.current?.focus()
           // A command typed out in full, which was not chosen from the picker, goes as a command too.
-          const typed = command || stop || attachments.length ? undefined : leadingCommand(commands, trimmed)
+          const typed = command || stop || attachments.length || connections.length ? undefined : leadingCommand(commands, trimmed)
           const sentCommand = command ?? typed?.command
-          const sent = onSend(typed ? typed.args : trimmed, attachments.map(({ file }) => file), sentCommand)
+          const sentConnections = connections
+          const sent = onSend(typed ? typed.args : trimmed, attachments.map(({ file }) => file), sentCommand, sentConnections.length ? sentConnections : undefined)
           if (typeof sent === 'boolean') {
-            if (sent) clearSent(text, command)
+            if (sent) clearSent(text, command, sentConnections)
             return
           }
           setSending(true)
           void sent.then(
             (went) => {
               setSending(false)
-              if (went) clearSent(text, command)
+              if (went) clearSent(text, command, sentConnections)
             },
             () => setSending(false),
           )
@@ -235,11 +250,19 @@ export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, 
         <div inert={sending}>
           <ComposerCommandLine
             command={command}
-            refusal={filesRefused
-              ? `Files can’t go with ${command.kind === 'skill' ? 'a skill' : 'it'}. Remove them, or ${command.kind === 'skill' ? 'the skill' : 'it'}.`
+            refusal={filesRefused || connectionsRefused
+              ? `${filesRefused ? 'Files' : 'Connections'} can’t go with ${command.kind === 'skill' ? 'a skill' : 'it'}. Remove them, or ${command.kind === 'skill' ? 'the skill' : 'it'}.`
               : command && stop ? 'It can be used once the agent has finished.' : undefined}
             onCancel={() => {
               setCommand(undefined)
+              inputRef.current?.focus()
+            }}
+          />
+          <ComposerConnectionLines
+            connections={connections}
+            refusal={stop && !command ? 'It can be added once the agent has finished.' : undefined}
+            onRemove={(key) => {
+              setConnections((current) => current.filter((connection) => connection.key !== key))
               inputRef.current?.focus()
             }}
           />

@@ -18,14 +18,16 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { WorkspaceLibraryList } from '@/workspaces/WorkspaceLibraryList'
 import { isMuted, useSetNotificationMute, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { ChatConnectionList } from './ChatConnectionList'
 import { formatUsage } from './usage'
 import { useChatSession } from './useChatSession'
 
 /** What a chat's settings page shows beneath its title. */
-export type ChatSettingsTab = 'library' | 'automations' | 'settings'
+export type ChatSettingsTab = 'library' | 'connections' | 'automations' | 'settings'
 
 export const CHAT_SETTINGS_TABS: { value: ChatSettingsTab; label: string }[] = [
   { value: 'library', label: 'Library' },
+  { value: 'connections', label: 'Connections' },
   { value: 'automations', label: 'Automations' },
   { value: 'settings', label: 'Settings' },
 ]
@@ -50,15 +52,18 @@ export type ChatSettingsPaneProps = {
   href?: (entry: LibraryEntry) => string
   /** Where an automation reports, for its row to open and link to. */
   automationLink: AutomationLink
+  /** Where the accounts its connections go through are managed. */
+  onOpenConnections: () => void
 }
 
 /**
  * What a chat has, apart from the conversation, a tab each: what its workspace has made, was sent
- * and worked on, on the Library's rows (`WorkspaceLibraryList`); what runs by itself in it, or was
+ * and worked on, on the Library's rows (`WorkspaceLibraryList`); what its agent can use
+ * (`ChatConnectionList`); what runs by itself in it, or was
  * set up from it for a gadget; and its settings, which are what it is told about (its workspace's
  * notifications), what it has used, and deleting it.
  */
-export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onOpen, href, automationLink }: ChatSettingsPaneProps) => {
+export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onOpen, href, automationLink, onOpenConnections }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -126,6 +131,9 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
         <Tabs value={tab} onValueChange={onTabChange} tabs={CHAT_SETTINGS_TABS} aria-label="Chat" className="gap-6">
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpen} href={href} />
+          </Tabs.Panel>
+          <Tabs.Panel value="connections" className="flex flex-col gap-8">
+            {tab === 'connections' && <ChatConnectionList workspaceId={workspaceId} chatId={chatId} onManage={onOpenConnections} />}
           </Tabs.Panel>
           <Tabs.Panel value="automations" className="flex flex-col gap-8">
             {tab === 'automations' && (

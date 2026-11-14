@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
+import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { Button } from '@/components/Button'
 import { ConnectionDialog, type ConnectionDialogResource } from '@/blocks/ConnectionDialog'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
@@ -90,6 +92,9 @@ export const ConnectionsPreview = () => {
         <Button onClick={() => setOpen('setup-ready')}>With the form</Button>
         <Button onClick={() => setOpen('setup-expired')}>Expired</Button>
         <Button onClick={() => setOpen('setup-grant')}>Needs access</Button>
+      </Section>
+      <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a connection: what kind, found by typing, your services first; then which, in the service’s form; then it sits above the draft, to go with the message, and is refused beside a skill)">
+        <AddConnectionPreview say={say} opened={opened} />
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
       {open?.startsWith('setup') && <SetUpPreview key={round} state={open as SetUp} onClose={() => setOpenAt(undefined)} say={say} opened={opened} />}
@@ -192,6 +197,7 @@ const SetUpPreview = ({ state, onClose, say, opened }: { state: SetUp; onClose: 
       onOpenChange={(next) => { setOpen(next); if (!next) setTimeout(onClose, 300) }}
       service={{ name: 'GitHub' }}
       resource="a GitHub repository"
+      description="The agent asked for a GitHub repository."
       reason="I need to read the open issues in cloudflare/gadgets to sort them by how long they have waited."
       accounts={setUpAccounts[state]}
       selectedAccountId={selected}
@@ -209,5 +215,73 @@ const SetUpPreview = ({ state, onClose, say, opened }: { state: SetUp; onClose: 
         return true
       }}
     />
+  )
+}
+
+const CHOICES: ConnectionChoice[] = [
+  { key: 'repo', service: { name: 'GitHub' }, title: 'Repository', description: 'Code, issues and pull requests', connected: true },
+  { key: 'sheet', service: { name: 'Google', color: '#1a73e8' }, title: 'Spreadsheet', description: 'A Google Sheets file', connected: true },
+  { key: 'doc', service: { name: 'Google', color: '#1a73e8' }, title: 'Document', description: 'A Google Docs file', connected: true },
+  { key: 'page', service: { name: 'Notion' }, title: 'Page', description: 'A page and what is under it', connected: false },
+  { key: 'team', service: { name: 'Linear' }, title: 'Team', description: 'A team’s issues and cycles', connected: false },
+]
+
+/** The + menu's Add a connection, end to end, into a composer's draft. */
+const AddConnectionPreview = ({ say, opened }: { say: (what: string) => void; opened: () => Promise<boolean> }) => {
+  const composer = useRef<ComposerHandle>(null)
+  const [choosing, setChoosing] = useState(false)
+  const [chosen, setChosen] = useState<ConnectionChoice>()
+  const [ready, setReady] = useState(false)
+  const [loading, setLoading] = useState(false)
+  return (
+    <div className="flex w-full flex-col gap-3">
+      <div className="flex gap-2">
+        <Button onClick={() => { setLoading(false); setChoosing(true) }}>Add a connection</Button>
+        <Button variant="ghost" onClick={() => { setLoading(true); setChoosing(true) }}>While services load</Button>
+      </div>
+      <Composer
+        ref={composer}
+        onSend={(text, _files, command, connections) => {
+          say(`sent “${text}”${connections?.length ? ` with ${connections.map(({ title }) => title).join(' and ')}` : ''}${command ? ` using ${command.title}` : ''}`)
+          return true
+        }}
+        addActions={{ onAddConnection: () => setChoosing(true) }}
+        commands={[{ key: 'brief', name: 'meeting-brief', title: 'Meeting brief', description: 'Before a meeting, gather who is coming.', kind: 'skill' }]}
+      />
+      <AddConnectionDialog
+        open={choosing && !chosen}
+        onOpenChange={setChoosing}
+        to="this chat"
+        choices={loading ? undefined : CHOICES}
+        onChoose={setChosen}
+      />
+      {chosen && (
+        <SetUpConnectionDialog
+          open={choosing}
+          onOpenChange={(next) => {
+            setChoosing(next)
+            if (!next) setChosen(undefined)
+          }}
+          service={chosen.service}
+          resource={chosen.title}
+          description={`Choose which ${chosen.title.toLowerCase()} this chat can use.`}
+          onBack={() => setChosen(undefined)}
+          accounts={chosen.connected ? [{ id: 1, name: chosen.service.name === 'GitHub' ? 'octocat' : 'ada@example.com' }] : []}
+          selectedAccountId={1}
+          onSelectAccount={() => {}}
+          onConnectAccount={opened}
+          onReconnect={opened}
+          configurator={<FakeConfigurator onReady={setReady} />}
+          ready={ready}
+          onAccept={async () => {
+            await new Promise((resolve) => setTimeout(resolve, 900))
+            composer.current?.addConnection({ key: `${chosen.key}-${Date.now()}`, title: chosen.key === 'repo' ? 'cloudflare/gadgets' : 'Q3 forecast', kind: chosen.title, service: chosen.service })
+            setChoosing(false)
+            setChosen(undefined)
+            return true
+          }}
+        />
+      )}
+    </div>
   )
 }

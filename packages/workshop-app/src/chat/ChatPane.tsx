@@ -4,6 +4,7 @@ import { ChatHeader } from '@/blocks/ChatHeader'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
+import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -12,9 +13,11 @@ import { WorkLog } from '@/blocks/WorkLog'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
+import { withCapsules } from './capsules'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import type { ChatSnapshot } from './ChatSession'
@@ -104,6 +107,11 @@ export const ChatPane = ({
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const restricted = workspace?.containsRestrictedData === true
   const [sharing, setSharing] = useState(false)
+  // Add a connection is open; and the connections made for the draft, by their line's key.
+  const [adding, setAdding] = useState(false)
+  const added = useRef(new Map<string, AddedConnection>())
+  // Making a connection in the workspace is building in it.
+  const builds = workspace !== undefined && workspace.role !== 'use'
   // Those who can only use what is in it cannot share it.
   const shareable = workspace !== undefined && workspace.role !== 'use' && workspaceLink !== undefined
   // Why the last message did not go, whether it was stopped here or by the server.
@@ -180,7 +188,7 @@ export const ChatPane = ({
   }, [items, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
-  const sendMessage = async (text: string, files: File[], command?: ComposerCommand) => {
+  const sendMessage = async (text: string, files: File[], command?: ComposerCommand, connections?: ComposerConnection[]) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
@@ -202,7 +210,9 @@ export const ChatPane = ({
       setProblem(missingCommand(command))
       return false
     }
-    const sent = await actions.send(request ?? words, model.id, files)
+    const given = connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
+    const { text: written, capsules } = withCapsules(words, given)
+    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined)
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
@@ -224,6 +234,11 @@ export const ChatPane = ({
           ref={composer}
           onSend={sendMessage}
           commands={commands}
+          addActions={builds ? {
+            onAddConnection: () => {
+              if (!connection?.blocked()) setAdding(true)
+            },
+          } : undefined}
           stop={chat.status === 'ready' && chat.agentActive ? {
             waiting: chat.waiting,
             onStop: () => {
@@ -319,6 +334,20 @@ export const ChatPane = ({
         onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
       />
       {shareable && <ShareWorkspaceDialog workspaceId={workspaceId} title={workspace.title} link={workspaceLink} open={sharing} onOpenChange={setSharing} />}
+      {builds && (
+        <AddConnection
+          workspaceId={workspaceId}
+          open={adding}
+          onOpenChange={setAdding}
+          to="this chat"
+          onAdded={async (made) => {
+            const key = `gatekeeper:${made.gatekeeperId}`
+            added.current.set(key, made)
+            // The chat has it once the message goes with it.
+            composer.current?.addConnection({ key, title: made.description.title, kind: made.kind, service: made.service })
+          }}
+        />
+      )}
     </ChatLayout>
   )
 }

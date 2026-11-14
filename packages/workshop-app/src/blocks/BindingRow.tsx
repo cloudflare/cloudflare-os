@@ -5,8 +5,8 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 import { ServiceLogo } from '@/components/ServiceLogo'
 
 export type BindingRowProps = {
-  /** The name the gadget's code knows it by, as in `env.NAME`. */
-  name: string
+  /** The name the code or the agent knows it by, as in `env.NAME`; absent until it has one. */
+  name?: string
   /** What it is bound to: a repository, a mailbox. */
   resource: string
   service?: { name: string; logoUrl?: string; color?: string }
@@ -19,8 +19,8 @@ export type BindingRowProps = {
 }
 
 /**
- * One of a gadget's connections, on one line: the service's logo, what it reaches, and the name
- * the gadget's code has for it, with more at the end: managing the account, and taking it away
+ * One of a gadget's connections, or a chat's, on one line: the service's logo, what it reaches,
+ * and the name the code has for it, with more at the end: managing the account, and taking it away
  * from the gadget, which asks first.
  */
 export const BindingRow = ({ name, resource, service, pending, onManage, onRemove }: BindingRowProps) => {
@@ -31,8 +31,8 @@ export const BindingRow = ({ name, resource, service, pending, onManage, onRemov
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate font-medium text-kumo-default">{resource}</span>
         <span className="truncate text-sm text-kumo-subtle">
-          <code className="font-mono text-[0.92em]">env.{name}</code>
-          {service && ` · ${service.name}`}
+          {name && <code className="font-mono text-[0.92em]">env.{name}</code>}
+          {service && `${name ? ' · ' : ''}${service.name}`}
           {pending && ' · Waiting to be accepted'}
         </span>
       </span>

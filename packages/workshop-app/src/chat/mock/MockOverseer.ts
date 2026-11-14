@@ -7,6 +7,7 @@ import type {
   AiChatSubscriber,
   BoundHookInfo,
   ChatAttachmentHandle,
+  ChatConnectionInfo,
   ChatAttachmentRef,
   PresenceSubscriber,
   SlashCommandChoice,
@@ -323,6 +324,14 @@ export class MockOverseer {
         enabled: log.enabled,
       }]
     })
+  }
+
+  /** The board the scripts' actions go through, as the chat's own, and the web search every chat has. */
+  async listChatConnections(_chatId: number): Promise<ChatConnectionInfo[]> {
+    return [
+      { gatekeeperId: 7, title: 'Jira · Platform board', vendorId: 'jira', name: 'PLATFORM_BOARD', scope: 'chat' },
+      { gatekeeperId: 2, title: 'Web search', vendorId: 'websearch', scope: 'always' },
+    ]
   }
 
   async deleteHook(id: number) {

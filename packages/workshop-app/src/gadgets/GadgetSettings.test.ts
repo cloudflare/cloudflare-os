@@ -12,6 +12,7 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
     setOutput: vi.fn<SettingsGadget['setOutput']>(async () => {}),
     remove: vi.fn<SettingsGadget['remove']>(async () => {}),
     listBindings: vi.fn<SettingsGadget['listBindings']>(async () => [{ name: 'GITHUB', target: 3, resourceTitle: 'cloudflare/gadgets', vendorId: 'github' }]),
+    bindWithSuggestedName: vi.fn<SettingsGadget['bindWithSuggestedName']>(async () => 'FORECAST'),
     unbind: vi.fn<SettingsGadget['unbind']>(async () => {}),
     createBlueprint: vi.fn<SettingsGadget['createBlueprint']>(),
     [Symbol.dispose]: vi.fn<() => void>(),
@@ -87,6 +88,17 @@ describe('GadgetSettings', () => {
     settings.start()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(settings.getSnapshot().status).toBe('loading')
+  })
+
+  it('binds a connection under the name its resource suggests, and reads its bindings again', async () => {
+    const { overseer, gadget, server } = fakeWorkspace()
+    const settings = new GadgetSettings(() => overseer, 7)
+    settings.start()
+    await vi.waitFor(() => expect(overseer.subscribeToWorkpieces).toHaveBeenCalled())
+    server().entry(summary('Todo'))
+    expect(await settings.bind(12)).toBe('FORECAST')
+    expect(gadget.bindWithSuggestedName).toHaveBeenCalledWith(12)
+    expect(gadget.listBindings).toHaveBeenCalledTimes(2)
   })
 
   it('reads what it is bound to again after unbinding', async () => {

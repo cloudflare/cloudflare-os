@@ -118,7 +118,18 @@ the chosen resource sits above the draft as a line, sent with the message as a c
 then has it. A chat's settings gain a Connections tab listing what it can use. A gadget's
 Connections tab gains Add, binding straight to the gadget.
 
-**Kernel.** None.
+As built, Add a connection opens a chooser first (`AddConnectionDialog`): each kind of resource the
+services offer, a row with the service's logo, "Your services" before "More services", searched by
+service or kind. Choosing goes on to the agent's dialog, its line saying "Choose which repository
+this chat can use." and with Back. The draft's line has the logo, which one and "GitHub
+repository", and an X; a skill chosen with connections says on its line that the two cannot go
+together, as files already did. The chat's Connections tab has no Add of its own, since the + menu
+is where a chat gets more, and says so when it has none; it groups "In this chat", "From the
+workspace's gadgets" and "Always there". Home's and a new chat's composer do not offer it: there is
+no workspace to make the connection in until the first message goes. Built-in services are left
+out of the chooser, as every chat has them.
+
+**Kernel.** None. Built.
 
 ## 5. Model selection
 

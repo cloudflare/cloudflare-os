@@ -64,21 +64,75 @@ const SetUpAgent = ({ request, open, onOpenChange }: SetUpConnectionProps) => (
 )
 
 const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnectionProps) => {
+  const { api } = useApi()
+  return (
+    <ConnectResource
+      open={open}
+      onOpenChange={onOpenChange}
+      service={{ vendorId: request.vendorId, name: request.vendorName, logoUrl: request.logoUrl }}
+      resourceUrlPattern={request.resourceUrlPattern}
+      resourceUrl={request.resourceUrl}
+      scope={request.scope}
+      description={request.scope ? `The agent asked for ${request.scope}.` : undefined}
+      reason={request.reason}
+      unknownKind="The agent didn’t say what kind of resource it wants. Ask it again."
+      onConnect={async (accountId, resourceUrl) => {
+        // Disposed by hand: `using` is not lowered for every browser this runs in.
+        const overseer = api.openWorkspace(workspaceId)
+        // Typed as nullable, but never null: it throws instead. Pipelined, so its id comes with it.
+        const gatekeeper = overseer.newGatekeeper(accountId, resourceUrl) as RpcPromise<GatekeeperClient<never>>
+        try {
+          await overseer.acceptConnectionRequest(request.requestId, { gatekeeperId: await gatekeeper.getId() })
+        } finally {
+          gatekeeper[Symbol.dispose]()
+          overseer[Symbol.dispose]()
+        }
+      }}
+    />
+  )
+}
+
+export type ConnectResourceProps = {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  service: { vendorId: string; name: string; logoUrl?: string }
+  /** The kind of resource (`SupportedResource.urlPattern`); absent when it is not known. */
+  resourceUrlPattern?: string
+  /** Which one, when it is known, to fill the service's form in with. */
+  resourceUrl?: string
+  /** What is connected, in words: "a GitHub repository". */
+  scope?: string
+  description?: string
+  reason?: string
+  /** What is said in place of the form when the kind is not known. */
+  unknownKind?: string
+  onBack?: () => void
+  /** Makes what was chosen, with the account it was chosen in. The dialog closes once it resolves. */
+  onConnect: (accountId: number, resourceUrl: string) => Promise<void>
+}
+
+/**
+ * Connects one of a service's resources (`SetUpConnectionDialog`): one of the user's accounts on
+ * it, connected first if there is none, with access to the kind of resource; then the service's own
+ * form for which one; then `onConnect`, which makes it what the caller needs.
+ */
+export const ConnectResource = ({
+  open, onOpenChange, service, resourceUrlPattern: pattern, resourceUrl, scope, description, reason, unknownKind, onBack, onConnect,
+}: ConnectResourceProps) => {
   const { api, reconnecting } = useApi()
   const connection = useConnectionNotice()
   const snapshot = useConnectedAccounts()
   const { services } = useServices()
-  const accounts = snapshot.status === 'ready' ? snapshot.accounts.filter(({ vendorId }) => vendorId === request.vendorId) : undefined
-  const vendor = services.status === 'ready' ? services.vendors.find(({ id }) => id === request.vendorId) : undefined
+  const accounts = snapshot.status === 'ready' ? snapshot.accounts.filter(({ vendorId }) => vendorId === service.vendorId) : undefined
+  const vendor = services.status === 'ready' ? services.vendors.find(({ id }) => id === service.vendorId) : undefined
   const resources = vendor?.supportedResources ?? accounts?.[0]?.supportedResources ?? []
-  const pattern = request.resourceUrlPattern
   const resource = resources.find(({ urlPattern }) => urlPattern === pattern)
 
   // The account chosen; until one is, the first that can be used.
   const [chosen, setChosen] = useState<number>()
   // The accounts there were when another was asked for, so the one that comes is chosen.
   const [before, setBefore] = useState<ReadonlySet<number>>()
-  const made = before && accounts && newAccountOf(accounts, request.vendorId, before)
+  const made = before && accounts && newAccountOf(accounts, service.vendorId, before)
   if (made) {
     setBefore(undefined)
     setChosen(made.id)
@@ -105,7 +159,7 @@ const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnect
         else release(next)
       },
       (error: unknown) => {
-        if (current) setFrame({ accountId, problem: `Couldn’t open ${request.vendorName}’s form: ${messageOf(error)}` })
+        if (current) setFrame({ accountId, problem: `Couldn’t open ${service.name}’s form: ${messageOf(error)}` })
       },
     )
     return () => {
@@ -115,14 +169,14 @@ const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnect
       setReady(false)
     }
     // A new grant restarts it, as a form reads the kinds it may offer only when it starts.
-  }, [api, reconnecting, accountId, pattern, grantedKey, request.vendorName])
+  }, [api, reconnecting, accountId, pattern, grantedKey, service.name])
 
   const grantable = resources.filter((candidate) => candidate.grantable).map(({ urlPattern }) => urlPattern)
   const connect = async () => {
     if (connection?.blocked()) return false
     setBefore(new Set(accounts?.map(({ id }) => id)))
     // Only what was asked for, where the service grants each kind on its own.
-    openConnectWindow(await api.connectAccount(request.vendorId, pattern && grantable.includes(pattern) ? [pattern] : undefined))
+    openConnectWindow(await api.connectAccount(service.vendorId, pattern && grantable.includes(pattern) ? [pattern] : undefined))
     return true
   }
 
@@ -131,9 +185,11 @@ const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnect
     <SetUpConnectionDialog
       open={open}
       onOpenChange={onOpenChange}
-      service={{ name: request.vendorName, logoUrl: request.logoUrl ?? vendor?.description.logo?.url, color: vendor?.description.color }}
-      resource={request.scope}
-      reason={request.reason}
+      service={{ name: service.name, logoUrl: service.logoUrl ?? vendor?.description.logo?.url, color: vendor?.description.color }}
+      resource={scope}
+      description={description}
+      reason={reason}
+      onBack={onBack}
       accounts={accounts?.map((account) => ({
         id: account.id,
         name: accountName(account) ?? account.description.displayName ?? account.vendor.displayName,
@@ -154,14 +210,14 @@ const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnect
         return true
       } : undefined}
       configurator={pattern === undefined ? (
-        <p className="text-base/5 text-kumo-subtle">The agent didn’t say what kind of {request.vendorName} resource it wants. Ask it again.</p>
+        <p className="text-base/5 text-kumo-subtle">{unknownKind}</p>
       ) : shown && 'problem' in shown ? (
         <p role="alert" className="text-base/5 text-kumo-danger">{shown.problem}</p>
       ) : shown ? (
         <ResourceConfiguratorFrame
           key={shown.accountId}
           frame={shown.frame}
-          initialResource={request.resourceUrl ? { resourceUrl: request.resourceUrl, resourceUrlPattern: pattern } : undefined}
+          initialResource={resourceUrl ? { resourceUrl, resourceUrlPattern: pattern } : undefined}
           acceptedResourceUrlPatterns={[pattern]}
           ensureResources={async (urlPatterns) => {
             if (connection?.blocked()) return false
@@ -173,22 +229,12 @@ const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnect
           onCollect={(next) => setCollect(next && { collect: next })}
         />
       ) : (
-        <p role="status" className="appears-late text-base text-kumo-subtle">Opening {request.vendorName}’s form…</p>
+        <p role="status" className="appears-late text-base text-kumo-subtle">Opening {service.name}’s form…</p>
       )}
       ready={ready && collect !== undefined}
       onAccept={async () => {
         if (connection?.blocked() || !collect || !usable) return false
-        const resourceUrl = await collect.collect()
-        // Disposed by hand: `using` is not lowered for every browser this runs in.
-        const overseer = api.openWorkspace(workspaceId)
-        // Typed as nullable, but never null: it throws instead. Pipelined, so its id comes with it.
-        const gatekeeper = overseer.newGatekeeper(usable.id, resourceUrl) as RpcPromise<GatekeeperClient<never>>
-        try {
-          await overseer.acceptConnectionRequest(request.requestId, { gatekeeperId: await gatekeeper.getId() })
-        } finally {
-          gatekeeper[Symbol.dispose]()
-          overseer[Symbol.dispose]()
-        }
+        await onConnect(usable.id, await collect.collect())
         onOpenChange(false)
         return true
       }}

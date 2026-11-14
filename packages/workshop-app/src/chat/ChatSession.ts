@@ -1,5 +1,5 @@
 import type { RpcStub } from 'capnweb'
-import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, Overseer, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, CapsuleSpecifier, Overseer, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
   gadgetNamer,
@@ -365,11 +365,11 @@ export class ChatSession {
 
   /**
    * Sends a message, or a slash command with the words it is given, to the chat, with `files`
-   * uploaded for a message to carry, and resolves to whether it went, so that whoever drafted it can keep the draft when it did not. The message and the reply
+   * uploaded for a message to carry and the connections in `capsules` given to the chat, and resolves to whether it went, so that whoever drafted it can keep the draft when it did not. The message and the reply
    * come back through the subscription, not from here; a failure is reported in the snapshot's
    * `sendError`.
    */
-  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = []): Promise<boolean> => {
+  send = async (message: string | SlashCommandRequest, modelId: string, files: readonly File[] = [], capsules?: CapsuleSpecifier[]): Promise<boolean> => {
     if (this.options.connection?.blocked()) return false
     const overseer = this.#overseer
     if (!overseer || !this.#loaded) {
@@ -383,14 +383,16 @@ export class ChatSession {
     const run = this.#run
     this.#sendError = undefined
     // Only plain text steers a running agent; the server refuses anything else until it is done.
-    if ((files.length || typeof message !== 'string') && this.#agentActive) {
-      this.#sendError = files.length ? 'Files can be sent once the agent has finished.' : 'Skills can be used once the agent has finished.'
+    if ((files.length || capsules?.length || typeof message !== 'string') && this.#agentActive) {
+      this.#sendError = files.length ? 'Files can be sent once the agent has finished.'
+        : capsules?.length ? 'Connections can be added once the agent has finished.'
+          : 'Skills can be used once the agent has finished.'
       this.#publishReady()
       return false
     }
     try {
       const attachments = await uploadAttachments(overseer, files)
-      await overseer.sendChatMessage(this.chatId, message, modelId, undefined, attachments)
+      await overseer.sendChatMessage(this.chatId, message, modelId, capsules, attachments)
     } catch (error) {
       if (run === this.#run) {
         this.#sendError = messageOf(error)
