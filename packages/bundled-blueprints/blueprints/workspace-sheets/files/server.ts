@@ -152,14 +152,21 @@ interface AgentCommit {
   /** Whether a sheet was renamed or deleted, which editors from before line ids can't follow (see legacyEvent). */
   relabel?: boolean;
 }
-/** A sort another sender's older edits mustn't land on (see CellOp.basis): its lines and when it landed. */
+/** A sort another sender's older edits mustn't land on (see CellOp.basis): its lines (null: every row) and the revision it landed at. */
 interface SortRecord {
   sheetId: string;
   senderId: string | undefined;
   revision: number;
-  rows: Set<number>;
+  rows: Set<number> | null;
   cols: Set<number>;
-  at: number;
+}
+/**
+ * The sorts remembered, as stored at "sorts" (lines as runs of ids), and for each sheet the
+ * newest sort forgotten since: an edit made before that is refused, its cell's fate unknown.
+ */
+interface SortLog {
+  records: { sheetId: string; senderId?: string; revision: number; rows: [number, number][] | null; cols: [number, number][] }[];
+  forgotten: Record<string, number>;
 }
 /** What the agent's presence/subscription arguments may carry; untrusted, so read field by field. */
 interface PresenceInput {
@@ -181,7 +188,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   declare pageSlots: number;
   declare pageWaiters: (() => void)[];
   declare orderCache: { revision: number; orders: Map<string, SheetOrder> } | null;
-  declare sorts: SortRecord[];
+  declare sorts: { records: SortRecord[]; forgotten: Record<string, number> } | null;
 
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
@@ -201,8 +208,9 @@ export class Gadget extends DurableObject<unknown, unknown> {
     this.pageSlots = 2;
     this.pageWaiters = [];
     this.orderCache = null;
-    // Recent sorts, which edits made before them mustn't land on (see sortedSince).
-    this.sorts = [];
+    // Recent sorts, which edits made before them mustn't land on (see sortedSince), read from
+    // storage on first use.
+    this.sorts = null;
   }
 
   async withPageSlot<T>(fn: () => Promise<T>): Promise<T> {
@@ -614,6 +622,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
     }
     const namesBefore = sheetNames(meta);
     const orders = new Map(await this.loadOrders(meta));
+    await this.loadSorts();
     const changedOrders = new Set<string>();
     // The sheet's order, cloned the first time this operation changes it.
     const own = (id: string): SheetOrder => {
@@ -820,7 +829,9 @@ export class Gadget extends DurableObject<unknown, unknown> {
         if (entry.value == null && !entry.fmt) { if (cur) write(id, cells, entry.key, null); }
         else write(id, cells, entry.key, { value: clipValue(entry.value ?? ""), fmt: entry.fmt, version: (cur?.version || 0) + 1 });
       }
-      sortRecords.push({ sheetId: id, senderId: operation.senderId, revision: meta.revision + 1, rows: new Set(sanitizeIds(sort.rows)), cols: new Set(sanitizeIds(sort.cols)), at: Date.now() });
+      const rows = sanitizeIds(sort.rows);
+      // Rows too scattered to keep cheaply are kept as every row.
+      sortRecords.push({ sheetId: id, senderId: operation.senderId, revision: meta.revision + 1, rows: idRuns(new Set(rows)).length > MAX_SORT_RUNS ? null : new Set(rows), cols: new Set(sanitizeIds(sort.cols)) });
     }
     // A sort is computed from the cells as they were; with one of them changed it would put
     // someone's edit in the wrong record, so nothing is applied and the sender sorts again.
@@ -896,11 +907,11 @@ export class Gadget extends DurableObject<unknown, unknown> {
     meta.lastModified = Date.now();
     noteLinesChanged(meta, [...changedOrders].filter((id) => orders.has(id)));
     if (opId) rememberOperation(meta, opId, { conflicts: conflicts.map(({ sheetId, ref }) => ({ sheetId, ref })), gone, sorted, refusedLines });
+    if (sortRecords.length) this.noteSorts(sortRecords, batch);
     batch.put("meta", meta);
     await batch.flush();
     release();
     this.orderCache = { revision: meta.revision, orders };
-    if (sortRecords.length) this.noteSorts(sortRecords);
 
     // The sender already has a replaced sheet's cells; peers get them in the event, or, for a
     // big sheet, `null`, which tells them to load that sheet in pages.
@@ -1005,16 +1016,32 @@ export class Gadget extends DurableObject<unknown, unknown> {
     }
   }
 
-  // Whether a sort by someone else, landed after `basis`, rewrote this cell.
-  sortedSince(sheetId: string, key: string, basis: number, senderId: string | undefined): boolean {
-    const ids = parseCellKey(key);
-    return !!ids && this.sorts.some((sort) => sort.sheetId === sheetId && sort.revision > basis && (sort.senderId === undefined || sort.senderId !== senderId) && sort.rows.has(ids.row) && sort.cols.has(ids.col));
+  async loadSorts(): Promise<NonNullable<Gadget["sorts"]>> {
+    if (this.sorts) return this.sorts;
+    const stored = await this.ctx.storage.get<SortLog>("sorts");
+    const toSet = (runs: [number, number][]) => new Set(runs.flatMap(([start, count]) => Array.from({ length: count }, (_, i) => start + i)));
+    const records = (stored?.records || []).map((record) => ({ sheetId: record.sheetId, senderId: record.senderId, revision: record.revision, rows: record.rows && toSet(record.rows), cols: toSet(record.cols) }));
+    return this.sorts = { records, forgotten: { ...(stored?.forgotten || {}) } };
   }
-  // Sorts are remembered for a while: an edit made before one reaches the server within seconds,
-  // or after a reconnect, which re-reads the sheet first.
-  noteSorts(records: SortRecord[]): void {
-    const now = Date.now();
-    this.sorts = [...this.sorts.filter((sort) => now - sort.at < SORT_MEMORY_MS), ...records].slice(-MAX_SORT_RECORDS);
+  // Whether a sort by someone else, landed after `basis`, rewrote this cell (or may have: a sort
+  // of its sheet since forgotten). Loaded first (loadSorts).
+  sortedSince(sheetId: string, key: string, basis: number, senderId: string | undefined): boolean {
+    const ids = parseCellKey(key), log = this.sorts;
+    if (!ids || !log) return false;
+    if ((log.forgotten[sheetId] ?? -1) > basis) return true;
+    return log.records.some((sort) => sort.sheetId === sheetId && sort.revision > basis && (sort.senderId === undefined || sort.senderId !== senderId) && (!sort.rows || sort.rows.has(ids.row)) && sort.cols.has(ids.col));
+  }
+  // The last MAX_SORT_RECORDS sorts are kept, with the operation that made them.
+  noteSorts(records: SortRecord[], batch: WriteBatch): void {
+    const log = this.sorts!;
+    const all = [...log.records, ...records];
+    for (const old of all.slice(0, Math.max(0, all.length - MAX_SORT_RECORDS))) log.forgotten[old.sheetId] = Math.max(log.forgotten[old.sheetId] ?? -1, old.revision);
+    log.records = all.slice(-MAX_SORT_RECORDS);
+    const stored: SortLog = {
+      records: log.records.map((sort) => ({ sheetId: sort.sheetId, ...(sort.senderId === undefined ? {} : { senderId: sort.senderId }), revision: sort.revision, rows: sort.rows && idRuns(sort.rows), cols: idRuns(sort.cols) })),
+      forgotten: log.forgotten,
+    };
+    batch.put("sorts", stored, JSON.stringify(stored).length);
   }
   // --- Cell API for agents & scripts --------------------------------------
   // Granular, name-friendly methods. Each goes through the mutation queue,
@@ -1985,10 +2012,12 @@ function relabelled(before: Map<string, string>, meta: DocumentMeta): boolean {
   return false;
 }
 
-// A typed value is at most MAX_VALUE_CHARS; its stored form (references as ids) is longer, and is
-// cut, if ever, before a reference rather than through one.
+// A typed value is at most MAX_VALUE_CHARS; its stored form (references as ids) is longer. A
+// reference typed in as few as 3 characters ("A1+") takes at most 38 stored (two 16-digit ids,
+// their `$`s and the token's marks), so MAX_STORED_CHARS holds any typed value whole; only a
+// stored value sent longer than that is cut, before a reference rather than through one.
 const MAX_VALUE_CHARS = 8192;
-const MAX_STORED_CHARS = 32768;
+const MAX_STORED_CHARS = 20 * MAX_VALUE_CHARS;
 function clipValue(value: string): string {
   if (value.length <= MAX_STORED_CHARS) return value;
   const cut = value.slice(0, MAX_STORED_CHARS), open = cut.lastIndexOf("\uE000");
@@ -2021,9 +2050,18 @@ function remainingLineOp(op: LineOp, line: LineOrder): LineOp | null {
   const ids = op.ids.filter((id) => line.isLive(id));
   return ids.length ? { ...op, ids } : null;
 }
-// How long, and how many, recent sorts are remembered (see sortedSince).
-const SORT_MEMORY_MS = 10 * 60 * 1000;
-const MAX_SORT_RECORDS = 50;
+// How many recent sorts are remembered (see sortedSince), and how many runs of rows each may keep.
+const MAX_SORT_RECORDS = 50, MAX_SORT_RUNS = 2000;
+// Ids as runs of consecutive ones: [first, count].
+function idRuns(ids: Iterable<number>): [number, number][] {
+  const runs: [number, number][] = [];
+  for (const id of [...ids].sort((a, b) => a - b)) {
+    const last = runs.at(-1);
+    if (last && id === last[0] + last[1]) last[1]++;
+    else if (!last || id >= last[0] + last[1]) runs.push([id, 1]);
+  }
+  return runs;
+}
 
 // --- Cell storage helpers ---------------------------------------------------
 // What an editor by position may write: a cell a sheet can have (A1:ZZ50000). A cell past it is

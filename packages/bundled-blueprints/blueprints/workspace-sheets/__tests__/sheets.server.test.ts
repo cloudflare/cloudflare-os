@@ -1269,3 +1269,47 @@ describe("a structure snapshot from before a change", () => {
     expect((await gadget.getStructure()).sheets[sheetId].filter).toMatchObject({ sort: { column: 0 } });
   });
 });
+
+describe("sorts", () => {
+  it("still refuse an edit made before them after the gadget restarts", async () => {
+    const storage = new MemoryStorage();
+    const gadget = new Gadget({ storage } as never, {});
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    await gadget.setCells({ cells: { A1: "first", A2: "second" } });
+    const { revision: basis } = await gadget.getStructure();
+    // Another tab sorts the two rows.
+    await gadget.applyOperation({ senderId: "b", lineIds: true, sorts: [{ sheetId, rows: [0, 1], cols: [0], cellOps: [{ sheetId, ref: "0:0", value: "second", fmt: null, baseVersion: 1 }, { sheetId, ref: "1:0", value: "first", fmt: null, baseVersion: 1 }] }] });
+    const restarted = new Gadget({ storage } as never, {});
+    // An edit of "second", made before the sort, reaches the restarted gadget at the cell's version now.
+    expect(await restarted.applyOperation({ senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "1:0", value: "edited second", fmt: null, baseVersion: 2, basis }] })).toMatchObject({ status: "unchanged", sorted: [{ sheetId, ref: "1:0" }] });
+    expect(await values(restarted, "A1:A2")).toEqual([["second"], ["first"]]);
+  });
+
+  it("refuse an edit made before a sort of its sheet that is no longer remembered", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    await gadget.setCells({ cells: { A1: "a", A2: "b" } });
+    const { revision: basis } = await gadget.getStructure();
+    let version = 1;
+    // Enough sorts of B1:B2 that the first is forgotten; none rewrote A2.
+    for (let i = 0; i < 51; i++, version++) {
+      await gadget.applyOperation({ senderId: "b", lineIds: true, sorts: [{ sheetId, rows: [0, 1], cols: [1], cellOps: [{ sheetId, ref: "0:1", value: String(i), fmt: null, baseVersion: version - 1 }] }] });
+    }
+    expect(await gadget.applyOperation({ senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "1:0", value: "late", fmt: null, baseVersion: 1, basis }] })).toMatchObject({ sorted: [{ sheetId, ref: "1:0" }] });
+    // One made after the forgotten sorts is judged by the ones remembered.
+    const { revision } = await gadget.getStructure();
+    expect(await gadget.applyOperation({ senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "1:0", value: "fresh", fmt: null, baseVersion: 1, basis: revision }] })).toMatchObject({ status: "applied" });
+  });
+});
+
+describe("long formulas", () => {
+  it("keep every reference once inserted lines make their stored form much longer", async () => {
+    const gadget = newGadget();
+    await gadget.setCells({ cells: { A1: "7" } });
+    await gadget.insertRows({ at: 1, count: 1 });
+    const sum = "SUM(" + Array.from({ length: 200 }, () => "A1").join(",") + ")";
+    const formula = "=" + Array.from({ length: 8 }, () => sum).join("+");
+    await gadget.setCells({ cells: { A1: "7", B1: formula } });
+    expect(await values(gadget, "B1")).toEqual([[formula]]);
+  });
+});
