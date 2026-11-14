@@ -12,7 +12,7 @@ import {
   type PreviewOAuthState,
 } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
-import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, revokeGoogleToken } from "./google-api";
+import { exchangeAuthCode, getAccessToken, getGoogleAccountDescription, getGoogleAccountProfile, getGoogleVerifiedEmail, GoogleAccessToken, RefreshFailure, revokeGoogleToken } from "./google-api";
 import type { GoogleDocEditSession, GoogleDocReadSession } from "./docs-types";
 import { GoogleDocsApi } from "./docs-api";
 import { GoogleSheetsApi } from "./sheets-api";
@@ -578,6 +578,22 @@ function parseAccountSubresource(subresource: string): AccountSubresource {
   }
 }
 
+/** What a caller is told when Google permanently refuses to refresh the account's access token. */
+function refreshFailureMessage(failure: RefreshFailure): string {
+  if (failure.reason === "policyBlocked") {
+    return "A Google Workspace admin has restricted access this connection needs " +
+        `(${failure.detail}). Ask your administrator to allow it — re-authenticating will not help.`;
+  }
+  // The account's organization limits how long a sign-in lasts for Google Cloud, which a connection
+  // holding a Cloud scope such as BigQuery's is subject to. Only signing in again renews it. Google
+  // names the condition with either subtype.
+  if (failure.subtype === "invalid_rapt" || failure.subtype === "rapt_required") {
+    return "Google needs this account to sign in again: its organization requires a new sign-in " +
+        "for Google Cloud access (such as BigQuery) every so often. Please re-authenticate.";
+  }
+  return "Google credentials have expired or been revoked. Please re-authenticate.";
+}
+
 export class UserAccount extends DurableObject<Env> {
   // Serialize minting, reconnect, and revoke against each other. Minting is a network round trip, so
   // without this a single invalidated token has every concurrent caller mint its own — a burst
@@ -939,14 +955,18 @@ export class UserAccount extends DurableObject<Env> {
       let result = await getAccessToken(refreshToken, clientId, clientSecret,
           AbortSignal.timeout(TOKEN_MINT_TIMEOUT_MS));
       if (!result.ok) {
-        // Both are permanent, so both mark the connection dead. They differ in the remedy:
+        // Google's codes only, never its prose: they tell a revoked or expired grant
+        // (`invalid_grant`) from a Google Cloud session that ran out (`invalid_rapt` or
+        // `rapt_required`).
+        logger.warn("Google refused to refresh an access token", {
+          event: "google.token.mint.refused",
+          providerError: result.reason === "policyBlocked" ? "admin_policy_enforced" : "invalid_grant",
+          ...(result.reason === "revoked" && result.subtype !== undefined
+              ? { providerSubtype: result.subtype } : {}),
+        });
+        // All are permanent, so all mark the connection dead. They differ in the remedy:
         // re-authenticating fixes a revoked grant but cannot grant a scope an admin has blocked.
-        let error = new Error(
-            result.reason === "policyBlocked"
-                ? "A Google Workspace admin has restricted access this connection needs " +
-                  `(${result.detail}). Ask your administrator to allow it — re-authenticating ` +
-                  "will not help."
-                : "Google credentials have expired or been revoked. Please re-authenticate.");
+        let error = new Error(refreshFailureMessage(result));
         // Recorded before notifying so only the first caller of a burst does either.
         this.#mintFailure = { error, at: Date.now() };
         this.#notifyCredentialsDead();

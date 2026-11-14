@@ -38,7 +38,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function safeProviderCode(value: unknown): string | undefined {
+/**
+ * `value` when it is shaped like one of Google's machine-readable codes (`invalid_grant`,
+ * `rateLimitExceeded`), which is safe to log and to show; prose, or anything else, is undefined.
+ */
+export function safeProviderCode(value: unknown): string | undefined {
   return typeof value === "string" && PROVIDER_CODE_PATTERN.test(value) ? value : undefined;
 }
 

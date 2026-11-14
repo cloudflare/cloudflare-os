@@ -10,6 +10,7 @@ import { createMimeMessage } from "mimetext/browser";
 import PostalMime, { addressParser } from "postal-mime";
 import type {Attachment as PostalAttachment} from "postal-mime";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { safeProviderCode } from "./google-response";
 
 /**
  * Internal type for parsed message info with raw label IDs (not yet resolved
@@ -151,7 +152,8 @@ export async function exchangeAuthCode(
 }
 
 export type RefreshFailure =
-  | { ok: false; reason: "revoked" }
+  /** Google's `invalid_grant`. `subtype` is its `error_subtype`, such as `invalid_rapt`, when it sends one. */
+  | { ok: false; reason: "revoked"; subtype?: string }
   | { ok: false; reason: "policyBlocked"; detail: string };
 
 export type AccessTokenResult = { ok: true; token: GoogleAccessToken } | RefreshFailure;
@@ -179,9 +181,12 @@ export async function getAccessToken(
     let isJson = contentType && contentType.startsWith("application/json");
 
     if (isJson) {
-      let body = await response.json<{error?: string, error_description?: string}>();
+      let body = await response.json<{
+        error?: string, error_description?: string, error_subtype?: unknown,
+      }>();
       if (body.error === "invalid_grant") {
-        return { ok: false, reason: "revoked" };
+        let subtype = safeProviderCode(body.error_subtype);
+        return { ok: false, reason: "revoked", ...(subtype !== undefined ? { subtype } : {}) };
       }
       if (body.error === "admin_policy_enforced") {
         return { ok: false, reason: "policyBlocked",

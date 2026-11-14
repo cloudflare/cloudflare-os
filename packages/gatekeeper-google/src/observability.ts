@@ -23,8 +23,12 @@ export type GoogleObservabilityFields = {
   pdfBytes: number;
   provider: string;
   providerCode: number;
+  /** The `error` code of a refused OAuth token request, such as `invalid_grant`. */
+  providerError: string;
   providerReasons: string[];
   providerStatus: string;
+  /** The `error_subtype` code of a refused OAuth token request, such as `invalid_rapt`. */
+  providerSubtype: string;
   userObjectId: string;
   vendorId: string;
 };
