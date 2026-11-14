@@ -62,8 +62,9 @@ disposer).
 - **`createSubscriber(RpcTarget, callbacks)`** -- an instance of the host's `RpcTarget` whose
   prototype carries each callback, since the RPC layer exposes prototype methods and never own
   properties. A `[Symbol.dispose]` callback is kept as well: the RPC layer calls it when the server
-  drops the subscriber, which is when a gadget subscribes again. The class comes from the gadget's bootstrap, which a library cannot import, so the
-  gadget passes it in the way it passes its `gadget` stub.
+  drops the subscriber, which is when the gadget subscribes again or a broadcast to it fails. The
+  class comes from the gadget's bootstrap, which a library cannot import, so the gadget passes it
+  in the way it passes its `gadget` stub.
 - **`collaboratorFor(clientId)`** -- the guest identity a tab declares for itself.
 
 Nothing on the client side touches the DOM; every module runs in Node under its tests.

@@ -165,7 +165,7 @@ describe("agent cell API", () => {
     await expect(failure(() => gadget.setCell({ ref: "A50001", value: 5 }))).rejects.toThrow("Cell out of range: A50001");
     await expect(failure(() => gadget.readRange({ range: "A1:Z50000" }))).rejects.toThrow("Range too large to read at once");
     await expect(failure(() => gadget.deleteSheet({}))).rejects.toThrow("A workbook needs at least one sheet");
-    // Nothing above was written.
+    // Only the valid addChart above wrote.
     expect((await gadget.getDocument()).revision).toBe(1);
   });
 
