@@ -22,23 +22,27 @@ const MISSING_MAIN = "client.js's default export has no main() function. Start t
   '`export default { main(gadget) { ... } }`.'
 const runtimeUrl = (callsMain: boolean) => `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
-// The gadget's server-side Durable Object, and the page's GadgetHost: the properties of the main
-// object of the frame's one RPC session with the page (GadgetFrameRoot).
-let gadget, host;
+// The main object of the frame's one RPC session with the page (GadgetFrameRoot), and its
+// properties: the gadget's server-side Durable Object, and the page's GadgetHost.
+let root, gadget, host;
 {
   let {port1, port2} = new MessageChannel();
   window.parent.postMessage("handshake", "*", [port2]);
-  let root = newMessagePortRpcSession(port1);
+  root = newMessagePortRpcSession(port1);
   gadget = root.gadget;
   host = root.host;
 }
+
+// Settles a call to the page whose result the runtime ignores, so nothing stays held on either
+// end. A failed call is dropped, since reporting it would make another call.
+let notify = call => { call.then(() => {}, () => {}); };
 ${callsMain ? '' : `
 globalThis.gadget = gadget;
 globalThis.RpcTarget = RpcTarget;
 globalThis.RpcStub = RpcStub;
 `}
 
-// Monkey-patch console to forward logs to the parent frame.
+// Monkey-patch console to forward logs to the page.
 for (let level of ['debug', 'info', 'log', 'warn', 'error']) {
   let original = console[level];
   console[level] = (...args) => {
@@ -49,7 +53,7 @@ for (let level of ['debug', 'info', 'log', 'warn', 'error']) {
         try { return JSON.stringify(arg); }
         catch { return String(arg); }
       });
-      window.parent.postMessage({ type: 'console', level, message }, '*');
+      notify(root.reportConsole(level, message));
     } catch {};
   };
 }
@@ -65,13 +69,11 @@ try {
   Window.prototype.open = blockedOpen;
 } catch {}
 
-// Forward Escape key presses to the parent frame. The sandboxed iframe captures keydown events
-// when it has focus, so the parent never sees them. The workshop UI uses Escape to exit fullscreen
-// gadget mode, so forward it explicitly.
+// Forward Escape key presses to the page. The sandboxed iframe captures keydown events when it
+// has focus, so the page never sees them. The workshop UI uses Escape to exit fullscreen gadget
+// mode, so forward it explicitly.
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    window.parent.postMessage({ type: 'escape' }, '*');
-  }
+  if (event.key === 'Escape') notify(root.escape());
 }, true);
 
 window.addEventListener('click', (event) => {
@@ -93,9 +95,7 @@ window.addEventListener('click', (event) => {
 // module graph that fails to fetch fires a non-bubbling error only on its <script> element. An
 // ErrorEvent's location is sent on its own because a SyntaxError's stack carries none; the parent
 // names the file.
-let reportError = (message, at) => {
-  window.parent.postMessage({ type: 'console', level: 'error', message, at }, '*');
-};
+let reportError = (message, at) => notify(root.reportConsole('error', message, at));
 window.addEventListener('error', (event) => {
   if (event instanceof ErrorEvent) {
     reportError(['Uncaught', event.error?.stack || event.message],
@@ -129,16 +129,28 @@ const MAIN_RUNTIME_URL = runtimeUrl(true)
 // The Workshop as a gadget UI's host.
 class WorkshopGadgetHost extends RpcTarget implements GadgetHost {}
 
+// Where a console call or uncaught error happened in the frame, as the browser reported it.
+type ConsoleLocation = { url?: string; line?: number; column?: number }
+
+// What the frame's runtime reports to the page, apart from anything gadget code calls.
+type FrameEvents = {
+  reportConsole(level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation): void
+  escape(): void
+}
+
 // The main object of the frame's RPC session. The frame reaches the gadget's server and the host
-// through one session, so a capability passed between them never proxies through the frame.
+// through one session, so a capability passed between them never proxies through the frame. Its
+// methods are the runtime's, which keeps the root out of gadget code's reach.
 class GadgetFrameRoot extends RpcTarget {
   readonly #gadget: RpcTarget
   readonly #host: GadgetHost
+  readonly #events: FrameEvents
 
-  constructor(gadget: RpcTarget, host: GadgetHost) {
+  constructor(gadget: RpcTarget, host: GadgetHost, events: FrameEvents) {
     super()
     this.#gadget = gadget
     this.#host = host
+    this.#events = events
   }
 
   get gadget() {
@@ -147,6 +159,14 @@ class GadgetFrameRoot extends RpcTarget {
 
   get host() {
     return this.#host
+  }
+
+  reportConsole(level: ConsoleLogEvent['level'], message: string[], at?: ConsoleLocation) {
+    this.#events.reportConsole(level, message, at)
+  }
+
+  escape() {
+    this.#events.escape()
   }
 }
 
@@ -400,6 +420,26 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, retryNonce])
 
+  // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
+  const frameEvents: FrameEvents = {
+    reportConsole: (level, message, at) => {
+      let location: string | undefined
+      if (at?.url) {
+        // Chrome names a module by its sourceURL; other browsers may give its data: URL. One not
+        // in the bundle, like the runtime's, can embed hundreds of KB, so it isn't echoed whole.
+        const path = pathsByUrlRef.current.get(at.url) ??
+          (at.url.startsWith('data:') ? `${at.url.slice(0, 40)}…` : at.url)
+        location = at.line ? `${path}:${at.line}:${at.column}` : path
+      }
+      onConsoleLogRef.current?.({
+        timestamp: new Date(),
+        level,
+        message: location ? [...message, `at ${location}`] : message,
+      })
+    },
+    escape: () => onIframeEscapeRef.current?.(),
+  }
+
   // Effect to handle iframe RPC handshake
   useEffect(() => {
     let cancelled = false
@@ -446,7 +486,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
             },
           })
           rpcSessionRef.current = newMessagePortRpcSession(
-              port, new GadgetFrameRoot(forwardingTarget, new WorkshopGadgetHost()))
+              port, new GadgetFrameRoot(forwardingTarget, new WorkshopGadgetHost(), frameEvents))
         } catch (caught) {
           gadgetStub?.[Symbol.dispose]?.()
           port.close()
@@ -456,23 +496,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         } finally {
           if (handshakePendingRef.current === generation) handshakePendingRef.current = null
         }
-      } else if (event.data?.type === 'console' && onConsoleLogRef.current) {
-        const { level, message, at } = event.data
-        let location: string | undefined
-        if (at?.url) {
-          // Chrome names a module by its sourceURL; other browsers may give its data: URL. One not
-          // in the bundle, like the runtime's, can embed hundreds of KB, so it isn't echoed whole.
-          const path = pathsByUrlRef.current.get(at.url) ??
-            (at.url.startsWith('data:') ? `${at.url.slice(0, 40)}…` : at.url)
-          location = at.line ? `${path}:${at.line}:${at.column}` : path
-        }
-        onConsoleLogRef.current({
-          timestamp: new Date(),
-          level,
-          message: location ? [...message, `at ${location}`] : message,
-        })
-      } else if (event.data?.type === 'escape') {
-        onIframeEscapeRef.current?.()
       }
     }
 

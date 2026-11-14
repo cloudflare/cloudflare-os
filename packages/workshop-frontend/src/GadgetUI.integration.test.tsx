@@ -39,6 +39,9 @@ interface TestGadget {
 interface TestFrameRoot {
   gadget: TestGadget
   host: object
+  reportConsole(level: ConsoleLogEvent['level'], message: string[],
+                at?: { url?: string; line?: number; column?: number }): void
+  escape(): void
 }
 
 interface TestChild {
@@ -756,16 +759,12 @@ describe('GadgetUI bundle errors and modules', () => {
     await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
     const iframe = container.querySelector('iframe')!
 
-    window.dispatchEvent(new MessageEvent('message', {
-      data: {
-        type: 'console',
-        level: 'error',
-        message: ['Uncaught', 'Error: boom'],
-        at: { url: importMapOf(iframe)['gadget:ui/list.js'], line: 2, column: 9 },
-      },
-      origin: 'null',
-      source: iframe.contentWindow,
-    }))
+    // As the frame's runtime reports it.
+    const { port1, port2 } = new MessageChannel()
+    using frame = newMessagePortRpcSession<TestFrameRoot>(port1)
+    dispatchIframeHandshake(iframe, port2)
+    await frame.reportConsole('error', ['Uncaught', 'Error: boom'],
+        { url: importMapOf(iframe)['gadget:ui/list.js'], line: 2, column: 9 })
 
     expect(onConsoleLog).toHaveBeenCalledWith(
       expect.objectContaining({ level: 'error', message: ['Uncaught', 'Error: boom', 'at ui/list.js:2:9'] }),

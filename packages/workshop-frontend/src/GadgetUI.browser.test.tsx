@@ -32,7 +32,7 @@ afterEach(async () => {
 })
 
 // Runs `bundle` in a frame, returning each console message the UI reports, as one string.
-const run = async (bundle: UiBundle) => {
+const run = async (bundle: UiBundle, onIframeEscape?: () => void) => {
   const logs: string[] = []
   const gadget = {
     getUiBundle: async () => bundle,
@@ -40,7 +40,9 @@ const run = async (bundle: UiBundle) => {
   } as unknown as RpcStub<GadgetClient>
   const onConsoleLog = (log: ConsoleLogEvent) => logs.push(log.message.join(' '))
   await act(async () => {
-    root.render(<GadgetUI gadget={gadget} height="100px" onConsoleLog={onConsoleLog} />)
+    root.render(
+      <GadgetUI gadget={gadget} height="100px" onConsoleLog={onConsoleLog} onIframeEscape={onIframeEscape} />,
+    )
   })
   return logs
 }
@@ -87,4 +89,13 @@ it('reports a default export with no main()', async () => {
   const logs = await run({ modules: [{ path: 'client.js', code: 'export default {};' }] })
 
   await expect.poll(() => logs.join('\n')).toMatch(/default export has no main\(\) function/)
+})
+
+it('forwards Escape pressed in the frame to the page', async () => {
+  let escapes = 0
+  await run({
+    jsCode: `window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));`,
+  }, () => escapes++)
+
+  await expect.poll(() => escapes).toBe(1)
 })
