@@ -1876,7 +1876,8 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   if (pendingStructure === sentStructure) pendingStructure = null;
   for (const [sheetId, cells] of sentReplacements) {
     const landed = result.structure?.sheets[sheetId]?.layout;
-    if (landed !== undefined && model.sheets[sheetId]) model.sheets[sheetId].layout = landed;
+    // A later move heard before this reply keeps its layout.
+    if (landed !== undefined && model.sheets[sheetId]) model.sheets[sheetId].layout = Math.max(model.sheets[sheetId].layout || 0, landed);
     if (pendingReplacements.get(sheetId) === cells) {
       pendingReplacements.delete(sheetId); replacementMoves.delete(sheetId);
       // Edits typed while the replacement was out are addressed in the layout it made.
@@ -7226,16 +7227,19 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
     }
     return value;
   };
+  // A changed edit is a new entry, so a save already carrying the old one doesn't clear it.
   let dropped = 0;
   const ops = [...pendingCellOps.values()];
   pendingCellOps.clear();
-  for (const op of ops) {
+  for (let op of ops) {
     if (op.sheetId === sheetId) {
       const ref = moves ? place(op.ref) : op.ref;
       if (!ref) { dropped++; continue; }
-      op.value = rewrite(op.value, true, op.ref, ref);
-      op.ref = ref; op.addressedIn = sheet.layout;
-    } else op.value = rewrite(op.value, false, op.ref, op.ref);
+      op = { ...op, value: rewrite(op.value, true, op.ref, ref), ref, addressedIn: sheet.layout };
+    } else {
+      const value = rewrite(op.value, false, op.ref, op.ref);
+      if (value !== op.value) op = { ...op, value };
+    }
     pendingCellOps.set(op.sheetId + "!" + op.ref, op);
   }
   if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");

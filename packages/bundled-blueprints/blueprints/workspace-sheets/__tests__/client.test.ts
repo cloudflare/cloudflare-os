@@ -151,6 +151,42 @@ describe("sync", () => {
     expect(shown("A3")).toBe("edited");
   });
 
+  it("keeps a later move's layout when an older save of its sheet is acknowledged", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    // This tab inserts a row; its replacement is out.
+    document.querySelector<HTMLElement>('td.cell[data-ref="A1"]')!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Insert row above"))!.click();
+    await settle();
+    expect((h.gadget.applyOperation.mock.calls[0][0] as Operation).sheetReplacements).toHaveLength(1);
+    // An agent's insert commits after it, and its event arrives before this tab's reply.
+    h.callbacks.operation({ ...remoteEvent({ ...meta, layout: 3 }, 3, { replacedSheets: ["s1"], replacedCells: { s1: { A3: cell("first") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), senderId: "agent" });
+    save.resolve({ status: "applied", revision: 2, conflicts: [], structure: structure({ ...meta, layout: 2 }) });
+    await settle();
+    typeIntoActiveCell("edited");
+    await settle();
+    expect((h.gadget.applyOperation.mock.calls.at(-1)![0] as Operation).cellOps?.[0]).toMatchObject({ value: "edited", layout: 3 });
+  });
+
+  it("resends a pending formula another sheet's move rewrote while its save was out", async () => {
+    const data = { ...sheet("s1"), name: "Data" }, other = sheet("s2");
+    const both = { title: "Book", sheetOrder: ["s2", "s1"], sheets: { s1: data, s2: other } };
+    const h = await loadClient(other, {}, { ...both, cells: { s1: { A1: cell("7") }, s2: {} } });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    typeIntoActiveCell("=Data!A1*2");
+    await settle(); // the save is out with the old reference
+    expect((h.gadget.applyOperation.mock.calls[0][0] as Operation).cellOps?.[0]?.value).toBe("=Data!A1*2");
+    // A row inserted above Data!A1 commits first; the server still accepts the old text.
+    h.callbacks.operation({ ...remoteEvent(other, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("7") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), structure: { ...both, sheets: { s1: { ...data, layout: 2 }, s2: other } } });
+    save.resolve({ status: "applied", revision: 3, conflicts: [], upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Data!A1*2") }], deletes: [] });
+    await settle();
+    expect(h.gadget.applyOperation).toHaveBeenCalledTimes(2);
+    expect((h.gadget.applyOperation.mock.calls[1][0] as Operation).cellOps).toEqual([{ sheetId: "s2", ref: "A1", value: "=Data!A2*2", fmt: null, baseVersion: 1, layout: 0 }]);
+  });
+
   it("drops an unsaved edit on a row someone else deleted, and moves a formula's references with the rows", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first"), A2: cell("second"), A3: cell("third") });
