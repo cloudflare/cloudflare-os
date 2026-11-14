@@ -9207,9 +9207,10 @@ class OverseerImpl implements AgentHooks {
 
     // Agent spawner bindings: workpiece IDs are workspace-local, so a spawner's env transfers
     // symbolically (see SpawnerEnvTarget). Each env entry references the exporting gadget
-    // itself, one of the gadget's own bindings by name, or -- for a target bound by no edge --
-    // an additional top-level binding synthesized just to feed the spawner (marked
-    // `spawnerOnly`), which the user fills at instantiation time like any other binding.
+    // itself, one of the gadget's own bindings by name, an ambient resource by vendor, or -- for
+    // another target bound by no edge -- an additional top-level binding synthesized just to feed
+    // the spawner (marked `spawnerOnly`), which the user fills at instantiation time like any
+    // other binding.
     for (let {bindingName, spec, spawnerBindings, base, suggestValue} of spawnerEdges) {
       let env: Record<string, SpawnerEnvTarget> = {};
       for (let [envName, {target}] of spawnerBindings) {
@@ -9262,6 +9263,8 @@ class OverseerImpl implements AgentHooks {
           // targeting the same workpiece references it instead of synthesizing a duplicate.
           edgeNameByTarget.set(target, synthName);
           env[envName] = {type: "binding", name: synthName};
+        } else if (targetSpec?.type === "ambient") {
+          env[envName] = {type: "ambient", vendorId: targetSpec.vendorId};
         } else {
           throw new Error(`Cannot create a blueprint: agent spawner binding "${bindingName}" ` +
               `gives its agents access to a resource ("${envName}") of a kind that blueprints ` +
@@ -11750,6 +11753,15 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // (A write, so deliberately not retried -- a reset can't distinguish "never applied" from
     // "applied, response lost".)
     await owner().setWorkspaceLastActive(this.ctx.id.toString(), new Date(), undefined);
+  }
+
+  /**
+   * The workspace's ambient gatekeeper for `vendorId`, which
+   * AuthenticatedApi.newWorkspaceFromBlueprint() gives to agent spawners (see SpawnerEnvTarget).
+   */
+  ambientGatekeeperId(vendorId: string): WorkpieceId | undefined {
+    return [...this.impl.storage.gatekeepers.list()].find(gk =>
+        gk.creationSpec?.type === "ambient" && gk.creationSpec.vendorId === vendorId)?.id;
   }
 
   async startGatekeeperSession(

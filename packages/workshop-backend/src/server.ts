@@ -610,7 +610,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
     // Phase two: agent spawners, with the full AgentSpawnerConfig reconstructed -- displayName
     // from the binding's title, modelId from the assignment, and env resolved against the
-    // phase-one gatekeepers and the new gadget.
+    // phase-one gatekeepers, the new gadget, and the ambient gatekeepers the workspace's first
+    // open provisioned (see OverseerDurableObject.open()).
     for (let [bindingName, assignment] of Object.entries(bindings)) {
       if (assignment.type !== "agentSpawner") continue;
       let blueprintBinding = blueprintBindings.get(bindingName);
@@ -622,6 +623,13 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       for (let [envName, target] of Object.entries(blueprintBinding.env)) {
         if (target.type === "gadget") {
           env[envName] = gadgetId;
+        } else if (target.type === "ambient") {
+          let id = await overseerDo.ambientGatekeeperId(target.vendorId);
+          if (id === undefined) {
+            throw new Error(`Agent spawner binding "${bindingName}" gives its agents ` +
+                `"${envName}" from "${target.vendorId}", which isn't available to you.`);
+          }
+          env[envName] = id;
         } else {
           let id = createdIds.get(target.name);
           if (id === undefined) {
