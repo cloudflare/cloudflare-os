@@ -3964,12 +3964,112 @@ export interface Overseer extends RpcTarget {
    * Subscribe to the gadget worker's console logs. This allows the user to observe console logs
    * being produced by the gadget.
    *
-   * At present, logs are not stored, so the only way to see them is to be subscribed when they
-   * happen.
+   * Console calls are not stored, so the only way to see them is to be subscribed when they
+   * happen. Only the exceptions a gadget did not catch are kept: see readGadgetErrors().
    *
    * To unsubscribe, dispose the returned stub.
    */
   subscribeToConsoleLogs(subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>>;
+
+  /**
+   * Read one page of the workspace's gadget error log, newest first by the order its entries
+   * were kept in. Console calls are not kept, at any level.
+   *
+   * A "server" entry is one of two things. An exception that the runtime reported for the
+   * gadget's worker outside the result of any call: a rejected `ctx.waitUntil()` promise, a
+   * throw in a timer callback. Or the error of a call to the gadget that failed, when the call
+   * was made through the Workshop: on a stub from connectToGadget(), through a binding to the
+   * gadget (another gadget's or an agent's), by the gadget's ExportHandler on the gadget it is
+   * handed, or by a hook's firing on the callback stored with the hook, a scheduled task's
+   * included. A firing's error is kept for the gadget that listHooks() names for the hook, under
+   * the chat whose version of that gadget was running, whether the callback is that gadget's or
+   * an agent's: the Workshop cannot tell which, so the failure of an agent's callback (its chat
+   * was deleted, say) reads as the error of a gadget whose code did not run. The Workshop's own
+   * two calls to the gadget's ExportHandler, getExportFormats() and export(), are kept the same
+   * way when they fail, their method written "at ExportHandler.export()": what the handler
+   * threw, the Workshop's refusal of formats it returned, a timeout, or a worker that did not
+   * start. The last fails the call whether or not the gadget has an ExportHandler, so a gadget
+   * whose server fails to load keeps one entry for each read of its export formats (each
+   * opening of its export menu, each export) with no method of it called. A failure that the
+   * handler lets escape from a call it made on the gadget is kept twice, as that call's and as
+   * the handler's. A gadget whose worker starts and that has no ExportHandler keeps nothing for
+   * it. A call on an object that one of those calls returned is not one of them, and is not
+   * kept (see below). The error is kept whoever raised it, so it can be the Workshop's own and
+   * not the gadget's, such as that of a call to a method the gadget does not have, or of a call
+   * in flight when the gadget was restarted to run other code, which starts "Gadget restarted"
+   * ("Gadget restarted to test proposed changes.", "Gadget restarted due to code update."). A
+   * throw of the gadget's constructor is both things: it fails the call and the runtime reports
+   * it, so a call that starts such a gadget keeps two entries. A later call on the same stub
+   * fails the same way with no constructor run, and keeps one.
+   *
+   * Not kept: a promise rejection that nothing in the gadget's worker handles, which the runtime
+   * reports nowhere; what a stream that the ExportHandler's export() returned fails with after
+   * the call returned it; the errors of the gadget's UI while the Workshop renders it for an
+   * export, which no session's browser runs; and the error of a call that does not pass the
+   * Workshop: one made on an object that a method of the gadget returned (a session or a
+   * handle, whose methods its holder then calls; likewise a stream that fails after it was
+   * returned), on an object that the gadget passed as an argument of a call it made (a
+   * subscriber or a callback handed to a binding), on a stored callback (a stub from the
+   * gadget's `ctx.restore()`) by anything but a hook's firing, such as an agent that was handed
+   * the stub, or on a capability that a callback returned. The caller of such a call still gets
+   * the error.
+   *
+   * A "client" entry is an uncaught error that a session reported for a gadget's UI (see
+   * reportGadgetErrors()).
+   *
+   * At most 30 errors a minute are kept for one gadget of each of three kinds: the exceptions
+   * the runtime reported, the calls that failed, and what sessions report. The kinds are
+   * counted apart, so none uses up another's minute, and as they arrive. The exceptions of one
+   * request to a gadget arrive together when the request ends, so a long-lived request that had
+   * more than 30 keeps 30 and a marker, however far apart they happened. The first error of a
+   * kind dropped in a minute brings a marker, an entry of the same source whose text is "1 error
+   * dropped" or "<n> errors dropped": the count is of the errors of that kind dropped since the
+   * gadget's last marker for it. Those dropped after it in that minute are counted by the next
+   * marker, which is kept only if an error of that gadget and kind arrives again in a later
+   * minute while the workspace still holds the count in memory. So a marker says that errors
+   * were dropped, and its count can be far fewer than were. Nothing but its text tells a marker
+   * from an error, and a gadget or a browser can write that text.
+   *
+   * An entry is kept for 72 hours from when it was kept, whatever its own `time` says, and the
+   * oldest go sooner once the entries of one gadget count past 1 MB or those of the workspace
+   * past 5 MB. "client" entries have a fifth of each bound to themselves, 200 KB and 1 MB, and
+   * "server" entries the rest, so what browsers report never pushes out what the Workshop caught.
+   * Within the "server" part nothing is set apart: the exceptions the runtime reported and the
+   * calls that failed share it. So whoever keeps making calls to a gadget fail, a collaborator
+   * who may only use it included, pushes out the gadget's own exceptions: at 30 long errors a
+   * minute, all of them in about seven minutes. The limit of 30 bounds how fast entries are
+   * kept, not which entries stay.
+   * An entry counts as an estimate of what it takes in storage (docs/gadget-error-log.md).
+   * Deleting a gadget leaves its entries, listed by its id until they expire. Deleting the
+   * workspace deletes them all.
+   *
+   * Page size is a server constant. Pages are full until the last: absence of `nextCursor` means
+   * there is nothing older. Throws for a malformed `cursor`.
+   *
+   * Requires "build" access.
+   */
+  readGadgetErrors(query?: GadgetErrorQuery): Promise<GadgetErrorPage>;
+
+  /**
+   * Report errors that a gadget's UI did not catch in this session's browser. `gadgetId` is the
+   * gadget, and `chatId` the chat whose draft of it the UI was showing, or null for its mainline.
+   * Each is kept in the workspace's gadget error log (readGadgetErrors()) with source "client",
+   * under this session's user and the time the call arrived. The texts are whatever the browser
+   * sent, so they prove nothing about the gadget.
+   *
+   * A call records at most MAX_GADGET_ERRORS_PER_CALL errors, and at most 30 a minute are kept
+   * for one gadget across everyone reporting for it. Errors over either limit are dropped, with
+   * the marker readGadgetErrors() describes, kept under the user and the chat of the call that
+   * brought it. Reported errors are not delivered to subscribeToConsoleLogs() subscribers.
+   *
+   * The call returns once its errors are kept. It throws when the log could not be written: the
+   * call's errors are then lost, and a client waits before it reports again.
+   *
+   * Throws if there is no such gadget or chat. A collaborator who may only use gadgets may report
+   * for a gadget their access includes, with `chatId` null.
+   */
+  reportGadgetErrors(gadgetId: WorkpieceId, chatId: number | null,
+                     entries: ReportedGadgetError[]): Promise<void>;
 
   // --- Blueprint management ---
   //
@@ -5731,6 +5831,134 @@ export type ConsoleLogEvent = {
 }
 
 /**
+ * The most characters of `text` a GadgetErrorEntry keeps: a longer text is cut to this length, its
+ * last character replaced with "…".
+ */
+export const MAX_GADGET_ERROR_TEXT_LENGTH = 2000;
+
+/**
+ * The most characters of an error's text that are read to make an entry's `text`: twice what is
+ * kept, so that redaction sees the whole of a token that straddles the cut. The Workshop sends no
+ * more than this per error.
+ */
+export const MAX_REPORTED_GADGET_ERROR_TEXT_LENGTH = 2 * MAX_GADGET_ERROR_TEXT_LENGTH;
+
+/**
+ * The most errors one Overseer.reportGadgetErrors() call records: the ones after them are
+ * dropped.
+ */
+export const MAX_GADGET_ERRORS_PER_CALL = 10;
+
+/**
+ * One entry of a workspace's gadget error log, as the Workshop keeps it: bounded, with
+ * token-shaped strings redacted. An entry is an error of a gadget's code that nothing in the
+ * gadget caught, as far as the Workshop sees one (Overseer.readGadgetErrors() says which it sees
+ * and which it does not), or a marker standing for errors that were dropped instead of kept. A
+ * marker is an entry like any other, told apart only by its `text`, which a gadget or a browser
+ * can imitate. Console calls are not kept, at any level: they reach only the subscribers of
+ * Overseer.subscribeToConsoleLogs(), while they happen.
+ *
+ * Entries are kept in the workspace's gadget error log, which Overseer.readGadgetErrors() reads
+ * (see docs/gadget-error-log.md).
+ */
+export type GadgetErrorEntry = {
+  /**
+   * When, by the Workshop's clock: when the exception happened for a "server" entry, when the
+   * report arrived for a "client" one, which is after the error by as long as the browser took
+   * to report it. A marker has the time it was written.
+   */
+  time: Date;
+
+  /**
+   * The gadget the error is kept for: the one whose code threw or that was being called, as far
+   * as the Workshop knows it (Overseer.readGadgetErrors() says where it does not).
+   */
+  gadgetId: WorkpieceId;
+
+  /**
+   * The chat whose draft of the gadget the code ran as, or null for the gadget's mainline. A chat
+   * that proposes no change to the gadget runs its mainline, so its exceptions are kept with
+   * null.
+   */
+  chatId: number | null;
+
+  /**
+   * Where the exception was caught: "server" by the Workshop, running the gadget's worker,
+   * "client" by a browser showing the gadget's UI. It does not say who chose the `text`, nor that
+   * the gadget's code threw it. A "server" entry can be the Workshop's own failure of a call
+   * (see Overseer.readGadgetErrors()), and it can hold what a caller sent: the error of a failed
+   * call names the method that was called, and a gadget's error can repeat its arguments. A
+   * "client" entry is unverified: its `text` is whatever that browser reported (see
+   * Overseer.reportGadgetErrors()), so nothing vouches for it.
+   */
+  source: "server" | "client";
+
+  /**
+   * On a "client" entry, the `AiChatAuthorInfo.id` of the user whose session reported it, as the
+   * Workshop knows that session and not as the browser said: the user whose browser ran the
+   * gadget's code, which says nothing of who wrote the text. Absent on a "server" entry.
+   */
+  userId?: string;
+
+  /**
+   * What was thrown, as text. For an exception the runtime reported for the gadget's worker, its
+   * name and message, with its stack where the runtime gives one. For a call to the gadget that
+   * failed, the error as text ("Error: message") and, on a line of its own, the method that was
+   * called ("    at method()"), which a hook's function-valued callback does not have. When what
+   * the call threw was neither an Error nor a string, only its kind is kept: "[object Object]"
+   * for a thrown object, whose members are not read. For a "client" entry, what the browser
+   * reported: a label and the error's stack or message. For a marker, "1 error dropped" or
+   * "<n> errors dropped".
+   *
+   * It is kept with token-shaped strings (bearer and basic credentials, `sk-` keys, JSON Web
+   * Tokens, PEM private keys, the password in a URL, and the values of URL parameters and JSON
+   * members named like a secret) replaced by "[redacted]", then cut to
+   * MAX_GADGET_ERROR_TEXT_LENGTH characters, the last of them "…" when anything was cut. The
+   * redaction is a backstop against a credential in an error message: the text may hold anything
+   * else the gadget handles.
+   */
+  text: string;
+};
+
+/**
+ * One uncaught error of a gadget's UI as Overseer.reportGadgetErrors() takes it: its text and
+ * nothing else. The Workshop keeps it with source "client", adding the gadget, the chat, the
+ * session's user and the time the report arrived itself, so that a browser chooses none of them.
+ */
+export type ReportedGadgetError = {
+  /**
+   * The error's message, with its stack where there is one. Neither redacted nor cut: the
+   * Workshop does both when it keeps the entry, reading the first
+   * MAX_REPORTED_GADGET_ERROR_TEXT_LENGTH characters.
+   */
+  text: string;
+};
+
+/** Which entries Overseer.readGadgetErrors() returns. The filters combine. */
+export type GadgetErrorQuery = {
+  /** Only this gadget's entries. An id that names no gadget, or a deleted one, is not an error. */
+  gadgetId?: WorkpieceId;
+  /**
+   * Only entries kept under this chat, or with null only those kept under no chat: a gadget's
+   * mainline (see GadgetErrorEntry.chatId). Absent, entries are listed whatever their chat. An id
+   * that names no chat, or a deleted one, is not an error.
+   */
+  chatId?: number | null;
+  /** Only entries from this source. */
+  source?: GadgetErrorEntry["source"];
+  /** The previous page's `nextCursor`; absent for the first page. */
+  cursor?: string;
+};
+
+/** One page of Overseer.readGadgetErrors(). */
+export type GadgetErrorPage = {
+  /** The page's entries, newest first by the order they were kept in. */
+  entries: GadgetErrorEntry[];
+  /** Pass as `cursor` for the next-older page; absent once there is none. */
+  nextCursor?: string;
+};
+
+/**
  * Summary of one workpiece, delivered via Overseer.subscribeToWorkpieces(), discriminated by
  * `type`. Gadgets and worktrees are published (gatekeeper workpieces -- chat capsules, ambient
  * singletons, connections -- are not listed). Worktrees are published only to subscriptions that
@@ -6342,9 +6570,11 @@ export interface WorkpieceClient extends RpcTarget {
    * Delete this workpiece (a gadget or a gatekeeper), permanently removing it from the workspace.
    *
    * For a gadget, this deletes its registry entry (including its binding map) and hooks and
-   * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget. For
-   * a gatekeeper, this destroys the connection itself -- distinct from merely unbinding it from
-   * one gadget (GadgetClient.unbind()).
+   * clears its files; gatekeepers it bound survive, possibly no longer bound by any gadget.
+   * The entries the workspace's gadget error log holds for it survive too:
+   * Overseer.readGadgetErrors() lists them by its id until they expire. For a gatekeeper, this
+   * destroys the connection itself -- distinct from merely unbinding it from one gadget
+   * (GadgetClient.unbind()).
    */
   remove(): Promise<void>;
 }
@@ -6542,8 +6772,9 @@ export interface GatekeeperClient<Session extends RpcCompatible<Session>> extend
  * - "build": full access -- edit code, use and participate in chats, manage bindings, etc. (the
  *   same access the owner has, modulo the owner-only exceptions documented in sharing.md).
  * - "use": may only render, interact with, and export the deployed UIs of certain gadgets
- *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()), plus read basic
- *   metadata. Which gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
+ *   (getUiBundle(), connectToGadget(), getExportFormats(), and export()) and report the errors
+ *   those UIs did not catch (Overseer.reportGadgetErrors()), plus read basic metadata. Which
+ *   gadgets is part of the grant (see CollaboratorGrant, CollaboratorAccess).
  */
 export type CollaboratorRole = "build" | "use";
 

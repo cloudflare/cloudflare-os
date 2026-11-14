@@ -75,11 +75,12 @@ async function outcomes<T>(calls: Calls<T>, target: T) {
 const allDenied = (calls: object) =>
   Object.fromEntries(Object.keys(calls).map(name => [name, DENIED]));
 
-// What renders the gadget UI, plus the inert action/console reads. Everything else must be
-// classified below, so a new Overseer or GadgetClient method fails to compile until it is.
+// What renders the gadget UI, plus the inert action/console reads and the report of that UI's
+// uncaught errors. Everything else must be classified below, so a new Overseer or GadgetClient
+// method fails to compile until it is.
 type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" |
     "subscribeToWorkpieces" | "getGadget" | "listActions" | "subscribeToActions" |
-    "subscribeToConsoleLogs";
+    "subscribeToConsoleLogs" | "reportGadgetErrors";
 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
@@ -140,6 +141,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   stopAgent: ws => ws.stopAgent(1),
   retryAgent: ws => ws.retryAgent(1, "model"),
   waitForAgent: ws => ws.waitForAgent(1),
+  readGadgetErrors: ws => ws.readGadgetErrors(),
   listBlueprints: ws => ws.listBlueprints(),
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
@@ -233,6 +235,19 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   expect(await useWs.listActions()).toEqual({ entries: [] });
   expect(await useWs.listActions({ filter: "pending" })).toEqual({ entries: [] });
+  // What the UI did not catch in the viewer's browser is taken for the gadget they hold, under no
+  // chat, and kept for the owner to read under the viewer. The viewer reads none of it back
+  // (readGadgetErrors() is among the denied calls above).
+  const reported = [{ text: "from the viewer" }];
+  expect(await useWs.reportGadgetErrors(gadgetId, null, reported)).toBeUndefined();
+  const underChat: Calls<RpcStub<Overseer>> = {
+    reportGadgetErrors: w => w.reportGadgetErrors(gadgetId, draft, reported),
+  };
+  expect(await outcomes(underChat, useWs)).toEqual(allDenied(underChat));
+  expect((await ws.readGadgetErrors({ gadgetId, source: "client" })).entries).toMatchObject([{
+    gadgetId, chatId: null, source: "client", text: "from the viewer",
+    userId: (await viewerApi.whoami()).id,
+  }]);
   const actions = new ActionRecorder();
   using actionsStub = stubFor(actions);
   using _actions = await useWs.subscribeToActions(actionsStub, new Date(0));
