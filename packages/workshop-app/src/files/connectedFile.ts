@@ -10,13 +10,6 @@ const MEDIA_KINDS: Record<string, ConnectedFileKind> = {
   'application/vnd.google-apps.presentation': 'presentation',
 }
 
-/** The provider's media type for each kind, for one known only by its address. */
-export const CONNECTED_MEDIA_TYPES: Record<ConnectedFileKind, string> = {
-  document: 'application/vnd.google-apps.document',
-  spreadsheet: 'application/vnd.google-apps.spreadsheet',
-  presentation: 'application/vnd.google-apps.presentation',
-}
-
 /** What a file of the provider's media type `mediaType` is, when it is one drawn as itself. */
 export const connectedFileKind = (mediaType: string | undefined): ConnectedFileKind | undefined =>
   mediaType === undefined ? undefined : MEDIA_KINDS[mediaType]
