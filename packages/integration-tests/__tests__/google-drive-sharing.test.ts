@@ -131,7 +131,8 @@ function returned(model: RoutedScriptedModel, nth: number, id: string): string {
   if (typeof result?.content !== "string" || !result.content.startsWith(prefix)) {
     throw new Error(`Tool call ${id} returned no value`);
   }
-  return result.content.slice(prefix.length);
+  // Without the note listing what is still waiting for the user's review (waitingForApprovalNote).
+  return result.content.slice(prefix.length).split("\n\nDrafted for the user to review")[0];
 }
 
 /** The one action pending in workspace `ws`. */
