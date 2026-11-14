@@ -9,7 +9,7 @@ import {
   type PdfRangeReader,
 } from "../src/drive-pdf";
 import type { AiFetcher } from "../src/workers-ai-markdown";
-import { imagePdf, type BuiltPdf, type PdfImage } from "./pdf-fixture";
+import { imagePdf, scanPage, type BuiltPdf } from "./pdf-fixture";
 import {
   BYTES, byteStream, conversionJson, eventResponse, fakeAi, formatLastJson, markdownJson,
   sentImage, splitResponse, streamedResponse, tokenEvents, type VisionJson,
@@ -425,11 +425,6 @@ const TRANSCRIPTION_FAILED = "Google Drive's PDF could not be transcribed.";
 const PAGES = [["Harbour Ledger", " Review"], ["Lot 55-0193-G", "\n\n18,442.07 florins"], ["Signatories"]];
 const TRANSCRIBED =
   "### Page 1\nHarbour Ledger Review\n\n### Page 2\nLot 55-0193-G\n\n18,442.07 florins\n\n### Page 3\nSignatories";
-
-function scanPage(seed: number, overrides: Partial<PdfImage> = {}): PdfImage {
-  let data = Uint8Array.from({ length: 700 + seed }, (_, i) => (i * 7 + seed) % 256);
-  return { data, width: 1275, height: 1650, ...overrides };
-}
 
 /** A three-page scan, each page one JPEG. */
 const SCAN = imagePdf([scanPage(1), scanPage(2), scanPage(3)]);

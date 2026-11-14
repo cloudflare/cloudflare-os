@@ -103,6 +103,16 @@ export function imagePdf(
 }
 
 /**
+ * A page image as large as a scanned page's, said to be a JPEG unless `overrides` say otherwise:
+ * `700 + seed` bytes of data that are no image's, which tell one page's from another's. What
+ * sends a page image as it is stored never decodes it.
+ */
+export function scanPage(seed: number, overrides: Partial<PdfImage> = {}): PdfImage {
+  let data = Uint8Array.from({ length: 700 + seed }, (_, i) => (i * 7 + seed) % 256);
+  return { data, width: 1275, height: 1650, ...overrides };
+}
+
+/**
  * A page image of black marks on white, 96 x 64 pixels, as Group 4 fax data: a corner mark, three
  * bars, an upright and a diagonal, so that every quarter of the page it is drawn across has
  * marks. It is too small to be taken for a page image, and fax is not read as stored, so a PDF
