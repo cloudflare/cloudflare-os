@@ -18,6 +18,12 @@ export type SetUpConnectionDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   service: { name: string; logoUrl?: string; color?: string }
+  /** What the dialog does, beside the service's logo; "Connect {service}" unless it does something else. */
+  title?: string
+  /** What its button says, and while it works: "Create", "Creating…". It connects unless told otherwise. */
+  accept?: { label: string; pending: string }
+  /** What it says while the user has no account on the service, when it is not connecting one. */
+  noAccount?: string
   /** What is being connected: the kind of resource, or its address. */
   resource?: string
   /** Under the title: what it is for, such as "The agent asked for a spreadsheet." */
@@ -51,13 +57,14 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 /**
  * A connection, set up: what an agent's request asks for (`ConnectionRequestCard`'s Set up), or
- * what the user chose to add to a chat or a gadget. The service's account to use, connecting one
+ * what the user chose to add to a chat or a gadget; or, titled and labelled so, something an agent
+ * asked to be created in one of the user's accounts. The service's account to use, connecting one
  * first where there is none, then which resource, in the service's own form, filled in with as
  * much as the agent knew. Each step that goes on in a window of the service's waits for it, saying
  * so, and can open it again.
  */
 export const SetUpConnectionDialog = ({
-  open, onOpenChange, service, resource, description, reason, onBack, accounts, selectedAccountId, onSelectAccount,
+  open, onOpenChange, service, title, accept = { label: 'Connect', pending: 'Connecting…' }, noAccount, resource, description, reason, onBack, accounts, selectedAccountId, onSelectAccount,
   onConnectAccount, onReconnect, onGrant, configurator, ready, onAccept,
 }: SetUpConnectionDialogProps) => {
   const [pending, setPending] = useState<'connect' | 'reconnect' | 'grant' | 'accept'>()
@@ -98,7 +105,7 @@ export const SetUpConnectionDialog = ({
       title={(
         <span className="flex items-center gap-3">
           <ServiceLogo name={service.name} src={service.logoUrl} color={service.color} size="lg" />
-          Connect {service.name}
+          {title ?? `Connect ${service.name}`}
         </span>
       )}
       description={description}
@@ -112,7 +119,7 @@ export const SetUpConnectionDialog = ({
             </Button>
           ) : (
             <Button variant="primary" disabled={!ready || pending !== undefined || !selected || selected.expired} onClick={() => void run('accept', onAccept)}>
-              {pending === 'accept' ? 'Connecting…' : 'Connect'}
+              {pending === 'accept' ? accept.pending : accept.label}
             </Button>
           )}
         </>
@@ -122,7 +129,7 @@ export const SetUpConnectionDialog = ({
       {accounts === undefined && <p role="status" className="appears-late text-base text-kumo-subtle">Loading your accounts…</p>}
       {none && (
         <p className="text-base/5 text-kumo-subtle">
-          Connect your {service.name} account first. You choose what is reached through it once it is connected.
+          {noAccount ?? `Connect your ${service.name} account first. You choose what is reached through it once it is connected.`}
         </p>
       )}
       {accounts && accounts.length > 0 && (

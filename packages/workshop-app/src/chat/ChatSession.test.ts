@@ -883,7 +883,10 @@ describe('ChatSession', () => {
       expect(ready(session).pinned).toMatchObject([{ kind: 'action', actionId: 7, state: 'pending' }])
 
       await session.approveAction(7)
-      expect(fake.approveAction).toHaveBeenCalledExactlyOnceWith(7)
+      expect(fake.approveAction).toHaveBeenCalledExactlyOnceWith(7, undefined)
+      // A creation goes with the account it is made in.
+      await session.approveAction(7, { accountId: 3 })
+      expect(fake.approveAction).toHaveBeenLastCalledWith(7, { accountId: 3 })
       // Nothing is assumed: the card changes only when the workspace reports the record.
       expect(ready(session).pinned).toMatchObject([{ state: 'pending' }])
 

@@ -1,5 +1,5 @@
 import type { RpcStub } from 'capnweb'
-import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiToolCall, CapsuleSpecifier, Overseer, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, AiChatMessage, CreationApproval, AiChatMetadata, AiChatStreamEvent, AiToolCall, CapsuleSpecifier, Overseer, SlashCommandChoice, SlashCommandRequest } from '@gadgets/workshop-shared/api'
 import {
   EMPTY_FEED,
   gadgetNamer,
@@ -443,12 +443,11 @@ export class ChatSession {
   retry = (modelId: string) => this.#ask((overseer) => overseer.retryAgent(this.chatId, modelId))
 
   /**
-   * Approves a pending action.
-   *
-   * TODO: approving a creation (`ActionLogEntry.creation`) also needs the account to create it in.
-   * The server refuses one until this app can ask; the refusal shows as `actionError`.
+   * Approves a pending action; a creation (`ActionItem.creation`) with how it is to be made, which
+   * `useApproveCreation` asks.
    */
-  approveAction = (actionId: number) => this.#ask((overseer) => overseer.approveAction(actionId))
+  approveAction = (actionId: number, creation?: CreationApproval) =>
+    this.#ask((overseer) => overseer.approveAction(actionId, creation))
 
   rejectAction = (actionId: number) => this.#ask((overseer) => overseer.rejectAction(actionId))
 

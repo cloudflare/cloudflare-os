@@ -92,13 +92,33 @@ const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnect
   )
 }
 
-export type ConnectResourceProps = {
+/** What `ConnectResource` makes of what was chosen. */
+type Making =
+  | {
+      /** Makes what was chosen, with the account it was chosen in. The dialog closes once it resolves. */
+      onConnect: (accountId: number, resourceUrl: string) => Promise<void>
+      create?: never
+    }
+  | {
+      onConnect?: never
+      /**
+       * Creates, rather than connects, what an agent asked for (`ActionLogEntry.creation`): in the
+       * account chosen and, for a kind with one, as its creation form chose (`configuration`).
+       */
+      create: {
+        /** What is created, as the dialog's title says it: "Create Document: Weekly notes". */
+        title: string
+        onCreate: (accountId: number, configuration: string | undefined) => Promise<void>
+      }
+    }
+
+export type ConnectResourceProps = Making & {
   open: boolean
   onOpenChange: (open: boolean) => void
   service: { vendorId: string; name: string; logoUrl?: string }
   /** The kind of resource (`SupportedResource.urlPattern`); absent when it is not known. */
   resourceUrlPattern?: string
-  /** Which one, when it is known, to fill the service's form in with. */
+  /** Which one, when it is known, to fill the service's form in with; what to suggest in a creation form. */
   resourceUrl?: string
   /** What is connected, in words: "a GitHub repository". */
   scope?: string
@@ -107,17 +127,17 @@ export type ConnectResourceProps = {
   /** What is said in place of the form when the kind is not known. */
   unknownKind?: string
   onBack?: () => void
-  /** Makes what was chosen, with the account it was chosen in. The dialog closes once it resolves. */
-  onConnect: (accountId: number, resourceUrl: string) => Promise<void>
 }
 
 /**
  * Connects one of a service's resources (`SetUpConnectionDialog`): one of the user's accounts on
  * it, connected first if there is none, with access to the kind of resource; then the service's own
- * form for which one; then `onConnect`, which makes it what the caller needs.
+ * form for which one; then `onConnect`, which makes it what the caller needs. Given `create`, it
+ * creates one instead: the account, then where and how, in the service's creation form where the
+ * kind has one (`SupportedResource.creationConfigurator`).
  */
 export const ConnectResource = ({
-  open, onOpenChange, service, resourceUrlPattern: pattern, resourceUrl, scope, description, reason, unknownKind, onBack, onConnect,
+  open, onOpenChange, service, resourceUrlPattern: pattern, resourceUrl, scope, description, reason, unknownKind, onBack, onConnect, create,
 }: ConnectResourceProps) => {
   const { api, reconnecting } = useApi()
   const connection = useConnectionNotice()
@@ -147,12 +167,16 @@ export const ConnectResource = ({
   const [frame, setFrame] = useState<{ accountId: number; frame: Frame } | { accountId: number; problem: string }>()
   const [collect, setCollect] = useState<{ collect: () => Promise<string> }>()
   const [ready, setReady] = useState(false)
-  const accountId = open && usable && !needsGrant && pattern ? usable.id : undefined
+  // A creation of a kind without a form needs nothing more than the account.
+  const formless = create !== undefined && resource !== undefined && !resource.creationConfigurator
+  // Only once the kind is known, as whether it has a creation form is.
+  const accountId = open && usable && !needsGrant && pattern && !formless && (!create || resource) ? usable.id : undefined
   useEffect(() => {
     if (accountId === undefined || pattern === undefined || reconnecting) return
     let current = true
     let started: Frame | undefined
-    api.startResourceConfigurator(accountId, pattern).then(
+    const start = create ? api.startCreationConfigurator(accountId, pattern) : api.startResourceConfigurator(accountId, pattern)
+    start.then(
       (next) => {
         started = next
         if (current) setFrame({ accountId, frame: next })
@@ -169,7 +193,7 @@ export const ConnectResource = ({
       setReady(false)
     }
     // A new grant restarts it, as a form reads the kinds it may offer only when it starts.
-  }, [api, reconnecting, accountId, pattern, grantedKey, service.name])
+  }, [api, reconnecting, accountId, pattern, grantedKey, service.name, create !== undefined])
 
   const grantable = resources.filter((candidate) => candidate.grantable).map(({ urlPattern }) => urlPattern)
   const connect = async () => {
@@ -186,6 +210,9 @@ export const ConnectResource = ({
       open={open}
       onOpenChange={onOpenChange}
       service={{ name: service.name, logoUrl: service.logoUrl ?? vendor?.description.logo?.url, color: vendor?.description.color }}
+      title={create?.title}
+      accept={create && { label: 'Create', pending: 'Creating…' }}
+      noAccount={create && `Connect your ${service.name} account first. It’s created there.`}
       resource={scope}
       description={description}
       reason={reason}
@@ -209,7 +236,7 @@ export const ConnectResource = ({
         if (flow) openConnectWindow(flow)
         return true
       } : undefined}
-      configurator={pattern === undefined ? (
+      configurator={formless ? undefined : pattern === undefined ? (
         <p className="text-base/5 text-kumo-subtle">{unknownKind}</p>
       ) : shown && 'problem' in shown ? (
         <p role="alert" className="text-base/5 text-kumo-danger">{shown.problem}</p>
@@ -231,10 +258,12 @@ export const ConnectResource = ({
       ) : (
         <p role="status" className="appears-late text-base text-kumo-subtle">Opening {service.name}’s form…</p>
       )}
-      ready={ready && collect !== undefined}
+      ready={formless || (ready && collect !== undefined)}
       onAccept={async () => {
-        if (connection?.blocked() || !collect || !usable) return false
-        await onConnect(usable.id, await collect.collect())
+        if (connection?.blocked() || !usable) return false
+        if (create) await create.onCreate(usable.id, collect && !formless ? await collect.collect() : undefined)
+        else if (collect) await onConnect(usable.id, await collect.collect())
+        else return false
         onOpenChange(false)
         return true
       }}

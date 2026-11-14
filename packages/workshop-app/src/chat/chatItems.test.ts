@@ -446,6 +446,12 @@ describe('toChatFeed', () => {
       expect(rules).toEqual({ Label: { gatekeeperId: 7, actionKind: LABEL }, 'Create issue': undefined, Relabel: undefined })
     })
 
+    it('says which pending actions create something, by the gatekeeper standing in for it', () => {
+      const result = feed(action({ title: 'Create Google Doc: Notes', creation: true }), action({ title: 'Create Google Doc: Old', creation: true, state: 'approved' }), action({ title: 'Post' }))
+      const creations = Object.fromEntries(only(result, 'action').map(({ title, creation }) => [title, creation]))
+      expect(creations).toEqual({ 'Create Google Doc: Notes': { gatekeeperId: 7 }, 'Create Google Doc: Old': undefined, Post: undefined })
+    })
+
     it('warns when a pending action’s description leaves out part of what it sends', () => {
       const result = feed(action({ title: 'Post', incomplete: true }), action({ title: 'Create issue' }))
       expect(only(result, 'action').map(({ incomplete }) => incomplete)).toEqual([true, false])

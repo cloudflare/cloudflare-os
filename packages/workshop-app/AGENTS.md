@@ -393,6 +393,10 @@ which redeems the ticket with the nonce the opener left in the popup's sessionSt
 the backend with `PUBLIC_BASE_URL=http://localhost:<app port>` so the gatekeeper hands off to this
 app rather than workshop-frontend. What an agent asks to be connected to is set up from its card in
 the chat (`SetUpConnection`), with an account of the service and the gatekeeper's own form.
+Approving a card that creates something, such as a Google Doc (`ActionItem.creation`), makes it in
+one of the user's accounts (`useApproveCreation`): with only one that can, there at once, where the
+service puts new things (My Drive); otherwise, or when the agent suggested where, `ConnectResource`
+asks which account and where, in the service's creation form (`startCreationConfigurator`).
 
 The user adds one themselves with `AddConnection`: `AddConnectionDialog` lists every connectable
 kind of resource of the services that are not built in, those with an account first, then

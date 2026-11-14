@@ -14,6 +14,7 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
+import { useApproveCreation } from '@/connections/ApproveCreation'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
@@ -90,6 +91,7 @@ export const ChatPane = ({
   const model = useMemo(() => modelFor(models, { picked: pickedId, chat: chatModel }), [models, pickedId, chatModel])
   const workspaces = useWorkspaces()
   const connection = useConnectionNotice()
+  const { approveCreation, dialog: creationDialog } = useApproveCreation({ workspaceId, approve: actions.approveAction })
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
   // What a row asked for that this app cannot do yet.
@@ -150,7 +152,12 @@ export const ChatPane = ({
       loadAttachment: actions.attachmentContent,
       onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
       outputHref,
-      onApprove: actions.approveAction,
+      onApprove: (action) => {
+        const { creation } = action
+        if (!creation) return actions.approveAction(action.actionId)
+        return approveCreation({ actionId: action.actionId, gatekeeperId: creation.gatekeeperId, title: action.title })
+          .catch((error: unknown) => setNotice(`Couldn’t create it: ${error instanceof Error ? error.message : String(error)}`))
+      },
       onDeny: actions.rejectAction,
       // Asked first: it reaches past this action, to every chat and gadget in the workspace.
       onAlwaysApprove: (rule) => setAsked({ rule, open: true }),
@@ -166,7 +173,7 @@ export const ChatPane = ({
       onOpenChat,
       chatHref,
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onOpenChat, chatHref])
+  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onOpenChat, chatHref, approveCreation])
   const keep = chat.status === 'ready' ? chat.keep : undefined
 
 
@@ -346,6 +353,7 @@ export const ChatPane = ({
         onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
       />
       {shareable && <ShareWorkspaceDialog workspaceId={workspaceId} title={isNamedWorkspace(workspace) ? workspace.title : (title ?? workspace.title)} link={workspaceLink} open={sharing} onOpenChange={setSharing} chat={!isNamedWorkspace(workspace)} />}
+      {creationDialog}
       {builds && (
         <AddConnection
           workspaceId={workspaceId}

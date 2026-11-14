@@ -125,6 +125,11 @@ export type ActionItem = Row & {
   incomplete: boolean
   /** The standing approval the user could give instead of deciding each time. */
   rule?: { gatekeeperId: number; actionKind: ActionKind }
+  /**
+   * It creates something in one of the user's accounts (`ActionLogEntry.creation`), which
+   * approving it asks which of, by way of the gatekeeper that stands in for it until then.
+   */
+  creation?: { gatekeeperId: number }
 }
 export type HookItem = Row & {
   kind: 'hook'
@@ -410,6 +415,7 @@ const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
       state === 'pending' && gatekeeperId !== undefined && actionKind && description.autoApprovable === true
         ? { gatekeeperId, actionKind }
         : undefined,
+    creation: state === 'pending' && log.creation && gatekeeperId !== undefined ? { gatekeeperId } : undefined,
   }
 }
 

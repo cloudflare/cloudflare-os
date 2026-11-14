@@ -27,7 +27,8 @@ export type ChatItemHandlers = {
   onOpenOutput: (output: OutputItem) => void
   /** An output's own page, for its card to link to so that it can be opened in another tab. */
   outputHref?: (output: OutputItem) => string
-  onApprove: (actionId: number) => ActionResult
+  /** Approves it; one that creates something (`ActionItem.creation`) asks first where. */
+  onApprove: (action: ActionItem) => ActionResult
   onDeny: (actionId: number) => ActionResult
   onAlwaysApprove: (rule: NonNullable<ActionItem['rule']>) => ActionResult
   onHookEnabledChange: (hookId: number, enabled: boolean) => ActionResult
@@ -158,7 +159,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           state="pending"
           incomplete={item.incomplete}
           restricted={restricted}
-          onApprove={() => handlers.onApprove(item.actionId)}
+          onApprove={() => handlers.onApprove(item)}
           onDeny={() => handlers.onDeny(item.actionId)}
           onAlwaysApprove={rule && (() => handlers.onAlwaysApprove(rule))}
         />

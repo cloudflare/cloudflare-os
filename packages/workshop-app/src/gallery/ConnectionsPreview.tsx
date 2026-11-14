@@ -26,7 +26,7 @@ const githubResources: ConnectionDialogResource[] = [
 ]
 
 type Open = 'connect' | 'connect-granular' | 'add' | 'manage' | 'manage-partial' | 'expired' | SetUp | undefined
-type SetUp = 'setup-loading' | 'setup-none' | 'setup-ready' | 'setup-expired' | 'setup-grant'
+type SetUp = 'setup-loading' | 'setup-none' | 'setup-ready' | 'setup-expired' | 'setup-grant' | 'setup-create' | 'setup-create-none'
 
 /** The Connections page's rows, and the dialog to connect a service or manage its account. */
 export const ConnectionsPreview = () => {
@@ -92,6 +92,10 @@ export const ConnectionsPreview = () => {
         <Button onClick={() => setOpen('setup-ready')}>With the form</Button>
         <Button onClick={() => setOpen('setup-expired')}>Expired</Button>
         <Button onClick={() => setOpen('setup-grant')}>Needs access</Button>
+      </Section>
+      <Section title="SetUpConnectionDialog, creating (approving a card that creates a Google Doc, with two accounts to choose between and the service’s form for where; and with no account yet). With one account, Approve creates it there without asking">
+        <Button onClick={() => setOpen('setup-create')}>Two accounts</Button>
+        <Button onClick={() => setOpen('setup-create-none')}>No account</Button>
       </Section>
       <Section title="AddConnectionDialog, then SetUpConnectionDialog with Back, and ComposerConnectionLines (the + menu’s Add a connection: what kind, found by typing, your services first; then which, in the service’s form; then it sits above the draft, to go with the message, and is refused beside a skill)">
         <AddConnectionPreview say={say} opened={opened} />
@@ -173,7 +177,21 @@ const setUpAccounts: Record<SetUp, SetUpConnectionAccount[] | undefined> = {
   'setup-ready': [{ id: 1, name: 'octocat' }, { id: 2, name: 'octo-work' }],
   'setup-expired': [{ id: 1, name: 'octocat', expired: true }],
   'setup-grant': [{ id: 1, name: 'octocat' }],
+  'setup-create': [{ id: 1, name: 'ada@example.com' }, { id: 2, name: 'ada@work.example' }],
+  'setup-create-none': [],
 }
+
+/** A stand-in for Google's creation form, which says where in Drive. */
+const FakeFolderChooser = () => (
+  <label className="flex flex-col gap-1.5 text-sm text-kumo-subtle">
+    Where
+    <select className="h-9 rounded-xl bg-kumo-base px-3 text-base text-kumo-default ring-1 ring-kumo-line">
+      <option>My Drive</option>
+      <option>My Drive › Meeting notes</option>
+      <option>Shared drives › Platform</option>
+    </select>
+  </label>
+)
 
 /** A stand-in for the service's own form, which is a sandboxed frame of the gatekeeper's. */
 const FakeConfigurator = ({ onReady }: { onReady: (ready: boolean) => void }) => (
@@ -191,6 +209,34 @@ const SetUpPreview = ({ state, onClose, say, opened }: { state: SetUp; onClose: 
   const [open, setOpen] = useState(true)
   const [selected, setSelected] = useState(1)
   const [ready, setReady] = useState(false)
+  if (state === 'setup-create' || state === 'setup-create-none') {
+    return (
+      <SetUpConnectionDialog
+        open={open}
+        onOpenChange={(next) => { setOpen(next); if (!next) setTimeout(onClose, 300) }}
+        service={{ name: 'Google', color: '#ffffff' }}
+        title="Create Google Doc: Weekly notes"
+        accept={{ label: 'Create', pending: 'Creating…' }}
+        noAccount="Connect your Google account first. It’s created there."
+        resource="Google Doc"
+        description="Choose the account to create it in, and where."
+        accounts={setUpAccounts[state]}
+        selectedAccountId={selected}
+        onSelectAccount={setSelected}
+        onConnectAccount={opened}
+        onReconnect={opened}
+        configurator={<FakeFolderChooser />}
+        ready
+        onAccept={async () => {
+          await new Promise((resolve) => setTimeout(resolve, 900))
+          say('created, and the agent’s connection is to it now')
+          setOpen(false)
+          setTimeout(onClose, 300)
+          return true
+        }}
+      />
+    )
+  }
   return (
     <SetUpConnectionDialog
       open={open}

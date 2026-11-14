@@ -82,6 +82,8 @@ export type ActionOptions = {
   /** The agent's turn is suspended until someone decides. */
   awaitDecision?: boolean
   resource?: { title?: string; url?: string }
+  /** It creates something in one of the approver's accounts (`ActionLogEntry.creation`). */
+  creation?: boolean
 }
 
 export const action = ({
@@ -95,6 +97,7 @@ export const action = ({
   incomplete,
   awaitDecision,
   resource = {},
+  creation,
 }: ActionOptions): Authored<'action'> => {
   const resolver = autoApprovedBy ?? resolvedBy ?? (state === 'pending' ? undefined : VIEWER)
   return actionMessage({
@@ -113,6 +116,7 @@ export const action = ({
     resolvedBy: resolver,
     autoApproved: autoApprovedBy ? true : undefined,
     appliedAt: resolver ? new Date(0) : undefined,
+    ...(creation ? { creation: true as const } : {}),
   })
 }
 
