@@ -1542,6 +1542,9 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
 /** How many times one agent turn retries a model request that failed transiently. */
 const TRANSIENT_FAILURE_RETRIES = 2;
 
+/** How often a pass still in setup, before its first model request, logs the step it is in. */
+const SETUP_SLOW_INTERVAL_MS = 30_000;
+
 /**
  * Runs one agent turn against the chat's history, compacting as needed. A pass over the history
  * may compact instead of prompting the model, or end after a persisted tool step because the next
@@ -1595,6 +1598,19 @@ async function runAgentPass(
     modelConfig: AiModelConfig,
     progress: AgentProgress): Promise<AgentPassOutcome> {
   const progressLogger = logger.with({chatId, executionId: progress.executionId});
+
+  // Setup waits on other objects before the first model request and logs nothing as it goes, so
+  // while it is slow it says which step it is in: loading the chat's bindings, replaying its
+  // history, or building the prompt.
+  let setupStep: "bindings" | "replay" | "prompt" = "bindings";
+  const setupStartedAt = Date.now();
+  const setupWatch = setInterval(() => {
+    progressLogger.warn("agent turn setup is slow", {
+      event: "agent.setup.slow", step: setupStep, durationMs: Date.now() - setupStartedAt,
+    });
+  }, SETUP_SLOW_INTERVAL_MS);
+  // Covers a setup that throws; one that succeeds ends the watch at its first request, below.
+  using _setupWatch = {[Symbol.dispose]: () => clearInterval(setupWatch)};
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
   // to other chats are excluded -- they belong to those chats' proposed changes). This is the
@@ -2198,6 +2214,10 @@ async function runAgentPass(
   // the prompt doesn't list (see below), so the prompt content derived from it stays in the
   // cacheable prefix; chat-local bindings accumulate on top during replay.
   let seedBindings = await hooks.prepareChatBindings(chatId, chatMessages);
+  // Setup waits on other objects and nothing below reads the signal until the first model
+  // request, so Stop is honored between its steps: here, per replayed message, and before the
+  // vendor list.
+  abortSignal.throwIfAborted();
   for (let seed of seedBindings) {
     if (!chatBindings.has(seed.name)) {
       chatBindings.set(seed.name, {type: "workpiece", id: seed.target});
@@ -2238,6 +2258,8 @@ async function runAgentPass(
     modelMessages.push(...makeReplayObservation(sequence, text, handle.model, timestamp));
   };
 
+  setupStep = "replay";
+
   // Rebuild the code the compacted prefix left behind: first the checkpoint's pins establish
   // their base trees, then the composed proposed change applies on top. (A pre-conversion
   // checkpoint carries neither -- its retired Yjs fields are ignored; the conversion boundary
@@ -2258,6 +2280,7 @@ async function runAgentPass(
     : 0), 0);
   const attachmentImageMaxEdge = attachmentImageCount > 20 ? 2000 : 8000;
   for (let [msgIndex, msg] of chatMessages.entries()) {
+    abortSignal.throwIfAborted();
     let modelMessageStart = modelMessages.length;
     let msgTimestamp = msg.timestamp.getTime();
     switch (msg.type) {
@@ -3191,6 +3214,8 @@ async function runAgentPass(
       workpiece => hooks.resolveWorkpieceRoot(resolveToolWorkpieceId(workpiece), true, chatId));
   let executeCodeStreamManager = new ExecuteCodeStreamManager(emitStreamEvent);
 
+  setupStep = "prompt";
+
   // Deployment-wide admin instructions, appended to the static system slot (slot 0) so they stay
   // inside the Anthropic prompt cache window. "" when unset.
   let instanceInstructions = formatInstanceInstructions(await hooks.getInstanceInstructions());
@@ -3324,6 +3349,7 @@ async function runAgentPass(
 
     // Build connectable-vendors section. We only list vendor names here; the agent fetches a
     // vendor's resource URL patterns on demand via listConnectableResources.
+    abortSignal.throwIfAborted();
     let connectableVendors = await hooks.listConnectableVendors();
     let systemPromptConnections: string;
     if (connectableVendors.length == 0) {
@@ -4409,6 +4435,9 @@ async function runAgentPass(
   let leadingSystemMessage: SystemMessage = {
     ...systemMessage, toolsAdded: toolList.map(toToolDeclaration),
   };
+  // Setup is over: what follows waits on the model, which logs its own progress.
+  clearInterval(setupWatch);
+
   // A checkpoint Anthropic wrote reaches a model that can read it as its block, and any other
   // model as the summary text.
   let stream = priorConversation !== undefined &&

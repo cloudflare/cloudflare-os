@@ -90,7 +90,7 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isLoopLimitError, retryOnDoReset, shouldRetryAfterReset, withTimeout, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import {
@@ -129,14 +129,13 @@ function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFan
     firstVisibleSequence: visible === Infinity ? undefined : visible};
 }
 
-async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([request, new Promise<never>((_, reject) => {
-      timeout = setTimeout(() => reject(new Error("User DO handoff timed out.")), 2_000);
-    })]);
-  } finally { clearTimeout(timeout); }
+function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
+  return withTimeout(request, 2_000, "User DO handoff timed out.");
 }
+
+// How long an agent turn's setup waits on one gatekeeper before going on without its answer
+// (see prepareChatBindings). Long enough for a loaded gatekeeper to list a large catalog.
+const TURN_SETUP_TIMEOUT_MS = 30_000;
 
 export const AGENT_RUNNING_ERROR_MESSAGE = "Agent is running, wait for it to finish.";
 
@@ -8730,14 +8729,22 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // The binding name a gatekeeper suggests for its resource, if any. Rejects when the gatekeeper
+  // fails or takes longer than turn setup waits; callers fall back to a generic name.
+  #suggestedBindingName(gatekeeperId: WorkpieceId): Promise<string | undefined> {
+    return withTimeout(
+        (async () =>
+            (await (await this.getGatekeeperFacet(gatekeeperId)).describe()).suggestedBindingName)(),
+        TURN_SETUP_TIMEOUT_MS, "Gatekeeper describe() timed out.");
+  }
+
   // The binding name an ambient resource takes in a chat: its gatekeeper's suggested binding name,
   // made unique.
   async #ambientBindingName(gatekeeperId: WorkpieceId, isTaken: (name: string) => boolean)
       : Promise<string> {
     let suggested: string | undefined;
     try {
-      suggested =
-          (await (await this.getGatekeeperFacet(gatekeeperId)).describe()).suggestedBindingName;
+      suggested = await this.#suggestedBindingName(gatekeeperId);
     } catch (err) {
       this.logger.warn("failed to fetch suggested binding name for ambient resource", {
         event: "chat.binding.ambient.describe.failed", gatekeeperId, error: err,
@@ -8968,8 +8975,7 @@ class OverseerImpl implements AgentHooks {
           let suggested: string | undefined;
           if (target !== undefined && this.storage.gatekeepers.get(target)) {
             try {
-              suggested =
-                  (await (await this.getGatekeeperFacet(target)).describe()).suggestedBindingName;
+              suggested = await this.#suggestedBindingName(target);
             } catch {
               // Fall through to the generic fallback.
             }
@@ -9025,9 +9031,13 @@ class OverseerImpl implements AgentHooks {
             // getAgentCatalog is optional on Gatekeeper; ambient resources always implement it (the
             // agent relies on it for discovery), answering null when they have none, so we view the
             // facet through CatalogGatekeeperFacet (derived from the contract) to call it directly.
-            let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
-                CatalogGatekeeperFacet;
-            let catalog = await facet.getAgentCatalog();
+            // Bounded, so that a gatekeeper that never answers costs the turn its catalog rather
+            // than stalling it.
+            let catalog = await withTimeout((async () => {
+              let facet = await this.getGatekeeperFacet(gatekeeperId) as unknown as
+                  CatalogGatekeeperFacet;
+              return facet.getAgentCatalog();
+            })(), TURN_SETUP_TIMEOUT_MS, "Gatekeeper getAgentCatalog() timed out.");
             if (!catalog) {
               this.#catalogless.add(gatekeeperId);
               return [gatekeeperId, null];

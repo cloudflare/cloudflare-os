@@ -16,6 +16,7 @@ import {
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
+import { withTimeout } from "./do-retry";
 import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
 import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
@@ -256,6 +257,9 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 
   return result === 0;
 }
+
+// How long listGatekeeperVendors waits on one gatekeeper before listing it as unavailable.
+const GATEKEEPER_VENDOR_LOAD_TIMEOUT_MS = 10_000;
 
 function unavailableGatekeeperVendorInfo(id: string): GatekeeperVendorInfo {
   return {
@@ -1974,10 +1978,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         }
 
         try {
-          let [description, supportedResources] = await Promise.all([
+          // Bounded, so that one gatekeeper that never answers lists as unavailable rather than
+          // holding up the whole list (and, through it, every agent turn's system prompt).
+          let [description, supportedResources] = await withTimeout(Promise.all([
             vendor.describe(),
             vendor.getSupportedResources(options),
-          ]);
+          ]), GATEKEEPER_VENDOR_LOAD_TIMEOUT_MS, "Gatekeeper vendor load timed out.");
           let enabledResources =
               filterEnabledResources(config, id, supportedResources)
                   .filter(resource => resource.connectable !== false || resource.creatable);
