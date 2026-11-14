@@ -437,7 +437,7 @@ describe("AutoApprovalDrainer with a chat in Auto", () => {
     putAction(storage, 3, { autoApprovable: false });
     putAction(storage, 4, { autoApprovable: true });
     let { applyFn, calls } = makeImmediateApply(storage);
-    await new AutoApprovalDrainer(storage, applyFn).drain(GK);
+    await new AutoApprovalDrainer(storage, applyFn, NONE_DECIDING).drain(GK);
     expect(calls).toEqual([1, 2]);
     expect(getAction(storage, 1).resolvedBy).toEqual(ENABLER);
     expect(getAction(storage, 3).state).toBe("pending");

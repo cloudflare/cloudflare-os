@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ResourcePreview } from "@gadgets/workshop-shared/gatekeeper";
 import { makeActionStorage, openFakeOverseer, putAction, type ActionTestStorage } from "./fixtures.js";
 
-vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined }));
+vi.mock("capnweb-validate", () => ({ validateRpc: () => () => undefined, skipRpcValidation: () => () => undefined }));
 
 const GATEKEEPER = 3;
 

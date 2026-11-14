@@ -217,7 +217,8 @@ export class SharingManager {
     let ceiling = ceilingOf(record);
     if (ceiling.role === "build") return ceiling;
     let gadgetIds = ceiling.gadgetIds.filter(id => this.gadgetExists(id));
-    return gadgetIds.length > 0 ? {role: "use", gadgetIds} : undefined;
+    return gadgetIds.length > 0
+      ? useAccess(gadgetIds, gadgetIds.filter(id => !accessIsLive(ceiling, id))) : undefined;
   }
 
   // The edge fields recording `grant`, throwing if it names a gadget that can't be shared.
@@ -741,7 +742,9 @@ export class SharingManager {
             // A link to several gadgets gives one edge per gadget, each conferring its own.
             conferred = edge.gadgetId === undefined ? info.ceiling
                 : accessIncludesGadget(info.ceiling, edge.gadgetId)
-                ? {role: "use", gadgetIds: [edge.gadgetId]} : undefined;
+                ? useAccess([edge.gadgetId],
+                    accessIsLive(info.ceiling, edge.gadgetId) ? [] : [edge.gadgetId])
+                : undefined;
           } else {
             if (ownerGrantsOnly && edge.sharer !== this.ownerProfileId) continue;
             source = edge.sharer;
