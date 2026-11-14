@@ -7,9 +7,10 @@
 //
 // A stored formula is the typed text with each reference swapped for a token
 // `\uE000sheet|from|sep|to\uE001` (`sheet` empty for the formula's own sheet; `sep` and `to` only
-// for a range). An endpoint is `[$]col.[$]row`, each part a line id, or `@n` for position n past
-// the sheet's edge (no line is there to follow; it stays that position, so a formula written
-// ahead of the data still reads it once the sheet grows to hold it).
+// for a range). An endpoint is `[$]col.[$]row`, each part a line id, or `id+n` for the line n
+// past line `id`, the sheet's last when it was written (no line is there to follow yet): a
+// formula written ahead of the data reads the lines the sheet grows to hold, and keeps reading
+// them as lines move above them. (`@n`, position n, is an older form, still read.)
 // Everything else is kept as typed. A reference to a sheet that doesn't exist is kept as typed
 // too, so it starts working if such a sheet is made.
 //
@@ -62,17 +63,21 @@ export function sheetPrefix(name: string): string {
   return (bare ? name : "'" + name.replace(/'/g, "''") + "'") + "!";
 }
 
-/** A line as an endpoint names it: by id, or by a position past the sheet's edge. */
-type LinePart = { id: number } | { at: number };
+/** A line as an endpoint names it: by id, `past` lines after a line (past the sheet's edge), or by position. */
+type LinePart = { id: number; past?: number } | { at: number };
 
 function storePart(index: number, order: LineOrder): string {
   const id = order.idAt(index);
-  return id !== undefined ? String(id) : "@" + index;
+  if (id !== undefined) return String(id);
+  const last = order.idAt(order.size - 1);
+  return last === undefined ? "@" + index : last + "+" + (index - order.size + 1);
 }
 function readPart(text: string): LinePart | null {
   if (text.startsWith("@")) { const at = Number(text.slice(1)); return Number.isSafeInteger(at) && at >= 0 ? { at } : null; }
-  const id = Number(text);
-  return text !== "" && Number.isSafeInteger(id) && id >= 0 ? { id } : null;
+  const [idText, pastText] = text.split("+");
+  const id = Number(idText), past = pastText === undefined ? 0 : Number(pastText);
+  if (idText === "" || !Number.isSafeInteger(id) || id < 0 || !Number.isSafeInteger(past) || past < 0 || (pastText !== undefined && past < 1)) return null;
+  return past ? { id, past } : { id };
 }
 
 /** One endpoint of a reference as typed: its `$` locks and position. */
@@ -127,8 +132,13 @@ function readEndpoint(text: string | undefined): StoredEndpoint | null {
 
 // A sheet that starts over (a pivot table rebuilt, see SheetReplacement) has lines 0..n-1 again,
 // so an id below FIRST_NEW_ID that its order doesn't have is position n past its edge, as `@n`.
+// A line past another is read by where that one is now (where it was, if it was deleted).
 function settled(part: LinePart, order: LineOrder): LinePart {
-  return "id" in part && part.id < FIRST_NEW_ID && !order.has(part.id) ? { at: part.id } : part;
+  if (!("id" in part)) return part;
+  const reset = part.id < FIRST_NEW_ID && !order.has(part.id);
+  if (!part.past) return reset ? { at: part.id } : part;
+  if (reset || !order.has(part.id)) return { at: part.id + part.past };
+  return { at: order.liveFrom(part.id)! - (order.isLive(part.id) ? 0 : 1) + part.past };
 }
 // Where one end of a reference is on an axis now: a live index, or null when its line is gone.
 function singleIndex(stored: LinePart, order: LineOrder): number | null {

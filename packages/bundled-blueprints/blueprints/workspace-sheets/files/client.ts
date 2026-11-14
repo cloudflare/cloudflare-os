@@ -2208,6 +2208,7 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
     if (!pending && noteCommits) noteCommit(sheetId, key, cell?.value ?? null, cell?.version ?? 0);
     noteReloadAck(sheetId, key, cell, result.revision);
     const later = overtaking(id);
+    if (!later) ownWriteSaved(sheetId, key, cell);
     // A sort made since holds the cell, and is based on this version now.
     const sort = pendingSorts.get(sheetId)?.cells.get(key);
     if (sort) { sort.baseVersion = cell?.version ?? 0; return; }
@@ -6070,6 +6071,15 @@ function remapCutFormula(value: string, formulaSourceSheetId: string, formulaTar
 function cutSourceUnchanged(sheetId: string, snapshot: ClipboardCell): boolean {
   const current = model.cells[sheetId]?.[snapshot.sourceRef];
   return (current?.version || 0) === snapshot.version && (current ? storedValue(sheetId, snapshot.sourceRef, current.value) : null) === snapshot.stored && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null);
+}
+// A cut cell whose own save (made before the cut, with what was cut) is acknowledged still holds
+// what was cut: the one write since is that save, so the cut follows it to the new version.
+function ownWriteSaved(sheetId: string, key: string, cell: Cell | null) {
+  const clip = copyFallback;
+  if (!clip?.cut || clip.sheetId !== sheetId || !cell) return;
+  for (const snapshot of clip.cells.flat()) {
+    if (snapshot?.sourceKey === key && cell.version === snapshot.version + 1 && cell.value === snapshot.stored && JSON.stringify(cell.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null)) snapshot.version = cell.version;
+  }
 }
 function clearStoredCell(sheetId: string, ref: string) {
   const cells = model.cells[sheetId] || (model.cells[sheetId] = {});

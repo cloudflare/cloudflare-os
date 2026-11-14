@@ -1185,6 +1185,26 @@ describe("a cut and its paste", () => {
     expect([shown("A1"), shown("D1")]).toEqual(["x", "x"]);
     expect(h.sent.flatMap((op) => op.cellOps ?? []).some((op) => op.ref === "0:0")).toBe(false);
   });
+
+  it("still moves a cell whose own save is answered between the cut and the paste", async () => {
+    const h = await loadClient(sheet("s1"));
+    let reply!: () => void;
+    h.gadget.applyOperation.mockImplementationOnce((op: Operation) => new Promise<OperationResult>((resolve) => {
+      reply = () => resolve({ status: "applied", revision: 2, conflicts: [], upserts: (op.cellOps ?? []).map((c) => ({ sheetId: c.sheetId, ref: c.ref, cell: { value: c.value ?? "", fmt: null, version: 1 } })) });
+    }));
+    go("A1");
+    typeIntoActiveCell("mine");
+    await settle(); // the save is in flight
+    go("A1");
+    gridEl().dispatchEvent(clipboardEvent("cut"));
+    reply();
+    await settle();
+    go("D1");
+    gridEl().dispatchEvent(clipboardEvent("paste"));
+    await settle();
+    expect([shown("A1") ?? "", shown("D1")]).toEqual(["", "mine"]);
+    expect(h.sent.at(-1)!.cellOps).toEqual(expect.arrayContaining([expect.objectContaining({ ref: "0:0", value: null, baseVersion: 1 }), expect.objectContaining({ ref: "0:3", value: "mine" })]));
+  });
 });
 
 describe("a save whose reply was lost", () => {

@@ -608,11 +608,11 @@ export class Gadget extends DurableObject<unknown, unknown> {
     // An operation sent again after its reply was lost is answered, not applied a second time.
     const opId = !legacy && typeof operation.id === "string" && operation.id ? operation.id.slice(0, 64) : null;
     const prior = opId ? meta.recentOps?.find((op) => op.id === opId) : undefined;
-    if (prior) return this.replayAck(meta, operation, prior);
     const replacements = (Array.isArray(operation.sheetReplacements) ? operation.sheetReplacements : []).filter(isLoose);
     const sorts = legacy || !Array.isArray(operation.sorts) ? [] : operation.sorts.filter(isLoose);
     const uploads = [...replacements, ...sorts].filter((write) => write.uploadId != null).map((write) => ({ id: String(write.uploadId), write }));
     const release = () => { for (const { id } of uploads) this.uploads.delete(id); };
+    if (prior) { release(); return this.replayAck(meta, operation, prior); }
     // A staged write must be complete before anything is applied.
     for (const { id, write } of uploads) {
       const upload = this.uploads.get(id);
@@ -956,7 +956,9 @@ export class Gadget extends DurableObject<unknown, unknown> {
     };
     for (const op of Array.isArray(operation.cellOps) ? operation.cellOps.filter(isLoose) : []) add(op.sheetId, op.ref);
     for (const sort of Array.isArray(operation.sorts) ? operation.sorts.filter(isLoose) : []) {
-      for (const op of Array.isArray(sort.cellOps) ? sort.cellOps.filter(isLoose) : []) add(sort.sheetId, op.ref);
+      if (Array.isArray(sort.cellOps)) for (const op of sort.cellOps.filter(isLoose)) add(sort.sheetId, op.ref);
+      // A staged sort's cells are gone with its upload: they're the cells of the lines it sorted.
+      else { const cols = sanitizeIds(sort.cols); for (const row of sanitizeIds(sort.rows)) for (const col of cols) add(sort.sheetId, row + ":" + col); }
     }
     const refused = prior.refused, conflicted = new Set((refused?.conflicts || []).map(({ sheetId, ref }) => sheetId + "!" + ref));
     const skipped = new Set([...(refused?.gone || []), ...(refused?.sorted || [])].map(({ sheetId, ref }) => sheetId + "!" + ref));

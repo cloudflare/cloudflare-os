@@ -1239,6 +1239,23 @@ describe("an operation sent again", () => {
     expect(again).toMatchObject({ status: "conflict", upserts: [{ ref: "0:0", cell: { value: "theirs", version: 2 } }], conflicts: [{ ref: "0:1", cell: { value: "x" } }] });
     expect(await values(gadget, "A1:B1")).toEqual([["theirs", "x"]]);
   });
+
+  it("answers a staged sort with the cells it sorted as they are now", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    await gadget.setCells({ cells: { A1: "b", A2: "a" } });
+    const staged = { "0:0": { value: "a", fmt: null, version: 1 }, "1:0": { value: "b", fmt: null, version: 1 } };
+    const stage = () => gadget.stageCells({ uploadId: "u", sheetId, part: 0, cells: staged });
+    const mine: Operation = { id: "op-a", senderId: "a", lineIds: true, sorts: [{ sheetId, rows: [0, 1], cols: [0], uploadId: "u", count: 2 }] };
+    stage();
+    await gadget.applyOperation(mine);
+    await gadget.setCells({ cells: { A1: "newer", A2: "" } });
+    stage();
+    const again = await gadget.applyOperation(structuredClone(mine));
+    expect(again).toMatchObject({ status: "applied", upserts: [{ ref: "0:0", cell: { value: "newer", version: 3 } }], deletes: [{ ref: "1:0" }] });
+    expect(await values(gadget, "A1:A2")).toEqual([["newer"], [""]]);
+    expect(gadget.uploads.size).toBe(0);
+  });
 });
 
 describe("a structure snapshot from before a change", () => {
@@ -1300,6 +1317,17 @@ describe("sorts", () => {
     // One made after the forgotten sorts is judged by the ones remembered.
     const { revision } = await gadget.getStructure();
     expect(await gadget.applyOperation({ senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "1:0", value: "fresh", fmt: null, baseVersion: 1, basis: revision }] })).toMatchObject({ status: "applied" });
+  });
+});
+
+describe("a formula past the sheet's edge", () => {
+  it("follows the lines it was written for once the sheet grows and lines go in above", async () => {
+    const gadget = newGadget();
+    await gadget.setCells({ cells: { B1: "=A101" } });
+    await gadget.setCells({ cells: { A101: "7" } });
+    await gadget.insertRows({ at: 1, count: 1 });
+    expect(await values(gadget, "B2")).toEqual([["=A102"]]);
+    expect((await values(gadget, "A102")).flat()).toEqual(["7"]);
   });
 });
 

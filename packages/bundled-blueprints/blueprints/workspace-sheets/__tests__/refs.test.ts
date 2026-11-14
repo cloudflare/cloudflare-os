@@ -122,6 +122,19 @@ describe("stored formulas", () => {
     expect(render(stored, book.ctx("a"))).toBe("=SUM(A1:A30)+A40");
   });
 
+  it("moves references past the sheet's edge with the lines above them", () => {
+    const book = workbook({ a: { name: "Sheet1", rows: 10 } });
+    const stored = toStored("=SUM(A5:A30)+A40", book.ctx("a"));
+    book.apply("a", { kind: "insert", axis: "rows", ids: [1000, 1001], before: 0 });
+    expect(render(stored, book.ctx("a"))).toBe("=SUM(A7:A32)+A42");
+    book.apply("a", { kind: "delete", axis: "rows", ids: [9] });
+    expect(render(stored, book.ctx("a"))).toBe("=SUM(A7:A31)+A41");
+    book.apply("a", { kind: "insert", axis: "rows", ids: Array.from({ length: 40 }, (_, i) => 2000 + i), before: null });
+    expect(render(stored, book.ctx("a"))).toBe("=SUM(A7:A31)+A41");
+    book.apply("a", { kind: "insert", axis: "rows", ids: [3000], before: 0 });
+    expect(render(stored, book.ctx("a"))).toBe("=SUM(A8:A32)+A42");
+  });
+
   it("stores chart and pivot ranges", () => {
     const order = SheetOrder.from(null, 10, 5);
     const stored = storeRange("B2:C5", order);
