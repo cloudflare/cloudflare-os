@@ -1509,6 +1509,9 @@ let ackedStructureRevision = -1;
 let inFlightStructure: StructureSnapshot | null = null; // structure sent in the save awaiting its response
 
 function queueCellOp(sheetId: string, ref: string, value: string | null, fmt: CellFmt | null, baseVersion?: number, layout = false) {
+  // A sheet whose cells someone else moved shows them where they were until its pages load, so
+  // an edit there would land on another record. It isn't saved; the loaded cells replace it.
+  if (loadingSheets.has(sheetId)) { toast(SHEET_LOADING, "bad"); return; }
   const key = sheetId + "!" + ref;
   // An edit on top of a reference rewrite carries the rewritten text, so it depends on that layout too.
   if (pendingCellOps.get(key)?.layout) layout = true;
@@ -1709,8 +1712,12 @@ const reloadAcks: ReloadAck[] = [];
 const reloadReplacements: { sheetId: string; revision: number }[] = [];
 // Sheets a reconnect's snapshot had from before such a save; reloaded once it's applied.
 let staleAfterSnapshot: string[] = [];
+// Sheets reloadSheets is reading, which can't be edited meanwhile (see queueCellOp).
+const loadingSheets = new Set<string>();
+const SHEET_LOADING = "This sheet is still loading its moved rows; try again in a moment";
 async function reloadSheets(ids: string[]) {
   holdEvents(); sheetReloads++;
+  for (const id of ids) loadingSheets.add(id);
   const generation = snapshotGeneration;
   try {
     for (let attempt = 0; generation === snapshotGeneration; attempt++) {
@@ -1737,6 +1744,8 @@ async function reloadSheets(ids: string[]) {
     }
   } finally {
     sheetReloads--;
+    // Edits refused meanwhile left history at the positions shown then.
+    for (const id of ids) { loadingSheets.delete(id); forgetHistoryOf(id); }
     // An event held during the reload mustn't undo a save of the same cell acknowledged after it.
     const acked = new Map<string, number>();
     if (!sheetReloads && !connecting) reloadReplacements.length = 0;
@@ -4887,6 +4896,7 @@ function startEdit(ref: string, replace = false, seed: string | null = null, fro
   if (!rc || !curSheet() || rc.r >= curSheet().rows || rc.c >= curSheet().cols) return;
   // Until the next frame moves the selection off a row a filter just hid (doRenderGrid), nothing types into it.
   if (curSheet().filter && !rowPassesFilter(rc.r)) return;
+  if (loadingSheets.has(activeSheetId)) { toast(SHEET_LOADING, "bad"); return; }
   editing = { ref, r: rc.r, c: rc.c, sheetId: activeSheetId, home: null };
   // Typing into a cell scrolled out of view brings it back first (the window follows).
   if (!rowHidden(rc.r)) scrollCellIntoView(rc.r, rc.c);
@@ -6472,6 +6482,8 @@ function renameSheet(id: string) {
     done = true;
     hideTip();
     input.remove();
+    // A rename rewrites formulas where they're shown, which a loading sheet's aren't yet.
+    if (save && clean && clean !== original && loadingSheets.size) { toast(SHEET_LOADING, "bad"); save = false; }
     const changed = save && clean && clean !== original && model.sheets[id];
     if (changed) {
       model.sheets[id].name = clean;
@@ -7242,8 +7254,8 @@ function retireFollowed(op: PendingCellOp, committed: number): { sheetId: string
   const last = link.next, key = last.sheetId + "!" + last.ref;
   if (pendingCellOps.get(key) !== last) return null;
   pendingCellOps.delete(key);
+  // The write stays for the reply's upserts, so they don't put back the older acknowledged cell.
   const write = overtakingWrites.get(key), cells = model.cells[last.sheetId];
-  overtakingWrites.delete(key);
   if (write && cells) { if (write.cell) cells[last.ref] = write.cell; else delete cells[last.ref]; }
   return last;
 }

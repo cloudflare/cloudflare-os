@@ -210,6 +210,37 @@ describe("sync", () => {
     expect(shown("A1")).toBe("14");
   });
 
+  it("keeps a rename's rewrite of a formula whose save landed before it, when the older reply arrives", async () => {
+    const data = sheet("s1"), other = { ...sheet("s2"), name: "Other" };
+    const book = (name: string) => ({ title: "Book", sheetOrder: ["s2", "s1"], sheets: { s1: { ...data, name }, s2: other } });
+    const h = await loadClient(other, {}, { ...book("Sheet1"), cells: { s1: { A1: cell("7") }, s2: {} } });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    typeIntoActiveCell("=Sheet1!A1*2");
+    await settle(); // the save is out, and commits at revision 2
+    h.callbacks.operation({ ...remoteEvent(other, 3, { upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Renamed!A1*2", 3) }] }), structure: book("Renamed"), senderId: "agent" });
+    save.resolve({ status: "applied", revision: 2, conflicts: [], upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Sheet1!A1*2", 2) }], deletes: [] });
+    await settle();
+    expect(shown("A1")).toBe("14");
+    expect(h.gadget.applyOperation).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses edits to a sheet while its moved cells load, so none lands on another record", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    const slices = deferred<{ revision: number; slices: { sheetId: string; after: string; from: string; to: string }[] }>();
+    h.gadget.getSheetSlices.mockImplementation(() => slices.promise);
+    h.gadget.getCellsPage.mockResolvedValue({ revision: 2, sheetId: "s1", next: null, packed: { refs: ["A2", "A3"], values: ["first", "second"], versions: [2, 2], styles: [-1, -1], fmts: [] } });
+    // An agent inserts a row above; the sheet is too big to send, so it's read again.
+    h.callbacks.operation({ ...remoteEvent({ ...meta, layout: 2 }, 2, { replacedSheets: ["s1"], replacedCells: { s1: null }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), senderId: "agent" });
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    typeIntoActiveCell("edited");
+    slices.resolve({ revision: 2, slices: [{ sheetId: "s1", after: "", from: "", to: "" }] });
+    await settle();
+    expect(h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? [])).toEqual([]);
+    expect([shown("A2"), shown("A3")]).toEqual(["first", "second"]);
+  });
+
   it("keeps a later move's layout when an older save of its sheet is acknowledged", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first") });
