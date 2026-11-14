@@ -5,7 +5,9 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
+import { clearCredentialExpiryLatch, notifyCredentialsExpiredOnce } from "@gadgets/gatekeeper-kit/credential-expiry";
 import { commitStagedCredentials, stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { SerialTaskQueue } from "@gadgets/gatekeeper-kit/serial-queue";
 import {
   PreviewOAuth,
   PreviewOAuthConfigurationError,
@@ -259,6 +261,10 @@ const TOKEN_REVOKE_TIMEOUT_MS = 10 * 1000;
 // short enough that the account recovers on its own once the cause is fixed — an admin lifting a
 // scope restriction leaves nothing for us to observe, so we have to re-ask Google eventually.
 const MINT_FAILURE_COOLDOWN_MS = 60 * 1000;
+
+// Storage key naming the latest refusal by Google to refresh the installed credentials, kept until
+// the Workshop, which was told they had expired, has heard that they mint tokens again.
+const REFRESH_REFUSED_KEY = "refreshRefused";
 
 // What a token request fails with once an account has no refresh token. Of the accounts a binding
 // can name, only one the Workshop disconnected loses it: revoke() deletes all of its storage. The
@@ -611,6 +617,12 @@ export class UserAccount extends DurableObject<Env> {
   // The last mint that failed permanently — revoked credentials, or a scope an admin has blocked.
   #mintFailure: { error: Error; at: number } | undefined;
 
+  // The notices to the Workshop about these credentials, sent one at a time in the order their
+  // causes happened. The Workshop goes on reading the account while it handles a restoration, and
+  // then records the connection as working, so an expiry told to it meanwhile would be overwritten:
+  // an expiry notice waits for the restoration before it to return.
+  #notices = new SerialTaskQueue();
+
   // This account's answers about its own access to subresources, keyed by subresource and
   // partitioned by the credentials that learned them (see #credentialsId), so an answer can't
   // outlive a disconnect that left storage behind, nor survive a reconnect, which may sign in as
@@ -741,8 +753,7 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<string>("refreshToken", response.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", response.accessToken);
       this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
-      // These credentials are new, so any recorded permanent failure no longer applies
-      this.#mintFailure = undefined;
+      this.#forgetRefusal();
       this.ctx.storage.kv.put<string[]>("grantedScopes", response.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, flow.requestedResources);
       return { callback, mode: flow.mode, stageId: undefined };
@@ -781,8 +792,7 @@ export class UserAccount extends DurableObject<Env> {
       this.ctx.storage.kv.put<string>("refreshToken", staged.refreshToken);
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", staged.accessToken);
       this.ctx.storage.kv.put<string>("credentialsId", crypto.randomUUID());
-      // These credentials are new, so any recorded permanent failure no longer applies
-      this.#mintFailure = undefined;
+      this.#forgetRefusal();
       this.ctx.storage.kv.put<string[]>("grantedScopes", staged.grantedScopes);
       mergeGrantedResources(this.ctx.storage.kv, staged.requestedResources);
     });
@@ -918,6 +928,14 @@ export class UserAccount extends DurableObject<Env> {
     return !opts?.forceRefresh;
   }
 
+  // Newly installed credentials have no failure recorded against them and nothing reported about
+  // them, so the next refusal is told to the Workshop afresh.
+  #forgetRefusal(): void {
+    this.#mintFailure = undefined;
+    this.ctx.storage.kv.delete(REFRESH_REFUSED_KEY);
+    clearCredentialExpiryLatch(this.ctx.storage.kv);
+  }
+
   async getAccessToken(opts?: AccessTokenRequest): Promise<GoogleAccessToken> {
     let { CLIENT_ID: clientId, CLIENT_SECRET: clientSecret } = this.env;
     if (!clientId || !clientSecret) {
@@ -936,9 +954,12 @@ export class UserAccount extends DurableObject<Env> {
       return cached;
     }
 
+    // The refusal a mint below ended: Google had refused these credentials, and now mints for them.
+    let endedRefusal: string | undefined;
+
     // Serialized so a burst of concurrent 401s collapses into one token exchange. The re-check
     // inside the lock is what does the collapsing — the lock alone would just queue the mints.
-    return this.#credentials.run(async () => {
+    let token = await this.#credentials.run(async () => {
       let fresh = this.ctx.storage.kv.get<GoogleAccessToken>("accessToken");
       if (this.#tokenSatisfies(fresh, opts)) {
         return fresh;
@@ -985,7 +1006,9 @@ export class UserAccount extends DurableObject<Env> {
         let error = new Error(refreshFailureMessage(result));
         // Recorded before notifying so only the first caller of a burst does either.
         this.#mintFailure = { error, at: Date.now() };
-        this.#notifyCredentialsDead();
+        let refusal = crypto.randomUUID();
+        this.ctx.storage.kv.put<string>(REFRESH_REFUSED_KEY, refusal);
+        this.#notifyCredentialsDead(refusal);
         throw error;
       }
 
@@ -1002,18 +1025,63 @@ export class UserAccount extends DurableObject<Env> {
       }
 
       this.ctx.storage.kv.put<GoogleAccessToken>("accessToken", result.token);
+      endedRefusal = this.ctx.storage.kv.get<string>(REFRESH_REFUSED_KEY);
       return result.token;
+    });
+
+    // Outside the lock, as acceptAuthCode's callbacks are: the Workshop reads the account's
+    // description when told, which asks this object for a token.
+    if (endedRefusal !== undefined) this.#notifyCredentialsRestored(endedRefusal);
+    return token;
+  }
+
+  // Sends a notice once those before it have returned. Not awaited by the mint that causes it: a
+  // notice that fails must not mask the mint's outcome, and the Workshop asks this object for a
+  // token while it handles one. A notice that throws is logged, so that those after it are still
+  // sent.
+  #queueNotice(send: () => Promise<void>): void {
+    this.#notices.run(send).catch(error => {
+      logger.warn("failed to send a credential notice", {
+        event: "credentials.notice.failed", error,
+      });
     });
   }
 
   // Tell the workshop the credentials are permanently dead so the UI prompts a reconnect instead of
-  // every call failing opaquely. Fire and forget — a notification failure must not mask the error.
-  #notifyCredentialsDead(): void {
-    let callback = this.ctx.storage.kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
-    callback?.credentialsExpired().catch(notifyErr => {
-      logger.warn("failed to notify credential expiry", {
-        event: "credentials.expiry.notify.failed", error: notifyErr,
-      });
+  // every call failing opaquely. The Workshop is told once per expiry, and a notice that did not
+  // arrive is sent again by the next refused mint. Nothing is said if, by its turn, `refusal` is no
+  // longer the latest: the credentials were replaced or disconnected, or a later refusal has a
+  // notice of its own queued.
+  #notifyCredentialsDead(refusal: string): void {
+    let kv = this.ctx.storage.kv;
+    this.#queueNotice(async () => {
+      if (kv.get<string>(REFRESH_REFUSED_KEY) !== refusal) return;
+      let callback = kv.get<Fetcher<GatekeeperConnectCallback>>("callback");
+      await notifyCredentialsExpiredOnce(kv, callback, VENDOR_ID);
+    });
+  }
+
+  // Tell the Workshop that credentials it was told had expired mint tokens again, as when an admin
+  // lifts the restriction that blocked them. `refusal` is forgotten only once the Workshop has
+  // heard, and only if Google has not refused again since, so a notice that did not arrive is sent
+  // again by the next mint. Nothing is said if, by its turn, `refusal` is no longer the latest: the
+  // credentials were replaced or disconnected, or Google has refused them again.
+  #notifyCredentialsRestored(refusal: string): void {
+    let kv = this.ctx.storage.kv;
+    this.#queueNotice(async () => {
+      try {
+        if (kv.get<string>(REFRESH_REFUSED_KEY) !== refusal) return;
+        // These credentials work again, so a later refusal of them is news to the Workshop. Re-armed
+        // here and not by the mint, so that an expiry notice still queued for `refusal` cannot set
+        // the latch afterwards and silence the next refusal.
+        clearCredentialExpiryLatch(kv);
+        await kv.get<Fetcher<GatekeeperConnectCallback>>("callback")?.credentialsRestored();
+        if (kv.get<string>(REFRESH_REFUSED_KEY) === refusal) kv.delete(REFRESH_REFUSED_KEY);
+      } catch (error) {
+        logger.warn("failed to notify credential restoration", {
+          event: "credentials.restore.notify.failed", error,
+        });
+      }
     });
   }
 

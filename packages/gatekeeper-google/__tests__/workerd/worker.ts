@@ -381,6 +381,37 @@ type TestHookDeliveryProps = { hooks: string; facet: ChatFacet; params: ChatHook
 type GmailFacet = { facetName: string; id: string; props: GmailGatekeeperImplProps };
 type TestGmailHookDeliveryProps = { hooks: string; facet: GmailFacet; params: GmailHookParams };
 
+/** What each `TestConnectCallback` was told, by its `props.name`. */
+export const connectCallbackEvents = new Map<string, string[]>();
+
+/** The names of the `TestConnectCallback`s that fail every call, as when the Workshop can't be reached. */
+export const unreachableConnectCallbacks = new Set<string>();
+
+/**
+ * The names of the `TestConnectCallback`s that do not return from `credentialsRestored()` while
+ * listed, as while the Workshop reads the account's description.
+ */
+export const heldConnectCallbacks = new Set<string>();
+
+/** Stands in for the Workshop's connect callback, recording each notice that reaches it. */
+export class TestConnectCallback extends WorkerEntrypoint<Cloudflare.Env, { name: string }> {
+  #record(event: string): void {
+    const { name } = this.ctx.props;
+    if (unreachableConnectCallbacks.has(name)) throw new Error("The Workshop can't be reached.");
+    connectCallbackEvents.set(name, [...connectCallbackEvents.get(name) ?? [], event]);
+  }
+
+  async credentialsExpired(): Promise<void> {
+    this.#record("credentialsExpired");
+  }
+
+  async credentialsRestored(): Promise<void> {
+    this.#record("credentialsRestored");
+    // Polled, since a promise settled by the test's request cannot be awaited from this one.
+    while (heldConnectCallbacks.has(this.ctx.props.name)) await scheduler.wait(5);
+  }
+}
+
 /** This worker's loopback exports, which the gatekeeper's generated `Cloudflare.Exports` omits. */
 type TestExports = {
   TestHooks: DurableObjectNamespace<TestHooks>;
