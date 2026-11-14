@@ -729,8 +729,8 @@ describe("XLSX export", () => {
     const colours = [...pie.matchAll(/<c:dPt><c:idx val="(\d)"\/><c:bubble3D val="0"\/><c:spPr><a:solidFill><a:srgbClr val="(\w+)"/g)].map((m) => [Number(m[1]), m[2]]);
     expect(colours).toEqual([[0, "E1632E"], [3, "3478C7"], [1, "1F9D77"]]);
     expect(pie).toContain('<c:legend><c:legendPos val="r"/><c:legendEntry><c:idx val="2"/><c:delete val="1"/></c:legendEntry><c:legendEntry><c:idx val="4"/><c:delete val="1"/></c:legendEntry><c:overlay val="0"/></c:legend>');
-    // The grid stacks from zero and leaves negatives out.
-    expect(part(parts, "xl/charts/chart3.xml")).toContain('<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/><c:min val="0"/></c:scaling>');
+    // Feb is negative: the grid stacks it leftwards from zero, so Excel's axis isn't pinned at 0.
+    expect(part(parts, "xl/charts/chart3.xml")).toContain('<c:valAx><c:axId val="2"/><c:scaling><c:orientation val="minMax"/></c:scaling>');
   });
 
   // Each of these opened in Excel for the web as a damaged workbook, a link to another workbook,
@@ -751,6 +751,23 @@ describe("XLSX export", () => {
     expect(cellXml(sheet, "B5")).toContain(">#REF!</f>");
     // The grid shows a range's first value; a one-cell array formula does too.
     expect(cellXml(sheet, "B6")).toBe('<c r="B6"><f t="array" ref="B6">A1:A2</f><v>1</v></c>');
+  });
+
+  it("prefixes Excel's newer functions, names ERROR.TYPE as Excel does, and keeps quoted text and sheet names as typed", async () => {
+    const gadget = newGadget();
+    await gadget.addSheet({ name: "CONCAT" });
+    await gadget.setCells({ cells: {
+      A1: '=IFS(TRUE,1)+IFNA(A9,0)+XOR(TRUE,FALSE)+SWITCH(1,1,1)+LEN(CONCAT("a","b"))+LEN(TEXTJOIN(",",TRUE,A9))+DAYS(2,1)',
+      A2: '=LEN("CONCAT(")+ERRORTYPE(NA())+LEN(CONCAT!A1)',
+      A3: "=ERRORTYPE(NA())" + "+0".repeat(4088),
+      A4: "=ERRORTYPE(NA())" + "+0".repeat(4087),
+    } });
+    const sheet = part(await xlsx(gadget), "xl/worksheets/sheet1.xml");
+    expect(cellXml(sheet, "A1")).toContain('<f>_xlfn.IFS(TRUE,1)+_xlfn.IFNA(A9,0)+_xlfn.XOR(TRUE,FALSE)+_xlfn.SWITCH(1,1,1)+LEN(_xlfn.CONCAT("a","b"))+LEN(_xlfn.TEXTJOIN(",",TRUE,A9))+_xlfn.DAYS(2,1)</f>');
+    expect(cellXml(sheet, "A2")).toContain('<f>LEN("CONCAT(")+ERROR.TYPE(NA())+LEN(CONCAT!A1)</f>');
+    // Excel holds 8,192 characters of formula: one the longer name takes past that stays text.
+    expect(cellXml(sheet, "A3")).toContain('t="inlineStr"><is><t xml:space="preserve">=ERRORTYPE(NA())+0');
+    expect(cellXml(sheet, "A4")).toContain("<f>ERROR.TYPE(NA())+0");
   });
 
   it("writes array constants, empty arguments and error values as Excel reads them, with Excel's results", async () => {

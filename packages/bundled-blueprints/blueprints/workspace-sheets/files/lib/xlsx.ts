@@ -1052,8 +1052,8 @@ function chartXml(chart: ChartLayout, cache: ChartCache, sheetName: string): str
     if (chart.type === "stackedBar") {
       xml += `<c:barChart><c:barDir val="bar"/><c:grouping val="stacked"/><c:varyColors val="0"/>${series}<c:gapWidth val="56"/><c:overlap val="100"/>${axes}</c:barChart>`;
       // Categories run top-down as in the grid, which puts the value axis at the category maximum.
-      // The grid stacks only positive values, from zero; the axis starting there clips negatives the same way.
-      xml += chartAxisXml("catAx", 1, 2, "l", chart.yAxisTitle, { reversed: true }) + chartAxisXml("valAx", 2, 1, "b", chart.xAxisTitle, { crossesMax: true, minimum: 0 });
+      // Excel scales the value axis itself, so negative values stack leftwards from zero as in the grid.
+      xml += chartAxisXml("catAx", 1, 2, "l", chart.yAxisTitle, { reversed: true }) + chartAxisXml("valAx", 2, 1, "b", chart.xAxisTitle, { crossesMax: true });
     } else {
       xml += chart.type === "area"
         ? `<c:areaChart><c:grouping val="standard"/><c:varyColors val="0"/>${series}${axes}</c:areaChart>`
