@@ -222,10 +222,13 @@ export type GoogleAccountProfile = {
   picture?: string;
 };
 
-export async function getGoogleAccountProfile(accessToken: string | AccessTokenProvider): Promise<GoogleAccountProfile> {
+/** `signal` lets a caller that holds the credential mutex bound the round trip. */
+export async function getGoogleAccountProfile(
+    accessToken: string | AccessTokenProvider, signal?: AbortSignal): Promise<GoogleAccountProfile> {
   const response = await fetchWithAuthRetry('https://www.googleapis.com/oauth2/v3/userinfo', {
     method: 'GET',
     headers: { 'Accept': 'application/json' },
+    ...(signal ? { signal } : {}),
   }, typeof accessToken === "string" ? async () => accessToken : accessToken);
 
   if (!response.ok) {

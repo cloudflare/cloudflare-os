@@ -29,6 +29,8 @@ async function connectedAccount() {
   };
   vi.stubGlobal("fetch", async (input: string | URL | Request) => {
     const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+    // Asked once a token mints, to record whose grant the account holds.
+    if (url.href === "https://www.googleapis.com/oauth2/v3/userinfo") return Response.json({sub: "subject"});
     if (url.href !== "https://oauth2.googleapis.com/token") throw new Error(`unexpected request: ${url}`);
     google.refreshes++;
     return google.refresh();
