@@ -1,8 +1,10 @@
 import { RpcTarget } from 'capnweb'
-import type { UiBundle } from '@gadgets/workshop-shared/api'
+import type { GadgetExportFormat, UiBundle } from '@gadgets/workshop-shared/api'
 
 // What a gadget's UI takes to load, so that loading can be seen.
 const LOAD_TIME = 500
+// How long an export takes, long enough to be seen under way.
+const EXPORT_TIME = 1500
 
 /** What a handle's calls fail with once the workspace has restarted under it. */
 export const RESTARTED = new Error('The workspace restarted.')
@@ -107,6 +109,24 @@ export class MockGadget {
         await reachable()
         const server = new MockGadgetServer(this.#document)
         return Object.assign(server, { onRpcBroken: (callback: (error: unknown) => void) => void handle.onBroken.add(callback) })
+      },
+      // As a gadget with no export code of its own is offered: its page, as HTML or a PDF.
+      getExportFormats: async (): Promise<GadgetExportFormat[]> => {
+        await reachable()
+        await new Promise((resolve) => setTimeout(resolve, LOAD_TIME))
+        return [
+          { id: 'html', label: 'HTML', mode: 'browser', contentType: 'text/html', fileExtension: '.html' },
+          { id: 'pdf', label: 'PDF', mode: 'browser', contentType: 'application/pdf', fileExtension: '.pdf' },
+        ]
+      },
+      // The HTML is its list as it stands; a PDF needs a browser to draw it, which there is none of here.
+      export: async (id: string): Promise<ReadableStream<Uint8Array>> => {
+        await reachable()
+        await new Promise((resolve) => setTimeout(resolve, EXPORT_TIME))
+        if (id !== 'html') throw new Error('There is no browser to draw it with here.')
+        const { title, tasks } = this.#document
+        const html = `<!doctype html><title>${title}</title><h1>${title}</h1><ul>${tasks.map(({ text, done }) => `<li>${done ? '✓ ' : ''}${text}</li>`).join('')}</ul>`
+        return new Blob([html], { type: 'text/html' }).stream()
       },
       onRpcBroken: (callback: (error: unknown) => void) => (handle.broken ? callback(handle.broken) : void handle.onBroken.add(callback)),
       // Nothing to release: the fake workspace keeps its gadgets.

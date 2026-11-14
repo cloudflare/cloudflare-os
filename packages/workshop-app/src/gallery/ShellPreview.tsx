@@ -7,6 +7,7 @@ import { Sidebar, type SidebarWorkspace } from '@/blocks/Sidebar'
 import { Button } from '@/components/Button'
 import { AppShell } from '@/layouts/AppShell'
 import { ApiContext } from '@/rpc/ApiContext'
+import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { Section } from './Section'
 
 const WORKSPACES: SidebarWorkspace[] = [
@@ -44,10 +45,12 @@ export const ShellPreview = () => {
   }
 
   return (
-    <Section title="AppShell, SplitLayout, SidePane, ResizeHandle (beside the page the pane shows one of what the chat has to show; with more than one a count shows, which opens to the list of them, and one opened from elsewhere is marked. The header has who else is there, more (reload, and hide the pane), a link, and Expand. Dragging the gap far to the right also hides the pane, which dims first, and so do the arrow keys on the handle past the pane's narrowest. As it goes, a handle stays out at the page's far edge for a moment, and comes out again when the pointer reaches the edge, to be clicked or pulled. Expanded, the pane grows over the room and the page goes, without what is in it starting over; opened as a page from elsewhere, such as the library, it is simply there in the page's place, and leaving it puts the page back at once, with no Collapse to go back to; Collapse takes its place in the header, followed by full screen, which fills the window until exited or Escape. A gadget runs in it, on a tinted surface whose bar pushes the header up out of the way or pulls it back down. Dragging the sidebar's gap well past its narrowest collapses it to a rail of icons. Near either gap a pill follows the pointer: drag it to resize, past a limit it resists and springs back; double-click to reset, or tab to it and use the arrow keys)">
+    <Section title="AppShell, SplitLayout, SidePane, ResizeHandle (beside the page the pane shows one of what the chat has to show; with more than one a count shows, which opens to the list of them, and one opened from elsewhere is marked. The header has who else is there, more (reload; export, which reads the gadget’s formats in the menu’s place and says in the header while it saves, and why if it fails; and hide the pane), a link, and Expand. Dragging the gap far to the right also hides the pane, which dims first, and so do the arrow keys on the handle past the pane's narrowest. As it goes, a handle stays out at the page's far edge for a moment, and comes out again when the pointer reaches the edge, to be clicked or pulled. Expanded, the pane grows over the room and the page goes, without what is in it starting over; opened as a page from elsewhere, such as the library, it is simply there in the page's place, and leaving it puts the page back at once, with no Collapse to go back to; Collapse takes its place in the header, followed by full screen, which fills the window until exited or Escape. A gadget runs in it, on a tinted surface whose bar pushes the header up out of the way or pulls it back down. Dragging the sidebar's gap well past its narrowest collapses it to a rail of icons. Near either gap a pill follows the pointer: drag it to resize, past a limit it resists and springs back; double-click to reset, or tab to it and use the arrow keys)">
       {/* Wider than the gallery's column, so that there is room to drag in. */}
       <div className="relative left-1/2 h-[32rem] w-[min(72rem,100vw-4rem)] shrink-0 -translate-x-1/2 rounded-3xl bg-kumo-canvas ring-1 ring-kumo-line">
         <ApiContext value={session}>
+          {/* The pane asks who may share what it shows. */}
+          <WorkspacesProvider>
           <AppShell
             sidebar={(collapsed) => (
               <Sidebar
@@ -103,6 +106,7 @@ export const ShellPreview = () => {
               </Button>
             </div>
           </AppShell>
+          </WorkspacesProvider>
         </ApiContext>
       </div>
     </Section>

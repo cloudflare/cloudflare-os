@@ -155,7 +155,18 @@ with it, and says why under the composer. The profile's default (§9) uses the s
 settings. Formats are read when the menu opens; the download says it is under way in the pane's
 header and says why if it fails.
 
-**Kernel.** None.
+As built, Export is a row of the pane's More that shows the formats in the menu's place, the way
+Model does in the + menu ("Reading its formats…", then "HTML .html", "PDF .pdf"; "It can't be
+saved as a file" or why it could not be read, with Try again). The progress moved from the header
+to a pill at the foot of the pane, "Exporting PDF…" in the shimmer the assistant's status uses: a
+narrow pane's header has no room beside the title, and the pill stays while the header is pushed
+away. A failure stays in the pill with why until dismissed. The browser asks where to save while
+the click still counts, where it can, and the file streams there; elsewhere it downloads, named
+for the gadget. The settings row ("Save it as a file: HTML or PDF") is for anyone who can open the
+gadget, and appears once its formats are read. A gadget shown from a chat exports as that chat
+proposes it.
+
+**Kernel.** None. Built.
 
 ## 7. A chat in a workspace, and a chat on its own
 

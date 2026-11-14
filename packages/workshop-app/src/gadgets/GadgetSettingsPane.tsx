@@ -6,6 +6,7 @@ import { BindingRow } from '@/blocks/BindingRow'
 import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
+import { GadgetExportRow } from './GadgetExportRow'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PublishBlueprintDialog } from '@/blocks/PublishBlueprintDialog'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
@@ -167,6 +168,7 @@ export const GadgetSettingsPane = ({
                     control={<Button icon={ExportIcon} onClick={() => setPublishing(true)}>Publish</Button>}
                   />
                 )}
+                <GadgetExportRow workspaceId={workspaceId} workpieceId={workpieceId} title={title ?? ''} />
               </SettingsGroup>
               {builds && (
                 <SettingsGroup label="Danger">

@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import type { RefObject } from 'react'
 import { CaretLeftIcon, CaretRightIcon, CheckIcon, CubeIcon, MagnifyingGlassIcon, PaperclipIcon, PlugIcon, PlusIcon } from '@phosphor-icons/react'
 import { DropdownMenu } from '@/components/DropdownMenu'
+import { useMenuPages } from '@/components/useMenuPages'
 import { commandGlyph, type ComposerCommand } from './ComposerCommandPicker'
 
 /** A model the draft can go to, as the menu lists it. */
@@ -45,25 +46,7 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
   const listed = [...items.filter(({ kind }) => kind === 'skill'), ...items.filter(({ kind }) => kind !== 'skill')]
   const more = listed.length > LISTED
   // Which list the menu shows: its own rows, or the models in their place.
-  const [view, setView] = useState<'main' | 'models'>('main')
-  const rows = useRef<HTMLDivElement>(null)
-  const swapped = useRef(false)
-  const show = (next: typeof view) => {
-    swapped.current = true
-    setView(next)
-  }
-  // The row chosen goes with the list it was in, so the keyboard carries on in the new one: on the
-  // model chosen, or back on Model. After the menu has let go of the row that went.
-  useEffect(() => {
-    if (!swapped.current) return
-    swapped.current = false
-    const frame = requestAnimationFrame(() => {
-      const list = rows.current
-      const target = list?.querySelector<HTMLElement>(view === 'models' ? '[aria-current="true"]' : '[data-row="model"]')
-      ;(target ?? list?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])'))?.focus()
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [view])
+  const { page, show, rows, onOpenChangeComplete } = useMenuPages<'main' | 'models'>('main')
   const current = model?.models.find(({ id }) => id === model.current)
 
   return (
@@ -75,13 +58,10 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
       anchorRef={anchorRef}
       side="top"
       inPlace={inPlace}
-      // Once closed, so the list does not change as the menu goes.
-      onOpenChangeComplete={(open) => {
-        if (!open) setView('main')
-      }}
+      onOpenChangeComplete={onOpenChangeComplete}
     >
       <div ref={rows}>
-        {view === 'models' && model ? (
+        {page === 'models' && model ? (
           <>
             <DropdownMenu.Item icon={CaretLeftIcon} onSelect={() => show('main')} keepsOpen label="Back">
               <span className="text-kumo-subtle">Model</span>
@@ -109,7 +89,7 @@ export const ComposerAddMenu = ({ anchorRef, inPlace, onUpload, onAddConnection,
               <span>Add a new connection</span>
             </DropdownMenu.Item>
             {model && (
-              <DropdownMenu.Item icon={CubeIcon} onSelect={() => show('models')} keepsOpen label="Model" row="model">
+              <DropdownMenu.Item icon={CubeIcon} onSelect={() => show('models')} keepsOpen label="Model" row="models">
                 <span className="flex-1">Model</span>
                 <span className="max-w-40 truncate text-sm text-kumo-subtle">{current?.name}</span>
                 <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />

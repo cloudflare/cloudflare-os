@@ -395,6 +395,13 @@ that run it are on Connections. A gadget the viewer cannot open shows `GadgetNoA
 page and on its settings, rather than an error: Request access writes a message with the link, and
 a blueprint card appears only when its blueprint is known.
 
+A gadget is saved as a file with `gadgets/GadgetExports` (`GadgetClient.export`, as the chat it is
+shown from proposes it): from the pane's More, Export shows the formats in the menu's place, read
+each time it opens (`components/useMenuPages`, as the composer's Model does), and a pill at the
+foot of the pane says it is under way, then why if it failed; on its settings, an Export row names
+the formats and appears only when it has some. `files/saveFile` asks where to save while the click
+still counts, where the browser can, and streams to it; elsewhere it downloads.
+
 ## Beside the page
 
 Files and outputs open in a second card beside the page (`SplitLayout`, which `AppShell` lays the

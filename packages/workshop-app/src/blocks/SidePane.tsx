@@ -1,8 +1,8 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
-import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
+import { AnimatePresence, animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
   ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
-  CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, ExportIcon, GearSixIcon,
+  CaretLeftIcon, CaretRightIcon, CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon, ExportIcon, GearSixIcon, XIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
 import { Button } from '@/components/Button'
@@ -10,6 +10,8 @@ import { DropdownMenu } from '@/components/DropdownMenu'
 import { Grabber } from '@/components/Grabber'
 import { HeaderBubble } from '@/components/HeaderBubble'
 import { clampSize, resistSize } from '@/components/resizing'
+import { ShimmerText } from '@/components/ShimmerText'
+import { useMenuPages } from '@/components/useMenuPages'
 import { CopyLinkButton } from './CopyLinkButton'
 import { SidePaneTitle } from './SidePaneTitle'
 
@@ -43,6 +45,22 @@ type Placement =
       onFullScreenChange: (on: boolean) => void
     }
 
+/**
+ * The kinds of file the one shown can be saved as, read when they are asked for, and the export
+ * under way or the last that failed, which the header says.
+ */
+export type SidePaneExports = {
+  formats:
+    | { status: 'unread' | 'loading' }
+    | { status: 'ready'; formats: readonly { id: string; label: string; fileExtension: string }[] }
+    | { status: 'failed'; message: string }
+  /** Reads the formats, as the list of them is shown. */
+  onRead: () => void
+  onExport: (id: string) => void
+  progress?: { status: 'exporting'; label: string } | { status: 'failed'; label: string; message: string }
+  onDismiss: () => void
+}
+
 export type SidePaneProps = Placement & {
   /** The one shown. Beside the page it need not be among the items: it was opened from elsewhere. */
   active?: SidePaneItem
@@ -60,6 +78,8 @@ export type SidePaneProps = Placement & {
   onShare?: () => void
   /** Goes to the one shown's own settings: a gadget's. */
   onOpenSettings?: () => void
+  /** Saves the one shown as a file of a kind it offers, such as a gadget as a PDF. */
+  exports?: SidePaneExports
   /**
    * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
    * step up, and the step down is a back button at the start of the header.
@@ -92,7 +112,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, openIn, onShare, onOpenSettings, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, openIn, onShare, onOpenSettings, exports, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -173,16 +193,18 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload || openIn || onShare || onOpenSettings))) && (
+            {(beside || (active && (onReload || onDownload || openIn || onShare || onOpenSettings || exports))) && (
               <HeaderBubble>
-                <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
-                  {onShare && <DropdownMenu.Item icon={ExportIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
-                  {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
-                  {openIn && <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={() => window.open(openIn.href, '_blank', 'noopener')}>{openIn.label}</DropdownMenu.Item>}
-                  {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
-                  {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
-                  {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
-                </DropdownMenu>
+                <MoreMenu
+                  title={active?.title}
+                  onShare={onShare}
+                  onReload={onReload}
+                  openIn={openIn}
+                  onDownload={onDownload}
+                  exports={active ? exports : undefined}
+                  onOpenSettings={onOpenSettings}
+                  onHide={beside?.onHide}
+                />
               </HeaderBubble>
             )}
             {active && link && (
@@ -241,8 +263,120 @@ export const SidePane = (props: SidePaneProps) => {
             onToggle={() => showHeader(!headerShown)}
           />
           {children}
+          <ExportStatus progress={exports?.progress} onDismiss={exports?.onDismiss} />
         </motion.div>
       )}
     </section>
+  )
+}
+
+type MoreMenuProps = Pick<SidePaneProps, 'onShare' | 'onReload' | 'openIn' | 'onDownload' | 'exports' | 'onOpenSettings'> & {
+  title?: string
+  onHide?: () => void
+}
+
+/** More that can be done with the one shown; Export shows the formats it offers in the menu's place. */
+const MoreMenu = ({ title, onShare, onReload, openIn, onDownload, exports, onOpenSettings, onHide }: MoreMenuProps) => {
+  const { page, show, rows, onOpenChangeComplete } = useMenuPages<'more' | 'export'>('more')
+  const exporting = exports?.progress?.status === 'exporting'
+  const formats = exports?.formats
+  return (
+    <DropdownMenu icon={DotsThreeIcon} aria-label={title ? `More for ${title}` : 'More'} align="end" onOpenChangeComplete={onOpenChangeComplete}>
+      <div ref={rows}>
+        {page === 'export' && exports && formats ? (
+          <>
+            <DropdownMenu.Item icon={CaretLeftIcon} onSelect={() => show('more')} keepsOpen label="Back">
+              <span className="text-kumo-subtle">Export</span>
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator />
+            {formats.status === 'ready' && formats.formats.length > 0 ? formats.formats.map((format) => (
+              <DropdownMenu.Item key={format.id} label={format.label} disabled={exporting} onSelect={() => exports.onExport(format.id)}>
+                {/* In the icons' column, so the formats line up under the rows' names. */}
+                <span aria-hidden="true" className="size-4 shrink-0" />
+                <span className="min-w-0 flex-1 truncate">{format.label}</span>
+                <span className="text-sm text-kumo-subtle">{format.fileExtension}</span>
+              </DropdownMenu.Item>
+            )) : formats.status === 'failed' ? (
+              <>
+                <p role="alert" className="max-w-64 py-2 ps-10 pe-3 text-sm text-pretty text-kumo-danger">Couldn’t read what it can be saved as. {formats.message}</p>
+                <DropdownMenu.Item icon={ArrowClockwiseIcon} keepsOpen onSelect={exports.onRead}>Try again</DropdownMenu.Item>
+              </>
+            ) : formats.status === 'ready' ? (
+              <p className="max-w-64 py-2 ps-10 pe-3 text-sm text-pretty text-kumo-subtle">It can’t be saved as a file.</p>
+            ) : (
+              <p role="status" className="py-2 ps-10 pe-3 text-sm text-kumo-subtle"><ShimmerText>Reading its formats…</ShimmerText></p>
+            )}
+          </>
+        ) : (
+          <>
+            {onShare && <DropdownMenu.Item icon={ExportIcon} onSelect={onShare}>Share…</DropdownMenu.Item>}
+            {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
+            {openIn && <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={() => window.open(openIn.href, '_blank', 'noopener')}>{openIn.label}</DropdownMenu.Item>}
+            {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
+            {exports && (
+              <DropdownMenu.Item
+                icon={DownloadSimpleIcon}
+                keepsOpen
+                label="Export"
+                row="export"
+                onSelect={() => {
+                  // Read each time, as its code may have changed since.
+                  exports.onRead()
+                  show('export')
+                }}
+              >
+                <span className="flex-1">Export</span>
+                <CaretRightIcon aria-hidden="true" weight="bold" className="size-3 shrink-0 text-kumo-subtle" />
+              </DropdownMenu.Item>
+            )}
+            {onOpenSettings && <DropdownMenu.Item icon={GearSixIcon} onSelect={onOpenSettings}>Gadget settings</DropdownMenu.Item>}
+            {onHide && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={onHide}>Hide pane</DropdownMenu.Item>}
+          </>
+        )}
+      </div>
+    </DropdownMenu>
+  )
+}
+
+/**
+ * The export under way, or why the last failed until it is put away: a pill floating at the foot of
+ * what is shown, which has room for it however narrow the header is, and stays while the header is
+ * pushed away.
+ */
+const ExportStatus = ({ progress, onDismiss }: { progress: SidePaneExports['progress']; onDismiss?: () => void }) => {
+  const transition = useReducedMotion() ? { duration: 0 } : { duration: 0.2, ease: [0.25, 0.1, 0.25, 1] as const }
+  return (
+    <div className="pointer-events-none absolute inset-x-0 bottom-4 z-20 flex justify-center px-4">
+      <AnimatePresence initial={false}>
+        {progress && (
+          <motion.div
+            key={progress.status}
+            initial={{ opacity: 0, y: 8, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 8, scale: 0.98 }}
+            transition={transition}
+            className="pointer-events-auto flex max-w-md min-w-0 items-center gap-1 rounded-[18px] bg-kumo-base py-1 ps-4 pe-1 text-sm shadow-[0_6px_24px_rgba(0,0,0,0.08)] ring-1 ring-kumo-contrast/6"
+          >
+            {progress.status === 'exporting' ? (
+              <span role="status" className="flex min-h-7 items-center pe-3 text-kumo-subtle">
+                <ShimmerText>Exporting {progress.label}…</ShimmerText>
+              </span>
+            ) : (
+              <>
+                <span role="alert" className="min-w-0 py-1 text-pretty text-kumo-danger">Couldn’t export {progress.label}. {progress.message}</span>
+                <Button
+                  variant="ghost"
+                  icon={<XIcon weight="bold" />}
+                  aria-label="Dismiss"
+                  title="Dismiss"
+                  onClick={onDismiss}
+                  className="size-7 shrink-0 self-start text-kumo-subtle hover:text-kumo-default [&>svg]:size-3"
+                />
+              </>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   )
 }

@@ -16,6 +16,7 @@ import { OPEN_IN, type ConnectedFileKind } from '@/files/connectedFile'
 import { useConnectedFilePreview, type ConnectedFileState } from './useConnectedFilePreview'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
+import { useGadgetExports } from '@/gadgets/useGadgetExports'
 
 export type AsidePaneProps = {
   /** The one shown. */
@@ -118,6 +119,19 @@ export const AsidePane = (props: AsidePaneProps) => {
     />
   )
 
+  // A gadget is saved as it is shown: with what the chat it is shown from proposes.
+  const exporting = useGadgetExports(gadget && snapshot.ui.status === 'ready' ? gadget : undefined)
+  const exports = exporting && {
+    formats: exporting.snapshot.formats,
+    onRead: () => void exporting.exports.loadFormats(),
+    onExport: (id: string) => {
+      const format = exporting.snapshot.formats.status === 'ready' ? exporting.snapshot.formats.formats.find((each) => each.id === id) : undefined
+      if (format) void exporting.exports.exportAs(format, title)
+    },
+    progress: exporting.snapshot.progress,
+    onDismiss: exporting.exports.dismiss,
+  }
+
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
@@ -128,6 +142,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     onShare: shareable ? () => setSharing(true) : undefined,
     // Not for one the viewer cannot open, whose settings they could not see either.
     onOpenSettings: gadget && onOpenSettings && snapshot.ui.status !== 'denied' ? () => onOpenSettings(gadget, title) : undefined,
+    exports,
     narrow,
   }
 

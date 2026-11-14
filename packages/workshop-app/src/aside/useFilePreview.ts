@@ -3,6 +3,7 @@ import { useApi } from '@/rpc/ApiContext'
 import type { AsideFile } from './asideItems'
 import { SVG_TYPE, svgDataUrl } from '@/files/svgImage'
 import { isOfficeKind, previewOf, type FilePreview, type OfficeKind } from './filePreview'
+import { saveBytes } from '@/files/saveFile'
 
 /** How a file is shown, with an address for its bytes where the browser shows them. */
 export type ShownFile =
@@ -24,16 +25,6 @@ export type FileState =
     }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
-
-const save = (bytes: Uint8Array, name: string) => {
-  // As bytes and nothing else, so that it is saved rather than opened.
-  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'application/octet-stream' }))
-  const link = document.createElement('a')
-  link.href = url
-  link.download = name
-  link.click()
-  setTimeout(() => URL.revokeObjectURL(url), 0)
-}
 
 /**
  * A file sent in a chat, ready to show: the bytes it came with, or else fetched through the chat,
@@ -98,7 +89,7 @@ export const useFilePreview = (file: AsideFile | undefined): FileState => {
     return chatId === undefined && !inline ? { status: 'unreachable' } : { status: 'loading' }
   }
   if (!preview) return { status: 'loading' }
-  const download = () => save(bytes, name)
+  const download = () => saveBytes(bytes as BlobPart, name)
   if (isOfficeKind(preview.kind)) return { status: 'ready', preview: { kind: preview.kind, bytes, mimeType }, download }
   if (preview.kind === 'markdown' || preview.kind === 'text' || preview.kind === 'none') return { status: 'ready', preview, download }
   // Waiting for its address, which comes with the next render.
