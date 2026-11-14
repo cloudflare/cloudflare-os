@@ -24,6 +24,7 @@ type Harness = {
   screenshotType: () => string | undefined;
   screenshotClip: () => {x: number; y: number; width: number; height: number} | undefined;
   screenshotCaptureBeyondViewport: () => boolean | undefined;
+  viewport: () => {width: number; height: number} | undefined;
   setDocumentDimensions: (width: number, height: number) => void;
   setSnapshot: (value: string) => void;
 };
@@ -45,6 +46,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
   let screenshotType: string | undefined;
   let screenshotClip: {x: number; y: number; width: number; height: number} | undefined;
   let screenshotCaptureBeyondViewport: boolean | undefined;
+  let viewport: {width: number; height: number} | undefined;
   let documentDimensions = {width: 1000, height: 1000};
   let snapshot = "<!DOCTYPE html>\n<html><head></head><body>Snapshot</body></html>";
   let navigated = false;
@@ -137,6 +139,9 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
       });
     },
     mainFrame: () => mainFrame,
+    setViewport: async (value: {width: number; height: number}) => {
+      viewport = value;
+    },
     emulateMediaType: async (value: string) => {
       expect(navigated).toBe(false);
       mediaType = value;
@@ -195,6 +200,7 @@ function makeHarness(pdfChunks = ["%PDF-1.4"], closePdf = true) {
     screenshotType: () => screenshotType,
     screenshotClip: () => screenshotClip,
     screenshotCaptureBeyondViewport: () => screenshotCaptureBeyondViewport,
+    viewport: () => viewport,
     setDocumentDimensions: (width, height) => { documentDimensions = {width, height}; },
     setSnapshot: value => { snapshot = value; },
   };
@@ -369,6 +375,25 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.screenshotClip()).toEqual({x: 0, y: 0, width: 1000, height: 1000});
     expect(harness.screenshotCaptureBeyondViewport()).toBe(true);
     expect(harness.mediaType()).toBe("screen");
+    expect(harness.browserClosed()).toBe(true);
+  });
+
+  it("pictures only the page it was given, however long the document, for a thumbnail", async () => {
+    let { gadget, harness } = makeHarness();
+    harness.setDocumentDimensions(1280, 9000);
+
+    let stream = renderGadgetInBrowser(
+      {} as BrowserRun,
+      "export default {}",
+      "Test Gadget",
+      gadget as never,
+      {id: "thumbnail", label: "Thumbnail", mode: "browser", contentType: "image/jpeg", fileExtension: ".jpg"},
+      {width: 1280, height: 800},
+    );
+
+    expect(await collect(await stream)).toBe("jpeg");
+    expect(harness.viewport()).toEqual({width: 1280, height: 800});
+    expect(harness.screenshotClip()).toEqual({x: 0, y: 0, width: 1280, height: 800});
     expect(harness.browserClosed()).toBe(true);
   });
 

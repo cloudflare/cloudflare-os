@@ -8,7 +8,7 @@ import { GroupedList } from '@/components/GroupedList'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { LibraryEntry, LibraryGroup } from './libraryEntries'
 import type { LibraryEntriesState } from './useLibraryEntries'
-import { useThumbnail } from './useThumbnail'
+import { useLibraryPicture } from './useLibraryPicture'
 
 export type LibraryListProps = {
   groups: LibraryGroup[]
@@ -29,8 +29,11 @@ const copyLink = (href: string) => {
 }
 
 // Each its own component, so that each fetches its own picture.
-const Row = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryRow {...props} thumbnail={useThumbnail(entry)} />
-const Tile = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryTile {...props} thumbnail={useThumbnail(entry)} />
+const Row = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => <LibraryRow {...props} thumbnail={useLibraryPicture(entry).photo} />
+const Tile = ({ entry, ...props }: Omit<LibraryItemProps, 'thumbnail'> & { entry: LibraryEntry }) => {
+  const { ref, photo, preview } = useLibraryPicture(entry)
+  return <LibraryTile ref={ref} {...props} thumbnail={photo} preview={preview} />
+}
 
 /**
  * Library entries as rows in groups, or tiles in a grid, each starred from its row and with a menu

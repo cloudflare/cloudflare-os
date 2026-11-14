@@ -72,10 +72,17 @@ the kernel can render a gadget in a browser (exports). Nothing makes a picture o
 **Decision.** Everything shows what it is. Files use the chat's thumbnails. Gadgets show a picture
 of their UI, rendered by the server and kept until their code changes; one with no UI, or a
 deployment without browser rendering, shows its format's glyph on its tile as now. Google files
-show the blank page of their kind that stands in while they load beside a chat.
+show the top of their real first page, read through the connection the workspace reaches them by
+and drawn the way the page beside a chat draws them. A preview is asked for only once its tile
+nears the screen, and gadgets two at a time, since each may take a browser of the server's. A
+preview sits under the tile's name on a frosted foot; an image file still fills its tile. Rows keep
+their glyphs: a preview at row size says nothing a glyph doesn't.
 
-**Kernel.** `GadgetClient.getThumbnail()`: a PNG of the gadget's UI, rendered by Browser Run at a
-fixed size and kept per gadget for the code version it was taken of.
+**Kernel.** `GadgetClient.getThumbnail()`: a JPEG of the top 1280x800 of the gadget's UI, rendered
+by Browser Run and kept in the overseer's `thumbnails` table for the commit it was taken of. A
+failure is kept too and tried again after an hour, so a gadget that can't be drawn isn't drawn on
+every look; two looks at once share one drawing, and drawings run one at a time per workspace.
+Refused wherever `export()` is (a view-only client). Built.
 
 ## 3. Automations
 

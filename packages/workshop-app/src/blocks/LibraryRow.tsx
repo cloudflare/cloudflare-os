@@ -4,6 +4,7 @@ import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
 import { ContextMenu } from '@/components/ContextMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
+import type { FileThumbnail } from './file-preview/useFileThumbnail'
 import { LinkButton } from '@/components/LinkButton'
 
 /** Something that can be done with a thing in the Library, from its More menu or by right-clicking it. */
@@ -21,6 +22,11 @@ export type LibraryItemProps = {
   icon: ReactElement
   /** A picture of it, such as an image file's own, in place of its icon. */
   thumbnail?: string
+  /**
+   * A glimpse of it where it has no picture of its own: a gadget's screen, a document's first
+   * page. A tile shows it under its name; a row, too small for one, shows its icon.
+   */
+  preview?: FileThumbnail | null
   /** When it was, as the list it is in puts it. */
   time?: string
   /** Starred or not; absent for what cannot be, such as a file that lives with a connected service. */

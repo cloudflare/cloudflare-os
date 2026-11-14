@@ -444,6 +444,15 @@ function describeBindingKind(binding: BlueprintBinding): string {
 }
 
 const MAX_BLUEPRINT_SCREENSHOT_BYTES = 1024 * 1024;
+
+// A gadget's thumbnail (GadgetClient.getThumbnail()): a JPEG of its UI on a page this big, kept
+// in storage while no bigger than this, and tried again this long after it could not be drawn.
+const THUMBNAIL_VIEWPORT = {width: 1280, height: 800};
+const THUMBNAIL_FORMAT: GadgetExportFormat = {
+  id: "thumbnail", label: "Thumbnail", mode: "browser", contentType: "image/jpeg", fileExtension: ".jpg",
+};
+const MAX_THUMBNAIL_BYTES = 1024 * 1024;
+const THUMBNAIL_RETRY_MS = 60 * 60 * 1000;
 function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload): BlueprintScreenshotUpload {
   if (screenshot.mimeType !== "image/jpeg" && screenshot.mimeType !== "image/png") {
     throw new Error("Blueprint screenshot must be a JPEG or PNG image.");
@@ -2300,6 +2309,7 @@ class OverseerImpl implements AgentHooks {
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
     this.deleteView(id);
+    this.storage.thumbnails.delete(id);
     // An agent spawner may bind the gadget (see GatekeeperRecord.bindings).
     for (let chatId of this.#deleteBindingEdges(edge => edge.target === id)) {
       affectedChats.add(chatId);
@@ -5542,6 +5552,59 @@ class OverseerImpl implements AgentHooks {
       let title = this.getGadgetRecord(gadgetId).title;
       return renderGadgetInBrowser(browser, bundle.jsCode, title, exportGadget.dup(), format);
     }
+  }
+
+  // Thumbnails being drawn, by gadget, and the one browser session they take turns with: a
+  // Library showing every gadget would otherwise launch a browser for each at once.
+  #thumbnailsDrawing = new Map<WorkpieceId, Promise<Uint8Array | null>>();
+  #thumbnailTurn: Promise<unknown> = Promise.resolve();
+
+  // GadgetClient.getThumbnail(): the picture kept for the gadget's head commit, or one drawn now
+  // and kept. A failure is kept too, and tried again only after THUMBNAIL_RETRY_MS, so a gadget
+  // that cannot be drawn costs a browser session that often at most. Never rejects.
+  getGadgetThumbnail(gadgetId: WorkpieceId): Promise<Uint8Array | null> {
+    let browser = this.env.BROWSER;
+    let commitId = this.getGadgetHead(gadgetId);
+    if (!browser || commitId === undefined) return Promise.resolve(null);
+    let kept = this.storage.thumbnails.get(gadgetId);
+    if (kept?.commitId === commitId &&
+        (kept.image || !kept.failedAt || Date.now() - kept.failedAt.valueOf() < THUMBNAIL_RETRY_MS)) {
+      return Promise.resolve(kept.image ?? null);
+    }
+    let drawing = this.#thumbnailsDrawing.get(gadgetId);
+    if (drawing) return drawing;
+    let turn = this.#thumbnailTurn.then(() => this.#drawThumbnail(browser, gadgetId, commitId));
+    this.#thumbnailTurn = turn.catch(() => {});
+    drawing = turn.then(
+      (image) => {
+        // Kept only if the gadget is still there, at the code it was drawn from.
+        if (this.getGadgetHead(gadgetId) === commitId) this.storage.thumbnails.put({gadgetId, commitId, ...(image ? {image} : {})});
+        return image;
+      },
+      () => {
+        // Deliberately omits the caught value, which can carry Gadget-authored text.
+        this.logger.warn("failed to draw gadget thumbnail", {event: "gadget.thumbnail.failed"});
+        if (this.getGadgetHead(gadgetId) === commitId) this.storage.thumbnails.put({gadgetId, commitId, failedAt: new Date()});
+        return null;
+      },
+    ).finally(() => this.#thumbnailsDrawing.delete(gadgetId));
+    this.#thumbnailsDrawing.set(gadgetId, drawing);
+    this.ctx.waitUntil(drawing);
+    return drawing;
+  }
+
+  // The gadget's mainline UI, drawn in a browser on a page THUMBNAIL_VIEWPORT big, over its live
+  // facet as an export is. Null for a gadget with no UI.
+  async #drawThumbnail(browser: BrowserRun, gadgetId: WorkpieceId, commitId: string): Promise<Uint8Array | null> {
+    if (this.getGadgetHead(gadgetId) !== commitId) return null;
+    let bundle = await this.getGadgetUiBundle(gadgetId);
+    if (!bundle) return null;
+    let gadget = await this.getGadgetFacet(gadgetId) as unknown as NativeRpcStub<any>;
+    let stream = await renderGadgetInBrowser(browser, bundle.jsCode, this.getGadgetRecord(gadgetId).title, gadget,
+        THUMBNAIL_FORMAT, THUMBNAIL_VIEWPORT);
+    let image = new Uint8Array(await new Response(stream).arrayBuffer());
+    if (image.byteLength > MAX_THUMBNAIL_BYTES) throw new Error("The thumbnail is too large to keep.");
+    return image;
   }
 
   // =======================================================================================
@@ -14986,6 +15049,10 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     return this.impl.exportGadget(this.id, formatId, chatId);
   }
 
+  async getThumbnail(): Promise<Uint8Array | null> {
+    return this.impl.getGadgetThumbnail(this.id);
+  }
+
   async getAccessMode(): Promise<GadgetAccessMode> {
     return "live";
   }
@@ -15284,6 +15351,10 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
     return this.impl.exportGadget(this.id, id);
   }
 
+  async getThumbnail(): Promise<Uint8Array | null> {
+    return this.impl.getGadgetThumbnail(this.id);
+  }
+
   async getAccessMode(): Promise<GadgetAccessMode> {
     return "live";
   }
@@ -15386,6 +15457,7 @@ class ViewGadgetClientInterface extends RpcTarget implements GadgetClient {
   async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
   async setOutput(_output: GadgetFormat | null): Promise<void> { this.#deny(); }
   async getExportFormats(_chatId?: number): Promise<GadgetExportFormat[]> { this.#deny(); }
+  async getThumbnail(): Promise<Uint8Array | null> { this.#deny(); }
   async export(_id: string, _chatId?: number): Promise<ReadableStream<Uint8Array>> {
     this.#deny();
   }

@@ -6936,6 +6936,14 @@ export interface GadgetClient extends WorkpieceClient {
   export(id: string, chatId?: number): Promise<ReadableStream<Uint8Array>>;
 
   /**
+   * A picture of the Gadget's UI as its mainline code draws it, for a list to show what it looks
+   * like: a JPEG of a 1280x800 page, taken in a browser and kept until the code changes. Null when
+   * it has no UI, the deployment has no browser rendering, or it could not be drawn (tried again
+   * after a while). Refused where export() is.
+   */
+  getThumbnail(): Promise<Uint8Array | null>;
+
+  /**
    * How this client was admitted. "view" when it serves the owner's view (see GadgetView): a
    * "use" collaborator could not be verified against the gadget's data sources, or a live client
    * asked for the view through openView(). Such a client's getUiBundle() and connectToGadget()

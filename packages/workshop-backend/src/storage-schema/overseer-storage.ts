@@ -1242,6 +1242,20 @@ export type ShareKeyRecord = ShareLinkRecord | ShareKeyAliasRecord;
  * choices for. See observers-implementation-plan.md §3.
  */
 /**
+ * A picture of one gadget's UI (GadgetClient.getThumbnail()), for the code it was taken of: taken
+ * again once the gadget's head moves, and after a failure only once THUMBNAIL_RETRY_MS has passed.
+ */
+export type ThumbnailRecord = {
+  gadgetId: WorkpieceId;
+  /** The gadget's head commit when it was taken, or tried. */
+  commitId: string;
+  /** The JPEG. Absent when there was nothing to draw or drawing it failed. */
+  image?: Uint8Array;
+  /** When drawing it failed, to try again later rather than on every look. */
+  failedAt?: Date;
+};
+
+/**
  * The owner's view of one gadget (GadgetView in the API): a copy of the gadget's facet, under the
  * name `OverseerImpl.viewFacetName()`, cloned from it by the owner's last open. One per gadget,
  * cloned over in place, never by a failed clone. See docs/sharing.md, "Shared views".
@@ -1890,6 +1904,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // (`authorizeObservation`) map an opaque observerId back to a profileId.
       // The owner's view of each gadget that has one, keyed by gadget. See `ViewRecord`.
       views: collection<ViewRecord>()({
+        primaryKey: "gadgetId",
+      }),
+
+      // A picture of each gadget's UI that has been asked for, keyed by gadget. See `ThumbnailRecord`.
+      thumbnails: collection<ThumbnailRecord>()({
         primaryKey: "gadgetId",
       }),
 

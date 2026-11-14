@@ -1,9 +1,11 @@
+import type { Ref } from 'react'
 import { DotsThreeIcon, StarIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Button } from '@/components/Button'
 import { ContextMenu } from '@/components/ContextMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { LinkButton } from '@/components/LinkButton'
+import { AttachmentTileFace } from './AttachmentTileFace'
 import { libraryMenu, type LibraryItemProps } from './LibraryRow'
 
 // Over a picture as much as over the tile's own surface, so on a disc of their own.
@@ -16,14 +18,16 @@ const HIDDEN = 'pointer-events-none scale-75 opacity-0 group-hover:pointer-event
 const POP = 'transition-[opacity,scale] duration-100 ease-[cubic-bezier(0.2,0,0.15,1)] motion-reduce:transition-none'
 
 /**
- * A gadget or a file in the Library's grid, as a square tile: its own picture, filling it, or else
- * the glyph of what it is over its name. Pointed at, More and its star pop out in its top corner; a
- * starred one keeps its star out. Pressed, it gives a little. Right-click it for the same menu as
- * More.
+ * A gadget or a file in the Library's grid, as a square tile: its own picture, filling it; or a
+ * glimpse of it (a gadget's screen, a document's first page) under its name, faded in once it is
+ * drawn; or else the glyph of what it is over its name. Pointed at, More and its star pop out in
+ * its top corner; a starred one keeps its star out. Pressed, it gives a little. Right-click it for
+ * the same menu as More. `ref` is its square, for whoever draws its glimpse once it is near the
+ * screen.
  */
-export const LibraryTile = ({ title, icon, thumbnail, time, starred, onStarredChange, actions, href, onSelect }: LibraryItemProps) => (
+export const LibraryTile = ({ title, icon, thumbnail, preview, time, starred, onStarredChange, actions, href, onSelect, ref }: LibraryItemProps & { ref?: Ref<HTMLDivElement> }) => (
   <ContextMenu menu={libraryMenu(actions)} aria-label={`More for ${title}`} className="block">
-    <div className="group relative aspect-square overflow-hidden rounded-2xl bg-kumo-contrast/3 ring-1 ring-kumo-contrast/6 transition-[scale] duration-150 ease-out has-[.tile:active]:scale-[0.97] has-focus-visible:ring-kumo-contrast/20 motion-reduce:transition-none">
+    <div ref={ref} className="group relative aspect-square overflow-hidden rounded-2xl bg-kumo-contrast/3 ring-1 ring-kumo-contrast/6 transition-[scale] duration-150 ease-out has-[.tile:active]:scale-[0.97] has-focus-visible:ring-kumo-contrast/20 motion-reduce:transition-none">
       <LinkButton
         href={href}
         onClick={onSelect}
@@ -34,6 +38,17 @@ export const LibraryTile = ({ title, icon, thumbnail, time, starred, onStarredCh
           <>
             <img src={thumbnail} alt="" className="absolute inset-0 size-full object-cover transition-[scale] duration-300 ease-out group-hover:scale-[1.03] motion-reduce:transition-none" />
             <span className="sr-only">{title}</span>
+          </>
+        ) : preview ? (
+          <>
+            <span aria-hidden="true" className="absolute inset-0 overflow-hidden transition-[scale] duration-300 ease-out group-hover:scale-[1.03] motion-reduce:transition-none">
+              <AttachmentTileFace name={title} kind="file" thumbnail={preview} />
+            </span>
+            {/* The name sits on a foot of the tile's own surface, so it reads over any picture. */}
+            <span className="appears absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-kumo-base/92 px-2.5 py-2 shadow-[0_-1px_0_rgb(0_0_0/0.04)] backdrop-blur-sm">
+              <span className="flex shrink-0 text-kumo-subtle [&>svg]:size-3.5">{icon}</span>
+              <span className="min-w-0 truncate text-xs/4 font-medium text-kumo-default">{title}</span>
+            </span>
           </>
         ) : (
           <>

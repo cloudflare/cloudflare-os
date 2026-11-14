@@ -306,6 +306,15 @@ workspace's Library tab and a chat's settings show the same rows. A star or a re
 and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
 whoever builds where it was made.
 
+A tile shows what it is: an image file fills it; otherwise, once the tile nears the screen,
+`library/useLibraryPicture.ts` fetches a glimpse that sits under the name on a frosted foot. A
+gadget's is the server's picture of it (`GadgetClient.getThumbnail()`, asked again only when the
+gadget was worked on, two at a time); a file's is the chat's thumbnail (`useFileThumbnail`); a
+Google file's is the top of its real page, read with `previewResource` and drawn by
+`blocks/resource-preview/ConnectedFileThumbnail`. What was fetched is kept for 80 entries, so
+switching tabs or views does not fetch again. Nothing arrives means the glyph stays. Rows keep
+their glyphs.
+
 ## Skills
 
 A skill is a `SKILL.md` in a Context Library collection (gatekeeper-context). `skills/SkillsLibrary`

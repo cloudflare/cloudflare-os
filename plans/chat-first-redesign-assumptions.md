@@ -334,4 +334,9 @@ list it here, so it is known what workshop-app needs from the kernel.
   which skill it read (kernel: `ObservationDescription.skill`, set by gatekeeper-context's
   `read()` from the document's manifest name), so the step says "Used Meeting brief" and the reply
   names it.
+- **What a gadget looks like.** Nothing made a picture of a gadget, so the Library could only show
+  its glyph. Now `GadgetClient.getThumbnail()` draws the top of its UI at 1280x800 in Browser Run
+  (`renderGadgetInBrowser` takes a viewport) and keeps the JPEG per commit in the overseer's
+  `thumbnails` table, failures included, so the Library's tiles show the gadget itself. It is null
+  where there is no browser binding, and a view-only client is refused it as it is `export()`.
 

@@ -158,7 +158,8 @@ delete globalThis.__workshopExportRuntime;
  * Takes ownership of `gadget` and disposes it once the export settles. The
  * returned stream must be consumed or cancelled: the browser session stays open
  * until it settles or times out. `viewport` fixes the page size the Gadget lays
- * out in; the browser's default is used without it.
+ * out in, and an image is then of that page alone rather than the whole document; the browser's
+ * default is used without it.
  */
 export async function renderGadgetInBrowser(
   browserBinding: BrowserRun,
@@ -258,7 +259,7 @@ export async function renderGadgetInBrowser(
           return streamBytes(new TextEncoder().encode(html));
         }
         case "image/png": {
-          const clip = await isolatedRealm.evaluate(
+          const clip = viewport ? {x: 0, y: 0, ...viewport} : await isolatedRealm.evaluate(
             getValidatedScreenshotClip,
             MAX_SCREENSHOT_PIXELS,
           );
@@ -269,7 +270,7 @@ export async function renderGadgetInBrowser(
           }));
         }
         case "image/jpeg": {
-          const clip = await isolatedRealm.evaluate(
+          const clip = viewport ? {x: 0, y: 0, ...viewport} : await isolatedRealm.evaluate(
             getValidatedScreenshotClip,
             MAX_SCREENSHOT_PIXELS,
           );
