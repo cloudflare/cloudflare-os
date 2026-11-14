@@ -314,10 +314,12 @@ export interface PagerDutySchedule {
 export interface PagerDutyEventHook {
   /**
    * Called with each event the hook watches for. `event.incident` can read and change the
-   * incident, and is released when this call returns. An event may arrive more than once or out
-   * of order, so key any work on `event.id` to keep it idempotent. One this throws for is retried
-   * with backoff, eight attempts in all, and disabling the hook ends its retries. An event can
-   * also be missed, so a gadget that must see every incident should also list them now and then.
+   * incident, and is released when this call returns. Return within a minute or two: after
+   * 4 minutes the call counts as failed and the event is retried, while the first call may still
+   * be running. So an event may arrive more than once, even twice at once, or out of order: key
+   * any work on `event.id` to keep it idempotent. One this throws for is retried with backoff,
+   * eight attempts in all, and disabling the hook ends its retries. An event can also be missed,
+   * so a gadget that must see every incident should also list them now and then.
    */
   receiveEvent(event: PagerDutyEvent): Promise<void>;
 }

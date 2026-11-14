@@ -1062,11 +1062,12 @@ export interface GitHubEventHook {
   /**
    * Called with each event the hook watches for. Its capabilities (`issue`, `pullRequest` or
    * `repo`) can read and queue writes for approval, and are released when this call returns.
-   * An event may arrive more than once or out of order, so key any work on `event.id` to keep it
-   * idempotent. One this throws for is retried with backoff, eight attempts in all, and disabling
-   * the hook ends its retries. An event can also be missed, as when GitHub can't reach this
-   * deployment for hours, so a gadget that must see every change should also read the repository
-   * now and then.
+   * Return within a minute or two: after 4 minutes the call counts as failed and the event is
+   * retried, while the first call may still be running. So an event may arrive more than once,
+   * even twice at once, or out of order: key any work on `event.id` to keep it idempotent. One
+   * this throws for is retried with backoff, eight attempts in all, and disabling the hook ends its
+   * retries. An event can also be missed, as when GitHub can't reach this deployment for hours, so
+   * a gadget that must see every change should also read the repository now and then.
    */
   receiveEvent(event: GitHubEvent): Promise<void>;
 }

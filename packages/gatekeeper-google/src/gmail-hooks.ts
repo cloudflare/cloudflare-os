@@ -128,8 +128,9 @@ class MailboxChangedError extends Error {
  */
 export class GmailHookDriver extends DurableObject<Env> {
   #watching = new SingleFlight();
-  #hooks = new HookRegistry<GmailMessageHookTarget, string, Registration>(this.ctx.storage.kv, () => {
-    logger.warn("dropped a Gmail message after repeated delivery failures", { event: "gmail.hooks.delivery.dropped" });
+  #hooks = new HookRegistry<GmailMessageHookTarget, string, Registration>(this.ctx.storage.kv, {
+    onRunReport: report => logger.warn("Gmail hook deliveries failed, timed out or were dropped",
+      { event: "gmail.hooks.delivery.report", ...report }),
   });
 
   async register(key: string, registration: Omit<Registration, "since">, capabilities: Capabilities): Promise<void> {

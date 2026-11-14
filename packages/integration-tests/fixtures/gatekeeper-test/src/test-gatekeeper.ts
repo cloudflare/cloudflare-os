@@ -349,7 +349,7 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
   }
 
   /** The hooks `TestSession.subscribe()` binds, kept and delivered as a hook driver keeps its own. */
-  readonly #subscribed = new HookRegistry<ValueHook, number, { name: string }>(this.ctx.storage.kv, () => {});
+  readonly #subscribed = new HookRegistry<ValueHook, number, { name: string }>(this.ctx.storage.kv, { onRunReport: () => {} });
 
   registerSubscribedHook(key: string, name: string, capabilities: HookCapabilities<ValueHook, number>): void {
     this.#subscribed.set(key, { name }, capabilities);
