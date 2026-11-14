@@ -455,7 +455,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
           "Connect your Google account to give Cloudflare OS access to Gmail, Google Docs, Google " +
           "Sheets, Google Slides, Google Drive, Google Calendar, Google Chat, and BigQuery. Build " +
           "agents that triage email, draft and edit documents, spreadsheets and presentations, " +
-          "search Drive and read native Docs and Sheets, find focus time, " +
+          "search Drive and read its Docs, Sheets, Slides, PDFs and other files, find focus time, " +
           "schedule meetings, follow and post to Chat conversations, or run analytics queries on " +
           "your data.",
       providesAuth: true,
