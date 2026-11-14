@@ -151,6 +151,22 @@ describe("sync", () => {
     expect(shown("A3")).toBe("edited");
   });
 
+  it("doesn't resend an edit saved before a move carried it, and shows a later write over it", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta);
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    typeIntoActiveCell("mine");
+    await settle(); // the save of A1 is out
+    // An agent inserts a row above it (the saved edit moves to A2), then writes A2.
+    h.callbacks.operation({ ...remoteEvent({ ...meta, layout: 3 }, 3, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("mine", 2) } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), senderId: "agent" });
+    h.callbacks.operation({ ...remoteEvent({ ...meta, layout: 3 }, 4, { upserts: [{ sheetId: "s1", ref: "A2", cell: cell("theirs", 3) }] }), senderId: "agent" });
+    save.resolve({ status: "applied", revision: 2, conflicts: [], upserts: [{ sheetId: "s1", ref: "A1", cell: cell("mine", 2) }], deletes: [] });
+    await settle();
+    expect(shown("A2")).toBe("theirs");
+    expect(h.gadget.applyOperation.mock.calls.slice(1).flatMap(([op]) => (op as Operation).cellOps ?? [])).toEqual([]);
+  });
+
   it("shifts an unsaved formula by each move in turn, a sort by only its own displacement", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });

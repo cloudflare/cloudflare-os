@@ -1494,6 +1494,9 @@ let wholesaleBaseRevision: number | null = null;
 // The newest remote write (`cell: null` for a deletion) to a cell whose edit was pending when it
 // arrived. A save's reply can come after it, and must not put back the older acknowledged cell.
 const overtakingWrites = new Map<string, { revision: number; cell: Cell | null }>();
+// An edit a move carried or rewrote (followCellMoves) is a new entry; this links each one it
+// replaced to it, with the move's revision, so a save reply can tell whether it is still owed.
+const followedEdits = new WeakMap<PendingCellOp, { next: PendingCellOp; revision: number }>();
 // Set when a save failed, so the next attempt first asks the server where the sheet stands: a
 // failure says nothing about whether the commit landed.
 let resyncBeforeSave = false;
@@ -1865,9 +1868,14 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   // followCellMoves). It's looked up where it is now, as a move may have carried it.
   const misplaced = new Set((result.misplaced || []).map((x) => x.sheetId + "!" + x.ref));
   const sentLayouts = new Map(cellOps.map((op) => [op.sheetId + "!" + op.ref, op.layout]));
+  const retired: { sheetId: string; ref: string }[] = [];
   for (const [key, op] of sentCellOps) {
     const at = op.sheetId + "!" + op.ref;
-    if (pendingCellOps.get(at) !== op) continue;
+    if (pendingCellOps.get(at) !== op) {
+      const cell = misplaced.has(key) ? null : retireFollowed(op, result.revision);
+      if (cell) retired.push(cell);
+      continue;
+    }
     if (!misplaced.has(key)) pendingCellOps.delete(at);
     // Refused for a move this tab has heard nothing of, even in held events: it can't be placed,
     // so it's dropped rather than resent forever.
@@ -1963,9 +1971,9 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
     else cells[cf.ref] = { value: rebased.value ?? "", fmt: rebased.fmt ?? null, version: cf.cell?.version || 0 };
   }
   // Only the cells this reply touched need working out again.
-  rebuildEngine([...(result.upserts || []), ...(result.deletes || []), ...conflicts].map((x) => ({ sheetId: x.sheetId, ref: x.ref })));
+  rebuildEngine([...(result.upserts || []), ...(result.deletes || []), ...conflicts, ...retired].map((x) => ({ sheetId: x.sheetId, ref: x.ref })));
   // Our own broadcasts are ignored; conflicts, reloads and adopted remote writes need a redraw.
-  if (reloadedAfterFailure || conflicts.length || adoptedRemote) renderGrid();
+  if (reloadedAfterFailure || conflicts.length || adoptedRemote || retired.length) renderGrid();
   return conflicts.length ? "conflict" : "saved";
 }
 // Leaving or hiding the page saves immediately rather than after the debounce.
@@ -7195,6 +7203,20 @@ function applyRemoteOperation(event: OperationEvent) {
   // The grid re-renders on the next frame; the live touch is drawn right after.
   if (live) requestAnimationFrame(() => { try { showLiveEdit(live); } catch (e) { console.error(e); } });
 }
+// A saved edit a later move carried: the server moved it too, so what the move made of it isn't
+// owed, unless it was edited again since. A write that came after the move shows instead.
+function retireFollowed(op: PendingCellOp, committed: number): { sheetId: string; ref: string } | null {
+  let link = followedEdits.get(op);
+  if (!link || link.revision <= committed) return null;
+  while (followedEdits.get(link.next)) link = followedEdits.get(link.next)!;
+  const last = link.next, key = last.sheetId + "!" + last.ref;
+  if (pendingCellOps.get(key) !== last) return null;
+  pendingCellOps.delete(key);
+  const write = overtakingWrites.get(key), cells = model.cells[last.sheetId];
+  overtakingWrites.delete(key);
+  if (write && cells) { if (write.cell) cells[last.ref] = write.cell; else delete cells[last.ref]; }
+  return last;
+}
 // Someone else's replacement moved a sheet's cells (null: in ways unknown). This tab's unsaved
 // edits to that sheet follow the cells they were typed into, and are addressed in the new layout;
 // one on a deleted line is dropped. Their formulas, like everyone's stored ones, follow the lines
@@ -7234,7 +7256,8 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
   let dropped = 0;
   const ops = [...pendingCellOps.values()];
   pendingCellOps.clear();
-  for (let op of ops) {
+  for (const was of ops) {
+    let op = was;
     if (op.sheetId === sheetId) {
       const ref = moves ? place(op.ref) : op.ref;
       if (!ref) { dropped++; continue; }
@@ -7243,6 +7266,7 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
       const value = rewrite(op.value, null);
       if (value !== op.value) op = { ...op, value };
     }
+    if (op !== was) followedEdits.set(was, { next: op, revision });
     pendingCellOps.set(op.sheetId + "!" + op.ref, op);
   }
   if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
