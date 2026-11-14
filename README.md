@@ -17,6 +17,16 @@ Cloudflare OS provides three things in particular:
 
 We are making Cloudflare OS open source so that others can copy it and customize it for their own company. The idea is not that your company uses Cloudflare OS, but rather that you make it "*Your Company* OS".
 
+## About this fork: the `serspace` branch
+
+This repository is Serspace Labs' fork of [cloudflare/cloudflare-os](https://github.com/cloudflare/cloudflare-os). The `main` branch tracks upstream, while the **`serspace` branch is the one used to build and run Serspace OS**, Serspace Labs' internal instance. It regularly merges upstream `main` and carries additions that are not part of the official Cloudflare OS release:
+
+* **An extended GitHub Gatekeeper** — read and write access to GitHub Projects, milestones, and assignees, with project field edits gated behind explicit human approval.
+* **Nested Gatekeeper app routes** — the frontend serves Gatekeeper apps under scoped nested routes, so a Gadget can own a multi-page URL space instead of a single path.
+* **Upstream sync tooling** — a `pnpm sync:upstream` workflow (plus fork-aware CI) that pulls `cloudflare/cloudflare-os` into this fork reproducibly.
+
+Everything below describes Cloudflare OS itself and applies to this branch as well.
+
 ## Quick Start
 
 To quickly run Cloudflare OS locally, [install pnpm](https://pnpm.io/), then do:
