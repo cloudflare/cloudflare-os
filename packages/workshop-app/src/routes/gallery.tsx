@@ -22,6 +22,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
+import { LibraryPreview } from '@/gallery/LibraryPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
@@ -317,6 +318,7 @@ function Gallery() {
       <MessageBlocksPreview />
       <ToolBlocksPreview />
       <CardBlocksPreview />
+      <LibraryPreview />
       <SystemBlocksPreview />
       <SettingsPreview />
       <Section title="Composer">
