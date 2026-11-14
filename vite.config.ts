@@ -8,9 +8,10 @@ const appFolders = (...folders: string[]) =>
   folders.flatMap((folder) => [`@/${folder}/*`, `../${folder}/*`, `../../${folder}/*`, `../../../${folder}/*`])
 
 // workshop-app: the folders that talk to the backend. UI layers must not import them.
-const DATA_LAYERS = appFolders('rpc', 'chat', 'workspaces', 'aside', 'library')
+const DATA_FOLDERS = ['rpc', 'chat', 'workspaces', 'aside', 'library', 'sharing', 'gadgets', 'connections']
+const DATA_LAYERS = appFolders(...DATA_FOLDERS)
 const DATA_LAYERS_MESSAGE =
-  'UI layers take plain props and callbacks. Data and RPC code lives in rpc/, chat/, workspaces/, aside/ and library/, and routes connect it.'
+  `UI layers take plain props and callbacks. Data and RPC code lives in ${DATA_FOLDERS.map((folder) => `${folder}/`).join(', ')}, and routes connect it.`
 // workshop-app: the development-only gallery, which nothing that ships may import.
 const GALLERY = { group: appFolders('gallery'), message: 'The gallery is for development only.' }
 
@@ -189,7 +190,7 @@ export default defineConfig({
       },
       {
         // The data folders feed the UI through routes; they never import routes themselves.
-        files: ['packages/workshop-app/src/{rpc,chat,workspaces,aside,library}/**/*.{ts,tsx}'],
+        files: [`packages/workshop-app/src/{${DATA_FOLDERS.join(',')}}/**/*.{ts,tsx}`],
         rules: {
           'no-restricted-imports': [
             'error',

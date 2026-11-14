@@ -33,6 +33,9 @@ src/
   chat/mock/    A scripted fake backend for chats, played at `/mock/<scenario>`. Development only
   aside/        What is open beside the page (a file, an output), and the ways to open it
   library/      Everything the user's workspaces have made (`useLibrary`), and the Library page
+  sharing/      Who a workspace or a gadget is shared with, and the dialogs that change it
+  gadgets/      One gadget's own pages: its settings, what it is connected to
+  connections/  The user's connected services, and connecting another
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -40,8 +43,8 @@ src/
 ```
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
-folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`) are the only code that talks to the
-backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
+folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `sharing/`, `gadgets/`,
+`connections/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
 and layouts take plain typed props and callbacks.
