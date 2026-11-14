@@ -41,6 +41,15 @@ opened.document[Symbol.dispose]();
 - Disposing the document gives back everything held for it. So does the caller going away. A
   document that goes two minutes without a call can lose its room to another PDF that needs it:
   its next call is answered `released`, and the caller opens the PDF again.
+- Every call on one document is part of the invocation that opened it, and counts against the
+  CPU time an invocation may use (30 seconds unless the Worker is given more). What uses it up
+  is the drawing, not the number of pages: measured, the heaviest page that is still drawn
+  within the limits below takes 3 to 5 seconds, so about ten such pages use it up, as some 200
+  fax pages at 300 dpi do; a 26-page JPEG 2000 scan uses 12 seconds of it. The call
+  that runs out fails in the caller with the runtime's own error, and nothing in this Worker
+  runs to clear up after it. So the next thing asked of the renderer, by anyone, first puts the
+  instance back and lets that document's room go (`cut-off` in the log): a caller that opens
+  the PDF again finds room for it and goes on from the page it was at.
 
 ## Limits
 
@@ -51,8 +60,8 @@ the build counts its own work and ends a call that has done too much (see the ve
 | Limit | Value |
 |---|---|
 | PDFium's memory | 64 MiB |
-| A PDF | 16 MiB, 2,000 pages |
-| The PDFs open at once | 24 MiB between them, each charged its file, one page's pixels and 16,000 bytes |
+| A PDF | 32 MiB, 2,000 pages |
+| The PDFs open at once | 40 MiB between them, each charged its file, one page's pixels and 16,000 bytes |
 | A page | 3,000,000 pixels, 4,000 a side, drawn in strips of at most 1 MiB |
 | A page's images | 40,000,000 pixels each as declared, 80,000,000 together |
 | Bands | 1 to 8 as asked, and no more than one for every 400 rows the page has |
@@ -70,6 +79,34 @@ document, so nothing of one PDF is there for the next call to find.
 Component `pdf-renderer`, events `pdf-renderer.opened`, `pdf-renderer.refused`,
 `pdf-renderer.page_rendered` and `pdf-renderer.released`. They carry sizes, counts and reason
 words, and nothing of a document.
+
+## Metrics
+
+A deployment that records subservice calls (see the
+[observability README](../observability/README.md#subservice-calls)) gets one point from this
+Worker for each document that was opened, written where `pdf-renderer.released` is logged: event
+type `release`, source and service `pdf-renderer`, operation `document`, and as its reason the
+word that log line carries. A PDF that was refused at `open` held nothing and writes none.
+
+| Reason | Outcome | The document's room was given back |
+|---|---|---|
+| `disposed` | `success` | by its caller, disposing it or going away |
+| `idle` | `refused` | to another PDF that needed it, after two minutes without a call |
+| `cut-off` | `error` | by the renderer, on finding that a call for it was cut off |
+
+The point is written only when this Worker has the `METRICS` binding and `SUBSERVICE_METRICS` set
+to `true`. Neither is in its config: a deployment adds both. The opens and page renders
+themselves are counted by the caller, which for the Google gatekeeper is described in
+[its README](../gatekeeper-google/README.md).
+
+A call that runs out of the invocation's CPU time is cut off, so `cut-off` counts the documents
+lost that way, less some: nothing runs when a call is cut off, so the point is written when the
+isolate is next asked for anything, with that moment as its time, and never when the isolate
+goes away first. Measured against a renderer held to 150 ms of CPU, seven of nine such documents
+were counted. The caller sees the call throw every time, and counts it as a `render-page` that
+failed with the reason `call`, and the PDF it then downloads and opens again as a `reopen` with
+the cause `call`, as it does when the isolate went away. Those counts are what to watch before
+giving this Worker more CPU time.
 
 ## The vendored build
 
