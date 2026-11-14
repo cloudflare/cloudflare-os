@@ -77,17 +77,20 @@ it("shows attachment-only assistant messages inline instead of hiding them in to
   expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:attachment-2");
 });
 
-it("downloads assistant binary files through the authenticated chat attachment API", async () => {
+it.each([false, true])("downloads assistant files from the viewer, including images (%s)", async isImage => {
   const view = await setup();
-  await view.message(0, [{id: "binary", name: "result.bin", mimeType: "application/octet-stream", size: 3}]);
-  await act(async () => {document.querySelector<HTMLButtonElement>('[aria-label="Preview result.bin"]')!.click();});
+  const attachment = isImage ? image("result")
+    : {id: "binary", name: "result.bin", mimeType: "application/octet-stream", size: 3};
+  await view.message(0, [attachment]);
+  await act(async () => {document.querySelector<HTMLButtonElement>(`[aria-label="Preview ${attachment.name}"]`)!.click();});
+  await vi.waitFor(() => expect(document.querySelector('[aria-label="Download"]')).not.toBeNull());
   const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function(this: HTMLAnchorElement) {
-    expect(this.download).toBe("result.bin");
-    expect(this.href).toBe("blob:attachment-1");
+    expect(this.download).toBe(attachment.name);
+    expect(this.href).toBe(isImage ? "blob:attachment-2" : "blob:attachment-1");
   });
   await act(async () => {
     document.querySelector<HTMLButtonElement>('[aria-label="Download"]')!.click();
   });
-  expect(view.download).toHaveBeenCalledExactlyOnceWith(1, "binary");
+  expect(view.download.mock.calls).toEqual(isImage ? [] : [[1, "binary"]]);
   expect(click).toHaveBeenCalledTimes(1);
 });

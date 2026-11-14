@@ -62,7 +62,7 @@ export const ChatAttachmentCard = ({
             loading="lazy"
             onError={() => setImageFailed(true)}
             className={inlineImages
-              ? "block max-h-[512px] w-auto max-w-full object-contain sm:max-w-[512px]"
+              ? "block max-h-[512px] w-auto max-w-[min(512px,100%)] object-contain"
               : prominent
               ? "block max-h-[220px] min-h-[90px] w-auto min-w-[90px] max-w-full object-cover sm:max-w-[320px]"
               : "block h-full w-full object-cover"}
