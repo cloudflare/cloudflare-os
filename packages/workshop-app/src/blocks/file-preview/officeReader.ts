@@ -15,16 +15,27 @@ class ReadingLane {
   #running: Job | undefined;
   readonly #queue: Job[] = [];
 
-  /** @param latestOnly A new read abandons the ones before it: the viewer shows one file at a time. */
-  constructor(private readonly latestOnly: boolean) {}
+  /**
+   * @param latestFirst A new read goes first: the file just opened is read before any opened
+   * before it, whose read is put back to finish after it. Nothing is given up on, so two viewers
+   * showing at once never take turns stopping each other.
+   */
+  constructor(private readonly latestFirst: boolean) {}
 
   add(job: Job) {
-    if (this.latestOnly) {
-      const superseded = new DOMException("Another file was opened", "AbortError");
-      for (const waiting of this.#queue.splice(0)) waiting.reject(superseded);
-      if (this.#running && this.#running.request.bytes !== job.request.bytes) this.#stop(superseded);
+    if (!this.latestFirst) {
+      this.#queue.push(job);
+      return this.#pump();
     }
-    this.#queue.push(job);
+    this.#queue.unshift(job);
+    const running = this.#running;
+    if (running && running.request.bytes !== job.request.bytes) {
+      // Stopped, not failed: it starts again, from the beginning, once the new one is read.
+      this.#running = undefined;
+      this.#worker?.terminate();
+      this.#worker = undefined;
+      this.#queue.splice(1, 0, running);
+    }
     this.#pump();
   }
 
@@ -82,7 +93,7 @@ class ReadingLane {
 /**
  * Files someone opened and cards' thumbnails are read in workers of their own: a large file left
  * reading in a closed viewer never holds up the cards, and a chat full of cards never holds up
- * the file someone opened. Opening a file stops the read of one opened before it.
+ * the file someone opened. Opening a file reads it first, ahead of one opened before it.
  */
 const lanes = { viewer: new ReadingLane(true), cards: new ReadingLane(false) };
 

@@ -15,7 +15,7 @@ export const derivedFrom = <T>(
   if (!result) {
     const made = derive(bytes);
     derived.set(derive, result = made);
-    // A read stopped because another file was opened is read again when this one is reopened.
+    // A read given up on (its signal aborted) is read again when the file is shown again.
     made.catch((error: unknown) => {
       if (error instanceof DOMException && error.name === "AbortError" && derived.get(derive) === made) derived.delete(derive);
     });
