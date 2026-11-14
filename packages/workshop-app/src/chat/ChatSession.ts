@@ -11,11 +11,21 @@ import {
   type UserItem,
   type WorkEntry,
 } from './chatItems'
-import { acceptsAlone, proposesOnlyCode } from './autoAccept'
+import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
 import { uploadAttachments } from './uploadAttachments'
 import { ActionUpdates, ChatSubscriber, type ChatEvents } from './ChatSubscriber'
+
+/**
+ * The chat's changes are waiting for the user to keep or discard them: they could not be kept on
+ * their own (see autoAccept.ts), because of what they do or because others work on them too.
+ */
+export type KeepAsk = {
+  changes: ProposedChanges
+  /** Someone else is in the workspace, or another chat has changes waiting to the same gadgets. */
+  shared: boolean
+}
 
 export type ChatSnapshot =
   | { status: 'loading' }
@@ -53,6 +63,8 @@ export type ChatSnapshot =
        * below everything else in the turn.
        */
       pinned: ChatFeed['pinned']
+      /** The chat's changes wait for the user to keep them. Undefined while the agent works. */
+      keep: KeepAsk | undefined
       /** Why the last send failed, until the next send. */
       sendError: string | undefined
       /** Why the last thing asked of a row (approve, deny, retry, a hook's switch) failed, until the next. */
@@ -79,6 +91,8 @@ type Calls =
   | 'setChatTitle'
   | 'listCollaborators'
   | 'mergeChanges'
+  | 'revertChanges'
+  | 'updateChatFromMainline'
 
 /**
  * The part of a workspace's Overseer a session uses, and the lease that must be disposed. The
@@ -127,6 +141,8 @@ type LiveCall = {
   toolName?: AiToolCall['toolName']
   /** The file it names, once that part of its input has streamed. */
   target?: string
+  /** What the agent said the code it is running does, in a few words. */
+  summary?: string
   /** What a `createGadget` is making, e.g. "Document". */
   noun?: string
   /** What it is writing: code to run, or a file's new content. */
@@ -142,7 +158,7 @@ const liveEntry = (call: LiveCall, reasoning: string | undefined): ToolEntry => 
   type: 'call',
   key: call.toolCallId,
   icon: call.toolName ? toolIcon(call.toolName) : 'terminal',
-  label: liveToolLabel(call.toolName, call.target, call.noun),
+  label: call.summary ?? liveToolLabel(call.toolName, call.target, call.noun),
   reasoning,
   sections: liveToolSections(call),
   running: !call.finished,
@@ -154,6 +170,12 @@ const HISTORY_PAGE_SIZE = 50
 const QUOTE_SEARCH_PAGES = 20
 /** How many earlier pages are fetched to see everything a chat's changes would accept. */
 const EPOCH_SEARCH_PAGES = 20
+/**
+ * How long after a turn ends its changes are left before the user is asked to keep them: the
+ * workspace keeps a turn's changes on its own too, a moment after it ends, and a question that
+ * came and went at once would only flash by.
+ */
+const KEEP_GRACE = 1500
 
 // After the workspace was lost, it is connected to again at once, then after these, doubling.
 const RETRY_DELAY = { first: 1000, most: 10_000 }
@@ -221,6 +243,9 @@ export class ChatSession {
   // another so two never race.
   #proposed = ''
   #accepting: Promise<void> = Promise.resolve()
+  #keep: KeepAsk | undefined
+  #keepTimer: ReturnType<typeof setTimeout> | undefined
+  #turnEndedAt = 0
 
   /** `open` connects to the chat's workspace; the session disposes what it returns. */
   constructor(
@@ -388,6 +413,23 @@ export class ChatSession {
     this.#ask((overseer) => (enabled ? overseer.enableHook(hookId) : overseer.disableHook(hookId)))
 
   /**
+   * Keeps the chat's changes, as asked (`keep`). When what has been accepted elsewhere has moved on
+   * since, it is brought in first, and the changes are kept on top of it unless that left
+   * conflicts, which then wait with the rest.
+   */
+  keepChanges = () => this.#ask(async (overseer) => {
+    const { outcome } = await overseer.mergeChanges(this.chatId)
+    if (outcome === 'merged') return
+    const { conflictPaths } = await overseer.updateChatFromMainline(this.chatId)
+    if (conflictPaths.length) throw new Error('The latest accepted changes conflict with these. Look over the files, then keep them.')
+    const retried = await overseer.mergeChanges(this.chatId)
+    if (retried.outcome !== 'merged') throw new Error('Someone else’s changes landed meanwhile. Try again.')
+  })
+
+  /** Throws away everything the chat proposes, as asked (`keep`). */
+  discardChanges = () => this.#ask((overseer) => overseer.revertChanges(this.chatId, 0))
+
+  /**
    * Gives the chat a title of its own. It is shown at once, and put back, with the promise
    * rejected, when the workspace refuses it.
    */
@@ -536,11 +578,13 @@ export class ChatSession {
   #activity() {
     if (this.#compacting) return 'Compacting the conversation…'
     const call = this.#calls.at(-1)
-    if (call) return liveToolLabel(call.toolName, call.target, call.noun)
+    if (call) return call.summary ? `${call.summary}…` : liveToolLabel(call.toolName, call.target, call.noun)
     return this.#streaming === '' ? 'Thinking…' : 'Writing…'
   }
 
   #reset() {
+    clearTimeout(this.#keepTimer)
+    this.#keep = undefined
     this.#loaded = false
     this.#early = []
     this.#title = undefined
@@ -587,6 +631,7 @@ export class ChatSession {
       agentActive: this.#agentActive,
       waiting: this.#steers.filter(({ unread }) => unread).map(({ text }) => text),
       pinned: this.#feed.pinned,
+      keep: this.#agentActive ? undefined : this.#keep,
       sendError: this.#sendError,
       actionError: this.#actionError,
       hasEarlier: this.#nextBeforeSequence !== undefined,
@@ -714,31 +759,61 @@ export class ChatSession {
     const proposed = (chat.proposedChangeWorkpieces ?? []).join()
     const changed = proposed !== this.#proposed
     this.#proposed = proposed
+    if (turnEnded) this.#turnEndedAt = Date.now()
+    // Kept, discarded, or worked on again: what was asked no longer stands.
+    if (changed || chat.activeAgent) this.#askToKeep(undefined)
     if (proposed === '' || chat.activeAgent || !(turnEnded || changed)) return
     this.#accepting = this.#accepting.then(() => this.#accept(run))
+  }
+
+  /**
+   * Asks the user to keep the changes, or stops asking. Asked no sooner than `KEEP_GRACE` after the
+   * turn ended, and only if nothing has changed meanwhile.
+   */
+  #askToKeep(ask: KeepAsk | undefined) {
+    clearTimeout(this.#keepTimer)
+    if (!ask) {
+      if (this.#keep === undefined) return
+      this.#keep = undefined
+      return void this.#publishReady()
+    }
+    const run = this.#run
+    const proposed = this.#proposed
+    this.#keepTimer = setTimeout(() => {
+      if (run !== this.#run || proposed !== this.#proposed || this.#agentActive) return
+      this.#keep = ask
+      this.#publishReady()
+    }, Math.max(0, this.#turnEndedAt + KEEP_GRACE - Date.now()))
   }
 
   async #accept(run: number) {
     const overseer = this.#overseer
     if (!overseer || run !== this.#run) return
     let chat: AiChatMetadata | undefined
+    let alone: boolean
     try {
       // Read afresh, as this may run well after what prompted it.
       const [chats, collaborators] = await Promise.all([overseer.listChats(), overseer.listCollaborators()])
       chat = chats.find(({ id }) => id === this.chatId)
-      if (!chat || !acceptsAlone(chat, chats, collaborators.length > 0)) return
+      if (!chat?.proposedChangeWorkpieces?.length || chat.activeAgent) return
+      alone = acceptsAlone(chat, chats, collaborators.length > 0)
     } catch {
-      // What cannot be checked is left proposed.
-      return
+      // What cannot be checked is left proposed, and asked about.
+      alone = false
     }
-    const epoch = chat.codeBase?.epoch
-    if (!(await this.#loadedSince(run, epoch))) return
+    const epoch = chat?.codeBase?.epoch
+    // What is asked about is what has been loaded, should the start of the epoch be out of reach.
+    const complete = await this.#loadedSince(run, epoch)
     // The accept takes whatever is proposed by the time it lands, so a turn begun since would
     // have it take that turn's changes unchecked.
-    if (run !== this.#run || this.#agentActive || !proposesOnlyCode([...this.#messages.values()], epoch)) return
+    if (run !== this.#run || this.#agentActive) return
+    const messages = [...this.#messages.values()]
+    const ask = () => this.#askToKeep({ changes: proposedChanges(messages, epoch), shared: !alone })
+    if (!alone || !complete || !proposesOnlyCode(messages, epoch)) return ask()
     try {
       // A stale outcome (another chat's accept landed first) leaves the changes proposed.
-      await overseer.mergeChanges(this.chatId)
+      const { outcome } = await overseer.mergeChanges(this.chatId)
+      if (outcome === 'stale' && run === this.#run) ask()
     } catch (error) {
       if (run !== this.#run) return
       this.#actionError = `The changes couldn’t be accepted: ${messageOf(error)}`
@@ -828,6 +903,9 @@ export class ChatSession {
         this.#outputFormats.set(event.toolCallId, { noun, icon })
         break
       }
+      case 'toolCallSummary':
+        this.#liveCall(event.toolCallId).summary = event.summary
+        break
       case 'toolCodeDelta':
         this.#liveCall(event.toolCallId).written += event.delta
         break

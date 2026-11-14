@@ -47,3 +47,35 @@ export const proposesOnlyCode = (messages: readonly AiChatMessage[], epoch: numb
     !batch.mainlineMerge &&
     (batch.blueprintMerges ?? []).every(({ gadgetId }) => created.has(gadgetId)))
 }
+
+/** What a chat's still-proposed changes would do, as far as the user is asked to keep them. */
+export type ProposedChanges = {
+  /** Gadgets they make. */
+  created: { gadgetId: number; title: string }[]
+  /** Resources they give gadgets, by the name the gadget's code reaches each by (`env.NAME`). */
+  bindings: { gadgetId: number; name: string }[]
+  /** Gadgets they bring a blueprint's update into. */
+  updates: { gadgetId: number; title: string }[]
+  /** They bring in what has been accepted elsewhere since the chat began. */
+  mainline: boolean
+  /** Files left with conflict markers, by path, which keeping them would keep as they are. */
+  conflicts: string[]
+}
+
+/** What the batches a chat still proposes add up to. `messages` must reach back to its epoch. */
+export const proposedChanges = (messages: readonly AiChatMessage[], epoch: number | undefined): ProposedChanges => {
+  const batches = proposedBatches(messages, epoch)
+  const conflicts = new Set<string>()
+  for (const { blueprintMerges = [], mainlineMerge } of batches) {
+    for (const { conflictPaths } of blueprintMerges) conflictPaths.forEach((path) => conflicts.add(path))
+    for (const { conflictPaths = [] } of mainlineMerge?.gadgets ?? []) conflictPaths.forEach((path) => conflicts.add(path))
+    mainlineMerge?.conflictPaths.forEach((path) => conflicts.add(path))
+  }
+  return {
+    created: batches.flatMap(({ createdGadgets = [] }) => createdGadgets.map(({ gadgetId, title }) => ({ gadgetId, title }))),
+    bindings: batches.flatMap(({ addedBindings = [] }) => addedBindings.map(({ gadgetId, name }) => ({ gadgetId, name }))),
+    updates: batches.flatMap(({ blueprintMerges = [] }) => blueprintMerges.map(({ gadgetId, title }) => ({ gadgetId, title }))),
+    mainline: batches.some(({ mainlineMerge }) => mainlineMerge !== undefined),
+    conflicts: [...conflicts],
+  }
+}

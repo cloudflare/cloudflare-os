@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
 import type {
   ActionLogEntry,
@@ -89,6 +89,8 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     setChatTitle: vi.fn<Overseer['setChatTitle']>(async () => {}),
     listCollaborators: vi.fn<Overseer['listCollaborators']>(async () => []),
     mergeChanges: vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' })),
+    revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
+    updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
   }
 
   const broken = new Set<(error: unknown) => void>()
@@ -952,6 +954,76 @@ describe('ChatSession', () => {
       fake.mergeChanges.mockRejectedValueOnce(new Error('Gadget is locked'))
       await endTurn()
       await vi.waitFor(() => expect(ready(session).actionError).toBe('The changes couldn’t be accepted: Gadget is locked'))
+    })
+  })
+
+  describe('asking to keep changes', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    it('asks a moment after the turn ends, saying what the changes do', async () => {
+      const { session, endTurn } = await workingOn([changes(1, binding)])
+      vi.useFakeTimers()
+      await endTurn()
+      expect(ready(session).keep).toBeUndefined()
+
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(ready(session).keep).toEqual({
+        changes: { created: [], bindings: [{ gadgetId: 1, name: 'JIRA' }], updates: [], mainline: false, conflicts: [] },
+        shared: false,
+      })
+    })
+
+    it('asks about code too while someone else is in the workspace', async () => {
+      const { fake, session, endTurn } = await workingOn([changes(1)])
+      fake.listCollaborators.mockResolvedValue([{ profile: userAuthor, addedBy: [], access: { role: 'build' } }])
+      vi.useFakeTimers()
+      await endTurn()
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(ready(session).keep).toMatchObject({ shared: true })
+    })
+
+    it('never asks about changes kept meanwhile, as the workspace keeps a turn’s own', async () => {
+      const { fake, session, endTurn } = await workingOn([changes(1, binding)])
+      vi.useFakeTimers()
+      await endTurn()
+      fake.server().metadata(chat(0, 'Chat', 1))
+      await vi.advanceTimersByTimeAsync(1500)
+      expect(ready(session).keep).toBeUndefined()
+    })
+
+    it('stops asking once the agent works again', async () => {
+      const { fake, session, endTurn } = await workingOn([changes(1, binding)])
+      vi.useFakeTimers()
+      await endTurn()
+      await vi.advanceTimersByTimeAsync(1500)
+      fake.server().metadata(proposing(agentAuthor))
+      expect(ready(session).keep).toBeUndefined()
+    })
+
+    it('keeps them, bringing in what was kept elsewhere first when that has moved on', async () => {
+      const { fake, session } = await workingOn([changes(1, binding)])
+      fake.mergeChanges.mockResolvedValueOnce({ outcome: 'stale' })
+      await session.keepChanges()
+      expect(fake.updateChatFromMainline).toHaveBeenCalledExactlyOnceWith(0)
+      expect(fake.mergeChanges).toHaveBeenCalledTimes(2)
+      expect(ready(session).actionError).toBeUndefined()
+    })
+
+    it('leaves them waiting when what was kept elsewhere conflicts with them', async () => {
+      const { fake, session } = await workingOn([changes(1, binding)])
+      fake.mergeChanges.mockResolvedValueOnce({ outcome: 'stale' })
+      fake.updateChatFromMainline.mockResolvedValueOnce({ conflictPaths: ['client.js'] })
+      await session.keepChanges()
+      expect(fake.mergeChanges).toHaveBeenCalledOnce()
+      expect(ready(session).actionError).toMatch(/conflict/)
+    })
+
+    it('discards all of them', async () => {
+      const { fake, session } = await workingOn([changes(1, binding)])
+      await session.discardChanges()
+      expect(fake.revertChanges).toHaveBeenCalledExactlyOnceWith(0, 0)
     })
   })
 

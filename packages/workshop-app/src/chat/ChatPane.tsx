@@ -1,6 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
+import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -12,8 +13,10 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED } from './chatItems'
+import { continuesRun, EMPTY_FEED, type ChatItem, type OutputItem } from './chatItems'
+import type { ChatSnapshot } from './ChatSession'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
+import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
 import { useChatSession } from './useChatSession'
@@ -37,12 +40,34 @@ export type ChatPaneProps = {
   outputHref?: ChatItemHandlers['outputHref']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
+  onOpenChat?: ChatItemHandlers['onOpenChat']
+  chatHref?: ChatItemHandlers['chatHref']
 }
 
 const LIVE_WORK = 'live:work'
 
+/** A gadget's title, as the chat's own cards for it have it: what the chat made, or worked on. */
+const outputTitle = (items: readonly ChatItem[] | undefined, chat: ChatSnapshot, gadgetId: number) => {
+  const pinned = chat.status === 'ready' ? chat.pinned : []
+  return [...(items ?? []), ...pinned]
+    .findLast((item): item is OutputItem => item.kind === 'output' && item.workpieceId === gadgetId)?.title
+}
+
 /** One chat, live: its title, the messages as they arrive, and the composer. */
-export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, onOpenSettings, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove }: ChatPaneProps) => {
+export const ChatPane = ({
+  workspaceId,
+  chatId,
+  initialTitle,
+  onOpenWorkspace,
+  onOpenSettings,
+  onOpenAttachment,
+  onOpenOutput,
+  outputHref,
+  onSetUpConnection,
+  onAlwaysApprove,
+  onOpenChat,
+  chatHref,
+}: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
@@ -91,8 +116,11 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
+      onOpenChat,
+      chatHref,
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove])
+  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onOpenChat, chatHref])
+  const keep = chat.status === 'ready' ? chat.keep : undefined
 
 
   const messages = useMemo(() => {
@@ -197,6 +225,16 @@ export const ChatPane = ({ workspaceId, chatId, initialTitle, onOpenWorkspace, o
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
               </LiveRows.Row>
             ))}
+            {keep && (
+              <LiveRows.Row key="keep">
+                <KeepChangesCard
+                  changes={keepChangeLines(keep, (gadgetId) => outputTitle(items, chat, gadgetId))}
+                  reason={keepReason(keep)}
+                  onKeep={actions.keepChanges}
+                  onDiscard={actions.discardChanges}
+                />
+              </LiveRows.Row>
+            )}
             {chat.actionError && <LiveRows.Row key="action-error"><MessageBubble role="error">{chat.actionError}</MessageBubble></LiveRows.Row>}
             {notice && <LiveRows.Row key="notice"><p role="status" className="px-2 text-sm text-kumo-subtle">{notice}</p></LiveRows.Row>}
           </LiveRows>

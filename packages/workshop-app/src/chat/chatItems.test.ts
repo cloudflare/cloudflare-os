@@ -440,6 +440,30 @@ describe('toChatFeed', () => {
       ])
     })
 
+    it('marks going back to an earlier point, and undoing one that made a gadget', () => {
+      const restore = (to: 'before' | 'after', removed?: string) => ({
+        type: 'restore' as const,
+        from: 1,
+        to,
+        commits: [],
+        removedGadgets: removed ? [{ gadgetId: 4, title: removed }] : undefined,
+        author: VIEWER,
+      })
+      const labels = (result: ChatFeed) => only(result, 'divider').map(({ label }) => label)
+      expect(labels(feed(user('undo it'), restore('before')))).toEqual(['You undid changes'])
+      expect(labels(feed(user('undo it'), restore('before', 'Tip Jar')))).toEqual(['You undid creating “Tip Jar”'])
+      expect(labels(feed(user('go back'), restore('after')))).toEqual(['You went back to an earlier version'])
+      expect(noFallback(feed(restore('after')))).toEqual([])
+    })
+
+    it('shows a report from an agent the chat set up as said by that agent, where it arrived', () => {
+      const report = { type: 'agentReport' as const, runChatId: 7, agentName: 'Digest', message: 'Three new issues.', author: AGENT }
+      const result = feed(user('set it up'), agent({ text: 'Done' }), report, user('thanks'))
+      expect(kinds(result)).toEqual(['user', 'assistant', 'report', 'user'])
+      expect(only(result, 'report')).toMatchObject([{ agentName: 'Digest', text: 'Three new issues.', runChatId: 7 }])
+      expect(continuesRun(only(result, 'assistant')[0], only(result, 'report')[0])).toBe(false)
+    })
+
     it('shows nothing for the agent’s own edits or the storage migration’s record', () => {
       expect(rows(feed(changes({ author: AGENT }), changes({ conversionBoundary: true })))).toEqual([])
     })

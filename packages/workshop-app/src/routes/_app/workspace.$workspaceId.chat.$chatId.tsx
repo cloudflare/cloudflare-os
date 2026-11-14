@@ -42,6 +42,14 @@ function WorkspaceChat() {
       router.buildLocation({ ...itemPage(workspaceId, { kind: 'output', workpieceId: output.workpieceId }, isApp(output)), search: { chat: chatId } }).href,
     [router, workspaceId, chatId],
   )
+  const openChat = useCallback(
+    (id: number) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId: id } }),
+    [navigate, workspaceId],
+  )
+  const chatHref = useCallback(
+    (id: number) => router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId: id } }).href,
+    [router, workspaceId],
+  )
   return (
     <ChatPane
       // Keyed, so each chat gets its own session rather than reusing the previous one's.
@@ -54,6 +62,8 @@ function WorkspaceChat() {
       onOpenAttachment={openAttachment}
       onOpenOutput={openOutput}
       outputHref={outputHref}
+      onOpenChat={openChat}
+      chatHref={chatHref}
     />
   )
 }

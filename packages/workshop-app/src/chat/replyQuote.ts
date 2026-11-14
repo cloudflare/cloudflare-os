@@ -1,4 +1,7 @@
-import type { AssistantItem, ChatItem, UserItem } from './chatItems'
+import type { AssistantItem, ChatItem, ReportItem, UserItem } from './chatItems'
+
+/** A message that can be replied to: anything someone said. */
+export type Quotable = UserItem | AssistantItem | ReportItem
 
 // A reply carries what it answers inside its own text, as a Markdown blockquote ahead of what was
 // written. There is no reply in the protocol: this way the agent reads the quote as anyone would,
@@ -33,8 +36,8 @@ export const quoteOf = (text: string): string => {
  * The line a message in the conversation is quoted as. A person's message is quoted for what they
  * wrote, with what they mentioned by its name, and without the quote it may itself open with.
  */
-export const quoteLine = (item: UserItem | AssistantItem): string =>
-  quoteOf(item.kind === 'assistant'
+export const quoteLine = (item: Quotable): string =>
+  quoteOf(item.kind !== 'user'
     ? item.text
     : item.parts.map((part) => (part.type === 'text' ? part.text : part.type === 'capsule' ? part.title : part.type === 'format' ? part.noun : `/${part.name}`)).join(''))
 
@@ -42,11 +45,11 @@ export const quoteLine = (item: UserItem | AssistantItem): string =>
  * The message a reply answers, among the rows of the conversation: the nearest one before the
  * reply that would be quoted as the line the reply carries, which is all it has to go by.
  */
-export const quotedBy = (reply: UserItem, rows: readonly ChatItem[]): UserItem | AssistantItem | undefined => {
+export const quotedBy = (reply: UserItem, rows: readonly ChatItem[]): Quotable | undefined => {
   if (reply.quote === undefined) return undefined
   const at = rows.findIndex(({ key }) => key === reply.key)
   return rows.slice(0, at === -1 ? rows.length : at)
-    .findLast((row): row is UserItem | AssistantItem => (row.kind === 'user' || row.kind === 'assistant') && quoteLine(row) === reply.quote)
+    .findLast((row): row is Quotable => (row.kind === 'user' || row.kind === 'assistant' || row.kind === 'report') && quoteLine(row) === reply.quote)
 }
 
 /** The text to send for a reply: the quote, then what was written. */

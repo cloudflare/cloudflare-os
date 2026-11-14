@@ -141,7 +141,19 @@ export type NoticeItem = Row & {
  * did something to the chat's changes (saved edits, accepted them, discarded them). Which model
  * wrote a message is in its details, so another taking over is not marked.
  */
-export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'changes' | 'merge' | 'revert'; label: string }
+export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'changes' | 'merge' | 'revert' | 'restore'; label: string }
+/**
+ * The final reply of a run of an agent this chat set up, posted here as the run ended. It is said
+ * by that agent, not by this chat's, and its own conversation is a way further in.
+ */
+export type ReportItem = Row & {
+  kind: 'report'
+  agentName: string
+  text: string
+  /** The run's own conversation, in the same workspace. */
+  runChatId: number
+  sentAt: Date
+}
 export type ErrorItem = Row & {
   kind: 'error'
   text: string
@@ -157,7 +169,7 @@ export type ErrorItem = Row & {
 export type ArtefactItem = OutputItem | HookItem | ActionItem | ConnectionItem
 
 /** One row of the conversation. */
-export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem
+export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | DividerItem | ErrorItem | ReportItem
 
 /**
  * Whether a row carries on from the one before it: a message from the same sender with nothing of
@@ -439,6 +451,13 @@ const creationOf = (
   return { workpieceId: call.output.gadgetId, title: call.input.title, type: 'gadget', draft: state === 'pending' }
 }
 
+/** What a restore did, as a point in the conversation: undoing a point, or going back to one. */
+const restoreText = (message: Message<'restore'>, actor: string) => {
+  const removed = message.removedGadgets ?? []
+  if (message.to === 'before' && removed.length) return `${actor} undid creating ${removed.map(({ title }) => `“${title}”`).join(', ')}`
+  return message.to === 'before' ? `${actor} undid changes` : `${actor} went back to an earlier version`
+}
+
 const changesText = (message: Message<'changes'>, actor: string) => {
   if (message.mainlineMerge) return `${actor} brought in the latest accepted changes`
   if (message.createdGadgets?.length) return `${actor} created ${message.createdGadgets.map(({ title }) => `“${title}”`).join(', ')}`
@@ -671,6 +690,24 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
 
       case 'revert':
         act(message, 'revert', `${actor(message.author)} discarded changes`)
+        break
+
+      case 'restore':
+        act(message, 'restore', restoreText(message, actor(message.author)))
+        break
+
+      case 'agentReport':
+        // Said by another agent, between this chat's turns: it starts none here, so it is not
+        // held back with the turn's artefacts, and what follows it carries on.
+        carryOn()
+        items.push(emit<ReportItem>(`report:${id}`, [message], () => ({
+          kind: 'report',
+          id,
+          agentName: message.agentName,
+          text: message.message,
+          runChatId: message.runChatId,
+          sentAt: message.timestamp,
+        })))
         break
 
       case 'useGadget': {

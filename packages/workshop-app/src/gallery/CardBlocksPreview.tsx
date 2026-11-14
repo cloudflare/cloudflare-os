@@ -3,6 +3,8 @@ import { FileTextIcon, ImageIcon, WaveformIcon } from '@phosphor-icons/react'
 import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectionRequestCard } from '@/blocks/ConnectionRequestCard'
 import { HookCard } from '@/blocks/HookCard'
+import { KeepChangesCard } from '@/blocks/KeepChangesCard'
+import { ReportMessage } from '@/blocks/ReportMessage'
 import { OutputCard } from '@/blocks/OutputCard'
 import { FileListItem } from '@/blocks/FileListItem'
 import { FileView } from '@/blocks/FileView'
@@ -174,6 +176,33 @@ export const CardBlocksPreview = () => {
           <ConnectionRequestCard vendorName="Cloudflare" logoUrl="/favicon.svg" scope="Workers account" reason="To read last week’s error rates." state="pending" onSetUp={after('set up')} onDeny={after('connection denied')} />
           <ConnectionRequestCard vendorName="Cloudflare" logoUrl="/favicon.svg" scope="Workers account" reason="To read last week’s error rates." state="connected" />
           <ConnectionRequestCard vendorName="Grafana" logoUrl="/missing.svg" scope="Grafana dashboard" reason="To overlay deploy markers on the error-rate chart." state="denied" />
+        </Column>
+      </Section>
+      <Section title="KeepChangesCard (changes that give access, an update with conflicts, code others work on too; Discard asks again)">
+        <Column>
+          <KeepChangesCard
+            changes={['Makes “Standup notes”', 'Gives “Standup notes” access to env.JIRA']}
+            reason="What a gadget can reach is yours to decide."
+            onKeep={after('kept')}
+            onDiscard={after('discarded')}
+          />
+          <KeepChangesCard
+            changes={['Brings its blueprint’s update into “Tip Jar”', 'Leaves 2 files with conflicts']}
+            reason="Look over the conflicts before keeping them."
+            onKeep={after('kept')}
+            onDiscard={after('discarded')}
+          />
+          <KeepChangesCard changes={[]} reason="Others work on these gadgets too, so changes wait for you." onKeep={after('kept')} onDiscard={after('discarded')} />
+        </Column>
+      </Section>
+      <Section title="ReportMessage (what an agent the chat set up found on a run, with the way into the run)">
+        <Column>
+          <ReportMessage
+            agentName="Morning digest"
+            text={'Three new issues in **PLAT** since yesterday:\n\n- PLAT-231 Login loop on Safari\n- PLAT-232 Export times out\n- PLAT-233 Typo on pricing page'}
+            href="#run"
+            onOpenRun={after('run opened')}
+          />
         </Column>
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>

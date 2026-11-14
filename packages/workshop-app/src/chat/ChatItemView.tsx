@@ -7,16 +7,17 @@ import { FeedDivider } from '@/blocks/FeedDivider'
 import { HookCard } from '@/blocks/HookCard'
 import { messageInfo } from '@/blocks/messageInfo'
 import { OutputCard } from '@/blocks/OutputCard'
+import { ReportMessage } from '@/blocks/ReportMessage'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
-import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, NoticeItem, OutputItem, UserItem } from './chatItems'
+import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, NoticeItem, OutputItem, ReportItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
 export type ChatItemHandlers = {
   /** Start a reply to a message. */
-  onReply: (item: UserItem | AssistantItem) => void
+  onReply: (item: UserItem | AssistantItem | ReportItem) => void
   /** Go to the message a reply answers. */
   onShowQuoted: (reply: UserItem) => void
   onOpenAttachment: (attachment: ChatAttachment) => void
@@ -31,6 +32,10 @@ export type ChatItemHandlers = {
   onDenyConnection: (requestId: string) => ActionResult
   onRetry: () => ActionResult
   onContinue: () => ActionResult
+  /** Goes to another conversation in the workspace, such as the run an agent reported from. */
+  onOpenChat?: (chatId: number) => void
+  /** A conversation's address in the workspace, for a link to it to open in another tab. */
+  chatHref?: (chatId: number) => string
 }
 
 export type ChatItemViewProps = {
@@ -95,6 +100,17 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
               trace: { steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle },
             }),
           }}
+        />
+      )
+    case 'report':
+      return (
+        <ReportMessage
+          agentName={item.agentName}
+          text={item.text}
+          href={handlers.chatHref?.(item.runChatId)}
+          onOpenRun={() => handlers.onOpenChat?.(item.runChatId)}
+          onReply={() => handlers.onReply(item)}
+          details={{ open: isOpen, onToggle: toggle, ...messageInfo({ sender: item.agentName, sentAt: item.sentAt }) }}
         />
       )
     case 'output':
