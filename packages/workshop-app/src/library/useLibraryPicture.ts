@@ -17,6 +17,10 @@ const LARGEST = 4 * 1024 * 1024
 const KEPT = 80
 // Gadgets' pictures asked for at once: each may take a browser of the server's to draw.
 const AT_ONCE = 2
+// A gadget the server could not draw yet, as when its browser was starting, is asked for again
+// after this long, this many times while its tile is shown.
+const RETRY_AFTER = 8000
+const RETRIES = 2
 
 /** What has been fetched for the Library's tiles, by what it is of, kept for `KEPT` of them. */
 class Kept<T> {
@@ -31,6 +35,11 @@ class Kept<T> {
     // One that failed is asked for again next time.
     fetching.catch(() => this.#fetched.delete(key))
     return fetching
+  }
+
+  /** Lets go of what was fetched for `key`, so it is fetched again next time. */
+  forget(key: string) {
+    this.#fetched.delete(key)
   }
 }
 
@@ -136,10 +145,20 @@ export const useLibraryPicture = (entry: LibraryEntry) => {
 
   useNearScreen(ref, !reconnecting && (gadgetKey !== undefined || linkedKey !== undefined), () => {
     let cancelled = false
+    let retry: ReturnType<typeof setTimeout> | undefined
     if (output && gadgetKey) {
-      gadgets.get(gadgetKey, () => inTurn(() => inWorkspace(api, output.workspaceId,
+      // None is not kept: the server may draw it a little later, and another tile asks again.
+      const draw = (tries: number) => gadgets.get(gadgetKey, () => inTurn(() => inWorkspace(api, output.workspaceId,
         (overseer) => overseer.getGadget(output.workpieceId).getThumbnail())))
-        .then((bytes) => !cancelled && bytes && setGadgetBytes({ key: gadgetKey, bytes }), () => {})
+        .then((bytes) => {
+          if (bytes) {
+            if (!cancelled) setGadgetBytes({ key: gadgetKey, bytes })
+            return
+          }
+          gadgets.forget(gadgetKey)
+          if (!cancelled && tries > 0) retry = setTimeout(() => draw(tries - 1), RETRY_AFTER)
+        }, () => {})
+      draw(RETRIES)
     }
     if (linked && linkedKey) {
       connected.get(linkedKey, () => inWorkspace(api, linked.workspaceId,
@@ -148,6 +167,7 @@ export const useLibraryPicture = (entry: LibraryEntry) => {
     }
     return () => {
       cancelled = true
+      clearTimeout(retry)
     }
   })
 

@@ -41,11 +41,14 @@ export const LibraryTile = ({ title, icon, thumbnail, preview, time, starred, on
           </>
         ) : preview ? (
           <>
-            <span aria-hidden="true" className="absolute inset-0 overflow-hidden transition-[scale] duration-300 ease-out group-hover:scale-[1.03] motion-reduce:transition-none">
-              <AttachmentTileFace name={title} kind="file" thumbnail={preview} />
+            {/* Above the foot, not behind it, so none of the picture shows around the name. */}
+            <span aria-hidden="true" className="absolute inset-x-0 top-0 bottom-8 overflow-hidden">
+              <span className="absolute inset-0 transition-[scale] duration-300 ease-out group-hover:scale-[1.03] motion-reduce:transition-none">
+                <AttachmentTileFace name={title} kind="file" thumbnail={preview} />
+              </span>
             </span>
-            {/* The name sits on a foot of the tile's own surface, so it reads over any picture. */}
-            <span className="appears absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-kumo-base/92 px-2.5 py-2 shadow-[0_-1px_0_rgb(0_0_0/0.04)] backdrop-blur-sm">
+            {/* The name sits on a foot of the tile's own surface, under the picture. */}
+            <span className="appears absolute inset-x-0 bottom-0 flex h-8 items-center gap-1.5 bg-kumo-base px-2.5 shadow-[0_-1px_0_rgb(0_0_0/0.06)]">
               <span className="flex shrink-0 text-kumo-subtle [&>svg]:size-3.5">{icon}</span>
               <span className="min-w-0 truncate text-xs/4 font-medium text-kumo-default">{title}</span>
             </span>
