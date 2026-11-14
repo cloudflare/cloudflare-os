@@ -17,6 +17,7 @@ import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
 import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import type { ChatSnapshot } from './ChatSession'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
+import { nameGadgets, type GoBack } from './changePoints'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
@@ -80,6 +81,8 @@ export const ChatPane = ({
   const [reply, setReply] = useState<{ key: string; quote: string }>()
   // The standing approval last asked about, kept while the question goes so that it still names it.
   const [asked, setAsked] = useState<{ rule: NonNullable<ActionItem['rule']>; open: boolean }>()
+  // Undoing that would delete what it made, while that is asked about; kept as the question goes.
+  const [deleting, setDeleting] = useState<{ point: GoBack; open: boolean }>()
   const composer = useRef<ComposerHandle>(null)
   const list = useRef<MessageListHandle>(null)
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
@@ -117,6 +120,8 @@ export const ChatPane = ({
       onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
       // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
+      // Undoing what made a gadget deletes it, which is asked about first; anything else can be gone back on.
+      onGoBack: (point) => (point.deletes.length ? setDeleting({ point, open: true }) : actions.goBack(point)),
       onOpenChat,
       chatHref,
     }
@@ -261,6 +266,15 @@ export const ChatPane = ({
             : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
+      <ConfirmDialog
+        open={deleting?.open === true}
+        onOpenChange={(open) => setDeleting((current) => current && { ...current, open })}
+        destructive
+        title={`Undo creating ${nameGadgets(deleting?.point.deletes.map((id) => outputTitle(items, chat, id)) ?? [])}?`}
+        description="What this made is deleted, with everything it stored, and can’t be brought back."
+        confirm="Undo and delete"
+        onConfirm={() => (deleting ? actions.goBack(deleting.point) : undefined)}
+      />
       <ConfirmDialog
         open={asked?.open === true}
         onOpenChange={(open) => setAsked((current) => current && { ...current, open })}

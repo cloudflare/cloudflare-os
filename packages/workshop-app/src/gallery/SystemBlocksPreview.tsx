@@ -14,7 +14,7 @@ export const SystemBlocksPreview = () => {
 
   return (
     <>
-      <Section title="SystemRow, FeedDivider (the context compacted, and what people did to the changes)">
+      <Section title="SystemRow, FeedDivider (the context compacted, what people did to the changes, and going back on it)">
         <Column>
           <SystemRow icon="code" detail={'{ key: "PLAT-230" }'}>onTicket() with env.TICKETS</SystemRow>
           <SystemRow icon="info">A message this version can’t show</SystemRow>
@@ -22,6 +22,8 @@ export const SystemBlocksPreview = () => {
           <FeedDivider>You saved edits</FeedDivider>
           <FeedDivider>Grace Hopper applied changes</FeedDivider>
           <FeedDivider>Grace Hopper discarded changes</FeedDivider>
+          <FeedDivider action={{ label: 'Redo', title: 'Bring back what this undid', onSelect: after('redid') }}>You undid changes</FeedDivider>
+          <FeedDivider action={{ label: 'Go back', title: 'Bring back how things were here', onSelect: after('went back') }}>You went back to an earlier version</FeedDivider>
         </Column>
       </Section>
       <Section title="ErrorMessage (earlier error, last error with Retry, out of credits)">

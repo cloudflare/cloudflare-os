@@ -154,11 +154,14 @@ export const changes = (extra: Partial<Authored<'changes'>> = {}): Authored<'cha
   ...extra,
 })
 
-/** Accepts everything before it, as the server computes `mergeThrough`. */
-export const merge = (author = VIEWER) => (sequence: number): Authored<'merge'> => ({
+/**
+ * Accepts everything before it, as the server computes `mergeThrough`, with the commits it made, if
+ * any: those with no `previousCommit` made their gadget.
+ */
+export const merge = (author = VIEWER, commits: Authored<'merge'>['commits'] = []) => (sequence: number): Authored<'merge'> => ({
   type: 'merge',
   mergeThrough: sequence - 1,
-  commits: [],
+  commits,
   epochBoundary: true,
   author,
 })

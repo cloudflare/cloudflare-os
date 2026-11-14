@@ -12,6 +12,7 @@ import {
   type UserItem,
   type WorkEntry,
 } from './chatItems'
+import type { GoBack } from './changePoints'
 import { acceptsAlone, proposedChanges, proposesOnlyCode, type ProposedChanges } from './autoAccept'
 import { quotedBy } from './replyQuote'
 import { liveToolLabel, liveToolSections, toolIcon } from './toolCalls'
@@ -96,6 +97,7 @@ type Calls =
   | 'listCollaborators'
   | 'mergeChanges'
   | 'revertChanges'
+  | 'restoreChanges'
   | 'updateChatFromMainline'
   | 'deleteChat'
 
@@ -421,6 +423,12 @@ export class ChatSession {
     this.#ask((overseer) => overseer.setAutoApprovedActionKind(gatekeeperId, actionKind))
 
   denyConnection = (requestId: string) => this.#ask((overseer) => overseer.denyConnectionRequest(requestId))
+
+  /**
+   * Puts the chat's gadgets back to a point in it (`GoBack`), as new versions on top of what they
+   * are, so that this can itself be gone back on. The restore it records says what happened.
+   */
+  goBack = ({ sequence, to }: GoBack) => this.#ask((overseer) => overseer.restoreChanges(this.chatId, sequence, to))
 
   setHookEnabled = (hookId: number, enabled: boolean) =>
     this.#ask((overseer) => (enabled ? overseer.enableHook(hookId) : overseer.disableHook(hookId)))

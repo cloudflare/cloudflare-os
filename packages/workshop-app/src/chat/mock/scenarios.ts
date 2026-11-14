@@ -383,7 +383,8 @@ const output: Scenario = {
       })),
     ),
     { message: changes(), delay: 2500 },
-    { message: merge(), delay: 2500 },
+    // Kept with the turn's end: made here, so undoing it would delete it.
+    { message: merge(VIEWER, [{ gadgetId: 41, commitId: 'q3-1', previousCommit: null }]), delay: 2500 },
   ],
 }
 

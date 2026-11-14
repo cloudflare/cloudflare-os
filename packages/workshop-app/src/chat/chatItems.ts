@@ -1,6 +1,7 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { webUrl } from '@/components/webUrl'
+import { changePoints, type GoBack } from './changePoints'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type ToolIcon, type ToolSection } from './toolCalls'
 
@@ -86,6 +87,8 @@ export type AssistantItem = Row & {
    * before it was said. Not part of the conversation; there for whoever asks about the message.
    */
   trace: TraceEntry[]
+  /** The changes its turn kept can be undone, or gone back to, from here. */
+  goBack?: GoBack
 }
 export type OutputItem = Row & {
   kind: 'output'
@@ -141,7 +144,13 @@ export type NoticeItem = Row & {
  * did something to the chat's changes (saved edits, accepted them, discarded them). Which model
  * wrote a message is in its details, so another taking over is not marked.
  */
-export type DividerItem = Row & { kind: 'divider'; marks: 'compaction' | 'changes' | 'merge' | 'revert' | 'restore'; label: string }
+export type DividerItem = Row & {
+  kind: 'divider'
+  marks: 'compaction' | 'changes' | 'merge' | 'revert' | 'restore'
+  label: string
+  /** What it marks can be undone, redone or gone back to. */
+  goBack?: GoBack
+}
 /**
  * The final reply of a run of an agent this chat set up, posted here as the run ended. It is said
  * by that agent, not by this chat's, and its own conversation is a way further in.
@@ -452,10 +461,12 @@ const creationOf = (
 }
 
 /** What a restore did, as a point in the conversation: undoing a point, or going back to one. */
-const restoreText = (message: Message<'restore'>, actor: string) => {
+// Going back to before an undo is a redo. `target` is the message it went back from.
+const restoreText = (message: Message<'restore'>, actor: string, target: AiChatMessage | undefined) => {
   const removed = message.removedGadgets ?? []
-  if (message.to === 'before' && removed.length) return `${actor} undid creating ${removed.map(({ title }) => `“${title}”`).join(', ')}`
-  return message.to === 'before' ? `${actor} undid changes` : `${actor} went back to an earlier version`
+  if (message.to === 'after') return `${actor} went back to an earlier version`
+  if (removed.length) return `${actor} undid creating ${removed.map(({ title }) => `“${title}”`).join(', ')}`
+  return target?.type === 'restore' && target.to === 'before' ? `${actor} redid changes` : `${actor} undid changes`
 }
 
 const changesText = (message: Message<'changes'>, actor: string) => {
@@ -479,6 +490,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   ])
   const creationState = creationStates(messages)
   const { viewerId, compactedTo } = context
+  const points = changePoints(messages, viewerId)
   const actor = ({ id, name }: AiChatAuthorInfo) => (id === viewerId ? 'You' : name)
 
   const items: ChatItem[] = []
@@ -525,7 +537,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     acts = []
   }
   const act = (message: AiChatMessage, marks: DividerItem['marks'], label: string) => {
-    acts.push(emit<DividerItem>(`act:${message.sequence}`, [message, label], () => ({ kind: 'divider', id: message.sequence, marks, label })))
+    const goBack = points.marks.get(message.sequence)
+    acts.push(emit<DividerItem>(`act:${message.sequence}`, [message, label, goBack?.action], () => ({ kind: 'divider', id: message.sequence, marks, label, goBack })))
   }
   // The context is cut some way back from where `/compact` was typed, to leave the agent a working
   // tail. Saying so there would put the answer to the command above the command, so a compaction
@@ -599,13 +612,15 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
           const trace: TraceEntry[] = thought
             ? [...work, emitStep<ThinkingEntry>(`thinking:${id}`, [thought], () => ({ type: 'thinking', text: thought }))]
             : work
-          items.push(emit<AssistantItem>(`assistant:${id}`, [message, ...trace], () => ({
+          const goBack = points.answers.get(id)
+          items.push(emit<AssistantItem>(`assistant:${id}`, [message, goBack?.sequence, goBack?.action, ...trace], () => ({
             kind: 'assistant',
             id,
             text,
             sender: message.author.name,
             sentAt: message.timestamp,
             trace,
+            goBack,
           })))
           work = []
         }
@@ -693,7 +708,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         break
 
       case 'restore':
-        act(message, 'restore', restoreText(message, actor(message.author)))
+        act(message, 'restore', restoreText(message, actor(message.author), messages.find(({ sequence }) => sequence === message.from)))
         break
 
       case 'agentReport':

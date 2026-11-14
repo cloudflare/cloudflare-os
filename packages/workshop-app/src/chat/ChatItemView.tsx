@@ -11,6 +11,7 @@ import { ReportMessage } from '@/blocks/ReportMessage'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
+import type { GoBack } from './changePoints'
 import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, NoticeItem, OutputItem, ReportItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
@@ -32,6 +33,8 @@ export type ChatItemHandlers = {
   onDenyConnection: (requestId: string) => ActionResult
   onRetry: () => ActionResult
   onContinue: () => ActionResult
+  /** Puts the chat's gadgets back to a point in it. */
+  onGoBack?: (point: GoBack) => ActionResult
   /** Goes to another conversation in the workspace, such as the run an agent reported from. */
   onOpenChat?: (chatId: number) => void
   /** A conversation's address in the workspace, for a link to it to open in another tab. */
@@ -48,6 +51,19 @@ export type ChatItemViewProps = {
   joinsAbove?: boolean
   joinsBelow?: boolean
 }
+
+// As a word after the line that marks it.
+const DIVIDER_ACTIONS: Record<GoBack['action'], { label: string; title: string }> = {
+  undo: { label: 'Undo', title: 'Put things back as they were before this' },
+  redo: { label: 'Redo', title: 'Bring back what this undid' },
+  restore: { label: 'Go back', title: 'Bring back how things were here' },
+}
+
+const goBackOf = (point: GoBack | undefined, { onGoBack }: ChatItemHandlers) =>
+  point && onGoBack && { action: point.action, onSelect: () => onGoBack(point) }
+
+const dividerAction = (point: GoBack | undefined, { onGoBack }: ChatItemHandlers) =>
+  point && onGoBack && { ...DIVIDER_ACTIONS[point.action], onSelect: () => onGoBack(point) }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
   callback: 'code',
@@ -91,6 +107,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           text={item.text}
           joins={joins}
           onReply={() => handlers.onReply(item)}
+          goBack={goBackOf(item.goBack, handlers)}
           details={{
             open: isOpen,
             onToggle: toggle,
@@ -170,7 +187,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
     case 'notice':
       return <SystemRow icon={NOTICE_ICONS[item.notice]} detail={item.detail}>{item.text}</SystemRow>
     case 'divider':
-      return <FeedDivider>{item.label}</FeedDivider>
+      return <FeedDivider action={dividerAction(item.goBack, handlers)}>{item.label}</FeedDivider>
     case 'error':
       return (
         <ErrorMessage

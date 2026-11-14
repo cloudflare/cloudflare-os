@@ -206,6 +206,29 @@ export class MockOverseer {
     this.player.fire('onDeny')
   }
 
+  /**
+   * Records going back to a merge or restore, as the server would: a new commit for each gadget, but
+   * a gadget the merge made is removed by undoing it.
+   */
+  async restoreChanges(_chatId: number, sequence: number, to: 'before' | 'after') {
+    const target = this.#messages.find((message) => message.sequence === sequence)
+    if (target?.type !== 'merge' && target?.type !== 'restore') throw new Error(`Nothing to go back to at ${sequence}`)
+    const made = to === 'before' && target.type === 'merge' ? target.commits.filter(({ previousCommit }) => previousCommit === null) : []
+    const titleOf = (gadgetId: number) => this.#messages
+      .flatMap((message) => (message.type === 'changes' ? message.createdGadgets ?? [] : []))
+      .find((gadget) => gadget.gadgetId === gadgetId)?.title ?? 'Untitled'
+    this.#append({
+      type: 'restore',
+      from: sequence,
+      to,
+      commits: target.commits
+        .filter((commit) => !made.includes(commit))
+        .map(({ gadgetId, commitId }) => ({ gadgetId, commitId: `${commitId}-${to}`, previousCommit: commitId })),
+      removedGadgets: made.length ? made.map(({ gadgetId }) => ({ gadgetId, title: titleOf(gadgetId) })) : undefined,
+      author: VIEWER,
+    })
+  }
+
   /** Approves what is pending under the new rule, and what the script queues under it later. */
   async setAutoApprovedActionKind(gatekeeperId: number, actionKind: ActionKind) {
     this.#rules.add(`${gatekeeperId}:${actionKind.tag}`)

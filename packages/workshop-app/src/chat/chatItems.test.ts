@@ -48,7 +48,7 @@ const request = (state: 'pending' | 'accepted' | 'denied') =>
 const LABEL = { tag: 'jira.label', label: 'Label an issue' }
 const restore = (to: 'before' | 'after', removed?: string) => ({
   type: 'restore' as const,
-  from: 1,
+  from: 0,
   to,
   commits: [],
   removedGadgets: removed ? [{ gadgetId: 4, title: removed }] : undefined,

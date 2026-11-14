@@ -83,6 +83,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     stopAgent: vi.fn<Overseer['stopAgent']>(async () => {}),
     approveAction: vi.fn<Overseer['approveAction']>(async () => {}),
     rejectAction: vi.fn<Overseer['rejectAction']>(async () => {}),
+    restoreChanges: vi.fn<Overseer['restoreChanges']>(async () => {}),
     setAutoApprovedActionKind: vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {}),
     denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
@@ -836,6 +837,17 @@ describe('ChatSession', () => {
       await session.alwaysApprove(rule)
       expect(fake.setAutoApprovedActionKind).toHaveBeenCalledExactlyOnceWith(3, rule.actionKind)
       expect(ready(session).pinned).toMatchObject([{ state: 'pending' }])
+    })
+
+    it('goes back to a point through the workspace, and says why when it could not', async () => {
+      const { fake, session } = await withAction()
+
+      await session.goBack({ sequence: 5, to: 'before', action: 'undo', deletes: [] })
+      expect(fake.restoreChanges).toHaveBeenCalledExactlyOnceWith(0, 5, 'before')
+
+      fake.restoreChanges.mockRejectedValueOnce(new Error('The chat proposes changes to Tip Jar'))
+      await session.goBack({ sequence: 2, to: 'after', action: 'restore', deletes: [] })
+      expect(ready(session).actionError).toBe('The chat proposes changes to Tip Jar')
     })
 
     it('denies through the workspace', async () => {

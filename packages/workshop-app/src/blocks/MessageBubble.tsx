@@ -3,7 +3,7 @@ import { CaretUpIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import '@/components/Arrival.css'
 import { Button } from '@/components/Button'
-import { MessageActions, MESSAGE_ACTION_STYLE } from './MessageActions'
+import { MessageActions, MESSAGE_ACTION_STYLE, type MessageActionsProps } from './MessageActions'
 import './MessageBubble.css'
 import { useDetailsStage } from './useDetailsStage'
 
@@ -27,6 +27,8 @@ export type MessageBubbleProps = {
   onReply?: () => void
   /** What copying the message puts on the clipboard. */
   copyText?: string
+  /** The changes its turn kept can be gone back on from here. */
+  goBack?: MessageActionsProps['goBack']
   /**
    * What there is to know about the message (see `messageInfo`), in an outlined panel below it while open.
    * Controlled, so it can outlive the message being unmounted (a virtual list does that).
@@ -108,12 +110,12 @@ const OWN_TAP = 'a, button, input, textarea, summary, label, [role="button"]'
  * Neighbouring messages from the same sender tuck together (see `RUN`). One that has just arrived
  * grows in (see Arrival.css), settling into the run it joins (see MessageBubble.css).
  */
-export const MessageBubble = ({ role, children, media, joins, onReply, copyText, details }: MessageBubbleProps) => {
+export const MessageBubble = ({ role, children, media, joins, onReply, copyText, goBack, details }: MessageBubbleProps) => {
   const detailsId = useId()
   const open = details?.open ?? false
   // A bubble with nothing to offer, such as one of a message's files above its words, has no actions.
   const actions = (onReply || copyText !== undefined || details) &&
-    <MessageActions onReply={onReply} copyText={copyText} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
+    <MessageActions onReply={onReply} copyText={copyText} goBack={goBack} details={details && { open, onToggle: details.onToggle, controls: detailsId }} />
 
   // Shown by a tap, rather than by a pointer that is there, until the message is tapped again or
   // anything else is.
