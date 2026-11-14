@@ -10,7 +10,7 @@ import { OutputCard } from '@/blocks/OutputCard'
 import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
-import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, NoticeItem, OutputItem, UserItem } from './chatItems'
+import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
@@ -27,7 +27,8 @@ export type ChatItemHandlers = {
   onDeny: (actionId: number) => ActionResult
   onAlwaysApprove: (rule: NonNullable<ActionItem['rule']>) => ActionResult
   onHookEnabledChange: (hookId: number, enabled: boolean) => ActionResult
-  onSetUpConnection: (requestId: string) => ActionResult
+  /** Sets up what a connection request asks for, which then accepts it. */
+  onSetUpConnection: (request: ConnectionItem) => ActionResult
   onDenyConnection: (requestId: string) => ActionResult
   onRetry: () => ActionResult
   onContinue: () => ActionResult
@@ -145,7 +146,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
           <ConnectionRequestCard
             {...request}
             state="pending"
-            onSetUp={() => handlers.onSetUpConnection(item.requestId)}
+            onSetUp={() => handlers.onSetUpConnection(item)}
             onDeny={() => handlers.onDenyConnection(item.requestId)}
           />
         )

@@ -21,7 +21,7 @@ export type ConnectButtonProps = {
 // More than this, and the rest are counted.
 const SHOWN = 3
 
-const Logo = ({ name, src }: ConnectButtonLogo) => {
+const Logo = ({ name, src }: Omit<ConnectButtonLogo, 'key'>) => {
   const [failed, setFailed] = useState(false)
   return src && !failed
     ? <img src={src} alt="" className="size-3 object-contain" onError={() => setFailed(true)} />
@@ -66,7 +66,7 @@ export const ConnectButton = ({ logos = [], current, onConnect }: ConnectButtonP
                 index > 0 && '-ms-1 group-hover/connect:ms-1 group-focus-visible/connect:ms-1',
               )}
             >
-              <Logo {...logo} />
+              <Logo name={logo.name} src={logo.src} />
             </span>
           ))}
           {more > 0 && <span className="ms-1.5 text-xs font-medium text-kumo-subtle tabular-nums">+{more}</span>}

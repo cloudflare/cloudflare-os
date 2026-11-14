@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button } from '@/components/Button'
 import { ConnectionDialog, type ConnectionDialogResource } from '@/blocks/ConnectionDialog'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
+import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
 import { ListGroup } from '@/blocks/ListGroup'
 import { ServiceLogo } from '@/components/ServiceLogo'
 import { useReport } from './previewState'
@@ -22,7 +23,8 @@ const githubResources: ConnectionDialogResource[] = [
   { urlPattern: 'https://github.com/:owner/:repo', title: 'Repository', description: 'Code, issues and pull requests in one repository' },
 ]
 
-type Open = 'connect' | 'connect-granular' | 'add' | 'manage' | 'manage-partial' | 'expired' | undefined
+type Open = 'connect' | 'connect-granular' | 'add' | 'manage' | 'manage-partial' | 'expired' | SetUp | undefined
+type SetUp = 'setup-loading' | 'setup-none' | 'setup-ready' | 'setup-expired' | 'setup-grant'
 
 /** The Connections page's rows, and the dialog to connect a service or manage its account. */
 export const ConnectionsPreview = () => {
@@ -82,7 +84,15 @@ export const ConnectionsPreview = () => {
         <Button onClick={() => setOpen('manage-partial')}>Manage, more to grant</Button>
         <Button onClick={() => setOpen('expired')}>Expired</Button>
       </Section>
+      <Section title="SetUpConnectionDialog (a chat’s connection request: accounts loading, none yet, one with the service’s form, an expired one, one without access)">
+        <Button onClick={() => setOpen('setup-loading')}>Loading</Button>
+        <Button onClick={() => setOpen('setup-none')}>No account</Button>
+        <Button onClick={() => setOpen('setup-ready')}>With the form</Button>
+        <Button onClick={() => setOpen('setup-expired')}>Expired</Button>
+        <Button onClick={() => setOpen('setup-grant')}>Needs access</Button>
+      </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
+      {open?.startsWith('setup') && <SetUpPreview key={round} state={open as SetUp} onClose={() => setOpenAt(undefined)} say={say} opened={opened} />}
       <ConnectionDialog key={`connect-${round}`} open={open === 'connect'} onOpenChange={close} mode="connect" service={github} resources={githubResources} onConnect={opened} />
       <ConnectionDialog key={`granular-${round}`} open={open === 'connect-granular'} onOpenChange={close} mode="connect" service={google} resources={googleResources} onConnect={opened} />
       <ConnectionDialog
@@ -149,5 +159,55 @@ export const ConnectionsPreview = () => {
         onDisconnect={async () => true}
       />
     </>
+  )
+}
+
+const setUpAccounts: Record<SetUp, SetUpConnectionAccount[] | undefined> = {
+  'setup-loading': undefined,
+  'setup-none': [],
+  'setup-ready': [{ id: 1, name: 'octocat' }, { id: 2, name: 'octo-work' }],
+  'setup-expired': [{ id: 1, name: 'octocat', expired: true }],
+  'setup-grant': [{ id: 1, name: 'octocat' }],
+}
+
+/** A stand-in for the service's own form, which is a sandboxed frame of the gatekeeper's. */
+const FakeConfigurator = ({ onReady }: { onReady: (ready: boolean) => void }) => (
+  <label className="flex flex-col gap-1.5 text-sm text-kumo-subtle">
+    Repository
+    <input
+      defaultValue="cloudflare/"
+      onChange={(event) => onReady(/^[\w.-]+\/[\w.-]+$/.test(event.target.value))}
+      className="h-9 rounded-xl bg-kumo-base px-3 text-base text-kumo-default ring-1 ring-kumo-line"
+    />
+  </label>
+)
+
+const SetUpPreview = ({ state, onClose, say, opened }: { state: SetUp; onClose: () => void; say: (what: string) => void; opened: () => Promise<boolean> }) => {
+  const [open, setOpen] = useState(true)
+  const [selected, setSelected] = useState(1)
+  const [ready, setReady] = useState(false)
+  return (
+    <SetUpConnectionDialog
+      open={open}
+      onOpenChange={(next) => { setOpen(next); if (!next) setTimeout(onClose, 300) }}
+      service={{ name: 'GitHub' }}
+      resource="a GitHub repository"
+      reason="I need to read the open issues in cloudflare/gadgets to sort them by how long they have waited."
+      accounts={setUpAccounts[state]}
+      selectedAccountId={selected}
+      onSelectAccount={setSelected}
+      onConnectAccount={opened}
+      onReconnect={opened}
+      onGrant={state === 'setup-grant' ? opened : undefined}
+      configurator={<FakeConfigurator onReady={setReady} />}
+      ready={ready}
+      onAccept={async () => {
+        await new Promise((resolve) => setTimeout(resolve, 900))
+        say('connected, and handed to the agent')
+        setOpen(false)
+        setTimeout(onClose, 300)
+        return true
+      }}
+    />
   )
 }
