@@ -301,6 +301,13 @@ entry for every block). What was decided on the way:
 - **Library.** Items open as their own page, as he does it, not beside the Library. Google files
   can't be starred (there is no kind for them) but can be removed.
 - **Sharing.** Toasts become notes under the invite field. Avatars are initials only.
+- **Sidebar recents.** His sidebar lists one row per workspace; the Figma, like our prototype,
+  lists chats. Each chat is a row of its own, drawn with its workspace's icon, its workspace and
+  activity under the title, and its unread dot. A workspace with no chat to list keeps one row.
+  Archived, unjoined and agent-started chats stay on the workspace's page unless one is open. No
+  kernel change was needed: `getChatThreads()` and the `"all"` unread-state subscription list every
+  chat from the User DO without opening a workspace. Their gap is workspaces shared for use only,
+  whose chats they leave out; those show as a workspace row.
 - **Switching beside a chat.** His switcher lists what the workspace made and leaves out the files
   sent in the chat, but a file that was open was put in front of the list anyway, so it appeared
   with a count that left it out. It lists the chat's files too, newest first, and counts them.

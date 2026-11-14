@@ -472,3 +472,9 @@ literals. Wrap a Kumo component only for what tokens cannot change, such as size
 
 Components start here. Move one to `packages/ui` once a second frontend (e.g. a gatekeeper app) needs
 it, as `packages/ui/AGENTS.md` describes. Shell and layout code is expected to stay here.
+
+## The sidebar
+
+The sidebar lists recents (`workspaces/sidebarEntries.ts`): each chat as a row of its own, from the
+account's `getChatThreads()`, kept live by the `"all"` unread-state subscription
+(`WorkspacesProvider`), and each workspace with no chat to list as one row.

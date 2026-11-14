@@ -23,7 +23,8 @@ import { sharedConnection } from '@/rpc/sharedConnection'
 import { clearToken } from '@/rpc/token'
 import { AppSearch } from './-AppSearch'
 import { ShareLinkGate } from '@/sharing/ShareLinkGate'
-import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { chatEntryKey, sidebarEntries, workspaceEntryKey } from '@/workspaces/sidebarEntries'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 import { formatActivity } from '@/workspaces/formatActivity'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
@@ -60,6 +61,7 @@ const AppFrame = () => {
   const connection = useConnectionNotice()!
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
+  const chatThreads = useChatThreads()
   const accounts = useConnectedAccounts()
   const { services } = useServices()
   const navigate = useNavigate()
@@ -189,17 +191,22 @@ const AppFrame = () => {
     asideElement = <EmptyAsidePane reading={library.reading} problem={library.problem} onRetry={library.retry} onHide={hideEmpty} narrow={narrow} />
   }
 
-  // Each workspace is listed by its title and when it was last active.
-  const workspaces =
-    workspacesState.status === 'ready'
-      ? workspacesState.workspaces.map(({ id, title, lastActive }) => ({
-          id,
-          title,
-          workspaceLabel: workspaceLabel(title),
-          subtitle: formatActivity(lastActive),
-          href: router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: id } }).href,
-        }))
-      : []
+  // The recents: each chat on a row of its own, drawn with its workspace's icon and named with it,
+  // and each workspace with no chat to list, by its title and when it was last active.
+  const entries = workspacesState.status === 'ready' ? sidebarEntries(workspacesState.workspaces, chatThreads ?? [], chatRef) : []
+  const entryHref = ({ workspaceId: inWorkspace, chatId: entryChat }: (typeof entries)[number]) =>
+    entryChat === undefined
+      ? router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId: inWorkspace } }).href
+      : router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: inWorkspace, chatId: entryChat } }).href
+  const workspaces = entries.map((entry) => ({
+    id: entry.key,
+    title: entry.title,
+    workspaceLabel: workspaceLabel(entry.workspaceTitle),
+    subtitle: entry.chatId === undefined ? formatActivity(entry.at) : `${entry.workspaceTitle} · ${formatActivity(entry.at)}`,
+    unread: entry.unread,
+    href: entryHref(entry),
+  }))
+  const selectedEntry = chatRef ? chatEntryKey(chatRef.workspaceId, chatRef.chatId) : workspaceId && workspaceEntryKey(workspaceId)
   const notice =
     workspacesState.status === 'failed'
       ? `Couldn’t load workspaces: ${workspacesState.message}`
@@ -211,11 +218,14 @@ const AppFrame = () => {
     <Sidebar
       user={{ name: user.name }}
       workspaces={workspaces}
-      selectedWorkspaceId={workspaceId}
+      selectedWorkspaceId={selectedEntry}
       // Each puts the sidebar away on a narrow screen, even where it goes to the page it is over.
-      onSelectWorkspace={(id) => {
+      onSelectWorkspace={(key) => {
         leaveSidebar()
-        void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: id } })
+        const entry = entries.find((candidate) => candidate.key === key)
+        if (!entry) return
+        if (entry.chatId === undefined) void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: entry.workspaceId } })
+        else void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: entry.workspaceId, chatId: entry.chatId } })
       }}
       onGoHome={() => {
         leaveSidebar()

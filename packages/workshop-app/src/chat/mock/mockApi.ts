@@ -24,6 +24,12 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     openWorkspace: () => overseer.open(),
     listModels: async () => [AGENT],
     listWorkspaces: async () => [workspace],
+    // The scenario's chat, as the account lists it, and nothing live about it.
+    getChatThreads: async () => [{
+      workspaceId: MOCK_WORKSPACE_ID, chatId: 0, chatTitle: scenario.title, latestSequence: 0, latestActivityAt: new Date(),
+      unreadMessageCount: 0, readThroughSequence: 0,
+    }],
+    subscribeToUnreadState: async () => ({ [Symbol.dispose]: () => {} }),
     // An empty library: what a scenario makes is listed from its chat, as a pending gadget is.
     listOutputs: async () => ({ outputs: [], catchingUp: false }),
     // Nothing starred or taken out of it.

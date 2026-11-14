@@ -1,11 +1,36 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import type { NotificationMute, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import { RpcTarget } from 'capnweb'
+import type { ChatReadState, NotificationMute, UnreadStateSubscriber, UnreadThread, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { useApi } from '@/rpc/ApiContext'
 import { WorkspacesContext, type WorkspacesState } from './WorkspacesContext'
 
+// How long after a chat changes its list is read again, so a burst of messages reads it once.
+const CHATS_SETTLE = 400
+
+/**
+ * What the account says as the user's chats change. Only read state comes with a change, so the
+ * list is read again for the rest (a new chat, a new title, the latest message).
+ */
+class ChatChanges extends RpcTarget implements UnreadStateSubscriber {
+  constructor(private readonly changed: (chat?: ChatReadState) => void) {
+    super()
+  }
+
+  async updated() {
+    this.changed()
+  }
+
+  async summaryUpdated() {}
+
+  async chatUpdated(_workspaceId: string, _chatId: number, chat: ChatReadState | null) {
+    this.changed(chat ?? undefined)
+  }
+}
+
 /**
  * Loads the user's workspaces when mounted, and again on `refresh()`. The list has no live updates
- * to subscribe to, so whoever changes it asks for a reload.
+ * to subscribe to, so whoever changes it asks for a reload. Their chats are listed beside them and
+ * kept live through the account's read state, which never opens a workspace.
  */
 export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   const { api, reconnecting } = useApi()
@@ -14,6 +39,36 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
   const [version, setVersion] = useState(0)
   // Stable, for whoever keeps it beyond a render, such as a chat session.
   const [refresh] = useState(() => () => setVersion((v) => v + 1))
+  const [chats, setChats] = useState<UnreadThread[]>()
+
+  useEffect(() => {
+    if (reconnecting) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const read = () => {
+      api.getChatThreads().then(
+        (threads) => !cancelled && setChats(threads),
+        // The sidebar lists workspaces alone meanwhile.
+        () => !cancelled && setChats(undefined),
+      )
+    }
+    const changed = (chat?: ChatReadState) => {
+      // A chat read or unread shows at once; the rest follows with the list.
+      if (chat) {
+        setChats((current) => current?.map((thread) => (thread.workspaceId === chat.workspaceId && thread.chatId === chat.chatId ? { ...thread, ...chat } : thread)))
+      }
+      clearTimeout(timer)
+      timer = setTimeout(read, CHATS_SETTLE)
+    }
+    read()
+    const subscription = Promise.resolve(api.subscribeToUnreadState('all', new ChatChanges(changed)))
+    subscription.catch(() => {})
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      void subscription.then((held) => held[Symbol.dispose](), () => {})
+    }
+  }, [api, reconnecting, version])
 
   useEffect(() => {
     // Over a lost connection it could only fail; the new connection's `api` loads it.
@@ -98,5 +153,5 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     }
   }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setNotificationMute, remove, create }}>{children}</WorkspacesContext>
+  return <WorkspacesContext value={{ state, chats, refresh, setPinned, rename, setNotificationMute, remove, create }}>{children}</WorkspacesContext>
 }

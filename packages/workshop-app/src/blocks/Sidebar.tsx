@@ -10,7 +10,9 @@ export type { SidebarWorkspace }
 
 export type SidebarProps = {
   user: { name: string; avatarUrl?: string }
+  /** The recents, each drawn with its workspace's icon: chats on rows of their own, or workspaces. */
   workspaces: SidebarWorkspace[]
+  /** The `id` of the row that is open. */
   selectedWorkspaceId?: string
   onSelectWorkspace: (id: string) => void
   /** The logo was clicked: go to the start of a new chat. */
@@ -37,7 +39,7 @@ export type SidebarProps = {
 
 const RailDivider = () => <span aria-hidden="true" className="my-4 h-px w-4 shrink-0 bg-kumo-line" />
 
-/** The sidebar: global buttons on top, the workspaces, then the user and connections. */
+/** The sidebar: global buttons on top, the recent chats and workspaces, then the user and connections. */
 export const Sidebar = ({
   user,
   workspaces,

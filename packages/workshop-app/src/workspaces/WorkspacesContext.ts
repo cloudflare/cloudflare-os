@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react'
-import type { NotificationMute, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { NotificationMute, UnreadThread, WorkspaceMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 
 export type WorkspacesState =
   | { status: 'loading' }
@@ -8,6 +8,11 @@ export type WorkspacesState =
 
 export type WorkspacesContextValue = {
   state: WorkspacesState
+  /**
+   * Every chat in the user's workspaces, as the account lists them (`getChatThreads()`), kept up
+   * to date as they change. Undefined until listed, and while they cannot be.
+   */
+  chats: UnreadThread[] | undefined
   /** Loads the list again, e.g. after a conversation was created. The current list stays up meanwhile. */
   refresh: () => void
   /** Stars or unstars a workspace, shown at once and undone if the server refuses. */
@@ -32,6 +37,9 @@ const useWorkspacesContext = (): WorkspacesContextValue => {
 
 /** The user's workspaces, most recently active first. Only available beneath `WorkspacesProvider`. */
 export const useWorkspaces = (): WorkspacesState => useWorkspacesContext().state
+
+/** Every chat in the user's workspaces, live; undefined until they are listed. */
+export const useChatThreads = (): UnreadThread[] | undefined => useWorkspacesContext().chats
 
 /** Reloads the workspace list. */
 export const useRefreshWorkspaces = (): (() => void) => useWorkspacesContext().refresh
