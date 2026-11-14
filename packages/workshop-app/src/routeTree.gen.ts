@@ -20,6 +20,7 @@ import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
 import { Route as AppLibraryIndexRouteImport } from './routes/_app/library.index'
 import { Route as AppLibraryItemIdRouteImport } from './routes/_app/library.$itemId'
+import { Route as AppAppItemIdSettingsRouteImport } from './routes/_app/app.$itemId_.settings'
 import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
 import { Route as AppWorkspaceWorkspaceIdNewRouteImport } from './routes/_app/workspace.$workspaceId.new'
 import { Route as AppWorkspaceWorkspaceIdChatChatIdRouteImport } from './routes/_app/workspace.$workspaceId.chat.$chatId'
@@ -79,6 +80,11 @@ const AppLibraryItemIdRoute = AppLibraryItemIdRouteImport.update({
   path: '/library/$itemId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAppItemIdSettingsRoute = AppAppItemIdSettingsRouteImport.update({
+  id: '/app/$itemId_/settings',
+  path: '/app/$itemId/settings',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppWorkspaceWorkspaceIdIndexRoute =
   AppWorkspaceWorkspaceIdIndexRouteImport.update({
     id: '/workspace/$workspaceId/',
@@ -115,6 +121,7 @@ export interface FileRoutesByFullPath {
   '/app/$itemId': typeof AppAppItemIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/library/': typeof AppLibraryIndexRoute
+  '/app/$itemId/settings': typeof AppAppItemIdSettingsRoute
   '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
   '/workspace/$workspaceId/chat/$chatId': typeof AppWorkspaceWorkspaceIdChatChatIdRoute
@@ -131,6 +138,7 @@ export interface FileRoutesByTo {
   '/app/$itemId': typeof AppAppItemIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/library': typeof AppLibraryIndexRoute
+  '/app/$itemId/settings': typeof AppAppItemIdSettingsRoute
   '/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/workspace/$workspaceId': typeof AppWorkspaceWorkspaceIdIndexRoute
   '/workspace/$workspaceId/chat/$chatId': typeof AppWorkspaceWorkspaceIdChatChatIdRoute
@@ -149,6 +157,7 @@ export interface FileRoutesById {
   '/_app/app/$itemId': typeof AppAppItemIdRoute
   '/_app/library/$itemId': typeof AppLibraryItemIdRoute
   '/_app/library/': typeof AppLibraryIndexRoute
+  '/_app/app/$itemId_/settings': typeof AppAppItemIdSettingsRoute
   '/_app/workspace/$workspaceId/new': typeof AppWorkspaceWorkspaceIdNewRoute
   '/_app/workspace/$workspaceId/': typeof AppWorkspaceWorkspaceIdIndexRoute
   '/_app/workspace/$workspaceId/chat/$chatId': typeof AppWorkspaceWorkspaceIdChatChatIdRoute
@@ -167,6 +176,7 @@ export interface FileRouteTypes {
     | '/app/$itemId'
     | '/library/$itemId'
     | '/library/'
+    | '/app/$itemId/settings'
     | '/workspace/$workspaceId/new'
     | '/workspace/$workspaceId/'
     | '/workspace/$workspaceId/chat/$chatId'
@@ -183,6 +193,7 @@ export interface FileRouteTypes {
     | '/app/$itemId'
     | '/library/$itemId'
     | '/library'
+    | '/app/$itemId/settings'
     | '/workspace/$workspaceId/new'
     | '/workspace/$workspaceId'
     | '/workspace/$workspaceId/chat/$chatId'
@@ -200,6 +211,7 @@ export interface FileRouteTypes {
     | '/_app/app/$itemId'
     | '/_app/library/$itemId'
     | '/_app/library/'
+    | '/_app/app/$itemId_/settings'
     | '/_app/workspace/$workspaceId/new'
     | '/_app/workspace/$workspaceId/'
     | '/_app/workspace/$workspaceId/chat/$chatId'
@@ -293,6 +305,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppLibraryItemIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/app/$itemId_/settings': {
+      id: '/_app/app/$itemId_/settings'
+      path: '/app/$itemId/settings'
+      fullPath: '/app/$itemId/settings'
+      preLoaderRoute: typeof AppAppItemIdSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/workspace/$workspaceId/': {
       id: '/_app/workspace/$workspaceId/'
       path: '/workspace/$workspaceId'
@@ -331,6 +350,7 @@ interface AppRouteChildren {
   AppAppItemIdRoute: typeof AppAppItemIdRoute
   AppLibraryItemIdRoute: typeof AppLibraryItemIdRoute
   AppLibraryIndexRoute: typeof AppLibraryIndexRoute
+  AppAppItemIdSettingsRoute: typeof AppAppItemIdSettingsRoute
   AppWorkspaceWorkspaceIdNewRoute: typeof AppWorkspaceWorkspaceIdNewRoute
   AppWorkspaceWorkspaceIdIndexRoute: typeof AppWorkspaceWorkspaceIdIndexRoute
   AppWorkspaceWorkspaceIdChatChatIdRoute: typeof AppWorkspaceWorkspaceIdChatChatIdRoute
@@ -344,6 +364,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAppItemIdRoute: AppAppItemIdRoute,
   AppLibraryItemIdRoute: AppLibraryItemIdRoute,
   AppLibraryIndexRoute: AppLibraryIndexRoute,
+  AppAppItemIdSettingsRoute: AppAppItemIdSettingsRoute,
   AppWorkspaceWorkspaceIdNewRoute: AppWorkspaceWorkspaceIdNewRoute,
   AppWorkspaceWorkspaceIdIndexRoute: AppWorkspaceWorkspaceIdIndexRoute,
   AppWorkspaceWorkspaceIdChatChatIdRoute:

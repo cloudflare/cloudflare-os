@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
-import { asideItemFor, formatAsideRef, pageOf, parseAsideRef, parseItemPageId, type AsideItem } from '@/aside/asideItems'
+import { asideItemFor, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
 import { lastShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
@@ -127,6 +127,13 @@ const AppFrame = () => {
   const linkTo = (inWorkspace: string, item: AsideItem, fromChat: number | undefined) =>
     absolute(router.buildLocation({ ...pageOf(inWorkspace, item), search: { chat: fromChat } }).href)
 
+  // A gadget's own settings, which the way back from comes back to.
+  const openSettings = (output: AsideOutput, title: string) =>
+    navigate({
+      to: '/app/$itemId/settings',
+      params: { itemId: itemPageId(output.workspaceId, { kind: 'output', workpieceId: output.workpieceId }) },
+      state: { fromItem: true, gadgetTitle: title },
+    })
   let asideElement: ReactNode = null
   if (itemPage && pageItem) {
     const { workspaceId: pageWorkspaceId, ref } = pageItem
@@ -142,6 +149,7 @@ const AppFrame = () => {
         fullScreen={fullScreen}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
+        onOpenSettings={openSettings}
         // Expanded from beside a page, it goes back there; opened with a chat named, beside that.
         // Opened otherwise, such as from the library, there is nothing to collapse into. On a
         // narrow screen, where it is beside nothing, it goes up.
@@ -163,6 +171,7 @@ const AppFrame = () => {
         link={linkTo(besideWorkspaceId, item, chatId)}
         onFullScreenChange={setFullScreen}
         narrow={narrow}
+        onOpenSettings={openSettings}
         onSelect={(key) => aside.show(key, chatRef)}
         onHide={aside.hide}
         onExpand={() => navigate({ ...pageOf(besideWorkspaceId, item), search: { chat: chatId }, state: { fromChat: true } })}

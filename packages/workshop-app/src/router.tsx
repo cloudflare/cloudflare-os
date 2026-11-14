@@ -31,5 +31,9 @@ declare module '@tanstack/react-router' {
      * from it on a narrow screen goes there rather than to the item's workspace.
      */
     fromLibrary?: boolean
+    /** A gadget's settings, opened from the gadget: the way back to it goes back. */
+    fromItem?: boolean
+    /** The title of the gadget whose settings are being opened, when the page that opened them knew it. */
+    gadgetTitle?: string
   }
 }

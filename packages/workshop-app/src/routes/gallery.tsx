@@ -22,6 +22,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
+import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
@@ -319,6 +320,7 @@ function Gallery() {
       <SystemBlocksPreview />
       <SettingsPreview />
       <ConnectionsPreview />
+      <GadgetSettingsPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">

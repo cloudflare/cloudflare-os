@@ -1,12 +1,13 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { FileView } from '@/blocks/FileView'
+import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { asideItemIcon } from './asideItemIcon'
-import type { AsideFile, AsideItem } from './asideItems'
+import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
@@ -23,6 +24,8 @@ export type AsidePaneProps = {
   onFullScreenChange: (on: boolean) => void
   /** Filling a narrow screen, where it does not grow any further (see `SidePane`). */
   narrow?: boolean
+  /** Goes to a gadget's own settings, from the pane's more. */
+  onOpenSettings?: (output: AsideOutput, title: string) => void
 } & (
   | {
       /** Beside the page: one of what can be shown beside the chat. */
@@ -51,7 +54,7 @@ const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: 
  * alone.
  */
 export const AsidePane = (props: AsidePaneProps) => {
-  const { item, link, onFullScreenChange, narrow } = props
+  const { item, link, onFullScreenChange, narrow, onOpenSettings } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const { connection, snapshot } = useGadgetConnection(item.kind === 'output' ? item.output : undefined, () => onFullScreenChange(false))
   const frame = useRef<HTMLIFrameElement>(null)
@@ -76,14 +79,17 @@ export const AsidePane = (props: AsidePaneProps) => {
   ) : item.output.type === 'worktree' ? (
     <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
   ) : (
-    <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} onReload={connection?.reload} />
+    <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} link={link} onReload={connection?.reload} />
   )
+  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
   const shared = {
     active: paneItem(item, title),
     people: snapshot.people,
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+    // Not for one the viewer cannot open, whose settings they could not see either.
+    onOpenSettings: gadget && onOpenSettings && snapshot.ui.status !== 'denied' ? () => onOpenSettings(gadget, title) : undefined,
     narrow,
   }
 
@@ -138,10 +144,11 @@ export const EmptyAsidePane = ({ reading, problem, onRetry, onHide, narrow }: Em
   </SidePane>
 )
 
-const GadgetView = ({ title, ui, frame, onReload }: {
+const GadgetView = ({ title, ui, frame, link, onReload }: {
   title: string
   ui: GadgetUi
   frame: RefObject<HTMLIFrameElement | null>
+  link?: string
   onReload?: () => void
 }) => {
   switch (ui.status) {
@@ -158,6 +165,8 @@ const GadgetView = ({ title, ui, frame, onReload }: {
           action={onReload && { label: 'Try again', onClick: onReload }}
         />
       )
+    case 'denied':
+      return <div className="h-full overflow-y-auto"><GadgetNoAccess title={title} link={link ?? window.location.href} /></div>
     case 'ready':
       // Keyed by the load, so that a reload starts the page over.
       return <GadgetFrame key={ui.load} ref={frame} page={ui.page} title={title} />
