@@ -1867,12 +1867,13 @@ async function sendPendingOperation(): Promise<"saved" | "retry" | "conflict"> {
   // entry and stays pending, and one refused as misplaced is resent where its cell went (see
   // followCellMoves). It's looked up where it is now, as a move may have carried it.
   const misplaced = new Set((result.misplaced || []).map((x) => x.sheetId + "!" + x.ref));
+  const accepted = new Set([...(result.upserts || []), ...(result.deletes || [])].map((x) => x.sheetId + "!" + x.ref));
   const sentLayouts = new Map(cellOps.map((op) => [op.sheetId + "!" + op.ref, op.layout]));
   const retired: { sheetId: string; ref: string }[] = [];
   for (const [key, op] of sentCellOps) {
     const at = op.sheetId + "!" + op.ref;
     if (pendingCellOps.get(at) !== op) {
-      const cell = misplaced.has(key) ? null : retireFollowed(op, result.revision);
+      const cell = accepted.has(key) ? retireFollowed(op, result.revision) : null;
       if (cell) retired.push(cell);
       continue;
     }
@@ -2609,15 +2610,17 @@ function refreshPivot(sheetId: string, save = true): boolean {
 function schedulePivotRefreshes() {
   if (!pivotSheets().length) return;
   clearTimeout(pivotRefreshTimer);
-  pivotRefreshTimer = setTimeout(() => {
-    rebuildEngine();
-    const pivots = pivotSheets();
-    for (let pass = 0; pass <= pivots.length; pass++) {
-      let changed = false;
-      for (const id of pivots) if (refreshPivot(id)) changed = true;
-      if (!changed) break;
-    }
-  }, 320);
+  pivotRefreshTimer = setTimeout(() => refreshPivots(), 320);
+}
+// `save`: false for an export, which prints them as rebuilt without writing them back.
+function refreshPivots(save = true) {
+  rebuildEngine();
+  const pivots = pivotSheets();
+  for (let pass = 0; pass <= pivots.length; pass++) {
+    let changed = false;
+    for (const id of pivots) if (refreshPivot(id, save)) changed = true;
+    if (!changed) break;
+  }
 }
 function createPivotTable() {
   if (!finishEditBeforeSheetChange()) return;
@@ -7417,7 +7420,8 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
   rebuildEngine();
   renderTabs(); renderGrid();
   updateSelectionUI(); refreshToolbarState(); updateEditingOrigin();
-  if (isExport) renderPrintWorkbook();
+  // A pivot's source may have changed with no grid open to rebuild it (see refreshExportPivots).
+  if (isExport) { refreshPivots(false); renderPrintWorkbook(); }
   return acked;
 }
 

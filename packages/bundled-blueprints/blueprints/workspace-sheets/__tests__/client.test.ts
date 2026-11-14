@@ -167,6 +167,21 @@ describe("sync", () => {
     expect(h.gadget.applyOperation.mock.calls.slice(1).flatMap(([op]) => (op as Operation).cellOps ?? [])).toEqual([]);
   });
 
+  it("keeps an edit a move carried when its original write was refused as a conflict", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("old") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    typeIntoActiveCell("mine");
+    await settle(); // the save of A1 is out
+    // An agent wrote A1 first (the save conflicts), then inserted a row above it.
+    h.callbacks.operation({ ...remoteEvent(meta, 2, { upserts: [{ sheetId: "s1", ref: "A1", cell: cell("theirs", 2) }] }), senderId: "agent" });
+    h.callbacks.operation({ ...remoteEvent({ ...meta, layout: 3 }, 3, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("theirs", 2) } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }), senderId: "agent" });
+    save.resolve({ status: "conflict", revision: 2, conflicts: [{ sheetId: "s1", ref: "A1", cell: cell("theirs", 2) }] });
+    await settle();
+    expect(h.gadget.applyOperation.mock.calls.slice(1).flatMap(([op]) => (op as Operation).cellOps ?? [])).toContainEqual(expect.objectContaining({ ref: "A2", value: "mine" }));
+  });
+
   it("shifts an unsaved formula by each move in turn, a sort by only its own displacement", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
@@ -831,6 +846,23 @@ describe("pivot tables", () => {
     const values = Object.values((replaced as { cells: CellMap }).cells).map((c) => c.value);
     expect(values).toContain("10");
     expect(values).not.toContain("5");
+  });
+
+  it("are rebuilt from their source before a PDF prints them", async () => {
+    const source = sheet("s1"), pivot: SheetMeta = { ...sheet("p1"), name: "Pivot", pivot: {
+      sourceSheetId: "s1", sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Amount", aggregate: "sum",
+      showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
+    } };
+    // The pivot was last built when North's amount was 10; an agent has since made it 20.
+    const cells = { s1: { A1: cell("Region"), B1: cell("Amount"), A2: cell("North"), B2: cell("20") }, p1: { A1: cell("Region"), B1: cell("Sum of Amount"), A2: cell("North"), B2: cell("10") } };
+    (globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId = "pdf";
+    try {
+      const h = await loadClient(source, {}, { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot }, cells });
+      const printed = [...document.querySelectorAll("#printWorkbook .print-sheet")].map((section) => section.textContent);
+      expect(printed[1]).toContain("20");
+      expect(printed[1]).not.toContain("10");
+      expect(h.gadget.applyOperation).not.toHaveBeenCalled();
+    } finally { delete (globalThis as { gadgetExportFormatId?: string }).gadgetExportFormatId; }
   });
 
   it("store a very small total as a number", async () => {
