@@ -87,6 +87,7 @@ type Calls =
   | 'sendChatMessage'
   | 'uploadBlob'
   | 'getChatAttachmentContent'
+  | 'markChatRead'
   | 'retryAgent'
   | 'stopAgent'
   | 'approveAction'
@@ -244,6 +245,8 @@ export class ChatSession {
   // and the chat's own creations with the feed.
   #gadgets: ReadonlyMap<number, GadgetTitle> = new Map()
   #gadgetOf: (gadgetId: number) => StepGadget | undefined = () => undefined
+  // The latest message the account was told the viewer has read.
+  #markedRead = -1
   // Files sent in the chat that were fetched, oldest first, by id.
   #attachments = new Map<string, Promise<Uint8Array>>()
   // The steps since the last message with the step being written joined on, rebuilt only when
@@ -533,6 +536,21 @@ export class ChatSession {
       await (this.#earlier ?? this.loadEarlier())
       if (this.#nextBeforeSequence === before) return undefined
     }
+  }
+
+  /**
+   * Tells the account the viewer has read the chat through its latest message, which clears its
+   * unread mark in the sidebar. Said once per message: asking again before another arrives does
+   * nothing. A session that may only use the workspace cannot mark it, and stays quiet about it.
+   */
+  markRead = () => {
+    const latest = Math.max(-1, ...this.#messages.keys())
+    const overseer = this.#overseer
+    if (!this.#loaded || !overseer || latest <= this.#markedRead || this.options.connection?.down) return
+    this.#markedRead = latest
+    Promise.resolve(overseer.markChatRead(this.chatId, latest)).catch(() => {
+      if (this.#markedRead === latest) this.#markedRead = -1
+    })
   }
 
   /**

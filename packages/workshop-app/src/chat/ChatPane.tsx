@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
@@ -101,6 +101,16 @@ export const ChatPane = ({
   // Why the last message did not go, whether it was stopped here or by the server.
   const sendProblem = problem ?? (chat.status === 'ready' ? chat.sendError : undefined)
   useDocumentTitle(title ?? 'Chat')
+
+  // What is on screen has been read: each message that arrives while the tab is in view, and
+  // what came while it was away once it is back.
+  const latestRow = items?.at(-1)?.id
+  useEffect(() => {
+    const markIfShown = () => document.visibilityState === 'visible' && actions.markRead()
+    markIfShown()
+    document.addEventListener('visibilitychange', markIfShown)
+    return () => document.removeEventListener('visibilitychange', markIfShown)
+  }, [actions, latestRow])
 
   const handlers = useMemo((): ChatItemHandlers => {
     const unavailable = (what: string) => () => setNotice(`${what} isn’t available in this app yet.`)

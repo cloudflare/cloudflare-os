@@ -100,6 +100,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     revertChanges: vi.fn<Overseer['revertChanges']>(async () => {}),
     updateChatFromMainline: vi.fn<Overseer['updateChatFromMainline']>(async () => ({ conflictPaths: [] })),
     deleteChat: vi.fn<Overseer['deleteChat']>(async () => {}),
+    markChatRead: vi.fn<Overseer['markChatRead']>(async () => {}),
     getChatAttachmentContent: vi.fn<Overseer['getChatAttachmentContent']>(async (_chatId, id) => new TextEncoder().encode(id)),
   }
 
@@ -564,6 +565,19 @@ describe('ChatSession', () => {
       fake.server().message(userMessage(0, 'too late'))
 
       expect(session.getSnapshot()).toBe(before)
+    })
+  })
+
+  describe('read state', () => {
+    it('marks the chat read through its latest message once, and again only when another arrives', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'go'), agentMessage(1, 'done')) })
+      const session = await started(fake)
+      session.markRead()
+      session.markRead()
+      expect(fake.markChatRead.mock.calls).toEqual([[0, 1]])
+      fake.server().message(agentMessage(2, 'more'))
+      session.markRead()
+      expect(fake.markChatRead.mock.calls).toEqual([[0, 1], [0, 2]])
     })
   })
 

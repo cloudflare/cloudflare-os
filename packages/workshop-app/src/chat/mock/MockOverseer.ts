@@ -316,6 +316,9 @@ export class MockOverseer {
     return typeof file === 'function' ? file() : file
   }
 
+  /** Read state is the account's, which the scenarios do not keep. */
+  async markChatRead() {}
+
   async setChatTitle(_chatId: number, title: string) {
     this.#setMetadata({ title })
   }
