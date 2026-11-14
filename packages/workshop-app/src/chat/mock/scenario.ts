@@ -269,6 +269,11 @@ export type Scenario = {
   refusals?: string[]
   /** How long a message takes to be sent, in milliseconds, so that one on its way can be seen. */
   sendDelay?: number
+  /**
+   * The chat's own keeping is played out: the workspace says what the chat proposes, and keeping or
+   * discarding it records a merge or revert. Otherwise accepts are scripted, and nothing is proposed.
+   */
+  keeps?: boolean
 }
 
 const CHUNK_DELAY = 45

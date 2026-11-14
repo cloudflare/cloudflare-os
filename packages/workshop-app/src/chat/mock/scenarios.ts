@@ -611,6 +611,67 @@ const longHistory: Scenario = {
 }
 
 /** Every scripted chat, in the order the picker lists them. */
+const STATUS_PAGE = 'Status page'
+const createStatusPage = call('createGadget', { title: STATUS_PAGE, bindingName: 'STATUS' }, { output: { gadgetId: 51, changeId: 1 } })
+
+const keepChanges: Scenario = {
+  id: 'keep-changes',
+  title: 'Status page',
+  description:
+    'The agent makes a gadget that reads the incidents feed. Code alone would be kept as the turn ends, but what ' +
+    'a gadget can reach is yours to grant, so once the turn is over the chat asks. Keep it, and the way back is ' +
+    'on the answer: hover it for Undo, which asks first since it would delete the gadget. Or discard it.',
+  history: history([user('Make a status page that shows our open incidents.')]),
+  keeps: true,
+  script: [
+    ...turn(
+      say(agent({ text: 'I’ll make a page that reads the incidents feed.' })),
+      streamTool(createStatusPage),
+      { message: agent({ toolCalls: [createStatusPage] }), delay: 300 },
+      {
+        message: changes({
+          author: AGENT,
+          createdGadgets: [{ gadgetId: 51, title: STATUS_PAGE, bindingName: 'STATUS' }],
+          addedBindings: [{ gadgetId: 51, name: 'INCIDENTS', target: 9 }],
+        }),
+        delay: 200,
+      },
+      say(agent({ text: 'The status page lists open incidents, worst first. It needs the incidents feed to read from.' })),
+    ),
+  ],
+}
+
+const agentReports: Scenario = {
+  id: 'agent-report',
+  title: 'Morning digest',
+  description:
+    'An agent this chat set up reports in between turns, said as that agent, with the way to the run it came ' +
+    'from. Reply to it as to any message.',
+  history: history([
+    user('Every morning, summarise what changed on the platform board.'),
+    agent({ text: 'Done: **Morning digest** runs at 8:00 and reports here.' }),
+    {
+      type: 'agentReport',
+      runChatId: 3,
+      agentName: 'Morning digest',
+      message: 'Three tickets moved to Done overnight, and **PLAT-212** is waiting on review.',
+      author: AGENT,
+    },
+  ]),
+  script: [
+    {
+      message: {
+        type: 'agentReport',
+        runChatId: 4,
+        agentName: 'Morning digest',
+        message: 'A new incident was opened: the chart shows 4 weeks again.',
+        author: AGENT,
+      },
+      delay: 1500,
+    },
+  ],
+}
+
 export const SCENARIOS: Scenario[] = [
   plain,
   toolRun,
@@ -619,6 +680,8 @@ export const SCENARIOS: Scenario[] = [
   observationHook,
   connection,
   output,
+  keepChanges,
+  agentReports,
   errors,
   sendRefused,
   workspaceRestart,

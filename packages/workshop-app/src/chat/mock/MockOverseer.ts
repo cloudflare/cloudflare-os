@@ -52,6 +52,7 @@ export class MockOverseer {
   #blobs = new Map<GitOid, Uint8Array>()
   #refusals: string[]
   #sendDelay: number
+  #keeps: boolean
   #handles = new Set<Handle>()
   // Bumped by each restart, as the server's stream generation is.
   #generation = 1
@@ -71,6 +72,7 @@ export class MockOverseer {
     this.#messages = [...scenario.history]
     this.#refusals = [...(scenario.refusals ?? [])]
     this.#sendDelay = scenario.sendDelay ?? 0
+    this.#keeps = scenario.keeps === true
     // A copy, since files sent in the chat join them, and a restart begins from the scenario again.
     this.#files = { ...scenario.files }
     this.#metadata = {
@@ -134,7 +136,46 @@ export class MockOverseer {
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
-    return [this.#metadata]
+    return [this.#chat()]
+  }
+
+  /** The chat as the server describes it, with what it proposes. */
+  #chat(): AiChatMetadata {
+    const proposed = this.#proposed()
+    return proposed.length ? { ...this.#metadata, proposedChangeWorkpieces: [...new Set(proposed.map(({ gadgetId }) => gadgetId))] } : this.#metadata
+  }
+
+  /** Nobody else is in the workspace, as far as keeping changes goes. */
+  async listCollaborators() {
+    return []
+  }
+
+  /** What the chat proposes since it last kept or discarded, for a scenario that `keeps`: a gadget each. */
+  #proposed() {
+    if (!this.#keeps) return []
+    const last = this.#messages.findLastIndex(({ type }) => type === 'merge' || type === 'revert')
+    return this.#messages.slice(last + 1).flatMap((message) => message.type !== 'changes' ? [] : [
+      ...(message.createdGadgets ?? []).map(({ gadgetId }) => ({ gadgetId, made: true })),
+      ...(message.addedBindings ?? []).map(({ gadgetId }) => ({ gadgetId, made: false })),
+    ])
+  }
+
+  /** Keeps what the chat proposes, with a commit for each gadget, as the server would. */
+  async mergeChanges(_chatId: number): Promise<{ outcome: 'merged' }> {
+    const made = new Set(this.#proposed().filter(({ made }) => made).map(({ gadgetId }) => gadgetId))
+    const gadgets = [...new Set(this.#proposed().map(({ gadgetId }) => gadgetId))]
+    this.#append((sequence) => ({
+      type: 'merge',
+      mergeThrough: sequence - 1,
+      commits: gadgets.map((gadgetId) => ({ gadgetId, commitId: `kept-${sequence}-${gadgetId}`, previousCommit: made.has(gadgetId) ? null : `head-${gadgetId}` })),
+      epochBoundary: true,
+      author: VIEWER,
+    }))
+    return { outcome: 'merged' }
+  }
+
+  async revertChanges(_chatId: number, revertFrom: number) {
+    this.#append({ type: 'revert', revertFrom, author: VIEWER })
   }
 
   async getChatHistory(chatId: number, beforeSequence?: number, limit?: number): Promise<AiChatHistoryPage> {
@@ -346,6 +387,8 @@ export class MockOverseer {
     }
     this.#messages.push(message)
     this.#deliver(message)
+    // What the chat proposes has changed, which the server says in the chat's metadata.
+    if (this.#keeps && (message.type === 'changes' || message.type === 'merge' || message.type === 'revert')) this.#setMetadata({})
   }
 
   #autoApproves(message: AiChatMessage): message is ActionMessage & { actionLog: ActionLogEntry & { type: 'action' } } {
@@ -361,7 +404,7 @@ export class MockOverseer {
 
   #setMetadata(change: Partial<AiChatMetadata>) {
     this.#metadata = { ...this.#metadata, ...change, lastActive: new Date() }
-    this.#chatSubscribers.forEach((subscriber) => subscriber.metadata(this.#metadata))
+    this.#chatSubscribers.forEach((subscriber) => subscriber.metadata(this.#chat()))
   }
 
   #replace(message: AiChatMessage) {
