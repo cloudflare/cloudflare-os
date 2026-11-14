@@ -787,12 +787,18 @@ export class Gadget extends DurableObject {
 }
 \`\`\`
 
-client.js is JavaScript that runs inside the browser to render a client-side user interface. This script runs inside a sandboxed iframe. It can display UI by manipulating the DOM. The client context is initialized with a special global variable called \`gadget\`, which is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
+client.js is JavaScript that runs inside the browser to render a client-side user interface. It runs as an ES module inside a sandboxed iframe, and can display UI by manipulating the DOM. client.js must have a default export with a \`main(gadget)\` method, which the Workshop calls once client.js has loaded. Its \`gadget\` argument is an RPC stub pointing at the gadget's Durable Object server. This RPC stub is implemented using Cap'n Web, an RPC system from Cloudflare that works similarly to Cloudflare Workers' built-in RPC system, but is able to be used in a browser. In short, methods invoked on the \`gadget\` stub will invoke the same-named method on the Durable Object class. A simple client.js might look like:
 
 \`\`\`
-let greeting = await gadget.greet("World");
-document.body.appendChild(document.createTextNode(greeting));
+export default {
+  async main(gadget) {
+    let greeting = await gadget.greet("World");
+    document.body.appendChild(document.createTextNode(greeting));
+  },
+};
 \`\`\`
+
+\`gadget\` is not a global variable: pass it to whatever code needs to call the server.
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
@@ -809,7 +815,7 @@ Note that the iframe sandbox on the client side prohibits modal popup boxes like
 client.js and server.js may import other .js files in the Gadget. Each file has a size limit, so split a large UI into several files.
 
 * A relative import names the exact file, extension included (\`./ui/list.js\`, not \`./ui/list\`), resolves against the importing file, and cannot reach outside the Gadget. Only .js files can be imported.
-* Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm), or URLs other than \`data:\` URLs.
+* Client code cannot import server.js, \`cloudflare:\` modules, bare package names (npm) other than "capnweb", or URLs other than \`data:\` URLs.
 * Client code cannot use \`import()\`; import modules statically. Do not build URLs from \`import.meta.url\`.
 * Everything client.js reaches through imports is sent to anyone who can use the Gadget, including people who can use it but not edit it. Keep secrets and server-only logic in modules that only server.js imports.
 * Import problems in the UI are reported in the Gadget console.
@@ -835,25 +841,42 @@ async subscribe(callback) {
 And on the client:
 
 \`\`\`
+import { RpcTarget } from "capnweb";
+
 class Callback extends RpcTarget {
+  constructor(gadget) {
+    super();
+    this.gadget = gadget;
+  }
+
   update(state) {
     // update the UI
   }
 
   [Symbol.dispose]() {
     // Connection lost. Resubscribe using new connection.
-    gadget.subscribe(this);
+    this.gadget.subscribe(this);
   }
 }
 
-gadget.subscribe(new Callback());
+export default {
+  main(gadget) {
+    gadget.subscribe(new Callback(gadget));
+  },
+};
 \`\`\`
 
-The top-level \`gadget\` stub survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
+The \`gadget\` stub passed to \`main()\` survives backend reconnects, and calls made while its replacement is being acquired will wait. However, other capabilities passed over RPC in either direction are disposed on disconnect, and must be re-acquired.
 
-\`gadget\`, \`RpcTarget\`, and \`RpcStub\` are globals in every client module. DO NOT import them.
+In client code, import \`RpcTarget\` and \`RpcStub\` from "capnweb".
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
+
+## Legacy client.js
+
+Older Gadgets may have a legacy client.js: one with no default export, whose top-level code builds the UI directly. The Workshop still runs these, as a single module with \`gadget\`, \`RpcTarget\` and \`RpcStub\` as global variables, and a browser-mode export waits for its top-level \`await\`. A legacy client.js cannot import anything, including another file of the Gadget or "capnweb": imports require the default export with \`main()\`.
+
+A small change to a legacy client.js can keep its style. To split one into files, or when rewriting much of it, convert it: move its top-level code into \`export default { async main(gadget) { ... } }\`, import \`RpcTarget\` and \`RpcStub\` from "capnweb", and pass \`gadget\` to the code that needs it. Do not add a default export without converting the rest, because the globals no longer exist once client.js has one. Write every new client.js with \`main()\`.
 
 ## Design Tips
 
@@ -866,15 +889,19 @@ If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:worke
 
 Every Gadget UI can be exported to HTML or PDF using platform-owned controls outside the Gadget. Never add print or export UI to a Gadget and never call \`window.print()\`. Browser-mode PDF exports render using print media; HTML, PNG, and JPEG exports render using screen media. When asked to support or improve PDF export, use standard print CSS such as \`@media print\`, \`@page\`, and CSS fragmentation properties so the output remains readable.
 
-During a browser-mode export, client code is initialized with another special global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client code.
+During a browser-mode export, the Workshop defines a global variable named \`gadgetExportFormatId\`. This variable is only defined during export; during normal interactive rendering, referencing it directly throws a \`ReferenceError\`. Guard access with \`typeof gadgetExportFormatId !== "undefined"\` or read \`globalThis.gadgetExportFormatId\`. Use \`gadgetExportFormatId\` when the Gadget supports multiple HTML, PDF, PNG, or JPEG export variants. Do not declare or import \`gadgetExportFormatId\` in client code.
 
-The Workshop waits for client.js, including any top-level \`await\`, to finish before capturing a browser-mode export. Use top-level \`await\` when the initial UI must load data or otherwise complete asynchronous rendering before capture. For example:
+The Workshop waits for \`main()\` to finish, including the promise it returns, before capturing a browser-mode export. Make \`main()\` async and await what the initial UI needs when it must load data or otherwise complete asynchronous rendering before capture. For example:
 
 \`\`\`
-let report = await gadget.getReport();
-let exportFormat = globalThis.gadgetExportFormatId;
-document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
-document.body.append(renderReport(report));
+export default {
+  async main(gadget) {
+    let report = await gadget.getReport();
+    let exportFormat = globalThis.gadgetExportFormatId;
+    document.body.className = exportFormat === "compact-pdf" ? "compact" : "interactive";
+    document.body.append(renderReport(report));
+  },
+};
 \`\`\`
 
 To add, replace, or disable export formats, server.js may export a class named \`ExportHandler\`, which must extend \`WorkerEntrypoint\`. Its \`getExportFormats(gadget)\` method returns the complete list of formats, and its \`export(gadget, id)\` method returns a \`ReadableStream<Uint8Array>\` for formats whose mode is \`"server"\`. Read any needed Gadget state before \`export()\` returns; do not capture the borrowed \`gadget\` parameter in the returned stream. If \`getExportFormats(gadget)\` returns only browser-mode formats, do not implement \`export(gadget, id)\`. \`export\` is valid as a JavaScript class method name; write it directly as \`async export(gadget, id)\`, without quoting it or using a computed property. Browser mode supports \`text/html\`, \`application/pdf\`, \`image/png\`, and \`image/jpeg\`; server mode supports any media type. Each format must contain a unique non-empty \`id\`, a \`label\`, a \`mode\`, a \`contentType\`, and a \`fileExtension\` beginning with a dot. Each format may also contain an optional \`fileName\`, including its extension, such as \`"my-report.pdf"\`. When omitted, the downloaded file name defaults to the Gadget title plus \`fileExtension\`. Returning an empty list disables export. The Workshop supplies default HTML and PDF formats only when server.js does not export \`ExportHandler\` at all.
