@@ -95,6 +95,13 @@ const PAGES_AHEAD = [
   "billed, for a page begun ahead of you also when you never read it",
 ];
 
+/** What a PDF's types say of a text too long for a model's context: where to keep it, and what that costs. */
+const KEPT_IN_A_WORKTREE = [
+  "pass `text` to a worktree's `writeBytes(path, text)`",
+  "so every page is read, and billed",
+  "fails with that error and stores nothing",
+];
+
 /** The lines in square brackets that `text` holds in double quotes, after any line breaks, sorted. */
 function quotedNotes(text: string): string[] {
   return [...text.matchAll(/"(?:\\n)*(\[[^"\]]+\])"/g)].map(match => match[1]!).toSorted();
@@ -692,6 +699,7 @@ folder.move("file-1", "folder-9");
       expect(compileAgentTypes(bundle() + `
 declare const drive: ${account};
 declare const folder: ${folder};
+declare const worktree: { writeBytes(path: string, content: ReadableStream<Uint8Array>): Promise<void> };
 async function read(): Promise<string> {
   const { text, hasText } = await drive.readPdf("file-1");
   const flag: boolean = hasText;
@@ -700,6 +708,7 @@ async function read(): Promise<string> {
   await reader.cancel();
   const scan = await folder.readPdf("file-3");
   const read: boolean = scan.transcribed && !scan.hasText;
+  await worktree.writeBytes("scan.md", (await folder.readPdf("file-5")).text);
   return new Response(text).text();
 }
 // @ts-expect-error Pages without text are read without being asked for: there is no option.
@@ -722,6 +731,7 @@ const unsaid: DrivePdfText = { text: new ReadableStream(), hasText: true };
     expect(quotedNotes(driveTypes)).toEqual(given);
     expect(driveTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
     for (const said of PAGES_AHEAD) expect(driveTypes).toContain(said);
+    for (const said of KEPT_IN_A_WORKTREE) expect(driveTypes).toContain(said);
   });
 
   it("streams a PDF's text from a Gmail attachment, a draft's too, and takes no argument", () => {
@@ -730,6 +740,7 @@ const unsaid: DrivePdfText = { text: new ReadableStream(), hasText: true };
     expect(compileAgentTypes(types + `
 declare const attachment: GmailAttachment;
 declare const draftAttachment: GmailDraftAttachment;
+declare const worktree: { writeBytes(path: string, content: ReadableStream<Uint8Array>): Promise<void> };
 async function read(): Promise<string> {
   const { text, hasText } = await attachment.readPdf();
   const flag: boolean = hasText;
@@ -738,6 +749,7 @@ async function read(): Promise<string> {
   await reader.cancel();
   const scan = await attachment.readPdf();
   const read: boolean = scan.transcribed && !scan.hasText;
+  await worktree.writeBytes("scan.md", (await attachment.readPdf()).text);
   return new Response(text).text();
 }
 // @ts-expect-error Pages without text are read without being asked for: there is no option.
@@ -759,6 +771,7 @@ const unsaid: GmailPdfText = { text: new ReadableStream(), hasText: true };
     expect(quotedNotes(gmailTypes)).toEqual(given);
     expect(gmailTypes).toContain(`up to ${RENDER_LIMITS.fileBytes / (1024 * 1024)} MiB`);
     for (const said of PAGES_AHEAD) expect(gmailTypes).toContain(said);
+    for (const said of KEPT_IN_A_WORKTREE) expect(gmailTypes).toContain(said);
   });
 
   it("streams a file's bytes from both Drive sessions, whole or by range", () => {
