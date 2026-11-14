@@ -1,5 +1,5 @@
 import { RpcTarget } from 'capnweb'
-import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
+import type { ConnectedAccountsSubscriber, GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, SupportedResource, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 /** An account the user has connected on a service, as the server describes it. */
@@ -131,4 +131,23 @@ export const connectedVendors = (accounts: readonly ConnectedAccount[]): Connect
     byVendor.set(vendorId, { vendorId, name: vendor.displayName, logoUrl: vendor.logo?.url })
   }
   return [...byVendor.values()]
+}
+
+// The best known first, so an invitation reads at a glance.
+const FAMILIAR = ['google', 'github', 'slack', 'microsoft', 'notion']
+
+/**
+ * A few services that could be connected, by their logos, to invite connecting one while nothing
+ * is: those with a logo that the user connects themselves, the best known first.
+ */
+export const suggestedVendors = (vendors: readonly GatekeeperVendorInfo[], count = 3): ConnectedVendor[] => {
+  const rank = (id: string) => {
+    const index = FAMILIAR.findIndex((familiar) => id.startsWith(familiar))
+    return index === -1 ? FAMILIAR.length : index
+  }
+  return vendors
+    .filter(({ unavailable, description }) => !unavailable && !description.autoProvisionsAccount && description.logo?.url)
+    .toSorted((a, b) => rank(a.id) - rank(b.id))
+    .slice(0, count)
+    .map(({ id, description }) => ({ vendorId: id, name: description.displayName, logoUrl: description.logo?.url }))
 }

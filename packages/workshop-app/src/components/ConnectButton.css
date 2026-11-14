@@ -1,0 +1,42 @@
+/* The logos in the connect pill are a hand of cards: tucked under one another and tilted a little,
+   as if held, until the pill is pointed at or focused. Then they spread out flat, one after the
+   other, on the spring cards arrive on (`Arrival.css`), and settle back the same way. Logos of what
+   could be connected, shown while nothing is, wait in grey and take their colours as they spread. */
+.connect-logo {
+  --connect-easing: linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1);
+  rotate: var(--connect-tilt, 0deg);
+  transition:
+    margin 420ms var(--connect-easing),
+    rotate 420ms var(--connect-easing),
+    translate 420ms var(--connect-easing),
+    filter 200ms ease-out,
+    opacity 200ms ease-out,
+    box-shadow 200ms ease-out;
+  transition-delay: calc(var(--connect-index, 0) * 35ms);
+}
+
+.connect-logo + .connect-logo {
+  margin-inline-start: -6px;
+}
+
+.connect-logo[data-suggested] {
+  filter: grayscale(1);
+  opacity: 0.55;
+}
+
+:is(.group\/connect:hover, .group\/connect:focus-visible) .connect-logo {
+  rotate: 0deg;
+  translate: 0 -1px;
+  filter: none;
+  opacity: 1;
+}
+
+:is(.group\/connect:hover, .group\/connect:focus-visible) .connect-logo + .connect-logo {
+  margin-inline-start: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .connect-logo {
+    transition: filter 200ms ease-out, opacity 200ms ease-out;
+  }
+}

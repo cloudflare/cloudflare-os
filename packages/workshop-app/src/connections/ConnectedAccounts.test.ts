@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectedAccountsSubscriber } from '@gadgets/workshop-shared/api'
 import type { VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
-import { ConnectedAccounts, connectedVendors, type ConnectedAccount } from './ConnectedAccounts'
+import { ConnectedAccounts, connectedVendors, suggestedVendors, type ConnectedAccount } from './ConnectedAccounts'
 
 const vendor = (displayName: string, extra: Partial<VendorDescription> = {}): VendorDescription => ({ displayName, url: 'https://example.com', ...extra })
 
@@ -89,6 +89,22 @@ describe('connectedVendors', () => {
     ])).toEqual([
       { vendorId: 'github', name: 'GitHub', logoUrl: 'gh.svg' },
       { vendorId: 'slack', name: 'Slack', logoUrl: undefined },
+    ])
+  })
+})
+
+describe('suggestedVendors', () => {
+  const info = (id: string, description: VendorDescription, unavailable?: true) => ({ id, description, supportedResources: [], unavailable })
+  it('offers the best known with a logo first, leaving out what cannot be connected by hand', () => {
+    expect(suggestedVendors([
+      info('jira', vendor('Jira', { logo: { url: 'j.svg' } })),
+      info('slack', vendor('Slack')),
+      info('context', vendor('Skills', { logo: { url: 's.svg' }, autoProvisionsAccount: true })),
+      info('github', vendor('GitHub', { logo: { url: 'gh.svg' } }), true),
+      info('google', vendor('Google', { logo: { url: 'g.svg' } })),
+    ])).toEqual([
+      { vendorId: 'google', name: 'Google', logoUrl: 'g.svg' },
+      { vendorId: 'jira', name: 'Jira', logoUrl: 'j.svg' },
     ])
   })
 })

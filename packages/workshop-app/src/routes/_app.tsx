@@ -8,9 +8,10 @@ import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
 import { Sidebar } from '@/blocks/Sidebar'
 import { ChatSessionsProvider } from '@/chat/ChatSessionsProvider'
-import { connectedVendors } from '@/connections/ConnectedAccounts'
+import { connectedVendors, suggestedVendors } from '@/connections/ConnectedAccounts'
 import { useConnectedAccounts } from '@/connections/ConnectedAccountsContext'
 import { ConnectedAccountsProvider } from '@/connections/ConnectedAccountsProvider'
+import { useServices } from '@/connections/useServices'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { AppShell } from '@/layouts/AppShell'
 import { NarrowShell } from '@/layouts/NarrowShell'
@@ -60,6 +61,7 @@ const AppFrame = () => {
   const connectionState = useSyncExternalStore(connection.subscribe, connection.getSnapshot)
   const workspacesState = useWorkspaces()
   const accounts = useConnectedAccounts()
+  const { services } = useServices()
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
@@ -228,6 +230,9 @@ const AppFrame = () => {
       }}
       connections={accounts.status === 'ready'
         ? connectedVendors(accounts.accounts).map(({ vendorId, name, logoUrl }) => ({ key: vendorId, name, src: logoUrl }))
+        : undefined}
+      suggestedConnections={services.status === 'ready'
+        ? suggestedVendors(services.vendors).map(({ vendorId, name, logoUrl }) => ({ key: vendorId, name, src: logoUrl }))
         : undefined}
       connectionsPage={{
         current: connectionsPage !== undefined,

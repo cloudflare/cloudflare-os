@@ -19,6 +19,8 @@ export type SidebarProps = {
   notice?: string
   /** Logos of the connected services, shown in the connect button. */
   connections?: ConnectButtonLogo[]
+  /** While nothing is connected: logos of services that could be, shown in grey to invite it. */
+  suggestedConnections?: ConnectButtonLogo[]
   /** The connect button's page, of what is connected and what can be, and whether it is the one showing. */
   connectionsPage?: { current: boolean; onOpen: () => void }
   /** The library's page, and whether it is the one showing. */
@@ -44,6 +46,7 @@ export const Sidebar = ({
   onGoHome,
   notice,
   connections,
+  suggestedConnections,
   connectionsPage,
   library,
   workspacesPage,
@@ -124,7 +127,7 @@ export const Sidebar = ({
       {nav}
       <footer className="flex items-center justify-between">
         {account}
-        <ConnectButton logos={connections} current={connectionsPage?.current} onConnect={connectionsPage?.onOpen} />
+        <ConnectButton logos={connections} suggested={suggestedConnections} current={connectionsPage?.current} onConnect={connectionsPage?.onOpen} />
       </footer>
     </div>
   )

@@ -229,9 +229,10 @@ function Gallery() {
         <Avatar name="Ada Lovelace" />
         <Avatar name="Broken image" src="/missing.png" />
       </Section>
-      <Section title="ConnectButton (no logos, two, and more than fit, which fan out when pointed at)">
+      <Section title="ConnectButton (two, more than fit, inviting while nothing is connected, and alone; they fan out when pointed at)">
         <ConnectButton logos={[{ key: 'github', name: 'GitHub' }, { key: 'slack', name: 'Slack' }]} />
         <ConnectButton logos={['GitHub', 'Slack', 'Linear', 'Notion', 'Jira'].map((name) => ({ key: name, name, src: name === 'Slack' ? '/missing.png' : undefined }))} />
+        <ConnectButton suggested={['Google', 'GitHub', 'Slack'].map((name) => ({ key: name, name }))} />
         <ConnectButton />
       </Section>
       <Section title="WorkspaceIcon (and small, as in a button)">

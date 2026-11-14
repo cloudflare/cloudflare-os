@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { cn } from '@cloudflare/kumo/utils'
 import { PlusIcon } from '@phosphor-icons/react'
 import { Button } from './Button'
+import './ConnectButton.css'
 
 export type ConnectButtonLogo = {
   key: string
@@ -13,6 +14,8 @@ export type ConnectButtonLogo = {
 export type ConnectButtonProps = {
   /** The logos of what is connected, shown after the add control, the first on top. */
   logos?: ConnectButtonLogo[]
+  /** While nothing is connected: logos of what could be, shown in grey as an invitation. */
+  suggested?: ConnectButtonLogo[]
   /** Its page is the one showing, which it is marked as, as the sidebar's other buttons are. */
   current?: boolean
   onConnect?: () => void
@@ -20,6 +23,8 @@ export type ConnectButtonProps = {
 
 // More than this, and the rest are counted.
 const SHOWN = 3
+// Held as a hand: the first upright on top, the ones under it turned a little further each.
+const TILTS = [0, 7, 14]
 
 const Logo = ({ name, src }: Omit<ConnectButtonLogo, 'key'>) => {
   const [failed, setFailed] = useState(false)
@@ -28,15 +33,21 @@ const Logo = ({ name, src }: Omit<ConnectButtonLogo, 'key'>) => {
     : <span aria-hidden="true" className="text-[10px]/none font-semibold text-kumo-default">{name.slice(0, 1).toUpperCase()}</span>
 }
 
+const AND = new Intl.ListFormat('en', { type: 'conjunction' })
+
 /**
- * A pill with a round add control, followed by the logos of what is already connected. They sit
- * over one another like a hand of cards, each tucked under the one before it, and fan out when the
- * pill is pointed at or focused, on the same ease as the header's crumb.
+ * A pill with a round add control, followed by the logos of what is already connected, or, while
+ * nothing is, of what could be. They are held like a hand of cards, each tucked under the one
+ * before it, and spread out when the pill is pointed at or focused (`ConnectButton.css`).
  */
-export const ConnectButton = ({ logos = [], current, onConnect }: ConnectButtonProps) => {
-  const shown = logos.slice(0, SHOWN)
-  const more = logos.length - shown.length
-  const label = logos.length ? `Connections: ${logos.map(({ name }) => name).join(', ')}` : 'Connect an app'
+export const ConnectButton = ({ logos = [], suggested = [], current, onConnect }: ConnectButtonProps) => {
+  const inviting = logos.length === 0
+  const all = inviting ? suggested : logos
+  const shown = all.slice(0, SHOWN)
+  const more = inviting ? 0 : logos.length - shown.length
+  const label = !inviting
+    ? `Connections: ${logos.map(({ name }) => name).join(', ')}`
+    : shown.length ? `Connect ${AND.format([...shown.map(({ name }) => name), 'more'])}` : 'Connect an app'
 
   return (
     <Button
@@ -57,13 +68,12 @@ export const ConnectButton = ({ logos = [], current, onConnect }: ConnectButtonP
           {shown.map((logo, index) => (
             <span
               key={logo.key}
-              style={{ zIndex: shown.length - index }}
+              data-suggested={inviting || undefined}
+              style={{ zIndex: shown.length - index, '--connect-index': index, '--connect-tilt': `${TILTS[index] ?? 0}deg` } as CSSProperties}
               className={cn(
                 // A halo in the pill's own colour keeps each apart from the one it tucks under.
-                'relative grid size-[22px] shrink-0 place-items-center rounded-full bg-kumo-base shadow-[0_0_0_2px_var(--color-kumo-base)] ring-1 ring-kumo-line ring-inset',
-                'transition-[margin,box-shadow] duration-300 ease-out motion-reduce:transition-none',
+                'connect-logo relative grid size-[22px] shrink-0 place-items-center rounded-full bg-kumo-base shadow-[0_0_0_2px_var(--color-kumo-base)] ring-1 ring-kumo-line ring-inset',
                 'group-hover/connect:shadow-[0_0_0_2px_var(--color-kumo-tint)] group-aria-[current=page]/connect:shadow-[0_0_0_2px_var(--color-kumo-tint)]',
-                index > 0 && '-ms-1 group-hover/connect:ms-1 group-focus-visible/connect:ms-1',
               )}
             >
               <Logo name={logo.name} src={logo.src} />

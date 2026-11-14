@@ -162,7 +162,7 @@ export class MockOverseer {
 
   /** Keeps what the chat proposes, with a commit for each gadget, as the server would. */
   async mergeChanges(_chatId: number): Promise<{ outcome: 'merged' }> {
-    const made = new Set(this.#proposed().filter(({ made }) => made).map(({ gadgetId }) => gadgetId))
+    const made = new Set(this.#proposed().filter((proposal) => proposal.made).map(({ gadgetId }) => gadgetId))
     const gadgets = [...new Set(this.#proposed().map(({ gadgetId }) => gadgetId))]
     this.#append((sequence) => ({
       type: 'merge',
