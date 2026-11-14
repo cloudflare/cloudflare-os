@@ -11,8 +11,11 @@ declare global {
   var __workshopExportSendToBrowser: (message: string) => void;
   /** Receives the next Cap'n Web RPC message from the browser-side session. */
   var __workshopExportReceiveFromBrowser: () => Promise<string>;
-  /** Settles when the Gadget client module has finished loading. */
-  var __workshopExportModulePromise: Promise<Record<string, unknown>>;
+  /**
+   * Settles when the Gadget client module has finished loading, and for a UI
+   * that calls `main()`, when that settles.
+   */
+  var __workshopExportModulePromise: Promise<unknown>;
 
   // Globals set in the isolated realm:
 

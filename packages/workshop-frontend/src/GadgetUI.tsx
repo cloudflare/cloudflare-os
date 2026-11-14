@@ -3,7 +3,7 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
-import { prepareUiPage, type UiPage } from '@gadgets/workshop-shared/ui-page'
+import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
@@ -14,18 +14,25 @@ import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 // data: and URL encoding for the outer, as this largely avoids double-escaping.
 //
 // The runtime is a module script placed before the gadget's entry. Module scripts run in document
-// order, so the globals it sets exist before any gadget module evaluates, even one the entry
-// imports. It must stay synchronous: a top-level await would let the entry run first.
-const RUNTIME_URL = `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
+// order, so what it sets up exists before any gadget module evaluates, even one the entry imports:
+// for a legacy UI, its globals. It must stay synchronous: a top-level await would let the entry run
+// first. For a UI that `callsMain`, the `gadget` stub stays in the runtime's module scope, so it
+// reaches only the code `main()` hands it to.
+const MISSING_MAIN = "client.js's default export has no main() function. Start the UI with " +
+  '`export default { main(gadget) { ... } }`.'
+const runtimeUrl = (callsMain: boolean) => `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`import { RpcTarget, RpcStub, newMessagePortRpcSession } from "${CAPNWEB_MODULE_URL}";
 
-globalThis.RpcTarget = RpcTarget;
-globalThis.RpcStub = RpcStub;
+let gadget;  // RPC stub to the gadget's server-side Durable Object.
 {
   let {port1, port2} = new MessageChannel();
   window.parent.postMessage("handshake", "*", [port2]);
-  // RPC stub to the gadget's server-side Durable Object.
-  globalThis.gadget = newMessagePortRpcSession(port1);
+  gadget = newMessagePortRpcSession(port1);
 }
+${callsMain ? '' : `
+globalThis.gadget = gadget;
+globalThis.RpcTarget = RpcTarget;
+globalThis.RpcStub = RpcStub;
+`}
 
 // Monkey-patch console to forward logs to the parent frame.
 for (let level of ['debug', 'info', 'log', 'warn', 'error']) {
@@ -97,8 +104,23 @@ window.addEventListener('unhandledrejection', (event) => {
   let reason = event.reason;
   reportError(['Unhandled promise rejection:', reason?.stack || String(reason)]);
 });
-
+${callsMain ? `
+// The same module instance the entry's <script> loads. A main() that throws or rejects is reported
+// as an unhandled rejection.
+import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
+  let main = entry.default?.main;
+  if (typeof main !== 'function') {
+    reportError([${JSON.stringify(MISSING_MAIN)}]);
+    return;
+  }
+  return main.call(entry.default, gadget);
+}, () => {
+  // The entry's <script> element reports a module that fails to load or to evaluate.
+});
+` : ''}
 //# sourceURL=gadget-runtime.js`)}`
+const LEGACY_RUNTIME_URL = runtimeUrl(false)
+const MAIN_RUNTIME_URL = runtimeUrl(true)
 
 const createSandboxedHtml = (page: UiPage): string => {
   return `<!DOCTYPE html>
@@ -108,7 +130,7 @@ const createSandboxedHtml = (page: UiPage): string => {
   <script type="importmap">${page.importMap}</script>
 </head>
 <body>
-    <script type="module" src="${RUNTIME_URL}"></script>
+    <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
     <script type="module" src="${page.entryUrl}"></script>
 </body>
 </html>`.trim()
@@ -316,7 +338,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
-          const page = prepareUiPage(bundle)
+          const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
           pathsByUrlRef.current = page.pathsByUrl
           setSandboxedHtml(createSandboxedHtml(page))
         } else {

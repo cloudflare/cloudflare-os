@@ -1,6 +1,6 @@
 // The default build compiles wasm at runtime, which Workers forbid. The `/js` build exports only
 // `parse`; its types also declare `init`, which would fail when the module links.
-import { parse, type ImportSpecifier } from "es-module-lexer/js";
+import { parse, type ExportSpecifier, type ImportSpecifier } from "es-module-lexer/js";
 import type { UiBundle } from "@gadgets/workshop-shared/api";
 import { uiModuleKey } from "@gadgets/workshop-shared/ui-page";
 
@@ -11,25 +11,37 @@ const UNSAFE_PATH = /["'`\\\s\p{Cc}]/u;
 /**
  * Collects the UI modules `client.js` reaches through relative static imports, rewriting each such
  * specifier to the module's `uiModuleKey`. Anyone who can use the gadget receives the bundle, so
- * nothing `client.js` doesn't reach is included. A pure function of the gadget's file tree. Returns
- * null when there's no `client.js`, and throws on the first import that breaks the UI import rules.
+ * nothing `client.js` doesn't reach is included. A pure function of the gadget's file tree.
+ *
+ * A `client.js` with a default export is started by calling its `main()`, and is sent as
+ * `modules`; one with no default export is a legacy UI, sent as `jsCode`. A legacy UI may import
+ * only `data:` URLs: a module that imports another can't rely on legacy globals.
+ *
+ * Returns null when there's no `client.js`, and throws on the first import that breaks the UI
+ * import rules.
  */
 export function buildUiBundle(files: ReadonlyMap<string, string>): UiBundle | null {
   if (!files.has("client.js")) return null;
   let shipped = new Map<string, string>();
   // Iterating a Set visits values added during the loop, so this is also the walk's queue.
   let reached = new Set(["client.js"]);
+  let exportsDefault = false;
+  // Where client.js first imports something other than a data: URL, for the error if it has no
+  // default export.
+  let firstModuleImport: string | undefined;
   for (let path of reached) {
     let code = files.get(path)!;
     let lineAt = linesIn(code);
     let messageAt = (offset: number, problem: string) => `${path}:${lineAt(offset)}: ${problem}`;
 
     let imports: readonly ImportSpecifier[] = [];
+    let exports: readonly ExportSpecifier[] = [];
     try {
-      [imports] = parse(code);
+      [imports, exports] = parse(code);
     } catch {
       // Shipped as written, so the browser reports the real SyntaxError at the right place.
     }
+    if (path === "client.js") exportsDefault = exports.some(({n}) => n === "default");
 
     let rewritten = "";
     let copied = 0;
@@ -55,10 +67,12 @@ export function buildUiBundle(files: ReadonlyMap<string, string>): UiBundle | nu
             `like "./ui/list.js".`);
       }
       if (spec.startsWith("data:")) continue;
+      if (path === "client.js") firstModuleImport ??= messageAt(s, quoted);
+      // The page's import map resolves it to the Cap'n Web the page's RPC session uses.
+      if (spec === "capnweb") continue;
       if (!spec.startsWith("./") && !spec.startsWith("../")) {
         throw fail(`${quoted} can't be imported: UI code can import only the gadget's own .js ` +
-            `files, by relative path like "./ui/list.js", and data: URLs. gadget, RpcTarget and ` +
-            `RpcStub are globals in every UI module; don't import them.`);
+            `files, by relative path like "./ui/list.js", "capnweb", and data: URLs.`);
       }
 
       let resolved = resolve(path, spec);
@@ -84,9 +98,14 @@ export function buildUiBundle(files: ReadonlyMap<string, string>): UiBundle | nu
     shipped.set(path, rewritten + code.slice(copied));
   }
 
-  return shipped.size === 1
-    ? {jsCode: shipped.get("client.js")!}
-    : {modules: [...shipped].map(([path, code]) => ({path, code}))};
+  if (exportsDefault) return {modules: [...shipped].map(([path, code]) => ({path, code}))};
+  if (firstModuleImport !== undefined) {
+    throw new Error(`${firstModuleImport} is imported, so client.js must start the UI from a ` +
+        `main function: \`export default { main(gadget) { ... } }\`, and import RpcTarget and ` +
+        `RpcStub from "capnweb". The gadget, RpcTarget and RpcStub globals exist only for a ` +
+        `legacy client.js, which has no default export and imports only data: URLs.`);
+  }
+  return {jsCode: shipped.get("client.js")!};
 }
 
 // Resolves a `./` or `../` specifier against the importing file's directory, or returns null if

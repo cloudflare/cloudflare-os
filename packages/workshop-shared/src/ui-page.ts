@@ -17,6 +17,12 @@ export type UiPage = {
   /** The `data:` URL of `client.js`, which the page loads as its entry module. */
   entryUrl: string;
 
+  /**
+   * Whether the page starts the UI by calling `main(gadget)` on `client.js`'s default export,
+   * rather than running a legacy `client.js` with the `gadget`, `RpcTarget` and `RpcStub` globals.
+   */
+  callsMain: boolean;
+
   /** The JSON body of the page's `<script type="importmap">`, safe to inline in HTML. */
   importMap: string;
 
@@ -26,10 +32,12 @@ export type UiPage = {
 
 /**
  * Encodes each module of `bundle` as a `data:` URL and maps its key to it. The entry is mapped too,
- * so a module that imports `client.js` shares the instance the page loads.
+ * so a module that imports `client.js` shares the instance the page loads. "capnweb" maps to
+ * `capnwebUrl`, which must be the URL the page's own RPC session imports Cap'n Web from: a module
+ * instance of its own would have its own `RpcTarget`, which the session wouldn't recognize.
  */
-export function prepareUiPage(bundle: UiBundle): UiPage {
-  let imports: Record<string, string> = {};
+export function prepareUiPage(bundle: UiBundle, capnwebUrl: string): UiPage {
+  let imports: Record<string, string> = {capnweb: capnwebUrl};
   let pathsByUrl = new Map<string, string>();
   let modules = "modules" in bundle ? bundle.modules : [{path: "client.js", code: bundle.jsCode}];
   for (let {path, code} of modules) {
@@ -39,6 +47,7 @@ export function prepareUiPage(bundle: UiBundle): UiPage {
   }
   return {
     entryUrl: imports[uiModuleKey("client.js")]!,
+    callsMain: "modules" in bundle,
     // JSON doesn't escape `<`, so a path containing `</script>` would end the element early.
     importMap: JSON.stringify({imports}).replaceAll("<", "\\u003c"),
     pathsByUrl,

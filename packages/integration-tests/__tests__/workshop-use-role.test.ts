@@ -56,8 +56,8 @@ const headOf = (workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, after?: st
 const ui = (gadgetId: WorkpieceId, text?: string): CodeContent =>
   new Map([[gadgetId, new Map(text === undefined ? [] : [["client.js", text]])]]);
 
-const MAINLINE_UI = "export default 'mainline';\n";
-const DRAFT_UI = "export default 'draft';\n";
+const MAINLINE_UI = "document.title = 'mainline';\n";
+const DRAFT_UI = "document.title = 'draft';\n";
 const COMMIT = "0".repeat(40);
 const DENIED = "Unauthorized: this collaborator only has permission to use the gadget's UI.";
 
@@ -269,7 +269,7 @@ it("a use collaborator's UI bundle carries only what client.js reaches", async (
     return headOf(workpieces, gadgetId, baseCommit);
   };
   const split = {
-    "client.js": `import { list } from "./ui/list.js";\n`,
+    "client.js": `import { list } from "./ui/list.js";\nexport default { main(gadget) {} };\n`,
     "ui/list.js": "export const list = [];\n",
     "server.js": `import { key } from "./lib/secret.js";\n` +
         `export class Gadget { secret = "SERVER-ONLY"; }\n`,
@@ -284,7 +284,8 @@ it("a use collaborator's UI bundle carries only what client.js reaches", async (
   using useGadget = await useWs.getGadget(gadgetId);
   expect(await useGadget.getUiBundle()).toEqual({
     modules: [
-      { path: "client.js", code: `import { list } from "gadget:ui/list.js";\n` },
+      { path: "client.js",
+        code: `import { list } from "gadget:ui/list.js";\nexport default { main(gadget) {} };\n` },
       { path: "ui/list.js", code: "export const list = [];\n" },
     ],
   });

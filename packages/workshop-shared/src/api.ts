@@ -3030,7 +3030,8 @@ export type UiBundle = {
 //  url: string;
 
   /**
-   * The code of `client.js` when it is the UI's only module, rewritten like `modules`.
+   * A legacy UI's `client.js`: one module, which has no default export and imports only `data:`
+   * URLs. The page runs it with the `gadget` stub, `RpcTarget` and `RpcStub` as globals.
    * TODO: For now we just return the code but we should switch to serving over HTTP as described
    *   above, for caching. Or... maybe we should actually serve over RPC, but also employ the
    *   Cache API in the browser? Or some other local storage?
@@ -3042,6 +3043,17 @@ export type UiBundle = {
    * with its relative imports rewritten to the internal keys the page's import map resolves (see
    * `ui-page.ts`). Anyone who can use the gadget receives these, so nothing only `server.js`
    * imports is ever included.
+   *
+   * The page starts the UI by calling `main(gadget)` on `client.js`'s default export, and sets
+   * no globals: the `gadget` stub reaches only code `main()` passes it to, and the modules import
+   * `RpcTarget` and `RpcStub` from "capnweb", which the page maps to the Cap'n Web its RPC session
+   * uses.
+   *
+   * That keeps the stub from code that isn't handed it, not from code trying to get it: the
+   * modules share one realm, where one can intercept what another passes around. Nor is the
+   * page's connection to the server reserved for its runtime. Any module can post the iframe's
+   * RPC handshake to the Workshop, and in a browser-mode export any module can replace the
+   * globals the export's RPC session runs through.
    */
   modules: UiModule[];
 };

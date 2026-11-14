@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { UiBundle } from "@gadgets/workshop-shared/api";
 
 const launch = vi.hoisted(() => vi.fn());
 vi.mock("@cloudflare/puppeteer", () => ({ launch }));
@@ -205,11 +206,12 @@ function render(
   pdfChunks?: string[],
   closePdf = true,
   contentType = "application/pdf",
+  bundle: UiBundle = {jsCode: "export default {}"},
 ) {
   let { gadget, harness } = makeHarness(pdfChunks, closePdf);
   let stream = renderGadgetInBrowser(
     {} as BrowserRun,
-    {jsCode: "export default {}"},
+    bundle,
     "Test Gadget",
     gadget as never,
     {
@@ -320,10 +322,23 @@ describe("renderGadgetInBrowser", () => {
     expect(harness.exportDocument()).toContain(
       'globalThis.gadgetExportFormatId%20%3D%20%22test-format%22',
     );
+    expect(harness.exportDocument()).toContain("globalThis.__workshopExportCallsMain%20%3D%20false");
     expect(harness.exportDocumentCsp()).toContain("script-src data: 'unsafe-inline'");
     expect(harness.exportDocumentCsp()).toContain("img-src data: blob:");
     expect(harness.exportDocumentCsp()).toContain("media-src data: blob:");
     expect(harness.blobRequestContinued()).toBe(true);
+  });
+
+  it("starts a UI sent as modules by calling main(), mapping capnweb for its modules", async () => {
+    let { stream, harness } = render(undefined, true, "application/pdf",
+        {modules: [{path: "client.js", code: "export default { main() {} };"}]});
+
+    await collect(await stream);
+    let exportDocument = harness.exportDocument();
+    expect(exportDocument).toContain("globalThis.__workshopExportCallsMain%20%3D%20true");
+    expect(exportDocument).toContain('<script type="module" src="data:text/javascript;');
+    let importMap = exportDocument.match(/<script type="importmap">(.*?)<\/script>/)![1]!;
+    expect(JSON.parse(importMap).imports.capnweb).toMatch(/^data:text\/javascript;/);
   });
 
   it("exports an inert snapshot with locally bundled DOMPurify", async () => {

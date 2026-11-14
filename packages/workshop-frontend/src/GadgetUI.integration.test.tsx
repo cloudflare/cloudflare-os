@@ -173,9 +173,11 @@ function importMapOf(iframe: HTMLIFrameElement | null): Record<string, string> {
   return imports
 }
 
-// The source of every module the page of the iframe in `container` maps, decoded from its data: URLs.
+// The source of every gadget module the page of the iframe in `container` maps, decoded from its
+// data: URLs.
 function loadedCode(container: HTMLElement): string {
-  return Object.values(importMapOf(container.querySelector('iframe'))).map(url => {
+  const { capnweb: _, ...imports } = importMapOf(container.querySelector('iframe'))
+  return Object.values(imports).map(url => {
     const binary = atob(url.slice(url.indexOf(',') + 1))
     return new TextDecoder().decode(Uint8Array.from(binary, c => c.charCodeAt(0)))
   }).join('\n')

@@ -4,6 +4,7 @@ import { createLogger } from "@gadgets/observability/logger";
 import type { GadgetExportFormat, UiBundle } from "@gadgets/workshop-shared/api";
 import { prepareUiPage } from "@gadgets/workshop-shared/ui-page";
 import BROWSER_EXPORT_RUNTIME from "./generated/browser-export-runtime.txt";
+import CAPNWEB_MODULE from "./generated/capnweb-module.txt";
 import HTML_SANITIZER_RUNTIME from "./generated/html-sanitizer-runtime.txt";
 import {
   createStaticHtmlSnapshot,
@@ -133,11 +134,14 @@ function scriptUrl(source: string): string {
   return `data:text/javascript;charset=utf-8,${encodeURIComponent(source)}`;
 }
 
+const CAPNWEB_URL = scriptUrl(CAPNWEB_MODULE);
+
 function makeExportHtml(bundle: UiBundle, formatId: string): string {
-  let { entryUrl, importMap } = prepareUiPage(bundle);
+  let { entryUrl, callsMain, importMap } = prepareUiPage(bundle, CAPNWEB_URL);
   let runtimeUrl = scriptUrl(
       `globalThis.gadgetExportFormatId = ${JSON.stringify(formatId)};\n` +
       `globalThis.__workshopExportClientUrl = ${JSON.stringify(entryUrl)};\n` +
+      `globalThis.__workshopExportCallsMain = ${callsMain};\n` +
       BROWSER_EXPORT_RUNTIME);
 
   return `<!DOCTYPE html>
@@ -147,7 +151,7 @@ function makeExportHtml(bundle: UiBundle, formatId: string): string {
   <script type="importmap">${importMap}</script>
 </head>
 <body>
-  <script src="${runtimeUrl}"></script>
+  <script type="module" src="${runtimeUrl}"></script>
 </body>
 </html>`;
 }
