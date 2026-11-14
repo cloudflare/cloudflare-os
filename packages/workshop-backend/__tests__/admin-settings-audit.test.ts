@@ -409,7 +409,7 @@ describe("AdminSettings promotes bundled formats", () => {
   });
 });
 
-describe("AdminSettings audit retention bound", () => {
+describe("AdminSettings admin access bounds", () => {
   it("records a logo with the retention committed, not one still in flight", async () => {
     const { inDo, seed, put, appended } = adminSettings();
     await seed({ adminAuditRetentionDays: 365 });
@@ -459,6 +459,52 @@ describe("AdminSettings audit retention bound", () => {
     });
   });
 
+  it("refuses an access level above ADMIN_WORKSPACE_ACCESS_MAX", async () => {
+    const { inDo, seed, appended, config, records } = adminSettings();
+    await seed({ adminWorkspaceAccess: "off" });
+    await expect(inDo(admin => admin.setAdminWorkspaceAccess("metadata", ACTOR),
+        { more: { ADMIN_WORKSPACE_ACCESS_MAX: "off" } }))
+        .rejects.toThrow("ADMIN_WORKSPACE_ACCESS_MAX");
+    expect(appended).toEqual([]);
+    expect((await config()).adminWorkspaceAccess).toBe("off");
+
+    await inDo(admin => admin.setAdminWorkspaceAccess("metadata", ACTOR));
+    await inDo(admin => admin.setAdminWorkspaceAccess("off", ACTOR));
+    await inDo(admin => admin.setAdminWorkspaceAccess("metadata", ACTOR));
+    expect(records().map(record => record.changes)).toStrictEqual([
+      [{ setting: "adminWorkspaceAccess", before: "off", after: "metadata" }],
+      [{ setting: "adminWorkspaceAccess", before: "metadata", after: "off" }],
+      [{ setting: "adminWorkspaceAccess", before: "off", after: "metadata" }],
+    ]);
+    expect((await config()).adminWorkspaceAccess).toBe("metadata");
+  });
+
+  // The bound check alone would pass such a value: it sorts below every level.
+  describe.each([
+    ["no cap", {}],
+    ["the cap at off", { ADMIN_WORKSPACE_ACCESS_MAX: "off" }],
+  ])("with %s", (_name, more) => {
+    it.each(["full", "FULL", "", undefined])(
+        "refuses a value that is not a level: %j", async value => {
+      const { inDo, storageOf, appended, config } = adminSettings();
+      await expect(inDo(admin => admin.setAdminWorkspaceAccess(value as never, ACTOR), { more }))
+          .rejects.toThrow("Invalid admin workspace access");
+      expect(appended).toEqual([]);
+      expect((await config()).adminWorkspaceAccess).toBe("metadata");
+      expect(JSON.stringify(await inDo(admin => storageOf(admin).adminConfig.get()) ?? null))
+          .not.toContain("full");
+    });
+  });
+
+  it("allows nothing while ADMIN_WORKSPACE_ACCESS_MAX is not a level", async () => {
+    const { inDo, appended } = adminSettings({ ADMIN_WORKSPACE_ACCESS_MAX: "none" });
+    await expect(inDo(admin => admin.setAdminWorkspaceAccess("metadata", ACTOR)))
+        .rejects.toThrow("ADMIN_WORKSPACE_ACCESS_MAX");
+    expect(appended).toEqual([]);
+    expect((await inDo(admin => admin.getSettings("admin"))).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "off", chosen: "metadata", max: "off" });
+  });
+
   it("refuses a retention below ADMIN_AUDIT_RETENTION_MIN_DAYS", async () => {
     const { inDo, appended, config } = adminSettings();
     for (let days of [30, 89, 90.5, 3651]) {
@@ -476,24 +522,54 @@ describe("AdminSettings audit retention bound", () => {
     expect((await config()).adminAuditRetentionDays).toBe(400);
   });
 
-  it("reports the retention enforced, chosen and bounded", async () => {
+  it("reports the level and retention enforced, chosen and bounded", async () => {
     const { inDo, appended } = adminSettings();
     await inDo(admin => admin.setAdminAuditRetentionDays(100, ACTOR));
 
     const settings = (more: object) =>
         inDo(admin => admin.getSettings("admin"), { more });
     expect(await settings({})).toMatchObject({
+      adminWorkspaceAccess: { effective: "metadata", chosen: "metadata", max: "metadata" },
       adminAuditRetentionDays: { effective: 100, chosen: 100, min: 90 },
     });
-    // Raising the bound keeps the admins' choice, but enforces the bound.
-    expect(await settings({ ADMIN_AUDIT_RETENTION_MIN_DAYS: "180" })).toMatchObject({
-      adminAuditRetentionDays: { effective: 180, chosen: 100, min: 180 },
-    });
+    // Lowering the bounds keeps the admins' choices, but enforces the bounds. A cap that is not a
+    // level is "off".
+    for (let cap of ["off", "full"]) {
+      expect(await settings({
+        ADMIN_WORKSPACE_ACCESS_MAX: cap, ADMIN_AUDIT_RETENTION_MIN_DAYS: "180",
+      }), cap).toMatchObject({
+        adminWorkspaceAccess: { effective: "off", chosen: "metadata", max: "off" },
+        adminAuditRetentionDays: { effective: 180, chosen: 100, min: 180 },
+      });
+    }
 
     // A record is kept for the retention in effect when it is made.
     await inDo(admin => admin.updateAdminConfig({ siteName: "Acme" }, ACTOR),
         { more: { ADMIN_AUDIT_RETENTION_MIN_DAYS: "180" } });
     expect(appended.at(-1)!.retentionDays).toBe(180);
+  });
+
+  it("reads a stored level that is not one as off until an admin chooses", async () => {
+    const { inDo, seed, storageOf, records } = adminSettings();
+    await seed({ adminWorkspaceAccess: "full" as never });
+
+    expect((await inDo(admin => admin.getSettings("admin"))).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "off", chosen: "off", max: "metadata" });
+    // The config an inspection computes its policy from.
+    expect((await inDo(admin => admin.committedAdminConfig())).adminWorkspaceAccess).toBe("off");
+    expect((await inDo(admin => admin.getAdminConfig())).adminWorkspaceAccess).toBe("off");
+    // Reading rewrites nothing.
+    expect((await inDo(admin => storageOf(admin).adminConfig.get()))?.adminWorkspaceAccess)
+        .toBe("full");
+    expect(records()).toEqual([]);
+
+    await inDo(admin => admin.setAdminWorkspaceAccess("metadata", ACTOR));
+    expect(records()[0]!.changes).toStrictEqual(
+        [{ setting: "adminWorkspaceAccess", before: "off", after: "metadata" }]);
+    expect((await inDo(admin => storageOf(admin).adminConfig.get()))?.adminWorkspaceAccess)
+        .toBe("metadata");
+    expect((await inDo(admin => admin.getSettings("admin"))).adminWorkspaceAccess)
+        .toStrictEqual({ effective: "metadata", chosen: "metadata", max: "metadata" });
   });
 
   it("appends to the deployment-wide audit log", async () => {

@@ -107,6 +107,44 @@ The check works as follows:
   §10's read-time check of reported subresources, which asks only collaborators holding a live
   session; the others meet those requirements at their next admission.
 
+### Admin access: a deliberate exception
+
+A deployment admin (a user the backend's `ADMINS` variable lists) can inspect a workspace through
+`AdminApi.inspectWorkspace()` without being verified against its gatekeepers and without being
+seen by its members: `OverseerDurableObject.openForAdmin()` skips `authorizeCollaborator()` and
+observer verification by explicit policy, and the admin is never registered as an observer. So
+`excludeObservers` never names an admin, and no observation is blocked on an admin's account.
+
+The exception is bounded to metadata. The view never returns chat messages and attachments, file
+contents, commit messages, the arguments of queued agent calls, the descriptions and fields of
+actions, observations and hooks, or blueprint ids (see
+[What the metadata level withholds](admin-access.md#what-the-metadata-level-withholds) for each
+call). `ADMIN_WORKSPACE_ACCESS_MAX=off` turns inspection off whatever admins choose, and a value
+that is not a level counts as `off`. Titles, names, notes and blueprint descriptions stay visible,
+and can echo content.
+
+What a connection supplied is read only as the workspace stores it, and the connection is never
+asked. That includes a repository: a worktree can be a checkout through a connection, and the view
+reads any commit the workspace stores. So an admin never verified against that connection sees the
+repository's file names, commit ids, authors and times, and the paths that differ between two of
+its commits, as far as the workspace pulled them, from the workspace's copy. The view also shows
+each attachment's name, type, size and `oid` (a hash of its bytes, which `listChatAttachments()`
+returns), and which collaborators hold an observer record, with the id of the account each chose
+for each connection; the account itself is in the collaborator's own user account and is not read.
+
+The compensating controls are:
+
+- the admin list and the access cap are environment variables, out of reach of an admin session;
+- every inspection takes a reason, recorded with every call made through the view;
+- a view expires (15 minutes by default, an hour at most);
+- every call re-checks that the view is live and its admin still an admin;
+- every call is recorded, before anything it read leaves the server, in the deployment-wide audit
+  log (nothing is written to the workspace); a call whose record cannot be written fails,
+  returning nothing;
+- `ADMIN_AUDIT_RETENTION_MIN_DAYS` sets a floor on how long those records are kept.
+
+[admin-access.md](admin-access.md) is the design record.
+
 ---
 
 ## 2. Background: relevant existing code

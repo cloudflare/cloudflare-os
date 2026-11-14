@@ -169,6 +169,8 @@ Because access is recomputed from the graph on every `open()` and `getGadget()`,
 
 A share-key redemption goes through the same gate. The redeeming open() then verifies a `build` recipient as an observer like any other collaborator, and a gadget recipient when they get the gadget; a recipient whose verification fails persists as an unverified collaborator until removed (see Known limitations).
 
+Deployment admins can inspect a workspace outside the sharing graph: `AdminApi.inspectWorkspace()` mints a read-only `AdminWorkspaceView` through `openForAdmin()`, which never consults the permission graph, adds no collaborator and joins no session. It is a deliberate exception, bounded by an environment-set access cap and an audit recorded before anything an admin reads leaves the server; see [admin-access.md](admin-access.md).
+
 ### `ownerInvitesOnly`
 
 A gatekeeper whose data source requires each recipient to be granted access individually can mark an observation `ownerInvitesOnly` (`ObservationDescription` in `packages/workshop-shared/src/gatekeeper.ts`, typically alongside `containsRestrictedData`). Once any such observation is authorized, the Overseer permanently sets the `ownerInvitesOnly` storage flag (in `authorizeObservation`, after the exclusion gate, so a refused observation sets nothing). From then on, **only direct grants from the owner count**: `computeEffectiveAccess` skips every share-link edge (even for a link the owner created) and every `user` edge from anyone but the owner. Because every access decision derives from that computation, `open()`, `getGadget()`, `listCollaborators`, and the removal previews agree without further checks. The flag covers the whole workspace: an owner grant of gadget A still grants only A.

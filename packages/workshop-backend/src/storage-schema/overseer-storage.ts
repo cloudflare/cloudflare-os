@@ -56,6 +56,14 @@ export type GatekeeperRecord = {
   creationSpec?: GatekeeperCreationSpec;
 
   /**
+   * Who created the connection: the member whose session made it, or the initiator of the agent
+   * turn that created its resource. Absent on an ambient capsule, which no person creates, and on
+   * a record whose creator was not recorded: one written before creators were recorded, or a
+   * resource created in a turn that has no record.
+   */
+  createdBy?: AiChatAuthorInfo;
+
+  /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
    * by binding name. Seeded from the AgentSpawnerConfig.env the spawner was created with, then
    * edited like a gadget's (see GadgetRecord.bindings), and read when an agent is spawned.
@@ -1456,6 +1464,19 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // project-specific part of the agent's system prompt, so nobody without that prompt can
       // probe a shared prompt cache for it (see runAgentPass).
       promptCacheSalt: <string | undefined>undefined,
+
+      // When the workspace was initialised; unset for one initialised before this was recorded,
+      // until the directory feed backfills it from the owner's record (OverseerImpl.syncDirectory).
+      createdAt: <Date | undefined>undefined,
+
+      // The revision of the title the deployment directory is sent, bumped with every title
+      // write and at initialisation. Time-based (at least the epoch ms of the bump), so a
+      // workspace reinitialised under the same id outranks what its earlier life reported.
+      titleRev: 0,
+
+      // The highest titleRev the directory has acknowledged; -1 until it acknowledges one, and
+      // again once the workspace leaves the directory (OverseerImpl.removeFromDirectory).
+      directoryRev: -1,
     },
 
     collections: {
