@@ -530,12 +530,12 @@ describe("turned pages", () => {
 });
 
 describe("limits", () => {
-  it("the most the product's limits let an isolate hold is under 100 MiB", () => {
+  it("the most the product's limits let an isolate hold is under 112 MiB", () => {
     // The instance grown to its cap, which it never gives back; the image it is put back from
     // after each call; the PDFs held; and one page's bands, once as they are copied out and
     // once more as the answer is written for the binding.
     let most = RENDER_LIMITS.heapBytes + atRest().image.length + RENDER_LIMITS.heldBytes + 2 * RENDER_LIMITS.pagePixels;
-    expect(most).toBeLessThan(100 * MIB);
+    expect(most).toBeLessThan(112 * MIB);
   });
 
   it("a 14,400 point page renders within the pixels a page and a side may have", () => {
@@ -1266,7 +1266,7 @@ describe("holds", () => {
     expect(hold.file.every(value => value === 0)).toBe(true);
     expect(refusal(() => pdfRenderer(MODULES, { ...RENDER_LIMITS, heldBytes: charge(1000) - 1 }).hold(1000)))
       .toMatchObject({ reason: "room", ofPage: false, heapBytes: 0, work: 0 });
-    expect(charge(RENDER_LIMITS.fileBytes)).toBe(19_793_216);
+    expect(charge(RENDER_LIMITS.fileBytes)).toBe(36_570_432);
   });
 
   it("what does not fit is room, and a PDF at the limit leaves room for one of 0.5 MiB", () => {
@@ -1275,9 +1275,9 @@ describe("holds", () => {
     expect(refusal(() => own.hold(RENDER_LIMITS.fileBytes)).reason).toBe("room");
     own.hold(MIB / 2);
     expect(refusal(() => own.hold(MIB / 2)).reason).toBe("room");
-    // With nothing else held, seven fit.
+    // With nothing else held, eleven fit.
     let alone = pdfRenderer(MODULES, RENDER_LIMITS);
-    for (let n = 0; n < 7; n++) alone.hold(MIB / 2);
+    for (let n = 0; n < 11; n++) alone.hold(MIB / 2);
     expect(refusal(() => alone.hold(MIB / 2)).reason).toBe("room");
   });
 
@@ -1398,7 +1398,7 @@ describe("holds", () => {
     aged.hold(1000);
     expect(large.file.byteLength).toBe(8 * MIB);
     // This one needs the room the idle hold has; the one that was being filled keeps its own.
-    aged.hold(8 * MIB);
+    aged.hold(24 * MIB);
     expect(large.file.byteLength).toBe(0);
     expect(small.file.byteLength).toBe(1000);
   });

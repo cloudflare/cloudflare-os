@@ -55,10 +55,13 @@ export type RenderLimits = {
 /**
  * The limits the renderer Worker renders under. It has an isolate's memory to itself, so they are
  * what the measurements of a 64 MiB instance allow: the instance at its cap, the PDFs held and a
- * page crossing the binding come to under 100 MiB.
+ * page crossing the binding come to under 112 MiB of the 128 an isolate has. Measured on the
+ * edge with a 39 MiB PDF open: 109 MiB of that held through 300 draws in one isolate. A PDF may
+ * be no larger than the conversion its text is first asked of takes, which took one of 36 MB
+ * and refused one of 41 MB.
  */
 export const RENDER_LIMITS: RenderLimits = {
-  heapBytes: 64 * 1024 * 1024, fileBytes: 16 * 1024 * 1024, heldBytes: 24 * 1024 * 1024,
+  heapBytes: 64 * 1024 * 1024, fileBytes: 32 * 1024 * 1024, heldBytes: 40 * 1024 * 1024,
   pages: 2000, dpi: 150, pagePixels: 3_000_000, sidePixels: 4000, stripBytes: 1024 * 1024,
   pageObjects: 5000, formDepth: 4, imagePixels: 40_000_000, pageImagePixels: 80_000_000,
   steps: 20_000, work: 400_000_000, emptyWork: 20_000_000_000, bands: 8, bandRows: 400,

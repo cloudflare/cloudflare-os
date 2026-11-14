@@ -305,7 +305,7 @@ export interface GoogleDriveReadSession {
    * deployment has turned that off, a scanned PDF comes back with both false and an empty
    * `text`, and a PDF that has text as that text alone. An encrypted PDF fails.
    *
-   * A PDF without text of up to 16 MiB has its pages drawn, so it is read however its images
+   * A PDF without text of up to 32 MiB has its pages drawn, so it is read however its images
    * are stored: as fax, JBIG2 or JPEG 2000, with a palette or in CMYK, in layers, tiles or
    * strips, or turned, and so is writing that is drawn as shapes and not kept as text.
    * Each page is drawn in grey, at 150 dpi or fewer for a large one, and cut across where the
@@ -331,7 +331,7 @@ export interface GoogleDriveReadSession {
    * images that are all too small to be pages, or masks; and when an edit to the file replaced
    * an image that had a mask.
    *
-   * A PDF that has text is returned as that text. One of up to 16 MiB also has each page
+   * A PDF that has text is returned as that text. One of up to 32 MiB also has each page
    * without text drawn before `text` is read up to it, and a page that shows anything read by
    * the model as a scan's page is, into the text under its heading (see `DrivePdfText.text`).
    * `hasText` is still true and `transcribed` false, the text keeps every page's heading from

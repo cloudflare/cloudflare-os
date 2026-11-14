@@ -1873,7 +1873,7 @@ describe("pdfToText routing a PDF without text", () => {
     let { asked, readRange } = ranges(pdf);
     await expect(pdfToText(ai, undefined, byteStream(pdf.bytes, [1 << 20]).stream, readRange, renderer))
       .rejects.toThrow("The PDF has no text of its own, and its pages have to be rendered to be read, which is " +
-        "done only for a PDF of up to 16 MiB, so it cannot be transcribed.");
+        "done only for a PDF of up to 32 MiB, so it cannot be transcribed.");
     expect(asked).toEqual([]);
     expect(state.events).toEqual([]);
   });

@@ -11,7 +11,7 @@ import { bitsImage, encryptedPdf, faxPdf, onePage, scannedPdf } from "../pdf-ren
 // pool's Worker is the renderer itself, and it shares the tests' clock, console and modules.
 
 /** How many of the fixture's PDFs an isolate has room for: each is charged a page's pixels besides its file. */
-const ROOM_FOR = 8;
+const ROOM_FOR = 13;
 
 /**
  * `bytes` as a stream that is fed `chunk` of them at a time, each when the one before it was
@@ -193,7 +193,7 @@ describe("the entrypoint, over a service binding", () => {
     expect(await kept!.renderPage(0, { bands: 1 })).toMatchObject({ blank: false });
     clock.mockReturnValue(1_000_000 + HOLD_IDLE_MS + 1);
     expect((await opened(pdf)).pages).toBe(1);
-    // One of the seven made the room, so the other six are open still.
+    // One of the twelve made the room, so the other eleven are open still.
     let answers = [];
     for (let document of idle) answers.push(await document.renderPage(0, { bands: 1 }));
     let taken = answers.flatMap((answer, index) => "refused" in answer ? [index] : []);
@@ -201,7 +201,7 @@ describe("the entrypoint, over a service binding", () => {
     expect(answers[taken[0]!]).toEqual(unstarted("released"));
     expect(await kept!.renderPage(0, { bands: 1 })).toMatchObject({ blank: false });
     // Disposing the one that was taken back gives no room a second time, and a call is what
-    // kept the six, too: there is no room for another now.
+    // kept the eleven, too: there is no room for another now.
     idle[taken[0]!]![Symbol.dispose]();
     expect(await answerTo(pdf)).toEqual(unstarted("room"));
     // The one was said to be taken back, once.
