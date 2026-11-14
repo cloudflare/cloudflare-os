@@ -2,19 +2,27 @@ import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { ActionDescription, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DRIVE_ACTIONS, type DriveAction, type DriveActions } from "../src/drive-actions";
+import type { DriveEditorsHost } from "../src/drive-editors";
 import {
   DriveApiRequestError, FOLDER_MIME_TYPE, type DriveApi, type DriveCommentRecord,
   type DrivePermissionRecord, type DriveScopeNode,
 } from "../src/drive-api";
 import type { DriveWritesHost, WriteAttempt } from "../src/drive-writes";
+import type { GoogleDocEdits } from "../src/doc-actions";
+import type { SheetsActions } from "../src/sheets-simulation";
+import type { SlidesActions } from "../src/slides-simulation";
 import { FakeKv } from "./fake-kv";
 
 const COMMENTS: ActionKind = { tag: "driveComments", label: "Drive comments" };
 const SHARING: ActionKind = { tag: "driveSharing", label: "Drive sharing" };
 const MOVES: ActionKind = { tag: "driveMoves", label: "Drive moves" };
 
+/** The writes of the Drive API itself, apart from the edits of native files. */
+type DriveWrite =
+  Exclude<keyof DriveActions, keyof SlidesActions | keyof SheetsActions | keyof GoogleDocEdits>;
+
 /** What each definition declares, by the name its records are stored under. */
-const DECLARED: Record<keyof DriveActions, { actionKind: ActionKind; autoApprovable: boolean }> = {
+const DECLARED: Record<DriveWrite, { actionKind: ActionKind; autoApprovable: boolean }> = {
   createComment: { actionKind: COMMENTS, autoApprovable: true },
   createReply: { actionKind: COMMENTS, autoApprovable: true },
   resolveComment: { actionKind: COMMENTS, autoApprovable: true },
@@ -30,7 +38,7 @@ const NAMES = [
   "createComment", "createReply", "resolveComment", "suggestEdit", "createPermission",
   "updatePermission",
   "deletePermission", "moveFile",
-] as const satisfies readonly (keyof DriveActions)[];
+] as const satisfies readonly DriveWrite[];
 
 /** The kinds made as one Google account, which are staged and applied under a fence. */
 const FENCED: ReadonlySet<keyof DriveActions> =
@@ -173,9 +181,15 @@ function harness() {
     }),
   };
   let attempts = new Map<number, WriteAttempt>();
-  let host: DriveWritesHost = {
+  let host: DriveWritesHost & DriveEditorsHost = {
     api,
     docs: NO_DOCS,
+    editors: {
+      slides: () => { throw new Error("No Slides edit is applied here."); },
+      sheets: () => { throw new Error("No Sheets edit is applied here."); },
+      docs: () => { throw new Error("No Doc edit is applied here."); },
+      prove: async () => {},
+    },
     scope: () => ({ kind: "account" }),
     writeRefusal: async () => undefined,
     attempts: {
@@ -219,7 +233,7 @@ function harness() {
 describe("Drive actions", () => {
   it("declares the eight Drive writes under three kinds, none of which can be reverted", async () => {
     let { actions, journal, described, submit } = harness();
-    let ids: Record<keyof DriveActions, number> = {
+    let ids: Record<DriveWrite, number> = {
       createComment: await submit("createComment", COMMENT),
       createReply: await submit("createReply", REPLY),
       resolveComment: await submit("resolveComment", RESOLVE),
@@ -241,7 +255,10 @@ describe("Drive actions", () => {
       else expect(card, name).not.toHaveProperty("awaitDecision");
     }
 
-    expect(actions.autoApprovableKinds()).toEqual([COMMENTS]);
+    // Then the kinds of the native files' edits (drive-editors.test.ts).
+    expect(actions.autoApprovableKinds()[0]).toEqual(COMMENTS);
+    expect(actions.autoApprovableKinds()).not.toContainEqual(SHARING);
+    expect(actions.autoApprovableKinds()).not.toContainEqual(MOVES);
     expect(actions.retainsApplied).toBe(false);
   });
 

@@ -259,8 +259,7 @@ describe("the Drive picker's access choice", () => {
   const OPTIONS = [
     {
       value: "write", title: "Read and write",
-      description: "Files can also be commented on and shared, and a folder or all-of-Drive connection can move them. " +
-        "Each change waits for your approval.",
+      description: "Changes, such as edits, comments, sharing and moves, each wait for your approval.",
     },
     { value: "read", title: "Read only", description: "Files and their comments can be found and read. Nothing is changed." },
   ];
@@ -275,11 +274,15 @@ describe("the Drive picker's access choice", () => {
   const WAITING = "Waiting for permission in Google's window…";
   const CHECKING = "Checking whether changes are allowed…";
   const ALLOWED = "Changes are allowed.";
-  const AS_DRIVE_FILE = "Connects as a Drive file, whose content can be read but not edited.";
+  const EDITED_AS_DRIVE_FILE =
+    "Connects as a Drive file, whose content can be edited, each change with your approval.";
   const WRITE_URL = "https://drive.google.com/drive/folders/F?access=write";
 
   const NATIVE_DOC: DriveNode = {
     id: "doc:D", title: "Notes", kind: "file", mimeType: "application/vnd.google-apps.document",
+  };
+  const NATIVE_SLIDES: DriveNode = {
+    id: "slides:P", title: "Deck", kind: "file", mimeType: "application/vnd.google-apps.presentation",
   };
 
   beforeEach(() => {
@@ -655,6 +658,36 @@ describe("the Drive picker's access choice", () => {
     expect(frame.notices()).toEqual([]);
   });
 
+  // An Office upload's ID has the same kind as a native file's, and Drive writes no upload's content.
+  it("says an Office file connected as a Drive file cannot be edited, even with read and write access", async () => {
+    const frame = await open([FILE]);
+    frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [{
+      id: "sheets:X", title: "Budget.xlsx", kind: "file",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    }] });
+    await frame.list("folder:A");
+    frame.choose("sheets:X");
+    frame.chooseAccess("write");
+    await settle();
+    expect(frame.notices()).toEqual(
+      info("Connects as a Drive file, whose content can be read but not edited.", WRITE_PROMPT));
+  });
+
+  it("says a presentation connected as a Drive file can be edited with read and write access", async () => {
+    const frame = await open([FILE]);
+    frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [NATIVE_SLIDES] });
+    await frame.list("folder:A");
+    frame.choose("slides:P");
+    frame.chooseAccess("write");
+    await settle();
+    expect(frame.notices()).toEqual(info(EDITED_AS_DRIVE_FILE, WRITE_PROMPT));
+    frame.chooseAccess("read");
+    await settle();
+    expect(frame.notices()).toEqual(info(
+      "Connects as a Drive file, whose content can be read but not edited: editing it takes " +
+        "Read and write access."));
+  });
+
   it("keeps the shared-drives notice last", async () => {
     const frame = await open();
     frame.ui.listDriveNodes.mockResolvedValueOnce({ nodes: [], needsGrant: GRANT });
@@ -669,9 +702,10 @@ describe("the Drive picker's access choice", () => {
     asFile.choose("doc:D");
     asFile.chooseAccess("write");
     await settle();
-    expect(asFile.notices()).toEqual(info(AS_DRIVE_FILE, WRITE_PROMPT));
+    expect(asFile.notices()).toEqual(info(EDITED_AS_DRIVE_FILE, WRITE_PROMPT));
     // And before the cards: the Access field sits below the picker and the file's notice.
-    expect(asFile.order()).toEqual(["HierarchyPicker", AS_DRIVE_FILE, "RadioCards", WRITE_PROMPT]);
+    expect(asFile.order())
+      .toEqual(["HierarchyPicker", EDITED_AS_DRIVE_FILE, "RadioCards", WRITE_PROMPT]);
 
     // The confirmation stays when the shared-drives notice then appears after it.
     const allowed = await open();
@@ -762,7 +796,7 @@ describe("the Drive picker's access choice", () => {
     await expect(asked.prefill("https://docs.google.com/spreadsheets/d/S1/edit?access=write"))
       .resolves.toEqual({ target: "sheets:S1", access: "write" });
     expect(asked.ui.getWriteAccess).toHaveBeenCalledTimes(1);
-    expect(asked.notices()).toEqual(info(PRESET_PENDING, AS_DRIVE_FILE, WRITE_PROMPT));
+    expect(asked.notices()).toEqual(info(PRESET_PENDING, EDITED_AS_DRIVE_FILE, WRITE_PROMPT));
   });
 
   it("says the choice may have to be made again on a card that lacks an editable type", async () => {

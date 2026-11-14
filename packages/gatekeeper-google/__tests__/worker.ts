@@ -101,6 +101,9 @@ type TestGoogleDocGatekeeper = GoogleDocGatekeeperImpl & {
   testStoredValueJsonLength(key: string): number | undefined;
 };
 
+/** An action the queue received: its ID and its card's title. */
+type SubmittedAction = { actionId: number; title: string };
+
 /** What one Slides session call returned or threw, and what it queued and observed. */
 type SlidesCall = {
   value?: string | PresentationInfo | Slide[] | Record<string, string>;
@@ -138,6 +141,42 @@ type DocCall = {
  */
 type DriveBinding = { scope: DriveBindingScope; access?: DriveAccessLevel; deployment?: "read" };
 
+/** The read and write Drive file binding a facet named `drive:<name>` reaches doc-1 through. */
+const DRIVE_DOC: DriveBinding = { scope: { kind: "file", fileId: "doc-1" }, access: "write" };
+
+/**
+ * Whether the Doc hooks reach doc-1 through a read and write Drive file binding in this facet,
+ * rather than through a directly bound Doc: so a Doc suite runs a second time through Drive.
+ */
+function throughDrive(facetName: string): boolean {
+  return facetName.startsWith("drive:");
+}
+
+/** A Drive session method that opens a native file. */
+type NativeOpener = "openGoogleSlides" | "openGoogleSheet" | "openGoogleDoc";
+
+/** What one call on a native session a Drive binding opened returned or threw, and what it queued. */
+type NativeCall = {
+  value?: SlidesCall["value"] | SheetsCall["value"] | DocMetadata | GoogleDocTab[] | number;
+  error?: string;
+  actionId?: number;
+  action?: ActionDescription;
+  observations: string[];
+  /** What each observation reported, in order. */
+  reports: { title: string; subresources?: string[] }[];
+};
+
+/** Nothing once `call` resolves, or the message it was refused with. */
+function settle(call: unknown): Promise<{ error?: string }> {
+  return Promise.resolve(call).then(() => ({}), failure);
+}
+
+/** Calls method `method` of `target`, which a test names at run time, with `args`. */
+function callOn(target: object, method: string, args: unknown[]): unknown {
+  let call = (target as Record<string, (...args: unknown[]) => unknown>)[method];
+  return Reflect.apply(call, target, args);
+}
+
 /** What one Drive session call returned or threw, and what it queued and observed. */
 type DriveCall = {
   /**
@@ -174,6 +213,10 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   readonly observations: string[] = [];
   /** What each observation reported, in order. */
   readonly reports: { title: string; subresources?: string[] }[] = [];
+  /** Every action submitted, in the order the calls arrived. */
+  readonly submitted: SubmittedAction[] = [];
+  /** Holds the next submission open until `released`, calling `reach` once it has arrived. */
+  holdSubmission?: { reach(): void; released: Promise<void> };
 
   async authorizeObservation(description: ObservationDescription): Promise<void> {
     this.observations.push(description.description);
@@ -188,6 +231,13 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
   }
 
   async submitAction(actionId: number, description: ActionDescription): Promise<void> {
+    let held = this.holdSubmission;
+    if (held) {
+      this.holdSubmission = undefined;
+      held.reach();
+      await held.released;
+    }
+    this.submitted.push({ actionId, title: description.title });
     this.actionId = actionId;
     this.action = description;
     this.actionDescription = description.description;
@@ -241,7 +291,35 @@ export class TestHooks extends DurableObject<Env> {
 
   /** The kinds the bound Google Doc reports as auto-approvable. */
   async docAutoApprovable(facetName: string): Promise<ActionKind[]> {
-    return this.#gatekeeper(facetName).getAutoApprovableActions();
+    return throughDrive(facetName)
+      ? this.#drive(facetName, DRIVE_DOC).getAutoApprovableActions()
+      : this.#gatekeeper(facetName).getAutoApprovableActions();
+  }
+
+  /** A session of doc-1, of the bound Doc or as a Drive binding opens it (see throughDrive()). */
+  async #openDoc(
+    facetName: string, approvalQueue: RpcStub<ApprovalQueue>,
+  ): Promise<{ session: GoogleDocSession } & Disposable> {
+    if (!throughDrive(facetName)) {
+      let session = await this.#gatekeeper(facetName).startSession(
+        approvalQueue as unknown as ApprovalQueue) as GoogleDocSession & Disposable;
+      return { session, [Symbol.dispose]: () => session[Symbol.dispose]() };
+    }
+    let drive = await this.#drive(facetName, DRIVE_DOC).startSession(
+      approvalQueue as unknown as ApprovalQueue) as unknown as GoogleDriveSession & Disposable;
+    try {
+      let doc = await drive.openGoogleDoc("doc-1") as unknown as GoogleDocSession & Disposable;
+      return {
+        session: doc,
+        [Symbol.dispose]: () => {
+          doc[Symbol.dispose]();
+          drive[Symbol.dispose]();
+        },
+      };
+    } catch (error) {
+      drive[Symbol.dispose]();
+      throw error;
+    }
   }
 
   /** Observation descriptions authorized by the most recent session, successful or not. */
@@ -302,7 +380,9 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   async describe(facetName: string): Promise<ResourceDescription> {
-    return this.#gatekeeper(facetName).describe();
+    return throughDrive(facetName)
+      ? this.#drive(facetName, DRIVE_DOC).describe()
+      : this.#gatekeeper(facetName).describe();
   }
 
   async #withReadSession<Session, T>(
@@ -347,9 +427,8 @@ export class TestHooks extends DurableObject<Env> {
   ): Promise<T> {
     let queue = new TestApprovalQueue();
     using approvalQueue = new RpcStub<ApprovalQueue>(queue);
-    using session = await this.#gatekeeper(facetName).startSession(
-      approvalQueue as unknown as ApprovalQueue,
-    ) as GoogleDocSession & Disposable;
+    using opened = await this.#openDoc(facetName, approvalQueue);
+    let { session } = opened;
     try {
       // Awaited inside the scope: `return body(...)` would dispose both stubs mid-call.
       return await body(session, queue);
@@ -416,7 +495,9 @@ export class TestHooks extends DurableObject<Env> {
       // The overseer always passes an action-scoped git cache with the apply call, and the
       // validator (sharpened by the `Gatekeeper` interface) requires it, so the test passes a
       // stand-in the same way.
-      await this.#gatekeeper(facetName).applyAction(actionId, new RpcStub(new TestGitCache()));
+      let gatekeeper = throughDrive(facetName)
+        ? this.#drive(facetName, DRIVE_DOC) : this.#gatekeeper(facetName);
+      await gatekeeper.applyAction(actionId, new RpcStub(new TestGitCache()));
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -424,6 +505,9 @@ export class TestHooks extends DurableObject<Env> {
   }
 
   async rejectAction(facetName: string, actionId: number): Promise<void | { restart?: boolean }> {
+    if (throughDrive(facetName)) {
+      return await this.#drive(facetName, DRIVE_DOC).rejectAction(actionId) ?? undefined;
+    }
     return this.#gatekeeper(facetName).rejectAction(actionId);
   }
 
@@ -431,9 +515,8 @@ export class TestHooks extends DurableObject<Env> {
   async callDoc(facetName: string, method: keyof GoogleDocSession, args: unknown[]): Promise<DocCall> {
     let queue = new TestApprovalQueue();
     using approvalQueue = new RpcStub<ApprovalQueue>(queue);
-    using session = await this.#gatekeeper(facetName).startSession(
-      approvalQueue as unknown as ApprovalQueue,
-    ) as GoogleDocSession & Disposable;
+    using opened = await this.#openDoc(facetName, approvalQueue);
+    let { session } = opened;
     let outcome: { value?: DocCall["value"]; error?: string };
     try {
       let call = session[method] as (...args: unknown[]) => Promise<DocCall["value"]>;
@@ -601,16 +684,217 @@ export class TestHooks extends DurableObject<Env> {
     await (account as unknown as UserAccount).setAccessToken(token, after);
   }
 
-  /** Applies a Drive write, returning the error message it failed with, if any. */
-  async applyDrive(facetName: string, binding: DriveBinding, actionId: number)
-      : Promise<string | null> {
+  /**
+   * Applies a Drive write, returning the error message it failed with, if any. `entered` is called
+   * once the apply has run up to its first wait.
+   */
+  async applyDrive(
+    facetName: string, binding: DriveBinding, actionId: number, entered?: () => void,
+  ): Promise<string | null> {
+    let gatekeeper = this.#drive(facetName, binding);
+    using cache = new RpcStub(new TestGitCache());
+    let applying = Promise.resolve(gatekeeper.applyAction(actionId, cache));
+    // Handled below, once `entered` has run; this only keeps it from reporting as unhandled.
+    applying.catch(() => {});
+    if (entered) {
+      // Calls on one stub are delivered in order, and this one waits on nothing.
+      await gatekeeper.getTypeScriptTypes();
+      await entered();
+    }
     try {
-      using cache = new RpcStub(new TestGitCache());
-      await this.#drive(facetName, binding).applyAction(actionId, cache);
+      await applying;
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
     }
+  }
+
+  /** Rejects an edit made through a Drive binding, answering what the binding answers. */
+  async rejectDriveEdit(
+    facetName: string, binding: DriveBinding, actionId: number,
+  ): Promise<{ restart?: boolean } | null> {
+    return await this.#drive(facetName, binding).rejectAction(actionId) ?? null;
+  }
+
+  /**
+   * Opens native file `fileId` with `opener` from a fresh Drive session, after opening each folder
+   * of `path` in turn, and calls one of its methods, reporting what it returned, queued and
+   * observed. `entered` is called once the method has run up to its first wait: `probe`, a call
+   * that waits on nothing the method holds, is delivered after it and has returned.
+   */
+  async callDriveNative(
+    facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string,
+    method: string, args: unknown[], path: string[] = [], entered?: () => void,
+    probe?: [string, ...unknown[]],
+  ): Promise<NativeCall> {
+    return this.#onDriveNative(facetName, binding, opener, fileId, path, async (native, queue) => {
+      let outcome: { value?: NativeCall["value"]; error?: string };
+      try {
+        let calling = Promise.resolve(callOn(native, method, args));
+        // Handled below, once `entered` has run; this only keeps it from reporting as unhandled.
+        calling.catch(() => {});
+        if (entered) {
+          let [probeMethod, ...probeArgs] = probe ?? ["getSlides", []];
+          await Promise.resolve(callOn(native, probeMethod, probeArgs)).catch(() => {});
+          await entered();
+        }
+        outcome = { value: await calling as NativeCall["value"] };
+      } catch (error) {
+        outcome = failure(error);
+      }
+      return outcome;
+    });
+  }
+
+  /**
+   * Calls `method` of a native session opened as {@link callDriveNative} opens one, once `before`
+   * has run between the open and the call.
+   */
+  async callDriveNativeAfter(
+    facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string,
+    method: string, args: unknown[], path: string[], before: () => Promise<void>,
+  ): Promise<NativeCall> {
+    return this.#onDriveNative(facetName, binding, opener, fileId, path, async native => {
+      await before();
+      try {
+        return { value: await callOn(native, method, args) as NativeCall["value"] };
+      } catch (error) {
+        return failure(error);
+      }
+    });
+  }
+
+  /**
+   * Makes two calls on one native session opened as {@link callDriveNative} opens one, the second
+   * sent right after the first, before it has settled. Reports each outcome, and the actions in the
+   * order the queue received them.
+   */
+  async callDriveNativeTwice(
+    facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string,
+    first: [string, ...unknown[]], second: [string, ...unknown[]],
+  ): Promise<{ outcomes: { error?: string }[]; submitted: SubmittedAction[] }> {
+    let submitted: SubmittedAction[] = [];
+    let outcomes: { error?: string }[] = [];
+    await this.#onDriveNative(facetName, binding, opener, fileId, [], async (native, queue) => {
+      let [firstMethod, ...firstArgs] = first;
+      let [secondMethod, ...secondArgs] = second;
+      let one = settle(callOn(native, firstMethod, firstArgs));
+      let two = settle(callOn(native, secondMethod, secondArgs));
+      outcomes = await Promise.all([one, two]);
+      submitted = queue.submitted;
+      return {};
+    });
+    return { outcomes, submitted };
+  }
+
+  /** Releases the submission {@link holdDriveSubmission} holds, once it has settled. */
+  #heldSubmission?: () => Promise<{ error?: string }>;
+
+  /**
+   * Calls `method` of a native session opened as {@link callDriveNative} opens one, and returns
+   * once the call has reached its submission, which stays unanswered, and what the call allocated
+   * staged, until {@link releaseDriveSubmission}.
+   */
+  async holdDriveSubmission(
+    facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string,
+    method: string, args: unknown[],
+  ): Promise<void> {
+    let queue = new TestApprovalQueue();
+    let reached = Promise.withResolvers<void>();
+    let released = Promise.withResolvers<void>();
+    queue.holdSubmission = { reach: reached.resolve, released: released.promise };
+    let approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    let session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as unknown as GoogleDriveFolderSession & Disposable;
+    let native = await callOn(session, opener, [fileId]) as Disposable;
+    let calling = settle(callOn(native, method, args));
+    // A call refused before it submits never reaches the hold: it fails with its own error.
+    let early = await Promise.race([reached.promise.then(() => undefined), calling]);
+    if (early !== undefined) {
+      native[Symbol.dispose]();
+      session[Symbol.dispose]();
+      approvalQueue[Symbol.dispose]();
+      throw new Error(`The call ended before it submitted: ${early.error ?? "no error"}`);
+    }
+    this.#heldSubmission = async () => {
+      released.resolve();
+      let outcome = await calling;
+      native[Symbol.dispose]();
+      session[Symbol.dispose]();
+      approvalQueue[Symbol.dispose]();
+      return outcome;
+    };
+  }
+
+  /** Answers the submission {@link holdDriveSubmission} holds, reporting how its call ended. */
+  async releaseDriveSubmission(): Promise<{ error?: string }> {
+    let release = this.#heldSubmission;
+    this.#heldSubmission = undefined;
+    if (!release) throw new Error("No submission is held.");
+    return release();
+  }
+
+  /** What a Drive binding stores under `key`, as JSON, or `null` for nothing. */
+  async driveStored(facetName: string, binding: DriveBinding, key: string): Promise<string | null> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper).testStored(key);
+  }
+
+  /** Stores `json` under `key` of a Drive binding's storage, or deletes the key for `null`. */
+  async writeDriveStored(
+    facetName: string, binding: DriveBinding, key: string, json: string | null,
+  ): Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .writeTestStored(key, json);
+  }
+
+  /**
+   * Retires `count` writes in a Drive binding's journal, as approvals of writes no session here
+   * queued would: each fills the journal's memory of applied numbers.
+   */
+  async retireDriveActions(facetName: string, binding: DriveBinding, count: number): Promise<void> {
+    await (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .retireTestActions(count);
+  }
+
+  /** The keys a Drive binding stores under `prefix`, in key order. */
+  async driveStoredKeys(facetName: string, binding: DriveBinding, prefix: string): Promise<string[]> {
+    return (this.#drive(facetName, binding) as unknown as TestGoogleDriveGatekeeper)
+      .testStoredKeys(prefix);
+  }
+
+  /** Runs `use` on native file `fileId`, opened as {@link callDriveNative} opens it. */
+  async #onDriveNative(
+    facetName: string, binding: DriveBinding, opener: NativeOpener, fileId: string, path: string[],
+    use: (native: Disposable, queue: TestApprovalQueue) =>
+      Promise<{ value?: NativeCall["value"]; error?: string }>,
+  ): Promise<NativeCall> {
+    let queue = new TestApprovalQueue();
+    using approvalQueue = new RpcStub<ApprovalQueue>(queue);
+    using session = await this.#drive(facetName, binding).startSession(
+      approvalQueue as unknown as ApprovalQueue,
+    ) as unknown as GoogleDriveFolderSession & Disposable;
+    let opened: Disposable[] = [];
+    let outcome: { value?: NativeCall["value"]; error?: string };
+    try {
+      let target: GoogleDriveFolderSession = session;
+      for (let folderId of path) {
+        let folder = await target.openFolder(folderId) as GoogleDriveFolderSession & Disposable;
+        opened.push(folder);
+        target = folder;
+      }
+      let native = await callOn(target, opener, [fileId]) as Disposable;
+      opened.push(native);
+      outcome = await use(native, queue);
+    } catch (error) {
+      outcome = failure(error);
+    } finally {
+      for (let capability of opened.toReversed()) capability[Symbol.dispose]();
+    }
+    return {
+      ...outcome, actionId: queue.actionId, action: queue.action, observations: queue.observations,
+      reports: queue.reports,
+    };
   }
 
   /** Rejects a Drive write, returning the error message it was refused with, if any. */
@@ -765,9 +1049,80 @@ export class TestHooks extends DurableObject<Env> {
   async sheetsMarkers(facetName: string): Promise<(MarkerEntry | number)[]> {
     return (this.#sheets(facetName) as unknown as TestGoogleSheetsGatekeeper).testMarkers();
   }
+
+  /** The facet a standalone file gatekeeper of `kind` runs as under `facetName`. */
+  #stored(facetName: string, kind: StoredGatekeeper): StoredLayoutHooks {
+    let facet = kind === "doc" ? this.#gatekeeper(facetName)
+      : kind === "sheets" ? this.#sheets(facetName) : this.#slides(facetName);
+    return facet as unknown as StoredLayoutHooks;
+  }
+
+  /** Every key the facet's storage holds, in key order. */
+  async storedKeys(facetName: string, kind: StoredGatekeeper): Promise<string[]> {
+    return this.#stored(facetName, kind).testStoredKeys();
+  }
+
+  /** The value under `key`, read through the synchronous KV and through the asynchronous API. */
+  async storedValue(facetName: string, kind: StoredGatekeeper, key: string): Promise<StoredValue> {
+    return this.#stored(facetName, kind).testStoredValue(key);
+  }
+
+  /** Writes `operations` to the facet's storage through the synchronous KV or the asynchronous API. */
+  async writeStored(
+    facetName: string, kind: StoredGatekeeper, operations: StorageOperation[], api: "kv" | "async",
+  ): Promise<void> {
+    await this.#stored(facetName, kind).testWriteStored(operations, api);
+  }
+
+  /**
+   * Ends the facet `facetName` names, whatever it runs: the next call constructs the class again
+   * over the same storage, so what was written since is what that construction finds.
+   */
+  async restartFacet(facetName: string): Promise<void> {
+    this.ctx.facets.abort(facetName, new Error("Restarted by the test."));
+  }
 }
 
 type TestDurableObjectState = { ctx: { storage: DurableObjectStorage } };
+
+/** The standalone file gatekeepers whose stored layout the tests pin. */
+type StoredGatekeeper = "doc" | "sheets" | "slides";
+
+/**
+ * A value as the synchronous KV and the asynchronous storage API each read it, as JSON text so that
+ * any value crosses RPC; absent where nothing is stored.
+ */
+type StoredValue = { kv?: string; async?: string };
+
+/** Hooks on each standalone file gatekeeper that read and write its storage directly. */
+type StoredLayoutHooks = {
+  testStoredKeys(): string[];
+  testStoredValue(key: string): Promise<StoredValue>;
+  testWriteStored(operations: StorageOperation[], api: "kv" | "async"): Promise<void>;
+};
+
+const storedLayoutHooks: StoredLayoutHooks & ThisType<TestDurableObjectState> = {
+  testStoredKeys() {
+    return [...this.ctx.storage.kv.list()].map(([key]) => key);
+  },
+  async testStoredValue(key) {
+    let kv = this.ctx.storage.kv.get(key);
+    let read = await this.ctx.storage.get(key);
+    return {
+      ...kv === undefined ? {} : { kv: JSON.stringify(kv) },
+      ...read === undefined ? {} : { async: JSON.stringify(read) },
+    };
+  },
+  async testWriteStored(operations, api) {
+    for (let { key, value } of operations) {
+      if (api === "kv") this.ctx.storage.kv.put(key, value);
+      else await this.ctx.storage.put(key, value);
+    }
+  },
+};
+for (let gatekeeper of [GoogleDocGatekeeperImpl, GoogleSheetsGatekeeperImpl, GoogleSlidesGatekeeperImpl]) {
+  Object.assign(gatekeeper.prototype, storedLayoutHooks);
+}
 
 (GoogleDocGatekeeperImpl.prototype as TestGoogleDocGatekeeper).applyTestStorage = function(
   operations: StorageOperation[],
@@ -799,6 +1154,45 @@ type TestGoogleDriveGatekeeper = GoogleDriveGatekeeperImpl & {
   testQueued(): number[];
   testAttempts(): Record<number, WriteAttempt>;
   ageTestAttempt(id: number, ms: number): void;
+  testStored(key: string): string | null;
+  writeTestStored(key: string, json: string | null): void;
+  testStoredKeys(prefix: string): string[];
+  retireTestActions(count: number): void;
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).retireTestActions = function(
+  count: number,
+): void {
+  // A second journal over the same storage, which the live one reads afresh on every call.
+  let journal = new ActionJournal((this as unknown as TestDurableObjectState).ctx.storage.kv,
+    { namespace: "drive" });
+  for (let i = 0; i < count; i++) {
+    let id = journal.allocate({ kind: "createComment", payload: {} });
+    journal.markSubmitted(id);
+    journal.retire(id);
+  }
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testStored = function(
+  key: string,
+): string | null {
+  let value = (this as unknown as TestDurableObjectState).ctx.storage.kv.get(key);
+  return value === undefined ? null : JSON.stringify(value);
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).writeTestStored = function(
+  key: string, json: string | null,
+): void {
+  let { kv } = (this as unknown as TestDurableObjectState).ctx.storage;
+  if (json === null) kv.delete(key);
+  else kv.put(key, JSON.parse(json));
+};
+
+(GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).testStoredKeys = function(
+  prefix: string,
+): string[] {
+  let { kv } = (this as unknown as TestDurableObjectState).ctx.storage;
+  return [...kv.list({ prefix })].map(([key]) => key);
 };
 
 (GoogleDriveGatekeeperImpl.prototype as TestGoogleDriveGatekeeper).claimTestAction = function(

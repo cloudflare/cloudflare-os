@@ -1,6 +1,12 @@
 import { env } from "cloudflare:test";
 import { ActionJournal, APPLY_OUTCOME_UNKNOWN_MESSAGE } from "@gadgets/gatekeeper-kit/actions";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ActionDescription, ActionField, ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import { EDIT_OUT_OF_ORDER, SHEETS_STATE_PREFIX } from "../../src/drive-editors";
+import { DRIVE_WRITES_GRANT, GOOGLE_DRIVE_RESOURCE } from "../../src/resources";
+import { DriveFiles, DOC_MIME, FOLDER_MIME, SHEET_MIME } from "../drive-files";
+import { DRIVE_DOCS_KINDS, DRIVE_SHEETS_KINDS, DRIVE_SLIDES_KINDS } from "../drive-edit-kinds";
+import { GoogleSpreadsheetReadSessionImpl, GoogleSpreadsheetSessionImpl } from "../../src/sheets";
 import { MARKER_RETENTION_MS, SHEETS_ACTIONS, type MarkerEntry } from "../../src/sheets-actions";
 import { GoogleSheetsApi } from "../../src/sheets-api";
 import type { RestCellFormat } from "../../src/sheets-format";
@@ -11,6 +17,7 @@ import type {
 } from "../../src/sheets-read-types";
 import type { SheetMeta, SheetsAction } from "../../src/sheets-simulation";
 import type { SheetCellInput, SheetChange } from "../../src/sheets-types";
+import { serveFakes, type ProviderFake } from "../slides-provider";
 import {
   protectedRange, sheet as sheetMeta, spreadsheetMetadata, WHITESPACE_DRIFT, type FixtureGridRange,
 } from "../sheets-fixture";
@@ -138,41 +145,58 @@ class SheetsProvider {
   violations: string[] = [];
   #inflight?: BatchRequest[];
 
-  constructor(public sheets: ProviderSheet[], cells: Record<string, SheetCellInput> = {}) {
+  constructor(
+    public sheets: ProviderSheet[], cells: Record<string, SheetCellInput> = {},
+    readonly spreadsheetId = "sheet-1",
+  ) {
     for (let [name, value] of Object.entries(cells)) this.set(name, value);
   }
 
-  install(): this {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-      let request = new Request(input, init);
-      let url = new URL(request.url);
-      this.requests.push(url);
-      if (url.hostname === "www.googleapis.com" && url.pathname === "/drive/v3/files/sheet-1") {
-        expect(url.searchParams.get("fields")).toBe("capabilities(canEdit)");
-        return Response.json({ capabilities: { canEdit: this.canEdit } });
-      }
-      let path = url.pathname.replace("/v4/spreadsheets/sheet-1", "");
-      if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
-      // Entered values for the guard, or formats: the field mask says which.
-      if (path === ":getByDataFilter") {
-        return url.searchParams.get("fields")?.includes("userEnteredValue")
-          ? this.#gridData(url, await request.json())
-          : this.#formatsByDataFilter(url, await request.json());
-      }
-      if (path === "" && url.searchParams.has("ranges")) return this.#formatRead(url);
-      if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
-      if (path === "/values:batchGet") return this.#batchGet(url);
-      let metadataId = path.match(/^\/developerMetadata\/(\d+)$/)?.[1];
-      if (metadataId !== undefined) {
-        let marker = this.markers.get(Number(metadataId));
-        return marker
-          ? Response.json({ metadataId: Number(metadataId), ...marker })
-          : Response.json({ error: { code: 404, status: "NOT_FOUND" } }, { status: 404 });
-      }
-      if (path === "") return this.#metadata(url.searchParams.get("fields") ?? "");
-      throw new Error(`Unexpected provider request: ${url.href}`);
-    }));
+  /**
+   * Fakes that answer requests beside the spreadsheet's own, such as Drive's when a test reaches
+   * the spreadsheet through a Drive binding; each provider installed serves them too.
+   */
+  static companions: ProviderFake[] = [];
+
+  /** Serves this spreadsheet, and every one of `others`, as `fetch`. */
+  install(...others: ProviderFake[]): this {
+    serveFakes([this, ...others, ...SheetsProvider.companions]);
     return this;
+  }
+
+  /** Google's answer to `request`, or `undefined` for a request about another file. */
+  async handle(request: Request): Promise<Response | undefined> {
+    let url = new URL(request.url);
+    let base = `/v4/spreadsheets/${this.spreadsheetId}`;
+    let drive = url.hostname === "www.googleapis.com" &&
+      url.pathname === `/drive/v3/files/${this.spreadsheetId}`;
+    // Drive's other reads of the file are a companion's to answer.
+    if (drive && url.searchParams.get("fields") !== "capabilities(canEdit)") return undefined;
+    let mine = url.hostname === "sheets.googleapis.com" && (url.pathname === base ||
+      url.pathname.startsWith(`${base}:`) || url.pathname.startsWith(`${base}/`));
+    if (!drive && !mine) return undefined;
+    this.requests.push(url);
+    if (drive) return Response.json({ capabilities: { canEdit: this.canEdit } });
+    let path = url.pathname.slice(base.length);
+    if (path === ":batchUpdate") return this.#batch((await request.json() as { requests: BatchRequest[] }).requests);
+    // Entered values for the guard, or formats: the field mask says which.
+    if (path === ":getByDataFilter") {
+      return url.searchParams.get("fields")?.includes("userEnteredValue")
+        ? this.#gridData(url, await request.json())
+        : this.#formatsByDataFilter(url, await request.json());
+    }
+    if (path === "" && url.searchParams.has("ranges")) return this.#formatRead(url);
+    if (path === "/values:batchGetByDataFilter") return this.#byDataFilter(await request.json());
+    if (path === "/values:batchGet") return this.#batchGet(url);
+    let metadataId = path.match(/^\/developerMetadata\/(\d+)$/)?.[1];
+    if (metadataId !== undefined) {
+      let marker = this.markers.get(Number(metadataId));
+      return marker
+        ? Response.json({ metadataId: Number(metadataId), ...marker })
+        : Response.json({ error: { code: 404, status: "NOT_FOUND" } }, { status: 404 });
+    }
+    if (path === "") return this.#metadata(url.searchParams.get("fields") ?? "");
+    throw new Error(`Unexpected provider request: ${url.href}`);
   }
 
   /** A collaborator's edit of one cell, named as in `Sales!B2`, input starting `=` a formula. */
@@ -302,7 +326,7 @@ class SheetsProvider {
   }
 
   #metadata(fields: string): Response {
-    let body = spreadsheetMetadata("sheet-1", this.title, this.sheets);
+    let body = spreadsheetMetadata(this.spreadsheetId, this.title, this.sheets);
     // A field the mask does not name is left out, as Google leaves it out.
     for (let sheet of body.sheets) {
       if (!fields.includes("protectedRanges")) delete sheet.protectedRanges;
@@ -721,13 +745,51 @@ function hooks() {
 
 let facetCount = 0;
 
-/** A Sheets gatekeeper over its own storage, and calls through a fresh session each time. */
-function gatekeeper() {
-  let facet = `sheets-${++facetCount}`;
-  let call = async (method: string, ...args: unknown[]) =>
-    hooks().callSheets(facet, method as never, args);
+type SheetsCalls = {
+  call(method: string, args: unknown[]): Promise<{
+    value?: unknown; error?: string; actionId?: number; action?: ActionDescription;
+    observations: string[];
+  }>;
+  apply(actionId: number): Promise<string | null>;
+  reject(actionId: number): Promise<{ restart?: boolean } | null>;
+  autoApprovable(): Promise<ActionKind[]>;
+  orphan(actionId: number): Promise<void>;
+  /** The markers earlier batches left, as stored. */
+  markers(): Promise<(MarkerEntry | number)[]>;
+  /** Stores the markers earlier batches left, as entries or bare IDs. */
+  seedMarkers(entries: (MarkerEntry | number)[]): Promise<void>;
+};
+
+/** How a run reaches the spreadsheet, and what it changes in what the suite asserts. */
+type Run = {
+  name: string;
+  /** Calls through a fresh session each time, over a gatekeeper's own storage. */
+  gatekeeper(): ReturnType<typeof bound>;
+  /** The fields a card shows before the editor's own. */
+  file: ActionField[];
+  /** A kind as the run's binding labels it. */
+  kind(kind: ActionKind): ActionKind;
+  /** What a fresh session observes before its call's own reads. */
+  opened: string[];
+  /** The catalog of a binding to the spreadsheet whose Sheets kinds are `kinds`. */
+  catalog(kinds: ActionKind[]): ActionKind[];
+  /** The refusal of an approval out of order, given the earlier change's number. */
+  outOfOrder(earlier: number): string;
+  /**
+   * The refusal of a change the account cannot make, and how many reads it observed before: a
+   * Drive binding proves the file editable before it reads anything of it.
+   */
+  cannotEdit: { error: string; observed: number };
+  /** Prepares each test: the Drive run serves Drive beside Sheets, and grants the account it. */
+  setUp?(): Promise<void>;
+};
+
+/** The calls a test makes, through what a run supplies. */
+function bound(facet: string, through: SheetsCalls) {
+  let call = async (method: string, ...args: unknown[]) => through.call(method, args);
   let update = (changes: SheetChange[]) => call("updateSpreadsheet", changes);
   return {
+    facet,
     call,
     update,
     queued: async (changes: SheetChange[]) => {
@@ -744,16 +806,123 @@ function gatekeeper() {
       return outcome.value as unknown as SpreadsheetFormats;
     },
     info: async () => (await call("getSpreadsheet")).value as SpreadsheetInfo,
-    apply: (actionId: number) => hooks().applySheets(facet, actionId),
-    reject: (actionId: number) => hooks().rejectSheets(facet, actionId),
-    autoApprovable: () => hooks().sheetsAutoApprovable(facet),
-    seedMarkers: (entries: (MarkerEntry | number)[]) => hooks().seedSheetsMarkers(facet, entries),
-    markers: () => hooks().sheetsMarkers(facet),
+    apply: through.apply,
+    reject: through.reject,
+    autoApprovable: through.autoApprovable,
+    seedMarkers: through.seedMarkers,
+    markers: through.markers,
     /** Moves each stored marker's last send back by the retention window, as if it had passed. */
-    passWindow: async () => hooks().seedSheetsMarkers(facet, (await hooks().sheetsMarkers(facet)).map(entry =>
+    passWindow: async () => through.seedMarkers((await through.markers()).map(entry =>
       typeof entry === "number" ? entry : { ...entry, sentAt: entry.sentAt - MARKER_RETENTION_MS })),
-    orphan: (actionId: number) => hooks().orphanSheetsClaim(facet, actionId),
+    orphan: through.orphan,
   };
+}
+
+/** The spreadsheet bound directly. */
+const STANDALONE: Run = {
+  name: "bound directly",
+  gatekeeper() {
+    let facet = `sheets-${++facetCount}`;
+    return bound(facet, {
+      call: (method, args) => hooks().callSheets(facet, method as never, args),
+      apply: actionId => hooks().applySheets(facet, actionId),
+      reject: actionId => hooks().rejectSheets(facet, actionId),
+      autoApprovable: () => hooks().sheetsAutoApprovable(facet),
+      orphan: actionId => hooks().orphanSheetsClaim(facet, actionId),
+      markers: () => hooks().sheetsMarkers(facet),
+      seedMarkers: entries => hooks().seedSheetsMarkers(facet, entries),
+    });
+  },
+  file: [],
+  kind: kind => kind,
+  opened: [],
+  catalog: kinds => kinds,
+  outOfOrder: earlier =>
+    `Google Sheets changes apply in the order they were queued. Approve or reject change ${earlier} first.`,
+  cannotEdit: {
+    error: 'The connected Google account can view "Budget" but not edit it, so no change to it can be queued.',
+    observed: 1,
+  },
+};
+
+/** A read and write Drive binding to the spreadsheet alone. */
+const DRIVE_FILE = { scope: { kind: "file", fileId: "sheet-1" }, access: "write" } as const;
+/** The name Drive gives the spreadsheet's file. */
+const FILE_NAME = "Budget 2026";
+/** Where a Drive binding keeps the spreadsheet's markers and applied changes. */
+const DRIVE_STATE = `${SHEETS_STATE_PREFIX}sheet-1`;
+
+/** The spreadsheet's state as a Drive binding stores it. */
+type DriveSheetsState = { markers: (MarkerEntry | number)[]; applied: number[]; queued: number[]; at: number };
+
+async function driveState(facet: string): Promise<DriveSheetsState | undefined> {
+  let json = await hooks().driveStored(facet, DRIVE_FILE, DRIVE_STATE);
+  return json === null ? undefined : JSON.parse(json) as DriveSheetsState;
+}
+
+/** The spreadsheet opened from a read and write Drive binding to its file. */
+const THROUGH_DRIVE: Run = {
+  name: "opened from a read and write Drive binding",
+  gatekeeper() {
+    let facet = `drive-sheets-${++facetCount}`;
+    return bound(facet, {
+      call: (method, args) => hooks().callDriveNative(
+        facet, DRIVE_FILE, "openGoogleSheet", "sheet-1", method, args),
+      apply: actionId => hooks().applyDrive(facet, DRIVE_FILE, actionId),
+      reject: actionId => hooks().rejectDriveEdit(facet, DRIVE_FILE, actionId),
+      // An exact-file binding learns which editor its file has when it describes it.
+      autoApprovable: async () => {
+        await hooks().describeDrive(facet, DRIVE_FILE);
+        return hooks().driveAutoApprovable(facet, DRIVE_FILE);
+      },
+      orphan: actionId => hooks().orphanDriveClaim(facet, DRIVE_FILE, actionId),
+      markers: async () => (await driveState(facet))?.markers ?? [],
+      seedMarkers: async markers => hooks().writeDriveStored(facet, DRIVE_FILE, DRIVE_STATE,
+        JSON.stringify({
+          ...await driveState(facet) ?? { applied: [], queued: [], at: Date.now() }, markers,
+        })),
+    });
+  },
+  file: [
+    { label: "File", kind: "inline", value: "sheet-1" },
+    { label: "File name", kind: "inline", value: FILE_NAME },
+  ],
+  kind: ({ tag, label }) => ({ tag, label: `${label}, in any spreadsheet this connection reaches` }),
+  opened: ["Check current metadata for Drive file sheet-1 and open it as a Google Sheet."],
+  catalog: kinds => [
+    { tag: "driveComments", label: "Drive comments" },
+    ...kinds.map(kind => THROUGH_DRIVE.kind(kind)),
+  ],
+  outOfOrder: () => EDIT_OUT_OF_ORDER,
+  cannotEdit: { error: "The connected Google account cannot edit that file.", observed: 0 },
+  async setUp() {
+    SheetsProvider.companions = [new DriveFiles({
+      "sheet-1": {
+        name: FILE_NAME, mimeType: SHEET_MIME, parents: ["my-root"],
+        canEdit: () => current?.canEdit ?? true,
+      },
+    })];
+    await hooks().setDriveGrants([GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT]);
+  },
+};
+
+/**
+ * Engine behaviour is the same whichever way the spreadsheet is reached, so these suites run on
+ * both. The stored-layout cases read and seed the bound spreadsheet's own storage, and run on it
+ * alone.
+ */
+const RUNS = [STANDALONE, THROUGH_DRIVE];
+
+/** A Sheets gatekeeper over its own storage, reached as `run` reaches it. */
+function gatekeeper(run: Run = STANDALONE) {
+  return run.gatekeeper();
+}
+
+/** Sets `run` up for each test of the suite that calls this. */
+function useRun(run: Run): void {
+  if (!run.setUp) return;
+  beforeEach(() => run.setUp!());
+  afterEach(() => { SheetsProvider.companions = []; });
 }
 
 function budget(sheets: ProviderSheet[] = [sheetMeta(0, "Sales"), sheetMeta(7, "Q3 Plan", { index: 1, rowCount: 10, columnCount: 4 })]) {
@@ -840,26 +1009,29 @@ afterEach(() => {
   expect(violations).toEqual([]);
 });
 
-describe("Google Sheets changes", () => {
+describe.each(RUNS)("Google Sheets changes ($name)", run => {
+  useRun(run);
+
   it("queues literal values as an auto-approvable edit, shows them in reads, and writes them with a marker", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action, value, observations } = await sheets.queued([
       { op: "writeCells", range: "Sales!B2:C2", values: [[6, "done"]] },
     ]);
 
     expect(value).toBeUndefined();
-    expect(observations).toEqual(['Read the cells 1 change(s) write in "Budget" to queue them.']);
+    expect(observations).toEqual(
+      [...run.opened, 'Read the cells 1 change(s) write in "Budget" to queue them.']);
     expect(action).toMatchObject({
       title: 'Edit "Sales"',
       description: 'In "Sales", set B2:C2 to the values below.',
       autoApprovable: true,
-      actionKind: { tag: "editSheetValues", label: "Sheet value edits" },
+      actionKind: run.kind({ tag: "editSheetValues", label: "Sheet value edits" }),
       descriptionIsComplete: true,
-      fields: [{ label: "Values", kind: "text", value: '[6,"done"]' }],
+      fields: [...run.file, { label: "Values", kind: "text", value: '[6,"done"]' }],
     });
-    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
+    expect(await sheets.autoApprovable()).toEqual(run.catalog(AUTO_APPROVABLE));
     expect(provider.get("Sales!B2")).toBe(4);
 
     expect(await sheets.apply(actionId!)).toBeNull();
@@ -890,7 +1062,7 @@ describe("Google Sheets changes", () => {
     let provider = budget();
     provider.results["=B3*2"] = 10;
     provider.set("Sales!E3", "=B3*2");
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     await sheets.queued([
       { op: "writeCells", range: "Sales!B2:D2", values: [[6, true, "=sum(sales!b2:b3)"]] },
       { op: "clearRange", range: "Sales!A3:B3" },
@@ -915,7 +1087,7 @@ describe("Google Sheets changes", () => {
 
   it("queues a batch with a spreadsheet-only formula as an auto-approvable edit, written as Google stores it", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action } = await sheets.queued([
       { op: "writeCells", range: "sales!d2:d3", values: [["=sum(sales!b2:c2)"], [null]] },
@@ -925,8 +1097,9 @@ describe("Google Sheets changes", () => {
     expect(action).toMatchObject({
       title: "Edit 2 sheets",
       autoApprovable: true,
-      actionKind: EDIT_SPREADSHEET,
+      actionKind: run.kind(EDIT_SPREADSHEET),
       fields: [
+        ...run.file,
         { label: "Change 1: Values", kind: "text", value: '["=sum(Sales!B2:C2)"]\n[null]' },
         { label: "Change 1: Formulas", kind: "text", value: "D2: =sum(Sales!B2:C2)" },
       ],
@@ -935,7 +1108,7 @@ describe("Google Sheets changes", () => {
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", set D2:D3 to the values below\n' +
       '2. In "Q3 Plan", clear the contents of A1:B2, keeping their formatting');
-    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
+    expect(await sheets.autoApprovable()).toEqual(run.catalog(AUTO_APPROVABLE));
 
     expect(await sheets.apply(actionId!)).toBeNull();
 
@@ -959,17 +1132,17 @@ describe("Google Sheets changes", () => {
 
   it("queues a formula calling a function it does not know, which may wrap a fetch, for approval", async () => {
     budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     for (let formula of ["=MYFETCH(B2)", '=HYPERLINK("https://example.com/?" & B2)']) {
       let { action } = await sheets.queued([{ op: "writeCells", range: "Sales!D2", values: [[formula]] }]);
-      expect(action, formula).toMatchObject({ autoApprovable: false, actionKind: UPDATE_SPREADSHEET });
+      expect(action, formula).toMatchObject({ autoApprovable: false, actionKind: run.kind(UPDATE_SPREADSHEET) });
     }
   });
 
   it("names a sheet exactly when the description cannot, and quotes a formula with a line break", async () => {
     budget([sheetMeta(0, "Sales"), sheetMeta(3, "Sheet_1", { index: 1 }), sheetMeta(4, "Sheet1", { index: 2 })]);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { action } = await sheets.queued([
       { op: "writeCells", range: "Sheet_1!A1:B1", values: [["=1+\nB1: =2", "=A1"]] },
@@ -979,6 +1152,7 @@ describe("Google Sheets changes", () => {
     expect(action!.description).toContain(
       '1. In "Sheet1", set A1:B1 to the values below\n2. In "Sheet1", clear the contents of A1');
     expect(action!.fields).toEqual([
+      ...run.file,
       { label: "Change 1: Sheet", kind: "inline", value: "Sheet_1" },
       { label: "Change 1: Values", kind: "text", value: '["=1+\\nB1: =2","=A1"]' },
       { label: "Change 1: Formulas", kind: "text", value: 'A1: "=1+\\nB1: =2"\nB1: =A1' },
@@ -987,13 +1161,14 @@ describe("Google Sheets changes", () => {
 
   it("names a sheet whose title hides a character, and keeps any line separator on one line", async () => {
     budget([sheetMeta(0, "Sales"), sheetMeta(5, "Sales\u200b", { index: 1 })]);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { action } = await sheets.queued([
       { op: "writeCells", range: "'Sales\u200b'!A1:B1", values: [["=1+\u2028B1: =2", "x\u2029y"]] },
     ]);
 
     expect(action!.fields).toEqual([
+      ...run.file,
       // The kit shows a title it cannot write out plainly as JSON.
       { label: "Sheet", kind: "json", value: '"Sales\\u200b"' },
       { label: "Values", kind: "text", value: '["=1+\\u2028B1: =2","x\\u2029y"]' },
@@ -1003,7 +1178,7 @@ describe("Google Sheets changes", () => {
 
   it("refuses a collaborator's edit to any cell of a batch's changes, whatever their sizes", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     // Google answers the reads of these out of order, and each must still guard its own cells.
     let { actionId } = await sheets.queued([
       { op: "writeCells", range: "Sales!A9", values: [[1]] },
@@ -1020,7 +1195,7 @@ describe("Google Sheets changes", () => {
 
   it("refuses a collaborator-edited cell's overwrite without writing, but not an edit elsewhere", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let blocked = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[7]] }]);
 
     provider.set("Sales!A9", "note");
@@ -1039,13 +1214,11 @@ describe("Google Sheets changes", () => {
 
   it("applies changes in order, the later one overwriting what the earlier one wrote", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     let second = await sheets.queued([{ op: "writeCells", range: "Sales!B2:B3", values: [[7], [8]] }]);
 
-    expect(await sheets.apply(second.actionId!)).toBe(
-      `Google Sheets changes apply in the order they were queued. Approve or reject change ` +
-      `${first.actionId} first.`);
+    expect(await sheets.apply(second.actionId!)).toBe(run.outOfOrder(first.actionId!));
     expect(provider.batches).toEqual([]);
 
     expect(await sheets.apply(first.actionId!)).toBeNull();
@@ -1055,7 +1228,7 @@ describe("Google Sheets changes", () => {
 
   it("fails a change built on cells an earlier change was to write but did not, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let failed = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     let rejected = await sheets.queued([{ op: "writeCells", range: "Sales!C2", values: [[7]] }]);
     let later = await sheets.queued([{ op: "writeCells", range: "Sales!B2:C2", values: [[8, 9]] }]);
@@ -1073,7 +1246,7 @@ describe("Google Sheets changes", () => {
 
   it("guards cells an earlier applied change wrote against a collaborator's edit since", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [["=A1 + 1"]] }]);
     let second = await sheets.queued([{ op: "writeCells", range: "Sales!B2:B3", values: [[7], [8]] }]);
     expect(await sheets.apply(first.actionId!)).toBeNull();
@@ -1091,7 +1264,7 @@ describe("Google Sheets changes", () => {
   ] as const)("refuses to overwrite %s, which formula-mode reads cannot tell apart", async (_case, was, edited) => {
     let provider = budget();
     provider.enter("Sales!B2", was);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[7]] }]);
 
     provider.enter("Sales!B2", edited);
@@ -1105,7 +1278,7 @@ describe("Google Sheets changes", () => {
     let [stored, later] = WHITESPACE_DRIFT;
     let provider = budget();
     provider.set("Sales!B2", stored);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[7]] }]);
 
     provider.set("Sales!B2", later);
@@ -1116,7 +1289,7 @@ describe("Google Sheets changes", () => {
 
   it("asks for a restart only when rejecting a change that later ones were built on", async () => {
     budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     let second = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
 
@@ -1126,7 +1299,7 @@ describe("Google Sheets changes", () => {
 
   it("reports a queued change whose sheet is gone, blocks more changes, and fails it without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "'Q3 Plan'!A1", values: [["x"]] }]);
 
     provider.sheets = provider.sheets.filter(s => s.id !== 7);
@@ -1146,7 +1319,7 @@ describe("Google Sheets changes", () => {
 
   it("finds a write whose response was lost landed by its marker, sending it once", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     provider.nextFailure = "lost";
 
@@ -1161,7 +1334,7 @@ describe("Google Sheets changes", () => {
 
   it("resends a dropped write exactly as first sent, and it lands once", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     provider.nextFailure = "dropped";
 
@@ -1175,7 +1348,7 @@ describe("Google Sheets changes", () => {
 
   it("does not apply a write twice when the first send commits after its resend was sent", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     provider.nextFailure = "inflight";
 
@@ -1190,7 +1363,7 @@ describe("Google Sheets changes", () => {
 
   it("records an unknown outcome for a dropped write it can no longer resend, holding later changes until it can no longer land", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     provider.nextFailure = "dropped";
     provider.afterNextBatch = () => provider.set("Sales!B2", 5);
@@ -1218,7 +1391,7 @@ describe("Google Sheets changes", () => {
 
   it("neither replays nor resends a change whose activation died applying it", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     expect((await sheets.read("Sales!B2", "raw")).values).toEqual([[6]]);
     await sheets.orphan(actionId!);
@@ -1231,7 +1404,7 @@ describe("Google Sheets changes", () => {
 
   it("keeps each batch's marker while a send of it could still commit, then deletes it in the next batch", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     let second = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
     let third = await sheets.queued([{ op: "writeCells", range: "Sales!B4", values: [[8]] }]);
@@ -1254,7 +1427,7 @@ describe("Google Sheets changes", () => {
 
   it("deletes the markers a stored list of bare IDs names, as last sent long ago", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     await sheets.seedMarkers([1, 2, 3]);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
 
@@ -1266,7 +1439,7 @@ describe("Google Sheets changes", () => {
 
   it("stores every marker a send could still commit, and of the rest the 20 most recently sent", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let old = Array.from({ length: 25 }, (_, i) => i + 1);
     let recent = Array.from({ length: 30 }, (_, i) => ({ id: 101 + i, sentAt: Date.now() }));
     await sheets.seedMarkers([...old, ...recent]);
@@ -1297,7 +1470,7 @@ describe("Google Sheets changes", () => {
     ["forbidden", 403],
   ] as const)("leaves a change Google refused (%s) pending, and applies it with the same marker", async (failure, status) => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
     provider.nextFailure = failure;
 
@@ -1316,7 +1489,7 @@ describe("Google Sheets changes", () => {
 
   it("fails a change Google refuses as invalid, writing nothing and keeping every earlier marker", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let old = Array.from({ length: 20 }, (_, i) => i + 1);
     await sheets.seedMarkers(old);
     let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B12", values: [[6]] }]);
@@ -1336,14 +1509,13 @@ describe("Google Sheets changes", () => {
   it("refuses to queue a change the account can only view, after authorizing the read", async () => {
     let provider = budget();
     provider.canEdit = false;
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let outcome = await sheets.update([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
 
-    expect(outcome.error).toBe(
-      'The connected Google account can view "Budget" but not edit it, so no change to it can be queued.');
+    expect(outcome.error).toBe(run.cannotEdit.error);
     expect(outcome.actionId).toBeUndefined();
-    expect(outcome.observations).toHaveLength(1);
+    expect(outcome.observations).toHaveLength(run.opened.length + run.cannotEdit.observed);
   });
 
   it("refuses to queue a write into a protected range the account may not edit, and never asks who may", async () => {
@@ -1366,7 +1538,7 @@ describe("Google Sheets changes", () => {
         ],
       } as Partial<ProviderSheet>),
     ]);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let row = await sheets.update([{ op: "writeCells", range: "Sales!A1:B1", values: [["x", "y"]] }]);
     expect(row.error).toBe(
@@ -1399,24 +1571,26 @@ describe("Google Sheets changes", () => {
     ["IMAGE", '=IMAGE("https://example.com/a.png")'],
   ])("refuses a formula calling %s before reading anything", async (name, formula) => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let outcome = await sheets.update([{ op: "writeCells", range: "Sales!A1", values: [[formula]] }]);
 
     expect(outcome.error).toContain(`uses ${name}`);
     expect(outcome.actionId).toBeUndefined();
-    expect(outcome.observations).toEqual([]);
+    expect(outcome.observations).toEqual(run.opened);
     expect(provider.requests).toEqual([]);
   });
 });
 
-describe("Google Sheets changes to rows, columns and sheets", () => {
+describe.each(RUNS)("Google Sheets changes to rows, columns and sheets ($name)", run => {
+  useRun(run);
+
   it("refuses a read or a batch whose formulas the queued structure would rewrite too often", async () => {
     // Each formula is 75 characters, rewritten through 50 queued inserts: 3,750 of the 5,000,000.
     let provider = budget([sheetMeta(0, "Sales", { rowCount: 2_100, columnCount: 2 })]);
     let sum = (row: number) => "=" + Array.from({ length: 25 }, () => `B${row}`).join("+");
     for (let row = 1; row <= 2_100; row++) provider.set(`Sales!A${row}`, sum(1));
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     await sheets.queued(Array.from({ length: 50 }, () => ({ op: "insertRows" as const, sheet: "Sales", at: 1 })));
 
     expect((await sheets.call("readRange", "Sales!A51:A2150")).error).toBe(
@@ -1438,7 +1612,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("refuses a read or a batch over a formula it cannot follow through the queued changes", async () => {
     let provider = budget([sheetMeta(0, "Sales"), sheetMeta(5, "Q", { index: 1, rowCount: 5, columnCount: 5 })]);
     provider.set("Sales!A1", '=IF(TRUE,"\uE000",Q!A1)');
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     // The formula's Q is deleted, and a new Q added and renamed after it.
     await sheets.queued([
       { op: "deleteSheet", sheet: "Q" },
@@ -1463,7 +1637,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
     let formula = "=" + Array.from({ length: 50 }, () => "S1!A1").join("+");
     for (let row = 1; row <= 2_000; row++) provider.set(`Sales!A${row}`, formula);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     await sheets.queued([{ op: "renameSheet", sheet: "S1", title: "T".repeat(100) }]);
 
     // Formula reads show the formulas' text; other reads show their results, which a rename leaves.
@@ -1481,7 +1655,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("inserts rows and writes into them in one batch, landing where the read previewed", async () => {
     let provider = budget();
     provider.results["=B2*2"] = 8;
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action, value } = await sheets.queued([
       { op: "insertRows", sheet: "Sales", at: 3, count: 2 },
@@ -1489,12 +1663,12 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     expect(value).toBeUndefined();
-    expect(action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: true, actionKind: EDIT_SPREADSHEET });
+    expect(action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: true, actionKind: run.kind(EDIT_SPREADSHEET) });
     expect(action!.description).toContain(
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", insert 2 rows before row 3\n' +
       '2. In "Sales", set A3:B4 to the values below');
-    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
+    expect(await sheets.autoApprovable()).toEqual(run.catalog(AUTO_APPROVABLE));
     let previewed = await sheets.read("Sales!A1:C5", "formula");
     expect(previewed).toEqual({
       range: "Sales!A1:C5",
@@ -1531,7 +1705,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     provider.set("Sales!D2", "=SUM(B2:B3)");
     provider.results["=B2*2"] = 8;
     provider.results["=SUM(B2:B3)"] = 9;
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 3 }]);
     let blank = [null, null, null, null];
 
@@ -1549,11 +1723,11 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     // Each refusal tells what the spreadsheet holds, so it comes only after the read is authorized.
     let outside = await sheets.call("readRange", "Sales!A22");
     expect(outside.error).toBe("Range (Sales!A22) exceeds grid limits. Max rows: 21, max columns: 6");
-    expect(outside.observations).toEqual([
+    expect(outside.observations).toEqual([...run.opened,
       "Looked up 1 range(s) in the connected spreadsheet with the queued changes applied."]);
     let missing = await sheets.call("readRange", "Nope!A1");
     expect(missing.error).toBe('The spreadsheet has no sheet named "Nope" with the queued changes applied.');
-    expect(missing.observations).toHaveLength(1);
+    expect(missing.observations).toHaveLength(run.opened.length + 1);
 
     expect(await sheets.apply(actionId!)).toBeNull();
     expect(provider.get("Sales!D2")).toEqual({ formula: "=SUM(B2:B4)" });
@@ -1568,7 +1742,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     provider.set("Sales!F1", "=B2");
     provider.enter("Sales!E3", "=B2");
     provider.results["=B2"] = 4;
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let batch: SheetChange[] = [
       { op: "insertRows", sheet: "Sales", at: 1 },
       { op: "writeCells", range: "Sales!E2", values: [["new"]] },
@@ -1600,7 +1774,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     provider.set("Sales!E1", "=SEQUENCE(2)");
     provider.results["=SEQUENCE(2)"] = 1;
     provider.spill("Sales!E2", 2);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     expect(await sheets.read("Sales!E1:E2", "raw")).toEqual({ range: "Sales!E1:E2", values: [[1], [2]] });
     // The rows go in below, moving neither cell.
     await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 5, count: 2 }]);
@@ -1617,7 +1791,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("acts on a sheet a batch adds by its title, under an ID it mints that Google honours", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action, value } = await sheets.queued([
       { op: "addSheet", title: "Q4" },
@@ -1626,7 +1800,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     expect(value).toBeUndefined();
-    expect(action).toMatchObject({ title: 'Edit "Q4"', autoApprovable: true, actionKind: EDIT_SPREADSHEET });
+    expect(action).toMatchObject({ title: 'Edit "Q4"', autoApprovable: true, actionKind: run.kind(EDIT_SPREADSHEET) });
     expect(action!.description).toContain(
       '1. Add a sheet "Q4" of 1,000 rows and 26 columns at position 3\n' +
       '2. In "Q4", set A1 to the values below\n' +
@@ -1660,7 +1834,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     let provider = budget();
     provider.set("Sales!E2", "='Q3 Plan'!A1");
     provider.results["='Q3 Plan'!A1"] = 3;
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action } = await sheets.queued([
       { op: "renameSheet", sheet: "Q3 Plan", title: "Q3 Final" },
@@ -1670,6 +1844,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     expect(action).toMatchObject({
       title: 'Edit "Q3 Plan"',
       fields: [
+        ...run.file,
         { label: "Change 2: Values", kind: "text", value: '["=Sales!B2*2"]' },
         { label: "Change 2: Formulas", kind: "text", value: "A1: =Sales!B2*2" },
       ],
@@ -1694,7 +1869,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("names the sheets a batch only adds", async () => {
     budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let one = await sheets.queued([{ op: "addSheet", title: "Q4" }]);
     expect(one.action).toMatchObject({ title: 'Add the sheet "Q4"' });
     let two = await sheets.queued([{ op: "addSheet", title: "Q5" }, { op: "addSheet", title: "Q6" }]);
@@ -1703,7 +1878,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("describes every change to rows, columns and sheets, and sends each as Google accepts it", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action } = await sheets.queued([
       { op: "addSheet", title: "Q4", rowCount: 5, columnCount: 3 },
@@ -1721,7 +1896,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
     ]);
 
     // Q4, It's, Sales and the copy of Sales.
-    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: false, actionKind: UPDATE_SPREADSHEET });
+    expect(action).toMatchObject({ title: "Edit 4 sheets", autoApprovable: false, actionKind: run.kind(UPDATE_SPREADSHEET) });
     expect(action!.description).toContain(
       "Makes 12 changes, all or none of which are applied:\n\n" +
       '1. Add a sheet "Q4" of 5 rows and 3 columns at position 3\n' +
@@ -1738,6 +1913,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
       '12. In "Sales", insert 3 columns before column A');
     // The prose drops the underscore, so the title is also given exactly.
     expect(action!.fields).toEqual([
+      ...run.file,
       { label: "Change 2: New title", kind: "inline", value: "Plan_B" },
       { label: "Change 7: Sheet", kind: "inline", value: "Plan_B" },
       { label: "Change 8: Sheet", kind: "inline", value: "Plan_B" },
@@ -1776,14 +1952,14 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("reports a queued deleteSheet whose sheet a collaborator deleted, and fails it without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId, action } = await sheets.queued([{ op: "deleteSheet", sheet: "Q3 Plan" }]);
 
     expect(action).toMatchObject({
       title: 'Edit "Q3 Plan"',
       description: 'Delete the sheet "Q3 Plan" (10 rows, 4 columns) and everything on it.',
       autoApprovable: false,
-      actionKind: UPDATE_SPREADSHEET,
+      actionKind: run.kind(UPDATE_SPREADSHEET),
     });
     expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales"]);
 
@@ -1800,7 +1976,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("refuses to delete rows a collaborator edited since they were queued, and deletes them otherwise", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let edited = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 3 }]);
     expect(edited.action!.description).toBe('In "Sales", delete row 3.');
 
@@ -1821,7 +1997,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("fails a batch adding a sheet after a rejected one, whose position counts it, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let front = await sheets.queued([{ op: "addSheet", title: "Q4", index: 0 }]);
     // Between Sales and Q3 Plan once Q4 is first.
     let between = await sheets.queued([{ op: "addSheet", title: "Q5", index: 2 }]);
@@ -1835,7 +2011,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("fails a copy placed among sheets a collaborator has since reordered, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales" }]);
     expect((await sheets.info()).sheets.map(s => s.title)).toEqual(["Sales", "Copy of Sales", "Q3 Plan"]);
 
@@ -1847,7 +2023,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("fails a deletion of rows that would leave only rows a collaborator has since frozen, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let { actionId } = await sheets.queued([{ op: "deleteRows", sheet: "Sales", at: 2, count: 19 }]);
 
     provider.sheets[0] = { ...provider.sheets[0], frozenRowCount: 1 };
@@ -1858,7 +2034,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("fails a batch built on a rejected change to rows, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let inserted = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 2 }]);
     let written = await sheets.queued([{ op: "writeCells", range: "Sales!A2", values: [["new"]] }]);
 
@@ -1871,7 +2047,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("fails a copy of a sheet holding a rejected write, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let written = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["Area"]] }]);
     let copied = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales" }]);
     expect(await sheets.read("'Copy of Sales'!A1", "formula")).toEqual({ range: "'Copy of Sales'!A1", values: [["Area"]] });
@@ -1885,7 +2061,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
 
   it("fails a copy of a sheet holding rejected formatting, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let formatted = await sheets.queued([{ op: "formatCells", range: "Sales!A1", format: { bold: true } }]);
     let copied = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales" }]);
     expect((await sheets.call("readFormats", "'Copy of Sales'!A1")).value).toMatchObject({ formats: [[{ bold: true }]] });
@@ -1900,7 +2076,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   it("fails a write over a formula naming rows a rejected change deleted on another sheet, without writing", async () => {
     let provider = budget();
     provider.set("Sales!A1", "='Q3 Plan'!A5");
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let deleted = await sheets.queued([{ op: "deleteRows", sheet: "Q3 Plan", at: 1 }]);
     let written = await sheets.queued([{ op: "writeCells", range: "Sales!A1", values: [["x"]] }]);
 
@@ -1926,7 +2102,7 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
         protectedRanges: [protectedRange(3, { sheetId: 7 }, { requestingUserCanEdit: false, warningOnly: true })],
       } as Partial<ProviderSheet>),
     ]);
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     for (let change of [
       { op: "insertRows", sheet: "Sales", at: 21 },
@@ -1963,11 +2139,13 @@ describe("Google Sheets changes to rows, columns and sheets", () => {
   });
 });
 
-describe("Google Sheets formatting", () => {
+describe.each(RUNS)("Google Sheets formatting ($name)", run => {
+  useRun(run);
+
   it("queues formatting alone as auto-approvable, shows it in reads, and writes it as Google accepts it", async () => {
     let provider = budget();
     provider.setFormat("Sales!B2", { textFormat: { italic: true }, numberFormat: { type: "NUMBER", pattern: "0.0" } });
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action, value } = await sheets.queued([{
       op: "formatCells", range: "Sales!A1:B2",
@@ -1984,11 +2162,11 @@ describe("Google Sheets formatting", () => {
       description: 'In "Sales", format A1:B2: bold, 14 pt, text colour #ff0000, fill ACCENT1, number format ' +
         "CURRENCY (pattern below), aligned right, wrapped, a solid top border.",
       autoApprovable: true,
-      actionKind: { tag: "formatSheets", label: "Sheet formatting" },
+      actionKind: run.kind({ tag: "formatSheets", label: "Sheet formatting" }),
       descriptionIsComplete: true,
-      fields: [{ label: "Number format", kind: "text", value: '"$"#,##0.00' }],
+      fields: [...run.file, { label: "Number format", kind: "text", value: '"$"#,##0.00' }],
     });
-    expect(await sheets.autoApprovable()).toEqual(AUTO_APPROVABLE);
+    expect(await sheets.autoApprovable()).toEqual(run.catalog(AUTO_APPROVABLE));
 
     let set = {
       bold: true, fontSize: 14, textColor: "#ff0000", fillColor: "ACCENT1",
@@ -2046,7 +2224,7 @@ describe("Google Sheets formatting", () => {
       textFormat: { bold: true, italic: true }, numberFormat: { type: "PERCENT" },
       borders: { top: { style: "DASHED" }, bottom: { style: "SOLID" } },
     });
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let { actionId, action } = await sheets.queued([{
       op: "formatCells", range: "Sales!B2:C3",
@@ -2061,7 +2239,7 @@ describe("Google Sheets formatting", () => {
     expect(action!.description).toBe(
       'In "Sales", format B2:C3: default bold, default number format, no top border, a double right border ' +
       "in #00ff00, a dotted inner horizontal border in ACCENT2.");
-    expect(action!.fields ?? []).toEqual([]);
+    expect(action!.fields ?? []).toEqual(run.file);
     let dotted = { style: "DOTTED", color: "ACCENT2" };
     let double = { style: "DOUBLE", color: "#00ff00" };
     let changed = [
@@ -2107,13 +2285,13 @@ describe("Google Sheets formatting", () => {
 
   it("queues formatting with other changes as an edit, and names each sheet a formatting batch formats", async () => {
     budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let mixed = await sheets.queued([
       { op: "writeCells", range: "Sales!A5", values: [["x"]] },
       { op: "formatCells", range: "Sales!A5", format: { italic: true, verticalAlignment: "MIDDLE" } },
     ]);
-    expect(mixed.action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: true, actionKind: EDIT_SPREADSHEET });
+    expect(mixed.action).toMatchObject({ title: 'Edit "Sales"', autoApprovable: true, actionKind: run.kind(EDIT_SPREADSHEET) });
     expect(mixed.action!.description).toContain(
       "Makes 2 changes, all or none of which are applied:\n\n" +
       '1. In "Sales", set A5 to the values below\n' +
@@ -2136,8 +2314,8 @@ describe("Google Sheets formatting", () => {
     expect(formatting.action).toMatchObject({
       title: "Format 2 sheets",
       autoApprovable: true,
-      actionKind: { tag: "formatSheets", label: "Sheet formatting" },
-      fields: [{ label: "Change 3: Number format", kind: "text", value: "0.0" }],
+      actionKind: run.kind({ tag: "formatSheets", label: "Sheet formatting" }),
+      fields: [...run.file, { label: "Change 3: Number format", kind: "text", value: "0.0" }],
     });
     expect(formatting.action!.description).toContain(
       "Makes 3 changes, all or none of which are applied:\n\n" +
@@ -2151,7 +2329,7 @@ describe("Google Sheets formatting", () => {
     let provider = budget();
     provider.setFormat("Sales!A2", { textFormat: { bold: true } });
     provider.setFormat("Sales!A3", { textFormat: { italic: true } });
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
 
     let rows = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 3 }]);
     expect(await sheets.formats("Sales!A2:A4")).toEqual({
@@ -2179,7 +2357,7 @@ describe("Google Sheets formatting", () => {
 
   it("fails formatting built on rows a rejected change was to insert, without writing", async () => {
     let provider = budget();
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let rows = await sheets.queued([{ op: "insertRows", sheet: "Sales", at: 3 }]);
     let format = await sheets.queued([{ op: "formatCells", range: "Sales!A4", format: { bold: true } }]);
 
@@ -2193,7 +2371,7 @@ describe("Google Sheets formatting", () => {
   it("copies queued formatting with the sheet a queued change duplicates", async () => {
     let provider = budget();
     provider.setFormat("Sales!A2", { textFormat: { italic: true } });
-    let sheets = gatekeeper();
+    let sheets = gatekeeper(run);
     let format = await sheets.queued([{ op: "formatCells", range: "Sales!A1", format: { bold: true } }]);
     let copy = await sheets.queued([{ op: "duplicateSheet", sheet: "Sales", title: "Copy" }]);
 
@@ -2203,5 +2381,347 @@ describe("Google Sheets formatting", () => {
     expect(await sheets.apply(format.actionId!)).toBeNull();
     expect(await sheets.apply(copy.actionId!)).toBeNull();
     expect(await sheets.formats("Copy!A1:A2")).toEqual(previewed);
+  });
+});
+
+// What a bound spreadsheet stores, by its literal keys, so that moving its code cannot move its
+// storage.
+describe("Google Sheets stored layout", () => {
+  /** The value under `key`, as the synchronous KV reads it. */
+  async function stored(facet: string, key: string): Promise<unknown> {
+    let { kv } = await hooks().storedValue(facet, "sheets", key);
+    return kv === undefined ? undefined : JSON.parse(kv);
+  }
+
+  it("keeps its journal and markers under the keys it has always used", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    let first = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    let second = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
+    expect(await hooks().storedKeys(sheets.facet, "sheets"))
+      .toEqual(["sheets:action:1", "sheets:action:2", "sheets:nextActionId"]);
+    expect(await stored(sheets.facet, "sheets:action:1")).toEqual({
+      v: 2, state: "pending",
+      action: {
+        kind: "editSheetValues",
+        payload: {
+          changes: [expect.objectContaining({ op: "writeCells", sheetId: 0 })],
+          sheets: { 0: "Sales" }, guard: expect.any(Object),
+          marker: { id: expect.any(Number), token: expect.any(String) },
+        },
+      },
+    });
+
+    expect(await sheets.apply(first.actionId!)).toBeNull();
+    expect(await sheets.reject(second.actionId!)).toBeNull();
+    let third = await sheets.queued([{ op: "writeCells", range: "Sales!B3", values: [[8]] }]);
+
+    expect(third.actionId).toBe(3);
+    expect(await hooks().storedKeys(sheets.facet, "sheets")).toEqual([
+      "applied:sheets:action:", "sheets:action:3", "sheets:nextActionId", "sheets:staleMarkers",
+    ]);
+    expect(await stored(sheets.facet, "sheets:nextActionId")).toBe(4);
+    expect(await stored(sheets.facet, "applied:sheets:action:")).toEqual([1]);
+    expect(await stored(sheets.facet, "sheets:staleMarkers"))
+      .toEqual([{ id: markerOf(provider.batches[0]), sentAt: expect.any(Number) }]);
+  });
+
+  it("reads a marker list and journal stored before it first starts", async () => {
+    let provider = budget();
+    let sheets = gatekeeper();
+    // A bare ID is a marker last sent long ago; a counter carries on from where it was.
+    await hooks().writeStored(sheets.facet, "sheets", [
+      { kind: "put", key: "sheets:staleMarkers", value: [9] },
+      { kind: "put", key: "sheets:nextActionId", value: 12 },
+    ], "kv");
+    await hooks().restartFacet(sheets.facet);
+
+    let { actionId } = await sheets.queued([{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    expect(actionId).toBe(12);
+    expect(await sheets.apply(actionId!)).toBeNull();
+    expect(provider.batches.map(deletedBy)).toEqual([[9]]);
+  });
+});
+
+describe("Google Sheets edits through a read and write Drive binding", () => {
+  const ROOT = "folder-root";
+  const ACCOUNT = { scope: { kind: "account" }, access: "write" } as const;
+  const FOLDER = { scope: { kind: "folder", folderId: ROOT }, access: "write" } as const;
+  const fileBinding = (fileId: string) =>
+    ({ scope: { kind: "file", fileId }, access: "write" } as const);
+  type Binding = typeof ACCOUNT | typeof FOLDER | ReturnType<typeof fileBinding> |
+    { scope: typeof ACCOUNT.scope; access: "write"; deployment: "read" } | { scope: typeof ACCOUNT.scope };
+  const GRANTED = [GOOGLE_DRIVE_RESOURCE.urlPattern, DRIVE_WRITES_GRANT];
+  const COMMENTS = { tag: "driveComments", label: "Drive comments" };
+  const OUT_OF_SCOPE = "That file is no longer in this connection's scope.";
+  const DEPLOYMENT_READ_ONLY =
+    "This deployment keeps Google Drive read-only, so no Google Drive connection can make " +
+    "changes, and none can be connected with read and write access. Only the deployment's " +
+    "administrator can change that.";
+  const HELD = /^An earlier change's outcome is still unknown/;
+
+  /** Every Sheets API request, in order; it answers none of them. */
+  class SheetsRequests implements ProviderFake {
+    readonly requests: string[] = [];
+
+    async handle(request: Request): Promise<Response | undefined> {
+      let url = new URL(request.url);
+      if (url.hostname === "sheets.googleapis.com") this.requests.push(`${request.method} ${url.pathname}`);
+      return undefined;
+    }
+  }
+
+  let drive: DriveFiles;
+  let sheetsRequests: SheetsRequests;
+
+  /** Spreadsheets `sheet-1` (the current provider) and `sheet-2`, with the Drive that holds them. */
+  function spreadsheets() {
+    let first = budget();
+    let second = new SheetsProvider([sheetMeta(0, "Sales")], { "Sales!A1": "Region" }, "sheet-2");
+    first.install(second, drive);
+    return { first, second };
+  }
+
+  /** The Sheets provider `first` with only `drive` and the request log beside it. */
+  function serve(first: SheetsProvider, ...others: ProviderFake[]) {
+    first.install(sheetsRequests, ...others, drive);
+  }
+
+  let facetCount = 0;
+
+  /** One Drive gatekeeper over its own storage, reached as `binding` says, with calls on fresh sessions. */
+  function connection(binding: Binding, facet = `drive-sheets-editors-${++facetCount}`) {
+    let call = (fileId: string, method: string, ...args: unknown[]) =>
+      hooks().callDriveNative(facet, binding, "openGoogleSheet", fileId, method, args);
+    return {
+      facet,
+      call,
+      queued: async (fileId: string, changes: SheetChange[]) => {
+        let outcome = await call(fileId, "updateSpreadsheet", changes);
+        if (outcome.error !== undefined) throw new Error(outcome.error);
+        if (outcome.actionId === undefined) throw new Error("updateSpreadsheet queued nothing");
+        return outcome.actionId;
+      },
+      read: async (fileId: string, range: string) => call(fileId, "readRange", range),
+      apply: (actionId: number) => hooks().applyDrive(facet, binding, actionId),
+      reject: (actionId: number) => hooks().rejectDriveEdit(facet, binding, actionId),
+      queuedIds: () => hooks().driveQueued(facet, binding),
+      describe: () => hooks().describeDrive(facet, binding),
+      autoApprovable: () => hooks().driveAutoApprovable(facet, binding),
+      restart: () => hooks().restartDrive(facet),
+      /** What the binding keeps of spreadsheet `fileId`. */
+      state: async (fileId: string) => {
+        let json = await hooks().driveStored(facet, binding, `${SHEETS_STATE_PREFIX}${fileId}`);
+        return json === null ? undefined : JSON.parse(json) as DriveSheetsState;
+      },
+      writeState: (fileId: string, state: DriveSheetsState) => hooks().writeDriveStored(
+        facet, binding, `${SHEETS_STATE_PREFIX}${fileId}`, JSON.stringify(state)),
+      states: () => hooks().driveStoredKeys(facet, binding, SHEETS_STATE_PREFIX),
+    };
+  }
+
+  beforeEach(async () => {
+    drive = new DriveFiles({
+      "my-root": { name: "My Drive", mimeType: FOLDER_MIME, parents: [] },
+      [ROOT]: { name: "Reports", mimeType: FOLDER_MIME, parents: ["my-root"] },
+      elsewhere: { name: "Elsewhere", mimeType: FOLDER_MIME, parents: ["my-root"] },
+      "sheet-1": { name: "Budget", mimeType: SHEET_MIME, parents: [ROOT] },
+      "sheet-2": { name: "Forecast", mimeType: SHEET_MIME, parents: [ROOT] },
+      "doc-1": { name: "Notes", mimeType: DOC_MIME, parents: [ROOT] },
+    });
+    sheetsRequests = new SheetsRequests();
+    await hooks().setDriveGrants(GRANTED);
+  });
+
+  it("holds a spreadsheet's later changes behind its own lost write, and no other spreadsheet's", async () => {
+    let { first, second } = spreadsheets();
+    let account = connection(ACCOUNT);
+    let lost = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    first.nextFailure = "dropped";
+    first.afterNextBatch = () => first.set("Sales!B2", 5);
+    expect(await account.apply(lost)).toBe(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+    await account.reject(lost);
+
+    let later = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B3", values: [[7]] }]);
+    let other = await account.queued("sheet-2", [{ op: "writeCells", range: "Sales!B1", values: [[1]] }]);
+    expect(await account.apply(later)).toMatch(HELD);
+    expect(await account.apply(other)).toBeNull();
+    expect(second.get("Sales!B1")).toBe(1);
+
+    // Each spreadsheet keeps its own markers.
+    expect((await account.state("sheet-1"))!.markers)
+      .toEqual([{ id: markerOf(first.batches[0]), sentAt: expect.any(Number), unknown: true }]);
+    expect((await account.state("sheet-2"))!.markers)
+      .toEqual([{ id: markerOf(second.batches[0]), sentAt: expect.any(Number) }]);
+    expect(await account.states())
+      .toEqual([`${SHEETS_STATE_PREFIX}sheet-1`, `${SHEETS_STATE_PREFIX}sheet-2`]);
+  });
+
+  it("remembers a spreadsheet's applied changes past the journal's memory of the binding's", async () => {
+    let provider = budget();
+    serve(provider);
+    let account = connection(ACCOUNT);
+    let first = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    // Built on the first: it overwrites what the first writes.
+    let second = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B2:B3", values: [[7], [8]] }]);
+    expect(await account.apply(first)).toBeNull();
+
+    // A hundred and one other writes of the binding are applied in between.
+    await hooks().retireDriveActions(account.facet, ACCOUNT, 101);
+    expect(await account.apply(second)).toBeNull();
+    expect(provider.get("Sales!B3")).toBe(8);
+    expect((await account.state("sheet-1"))!.applied).toEqual([first, second]);
+
+    // The list keeps the last hundred.
+    await account.writeState("sheet-1", {
+      ...(await account.state("sheet-1"))!, applied: Array.from({ length: 100 }, (_, i) => 1000 + i),
+    });
+    let third = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B4", values: [[9]] }]);
+    expect(await account.apply(third)).toBeNull();
+    let { applied } = (await account.state("sheet-1"))!;
+    expect(applied).toHaveLength(100);
+    expect(applied.at(-1)).toBe(third);
+    expect(applied[0]).toBe(1001);
+  });
+
+  it("keeps a spreadsheet's state for a change left staged, which still applies, and sweeps it after", async () => {
+    let provider = budget();
+    serve(provider);
+    let account = connection(ACCOUNT);
+    let first = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    // Built on the first, and held before the kernel answers its submission, as an activation that
+    // ended there would leave it: staged, which no listing shows.
+    await hooks().holdDriveSubmission(account.facet, ACCOUNT, "openGoogleSheet", "sheet-1",
+      "updateSpreadsheet", [[{ op: "writeCells", range: "Sales!B2:B3", values: [[7], [8]] }]]);
+    let staged = first + 1;
+    // The number was noted as it was allocated.
+    expect((await account.state("sheet-1"))!.queued).toEqual([first, staged]);
+    expect(await account.queuedIds()).toEqual([first]);
+
+    expect(await account.apply(first)).toBeNull();
+    // A new session sweeps: the journal still holds the staged change, so its file's state stays.
+    await account.read("sheet-1", "Sales!A1");
+    expect((await account.state("sheet-1"))!.queued).toEqual([staged]);
+    await hooks().retireDriveActions(account.facet, ACCOUNT, 101);
+    // Approving the staged change applies it, built on the first, which its state remembers.
+    expect(await account.apply(staged)).toBeNull();
+    expect(provider.get("Sales!B3")).toBe(8);
+    expect((await account.state("sheet-1"))!.queued).toEqual([]);
+    // The kernel's answer arriving after the approval changes nothing.
+    expect(await hooks().releaseDriveSubmission()).toEqual({});
+
+    // Its markers can still land, so the state stays until they no longer can.
+    await account.read("sheet-1", "Sales!A1");
+    expect(await account.states()).toEqual([`${SHEETS_STATE_PREFIX}sheet-1`]);
+    let state = (await account.state("sheet-1"))!;
+    await account.writeState("sheet-1", {
+      ...state,
+      markers: state.markers.map(entry => typeof entry === "number" ? entry
+        : { ...entry, sentAt: entry.sentAt - MARKER_RETENTION_MS }),
+    });
+    // Twenty-five idle spreadsheets besides: the twenty written most recently are kept.
+    for (let i = 0; i < 25; i++) {
+      await account.writeState(`idle-${i}`, { markers: [], applied: [], queued: [], at: i });
+    }
+    await account.read("sheet-1", "Sales!A1");
+    let kept = await account.states();
+    expect(kept).toHaveLength(20);
+    expect(kept).not.toContain(`${SHEETS_STATE_PREFIX}idle-0`);
+    expect(kept).toContain(`${SHEETS_STATE_PREFIX}sheet-1`);
+  });
+
+  it("queues a change sent before the one before it has queued after it, built on it", async () => {
+    let provider = budget();
+    serve(provider);
+    let file = connection(fileBinding("sheet-1"));
+    let hold = drive.holdNextBatch();
+
+    let calling = hooks().callDriveNativeTwice(file.facet, fileBinding("sheet-1"), "openGoogleSheet",
+      "sheet-1", ["updateSpreadsheet", [{ op: "writeCells", range: "Sales!B2", values: [[6]] }]],
+      ["updateSpreadsheet", [{ op: "writeCells", range: "Sales!B2", values: [[7]] }]]);
+    await hold.reached;
+    await scheduler.wait(5);
+    expect(drive.batches()).toEqual([["sheet-1"]]);
+    hold.release();
+    let { outcomes, submitted } = await calling;
+
+    expect(outcomes).toEqual([{}, {}]);
+    expect(submitted.map(({ actionId }) => actionId)).toEqual([1, 2]);
+    // The second was prepared with the first pending: it builds on it.
+    expect(await file.apply(2)).toBe(EDIT_OUT_OF_ORDER);
+    expect(await file.apply(1)).toBeNull();
+    expect(await file.apply(2)).toBeNull();
+    expect(provider.get("Sales!B2")).toBe(7);
+  });
+
+  it("refuses every write of a spreadsheet that left the folder before any Sheets request", async () => {
+    let provider = budget();
+    serve(provider);
+    let folder = connection(FOLDER);
+    let writes = Object.getOwnPropertyNames(GoogleSpreadsheetSessionImpl.prototype)
+      .filter(name => name !== "constructor" && !name.startsWith("#") &&
+        !Object.getOwnPropertyNames(GoogleSpreadsheetReadSessionImpl.prototype).includes(name));
+    let args: Record<string, unknown[]> = {
+      updateSpreadsheet: [[{ op: "writeCells", range: "Sales!B2", values: [[6]] }]],
+    };
+    // Every write method has its call here, so a new one cannot be left out.
+    expect(writes.toSorted()).toEqual(Object.keys(args).toSorted());
+
+    for (let method of writes) {
+      sheetsRequests.requests.length = 0;
+      let refused = await hooks().callDriveNativeAfter(
+        folder.facet, FOLDER, "openGoogleSheet", "sheet-1", method, args[method], [],
+        async () => { drive.files.get("sheet-1")!.parents = ["elsewhere"]; });
+      drive.files.get("sheet-1")!.parents = [ROOT];
+      expect(refused.error, method).toBe(OUT_OF_SCOPE);
+      expect(refused.actionId, method).toBeUndefined();
+      expect(sheetsRequests.requests, method).toEqual([]);
+    }
+  });
+
+  it("reads queued rows with the writes grant withdrawn, as far as Google answers", async () => {
+    let provider = budget();
+    serve(provider);
+    let account = connection(ACCOUNT);
+    await account.queued("sheet-1", [{ op: "insertRows", sheet: "Sales", at: 3 }]);
+    await hooks().setDriveGrants([GOOGLE_DRIVE_RESOURCE.urlPattern]);
+    let before = provider.requests.length;
+
+    let read = await account.read("sheet-1", "Sales!A2:B4");
+
+    expect(read.value).toEqual({ range: "Sales!A2:B4", values: [["EMEA", "4"], [null, null], ["APAC", "5"]] });
+    // The rows a queued change moves are read by data filter, which takes a grant that may edit.
+    expect(provider.requests.slice(before).some(url => url.pathname.endsWith("ByDataFilter"))).toBe(true);
+  });
+
+  it("keeps a deployment's read-only setting: no editable session, no kind, and a queued change waits", async () => {
+    let provider = budget();
+    serve(provider);
+    let account = connection(ACCOUNT);
+    let queued = await account.queued("sheet-1", [{ op: "writeCells", range: "Sales!B2", values: [[6]] }]);
+    await account.restart();
+    let readOnly = connection({ ...ACCOUNT, deployment: "read" }, account.facet);
+
+    let refused = await readOnly.call("sheet-1", "updateSpreadsheet", []);
+    expect(refused.error).toBe('The RPC receiver does not implement the method "updateSpreadsheet".');
+    expect(await readOnly.autoApprovable()).toEqual([]);
+    expect(await readOnly.apply(queued)).toBe(DEPLOYMENT_READ_ONLY);
+    expect(provider.batches).toEqual([]);
+    expect(await readOnly.queuedIds()).toEqual([queued]);
+
+    await readOnly.restart();
+    expect(await account.apply(queued)).toBeNull();
+    expect(provider.get("Sales!B2")).toBe(6);
+  });
+
+  it("lists the spreadsheets' kinds where the binding can edit them", async () => {
+    serve(budget());
+    expect(await connection(ACCOUNT).autoApprovable())
+      .toEqual([COMMENTS, ...DRIVE_SLIDES_KINDS, ...DRIVE_SHEETS_KINDS, ...DRIVE_DOCS_KINDS]);
+
+    let spreadsheetFile = connection(fileBinding("sheet-1"));
+    expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS]);
+    await spreadsheetFile.describe();
+    expect(await spreadsheetFile.autoApprovable()).toEqual([COMMENTS, ...DRIVE_SHEETS_KINDS]);
   });
 });

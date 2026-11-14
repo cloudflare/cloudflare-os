@@ -62,6 +62,22 @@ export type MarkerEntry = { id: number; sentAt: number; unknown?: true };
  */
 export const MARKER_RETENTION_MS = 10 * 60 * 1000;
 
+/** How many markers no send can still commit are kept, so that later batches delete them. */
+const MAX_STALE_MARKERS = 20;
+
+/**
+ * The markers to store: every one a send could still commit, and of the rest the
+ * `MAX_STALE_MARKERS` most recently sent. The first part is bounded too: Google takes at most 60
+ * write requests a minute from a user, so about 600 markers at most are sent within the window, a
+ * few tens of KB, under the 128 KiB a stored value may hold.
+ */
+export function retainedMarkers(entries: readonly MarkerEntry[], now: number): MarkerEntry[] {
+  let open = (entry: MarkerEntry) => now < entry.sentAt + MARKER_RETENTION_MS;
+  let closed = new Set(entries.filter(entry => !open(entry))
+    .toSorted((a, b) => a.sentAt - b.sentAt).slice(-MAX_STALE_MARKERS));
+  return entries.filter(entry => open(entry) || closed.has(entry));
+}
+
 /** What an approved change is written with, and where the markers it leaves are kept. */
 export type SheetsHost = {
   api: GoogleSheetsApi;
@@ -449,10 +465,14 @@ function sheetBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition
   };
 }
 
-/** The Sheets change set, bound once per spreadsheet's journal. */
-export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>({
+/** Each Sheets change's definition, which a Drive connection reuses for the files it reaches. */
+export const SHEETS_DEFINITIONS: { [K in keyof SheetsActions]: ActionDefinition<SheetsActions[K], SheetsHost> } = {
   editSheetValues: sheetBatch(EDIT_SHEET_VALUES, true),
   formatSheets: sheetBatch(FORMAT_SHEETS, true),
   editSpreadsheet: sheetBatch(EDIT_SPREADSHEET, true),
   updateSpreadsheet: sheetBatch(UPDATE_SPREADSHEET, false),
-}, { fence: "none", vendorId: "google" });
+};
+
+/** The Sheets changes of a directly bound spreadsheet. */
+export const SHEETS_ACTIONS = defineActions<SheetsHost, SheetsActions>(
+  SHEETS_DEFINITIONS, { fence: "none", vendorId: "google" });

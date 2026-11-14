@@ -1,5 +1,8 @@
 import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";
 import type { GoogleDriveFolderReadSession, GoogleDriveReadSession } from "./drive-read-types";
+import type { GoogleDocEditSession } from "./docs-types";
+import type { GoogleSpreadsheetSession } from "./sheets-types";
+import type { GooglePresentationSession } from "./slides-types";
 export type * from "./drive-read-types";
 
 /** Options for {@link DriveCommentWrites.comment}. */
@@ -238,10 +241,31 @@ export interface DriveSharing {
 
 /**
  * An account binding with read and write access: everything {@link GoogleDriveReadSession} reads,
- * anywhere the connected account can reach in Google Drive, plus comment writes, sharing and moves.
+ * anywhere the connected account can reach in Google Drive, plus edits of Google Docs, Sheets and
+ * Slides files, comment writes, sharing and moves.
  */
 export interface GoogleDriveSession
     extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
+  /**
+   * Open an in-scope native Google Doc as an independently disposable capability that reads it
+   * and queues edits to it, each for the user's approval, as one connected on its own does. Its
+   * comments are this binding's own comment writes.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;
+
+  /**
+   * Open an in-scope native Google Sheet as an independently disposable capability that reads it
+   * and queues changes to it, each for the user's approval, as one connected on its own does.
+   */
+  openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;
+
+  /**
+   * Open an in-scope native Google Slides presentation as an independently disposable capability
+   * that reads it and queues changes to it, each for the user's approval, as one connected on its
+   * own does.
+   */
+  openGoogleSlides(fileId: string): Promise<GooglePresentationSession>;
+
   /**
    * Queue moving a file or folder into folder `folderId`, out of the folder it is in. Both must be
    * in the same drive: one shared drive, or neither in a shared drive. Something in the trash, or
@@ -263,20 +287,61 @@ export interface GoogleDriveSession
 
 /**
  * An exact-file binding with read and write access: everything {@link GoogleDriveReadSession}
- * reads of its one Drive file, the only file its methods accept, plus comment writes and sharing
- * on it. It cannot move the file.
+ * reads of its one Drive file, the only file its methods accept, plus edits when it is a Google
+ * Docs, Sheets or Slides file, comment writes and sharing on it. It cannot move the file.
  */
 export interface GoogleDriveFileSession
-    extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {}
+    extends GoogleDriveReadSession, DriveCommentWrites, DriveSharing {
+  /**
+   * Open an in-scope native Google Doc as an independently disposable capability that reads it
+   * and queues edits to it, each for the user's approval, as one connected on its own does. Its
+   * comments are this binding's own comment writes.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;
+
+  /**
+   * Open an in-scope native Google Sheet as an independently disposable capability that reads it
+   * and queues changes to it, each for the user's approval, as one connected on its own does.
+   */
+  openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;
+
+  /**
+   * Open an in-scope native Google Slides presentation as an independently disposable capability
+   * that reads it and queues changes to it, each for the user's approval, as one connected on its
+   * own does.
+   */
+  openGoogleSlides(fileId: string): Promise<GooglePresentationSession>;
+}
 
 /**
  * A folder binding with read and write access: navigation within the originally selected folder as
- * {@link GoogleDriveFolderReadSession} offers it, plus comment writes on the positioned folder's
- * direct children, sharing of those children and of the positioned folder itself, and moves within
- * the originally selected folder.
+ * {@link GoogleDriveFolderReadSession} offers it, plus edits of the Google Docs, Sheets and Slides
+ * files among the positioned folder's direct children, comment writes on those children, sharing of them
+ * and of the positioned folder itself, and moves within the originally selected folder.
  */
 export interface GoogleDriveFolderSession
     extends GoogleDriveFolderReadSession, DriveCommentWrites, DriveSharing {
+  /**
+   * Open a live direct-child native Google Doc as an independently disposable capability that
+   * reads it and queues edits to it, each for the user's approval, as one connected on its own
+   * does. Its comments are this binding's own comment writes.
+   */
+  openGoogleDoc(fileId: string): Promise<GoogleDocEditSession>;
+
+  /**
+   * Open a live direct-child native Google Sheet as an independently disposable capability that
+   * reads it and queues changes to it, each for the user's approval, as one connected on its own
+   * does.
+   */
+  openGoogleSheet(fileId: string): Promise<GoogleSpreadsheetSession>;
+
+  /**
+   * Open a live direct-child native Google Slides presentation as an independently disposable
+   * capability that reads it and queues changes to it, each for the user's approval, as one
+   * connected on its own does.
+   */
+  openGoogleSlides(fileId: string): Promise<GooglePresentationSession>;
+
   /**
    * Open a live direct child folder as an independently disposable capability, with the same
    * access.

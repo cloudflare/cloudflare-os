@@ -589,8 +589,8 @@ function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinitio
   };
 }
 
-/** The Slides change set, bound once per presentation's journal. */
-export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
+/** Each Slides change's definition, which a Drive connection reuses for the files it reaches. */
+export const SLIDES_DEFINITIONS: { [K in keyof SlidesActions]: ActionDefinition<SlidesActions[K], SlidesHost> } = {
   editText: designBatch(EDIT_SLIDES_TEXT, true),
   formatSlides: designBatch(FORMAT_SLIDES, true),
   editSlides: designBatch(EDIT_SLIDES, true),
@@ -739,4 +739,8 @@ export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>({
       };
     }),
   },
-}, { fence: "none", vendorId: "google" });
+};
+
+/** The Slides changes of a directly bound presentation. */
+export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>(
+  SLIDES_DEFINITIONS, { fence: "none", vendorId: "google" });

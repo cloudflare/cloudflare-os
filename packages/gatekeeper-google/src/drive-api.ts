@@ -94,8 +94,9 @@ export type DriveFile = {
  * asked about and must never see, so it fetches only what membership is decided from, plus what
  * this account may do, which a write is checked against in the same read. Each capability is what
  * one thing is decided from: `canComment` a comment, `canShare` a sharing change,
- * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file. One a part does
- * not carry is absent here, which reads as "cannot".
+ * `canAddChildren` a move's destination, `canMoveItemWithinDrive` a move's file, `canEdit` an edit
+ * of a Doc, Sheet or Slides file. One a part does not carry is absent here, which reads as
+ * "cannot".
  */
 export type DriveScopeNode = {
   id: string;
@@ -110,11 +111,13 @@ export type DriveScopeNode = {
   canShare?: boolean;
   canAddChildren?: boolean;
   canMoveItemWithinDrive?: boolean;
+  canEdit?: boolean;
 };
 
 /** Field mask for the facts {@link DriveApi.getScopeNodes} uses to prove scope. */
 const DRIVE_SCOPE_NODE_FIELDS = "id,mimeType,parents,driveId,trashed," +
-  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive)";
+  "capabilities(canListChildren,canComment,canShare,canAddChildren,canMoveItemWithinDrive," +
+  "canEdit)";
 
 /** Field mask for {@link DriveApi.checkObservations}: a scope node, and whether it may be downloaded. */
 const DRIVE_OBSERVATION_FIELDS =
@@ -598,6 +601,7 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
   let canShare = optionalCapability(value.capabilities, "canShare");
   let canAddChildren = optionalCapability(value.capabilities, "canAddChildren");
   let canMoveItemWithinDrive = optionalCapability(value.capabilities, "canMoveItemWithinDrive");
+  let canEdit = optionalCapability(value.capabilities, "canEdit");
   return {
     id: fileId,
     ...optionalFields(value, ["mimeType", "driveId"]),
@@ -609,6 +613,7 @@ function parseDriveScopeNode(body: string, fileId: string): DriveScopeNode {
     ...(canShare === undefined ? {} : { canShare }),
     ...(canAddChildren === undefined ? {} : { canAddChildren }),
     ...(canMoveItemWithinDrive === undefined ? {} : { canMoveItemWithinDrive }),
+    ...(canEdit === undefined ? {} : { canEdit }),
   };
 }
 

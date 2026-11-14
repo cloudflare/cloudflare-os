@@ -16,6 +16,9 @@ export const DRIVE_READ_TYPES_MODULE_PREFIX =
 export const DRIVE_TYPES_MODULE_PREFIX =
   'import type { DocSuggestion, DriveComment, DriveCommentReply } from "./comment-types";\n' +
   'import type { GoogleDriveFolderReadSession, GoogleDriveReadSession } from "./drive-read-types";\n' +
+  'import type { GoogleDocEditSession } from "./docs-types";\n' +
+  'import type { GoogleSpreadsheetSession } from "./sheets-types";\n' +
+  'import type { GooglePresentationSession } from "./slides-types";\n' +
   'export type * from "./drive-read-types";\n\n';
 
 /** Module-only prefix of the Gmail declaration; the flat vendor bundle gets RpcStub from chat-types instead. */
