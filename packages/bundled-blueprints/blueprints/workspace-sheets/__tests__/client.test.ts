@@ -335,6 +335,22 @@ describe("sync", () => {
     expect(editor.value).toBe("edited");
   });
 
+  it("renames the sheet an unsaved formula reads when it was renamed while this tab was disconnected", async () => {
+    const data = { ...sheet("s1"), name: "Data" }, other = sheet("s2");
+    const book = (name: string) => ({ title: "Book", sheetOrder: ["s2", "s1"], sheets: { s1: { ...data, name }, s2: other } });
+    const h = await loadClient(other, {}, { ...book("Data"), cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Data!A1") } } });
+    const snapshot = deferred<OpenedDocument>();
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => { h.callbacks = callback; return snapshot.promise; });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    typeIntoActiveCell("=Data!A1*2");
+    snapshot.resolve({ revision: 3, lastModified: 0, ...book("Renamed"), cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Renamed!A1", 3) } }, cursors: {} });
+    await settle();
+    const sent = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).cellOps ?? []).map((op) => op.value);
+    expect(sent).toContain("=Renamed!A1*2");
+    expect(sent).not.toContain("=Data!A1*2");
+    expect(shown("A1")).toBe("14");
+  });
+
   it("drops an unsaved formula reading a sheet whose rows moved while this tab was disconnected", async () => {
     const data = { ...sheet("s1"), name: "Data" }, other = sheet("s2");
     const book = (layout: number) => ({ title: "Book", sheetOrder: ["s2", "s1"], sheets: { s1: { ...data, layout }, s2: other } });

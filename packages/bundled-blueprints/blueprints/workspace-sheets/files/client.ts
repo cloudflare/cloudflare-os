@@ -7326,7 +7326,8 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
 // Remote structure replaces the model's (the server keeps the last one written). Local changes
 // still pending are diffed against `ackedStructure` and replayed on top, field by field, so a
 // remote chart and a local filter on the same sheet both survive.
-function applyStructure(s: Structure, revision: number) {
+// `namesBefore`: each sheet's name before this structure, by ID (a reconnect clears the sheets first).
+function applyStructure(s: Structure, revision: number, namesBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.name]))) {
   // A late event mustn't undo a newer structure already applied.
   if (revision < ackedStructureRevision) return;
   // A structure awaiting its save reply is local too: the server applies it after this remote
@@ -7334,7 +7335,6 @@ function applyStructure(s: Structure, revision: number) {
   const localSource = pendingStructure || inFlightStructure;
   const local = localSource ? localStructureChanges(localSource, s) : null;
   if (s.title != null) model.title = s.title;
-  const namesBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.name]));
   model.sheetOrder = s.sheetOrder.slice();
   for (const id of model.sheetOrder) model.sheets[id] = { ...model.sheets[id], ...s.sheets[id] };
   // Stored formulas follow a remote rename on the server; unsaved ones follow it here (unless this
@@ -7449,9 +7449,10 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
   const newerAck = reconcile && ackedStructure && ackedStructureRevision > model.revision ? { structure: structuredClone(ackedStructure), revision: ackedStructureRevision } : null;
   const structure = newerAck?.structure ?? { title: doc.title || "Untitled spreadsheet", sheetOrder: doc.sheetOrder || [], sheets: doc.sheets || {} };
   if (reconcile && ackedStructure) {
+    const namesBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.name]));
     model.sheets = {};
     ackedStructureRevision = -1;
-    applyStructure(structure, newerAck?.revision ?? model.revision);
+    applyStructure(structure, newerAck?.revision ?? model.revision, namesBefore);
   } else {
     model.title = structure.title;
     model.sheetOrder = structure.sheetOrder.slice();
