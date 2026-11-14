@@ -971,7 +971,14 @@ export class Gadget extends DurableObject<unknown, unknown> {
         else deletes.push({ sheetId, ref });
       }
     }
-    const named = new Set((Array.isArray(operation.lineOps) ? operation.lineOps : []).filter(isLoose).map((op) => String(op.sheetId || "")).filter((id) => orders.has(id)));
+    // Every sheet the operation could have made or changed the lines of: those its line
+    // operations and replacements name, and those its structure lists (it may have created them).
+    const structureIds = isLoose(operation.structure) && Array.isArray(operation.structure.sheetOrder) ? operation.structure.sheetOrder.map(String) : [];
+    const named = new Set([
+      ...(Array.isArray(operation.lineOps) ? operation.lineOps : []).filter(isLoose).map((op) => String(op.sheetId || "")),
+      ...(Array.isArray(operation.sheetReplacements) ? operation.sheetReplacements : []).filter(isLoose).map((rep) => String(rep.sheetId || "")),
+      ...structureIds,
+    ].filter((id) => orders.has(id)));
     return {
       status: conflicts.length ? "conflict" : "applied",
       revision: meta.revision,

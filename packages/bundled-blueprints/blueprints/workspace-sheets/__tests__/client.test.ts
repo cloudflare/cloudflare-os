@@ -1161,6 +1161,26 @@ describe("a save whose reply was lost", () => {
 });
 
 describe("duplicate a sheet", () => {
+  it("keeps saving the copy after the save that made it lost its reply", async () => {
+    const h = await loadClient(sheet("s1"), { A1: cell("1") });
+    // The first save applies, but its reply is lost; the server answers the resend from storage.
+    let made: Operation | null = null;
+    h.gadget.applyOperation.mockImplementationOnce(async (op: Operation) => { made = op; throw new Error("connection lost"); });
+    h.gadget.applyOperation.mockImplementationOnce(async (op: Operation): Promise<OperationResult> => {
+      const id = op.sheetReplacements![0].sheetId;
+      return { status: "applied", revision: 2, conflicts: [], upserts: [], deletes: [], orders: { [id]: { rows: [[0, 100]], cols: [[0, 26]] } } };
+    });
+    document.querySelector<HTMLElement>(".tab[data-id='s1']")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Duplicate"))!.click();
+    await sleep(600);
+    expect(made).not.toBeNull();
+    typeIntoActiveCell("edited");
+    await settle();
+    const copyId = made!.sheetReplacements![0].sheetId;
+    expect(h.sent.at(-1)!.cellOps).toEqual([expect.objectContaining({ sheetId: copyId, ref: "0:0", value: "edited" })]);
+  });
+
+
   it("saves the copy's formulas by line id, so they follow its lines", async () => {
     const h = await loadClient(sheet("s1"), { A1: cell("1"), A2: cell("2"), B1: cell("=SUM(A1:A2)") });
     document.querySelector<HTMLElement>(".tab[data-id='s1']")!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));

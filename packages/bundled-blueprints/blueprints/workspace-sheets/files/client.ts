@@ -1090,6 +1090,9 @@ function relayout(change: () => void, renumbered: ReadonlySet<string> = new Set(
   const moved = new Set([...after.orders.keys()].filter((id) => model.sheets[id] && before.orders.has(id) && runs(before.orders.get(id)) !== runs(after.orders.get(id))));
   const renamed = [...before.names].some(([id, name]) => after.names.get(id) !== name);
   if (!moved.size && !renamed) return { changed: false, dropped: 0 };
+  // A drag in progress names lines by position: it ends when they move under it.
+  if (fillDrag && moved.has(fillDrag.sheetId)) { fillDrag = null; clearFillPreview(); }
+  if (headerMove && moved.has(activeSheetId)) endHeaderMove();
   for (const id of moved) {
     measuredRowHeights.delete(id);
     if (renumbered.has(id)) continue;

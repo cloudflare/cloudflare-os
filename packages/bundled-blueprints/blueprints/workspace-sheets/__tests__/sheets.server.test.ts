@@ -1222,7 +1222,8 @@ describe("an operation sent again", () => {
     await gadget.applyOperation(mine);
     await gadget.applyOperation({ id: "op-b", senderId: "b", lineIds: true, cellOps: [{ sheetId: copy.id, ref: "1:0", value: "theirs", fmt: null, baseVersion: 0 }] });
     const { revision } = await gadget.getStructure();
-    expect(await gadget.applyOperation(structuredClone(mine))).toMatchObject({ status: "applied", revision });
+    // The answer has the new sheet's lines, though the operation had no line operations.
+    expect(await gadget.applyOperation(structuredClone(mine))).toMatchObject({ status: "applied", revision, orders: { [copy.id]: { rows: [[0, 5]], cols: [[0, 3]] } } });
     expect(await values(gadget, "A1:A2", "Copy")).toEqual([["copied"], ["theirs"]]);
   });
 
