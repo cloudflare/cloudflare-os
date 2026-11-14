@@ -263,3 +263,35 @@ end of their section.
   they haven't confirmed, then drops into the live gadget. Limiting someone who is using it live
   disconnects them back to the snapshot. The link row stays Can use / No access, and the choice
   only appears where the deployment serves snapshots.
+
+## Porting onto workshop-app
+
+The prototype above was built in `workshop-frontend` from Figma alone. It is being ported onto
+Balint's `packages/workshop-app`, which is the baseline: where the two disagree his choice stands,
+and ours is redone in his idiom (layers, tested plain classes, `Card`, the arrival spring, a gallery
+entry for every block). What was decided on the way:
+
+- **Accepting.** His client accepts a turn's code on its own (`autoAccept.ts`), and so does our
+  kernel (`#autoAcceptTurn`). Both go through the chat lock, so they are kept together. The viewer's
+  own accepts are not marked, as he has it, so Undo/Restore lives on the answer that ended the
+  turn as a message action, and on the divider for someone else's accepts and for restores.
+- **Keep these changes?** Ported as a card at the end of the live rows, with the same 1.5s grace.
+  Discard asks again.
+- **Archive.** Left out of chat settings: his sidebar lists workspaces, not chats, so archiving a
+  chat would have no visible effect.
+- **Chat settings.** Library and Settings tabs, with the tab in `?tab=` as on a workspace's page.
+  Notifications are the workspace's, and the row says so.
+- **Workspace page.** Gains a Settings tab: notifications, cost, and Delete for the owner
+  (`Overseer.deleteSelf`). Figma's Activity tab is not built.
+- **Create workspace.** Figma's page is built at `/workspaces/new`. The optional description is
+  left out because the API has no field for it. "Add new" on the Workspaces page opens this page
+  rather than going home.
+- **Search.** The prototype's command palette, reduced to the app's pages and workspaces, which
+  come from the list the sidebar already has. There are no blueprints in this app.
+- **Account menu.** Only who you are and Sign out. His app follows the system's appearance, so
+  there is no theme choice, and the admin pages stay in the old app.
+- **Always approve.** Asks first, saying the approval reaches every chat and gadget in the
+  workspace.
+- **Library.** Items open as their own page, as he does it, not beside the Library. Google files
+  can't be starred (there is no kind for them) but can be removed.
+- **Sharing.** Toasts become notes under the invite field. Avatars are initials only.
