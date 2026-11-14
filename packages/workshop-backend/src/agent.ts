@@ -570,9 +570,12 @@ export interface AgentHooks {
    * plus connection requests from before agents named their own). `chatMessages` is the caller's
    * in-memory copy of the chat log, which is both scanned and stamped in place -- storage reads
    * return fresh deserialized objects, so stamping a separately-listed copy would leave the
-   * caller's replay blind to the new names until the next turn.
+   * caller's replay blind to the new names until the next turn. The chat's context, as the seed
+   * layer changes it, isn't persisted once `abortSignal` fires: whatever cancelled the caller may
+   * have written the context since it was read.
    */
-  prepareChatBindings(chatId: number, chatMessages: AiChatMessage[]): Promise<SeedBindingInfo[]>;
+  prepareChatBindings(chatId: number, chatMessages: AiChatMessage[], abortSignal?: AbortSignal)
+      : Promise<SeedBindingInfo[]>;
 
   /**
    * Run one executeCode tool call. `worktreeTurn` is the turn's worktree state (see
@@ -1584,6 +1587,36 @@ export async function runAgent(
   }
 }
 
+/** Where compactChat cuts the chat, and a check its request must pass to be sent. */
+export type IdleCompaction = {
+  /** The first sequence to keep. */
+  compactTo: number;
+  /** Sees the summary request as it will be sent, and refuses it by throwing. */
+  beforeSend: (payload: unknown) => void;
+};
+
+/**
+ * Has Anthropic compact an idle chat at `idle.compactTo`, as a turn would before prompting the
+ * model, but prompts it for nothing else and runs no tools. Its preparation persists what a
+ * turn's would (see AgentHooks.prepareChatBindings) unless `abortSignal` fires first. Resolves
+ * with the checkpoint, unpublished, or undefined if Anthropic can't write the model's summaries
+ * or the chat can't be cut there (see findCompactionBoundary). Throws if the summary fails.
+ */
+export async function compactChat(
+    hooks: AgentHooks,
+    handle: ModelHandle,
+    chatId: number,
+    author: AiChatAuthorInfo,
+    history: ChatHistory,
+    abortSignal: AbortSignal,
+    initiator: AiChatAuthorInfo,
+    modelConfig: AiModelConfig,
+    idle: IdleCompaction): Promise<CompactionCheckpoint | undefined> {
+  let outcome = await runAgentPass(hooks, handle, chatId, author, history, abortSignal, initiator,
+      modelConfig, {executionId: crypto.randomUUID(), barrierSequence: 0}, idle);
+  return outcome.type === "compacted" ? outcome.checkpoint : undefined;
+}
+
 async function runAgentPass(
     hooks: AgentHooks,
     handle: ModelHandle,
@@ -1593,7 +1626,8 @@ async function runAgentPass(
     abortSignal: AbortSignal,
     initiator: AiChatAuthorInfo,
     modelConfig: AiModelConfig,
-    progress: AgentProgress): Promise<AgentPassOutcome> {
+    progress: AgentProgress,
+    idle?: IdleCompaction): Promise<AgentPassOutcome> {
   const progressLogger = logger.with({chatId, executionId: progress.executionId});
 
   // The workspace's gadget registry, snapshotted at the start of the turn (gadgets provisional
@@ -2197,7 +2231,7 @@ async function runAgentPass(
   // below relies on). The seed grows only by the always-available resources the chat gains, which
   // the prompt doesn't list (see below), so the prompt content derived from it stays in the
   // cacheable prefix; chat-local bindings accumulate on top during replay.
-  let seedBindings = await hooks.prepareChatBindings(chatId, chatMessages);
+  let seedBindings = await hooks.prepareChatBindings(chatId, chatMessages, abortSignal);
   for (let seed of seedBindings) {
     if (!chatBindings.has(seed.name)) {
       chatBindings.set(seed.name, {type: "workpiece", id: seed.target});
@@ -4421,12 +4455,21 @@ async function runAgentPass(
   // Compaction runs once the tools exist, because Anthropic summarizes the request a turn would
   // send. Defining the tools has no effects, so nothing has acted when a `/compact` turn returns.
   let compactionTurn = isCompactionTurn(chatMessages);
-  if (compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
-    let compactedTo = findCompactionBoundary(
-        projection, inputBudget, contextTokens,
-        checkpoint?.compactedTo, findProtectedFromSequence(chatMessages));
+  if (idle || compactionTurn || shouldCompactChat(contextTokens, inputBudget)) {
+    let protectedFrom = findProtectedFromSequence(chatMessages);
+    // An idle chat is compacted only by Anthropic, whose summary reads the cached prompt, and only
+    // where findCompactionBoundary could cut.
+    let idleCut = idle !== undefined && supportsAnthropicCompaction(handle.model) &&
+        idle.compactTo > (checkpoint?.compactedTo ?? 0) &&
+        (protectedFrom === undefined || idle.compactTo <= protectedFrom) &&
+        projection.some(({canCut, sequence}) => canCut && sequence === idle.compactTo);
+    let compactedTo = idle === undefined
+        ? findCompactionBoundary(
+            projection, inputBudget, contextTokens, checkpoint?.compactedTo, protectedFrom)
+        : idleCut ? idle.compactTo : undefined;
     if (compactedTo !== undefined) {
-      emitStreamEvent({type: "compacting"});
+      // Clients show a compaction's progress only during a turn.
+      if (!idle) emitStreamEvent({type: "compacting"});
       try {
         let written: Pick<CompactionCheckpoint, "summary" | "anthropicCompactionBlock">;
         if (supportsAnthropicCompaction(handle.model)) {
@@ -4436,7 +4479,8 @@ async function runAgentPass(
           let {summary, block} = await requestAnthropicCompaction(
               handle, stream,
               {messages: [leadingSystemMessage, ...modelMessages.slice(0, keptFrom)]},
-              COMPACTION_SYSTEM_PROMPT, {maxTokens: maxOutputTokens, signal: abortSignal});
+              COMPACTION_SYSTEM_PROMPT,
+              {maxTokens: maxOutputTokens, signal: abortSignal, beforeSend: idle?.beforeSend});
           written = {summary, anthropicCompactionBlock: block};
         } else {
           let summaryMessages = buildSummaryPrompt(projection, compactedTo, handle.model);
@@ -4479,14 +4523,15 @@ async function runAgentPass(
         return {type: "compacted", checkpoint: compacted};
       } catch (error) {
         // Compaction triggers below the limit, so the turn's own prompt still fits and a failed
-        // summary must not fail the turn. Cancellation and an explicit `/compact` do surface.
+        // summary must not fail the turn. Cancellation, an explicit `/compact` and an idle chat's
+        // compaction do surface.
         abortSignal.throwIfAborted();
-        if (compactionTurn) throw error;
+        if (compactionTurn || idle) throw error;
         logger.warn("compaction failed; running the turn without it", {
           event: "agent.compaction.failed", chatId, error,
         });
       } finally {
-        emitStreamEvent({type: "compacted"});
+        if (!idle) emitStreamEvent({type: "compacted"});
       }
     } else if (compactionTurn) {
       // An automatic attempt that finds no boundary just runs the turn, but `/compact` returns
@@ -4494,8 +4539,9 @@ async function runAgentPass(
       emitStreamEvent({type: "compacted", nothingToCompact: true});
     }
   }
-  // `/compact` ends the turn whether or not the boundary could advance; the model is never prompted.
-  if (compactionTurn) return {type: "finished"};
+  // `/compact` ends the turn whether or not the boundary could advance, and an idle chat's
+  // compaction ends with it; the model is never prompted.
+  if (compactionTurn || idle) return {type: "finished"};
 
   if (modelMessages.length === 0 ||
       modelMessages[modelMessages.length - 1].role === "assistant") {
