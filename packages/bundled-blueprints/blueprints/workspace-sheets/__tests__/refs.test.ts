@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { SheetOrder, type LineOp } from "../files/lib/lines.ts";
 import { type RefContext, hasStoredRefs, render, renderRange, storeRange, storedSheets, toStored } from "../files/lib/refs.ts";
 
+/** A line operation without its sheet (the tests name it separately). */
+type SheetLineOp = LineOp extends infer T ? (T extends LineOp ? Omit<T, "sheetId"> : never) : never;
+
 // A workbook of named sheets with their orders.
 function workbook(sheets: Record<string, { name: string; rows?: number; cols?: number }>) {
   const orders = new Map(Object.entries(sheets).map(([id, s]) => [id, SheetOrder.from(null, s.rows ?? 20, s.cols ?? 10)]));
@@ -13,7 +16,7 @@ function workbook(sheets: Record<string, { name: string; rows?: number; cols?: n
     sheetIdByName: (name) => [...names].find(([, n]) => n.toLowerCase() === name.toLowerCase())?.[0],
     sheetName: (id) => names.get(id),
   });
-  const apply = (sheetId: string, op: Omit<LineOp, "sheetId">) => orders.get(sheetId)!.axis(op.axis).apply({ ...op, sheetId } as LineOp);
+  const apply = (sheetId: string, op: SheetLineOp) => orders.get(sheetId)!.axis(op.axis).apply({ ...op, sheetId } as LineOp);
   return { orders, names, ctx, apply };
 }
 const rowIds = (book: ReturnType<typeof workbook>, sheetId: string, from: number, count: number) => book.orders.get(sheetId)!.rows.live().slice(from, from + count);
@@ -47,7 +50,7 @@ describe("stored formulas", () => {
   // The rules the server and grid applied to formula text on an insert or delete (the agent's
   // insertRows/deleteRows and the grid's menu) now fall out of reading ids.
   describe("follow inserted and deleted lines as formulas always did", () => {
-    const cases: [string, string, Omit<LineOp, "sheetId">, string][] = [
+    const cases: [string, string, SheetLineOp, string][] = [
       ["insert above a reference", "=A1+A3", { kind: "insert", axis: "rows", ids: [100, 101], before: 2 }, "=A1+A5"],
       ["insert inside a range", "=SUM(A1:A5)", { kind: "insert", axis: "rows", ids: [100, 101], before: 2 }, "=SUM(A1:A7)"],
       ["insert above a range", "=SUM(A3:A5)", { kind: "insert", axis: "rows", ids: [100], before: 0 }, "=SUM(A4:A6)"],
@@ -80,12 +83,19 @@ describe("stored formulas", () => {
     });
   });
 
+  it("writes a range first line first, each end keeping its own $", () => {
+    const book = workbook({ a: { name: "Sheet1" } });
+    expect(render(toStored("=SUM($B$5:A1)", book.ctx("a")), book.ctx("a"))).toBe("=SUM(A1:$B$5)");
+    expect(render(toStored("=SUM($A5:B$1)", book.ctx("a")), book.ctx("a"))).toBe("=SUM($A$1:B5)");
+  });
+
   it("moves a range's end with the line it ends on", () => {
     const book = workbook({ a: { name: "Sheet1" } });
     const stored = toStored("=SUM(A2:A4)", book.ctx("a"));
-    // Row 4 moved above row 2: the range now spans rows 2–5 by its ends (the cut-insert rule).
+    // Row 4 moved above row 2: the range spans what lies between its ends (the cut-insert rule),
+    // written first row first.
     book.apply("a", { kind: "move", axis: "rows", ids: rowIds(book, "a", 3, 1), before: rowIds(book, "a", 1, 1)[0] });
-    expect(render(stored, book.ctx("a"))).toBe("=SUM(A3:A2)");
+    expect(render(stored, book.ctx("a"))).toBe("=SUM(A2:A3)");
     // Moving rows inside the range keeps it whole.
     const inner = toStored("=SUM(A1:A6)", book.ctx("a"));
     book.apply("a", { kind: "move", axis: "rows", ids: rowIds(book, "a", 2, 2), before: rowIds(book, "a", 4, 1)[0] });
@@ -93,14 +103,14 @@ describe("stored formulas", () => {
   });
 
   it("gives the same result whichever order an insert and a delete land in", () => {
-    const run = (first: Omit<LineOp, "sheetId">, second: Omit<LineOp, "sheetId">) => {
+    const run = (first: SheetLineOp, second: SheetLineOp) => {
       const book = workbook({ a: { name: "Sheet1" } });
       const stored = toStored("=SUM(A2:A6)+A7", book.ctx("a"));
       book.apply("a", first); book.apply("a", second);
       return render(stored, book.ctx("a"));
     };
-    const ins: Omit<LineOp, "sheetId"> = { kind: "insert", axis: "rows", ids: [500], before: 5 };
-    const rm: Omit<LineOp, "sheetId"> = { kind: "delete", axis: "rows", ids: [5, 6] };
+    const ins: SheetLineOp = { kind: "insert", axis: "rows", ids: [500], before: 5 };
+    const rm: SheetLineOp = { kind: "delete", axis: "rows", ids: [5, 6] };
     expect(run(ins, rm)).toBe(run(rm, ins));
     expect(run(ins, rm)).toBe("=SUM(A2:A6)+#REF!");
   });

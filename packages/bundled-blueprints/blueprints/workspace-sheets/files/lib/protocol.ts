@@ -140,6 +140,18 @@ export interface DocumentMeta extends Structure {
   lastModified: number;
   /** `4` marks cells stored by line id (see the server's storage notes); older workbooks are migrated on load. */
   cellStorage?: number;
+  /** The last operations applied, newest last, so one sent again is answered rather than applied twice (see Operation.id). */
+  recentOps?: RecentOperation[];
+  /** For each sheet, the revision its lines last changed at. */
+  linesChanged?: Record<string, number>;
+  /** Ids of sheets deleted lately, which a snapshot built before the deletion can't bring back. */
+  deletedSheets?: string[];
+}
+
+/** An applied operation as the server remembers it: its id and what it refused, by cell key (`refused` is null when that was too much to keep). */
+export interface RecentOperation {
+  id: string;
+  refused: { conflicts: CellDeletion[]; gone: CellDeletion[]; sorted: CellDeletion[]; refusedLines: LineOp[] } | null;
 }
 
 /** A complete workbook snapshot by position, as `getDocument()` returns it: the structure as editors see it, and every sheet's cells by A1 reference with formulas as A1 text. */
@@ -254,12 +266,15 @@ export type SheetReplacement =
   | { sheetId: string; size: { rows: number; cols: number }; uploadId: string; count: number; cells?: undefined };
 
 /**
- * What a client sends to `applyOperation`, applied in this order: line operations, the structure
- * snapshot, sheet replacements, sorts, then per-cell edits. `lineIds` says the cells and structure
- * are by id (the current client); without it they're by position, from an editor that predates
- * ids, which the server translates by where lines are now.
+ * What a client sends to `applyOperation`, applied in this order: sheet replacements, line
+ * operations, the structure snapshot, sorts, then per-cell edits. `lineIds` says the cells and
+ * structure are by id (the current client); without it they're by position, from an editor that
+ * predates ids, which the server translates by where lines are now. `id` names the operation: one
+ * whose reply was lost is sent again as it was, and the server answers it from where things are
+ * now rather than apply it twice (a move or a replacement would undo what came after it).
  */
 export interface Operation {
+  id?: string;
   senderId?: string;
   lineIds?: true;
   lineOps?: LineOp[];

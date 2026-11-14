@@ -19,10 +19,12 @@
 //     only when no line of it is left;
 //   - a range is the lines between its two ends, so lines inserted inside it join it, and moving
 //     a line it ends on moves that end (the cut-and-insert rule spreadsheets use);
-//   - a reference to a deleted sheet is #REF!.
+//   - a reference to a deleted sheet is #REF!;
+//   - on a sheet that started over (a rebuilt pivot table), a line it no longer has is read by
+//     its old position.
 // ---------------------------------------------------------------------------
 import { colToLetter, formulaReferences, letterToCol } from "./formula.ts";
-import type { LineOrder, SheetOrder } from "./lines.ts";
+import { FIRST_NEW_ID, type LineOrder, type SheetOrder } from "./lines.ts";
 import type { Dims, SheetFilter, SheetMeta } from "./protocol.ts";
 
 /** A formula in stored form: references hold line ids (see this module's header). */
@@ -123,26 +125,29 @@ function readEndpoint(text: string | undefined): StoredEndpoint | null {
   return col && row ? { colLock: !!m[1], col, rowLock: !!m[3], row } : null;
 }
 
+// A sheet that starts over (a pivot table rebuilt, see SheetReplacement) has lines 0..n-1 again,
+// so an id below FIRST_NEW_ID that its order doesn't have is position n past its edge, as `@n`.
+function settled(part: LinePart, order: LineOrder): LinePart {
+  return "id" in part && part.id < FIRST_NEW_ID && !order.has(part.id) ? { at: part.id } : part;
+}
 // Where one end of a reference is on an axis now: a live index, or null when its line is gone.
-function singleIndex(part: LinePart, order: LineOrder): number | null {
+function singleIndex(stored: LinePart, order: LineOrder): number | null {
+  const part = settled(stored, order);
   if ("at" in part) return part.at;
   const index = order.indexOf(part.id);
   return index < 0 ? null : index;
 }
-// Where both ends of a range are on an axis now, in the endpoints' own order, after deleted
-// ends walk inward; null when nothing of it is left.
-function spanIndexes(a: LinePart, b: LinePart, order: LineOrder): [number, number] | null {
-  if ("at" in a && "at" in b) return [a.at, b.at];
-  if ("at" in a || "at" in b) {
-    // A range reaching past the edge keeps its placed end, walked forward past deleted lines.
-    const placed = ("at" in a ? b : a) as { id: number }, at = ("at" in a ? a : b) as { at: number };
-    const from = order.liveFrom(placed.id);
-    if (from === null) return null;
-    return "at" in a ? [at.at, from] : [from, at.at];
-  }
+// Where a range is on an axis now, first line first (as spreadsheets write a range, however its
+// ends were typed or have moved), after deleted ends walk inward; null when nothing of it is left.
+// `swapped`: the second end is the first line, so its `$` goes first.
+function spanIndexes(storedA: LinePart, storedB: LinePart, order: LineOrder): { lo: number; hi: number; swapped: boolean } | null {
+  const a = settled(storedA, order), b = settled(storedB, order);
+  const sorted = (x: number, y: number) => (x <= y ? { lo: x, hi: y, swapped: false } : { lo: y, hi: x, swapped: true });
+  if ("at" in a && "at" in b) return sorted(a.at, b.at);
+  if ("at" in a) { const to = order.liveFrom((b as { id: number }).id); return to === null ? null : sorted(a.at, to); }
+  if ("at" in b) { const from = order.liveFrom(a.id); return from === null ? null : sorted(from, b.at); }
   const span = order.span(a.id, b.id);
-  if (!span) return null;
-  return order.before(b.id, a.id) ? [span[1], span[0]] : span;
+  return span && { lo: span[0], hi: span[1], swapped: order.before(b.id, a.id) };
 }
 
 function endpointText(colLock: boolean, col: number, rowLock: boolean, row: number): string | null {
@@ -166,7 +171,9 @@ function renderToken(body: string, ctx: RefContext): string {
   if (!to) return "#REF!";
   const cols = spanIndexes(from.col, to.col, order.cols), rows = spanIndexes(from.row, to.row, order.rows);
   if (!cols || !rows) return "#REF!";
-  const a = endpointText(from.colLock, cols[0], from.rowLock, rows[0]), b = endpointText(to.colLock, cols[1], to.rowLock, rows[1]);
+  const lock = (swapped: boolean, first: boolean, fromLock: boolean, toLock: boolean) => (swapped === first ? toLock : fromLock);
+  const a = endpointText(lock(cols.swapped, true, from.colLock, to.colLock), cols.lo, lock(rows.swapped, true, from.rowLock, to.rowLock), rows.lo);
+  const b = endpointText(lock(cols.swapped, false, from.colLock, to.colLock), cols.hi, lock(rows.swapped, false, from.rowLock, to.rowLock), rows.hi);
   if (a === null || b === null) return "#REF!";
   const sep = (sepField || ":").replace(/^!/, "");
   return prefix + a + sep + (sepField?.startsWith("!") ? prefix : "") + b;

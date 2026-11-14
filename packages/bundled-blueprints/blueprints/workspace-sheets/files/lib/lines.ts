@@ -113,6 +113,8 @@ export class LineOrder {
   isLive(id: number): boolean { return this.built().liveIndex.has(id); }
   /** Every id ever placed, deleted ones included. */
   get placed(): number { return this.ids.length; }
+  /** How many lines the axis started with (ids 0..n-1, deleted ones included): the size a new sheet is created at before its other line operations. */
+  get started(): number { let n = 0; for (const id of this.ids) if (id < FIRST_NEW_ID) n++; return n; }
 
   /**
    * The live lines a span from line `a` to line `b` (either order) covers, as `[first, last]`
@@ -240,8 +242,8 @@ export function parseCellKey(key: string): { row: number; col: number } | null {
 /** The cell key of a row and column id. */
 export function cellKey(row: number, col: number): string { return row + ":" + col; }
 
-// Ids for inserted lines start past every line a sheet can start with, so they never meet one.
-const FIRST_NEW_ID = 2 ** 32;
+/** Where ids for inserted lines start: past every line a sheet can start with, so they never meet one. */
+export const FIRST_NEW_ID = 2 ** 32;
 const NEW_ID_SLOTS = Math.floor((2 ** 52 - FIRST_NEW_ID) / 32);
 
 /**

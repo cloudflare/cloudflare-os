@@ -323,14 +323,40 @@ describe("applyOperation", () => {
   it("refuses line operations that can't apply, and applies the rest", async () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();
-    const taken: LineOp = { kind: "insert", sheetId, axis: "rows", ids: [5], before: null };
+    // An insert whose lines are all placed already happened (its save is being sent again); one
+    // with only some of them placed collides with another.
+    const again: LineOp = { kind: "insert", sheetId, axis: "rows", ids: [5], before: null };
+    const taken: LineOp = { kind: "insert", sheetId, axis: "rows", ids: [5, 2 ** 32 + 96], before: null };
     const everything: LineOp = { kind: "delete", sheetId, axis: "cols", ids: Array.from({ length: 26 }, (_, i) => i) };
     const fine: LineOp = { kind: "insert", sheetId, axis: "cols", ids: [2 ** 32 + 64], before: 0 };
-    const result = await gadget.applyOperation({ lineIds: true, lineOps: [taken, everything, { kind: "move", sheetId, axis: "rows", ids: [3], before: 3 }, fine] });
+    const result = await gadget.applyOperation({ lineIds: true, lineOps: [again, taken, everything, { kind: "move", sheetId, axis: "rows", ids: [3], before: 3 }, fine] });
     expect(result).toMatchObject({ status: "applied", lineOps: [fine], refusedLines: [taken, everything, { kind: "move" }] });
     expect((await firstSheet(gadget)).cols).toBe(27);
     // Malformed ones are skipped outright.
     expect(await gadget.applyOperation({ lineIds: true, lineOps: [{ kind: "insert", sheetId, axis: "rows", ids: [-1], before: null }, { kind: "spin" } as never, null as never] })).toMatchObject({ status: "unchanged" });
+  });
+
+  it("creates a sheet and starts it over before the lines changed after, in one operation", async () => {
+    const gadget = newGadget();
+    const { sheetOrder, sheets } = await gadget.getStructure();
+    const cell = (value: string): Cell => ({ value, fmt: null, version: 1 });
+    const added = { ...sheets[sheetOrder[0]], id: "s_added", name: "Added", rows: 3, cols: 2 };
+    const inserted = 2 ** 32;
+    const lineOps: LineOp[] = [
+      { kind: "insert", sheetId: "s_added", axis: "rows", ids: [inserted], before: 0 },
+      { kind: "delete", sheetId: "s_added", axis: "rows", ids: [1] },
+    ];
+    const result = await gadget.applyOperation({
+      lineIds: true, lineOps,
+      structure: { sheetOrder: [...sheetOrder, "s_added"], sheets: { ...sheets, s_added: added } },
+      sheetReplacements: [{ sheetId: "s_added", size: { rows: 3, cols: 2 }, cells: { "0:0": cell("top"), "1:0": cell("deleted"), "2:0": cell("last") } }],
+      cellOps: [{ sheetId: "s_added", ref: `${inserted}:1`, value: "new", fmt: null, baseVersion: 0 }],
+    });
+    expect(result).toMatchObject({ status: "applied", lineOps });
+    expect(result.refusedLines).toBeUndefined();
+    expect(await values(gadget, "A1:B3", "Added")).toEqual([["", "new"], ["top", ""], ["last", ""]]);
+    // Sent again (its reply was lost), they have nothing left to do.
+    expect(await gadget.applyOperation({ lineIds: true, lineOps })).toMatchObject({ status: "unchanged" });
   });
 
   it("applies a sort's cells all together, and refuses someone's older edit of a sorted cell", async () => {
@@ -1159,5 +1185,87 @@ describe("review regressions", () => {
     await expect(gadget.subscribe(subscriber, { clientId: "c", lines: true })).rejects.toThrow("storage unavailable");
     expect(gadget.subscribers.size).toBe(0);
     expect(disposed).toBe(1);
+  });
+});
+
+// A sheet's first four live row ids.
+const rowIds = async (gadget: Gadget, sheetId: string) => (await gadget.openDocument()).orders![sheetId].rows.flatMap(([start, count, gone]) => gone ? [] : Array.from({ length: count }, (_, i) => start + i)).slice(0, 4);
+
+describe("an operation sent again", () => {
+  // A save whose reply was lost goes again as it was, under its id (Operation.id): the server
+  // answers it from where things are now, applying nothing twice.
+
+  it("doesn't move rows again over someone's later move", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const mine: Operation = { id: "op-a", senderId: "a", lineIds: true, lineOps: [{ kind: "move", sheetId, axis: "rows", ids: [2], before: 0 }] };
+    await gadget.applyOperation(mine);
+    await gadget.applyOperation({ id: "op-b", senderId: "b", lineIds: true, lineOps: [{ kind: "move", sheetId, axis: "rows", ids: [2], before: null }] });
+    const order = await rowIds(gadget, sheetId);
+    expect(order).toEqual([0, 1, 3, 4]);
+    const again = await gadget.applyOperation(structuredClone(mine));
+    const { revision } = await gadget.getStructure();
+    expect(again).toMatchObject({ status: "applied", revision, orders: { [sheetId]: expect.anything() } });
+    expect(await rowIds(gadget, sheetId)).toEqual(order);
+    expect((await gadget.getStructure()).revision).toBe(revision);
+  });
+
+  it("doesn't replace a sheet again over someone's later edit", async () => {
+    const gadget = newGadget();
+    const { sheetOrder, sheets } = await gadget.getStructure();
+    const copy = { ...sheets[sheetOrder[0]], id: "s_copy", name: "Copy", rows: 5, cols: 3 };
+    const mine: Operation = {
+      id: "op-a", senderId: "a", lineIds: true,
+      structure: { sheetOrder: [...sheetOrder, copy.id], sheets: { ...sheets, [copy.id]: copy }, revision: 1 },
+      sheetReplacements: [{ sheetId: copy.id, size: { rows: 5, cols: 3 }, cells: { "0:0": { value: "copied", fmt: null, version: 1 } } }],
+    };
+    await gadget.applyOperation(mine);
+    await gadget.applyOperation({ id: "op-b", senderId: "b", lineIds: true, cellOps: [{ sheetId: copy.id, ref: "1:0", value: "theirs", fmt: null, baseVersion: 0 }] });
+    const { revision } = await gadget.getStructure();
+    expect(await gadget.applyOperation(structuredClone(mine))).toMatchObject({ status: "applied", revision });
+    expect(await values(gadget, "A1:A2", "Copy")).toEqual([["copied"], ["theirs"]]);
+  });
+
+  it("answers an edit with the cell as it is now, rather than rebase it over a later one", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const mine: Operation = { id: "op-a", senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "0:0", value: "mine", fmt: null, baseVersion: 0 }, { sheetId, ref: "0:1", value: "lost", fmt: null, baseVersion: 3 }] };
+    // B's cell B1 is newer than A's edit of it, which conflicts.
+    await gadget.setCells({ cells: { B1: "x" } });
+    expect(await gadget.applyOperation(mine)).toMatchObject({ status: "conflict", conflicts: [{ ref: "0:1" }] });
+    await gadget.applyOperation({ id: "op-b", senderId: "b", lineIds: true, cellOps: [{ sheetId, ref: "0:0", value: "theirs", fmt: null, baseVersion: 1 }] });
+    const again = await gadget.applyOperation(structuredClone(mine));
+    expect(again).toMatchObject({ status: "conflict", upserts: [{ ref: "0:0", cell: { value: "theirs", version: 2 } }], conflicts: [{ ref: "0:1", cell: { value: "x" } }] });
+    expect(await values(gadget, "A1:B1")).toEqual([["theirs", "x"]]);
+  });
+});
+
+describe("a structure snapshot from before a change", () => {
+  it("doesn't bring back a sheet someone deleted since", async () => {
+    const gadget = newGadget();
+    const { sheetOrder, sheets } = await gadget.getStructure();
+    const second = { ...sheets[sheetOrder[0]], id: "s_two", name: "Two" };
+    const both = { sheetOrder: [...sheetOrder, second.id], sheets: { ...sheets, [second.id]: second } };
+    await gadget.applyOperation({ lineIds: true, structure: { ...both, revision: 1 } });
+    await gadget.deleteSheet({ sheet: "Two" });
+    await gadget.applyOperation({ senderId: "a", lineIds: true, structure: { ...both, revision: 2 }, lineOps: [{ kind: "insert", sheetId: second.id, axis: "rows", ids: [2 ** 32], before: 0 }] });
+    expect((await gadget.getStructure()).sheetOrder).toEqual(sheetOrder);
+  });
+
+  it("starts a filter's sort over when someone else's line change came after it", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId], sheets } = await gadget.getStructure();
+    const filter = { row: 0, endRow: 3, columns: [0], criteria: {}, rowOrder: [3, 1, 2], sort: { column: 0, direction: "asc" as const } };
+    const withFilter = (revision: number) => ({ sheetOrder: [sheetId], sheets: { [sheetId]: { ...sheets[sheetId], filter } }, revision });
+    await gadget.applyOperation({ lineIds: true, structure: withFilter(0) });
+    const { revision } = await gadget.getStructure();
+    expect((await gadget.getStructure()).sheets[sheetId].filter).toMatchObject({ rowOrder: [3, 1, 2], sort: { column: 0 } });
+    // A peer inserts a row inside the table; a snapshot built before it still has the old order.
+    await gadget.applyOperation({ senderId: "b", lineIds: true, lineOps: [{ kind: "insert", sheetId, axis: "rows", ids: [2 ** 32], before: 2 }] });
+    await gadget.applyOperation({ senderId: "a", lineIds: true, structure: withFilter(revision) });
+    expect((await gadget.getStructure()).sheets[sheetId].filter).toMatchObject({ sort: null });
+    // One built after it is kept as sent.
+    await gadget.applyOperation({ senderId: "a", lineIds: true, structure: withFilter(revision + 2) });
+    expect((await gadget.getStructure()).sheets[sheetId].filter).toMatchObject({ sort: { column: 0 } });
   });
 });

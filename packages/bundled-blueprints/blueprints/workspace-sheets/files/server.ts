@@ -31,6 +31,7 @@ import type {
   OperationResult,
   PackedCells,
   PivotSettings,
+  RecentOperation,
   SheetFilter,
   SheetMeta,
   SheetSlice,
@@ -596,6 +597,10 @@ export class Gadget extends DurableObject<unknown, unknown> {
     // An editor from before line ids names cells by position and sends settings by index; it's
     // translated by where lines are now, as it would have been applied before ids.
     const legacy = operation.lineIds !== true;
+    // An operation sent again after its reply was lost is answered, not applied a second time.
+    const opId = !legacy && typeof operation.id === "string" && operation.id ? operation.id.slice(0, 64) : null;
+    const prior = opId ? meta.recentOps?.find((op) => op.id === opId) : undefined;
+    if (prior) return this.replayAck(meta, operation, prior);
     const replacements = (Array.isArray(operation.sheetReplacements) ? operation.sheetReplacements : []).filter(isLoose);
     const sorts = legacy || !Array.isArray(operation.sorts) ? [] : operation.sorts.filter(isLoose);
     const uploads = [...replacements, ...sorts].filter((write) => write.uploadId != null).map((write) => ({ id: String(write.uploadId), write }));
@@ -620,6 +625,61 @@ export class Gadget extends DurableObject<unknown, unknown> {
     const dead = new DeadLines();
     let changed = false, structureChanged = false;
 
+    // --- Sheets this operation creates ------------------------------------
+    // They exist from the start, in identity order at the size they were made with, so the
+    // operation's replacements and line operations can name them.
+    const created = new Set<string>();
+    // A snapshot from before someone deleted a sheet still names it; it stays deleted.
+    const deletedSheets = new Set(meta.deletedSheets || []);
+    const structureIn = isLoose(operation.structure) ? operation.structure : null;
+    if (!legacy && structureIn && Array.isArray(structureIn.sheetOrder)) {
+      for (const raw of structureIn.sheetOrder) {
+        const id = String(raw);
+        if (hasSheet(meta, id) || created.has(id) || !SHEET_ID.test(id) || id === "__proto__" || deletedSheets.has(id)) continue;
+        const incoming: Loose = (isLoose(structureIn.sheets) && Object.hasOwn(structureIn.sheets, id) && isLoose(structureIn.sheets[id]) && structureIn.sheets[id]) || {};
+        orders.set(id, SheetOrder.from(null, clampInt(incoming.rows, 1, MAX_ROWS, DEFAULT_ROWS), clampInt(incoming.cols, 1, MAX_COLS, DEFAULT_COLS)));
+        changedOrders.add(id); created.add(id);
+      }
+    }
+
+    // --- Whole-sheet replacements -----------------------------------------
+    // By id (the current client), a replacement comes before the line operations: the sheet starts
+    // over, and lines changed after it apply to it. By position (an older editor), it comes after
+    // the structure, as it always has.
+    const replaced = new Map<string, Map<string, Cell>>(); // sheetId -> its new cells
+    const replaceSheets = () => {
+      for (const rep of replacements) {
+        const id = String(rep.sheetId || "");
+        if (legacy ? !hasSheet(meta, id) : !orders.has(id)) continue;
+        const staged = rep.uploadId != null ? (this.uploads.get(String(rep.uploadId)) as Upload).cells : null; // checked above
+        let next: Map<string, Cell>;
+        if (legacy) {
+          // By position: the cells at the lines' current places (an older editor's insert or sort).
+          const order = orders.get(id)!, ctx = new OrderBook(meta, orders).ctx(id);
+          next = new Map();
+          for (const [ref, cell] of sanitizeCellEntries(rep.cells, isGridRef)) {
+            const p = parseCellRef(ref), key = p && order.keyAt(p.r, p.c);
+            if (key) next.set(key, { ...cell, value: clipValue(toStored(cell.value, ctx)) });
+          }
+        } else {
+          // A regenerated sheet starts over in identity order at its new size.
+          const size: Loose = isLoose(rep.size) ? rep.size : {}, now = orders.get(id)!;
+          const rows = clampInt(size.rows, 1, MAX_ROWS, now.rows.size), cols = clampInt(size.cols, 1, MAX_COLS, now.cols.size);
+          orders.set(id, SheetOrder.from(null, rows, cols)); changedOrders.add(id);
+          next = new Map();
+          for (const [key, cell] of staged || sanitizeCellEntries(rep.cells, isCellKey)) {
+            const ids = parseCellKey(key);
+            if (ids && ids.row < rows && ids.col < cols) next.set(key, { ...cell, version: Math.max(1, cell.version) });
+          }
+          structureChanged = true;
+        }
+        writer.replace(id, next);
+        replaced.set(id, next);
+        changed = true;
+      }
+    };
+    if (!legacy) replaceSheets();
+
     // --- Line operations, by id, in order ---------------------------------
     const lineOps: LineOp[] = [], refusedLines: LineOp[] = [];
     const applyLine = (op: LineOp) => {
@@ -628,19 +688,24 @@ export class Gadget extends DurableObject<unknown, unknown> {
       lineOps.push(op);
     };
     for (const raw of legacy || !Array.isArray(operation.lineOps) ? [] : operation.lineOps) {
-      const op = sanitizeLineOp(raw);
+      const sent = sanitizeLineOp(raw);
+      const order = sent && orders.get(sent.sheetId);
+      if (!sent) continue;
+      if (!order) { refusedLines.push(sent); continue; }
+      const op = remainingLineOp(sent, order.axis(sent.axis));
       if (!op) continue;
-      const order = orders.get(op.sheetId);
-      if (!order || order.axis(op.axis).refusal(op, op.axis === "rows" ? MAX_ROWS : MAX_COLS)) { refusedLines.push(op); continue; }
+      if (order.axis(op.axis).refusal(op, op.axis === "rows" ? MAX_ROWS : MAX_COLS)) { refusedLines.push(op); continue; }
       applyLine(op);
     }
 
     // --- Structure (applied wholesale; omitted fields keep their values) --
+    // A filter sent here was made after this operation's line changes (see afterLineChange).
+    const sentFilters = new Set<string>();
     if (operation.structure) {
       const s = operation.structure;
       // An id becomes part of every key of its sheet, so a new one must be plain (a sheet "a"
       // would otherwise read the blocks of a sheet "a:b", and "__proto__" can't be a key).
-      const incomingOrder = Array.isArray(s.sheetOrder) ? [...new Set(s.sheetOrder.map(String))].filter((id) => hasSheet(meta, id) || (SHEET_ID.test(id) && id !== "__proto__")) : [];
+      const incomingOrder = Array.isArray(s.sheetOrder) ? [...new Set(s.sheetOrder.map(String))].filter((id) => hasSheet(meta, id) || (SHEET_ID.test(id) && id !== "__proto__" && !deletedSheets.has(id))) : [];
       // A workbook always has a sheet, so an order naming none keeps the stored one.
       const order = incomingOrder.length ? incomingOrder : meta.sheetOrder.slice();
       // A snapshot built on an older revision can't name a sheet created since (by the agent or
@@ -655,11 +720,12 @@ export class Gadget extends DurableObject<unknown, unknown> {
       for (const id of order) {
         const incoming: Loose = (s.sheets && Object.hasOwn(s.sheets, id) && isLoose(s.sheets[id]) && s.sheets[id]) || {};
         const exists = hasSheet(meta, id);
-        if (!exists) {
+        if (!legacy && Object.hasOwn(incoming, "filter")) sentFilters.add(id);
+        if (!exists && !orders.has(id)) {
           // A new sheet starts in identity order, at the size it was made with.
           orders.set(id, SheetOrder.from(null, clampInt(incoming.rows, 1, MAX_ROWS, DEFAULT_ROWS), clampInt(incoming.cols, 1, MAX_COLS, DEFAULT_COLS)));
           changedOrders.add(id);
-        } else if (legacy) {
+        } else if (exists && legacy) {
           // An editor by position grows or shrinks a sheet at its end (after an insert, its
           // replacement moved the cells).
           for (const axis of ["rows", "cols"] as Axis[]) {
@@ -687,6 +753,10 @@ export class Gadget extends DurableObject<unknown, unknown> {
           pivot: field("pivot"),
           created: exists ? meta.sheets[id].created : meta.revision + 1,
         });
+        // A filter's row order is by position: one from a snapshot older than someone else's
+        // change to the sheet's lines describes rows that have moved, so it starts over.
+        const filter = views[id].filter;
+        if (!legacy && filter && Object.hasOwn(incoming, "filter") && base !== null && (meta.linesChanged?.[id] ?? 0) > base) views[id].filter = { ...filter, rowOrder: [], sort: null };
       }
       // A pivot's range lives on its source sheet, which may appear later in the order.
       for (const sheet of Object.values(views)) {
@@ -695,45 +765,14 @@ export class Gadget extends DurableObject<unknown, unknown> {
         sheet.pivot.sourceRange = source ? sanitizeRange(sheet.pivot.sourceRange, source.rows, source.cols, false) : "";
       }
       // Drop the cells and lines of removed sheets.
-      for (const id of meta.sheetOrder) if (!Object.hasOwn(views, id)) { writer.clear(id); orders.delete(id); changedOrders.delete(id); batch.delete(ORDER_PREFIX + id); }
+      for (const id of meta.sheetOrder) if (!Object.hasOwn(views, id)) { writer.clear(id); orders.delete(id); changedOrders.delete(id); batch.delete(ORDER_PREFIX + id); noteDeletedSheet(meta, id); }
       meta.sheetOrder = order;
       meta.sheets = Object.fromEntries(order.map((id) => [id, storeSheet(views[id], (sheetId) => orders.get(sheetId))]));
       if (typeof s.title === "string") meta.title = s.title.slice(0, 200) || DEFAULT_TITLE;
       changed = structureChanged = true;
     }
 
-    // --- Whole-sheet replacements -----------------------------------------
-    const replaced = new Map<string, Map<string, Cell>>(); // sheetId -> its new cells
-    for (const rep of replacements) {
-      const id = String(rep.sheetId || "");
-      if (!hasSheet(meta, id)) continue;
-      const staged = rep.uploadId != null ? (this.uploads.get(String(rep.uploadId)) as Upload).cells : null; // checked above
-      let next: Map<string, Cell>;
-      if (legacy) {
-        // By position: the cells at the lines' current places (an older editor's insert or sort).
-        const order = orders.get(id)!, ctx = new OrderBook(meta, orders).ctx(id);
-        next = new Map();
-        for (const [ref, cell] of sanitizeCellEntries(rep.cells, isGridRef)) {
-          const p = parseCellRef(ref), key = p && order.keyAt(p.r, p.c);
-          if (key) next.set(key, { ...cell, value: clipValue(toStored(cell.value, ctx)) });
-        }
-      } else {
-        // A regenerated sheet starts over in identity order at its new size.
-        const size: Loose = isLoose(rep.size) ? rep.size : {};
-        const rows = clampInt(size.rows, 1, MAX_ROWS, meta.sheets[id].rows), cols = clampInt(size.cols, 1, MAX_COLS, meta.sheets[id].cols);
-        orders.set(id, SheetOrder.from(null, rows, cols)); changedOrders.add(id);
-        dead.forget(id);
-        next = new Map();
-        for (const [key, cell] of staged || sanitizeCellEntries(rep.cells, isCellKey)) {
-          const ids = parseCellKey(key);
-          if (ids && ids.row < rows && ids.col < cols) next.set(key, { ...cell, version: Math.max(1, cell.version) });
-        }
-        structureChanged = true;
-      }
-      writer.replace(id, next);
-      replaced.set(id, next);
-      changed = true;
-    }
+    if (legacy) replaceSheets();
 
     // Each sheet's cells this operation has read or written, so later steps see earlier ones.
     const working = new Map<string, Map<string, Cell>>(replaced);
@@ -834,7 +873,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
 
     // Settings and cells on the lines this operation deleted go with them.
     if (lineOps.length) {
-      for (const id of changedOrders) if (meta.sheets[id]) meta.sheets[id] = afterLineChange(meta.sheets[id], orders.get(id)!, lineOps.filter((op) => op.sheetId === id));
+      for (const id of changedOrders) if (meta.sheets[id]) meta.sheets[id] = afterLineChange(meta.sheets[id], orders.get(id)!, lineOps.filter((op) => op.sheetId === id), sentFilters.has(id));
       await this.dropDeadCells(dead, writer, replaced);
       changed = structureChanged = true;
     }
@@ -843,14 +882,20 @@ export class Gadget extends DurableObject<unknown, unknown> {
     const refusals = {
       ...(gone.length ? { gone } : {}), ...(sorted.length ? { sorted } : {}), ...(refusedLines.length ? { refusedLines } : {}),
     };
+    // A sheet whose lines the sender changed gets its order in the reply even if nothing was left
+    // to do (the operation was sent again), so the sender learns where its lines are.
+    const named = new Set((legacy || !Array.isArray(operation.lineOps) ? [] : operation.lineOps).map((op) => String(isLoose(op) ? op.sheetId : "")).filter((id) => orders.has(id)));
     if (!changed) {
-      return this.ackFor(legacy, book, { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts, ...refusals });
+      const ordersOf = named.size ? { orders: Object.fromEntries([...named].map((id) => [id, orders.get(id)!.toStored()])) } : {};
+      return this.ackFor(legacy, book, { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts, ...ordersOf, ...refusals });
     }
 
     await writer.plan(batch);
     for (const id of changedOrders) if (orders.has(id)) batch.put(ORDER_PREFIX + id, orders.get(id)!.toStored(), 2000);
     meta.revision += 1;
     meta.lastModified = Date.now();
+    noteLinesChanged(meta, [...changedOrders].filter((id) => orders.has(id)));
+    if (opId) rememberOperation(meta, opId, { conflicts: conflicts.map(({ sheetId, ref }) => ({ sheetId, ref })), gone, sorted, refusedLines });
     batch.put("meta", meta);
     await batch.flush();
     release();
@@ -864,7 +909,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
       senderId: operation.senderId,
       revision: meta.revision,
       ...(lineOps.length ? { lineOps } : {}),
-      ...(changedOrders.size ? { orders: Object.fromEntries([...changedOrders].filter((id) => orders.has(id)).map((id) => [id, orders.get(id)!.toStored()])) } : {}),
+      ...(changedOrders.size || named.size ? { orders: Object.fromEntries([...new Set([...changedOrders, ...named])].filter((id) => orders.has(id)).map((id) => [id, orders.get(id)!.toStored()])) } : {}),
       // A filter's row order makes a big sheet's structure large, so a cell edit doesn't repeat it.
       ...(structureChanged ? { structure: { sheetOrder: meta.sheetOrder, sheets: meta.sheets, title: meta.title } } : {}),
       upserts,
@@ -884,6 +929,53 @@ export class Gadget extends DurableObject<unknown, unknown> {
     return this.ackFor(legacy, after, { status: conflicts.length ? "conflict" : "applied", ...ack, conflicts, ...refusals });
   }
 
+  // The reply to an operation applied before (its first reply was lost), from where things are
+  // now: the current state of every cell it wrote, which a later write may have changed, and the
+  // orders of the sheets whose lines it changed. What it refused is refused again; a cell that
+  // conflicted is a conflict again, at its version now.
+  async replayAck(meta: DocumentMeta, operation: Operation, prior: RecentOperation): Promise<OperationResult> {
+    const orders = await this.loadOrders(meta);
+    const keys = new Map<string, Set<string>>();
+    const add = (sheetId: unknown, key: unknown) => {
+      const id = String(sheetId || ""), ref = String(key || "");
+      if (!hasSheet(meta, id) || !isCellKey(ref)) return;
+      let set = keys.get(id);
+      if (!set) keys.set(id, set = new Set());
+      set.add(ref);
+    };
+    for (const op of Array.isArray(operation.cellOps) ? operation.cellOps.filter(isLoose) : []) add(op.sheetId, op.ref);
+    for (const sort of Array.isArray(operation.sorts) ? operation.sorts.filter(isLoose) : []) {
+      for (const op of Array.isArray(sort.cellOps) ? sort.cellOps.filter(isLoose) : []) add(sort.sheetId, op.ref);
+    }
+    const refused = prior.refused, conflicted = new Set((refused?.conflicts || []).map(({ sheetId, ref }) => sheetId + "!" + ref));
+    const skipped = new Set([...(refused?.gone || []), ...(refused?.sorted || [])].map(({ sheetId, ref }) => sheetId + "!" + ref));
+    const upserts: CellUpsert[] = [], deletes: CellDeletion[] = [], conflicts: CellConflict[] = [];
+    for (const [sheetId, set] of keys) {
+      const cells = await this.readCells(sheetId, set);
+      for (const ref of set) {
+        if (skipped.has(sheetId + "!" + ref)) continue;
+        const cell = cells.get(ref);
+        if (cell && conflicted.has(sheetId + "!" + ref)) conflicts.push({ sheetId, ref, cell });
+        else if (cell) upserts.push({ sheetId, ref, cell });
+        else deletes.push({ sheetId, ref });
+      }
+    }
+    const named = new Set((Array.isArray(operation.lineOps) ? operation.lineOps : []).filter(isLoose).map((op) => String(op.sheetId || "")).filter((id) => orders.has(id)));
+    return {
+      status: conflicts.length ? "conflict" : "applied",
+      revision: meta.revision,
+      lastModified: meta.lastModified,
+      conflicts,
+      upserts,
+      deletes,
+      structure: { sheetOrder: meta.sheetOrder, sheets: meta.sheets, title: meta.title },
+      ...(named.size ? { orders: Object.fromEntries([...named].map((id) => [id, orders.get(id)!.toStored()])) } : {}),
+      ...(refused?.gone.length ? { gone: refused.gone } : {}),
+      ...(refused?.sorted.length ? { sorted: refused.sorted } : {}),
+      ...(refused?.refusedLines.length ? { refusedLines: refused.refusedLines } : {}),
+    };
+  }
+
   // A reply as its sender reads it: an editor from before line ids gets cells by position.
   ackFor(legacy: boolean, book: OrderBook, result: OperationResult): OperationResult {
     if (!legacy) return result;
@@ -896,11 +988,14 @@ export class Gadget extends DurableObject<unknown, unknown> {
   }
 
   // Deletes the cells on lines an operation deleted: the blocks of deleted rows, and, for deleted
-  // columns, every block of the sheet. A sheet replaced in the same operation is skipped.
-  async dropDeadCells(dead: DeadLines, writer: CellWriter, replaced: Map<string, unknown>): Promise<void> {
+  // columns, every block of the sheet.
+  async dropDeadCells(dead: DeadLines, writer: CellWriter, replaced: Map<string, Map<string, Cell>>): Promise<void> {
     for (const [sheetId, lines] of dead.sheets) {
-      if (replaced.has(sheetId)) continue;
-      const drop = (key: string) => { const ids = parseCellKey(key); if (ids && (lines.rows.has(ids.row) || lines.cols.has(ids.col))) writer.delete(sheetId, key); };
+      const gone = (key: string) => { const ids = parseCellKey(key); return !!ids && (lines.rows.has(ids.row) || lines.cols.has(ids.col)); };
+      const drop = (key: string) => { if (gone(key)) writer.delete(sheetId, key); };
+      // A sheet replaced in this operation holds only its new cells (the writer's own map).
+      const fresh = replaced.get(sheetId);
+      if (fresh) { for (const key of [...fresh.keys()]) if (gone(key)) fresh.delete(key); continue; }
       if (lines.cols.size) {
         for await (const { part } of this.blockParts(sheetId)) for (const key of part.refs) drop(key);
       } else if (lines.rows.size) {
@@ -1121,6 +1216,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
       if (meta.sheetOrder.length <= 1) throw new Error("A workbook needs at least one sheet");
       meta.sheetOrder = meta.sheetOrder.filter((x) => x !== id);
       delete meta.sheets[id];
+      noteDeletedSheet(meta, id);
       const batch = new WriteBatch(this.ctx.storage), writer = new CellWriter(this);
       writer.clear(id);
       await writer.plan(batch);
@@ -1310,6 +1406,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
     for (const [id, order] of changed || []) batch.put(ORDER_PREFIX + id, order.toStored(), 2000);
     meta.revision += 1;
     meta.lastModified = Date.now();
+    noteLinesChanged(meta, [...(changed?.keys() || [])]);
     batch.put("meta", meta);
     await batch.flush();
     this.orderCache = { revision: meta.revision, orders };
@@ -1816,7 +1913,6 @@ class DeadLines {
     if (!lines) this.sheets.set(sheetId, lines = { rows: new Set(), cols: new Set() });
     for (const id of ids) lines[axis].add(id);
   }
-  forget(sheetId: string) { this.sheets.delete(sheetId); }
 }
 
 // A line id list from a client: safe whole numbers, each once.
@@ -1869,12 +1965,14 @@ function sanitizePivotShape(input: unknown): PivotSettings | null {
 
 // A sheet's stored settings after line operations on it: a filter whose header row is gone goes,
 // and a filter's row order (by position) starts over; sizes for deleted lines are dropped.
-function afterLineChange(sheet: SheetMeta, order: SheetOrder, ops: LineOp[]): SheetMeta {
+function afterLineChange(sheet: SheetMeta, order: SheetOrder, ops: LineOp[], filterSent = false): SheetMeta {
   if (!ops.length) return sheet;
   const keep = (dims: Dims, line: LineOrder): Dims => Object.fromEntries(Object.entries(dims).filter(([id]) => line.isLive(Number(id))));
   let filter = sheet.filter;
   if (filter && !order.rows.isLive(filter.row)) filter = null;
-  else if (filter) filter = { ...filter, rowOrder: [], sort: null };
+  // A filter's sort is by position, so it starts over, unless the sender sent the filter as it
+  // stands after these lines changed.
+  else if (filter && !filterSent) filter = { ...filter, rowOrder: [], sort: null };
   return { ...sheet, colWidths: keep(sheet.colWidths, order.cols), rowHeights: keep(sheet.rowHeights, order.rows), filter };
 }
 
@@ -1895,6 +1993,33 @@ function clipValue(value: string): string {
   if (value.length <= MAX_STORED_CHARS) return value;
   const cut = value.slice(0, MAX_STORED_CHARS), open = cut.lastIndexOf("\uE000");
   return open > cut.lastIndexOf("\uE001") ? cut.slice(0, open) : cut;
+}
+// What is left to do of a line operation sent again (its save's reply was lost) or racing another
+// tab's: lines already deleted aren't deleted or moved again, and an insert whose lines are all
+// placed already happened. Null when nothing is.
+// How many applied operations are remembered (see Operation.id), and how many refused cells each
+// may keep; past that only its id is kept, and a resend takes the cells as they are.
+const RECENT_OPERATIONS = 256, RECENT_REFUSALS = 2000;
+function rememberOperation(meta: DocumentMeta, id: string, refused: NonNullable<RecentOperation["refused"]>) {
+  const size = refused.conflicts.length + refused.gone.length + refused.sorted.length + refused.refusedLines.length;
+  meta.recentOps = [...(meta.recentOps || []), { id, refused: size > RECENT_REFUSALS ? null : refused }].slice(-RECENT_OPERATIONS);
+}
+function noteLinesChanged(meta: DocumentMeta, sheetIds: string[]) {
+  if (!sheetIds.length) return;
+  const changed = meta.linesChanged = { ...(meta.linesChanged || {}) };
+  for (const id of sheetIds) changed[id] = meta.revision;
+  for (const id of Object.keys(changed)) if (!meta.sheets[id]) delete changed[id];
+}
+const DELETED_SHEETS = 500;
+function noteDeletedSheet(meta: DocumentMeta, id: string) {
+  meta.deletedSheets = [...(meta.deletedSheets || []).filter((x) => x !== id), id].slice(-DELETED_SHEETS);
+  if (meta.linesChanged) delete meta.linesChanged[id];
+}
+
+function remainingLineOp(op: LineOp, line: LineOrder): LineOp | null {
+  if (op.kind === "insert") return op.ids.length && op.ids.every((id) => line.has(id)) ? null : op;
+  const ids = op.ids.filter((id) => line.isLive(id));
+  return ids.length ? { ...op, ids } : null;
 }
 // How long, and how many, recent sorts are remembered (see sortedSince).
 const SORT_MEMORY_MS = 10 * 60 * 1000;

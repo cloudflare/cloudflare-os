@@ -166,6 +166,8 @@ describe("an editor tab still running the previous client", () => {
     await gadget.subscribe(subscriber(oldEvents), { clientId: "old" });
     await gadget.subscribe(subscriber(newEvents), { clientId: "new", lines: true });
     await gadget.insertRows({ at: 1, count: 1 });
+    // The whole workbook is read when it's delivered, so the next edit waits for that.
+    await settle();
     await gadget.setCells({ cells: { A1: "after", B1: "=A2" } });
     await settle();
     // The current client hears one line operation; nothing about the cells moves.
