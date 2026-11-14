@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { RpcTarget, newMessagePortRpcSession, type RpcStub } from "capnweb";
 import type {
   GatekeeperAppTheme,
+  GatekeeperAppThemeHost,
   GatekeeperAppThemeReceiver,
 } from "@gadgets/workshop-shared/theme";
 import SchedulerPage, { type ScheduleManagementClient } from "./SchedulerPage";
@@ -18,9 +19,8 @@ class AppIframe extends RpcTarget implements GatekeeperAppThemeReceiver {
   }
 }
 
-interface HostCapability extends RpcTarget {
+interface HostCapability extends GatekeeperAppThemeHost {
   readonly ui: RpcStub<ScheduleManagementClient>;
-  subscribeTheme(receiver: GatekeeperAppThemeReceiver): Promise<GatekeeperAppTheme>;
   openWorkspace(workspaceId: string, gadgetId?: number): Promise<void>;
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
   openPrompt(prompt: string): Promise<void>;

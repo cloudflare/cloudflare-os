@@ -39,6 +39,10 @@
       "types": "./src/inline-html-blocks.ts",
       "import": "./src/inline-html-blocks.ts"
     },
+    "./gatekeeper-app": {
+      "types": "./src/gatekeeper-app.ts",
+      "import": "./src/gatekeeper-app.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"

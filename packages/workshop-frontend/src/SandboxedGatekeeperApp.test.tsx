@@ -9,10 +9,16 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  Outlet,
   RouterProvider,
+  type AnyRouter,
 } from "@tanstack/react-router";
 import { newMessagePortRpcSession, RpcStub, RpcTarget } from "capnweb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  GatekeeperAppNavigateOptions,
+  GatekeeperAppPathReceiver,
+} from "@gadgets/workshop-shared/gatekeeper-app";
 import type {
   GatekeeperAppTheme,
   GatekeeperAppThemeReceiver,
@@ -90,6 +96,8 @@ interface TestHost extends RpcTarget {
   resolveWorkspaceTitles(ids: string[]): Promise<(string | null)[]>;
   openPrompt(prompt: string): Promise<void>;
   selectUsers(receiver: GatekeeperUserSelectionReceiver | string): Promise<void>;
+  subscribePath(receiver: GatekeeperAppPathReceiver): Promise<void>;
+  navigatePath(path: unknown, options?: GatekeeperAppNavigateOptions): Promise<void>;
 }
 
 class EmptyUi extends RpcTarget {}
@@ -121,6 +129,19 @@ class TestReceiver extends RpcTarget implements GatekeeperUserSelectionReceiver 
   }
 }
 
+class TestPathReceiver extends RpcTarget implements GatekeeperAppPathReceiver {
+  paths: string[] = [];
+  disposeCount = 0;
+
+  setPath(path: string): void {
+    this.paths.push(path);
+  }
+
+  [Symbol.dispose](): void {
+    this.disposeCount++;
+  }
+}
+
 const ALICE: GatekeeperUserSelection = { ticket: "a".repeat(64), profile: { displayName: "Alice" } };
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -143,26 +164,7 @@ describe("SandboxedGatekeeperApp navigation", () => {
     picker.real = false;
   });
 
-  // Mount the host under a router and complete the iframe's handshake, leaving `host` connected.
-  async function mountApp() {
-    const frame = {
-      iframeHtml: "<!doctype html><title>Scheduler</title>",
-      ui: new RpcStub(new EmptyUi()),
-    } as unknown as GatekeeperUiFrame;
-    const rootRoute = createRootRoute({
-      component: () => <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="scheduler" />,
-    });
-    const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
-    const gadgetRoute = createRoute({
-      getParentRoute: () => rootRoute,
-      path: "/workspace/$id",
-    });
-    const history = createMemoryHistory({ initialEntries: ["/"] });
-    const router = createRouter({
-      history,
-      routeTree: rootRoute.addChildren([indexRoute, gadgetRoute]),
-    });
-
+  async function render(router: AnyRouter) {
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -180,6 +182,56 @@ describe("SandboxedGatekeeperApp navigation", () => {
         ports: [port2],
       }),
     );
+    return iframe;
+  }
+
+  // Mount the host under a router and complete the iframe's handshake, leaving `host` connected.
+  async function mountApp() {
+    const frame = {
+      iframeHtml: "<!doctype html><title>Scheduler</title>",
+      ui: new RpcStub(new EmptyUi()),
+    } as unknown as GatekeeperUiFrame;
+    const rootRoute = createRootRoute({
+      component: () => (
+        <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="scheduler" path="/" />
+      ),
+    });
+    const indexRoute = createRoute({ getParentRoute: () => rootRoute, path: "/" });
+    const gadgetRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "/workspace/$id",
+    });
+    const history = createMemoryHistory({ initialEntries: ["/"] });
+    const router = createRouter({
+      history,
+      routeTree: rootRoute.addChildren([indexRoute, gadgetRoute]),
+    });
+    const iframe = await render(router);
+    return { iframe, router };
+  }
+
+  // Mount the host the way routes/gatekeepers_.$appId.$.tsx does: one splat route hosts it and reads
+  // the app-local path from its own params.
+  async function mountRoutedApp(initialPath: string) {
+    const frame = {
+      iframeHtml: "<!doctype html><title>Context</title>",
+      ui: new RpcStub(new EmptyUi()),
+    } as unknown as GatekeeperUiFrame;
+    const rootRoute = createRootRoute({ component: Outlet });
+    const AppHost = () => {
+      const { _splat } = appRoute.useParams();
+      return <SandboxedGatekeeperApp frame={frame} gatekeeperVendorId="context" path={`/${_splat ?? ""}`} />;
+    };
+    const appRoute = createRoute({
+      getParentRoute: () => rootRoute,
+      path: "/gatekeepers/$appId/$",
+      component: AppHost,
+    });
+    const router = createRouter({
+      history: createMemoryHistory({ initialEntries: [initialPath] }),
+      routeTree: rootRoute.addChildren([appRoute]),
+    });
+    const iframe = await render(router);
     return { iframe, router };
   }
 
@@ -421,5 +473,114 @@ describe("SandboxedGatekeeperApp navigation", () => {
       await vi.waitFor(() => expect(router.state.location.pathname).toBe("/"));
     });
     expect(router.state.location.search).toEqual({ prompt: "Create a daily brief." });
+  });
+
+  it("syncs the app-local path with the URL and browser history without remounting", async () => {
+    const { iframe, router } = await mountRoutedApp("/gatekeepers/context/collections/c1");
+    const receiver = new TestPathReceiver();
+    // The current path arrives through setPath() before subscribePath() resolves.
+    await host!.subscribePath(receiver);
+    expect(receiver.paths).toEqual(["/collections/c1"]);
+    const lastPath = () => receiver.paths.at(-1);
+
+    // Segments carry any character but "/"; the URL percent-encodes them.
+    const filePath = "/collections/c1/files/guides/a b#?%.md";
+    await act(async () => {
+      await host!.navigatePath(filePath);
+    });
+    expect(router.state.location.href).toBe(
+      "/gatekeepers/context/collections/c1/files/guides/a%20b%23%3F%25.md",
+    );
+    await vi.waitFor(() => expect(lastPath()).toBe(filePath));
+    const pushed = router.history.length;
+
+    // The current path is a no-op; replace swaps the entry rather than pushing one.
+    await act(async () => {
+      await host!.navigatePath(filePath);
+      await host!.navigatePath("/collections/c1/files/renamed.md", { replace: true });
+    });
+    await vi.waitFor(() => expect(lastPath()).toBe("/collections/c1/files/renamed.md"));
+    expect(router.history.length).toBe(pushed);
+
+    // Back/Forward reach the live app through the same session, and the iframe stays mounted.
+    await act(async () => router.history.back());
+    await vi.waitFor(() => expect(lastPath()).toBe("/collections/c1"));
+    await act(async () => router.history.forward());
+    await vi.waitFor(() => expect(lastPath()).toBe("/collections/c1/files/renamed.md"));
+    expect(container!.querySelector("iframe")).toBe(iframe);
+
+    await act(async () => {
+      await host!.navigatePath("/");
+    });
+    expect(router.state.location.href).toBe("/gatekeepers/context");
+    await vi.waitFor(() => expect(lastPath()).toBe("/"));
+  });
+
+  it.each([
+    ["a relative path", "collections/c1"],
+    ["an empty segment", "/collections//c1"],
+    ["a trailing slash", "/collections/c1/"],
+    ["a parent segment", "/collections/../admin"],
+    ["a control character", "/collections/c1\n"],
+    ["an oversized path", `/${"x".repeat(4_096)}`],
+    ["a non-string", 42],
+  ])("rejects navigation to %s without moving", async (_name, path) => {
+    const { router } = await mountRoutedApp("/gatekeepers/context/collections/c1");
+    await expect(host!.navigatePath(path)).rejects.toThrow(/gatekeeper app path/i);
+    expect(router.state.location.href).toBe("/gatekeepers/context/collections/c1");
+  });
+
+  it("releases a replaced path receiver and the current one on unmount", async () => {
+    const { router } = await mountRoutedApp("/gatekeepers/context");
+    const first = new TestPathReceiver();
+    const second = new TestPathReceiver();
+    await host!.subscribePath(first);
+    await host!.subscribePath(second);
+    await vi.waitFor(() => expect(first.disposeCount).toBe(1));
+
+    await act(async () => {
+      await host!.navigatePath("/collections/c2");
+    });
+    await vi.waitFor(() => expect(second.paths).toEqual(["/", "/collections/c2"]));
+    expect(first.paths).toEqual(["/"]);
+    expect(router.state.location.href).toBe("/gatekeepers/context/collections/c2");
+
+    await act(async () => root!.unmount());
+    root = undefined;
+    await vi.waitFor(() => expect(second.disposeCount).toBe(1));
+  });
+
+  it("delivers the current path ahead of a change that commits while the app subscribes", async () => {
+    const { router } = await mountRoutedApp("/gatekeepers/context/collections/c1");
+    const receiver = new TestPathReceiver();
+    // Until the app awaits the call, capnweb never pulls its result: this holds the window open
+    // between the host running subscribePath() and the app learning the call's outcome.
+    const subscription = host!.subscribePath(receiver);
+    await vi.waitFor(() => expect(receiver.paths).toEqual(["/collections/c1"]));
+
+    await act(async () => router.history.push("/gatekeepers/context/collections/c2"));
+    await vi.waitFor(() => expect(receiver.paths).toEqual(["/collections/c1", "/collections/c2"]));
+    await subscription;
+    expect(receiver.paths).toEqual(["/collections/c1", "/collections/c2"]);
+  });
+
+  it("keeps the Workshop's own controls out of the frame's reach", async () => {
+    await mountRoutedApp("/gatekeepers/context");
+    const pathReceiver = new TestPathReceiver();
+    await host!.subscribePath(pathReceiver);
+    const theme = await host!.subscribeTheme(new TestThemeReceiver());
+
+    // A stub forwards any name, so the frame can attempt these; the host must refuse them. An RpcPromise
+    // is callable, and expect().rejects calls a function, so wrap it in a real promise first.
+    const frameHost = host as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+    const refusal = (call: Promise<unknown>) =>
+      expect(Promise.resolve(call)).rejects.toThrow("is not a function");
+    await refusal(frameHost.updatePath!("/collections/forged"));
+    await refusal(frameHost.updateTheme!({ mode: "dark", accentColor: null }));
+    await refusal(frameHost.dispose!());
+
+    await host!.subscribePath(pathReceiver);
+    await expect(host!.subscribeTheme(new TestThemeReceiver())).resolves.toEqual(theme);
+    expect(pathReceiver.paths).toEqual(["/", "/"]);
   });
 });
