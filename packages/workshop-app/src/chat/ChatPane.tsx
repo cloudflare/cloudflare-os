@@ -3,6 +3,7 @@ import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
 import { MessageList, type MessageListHandle } from '@/blocks/MessageList'
@@ -13,7 +14,7 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { ChatItemView, type ChatItemHandlers } from './ChatItemView'
-import { continuesRun, EMPTY_FEED, type ChatItem, type OutputItem } from './chatItems'
+import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputItem } from './chatItems'
 import type { ChatSnapshot } from './ChatSession'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { keepChangeLines, keepReason } from './keepChanges'
@@ -39,7 +40,6 @@ export type ChatPaneProps = {
   onOpenOutput?: ChatItemHandlers['onOpenOutput']
   outputHref?: ChatItemHandlers['outputHref']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
-  onAlwaysApprove?: ChatItemHandlers['onAlwaysApprove']
   onOpenChat?: ChatItemHandlers['onOpenChat']
   chatHref?: ChatItemHandlers['chatHref']
 }
@@ -64,7 +64,6 @@ export const ChatPane = ({
   onOpenOutput,
   outputHref,
   onSetUpConnection,
-  onAlwaysApprove,
   onOpenChat,
   chatHref,
 }: ChatPaneProps) => {
@@ -79,6 +78,8 @@ export const ChatPane = ({
   const [disclosure] = useState(() => new DisclosureStore())
   // The message the draft replies to: its row, and the line of it that will be quoted.
   const [reply, setReply] = useState<{ key: string; quote: string }>()
+  // The standing approval last asked about, kept while the question goes so that it still names it.
+  const [asked, setAsked] = useState<{ rule: NonNullable<ActionItem['rule']>; open: boolean }>()
   const composer = useRef<ComposerHandle>(null)
   const list = useRef<MessageListHandle>(null)
   const work = chat.status === 'ready' ? chat.work : EMPTY_FEED.work
@@ -107,8 +108,8 @@ export const ChatPane = ({
       outputHref,
       onApprove: actions.approveAction,
       onDeny: actions.rejectAction,
-      // TODO: confirm, then `Overseer.setAutoApprovedActionKind`, with the auto-approval settings.
-      onAlwaysApprove: onAlwaysApprove ?? unavailable('Standing approvals'),
+      // Asked first: it reaches past this action, to every chat and gadget in the workspace.
+      onAlwaysApprove: (rule) => setAsked({ rule, open: true }),
       onHookEnabledChange: actions.setHookEnabled,
       // TODO: the connect flow, which ends in `Overseer.acceptConnectionRequest`.
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
@@ -119,7 +120,7 @@ export const ChatPane = ({
       onOpenChat,
       chatHref,
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onAlwaysApprove, onOpenChat, chatHref])
+  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onOpenChat, chatHref])
   const keep = chat.status === 'ready' ? chat.keep : undefined
 
 
@@ -260,6 +261,14 @@ export const ChatPane = ({
             : <span role="status" className="appears-late text-sm text-kumo-subtle">Loading conversation…</span>}
         </MessageList>
       )}
+      <ConfirmDialog
+        open={asked?.open === true}
+        onOpenChange={(open) => setAsked((current) => current && { ...current, open })}
+        title={`Always approve “${asked?.rule.actionKind.label}”?`}
+        description="From now on these go ahead without asking, in every chat in this workspace and whichever gadget asks. Any waiting now go ahead too."
+        confirm="Always approve"
+        onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
+      />
     </ChatLayout>
   )
 }

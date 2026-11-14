@@ -54,15 +54,13 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
   onRestart: () => void
 }) => {
   // Made once, so the callbacks handed to the chat stay the same.
-  const [{ session: signedIn, overseer, notice, onSetUpConnection, onAlwaysApprove }] = useState(() => {
+  const [{ session: signedIn, overseer, notice, onSetUpConnection }] = useState(() => {
     const mock = createMockApi(scenario)
     return {
       ...mock,
       notice: new ConnectionNotice(),
-      // What the real connect flow ends with, and what confirming a standing approval does.
+      // What the real connect flow ends with.
       onSetUpConnection: (requestId: string) => mock.overseer.acceptConnectionRequest(requestId, { gatekeeperId: 1 }),
-      onAlwaysApprove: ({ gatekeeperId, actionKind }: Parameters<NonNullable<ChatPaneProps['onAlwaysApprove']>>[0]) =>
-        mock.overseer.setAutoApprovedActionKind(gatekeeperId, actionKind),
     }
   })
   // The fake backend's connection, standing in for the app's: down for a `disconnect` step, and
@@ -96,7 +94,6 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
             <MockLayout
               onOpenScenarios={onOpenScenarios}
               onSetUpConnection={onSetUpConnection}
-              onAlwaysApprove={onAlwaysApprove}
               status={<ConnectionIsland state={connectionState.status === 'hidden' ? undefined : connectionState} onDismiss={notice.dismiss} />}
             >
               <MockControls
@@ -120,10 +117,9 @@ const CHAT = { workspaceId: MOCK_WORKSPACE_ID, chatId: 0 }
  * Laid out as the app lays out a chat, without the sidebar, so what it opens shows beside it. What
  * is shown is kept here rather than in the URL, which belongs to the scenario.
  */
-const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, status, children }: {
+const MockLayout = ({ onOpenScenarios, onSetUpConnection, status, children }: {
   onOpenScenarios: () => void
   onSetUpConnection: ChatPaneProps['onSetUpConnection']
-  onAlwaysApprove: ChatPaneProps['onAlwaysApprove']
   /** Said over the chat at the top of the window, as the app's frame does: the connection island. */
   status: ReactNode
   /** Over the chat, such as the player's controls. */
@@ -206,7 +202,6 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           onOpenAttachment={handlers.onOpenAttachment}
           onOpenOutput={handlers.onOpenOutput}
           onSetUpConnection={onSetUpConnection}
-          onAlwaysApprove={onAlwaysApprove}
         />
       )}
       {children}

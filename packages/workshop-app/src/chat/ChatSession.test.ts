@@ -83,6 +83,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     stopAgent: vi.fn<Overseer['stopAgent']>(async () => {}),
     approveAction: vi.fn<Overseer['approveAction']>(async () => {}),
     rejectAction: vi.fn<Overseer['rejectAction']>(async () => {}),
+    setAutoApprovedActionKind: vi.fn<Overseer['setAutoApprovedActionKind']>(async () => {}),
     denyConnectionRequest: vi.fn<Overseer['denyConnectionRequest']>(async () => {}),
     enableHook: vi.fn<Overseer['enableHook']>(async () => {}),
     disableHook: vi.fn<Overseer['disableHook']>(async () => {}),
@@ -826,6 +827,15 @@ describe('ChatSession', () => {
       fake.actions().entry(log({ state: 'approved', resolvedBy: userAuthor }))
       expect(ready(session).pinned).toEqual([])
       expect(ready(session).items.at(-1)).toMatchObject({ kind: 'action', state: 'approved', resolution: 'Approved by User' })
+    })
+
+    it('approves a kind of action for good through the workspace, leaving the card to its record', async () => {
+      const { fake, session } = await withAction()
+      const rule = { gatekeeperId: 3, actionKind: { tag: 'send', label: 'Send email' } }
+
+      await session.alwaysApprove(rule)
+      expect(fake.setAutoApprovedActionKind).toHaveBeenCalledExactlyOnceWith(3, rule.actionKind)
+      expect(ready(session).pinned).toMatchObject([{ state: 'pending' }])
     })
 
     it('denies through the workspace', async () => {

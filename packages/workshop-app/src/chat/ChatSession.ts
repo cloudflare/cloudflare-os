@@ -3,6 +3,7 @@ import type { ActionLogEntry, AiChatMessage, AiChatMetadata, AiChatStreamEvent, 
 import {
   EMPTY_FEED,
   toChatFeed,
+  type ActionItem,
   type ChatFeed,
   type ChatItem,
   type OutputFormat,
@@ -87,6 +88,7 @@ type Calls =
   | 'stopAgent'
   | 'approveAction'
   | 'rejectAction'
+  | 'setAutoApprovedActionKind'
   | 'denyConnectionRequest'
   | 'enableHook'
   | 'disableHook'
@@ -410,6 +412,13 @@ export class ChatSession {
   approveAction = (actionId: number) => this.#ask((overseer) => overseer.approveAction(actionId))
 
   rejectAction = (actionId: number) => this.#ask((overseer) => overseer.rejectAction(actionId))
+
+  /**
+   * Approves, from now on, every action of a kind its gatekeeper lets be approved for good, across
+   * the workspace, and those of it already waiting (`ActionItem.rule`).
+   */
+  alwaysApprove = ({ gatekeeperId, actionKind }: NonNullable<ActionItem['rule']>) =>
+    this.#ask((overseer) => overseer.setAutoApprovedActionKind(gatekeeperId, actionKind))
 
   denyConnection = (requestId: string) => this.#ask((overseer) => overseer.denyConnectionRequest(requestId))
 
