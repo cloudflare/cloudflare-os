@@ -434,6 +434,23 @@ describe("forwardRangeReader", () => {
     expect(opens[0]).toMatchObject({ handed: 0, cancelled: true });
   });
 
+  it.each(Array.from({ length: 12 }, (_, turns) => turns))(
+    "cancels the stream of an open that answered as the reader was released, %i turns of the queue after the range was asked for",
+    async turns => {
+      let { open, opens } = fakeFile();
+      let { readRange, release } = forwardRangeReader(open, GMAIL_PDF);
+
+      // The open answers at once, so somewhere in these turns the release falls between its
+      // answer and the pass being made of its stream, which nothing held to let go.
+      let pending = readRange(range(1, 120, 10));
+      for (let turn = 0; turn < turns; turn++) await Promise.resolve();
+      release();
+      await expect(pending).rejects.toThrow(LET_GO);
+      await settled();
+      expect(opens).toHaveLength(1);
+      expect(opens[0]!.cancelled).toBe(true);
+    });
+
   it("gives nothing of a range that was given up while its bytes were on their way, and still guards the pass for the next", async () => {
     let { open } = fakeFile();
     let { readRange } = forwardRangeReader(open, GMAIL_PDF);

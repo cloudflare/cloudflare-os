@@ -137,6 +137,12 @@ export function forwardRangeReader(
         if (range.over) throw new Error(LET_GO);
         if (!pass) {
           let stream = await opened({ page: range.page, again: range.again }, () => range.over);
+          // The range can be given up between that answer and here, when nothing holds the
+          // stream yet for whoever gave it up to let go.
+          if (range.over) {
+            void stream.cancel().catch(() => undefined);
+            throw new Error(LET_GO);
+          }
           pass = { reader: stream.getReader(), at: 0 };
         }
         let from = pass;
