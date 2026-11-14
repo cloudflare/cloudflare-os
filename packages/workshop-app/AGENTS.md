@@ -262,7 +262,7 @@ say so, what it has used (`chat/usage.ts`), and deleting it.
 ## Search and the account
 
 Search (`SearchDialog`, from the sidebar or ⌘K/Ctrl+K anywhere, `routes/-AppSearch.tsx`) finds the
-app's pages and every workspace from the list the sidebar already has, so opening it reads
+app's pages (Connections among them) and every workspace from the list the sidebar already has, so opening it reads
 nothing. What fits is ranked by `blocks/searchMatches.ts`: a title that starts with what was typed,
 then a word in it that does, then anywhere; a single letter only at a word's start. The arrow keys
 move through it and Enter goes. The sidebar's avatar opens the account menu, which signs out of
@@ -293,6 +293,28 @@ by when, or by name, and searched by name. The list or grid and the order are th
 workspace's Library tab and a chat's settings show the same rows. A star or a removal shows at once
 and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
 whoever builds where it was made.
+
+## Connections
+
+`connections/` holds the user's connected accounts (`ConnectedAccounts`, a plain class provided
+once by `_app`), the services they can connect (`useServices`) and the Connections page
+(`/connections`, from the sidebar's pill, which stacks the connected services' logos).
+`connectionGroups` sorts services into Connected, Built in and Available; blocks get logos and
+accounts as props. A connection finishes in a popup that ends on the app's own `/connect/handoff`,
+which redeems the ticket with the nonce the opener left in the popup's sessionStorage. In dev, start
+the backend with `PUBLIC_BASE_URL=http://localhost:<app port>` so the gatekeeper hands off to this
+app rather than workshop-frontend. What an agent asks to be connected to is set up from its card in
+the chat (`SetUpConnection`), with an account of the service and the gatekeeper's own form.
+
+## A gadget's own pages
+
+`/app/<id>/settings` is a gadget's settings, from its More and from full screen. `GadgetSettings`
+watches one gadget's workpiece, bindings and hooks, and reports `denied` when the workspace refuses
+the viewer. Who has it (`ShareGadgetDialog`), publishing it as a blueprint and deleting it are on
+the Settings tab, for whoever builds in its workspace; what it is connected to and the automations
+that run it are on Connections. A gadget the viewer cannot open shows `GadgetNoAccess`, beside the
+page and on its settings, rather than an error: Request access writes a message with the link, and
+a blueprint card appears only when its blueprint is known.
 
 ## Beside the page
 
