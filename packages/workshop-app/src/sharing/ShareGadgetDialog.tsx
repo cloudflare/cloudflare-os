@@ -18,7 +18,6 @@ import type { SharingSnapshot } from './SharingSession'
 import {
   accessBeyondGadget,
   canChange,
-  everyGadgetUsersOf,
   gadgetShareRefusal,
   holdersOf,
   levelOf,
@@ -83,7 +82,6 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
   const standing = ready && shareStanding(ready.metadata, user)
   const collaborators = ready?.collaborators ?? []
   const members = standing ? membersOf(collaborators, standing.owner) : []
-  const everyGadget = everyGadgetUsersOf(collaborators)
   const holders = holdersOf(collaborators, gadgetId)
   const viewsAvailable = ready?.metadata.sharedViewsAvailable === true
   const siteName = resolveSiteName(config?.siteName)
@@ -100,7 +98,6 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
   const search = useUserSearch(invite.value, config?.userSearchEnabled === true, [
     ...(standing ? [standing.owner.id] : []),
     ...members.map(({ profile }) => profile.id),
-    ...everyGadget.map(({ profile }) => profile.id),
     ...holders.map(({ profile }) => profile.id),
   ])
   const removal = useRemoval({ session, people: [user, ...(standing ? [standing.owner] : []), ...collaborators], from: 'gadget' })
@@ -223,16 +220,6 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
                 access={linkAccess()}
               />
             </ShareList.Row>
-            {everyGadget.map((person) => (
-              <ShareList.Row key={person.profile.id}>
-                <SharePersonRow
-                  name={person.profile.name}
-                  you={person.profile.id === user.id}
-                  detail={`Every gadget in ${workspaceTitle}`}
-                  access="Can use"
-                />
-              </ShareList.Row>
-            ))}
             {holders.map((person) => {
               const held = levelOf(person, gadgetId)
               const { id, name } = person.profile

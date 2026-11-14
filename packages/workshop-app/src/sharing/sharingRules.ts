@@ -40,16 +40,9 @@ export const shareStanding = (metadata: WorkspaceMetadata, viewer: AiChatAuthorI
 export const membersOf = (collaborators: readonly CollaboratorInfo[], owner: AiChatAuthorInfo) =>
   collaborators.filter(({ profile, access }) => access.role === 'build' && profile.id !== owner.id)
 
-/**
- * People who can use every gadget in the workspace, from before gadgets were shared one at a time.
- * Only the workspace's dialog can take that away, since it takes all of what they have.
- */
-export const everyGadgetUsersOf = (collaborators: readonly CollaboratorInfo[]) =>
-  collaborators.filter(({ access }) => access.role === 'use' && access.gadgetIds === 'all')
-
 /** The people a gadget was given to on its own, rather than with the workspace. */
 export const holdersOf = (collaborators: readonly CollaboratorInfo[], gadgetId: WorkpieceId) =>
-  collaborators.filter(({ access }) => access.role === 'use' && access.gadgetIds !== 'all' && access.gadgetIds.includes(gadgetId))
+  collaborators.filter(({ access }) => access.role === 'use' && access.gadgetIds.includes(gadgetId))
 
 export const levelOf = ({ access }: CollaboratorInfo, gadgetId: WorkpieceId): GadgetLevel =>
   access.role === 'use' && access.viewOnly?.includes(gadgetId) ? 'view' : 'use'
@@ -75,11 +68,8 @@ export const workspaceInviteRefusal = (userId: string, owner: AiChatAuthorInfo, 
 }
 
 /** Access someone has that already covers a gadget, which giving them the gadget would not change. */
-export const accessBeyondGadget = ({ profile, access }: CollaboratorInfo) => {
-  if (access.role === 'build') return `${profile.name} is a member of this workspace, so they can already edit this gadget.`
-  if (access.gadgetIds === 'all') return `${profile.name} can already use every gadget in this workspace.`
-  return undefined
-}
+export const accessBeyondGadget = ({ profile, access }: CollaboratorInfo) =>
+  access.role === 'build' ? `${profile.name} is a member of this workspace, so they can already edit this gadget.` : undefined
 
 /** Why sharing a gadget with `userId` would change nothing, if it would not (see `workspaceInviteRefusal`). */
 export const gadgetShareRefusal = (

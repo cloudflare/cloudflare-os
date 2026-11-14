@@ -47,14 +47,12 @@ const later = <T,>(value: () => T) => new Promise<T>((resolve, reject) => setTim
 }, 500))
 
 /**
- * A workspace to share, in memory: Ada owns it, Grace can edit it and let Alan in to one gadget,
- * and Margaret can still use every gadget, from before they were shared one at a time.
+ * A workspace to share, in memory: Ada owns it, and Grace can edit it and let Alan in to one gadget.
  */
 const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => {
   let people: CollaboratorInfo[] = [
     { profile: GRACE, addedBy: [by('ada')], access: { role: 'build' } },
     { profile: ALAN, addedBy: [by('grace')], access: { role: 'use', gadgetIds: [GADGET], viewOnly: [GADGET] } },
-    { profile: MARGARET, addedBy: [by('ada')], access: { role: 'use', gadgetIds: 'all' } },
   ]
   let links: ShareLinkInfo[] = []
   const meta: WorkspaceMetadata = {
@@ -71,7 +69,7 @@ const fakeSession = ({ viewer = ADA, metadata, failing }: Setup): ApiSession => 
   const take = (id: string, gadgetId?: number) => {
     people = people.flatMap((one) => {
       if (one.profile.id !== id) return [one]
-      if (gadgetId === undefined || one.access.role !== 'use' || one.access.gadgetIds === 'all') return []
+      if (gadgetId === undefined || one.access.role !== 'use') return []
       const gadgetIds = one.access.gadgetIds.filter((held) => held !== gadgetId)
       return gadgetIds.length > 0 ? [{ ...one, access: { ...one.access, gadgetIds } }] : []
     })

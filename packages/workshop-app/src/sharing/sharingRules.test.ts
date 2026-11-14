@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import type { AffectedCollaborator, AiChatAuthorInfo, CollaboratorInfo, PermissionEdge, WorkspaceMetadata } from '@gadgets/workshop-shared/api'
 import {
   canChange,
-  everyGadgetUsersOf,
   gadgetLinksOf,
   gadgetShareRefusal,
   holdersOf,
@@ -20,7 +19,7 @@ import {
 const person = (id: string, name = id): AiChatAuthorInfo => ({ type: 'user', id, name })
 const by = (sharer: string): PermissionEdge => ({ type: 'user', sharer, created: new Date(0) })
 const member = (id: string, addedBy: PermissionEdge[] = [by('ada')]): CollaboratorInfo => ({ profile: person(id), addedBy, access: { role: 'build' } })
-const holder = (id: string, gadgetIds: number[] | 'all', viewOnly?: number[]): CollaboratorInfo => ({
+const holder = (id: string, gadgetIds: number[], viewOnly?: number[]): CollaboratorInfo => ({
   profile: person(id),
   addedBy: [by('ada')],
   access: { role: 'use', gadgetIds, viewOnly },
@@ -46,13 +45,12 @@ describe('shareStanding', () => {
 })
 
 describe('who has what', () => {
-  const people = [member('grace'), holder('alan', [3, 4], [4]), holder('edsger', 'all'), member('ada')]
+  const people = [member('grace'), holder('alan', [3, 4], [4]), member('ada')]
 
-  it('tells members, gadget holders and those who can use every gadget apart', () => {
+  it('tells members and gadget holders apart', () => {
     expect(membersOf(people, ada).map(({ profile }) => profile.id)).toEqual(['grace'])
     expect(holdersOf(people, 3).map(({ profile }) => profile.id)).toEqual(['alan'])
     expect(holdersOf(people, 5)).toEqual([])
-    expect(everyGadgetUsersOf(people).map(({ profile }) => profile.id)).toEqual(['edsger'])
   })
 
   it('reads a gadget given to view only as view', () => {
@@ -81,10 +79,9 @@ describe('refusals', () => {
   })
 
   it('says why sharing a gadget would change nothing', () => {
-    const people = [member('grace'), holder('alan', [3]), holder('edsger', 'all')]
+    const people = [member('grace'), holder('alan', [3])]
     expect(gadgetShareRefusal('ada', ada, people, 3)).toMatch(/owns this workspace/)
     expect(gadgetShareRefusal('grace', ada, people, 3)).toMatch(/is a member of this workspace/)
-    expect(gadgetShareRefusal('edsger', ada, people, 3)).toMatch(/every gadget/)
     expect(gadgetShareRefusal('alan', ada, people, 3)).toBe('This gadget is already shared with alan.')
     expect(gadgetShareRefusal('alan', ada, people, 4)).toBeUndefined()
     expect(gadgetShareRefusal('barbara', ada, people, 3)).toBeUndefined()

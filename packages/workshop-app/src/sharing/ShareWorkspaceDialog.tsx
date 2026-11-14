@@ -11,7 +11,7 @@ import { Dialog } from '@/components/Dialog'
 import { useApi } from '@/rpc/ApiContext'
 import { useServerConfig } from '@/rpc/serverConfig'
 import { RequirementsNote, SharingPending } from './SharingParts'
-import { canChange, everyGadgetUsersOf, membersOf, shareStanding, workspaceInviteRefusal } from './sharingRules'
+import { canChange, membersOf, shareStanding, workspaceInviteRefusal } from './sharingRules'
 import { useInvite } from './useInvite'
 import { useRemoval } from './useRemoval'
 import { useSharing } from './useSharing'
@@ -47,7 +47,6 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
   const standing = ready && shareStanding(ready.metadata, user)
   const collaborators = ready?.collaborators ?? []
   const members = standing ? membersOf(collaborators, standing.owner) : []
-  const everyGadget = everyGadgetUsersOf(collaborators)
 
   const invite = useInvite({
     session,
@@ -132,22 +131,6 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
                       remove={{ label: 'Remove from workspace', onRemove: () => removal.ask({ id: person.profile.id, name: person.profile.name }) }}
                     />
                   ) : 'Can edit'}
-                />
-              </ShareList.Row>
-            ))}
-            {everyGadget.map((person) => (
-              <ShareList.Row key={person.profile.id}>
-                <SharePersonRow
-                  name={person.profile.name}
-                  you={person.profile.id === user.id}
-                  detail="Every gadget, from before gadgets were shared one at a time"
-                  access={removable(person) ? (
-                    <AccessMenu
-                      label="Can use"
-                      of={person.profile.name}
-                      remove={{ label: 'Remove access', onRemove: () => removal.ask({ id: person.profile.id, name: person.profile.name }) }}
-                    />
-                  ) : 'Can use'}
                 />
               </ShareList.Row>
             ))}
