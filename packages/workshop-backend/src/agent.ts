@@ -800,6 +800,8 @@ export default {
 
 \`gadget\` is not a global variable: pass it to whatever code needs to call the server.
 
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`. It is an RPC stub for whatever is running the UI, either the Workshop or a browser-mode export. It has no methods yet, so do not call anything on it.
+
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
 Make Gadget UIs responsive and usable on both desktop and phones by default.
