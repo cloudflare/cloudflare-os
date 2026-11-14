@@ -1,10 +1,14 @@
 import { Link } from '@tanstack/react-router'
-import { DotsThree, Star, ShareNetwork, Trash, Pencil } from '@phosphor-icons/react'
+import { BellSlash, DotsThree, Star, Trash, Pencil, UserPlus } from '@phosphor-icons/react'
 import { DropdownMenu } from '@cloudflare/kumo'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from '../menuStyles'
 import { useState, useEffect, useRef } from 'react'
-import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
+import type { WorkspaceMetadataWithTimestamps, NotificationMute } from '@gadgets/workshop-shared/api'
+import { WorkspaceNotificationsMenu } from '../../features/notifications/WorkspaceNotificationsMenu'
+import { describeMute } from '../../features/notifications/notificationMute'
 import { isImeComposing } from '../../keyboardEvent'
+import { useUnreadState } from '../../features/notifications/UnreadStateBridge'
+import { UnreadBadge } from '../../features/notifications/UnreadBadge'
 
 function initials(title: string | undefined): string {
   const t = (title || 'Untitled').trim()
@@ -15,8 +19,8 @@ function initials(title: string | undefined): string {
 
 /**
  * One row in the sidebar's Favorites / Recent list. Compact, with a monogram avatar, a truncated
- * title, and an overflow menu (favorite, rename, share, delete). Favorite/rename/share/delete
- * callbacks are passed in by the parent so this row stays a pure presentational component.
+ * title, and an overflow menu (favorite, rename, share, notifications, delete). Its callbacks are
+ * passed in by the parent so this row stays a pure presentational component.
  */
 export default function SidebarGadgetRow({
   gadget,
@@ -24,18 +28,22 @@ export default function SidebarGadgetRow({
   onTogglePin,
   onRename,
   onShare,
+  onNotificationMuteChange,
   onDelete,
 }: {
-  gadget: GadgetMetadataWithTimestamps
+  gadget: WorkspaceMetadataWithTimestamps
   collapsed?: boolean
-  onTogglePin: (g: GadgetMetadataWithTimestamps) => void
-  onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
-  onShare: (g: GadgetMetadataWithTimestamps) => void
-  onDelete: (g: GadgetMetadataWithTimestamps) => void
+  onTogglePin: (g: WorkspaceMetadataWithTimestamps) => void
+  onRename: (g: WorkspaceMetadataWithTimestamps, newTitle: string) => void
+  onShare: (g: WorkspaceMetadataWithTimestamps) => void
+  onNotificationMuteChange: (g: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) => void
+  onDelete: (g: WorkspaceMetadataWithTimestamps) => void
 }) {
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(gadget.title || '')
   const inputRef = useRef<HTMLInputElement>(null)
+  const unread = useUnreadState()
+  const unreadMessages = unread?.state?.workspaces.find(workspace => workspace.workspaceId === gadget.id)?.unreadMessageCount ?? 0
 
   useEffect(() => {
     if (renaming) inputRef.current?.focus()
@@ -52,24 +60,26 @@ export default function SidebarGadgetRow({
     setRenaming(true)
   }
 
+  const muteDescription = describeMute(gadget.notificationMute)
+
   return (
     <Link
       to="/workspace/$id"
       params={{ id: gadget.id }}
-      className="group flex h-8 items-center gap-2 rounded-lg pl-1.5 pr-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
-      activeProps={{ className: 'flex h-8 items-center gap-2 rounded-lg pl-1.5 pr-1 text-[13px] leading-[18px] tracking-[-0.25px] bg-kumo-fill text-kumo-strong font-medium' }}
+      className="group flex h-8 min-w-0 items-center gap-2 rounded-lg pl-1.5 pr-2.5 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
+      activeProps={{ className: 'flex h-8 min-w-0 items-center gap-2 rounded-lg pl-1.5 pr-2.5 text-[13px] leading-[18px] tracking-[-0.25px] bg-kumo-fill text-kumo-strong font-medium' }}
       onClick={(e) => {
         if (renaming) e.preventDefault()
       }}
       title={collapsed ? gadget.title || 'Untitled workspace' : undefined}
     >
-      <div
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle"
-        aria-hidden="true"
-      >
-        {initials(gadget.title)}
+      <div className="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle">
+        <span aria-hidden="true">{initials(gadget.title)}</span>
+        {collapsed && unreadMessages > 0 && <span
+          role="img"
+          aria-label={`${unreadMessages} unread ${unreadMessages === 1 ? "message" : "messages"}`}
+          className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-kumo-badge-blue" />}
       </div>
-
       {!collapsed && (
         <>
           {renaming ? (
@@ -89,49 +99,68 @@ export default function SidebarGadgetRow({
           ) : (
             <span className="min-w-0 flex-1 truncate">{gadget.title || 'Untitled workspace'}</span>
           )}
+          {muteDescription && (
+            <BellSlash size={12} alt={muteDescription} className="shrink-0 text-kumo-inactive" />
+          )}
 
           {/* Inside the row's <Link>: stopPropagation blocks the Link's SPA handler, so preventDefault
               is needed to stop the native <a> from navigating. */}
-          <div onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
+          <div className="relative flex h-6 min-w-6 shrink-0 items-center justify-center"
+            onClick={(e) => { e.stopPropagation(); e.preventDefault() }}>
+            {/* Reuse the trailing slot: a hidden actions button must not squeeze the title/badge. */}
+            <span className="pointer-events-none group-hover:invisible group-focus-within:invisible">
+              <UnreadBadge count={unreadMessages} />
+            </span>
             <DropdownMenu>
               <DropdownMenu.Trigger
                 render={
                   <button
                     type="button"
                     aria-label="Workspace actions"
-                    className="flex h-6 w-6 items-center justify-center rounded-md text-kumo-subtle opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100"
+                    className="absolute inset-0 flex h-6 w-full items-center justify-center rounded-md text-kumo-subtle opacity-0 transition-[opacity,color,background-color] group-hover:opacity-100 hover:bg-kumo-fill hover:text-kumo-default focus:opacity-100"
                   >
                     <DotsThree size={14} weight="bold" />
                   </button>
                 }
               />
               <DropdownMenu.Content className={MENU_CONTENT} style={MENU_POSITIONER_STYLE}>
+                <DropdownMenu.Item disabled={unreadMessages === 0} onClick={() => {
+                  void unread?.markWorkspaceRead(gadget.id).catch(() => {})
+                }} className={MENU_ITEM}>Mark workspace read</DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={startRename}
                   className={MENU_ITEM}
                 >
-                  <Pencil size={13} className="mr-2" /> Rename
+                  <Pencil size={13} /> Rename
                 </DropdownMenu.Item>
                 <DropdownMenu.Item
                   onClick={() => onTogglePin(gadget)}
                   className={MENU_ITEM}
                 >
-                  <Star size={13} className="mr-2" weight={gadget.pinned ? 'fill' : 'regular'} />
+                  <Star size={13} weight={gadget.pinned ? 'fill' : 'regular'} />
                   {gadget.pinned ? 'Unfavorite' : 'Favorite'}
                 </DropdownMenu.Item>
-                <DropdownMenu.Item
-                  onClick={() => onShare(gadget)}
-                  className={MENU_ITEM}
-                >
-                  <ShareNetwork size={13} className="mr-2" /> Share
-                </DropdownMenu.Item>
+                {/* Only members can invite; the role is cached with the listing, and the server decides. */}
+                {gadget.role !== 'use' && (
+                  <DropdownMenu.Item
+                    onClick={() => onShare(gadget)}
+                    className={MENU_ITEM}
+                  >
+                    <UserPlus size={13} /> Invite to workspace
+                  </DropdownMenu.Item>
+                )}
+                <WorkspaceNotificationsMenu
+                  workspaceId={gadget.id}
+                  mute={gadget.notificationMute}
+                  onMuteChange={(mute) => onNotificationMuteChange(gadget, mute)}
+                />
                 <DropdownMenu.Separator />
                 <DropdownMenu.Item
                   variant="danger"
                   onClick={() => onDelete(gadget)}
                   className={MENU_ITEM_DANGER}
                 >
-                  <Trash size={13} className="mr-2" />
+                  <Trash size={13} />
                   {gadget.owner ? 'Dismiss' : 'Delete'}
                 </DropdownMenu.Item>
               </DropdownMenu.Content>

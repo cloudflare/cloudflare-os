@@ -13,6 +13,7 @@ import { reportIssue } from './errorReporting'
 import {
   classifyRpcError, getDurableObjectId, isDurableObjectResetError, isOverloadedError,
   CONNECTION_MESSAGES, isTransientRpcError, logRpcFailure, reportDoResetError,
+  rpcFailureDescription,
 } from './rpcErrors'
 
 const rpcError = (message: string, props?: object) => Object.assign(new Error(message), props)
@@ -127,6 +128,26 @@ describe('logRpcFailure', () => {
       debug.mockRestore()
       error.mockRestore()
     }
+  })
+})
+
+describe('rpcFailureDescription', () => {
+  it("gives the server's message for a refusal", () => {
+    const refusal = 'The "Kimi K3" model is disabled on this deployment by an administrator.'
+    expect(rpcFailureDescription(new Error(refusal))).toBe(refusal)
+  })
+
+  it('gives nothing for a throw that carries no message', () => {
+    expect(rpcFailureDescription(new Error(''))).toBeUndefined()
+    expect(rpcFailureDescription('boom')).toBeUndefined()
+    expect(rpcFailureDescription({ message: 'not an Error' })).toBeUndefined()
+    expect(rpcFailureDescription(undefined)).toBeUndefined()
+  })
+
+  it('keeps transport and runtime strings away from the user', () => {
+    expect(rpcFailureDescription(storageTimeoutReset())).toBeUndefined()
+    expect(rpcFailureDescription(new Error('Peer closed WebSocket: 1006 '))).toBeUndefined()
+    expect(rpcFailureDescription(rpcError('internal error', { retryable: true }))).toBeUndefined()
   })
 })
 

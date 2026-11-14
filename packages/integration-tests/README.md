@@ -16,6 +16,12 @@ vendor this one as a submodule:
   [`wrangler`'s `createTestHarness()`](https://developers.cloudflare.com/changelog/post/2026-07-21-integration-test-harness/),
   patching their checked-in `wrangler.jsonc` in memory. Parameterised over gatekeepers on purpose: a
   suite for a new gatekeeper should be "point the harness at the package", not a forked copy.
+  `Harness.redeployWorkshop()` deploys another build of the Workshop over the running one, keeping
+  its storage, and resolves once every Worker runs it (`deploy()` does the same for any options);
+  `bundleBlueprints()` is a patch that changes which blueprints a build ships with.
+  Like `pnpm dev-server`, it boots the Workshop as a local instance (`WORKSHOP_ENVIRONMENT: "test"`),
+  where `cf-os api` may act as anyone; deleting that var in a patch runs it as a deployment, where the
+  CLI is for deployment admins only (`__tests__/cli-admins-only.test.ts`).
 - **`src/network-interceptor.ts`** — `NetworkInterceptor`, mechanism only. It patches
   `globalThis.fetch` (the harness routes Worker subrequests back through the Node process, so that is
   enough), passes loopback through, and **throws on anything a handler didn't match** — a test cannot
@@ -31,6 +37,36 @@ vendor this one as a submodule:
   per-test resource URLs; account labels are allocated for you, so two tests can't pick the same one.
 - **The escape assertion lives in `afterAll`, not `afterEach`** — an `afterEach` fires while sibling
   tests are still running, so it would inspect and clear state they are still using.
+- **A test that redeploys the Workshop starts a harness of its own.** A redeploy restarts the Workers
+  under every session they have, which would break the tests sharing the file's harness.
+
+## Property-based suites
+
+`__tests__/workshop-properties.test.ts` uses [fast-check](https://fast-check.dev/) to generate
+sequences of the operations a real client performs and replays each against the Workshop, checking
+the result against a small model: decisions on staged writes (with and without an auto-approval
+rule, while the provider may fail one apply), chats with shared and same-named attachments created
+and deleted, and two editors inserting, deleting and resending stale code changes before an
+accept. `__tests__/observer-reverification.test.ts` adds one for a collaborator's opens while
+their connections' credentials lapse and are repaired. Each run takes a fresh account, so runs
+and shrink attempts are independent. Scenarios a fixed seed might miss are pinned as fast-check
+`examples`, which run on every seed.
+
+Every run is real RPC, so a property costs hundreds of milliseconds per run and `numRuns` is kept
+small; `interruptAfterTimeLimit` bounds the shrink of a failing property inside the test timeout
+(`@gadgets/scripts/property-runs`). workshop-backend's in-isolate properties (sharing, blueprint
+releases, streamed tool input, decisions on a turn's staged writes, two chats' changes to one
+gadget, scope-widening restarts, unread counts) share those options, and its `vitest.config.ts`
+forwards `FAST_CHECK_SEED` into workerd. gatekeeper-kit's two share the options as well and run
+under Node: the action set against a model of its journal, and credentials under interleaved
+refresh and reconnect.
+
+`FAST_CHECK_SEED` pins the seed of every property, so the same cases run each time. CI sets it, so
+a pull request's result depends only on its code. Without it, each run draws a fresh seed, but a
+cached `pnpm test` replays its last result: run vitest directly (`test:run`) or
+`vp run --no-cache` to explore a new one. A failure prints `{ seed, path }`: rerun with
+`FAST_CHECK_SEED=<seed>` to reproduce it, or pass both to that property's `fc.assert()` options to
+replay the shrunk counterexample directly.
 
 ## The fixture gatekeeper
 
@@ -54,6 +90,27 @@ One deliberate departure from a shipping gatekeeper, to keep the fixture cheap:
   — both as a thrown error, which it deliberately cannot tell apart because it treats every failure as
   repairable — so the reason string is what carries the difference. Tests cover both narratives by
   choosing reason text.
+
+## A real gatekeeper: GitHub's hooks
+
+`__tests__/github-hooks.test.ts` runs a GitHub hook's whole life through the real Workshop and the
+real `gatekeeper-github` — subscribe, enable, a signed delivery, the gadget's write approved, then
+disable, connection removal and disconnect — and `github-hooks-off.test.ts` what a deployment
+without `WEBHOOK_ORIGIN` gets. GitHub is `__tests__/github-fake.ts`, a handler module for the
+interceptor. The gatekeeper boots from the tree `vp run -F @gadgets/github-gatekeeper
+build:integration-worker` validates, which the `test` task and `test:prebuild` build first.
+
+## An upgrade: Google's hooks
+
+`__tests__/google-hooks-upgrade.test.ts` enables Gmail and Chat hooks under the release of
+`gatekeeper-google` that came before its hook delivery queue moved into gatekeeper-kit, then
+upgrades that Worker in place to this tree's build, keeping its storage. It checks that queued
+deliveries, the hooks' capabilities and alarms, the Gmail watch and cursor and the Chat subscription
+all carry over, and that disconnecting reaches hooks the old release never told the account about.
+Google is `__tests__/google-fake.ts`. `vp run -F @gadgets/integration-tests build:upgrade-base`
+(`scripts/build-upgrade-base.ts`) bundles the old release from a temporary worktree of its revision.
+The new one comes from `vp run -F @gadgets/google-gatekeeper build:integration-worker`. The `test`
+task and `test:prebuild` build both first.
 
 ## Further reading
 

@@ -6,7 +6,7 @@
 const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow", "flowArrow",
     "kanban", "chartBar", "table", "notebook", "listChecks"];
 
-// Must match isReservedBlueprintKey() in src/blueprint-archive.ts.
+// Must match isReservedBlueprintKey() in workshop-backend's src/storage-schema/blueprints-kv.ts.
 const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);
 
 export type BundledBlueprintManifest = {
@@ -25,6 +25,13 @@ export type BundledBlueprintManifest = {
 export type BundledBlueprintPresentation = Omit<BundledBlueprintManifest,
     "created" | "version" | "lastUpdated" | "bindings">;
 
+/**
+ * The part of a manifest that comes from the Workshop the blueprint was exported from rather than
+ * from whoever curates it: what a `.gadget` archive's metadata holds beside its presentation.
+ */
+export type BundledBlueprintProvenance = Pick<BundledBlueprintManifest,
+    "created" | "version" | "lastUpdated" | "bindings">;
+
 export function parseBundledBlueprintPresentation(
   label: string,
   raw: string,
@@ -37,10 +44,22 @@ export function parseBundledBlueprintManifest(
   raw: string,
 ): BundledBlueprintManifest {
   let label = `${name}/blueprint.json`;
-  let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
   let parsed = JSON.parse(raw);
-  let presentation = parsePresentation(label, parsed,
-      ["created", "version", "lastUpdated", "bindings"]);
+  return {
+    ...parsePresentation(label, parsed, ["created", "version", "lastUpdated", "bindings"]),
+    ...parseBundledBlueprintProvenance(label, parsed),
+  };
+}
+
+/**
+ * Validates the provenance fields of `parsed`, a manifest or the metadata of a `.gadget` archive,
+ * and returns them alone. Whatever else `parsed` holds is the caller's to judge.
+ */
+export function parseBundledBlueprintProvenance(
+  label: string,
+  parsed: Record<string, unknown>,
+): BundledBlueprintProvenance {
+  let bad = (message: string): never => { throw new Error(`${label}: ${message}`); };
   let {created, version, lastUpdated, bindings} = parsed;
   if (typeof version !== "number" || !Number.isInteger(version) || version < 1) {
     bad("version must be a positive integer");
@@ -55,7 +74,6 @@ export function parseBundledBlueprintManifest(
   }
 
   return {
-    ...presentation,
     created: created as string,
     version: version as number,
     lastUpdated: lastUpdated as string,

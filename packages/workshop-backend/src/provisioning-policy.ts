@@ -12,7 +12,7 @@
 // calls them when provisioning, listing, and surfacing ambient accounts.
 
 import { AmbientGatekeeperMode } from "@gadgets/workshop-shared/api";
-import { AdminConfig } from "./admin-config.js";
+import type { AdminConfig } from "./storage-schema/admin-settings-storage.js";
 
 export const DEFAULT_AMBIENT_GATEKEEPER_MODE: AmbientGatekeeperMode = "optional";
 

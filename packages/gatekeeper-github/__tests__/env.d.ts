@@ -1,11 +1,11 @@
-/// <reference types="@cloudflare/vitest-pool-workers/types" />
+/// <reference types="@cloudflare/vitest-plugin/types" />
 
 // Types for the workerd suite's environment. The pool types `env` as `Cloudflare.Env`, so the
 // test-only bindings are declared by augmenting that -- which is what lets the tests read `env`
 // without a cast.
 
 import type { TestHooks } from "./workerd/worker.js";
-import type { UserAccount } from "../src/github.js";
+import type { GitHubHookDriver, UserAccount } from "../src/github.js";
 
 declare global {
   namespace Cloudflare {
@@ -14,6 +14,7 @@ declare global {
       // from the generated `worker-configuration.d.ts`.
       TEST_HOOKS: DurableObjectNamespace<TestHooks>;
       USER_ACCOUNT: DurableObjectNamespace<UserAccount>;
+      GITHUB_HOOK_DRIVER: DurableObjectNamespace<GitHubHookDriver>;
     }
   }
 }

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
 import type { AiChatMessage, BlueprintMetadata } from "@gadgets/workshop-shared/api";
-import { HISTORY_COMMIT_GAP_MS, migrateCodeLogToGit } from "../src/git-migration";
-import { foldProposedChanges, legacyChatBaseVersion } from "../src/agent-compaction";
+import { HISTORY_COMMIT_GAP_MS, legacyChatBaseVersion, migrateCodeLogToGit }
+  from "../src/storage-schema/overseer-git-migration";
+import { foldProposedChanges } from "../src/agent-compaction";
 import {
   AGENT, LegacyWorkspace, MINUTE, OWNER, T0, USER, captureEdit, expectHeadsMatchDoc, setFile,
 } from "./legacy-workspace";
@@ -27,17 +28,17 @@ describe("migrateCodeLogToGit", () => {
     expect(commits).toBe(3);
 
     // Every head tree must equal an independent replay of the recorded update log.
-    await expectHeadsMatchDoc(ws.storage, ws.gitStore, ws.docAt("current"));
+    await expectHeadsMatchDoc(ws.storage, ws.gitCache, ws.docAt("current"));
 
     // The head is the merge-point chain's tip: v3 was neither a merge point nor a gap, so it
     // folded into the v4 commit. The chain is rooted at the synthesized version-0 empty-tree
     // commit (every permanent gadget has a head; see GadgetRecord.commitId).
     let head = ws.storage.gadgets.get(10)!.commitId!;
-    expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map([
+    expect(ws.gitCache.readCommitFiles(head)).toEqual(new Map([
       ["app.js", "hello world\n"],
       ["extra.js", "more\n"],
     ]));
-    let log = await ws.gitStore.readCommitLog(head);
+    let log = ws.gitCache.readCommitLog(head);
     expect(log.length).toBe(3);
     expect(log[0].parents).toEqual([log[1].oid]);
     expect(log[1].parents).toEqual([log[2].oid]);
@@ -48,9 +49,9 @@ describe("migrateCodeLogToGit", () => {
     expect(log[1].message).toContain("code versions 1-2");
     expect(log[2].message).toContain("initial empty state");
     expect(log[2].timestamp).toEqual(new Date(T0));  // the gadget record's creation time
-    expect(await ws.gitStore.readCommitFiles(log[1].oid))
+    expect(ws.gitCache.readCommitFiles(log[1].oid))
         .toEqual(new Map([["app.js", "hello\n"]]));
-    expect(await ws.gitStore.readCommitFiles(log[2].oid)).toEqual(new Map());
+    expect(ws.gitCache.readCommitFiles(log[2].oid)).toEqual(new Map());
 
     // Merge messages carry the commits synthesized at their recorded versions; the no-code
     // merge (version 7, no code entry) correctly backfills to none.
@@ -84,13 +85,13 @@ describe("migrateCodeLogToGit", () => {
     expect(commits).toBe(3);
 
     let head = ws.storage.gadgets.get(20)!.commitId!;
-    let log = await ws.gitStore.readCommitLog(head);
+    let log = ws.gitCache.readCommitLog(head);
     expect(log.length).toBe(3);  // empty root + one commit per burst
     // The burst v2-v4 (1-minute spacing) folds into one commit at the version before the gap;
     // the final version always commits.
-    expect(await ws.gitStore.readCommitFiles(log[1].oid))
+    expect(ws.gitCache.readCommitFiles(log[1].oid))
         .toEqual(new Map([["a.js", "three\n"]]));
-    expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map([["a.js", "four\n"]]));
+    expect(ws.gitCache.readCommitFiles(head)).toEqual(new Map([["a.js", "four\n"]]));
   });
 
   it("keeps untouched gadgets out of each commit point", async () => {
@@ -108,14 +109,14 @@ describe("migrateCodeLogToGit", () => {
     expect(commits).toBe(4);  // two empty roots, two content commits
 
     // Every head tree must equal an independent replay of the recorded update log.
-    await expectHeadsMatchDoc(ws.storage, ws.gitStore, ws.docAt("current"));
+    await expectHeadsMatchDoc(ws.storage, ws.gitCache, ws.docAt("current"));
 
     // Each gadget's chain has exactly its empty root plus the commit where its own files
     // changed.
     let left = ws.storage.gadgets.get(30)!.commitId!;
     let right = ws.storage.gadgets.get(40)!.commitId!;
-    expect((await ws.gitStore.readCommitLog(left)).length).toBe(2);
-    expect((await ws.gitStore.readCommitLog(right)).length).toBe(2);
+    expect(ws.gitCache.readCommitLog(left).length).toBe(2);
+    expect(ws.gitCache.readCommitLog(right).length).toBe(2);
 
     let merges = ws.mergeMessages(1);
     expect(merges[0].commits).toEqual([{ gadgetId: 30, commitId: left }]);
@@ -264,7 +265,7 @@ describe("migrateCodeLogToGit", () => {
     let gadget = gadgets[0];
     expect(gadget.pending).toBeUndefined();
     expect(ws.storage.defaultGadgetId.get()).toBe(gadget.id);
-    expect(await ws.gitStore.readCommitFiles(gadget.commitId!)).toEqual(new Map());
+    expect(ws.gitCache.readCommitFiles(gadget.commitId!)).toEqual(new Map());
 
     // The chat converts like any other: pinned at the empty tree, its files as proposed sets.
     let conversion = ws.conversionMessage(1);
@@ -429,23 +430,23 @@ describe("migrateCodeLogToGit", () => {
 
     // Every head tree must equal an independent replay of the recorded update log (the default
     // gadget's root is "").
-    await expectHeadsMatchDoc(ws.storage, ws.gitStore, ws.docAt("current"), 60);
+    await expectHeadsMatchDoc(ws.storage, ws.gitCache, ws.docAt("current"), 60);
 
     // Each blueprint points at the commit whose tree is exactly the exported snapshot, even
     // though mainline moved on (bp-default) or the gadget is gone (bp-deleted).
     let bpDefault = ws.storage.blueprints.get("bp-default")!;
     expect(bpDefault.codeVersion).toBeUndefined();
-    expect(await ws.gitStore.readCommitFiles(bpDefault.commitId!))
+    expect(ws.gitCache.readCommitFiles(bpDefault.commitId!))
         .toEqual(new Map([["app.js", "exported\n"]]));
 
     let bpDeleted = ws.storage.blueprints.get("bp-deleted")!;
     expect(bpDeleted.codeVersion).toBeUndefined();
-    expect(await ws.gitStore.readCommitFiles(bpDeleted.commitId!))
+    expect(ws.gitCache.readCommitFiles(bpDeleted.commitId!))
         .toEqual(new Map([["gone.js", "deleted gadget\n"]]));
 
     // The deleted gadget has no registry record to point at its chain; the default gadget's
     // head is the final version's commit.
-    expect(await ws.gitStore.readCommitFiles(ws.storage.gadgets.get(60)!.commitId!))
+    expect(ws.gitCache.readCommitFiles(ws.storage.gadgets.get(60)!.commitId!))
         .toEqual(new Map([["app.js", "changed since export\n"]]));
   });
 
@@ -487,7 +488,7 @@ describe("migrateCodeLogToGit", () => {
 
     // The chat pins mainline's tip (the v3 commit)...
     let head = ws.storage.gadgets.get(80)!.commitId!;
-    expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map([
+    expect(ws.gitCache.readCommitFiles(head)).toEqual(new Map([
       ["app.js", "base\n"],
       ["new.js", "fresh\n"],
     ]));
@@ -498,6 +499,38 @@ describe("migrateCodeLogToGit", () => {
     // would have dropped the user's (the pending-structs hazard this rule exists to prevent).
     expect(await ws.convertedContent(91)).toEqual(new Map([
       [80, new Map([["app.js", "base\nagent\n"], ["new.js", "fresh\nuser\n"]])],
+    ]));
+  });
+
+  it("anchors a compacted chat at its active checkpoint's stamp", async () => {
+    // Nothing in the chat's messages names a version, so the checkpoint's stamp is the only
+    // record of the mainline state the chat's update was built against.
+    let ws = new LegacyWorkspace();
+    ws.addGadget(80, "APP");
+    ws.edit(T0 + 1 * MINUTE, doc => setFile(doc, "80", "app.js", "base\n"));             // v2
+    ws.edit(T0 + 2 * MINUTE, doc => setFile(doc, "80", "new.js", "fresh\n"));            // v3
+
+    ws.addChat(1);
+    ws.addMessage(1, USER, { type: "message", message: "hi" });
+    let update = captureEdit(ws.docAt(2), doc =>
+        doc.getMap<Y.Text>("80").get("app.js")!.insert(5, "agent\n"));
+    ws.addMessage(1, AGENT, { type: "changes", update });
+    ws.storage.chatMeta.put({ ...ws.storage.chatMeta.get(1)!, compactedTo: 1 });
+    ws.storage.chatCompactions.put({
+      chatId: 1, compactedTo: 1, summary: "", chatBindings: [], nextChangeId: 0,
+      observedCodeVersion: 2,
+    });
+
+    await migrateCodeLogToGit(ws.host());
+
+    // The chat pins the version-2 commit, which exists only because the checkpoint names it,
+    // rather than the tip a chat that references no version anchors at.
+    let [pin] = ws.codeBase(1)!.pins;
+    expect(pin.baseCommit).not.toBe(ws.storage.gadgets.get(80)!.commitId);
+    expect(ws.gitCache.readCommitFiles(pin.baseCommit))
+        .toEqual(new Map([["app.js", "base\n"]]));
+    expect(await ws.convertedContent(1)).toEqual(new Map([
+      [80, new Map([["app.js", "base\nagent\n"]])],
     ]));
   });
 
@@ -541,8 +574,8 @@ describe("migrateCodeLogToGit", () => {
     // The head is the synthesized empty-tree initial commit (every permanent gadget has a
     // head; see GadgetRecord.commitId)...
     let head = ws.storage.gadgets.get(10)!.commitId!;
-    expect(await ws.gitStore.readCommitFiles(head)).toEqual(new Map());
-    expect((await ws.gitStore.readCommitLog(head)).length).toBe(1);
+    expect(ws.gitCache.readCommitFiles(head)).toEqual(new Map());
+    expect(ws.gitCache.readCommitLog(head).length).toBe(1);
 
     // ...and the chat's uncommitted edit pins there, arming the accept gate: the accept
     // fast-forwards from the empty tree, and a first commit landing from another chat reads as

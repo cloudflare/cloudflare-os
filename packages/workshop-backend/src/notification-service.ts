@@ -1,0 +1,172 @@
+// Client for the Cloudflare-operated notification service. Every request is signed with this
+// installation's key; the service accepts only fixed, typed templates. See docs/notifications.md.
+
+import type { UserNotification, WebPushSubscription } from "@gadgets/workshop-shared/api";
+
+const encoder = new TextEncoder();
+
+const base64url = (bytes: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(bytes)))
+    .replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+
+// The service rejects titles longer than 96 UTF-16 units or with surrounding whitespace.
+function threadTitle(title: string): string | undefined {
+  let bounded = "";
+  for (let character of title.replace(/\s+/gu, " ").trim()) {
+    if (bounded.length + character.length > 96) break;
+    bounded += character;
+  }
+  return bounded.trimEnd() || undefined;
+}
+
+async function signedPost(
+    env: Cloudflare.Env, pathname: string, payload: object, signal?: AbortSignal,
+): Promise<Response> {
+  let {
+    NOTIFICATION_SERVICE_URL: serviceUrl, CFOS_INSTALL_ID: installId,
+    CFOS_INSTALL_KEY_ID: keyId, CFOS_INSTALL_PRIVATE_KEY: privateKey,
+  } = env;
+  if (!serviceUrl || !installId || !keyId || !privateKey) {
+    throw new Error("Notification service is not configured.");
+  }
+  let url = new URL(pathname, serviceUrl);
+  // The signature authenticates this install, not the service; only TLS keeps the request private.
+  if (url.protocol !== "https:") throw new Error("Notification service URL must use HTTPS.");
+  let body = JSON.stringify(payload);
+  let digest = base64url(await crypto.subtle.digest("SHA-256", encoder.encode(body)));
+  let timestamp = String(Math.floor(Date.now() / 1000));
+  let nonce = crypto.randomUUID();
+  let key = await crypto.subtle.importKey(
+      "pkcs8", Uint8Array.from(atob(privateKey), character => character.charCodeAt(0)),
+      { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  let canonical = ["CFOS1", "POST", pathname, installId, keyId, timestamp, nonce, digest].join("\n");
+  let signature = base64url(await crypto.subtle.sign(
+      { name: "ECDSA", hash: "SHA-256" }, key, encoder.encode(canonical)));
+  return fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-cfos-content-digest": digest,
+      "x-cfos-install-id": installId,
+      "x-cfos-key-id": keyId,
+      "x-cfos-nonce": nonce,
+      "x-cfos-signature": signature,
+      "x-cfos-timestamp": timestamp,
+    },
+    body,
+    // A followed redirect would resend the signed request, possibly over plaintext; a 3xx is not
+    // ok, so callers fail as for any other bad status. (Workers has no `redirect: "error"`.)
+    redirect: "manual",
+    signal,
+  });
+}
+
+// The service's ids are 64 lowercase hex characters. The device key indexes the stored
+// subscriptions, so a missing one would merge every device into one entry; hold the service to it.
+const isServiceId = (value: unknown): value is string =>
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
+/**
+ * Exchange the native app's one-time device registration, or a browser's Web Push subscription,
+ * for an install-and-user-bound subscription, along with the install-scoped key of the device it
+ * reaches.
+ */
+export async function registerDevice(
+    env: Cloudflare.Env, registration: string | WebPushSubscription, subject: string,
+): Promise<{ deviceKey: string; subscriptionId: string }> {
+  // A Web Push subscription is rebuilt field by field: RPC validation forwards extra properties,
+  // and the service's schema is strict.
+  let body = typeof registration === "string"
+      ? { deviceRegistrationId: registration, subject }
+      : { webPush: { endpoint: registration.endpoint,
+          keys: { p256dh: registration.keys.p256dh, auth: registration.keys.auth } }, subject };
+  return notificationRequest(async signal =>
+    subscription(await signedPost(env, "/v1/subscriptions", body, signal)));
+}
+
+/** Claim only a native registration authorized for this installation and authenticated CFOS user. */
+export async function registerAuthorizedDevice(
+    env: Cloudflare.Env, deviceRegistrationId: string, subject: string,
+): Promise<{ deviceKey: string; subscriptionId: string }> {
+  return notificationRequest(async signal =>
+    subscription(await signedPost(env, "/v2/subscriptions", { deviceRegistrationId, subject }, signal)));
+}
+
+// Bound each service exchange through response parsing so a stalled service cannot pin the caller.
+// AbortSignal.timeout leaves its timer alive after success, delaying Durable Object eviction.
+async function notificationRequest<T>(request: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  let controller = new AbortController();
+  let timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    return await request(controller.signal);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function subscription(response: Response): Promise<{ deviceKey: string; subscriptionId: string }> {
+  if (!response.ok) {
+    throw new Error(`Notification registration failed with status ${response.status}.`);
+  }
+  let { deviceKey, subscriptionId } =
+      await response.json<{ deviceKey?: unknown; subscriptionId?: unknown }>();
+  if (!isServiceId(deviceKey) || !isServiceId(subscriptionId)) {
+    throw new Error("Notification service returned an invalid subscription.");
+  }
+  return { deviceKey, subscriptionId };
+}
+
+/** Ask the central service for a short-lived grant for this authenticated installation user. */
+export async function authorizeDevice(env: Cloudflare.Env, subject: string): Promise<string> {
+  return notificationRequest(async signal => {
+    let response = await signedPost(env, "/v2/device-authorizations", { subject }, signal);
+    if (!response.ok) {
+      throw new Error(`Notification authorization failed with status ${response.status}.`);
+    }
+    let { authorization } = await response.json<{ authorization?: unknown }>();
+    if (!isServiceId(authorization)) {
+      throw new Error("Notification service returned an invalid authorization.");
+    }
+    return authorization;
+  });
+}
+
+/**
+ * Push a notification to the device behind `subscriptionId` as its owning User DO subject.
+ * Resolves to false when the service reports it will never deliver to that subscription again.
+ */
+export async function deliver(
+    env: Cloudflare.Env, subject: string, subscriptionId: string,
+    { id, kind, workspaceId, chatId, chatTitle }: UserNotification,
+    signal?: AbortSignal): Promise<boolean> {
+  let response = await signedPost(env, "/v1/deliveries", {
+    type: kind === "taskCompleted" ? "task_completed" : "permission_requested",
+    eventId: id,
+    taskId: `${workspaceId}:${chatId}`,
+    threadTitle: threadTitle(chatTitle),
+    path: `/workspace/${workspaceId}?chat=${chatId}&showChat=true`,
+    subscriptionId,
+    subject,
+  }, signal);
+  if (response.ok) return true;
+  // Only the service's verdict on the subscription retires it: a 401 can also mean a bad signature,
+  // which must not discard every device's subscription.
+  if (response.status === 401 || response.status === 410) {
+    let { status } = await response.json<{ status?: unknown }>();
+    if (status === "invalid_subscription" || status === "device_gone") return false;
+  }
+  throw new Error(`Notification delivery failed with status ${response.status}.`);
+}
+
+/** Replace the subscription's instance unread total. Retrying the same version is idempotent. */
+export async function deliverBadge(
+    env: Cloudflare.Env, subscriptionId: string, version: number, count: number): Promise<boolean> {
+  return notificationRequest(async signal => {
+    let response = await signedPost(env, "/v1/badges", {subscriptionId, version, count}, signal);
+    if (response.ok) return true;
+    if (response.status === 401 || response.status === 410) {
+      let {status} = await response.json<{status?: unknown}>();
+      if (status === "invalid_subscription" || status === "device_gone") return false;
+    }
+    throw new Error(`Badge delivery failed with status ${response.status}.`);
+  });
+}

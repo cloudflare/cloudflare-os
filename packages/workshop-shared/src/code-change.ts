@@ -48,6 +48,7 @@
 
 import { ChangeSet, Text } from "@codemirror/state";
 import fastDiff from "fast-diff";
+import type { GitOid } from "./gatekeeper";
 
 // =======================================================================================
 // Wire types
@@ -64,17 +65,50 @@ import fastDiff from "fast-diff";
  */
 export type TextChange = (number | [number, ...string[]])[];
 
+/** An immutable whole-file Git blob, addressed by the same OID capability as other Git objects. */
+export interface BytesRef {
+  /** Git blob object ID computed from the complete payload. */
+  oid: GitOid;
+  /** Exact payload length in bytes, checked against the stored blob before use. */
+  byteLength: number;
+}
+
+/** Validate the shape of a whole-file blob reference; the receiver checks the stored blob. */
+export function validateBytesRef(ref: BytesRef): void {
+  if (typeof ref !== "object" || ref === null || Object.keys(ref).length !== 2 ||
+      !("oid" in ref) || !("byteLength" in ref) || !/^[0-9a-f]{40}$/.test(ref.oid) ||
+      !Number.isSafeInteger(ref.byteLength) || ref.byteLength < 0) {
+    throw new Error("Invalid immutable byte reference.");
+  }
+}
+
 /**
- * One file's part of a `CodeChange`. A file's state is a string or absent, and exactly one of
- * the three variants applies:
+ * One file's part of a `CodeChange`. A file is text, a byte postimage, or absent. Exactly one
+ * variant applies; byte operations never reinterpret text's UTF-16 coordinates:
  * - `{edit}`: transform the existing text (invalid if the file is absent, or if its length
  *   doesn't match the change's before-length);
  * - `{set}`: create the file or wholesale-replace its content -- valid against any state,
  *   including absent;
  * - `{remove}`: delete the file. Valid against any state (deleting an absent file is a no-op),
  *   which keeps `remove` composable and transformable without knowing the base.
+ * - `{setBytes}`: create/replace with an immutable byte postimage, against any state;
  */
-export type FileChange = { edit: TextChange } | { set: string } | { remove: true };
+export type FileChange = { edit: TextChange } | { set: string } | { remove: true }
+  | { setBytes: BytesRef };
+
+/** Text remains UTF-16; opaque byte postimages use immutable payload references. */
+export type FileContent = string | BytesRef;
+
+/** Assert text at text-only tool/runtime boundaries; never reinterpret byte offsets as UTF-16. */
+export function requireTextContent(value: FileContent | undefined): string | undefined {
+  if (value !== undefined && typeof value !== "string") throw new Error("Binary content requires byte operations.");
+  return value;
+}
+
+/** Validate a gadget's text-only file map without silently dropping binary files. */
+export function requireTextFiles(files: ReadonlyMap<string, FileContent>): Map<string, string> {
+  return new Map([...files].map(([path, value]) => [path, requireTextContent(value)!]));
+}
 
 /**
  * One code change: for each touched gadget, a list of `[path, FileChange]` entries. Keys of the
@@ -106,7 +140,7 @@ export type CodeChange = { [gadgetId: number]: [path: string, change: FileChange
  * paths. For a worktree this holds only the paths a chat has touched -- a base tree is never
  * materialized whole (see Overseer.readFilesAtCommit()).
  */
-export type GadgetFiles = Map<string, string>;
+export type GadgetFiles = Map<string, FileContent>;
 
 /**
  * The code content of a chat (or any other collection of gadgets' files), keyed by gadget id.
@@ -118,13 +152,10 @@ export type CodeContent = Map<number, GadgetFiles>;
 // =======================================================================================
 // Size caps
 
-/**
- * Maximum length, in UTF-16 code units, of a single file's text that a change may produce (a
- * `set`'s content or an `edit`'s after-length). Backstop, not a product limit: gadget files are
- * source code, and each must fit in a git storage record capped at 2MB -- 512K code units stays
- * under that even for incompressible worst-case UTF-8.
- */
-export const MAX_FILE_TEXT_LENGTH = 512 * 1024;
+// There is deliberately no cap on a file's length. What bounds a file is the git storage record
+// its blob is written to at commit time, and that bound applies to the *deflated* object, which
+// no length measured here could predict; the commit's write fails atomically, losing nothing.
+// The caps below bound changes themselves, which are stored and sent uncompressed.
 
 /**
  * Maximum length, in UTF-16 code units, of a single file path within a change. Enforced only on
@@ -135,21 +166,15 @@ export const MAX_FILE_TEXT_LENGTH = 512 * 1024;
 export const MAX_FILE_PATH_LENGTH = 1024;
 
 /**
- * Maximum total size of one `CodeChange`, measured as a proxy for its serialized size: each file
- * entry costs a fixed overhead plus its path length plus its payload -- a `set`'s content
- * length, or an `edit`'s weighted section count plus its inserted-text length (`remove` costs
- * nothing beyond the overhead). Counting entries and sections, not just inserted text, bounds
- * storage, RPC messages, and transform work even for changes made of many payload-free parts
- * (mass removes). Enforced by `validateCodeChangeSchema`.
+ * Maximum `codeChangeSerializedSize` of one `CodeChange`, and of any composition of changes the
+ * server stores as one record. Durable Object storage caps a record at 8 MiB; this leaves the
+ * rest (388,608 bytes) for the record's envelope. A change past it could never be stored, and
+ * accepting one would wedge whatever later had to store it, so it is rejected up front: by
+ * `validateCodeChangeSchema` for a single change, and by the server's own budgets for the
+ * compositions it builds. Because the measure counts structure as well as text, it also bounds
+ * changes made of many payload-free parts (mass removes).
  */
-export const MAX_CODE_CHANGE_SIZE = 2 * 1024 * 1024;
-
-// The two module-private weights behind MAX_CODE_CHANGE_SIZE (callers only need the cap itself):
-// the fixed per-file-entry share, and each edit section's share -- a section serializes to a
-// few bytes of digits and brackets even when it inserts nothing, so it must weigh more than
-// nothing but needn't be exact.
-const FILE_ENTRY_SIZE_OVERHEAD = 16;
-const EDIT_SECTION_SIZE_WEIGHT = 4;
+export const MAX_CODE_CHANGE_SIZE = 8_000_000;
 
 // Structure overhead granted per node by codeChangeSerializedSize: V8 writes a handful of
 // header/varint bytes per object, array, and string, so a generous fixed share per node keeps
@@ -160,15 +185,13 @@ const SERIALIZED_LINE_OVERHEAD = 8;
 
 /**
  * Upper bound on the bytes a `CodeChange` contributes to a V8-serialized storage record --
- * the form Durable Object storage actually holds change rows and "changes" messages in,
- * subject to its 2MB value cap. V8 writes each string raw (Latin-1 at one byte per UTF-16
- * code unit, or UTF-16 at two) plus small structure headers, so two bytes per code unit of
- * every string -- gadget keys, paths, `set` text, inserted lines -- plus a fixed share per
- * structural node never undercounts; the estimate reads only string lengths, costing O(nodes)
- * independent of text size, and is immune to the escape-sequence and multi-byte inflation a
- * JSON-text measure would suffer. Callers use it to keep *compositions* of changes inside
- * one storable record; `MAX_CODE_CHANGE_SIZE` separately bounds a single change with its own
- * unit-weighted measure at validation time.
+ * the form Durable Object storage actually holds change rows and "changes" messages in.
+ * V8 writes each string raw (Latin-1 at one byte per UTF-16 code unit, or UTF-16 at two) plus
+ * small structure headers, so two bytes per code unit of every string -- gadget keys, paths,
+ * `set` text, inserted lines -- plus a fixed share per structural node never undercounts; the
+ * estimate reads only string lengths, costing O(nodes) independent of text size, and is immune
+ * to the escape-sequence and multi-byte inflation a JSON-text measure would suffer. The measure
+ * `MAX_CODE_CHANGE_SIZE` caps, for single changes and for compositions alike.
  */
 export function codeChangeSerializedSize(change: CodeChange): number {
   let bytes = SERIALIZED_ENTRY_OVERHEAD;  // the change object's own framing
@@ -178,6 +201,8 @@ export function codeChangeSerializedSize(change: CodeChange): number {
       bytes += SERIALIZED_ENTRY_OVERHEAD + 2 * path.length;
       if ("set" in fileChange) {
         bytes += 2 * fileChange.set.length;
+      } else if ("setBytes" in fileChange) {
+        bytes += byteFileChangeSize(fileChange);
       } else if ("edit" in fileChange) {
         for (let section of fileChange.edit) {
           bytes += SERIALIZED_SECTION_OVERHEAD;
@@ -206,6 +231,10 @@ function toChangeSet(change: TextChange): ChangeSet {
 // boundary, so "\r", "\r\n", "\u2028", "\u2029", and NUL stay inside their lines.
 function applyTextChange(text: string, change: TextChange): string {
   return toChangeSet(change).apply(Text.of(text.split("\n"))).toString();
+}
+
+function byteFileChangeSize(change: {setBytes: BytesRef}): number {
+  return 96 + 2 * change.setBytes.oid.length;
 }
 
 // Iterates a CodeChange's gadget entries as numeric ids. Assumes canonical keys
@@ -262,6 +291,8 @@ export function applyCodeChange(content: CodeContent, change: CodeChange): CodeC
     for (let [path, fileChange] of fileChanges) {
       if ("set" in fileChange) {
         files.set(path, fileChange.set);
+      } else if ("setBytes" in fileChange) {
+        files.set(path, fileChange.setBytes);
       } else if ("remove" in fileChange) {
         files.delete(path);
       } else {
@@ -269,6 +300,7 @@ export function applyCodeChange(content: CodeContent, change: CodeChange): CodeC
         if (existing === undefined) {
           throw new Error(`edit of absent file: gadget ${gadgetId} ${path}`);
         }
+        if (typeof existing !== "string") throw new Error("Text edit requires a text base.");
         files.set(path, applyTextChange(existing, fileChange.edit));
       }
     }
@@ -296,18 +328,45 @@ export function composeCodeChange(a: CodeChange, b: CodeChange): CodeChange {
   return makeCodeChange(gadgets);
 }
 
+/**
+ * Composes one epoch of a chat's batches of changes, in log order, into a single change over
+ * the epoch's pin bases. A batch's `pins` re-root the gadgets they name: whatever was composed
+ * for such a gadget before the batch is dropped, since its content restarts at the pinned
+ * commit's tree, and the batch's own `change` then applies over that tree. `seed` is the
+ * change accumulated before the first batch, such as a compaction checkpoint's
+ * `proposedChange`; a re-root drops the gadget's part of it like any other.
+ *
+ * Returns undefined when nothing is left, never an empty change. That is not to say that
+ * nothing is proposed: a re-root can leave a gadget's whole proposal in its pin.
+ */
+export function composeEpochChanges(
+    batches: Iterable<{change?: CodeChange, pins?: readonly {gadgetId: number}[]}>,
+    seed?: CodeChange): CodeChange | undefined {
+  let composed = seed ?? {};
+  for (let {change, pins} of batches) {
+    if (pins !== undefined && pins.length > 0) {
+      let rerooted = new Set(pins.map(pin => pin.gadgetId));
+      composed = Object.fromEntries(
+          gadgetEntries(composed).filter(([gadgetId]) => !rerooted.has(gadgetId)));
+    }
+    if (change !== undefined) composed = composeCodeChange(composed, change);
+  }
+  return Object.keys(composed).length > 0 ? composed : undefined;
+}
+
 function composeFileChange(
     gadgetId: number, path: string, a: FileChange | undefined, b: FileChange | undefined)
     : FileChange {
   if (a === undefined) return b!;
   if (b === undefined) return a;
   // b is later: its `set` or `remove` wholesale-supersedes whatever a did.
-  if ("set" in b || "remove" in b) return b;
+  if ("set" in b || "setBytes" in b || "remove" in b) return b;
   // b is an edit of a's result.
   if ("set" in a) return { set: applyTextChange(a.set, b.edit) };
   if ("remove" in a) {
     throw new Error(`cannot compose edit after remove: gadget ${gadgetId} ${path}`);
   }
+  if (!("edit" in a)) throw new Error("Cannot compose text edit over binary content.");
   return { edit: toChangeSet(a.edit).compose(toChangeSet(b.edit)).toJSON() };
 }
 
@@ -406,7 +465,9 @@ export function diffFiles(before: CodeContent, after: CodeContent): CodeChange {
       if (beforeText === afterText) continue;
       if (afterText === undefined) {
         files.set(path, { remove: true });
-      } else if (beforeText === undefined) {
+      } else if (typeof afterText !== "string") {
+        files.set(path, {setBytes: afterText});
+      } else if (typeof beforeText !== "string") {
         files.set(path, { set: afterText });
       } else {
         files.set(path, { edit: diffTextChange(beforeText, afterText) });
@@ -445,7 +506,7 @@ function diffTextChange(before: string, after: string): TextChange {
   }
   // The explicit "\n" line separator matters: ChangeSet.of's default splits inserted strings on
   // /\r\n?|\n/ and Text rejoins lines with "\n", which would corrupt content containing bare
-  // "\r". Only "\n" is a line boundary here, matching splitLines' invariants in git-store.
+  // "\r". Only "\n" is a line boundary here, matching splitLines' invariants in three-way-merge.ts.
   return ChangeSet.of(specs, before.length, "\n").toJSON();
 }
 
@@ -502,8 +563,8 @@ export function changedGadgets(change: CodeChange): number[] {
  * paths; exactly one variant per `FileChange`; that every `edit` parses as a ChangeSet whose
  * sections are non-negative integers that each retain, delete, or insert something (do-nothing
  * padding is rejected) and whose inserted line strings contain no "\n"; and the size caps:
- * `MAX_FILE_TEXT_LENGTH` per produced file, `MAX_FILE_PATH_LENGTH` per path, and
- * `MAX_CODE_CHANGE_SIZE` for the change overall. Throws on the first violation.
+ * `MAX_FILE_PATH_LENGTH` per path and `MAX_CODE_CHANGE_SIZE` for the change overall. Throws on
+ * the first violation.
  * Content-dependent checks (lengths, boundaries) are stage 2: `validateCodeChangeContent`.
  */
 export function validateCodeChangeSchema(change: CodeChange): void {
@@ -511,7 +572,8 @@ export function validateCodeChangeSchema(change: CodeChange): void {
   // count is pre-checked in O(1) and the budget re-checked as each section's cost accrues, so a
   // hostile change is rejected before its sections are walked -- and in particular before
   // `ChangeSet.fromJSON` materializes a second copy of an oversized edit.
-  let remaining = MAX_CODE_CHANGE_SIZE;
+  // The running cost is exactly `codeChangeSerializedSize`, accrued in the same order.
+  let remaining = MAX_CODE_CHANGE_SIZE - SERIALIZED_ENTRY_OVERHEAD;
   for (let [gadgetKey, fileChanges] of Object.entries(change)) {
     let gadgetId = Number(gadgetKey);
     if (!Number.isSafeInteger(gadgetId) || gadgetId < 0 || String(gadgetId) !== gadgetKey) {
@@ -520,6 +582,8 @@ export function validateCodeChangeSchema(change: CodeChange): void {
     if (fileChanges.length === 0) {
       throw new Error(`code change gadget entry is empty: gadget ${gadgetKey}`);
     }
+    remaining -= SERIALIZED_ENTRY_OVERHEAD + 2 * gadgetKey.length;
+    if (remaining < 0) throw new Error("code change is too large");
     let seen = new Set<string>();
     for (let [path, fileChange] of fileChanges) {
       if (path === "") throw new Error(`code change file path is empty: gadget ${gadgetKey}`);
@@ -530,7 +594,7 @@ export function validateCodeChangeSchema(change: CodeChange): void {
         throw new Error(`code change has a duplicate file entry: gadget ${gadgetKey} ${path}`);
       }
       seen.add(path);
-      remaining -= FILE_ENTRY_SIZE_OVERHEAD + path.length;
+      remaining -= SERIALIZED_ENTRY_OVERHEAD + 2 * path.length;
       if (remaining < 0) throw new Error("code change is too large");
       remaining -= validateFileChangeSchema(`gadget ${gadgetKey} ${path}`, fileChange, remaining);
     }
@@ -546,35 +610,38 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
   // `applyCodeChange` tests `set` before `edit` while `transformCodeChange` tests `edit` first,
   // so a two-variant FileChange would be read differently by two replicas and diverge them.
   let keys = Object.keys(fileChange);
-  if (keys.length !== 1 || !["edit", "set", "remove"].includes(keys[0])) {
-    throw new Error(`file change must have exactly one of edit/set/remove: ${where}`);
+  if (keys.length !== 1 || !["edit", "set", "remove", "setBytes"].includes(keys[0])) {
+    throw new Error(`file change must have exactly one of edit/set/remove/setBytes: ${where}`);
   }
   if ("set" in fileChange) {
-    if (fileChange.set.length > MAX_FILE_TEXT_LENGTH) {
-      throw new Error(`file is too large: ${where}`);
-    }
-    if (fileChange.set.length > budget) throw new Error("code change is too large");
-    return fileChange.set.length;
+    if (2 * fileChange.set.length > budget) throw new Error("code change is too large");
+    return 2 * fileChange.set.length;
   }
   if ("remove" in fileChange) return 0;
+  if ("setBytes" in fileChange) {
+    validateBytesRef(fileChange.setBytes);
+    const cost = byteFileChangeSize(fileChange);
+    if (cost > budget) throw new Error("code change is too large");
+    return cost;
+  }
   // ChangeSet.fromJSON is not strict enough on its own -- it accepts negative and non-integer
   // section lengths, sections that neither retain, delete, nor insert (free padding that would
   // evade the size caps), and inserted "line" strings containing "\n" (which desynchronize the
   // resulting document's line metadata from its text) -- so check sections ourselves first;
   // fromJSON then rejects the remaining malformed shapes, on input the budget has bounded.
   // O(1) budget pre-check on the section count alone, before any section is even looked at.
-  let cost = fileChange.edit.length * EDIT_SECTION_SIZE_WEIGHT;
+  let cost = fileChange.edit.length * SERIALIZED_SECTION_OVERHEAD;
   if (cost > budget) throw new Error("code change is too large");
   for (let section of fileChange.edit) {
     if (Array.isArray(section)) {
       if (!Number.isSafeInteger(section[0]) || section[0] < 0) {
         throw new Error(`file change edit has an invalid section length: ${where}`);
       }
-      // The inserted text's length: the lines' lengths plus the "\n" joining them. The
-      // separator count is known before the lines are walked, so a section padded with empty
-      // lines is rejected here in O(1) rather than after the walk.
-      let insertedHere = section.length >= 2 ? section.length - 2 : 0;
-      if (cost + insertedHere > budget) throw new Error("code change is too large");
+      // Each line's overhead is known before the lines are walked, so a section padded with
+      // empty lines is rejected here in O(1) rather than after the walk.
+      cost += (section.length - 1) * SERIALIZED_LINE_OVERHEAD;
+      if (cost > budget) throw new Error("code change is too large");
+      let insertedHere = section.length >= 2 ? section.length - 2 : 0;  // the joining "\n"s
       for (let i = 1; i < section.length; i++) {
         // A numeric index into `[number, ...string[]]` types as `string | number` because it
         // spans every element; every element past the first is a line.
@@ -583,11 +650,11 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
           throw new Error(`file change edit inserted line contains a newline: ${where}`);
         }
         insertedHere += line.length;
+        cost += 2 * line.length;
       }
       if (section[0] === 0 && insertedHere === 0) {
         throw new Error(`file change edit has a do-nothing section: ${where}`);
       }
-      cost += insertedHere;
       if (cost > budget) throw new Error("code change is too large");
     } else {
       if (!Number.isSafeInteger(section) || section < 0) {
@@ -596,13 +663,11 @@ function validateFileChangeSchema(where: string, fileChange: FileChange, budget:
       if (section === 0) throw new Error(`file change edit has a do-nothing section: ${where}`);
     }
   }
-  let changes: ChangeSet;
   try {
-    changes = toChangeSet(fileChange.edit);
+    toChangeSet(fileChange.edit);
   } catch (e) {
     throw new Error(`file change edit is malformed: ${where}: ${e}`, { cause: e });
   }
-  if (changes.newLength > MAX_FILE_TEXT_LENGTH) throw new Error(`file is too large: ${where}`);
   return cost;
 }
 
@@ -621,29 +686,33 @@ export function validateCodeChangeContent(change: CodeChange, content: CodeConte
     for (let [path, fileChange] of fileChanges) {
       let where = `gadget ${gadgetId} ${path}`;
       if ("set" in fileChange) {
-        if (hasLoneSurrogate(fileChange.set)) {
-          throw new Error(`file change set contains a lone surrogate: ${where}`);
-        }
+        if (hasLoneSurrogate(fileChange.set)) throw halfCharacterError(where);
       } else if ("edit" in fileChange) {
         let text = content.get(gadgetId)?.get(path);
         if (text === undefined) throw new Error(`edit of absent file: ${where}`);
+        if (typeof text !== "string") throw new Error(`Text edit requires a text base: ${where}`);
         let changes = toChangeSet(fileChange.edit);
         if (changes.length !== text.length) {
           throw new Error(`file change edit length mismatch: ${where}: ` +
               `change expects ${changes.length}, file has ${text.length}`);
         }
         changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-          if (!isCodePointBoundary(text, fromA) || !isCodePointBoundary(text, toA)) {
-            throw new Error(`file change edit splits a surrogate pair: ${where}`);
-          }
-          if (hasLoneSurrogate(inserted.toString())) {
-            throw new Error(`file change edit inserts a lone surrogate: ${where}`);
+          if (!isCodePointBoundary(text, fromA) || !isCodePointBoundary(text, toA) ||
+              hasLoneSurrogate(inserted.toString())) {
+            throw halfCharacterError(where);
           }
         });
       }
       // `remove` needs no content checks: it is valid against any state.
     }
   }
+}
+
+// Splitting a pair leaves its other half lone, so every surrogate rule fails the same way. An
+// agent's edit returns this as its tool error, so it says what to write instead.
+function halfCharacterError(where: string): Error {
+  return new Error(`${where} would contain half of a character such as an emoji (a lone ` +
+      `UTF-16 surrogate), which can't be saved. Write and replace whole characters only.`);
 }
 
 // Whether position `pos` in `text` is a code-point boundary, i.e. does not fall between the

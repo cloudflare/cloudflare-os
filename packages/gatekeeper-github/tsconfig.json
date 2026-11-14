@@ -14,5 +14,5 @@
     }
   },
   "include": ["src", "__tests__/**/*.ts"],
-  "exclude": ["dist", "node_modules", ".wrangler"]
+  "exclude": ["dist", "node_modules", ".wrangler", "__tests__/contract"]
 }

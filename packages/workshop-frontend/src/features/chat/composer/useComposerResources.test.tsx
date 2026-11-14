@@ -33,6 +33,12 @@ const description = {
   tsType: "Plan",
 };
 
+const resolution = {
+  accountId: 3,
+  vendorId: "vendor",
+  resourceUrlPattern: "https://example.com/*",
+};
+
 const emptyDocument = (text: string): ComposerDocument => ({
   text,
   capsules: [],
@@ -55,6 +61,23 @@ const fakeGatekeeper = (describeResource = async () => description) => {
   };
 };
 
+// A gatekeeper the attach modal created.
+const createdGatekeeper = () => {
+  const dispose = vi.fn<() => void>();
+  const remove = vi.fn<() => Promise<void>>(async () => {});
+  return {
+    dispose,
+    remove,
+    stub: {
+      getId: async () => 7,
+      describe: async () => description,
+      getCreationSpec: async () => ({ type: "gatekeeper" as const, vendorId: "vendor" }),
+      remove,
+      [Symbol.dispose]: dispose,
+    } as unknown as RpcStub<GatekeeperClient<any>>,
+  };
+};
+
 describe("useComposerResources", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
@@ -65,10 +88,12 @@ describe("useComposerResources", () => {
     sessionStorage.clear();
     iconState.resolve = undefined;
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   const renderHarness = async (
-    createCapsuleGatekeeper: () => Promise<RpcStub<GatekeeperClient<any>> | null>,
+    createCapsuleGatekeeper: (accountId: number, url: string) =>
+      Promise<RpcStub<GatekeeperClient<any>> | null>,
     draftOptions: { storageKey?: string; logoSlot?: string } = {},
   ) => {
     const onSelectionRequest = vi.fn<(
@@ -76,7 +101,7 @@ describe("useComposerResources", () => {
       documentRevision: number,
     ) => void>();
     const onConnectionCreated = vi.fn<() => void>();
-    const onError = vi.fn<(message: string) => void>();
+    const onError = vi.fn<(title: string, description?: string, configure?: () => void) => void>();
     let controls: {
       draft: ReturnType<typeof useComposerDraft>;
       resources: ReturnType<typeof useComposerResources>;
@@ -118,7 +143,7 @@ describe("useComposerResources", () => {
     });
     act(() => harness.controls.resources.scanAt(10));
 
-    await act(async () => harness.controls.resources.createCapsule(3, "vendor"));
+    await act(async () => harness.controls.resources.createCapsule(resolution));
 
     expect(harness.controls.draft.document).toEqual({
       text: "Plan ",
@@ -141,6 +166,26 @@ describe("useComposerResources", () => {
     );
   });
 
+  it("sends the URL with its query and reports the gatekeeper's refusal", async () => {
+    const link = "https://chat.google.com/room/AAQANZZTsQ8?cls=7&tab=1";
+    const refusal = "Google Chat resource URLs must not include fragments or query parameters other than cls.";
+    const createCapsuleGatekeeper = vi.fn<(accountId: number, url: string) =>
+      Promise<RpcStub<GatekeeperClient<any>> | null>>(async () => { throw new Error(refusal); });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = await renderHarness(createCapsuleGatekeeper);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument(link));
+    });
+    act(() => harness.controls.resources.scanAt(10));
+
+    await act(async () => harness.controls.resources.createCapsule(resolution));
+
+    expect(createCapsuleGatekeeper).toHaveBeenCalledWith(3, link);
+    expect(harness.onError).toHaveBeenCalledWith("Failed to add resource", refusal, expect.any(Function));
+    expect(harness.controls.draft.document).toEqual(emptyDocument(link));
+  });
+
   it("disposes but rejects a resource result after a newer edit", async () => {
     let resolveDescription!: (value: typeof description) => void;
     const gatekeeper = fakeGatekeeper(() => new Promise((resolve) => {
@@ -152,7 +197,7 @@ describe("useComposerResources", () => {
       harness.controls.draft.replaceDocument(emptyDocument(description.url));
     });
     act(() => harness.controls.resources.scanAt(10));
-    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    const creation = harness.controls.resources.createCapsule(resolution);
     await act(async () => Promise.resolve());
 
     act(() => {
@@ -172,6 +217,7 @@ describe("useComposerResources", () => {
     expect(harness.onError).toHaveBeenCalledWith(
       "The prompt changed before the resource could be added",
     );
+    expect(harness.onError.mock.calls[0][2]).toBeUndefined();
   });
 
   it("commits an accepted resource after the caret leaves its URL", async () => {
@@ -185,7 +231,7 @@ describe("useComposerResources", () => {
       harness.controls.draft.replaceDocument(emptyDocument(`See ${description.url}`));
     });
     act(() => harness.controls.resources.scanAt(10));
-    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    const creation = harness.controls.resources.createCapsule(resolution);
     await act(async () => Promise.resolve());
 
     act(() => harness.controls.resources.scanAt(0));
@@ -221,7 +267,7 @@ describe("useComposerResources", () => {
       { storageKey: "draft:user-a", logoSlot: "[icon]" },
     );
     act(() => harness.controls.resources.scanAt(15));
-    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    const creation = harness.controls.resources.createCapsule(resolution);
     await act(async () => Promise.resolve());
 
     await act(async () => {
@@ -250,7 +296,7 @@ describe("useComposerResources", () => {
       harness.controls.draft.replaceDocument(emptyDocument(description.url));
     });
     act(() => harness.controls.resources.scanAt(10));
-    const creation = harness.controls.resources.createCapsule(3, "vendor");
+    const creation = harness.controls.resources.createCapsule(resolution);
     await act(async () => Promise.resolve());
     expect(harness.controls.resources.isCreatingResource).toBe(true);
 
@@ -340,5 +386,175 @@ describe("useComposerResources", () => {
     expect(remove).toHaveBeenCalledOnce();
     expect(harness.onConnectionCreated).not.toHaveBeenCalled();
     expect(harness.onError).not.toHaveBeenCalled();
+  });
+
+  const failPaste = async (
+    createCapsuleGatekeeper: () => Promise<RpcStub<GatekeeperClient<any>> | null>,
+  ) => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const harness = await renderHarness(createCapsuleGatekeeper);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument(`See ${description.url}`));
+    });
+    act(() => harness.controls.resources.scanAt(10));
+    await act(async () => harness.controls.resources.createCapsule(resolution));
+    consoleError.mockRestore();
+    expect(harness.onError).toHaveBeenCalledOnce();
+    const [title, detail, configure] = harness.onError.mock.calls[0];
+    return { harness, title, detail, configure };
+  };
+
+  it("reports the server's own reason a pasted URL could not be connected", async () => {
+    const reason = "This is an Office file. Connect it again to make a Google copy.";
+    const { title, detail, configure } = await failPaste(async () => {
+      throw new Error(reason);
+    });
+
+    expect(title).toBe("Failed to add resource");
+    expect(detail).toBe(reason);
+    expect(configure).toBeTypeOf("function");
+  });
+
+  it("keeps a generic message for a transport failure", async () => {
+    const { title, detail, configure } = await failPaste(async () => {
+      throw new Error("Peer closed WebSocket");
+    });
+
+    expect(title).toBe("Failed to add resource");
+    expect(detail).toBeUndefined();
+    expect(configure).toBeTypeOf("function");
+  });
+
+  it("offers to configure a URL whose connection was not created", async () => {
+    const { title, detail, configure } = await failPaste(async () => null);
+
+    expect(title).toBe("Failed to create resource connection");
+    expect(detail).toBeUndefined();
+    expect(configure).toBeTypeOf("function");
+  });
+
+  it("opens the attach modal on a failed URL and replaces it with the modal's capsule", async () => {
+    const { harness, configure } = await failPaste(async () => {
+      throw new Error("Not a Google Sheet");
+    });
+    expect(harness.controls.resources.attachModalOpen).toBe(false);
+
+    act(() => configure!());
+
+    expect(harness.controls.resources.attachModalOpen).toBe(true);
+    expect(harness.controls.resources.attachModalPrefill).toEqual({
+      url: description.url,
+      resolution,
+    });
+    expect(harness.controls.resources.activeUrl).toBeNull();
+
+    const gatekeeper = createdGatekeeper();
+    await act(async () => harness.controls.resources.attachCreated(gatekeeper.stub));
+
+    expect(harness.controls.draft.document).toEqual({
+      text: "See Plan ",
+      capsules: [{
+        start: 4,
+        length: 4,
+        gatekeeperId: 7,
+        description,
+        vendorId: "vendor",
+      }],
+      formats: [],
+      command: null,
+    });
+    expect(harness.controls.resources.attachModalOpen).toBe(false);
+    expect(harness.controls.resources.attachModalPrefill).toBeUndefined();
+    expect(gatekeeper.remove).not.toHaveBeenCalled();
+    expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(harness.onConnectionCreated).toHaveBeenCalledOnce();
+    expect(harness.onSelectionRequest).toHaveBeenCalledWith(
+      { start: 9, end: 9 },
+      expect.any(Number),
+    );
+    expect(harness.onError).toHaveBeenCalledOnce();
+  });
+
+  it("replaces the failed URL after the prompt was edited elsewhere", async () => {
+    const { harness, configure } = await failPaste(async () => null);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(
+        emptyDocument(`Please see ${description.url} today`),
+      );
+    });
+
+    act(() => configure!());
+    await act(async () => harness.controls.resources.attachCreated(createdGatekeeper().stub));
+
+    expect(harness.controls.draft.document.text).toBe("Please see Plan today");
+    expect(harness.controls.draft.document.capsules).toEqual([
+      expect.objectContaining({ start: 11, length: 4, gatekeeperId: 7 }),
+    ]);
+  });
+
+  it("replaces the first remaining copy of the failed URL wherever edits moved it", async () => {
+    const { harness, configure } = await failPaste(async () => null);
+    const other = "https://other.example.com/x";
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(
+        emptyDocument(`Compare ${other} with ${description.url} and ${description.url}`),
+      );
+    });
+
+    act(() => configure!());
+    await act(async () => harness.controls.resources.attachCreated(createdGatekeeper().stub));
+
+    expect(harness.controls.draft.document.text)
+      .toBe(`Compare ${other} with Plan and ${description.url}`);
+    expect(harness.controls.draft.document.capsules).toEqual([
+      expect.objectContaining({ start: 14 + other.length, length: 4, gatekeeperId: 7 }),
+    ]);
+    expect(harness.onError).toHaveBeenCalledOnce();
+  });
+
+  it("does not open the modal once the failed URL is gone", async () => {
+    const { harness, configure } = await failPaste(async () => null);
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument("See nothing"));
+    });
+
+    act(() => configure!());
+
+    expect(harness.controls.resources.attachModalOpen).toBe(false);
+    expect(harness.onError).toHaveBeenLastCalledWith(
+      "The prompt changed before the resource could be added",
+    );
+  });
+
+  it("removes the modal's connection when the URL changed while the modal was open", async () => {
+    const { harness, configure } = await failPaste(async () => null);
+    act(() => configure!());
+    act(() => {
+      harness.controls.draft.recordEdit();
+      harness.controls.draft.replaceDocument(emptyDocument("See nothing"));
+    });
+
+    const gatekeeper = createdGatekeeper();
+    await act(async () => harness.controls.resources.attachCreated(gatekeeper.stub));
+
+    expect(harness.controls.draft.document).toEqual(emptyDocument("See nothing"));
+    expect(gatekeeper.remove).toHaveBeenCalledOnce();
+    expect(gatekeeper.dispose).toHaveBeenCalledOnce();
+    expect(harness.onConnectionCreated).not.toHaveBeenCalled();
+    expect(harness.onError).toHaveBeenLastCalledWith(
+      "The prompt changed before the resource could be added",
+    );
+  });
+
+  it("opens the add-menu modal without a prefill", async () => {
+    const harness = await renderHarness(async () => null);
+    act(() => harness.controls.resources.openAttachModal(0));
+
+    expect(harness.controls.resources.attachModalOpen).toBe(true);
+    expect(harness.controls.resources.attachModalPrefill).toBeUndefined();
   });
 });

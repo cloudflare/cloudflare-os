@@ -72,7 +72,7 @@ const revocations = async (label: string) =>
 
 const watchCode = (key: string) => `import { restore } from "cloudflare:workers";
 export default async function(self, env) {
-  await env.TEST_THING.watch(${JSON.stringify(key)}, await env.HOOKED[restore]({ type: "value-hook" }));
+  await env.TEST_THING.watch(${JSON.stringify(key)}, await env.HOOKED.rpc[restore]({ type: "value-hook" }));
 }`;
 
 it.concurrent("a connect flow adds the account only when its own session redeems the ticket, once",
@@ -131,7 +131,7 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
   const account = await connectConfirmed(api);
   const label = accountLabel(account);
 
-  const ws = stack.use(await api.newGadget());
+  const ws = stack.use(await api.newWorkspace());
   const connection = stack.use(
       await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/reconnect"));
   if (!connection) throw new Error("Failed to create the test connection");

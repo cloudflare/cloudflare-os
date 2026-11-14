@@ -1,0 +1,105 @@
+{
+  "entry": "SketchApi",
+  "constants": {},
+  "services": {
+    "SketchApi": {
+      "doc": "A fixture gatekeeper's app UI, as the Context gatekeeper's ContextApi.",
+      "methods": [
+        {
+          "name": "clear",
+          "doc": "Clears the canvas.",
+          "params": [],
+          "returns": {
+            "kind": "void"
+          }
+        },
+        {
+          "name": "draw",
+          "doc": "Draws a stroke, labelled with a note of the app's own Note type, returning that note.",
+          "params": [
+            {
+              "name": "stroke",
+              "type": {
+                "kind": "ref",
+                "name": "Stroke"
+              },
+              "optional": false,
+              "doc": ""
+            },
+            {
+              "name": "label",
+              "type": {
+                "kind": "ref",
+                "name": "Note"
+              },
+              "optional": true,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "ref",
+            "name": "Note"
+          }
+        },
+        {
+          "name": "pick",
+          "doc": "Picks the pen's colour.",
+          "params": [
+            {
+              "name": "color",
+              "type": {
+                "kind": "ref",
+                "name": "Color"
+              },
+              "optional": false,
+              "doc": ""
+            }
+          ],
+          "returns": {
+            "kind": "void"
+          }
+        }
+      ]
+    }
+  },
+  "shapes": {
+    "Color": {
+      "doc": "A pen's colour.",
+      "kind": "union",
+      "branches": [
+        {
+          "kind": "literal",
+          "value": "blue"
+        },
+        {
+          "kind": "literal",
+          "value": "red"
+        }
+      ]
+    },
+    "Note": {
+      "doc": "Not the API's Note: an app's names are its own.",
+      "kind": "object",
+      "properties": {
+        "text": {
+          "kind": "string"
+        }
+      }
+    },
+    "Stroke": {
+      "kind": "object",
+      "properties": {
+        "at": {
+          "kind": "date"
+        },
+        "color": {
+          "kind": "ref",
+          "name": "Color"
+        },
+        "width": {
+          "kind": "number"
+        }
+      }
+    }
+  }
+}

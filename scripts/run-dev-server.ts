@@ -4,8 +4,8 @@
 // then launches `wrangler dev` with all discovered workers.
 //
 // Flags:
-//   --use-workers-ai-binding   Include the Workers AI binding in
-//                               workshop-backend (requires Cloudflare login).
+//   --use-workers-ai-binding   Include the Workers AI binding in workshop-backend and in the
+//                               gatekeepers that declare one (requires Cloudflare login).
 //   --port PORT                 Listen on PORT instead of 8787. Overrides VITE_BACKEND_HOST.
 //
 // Env:
@@ -78,6 +78,19 @@ try {
 } catch (err) {
   console.error((err as Error).message);
   process.exit(1);
+}
+
+// The deploy service binds CLOUDFLARE_OS_DEPLOYMENT as JSON, and the backend treats the string form
+// as absent, so a value from the shell or `.dev.vars` is parsed here, before the builds so bad JSON
+// fails fast, and written into the backend's config as an object. An empty value counts as unset.
+let cloudflareOsDeployment: unknown;
+if (process.env.CLOUDFLARE_OS_DEPLOYMENT) {
+  try {
+    cloudflareOsDeployment = JSON.parse(process.env.CLOUDFLARE_OS_DEPLOYMENT);
+  } catch {
+    console.error("CLOUDFLARE_OS_DEPLOYMENT is not valid JSON; set it as one JSON line.");
+    process.exit(1);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -472,6 +485,7 @@ function devBuildConfig(build: WranglerBuild | undefined, pkgDir: string): Wrang
 // Maps a gatekeeper name to the shared env vars whose values seed its CLIENT_ID / CLIENT_SECRET.
 const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = {
   "gatekeeper-github": { id: "GITHUB_CLIENT_ID", secret: "GITHUB_CLIENT_SECRET" },
+  "gatekeeper-gitlab": { id: "GITLAB_CLIENT_ID", secret: "GITLAB_CLIENT_SECRET" },
   "gatekeeper-google": { id: "GOOGLE_CLIENT_ID", secret: "GOOGLE_CLIENT_SECRET" },
   "gatekeeper-cloudflare": { id: "CLOUDFLARE_OAUTH_CLIENT_ID", secret: "CLOUDFLARE_OAUTH_CLIENT_SECRET" },
   "gatekeeper-supabase": { id: "SUPABASE_CLIENT_ID", secret: "SUPABASE_CLIENT_SECRET" },
@@ -481,6 +495,9 @@ const SHARED_GATEKEEPER_CREDS: Record<string, { id: string; secret: string }> = 
   "gatekeeper-slack": { id: "SLACK_CLIENT_ID", secret: "SLACK_CLIENT_SECRET" },
   "gatekeeper-linear": { id: "LINEAR_CLIENT_ID", secret: "LINEAR_CLIENT_SECRET" },
   "gatekeeper-spotify": { id: "SPOTIFY_CLIENT_ID", secret: "SPOTIFY_CLIENT_SECRET" },
+  "gatekeeper-x": { id: "X_CLIENT_ID", secret: "X_CLIENT_SECRET" },
+  "gatekeeper-microsoft": { id: "MICROSOFT_CLIENT_ID", secret: "MICROSOFT_CLIENT_SECRET" },
+  "gatekeeper-pagerduty": { id: "PAGERDUTY_CLIENT_ID", secret: "PAGERDUTY_CLIENT_SECRET" },
 };
 
 // Deployment-configured vars a gatekeeper reads that its committed `wrangler.jsonc` deliberately
@@ -496,6 +513,22 @@ const PASSTHROUGH_GATEKEEPER_VARS: Record<string, string[]> = {
     "MCP_PORTAL_TRUST_ANNOTATIONS", "MCP_PORTAL_HIDDEN_SERVER_IDS", "MCP_ALLOW_INSECURE",
   ],
   "gatekeeper-mcp": ["MCP_ALLOW_INSECURE"],
+  // A tunnel's public origin, for GitHub to deliver hook events to; unset, hooks are refused.
+  "gatekeeper-github": ["WEBHOOK_ORIGIN"],
+  // The instance a self-hosted GitLab gatekeeper talks to, and the Access service token for one
+  // behind Cloudflare Access; unset, it talks to gitlab.com.
+  "gatekeeper-gitlab": ["GITLAB_URL", "GITLAB_API_URL", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET"],
+  // Each connection's daily read limit; unset, the in-code default.
+  "gatekeeper-x": ["X_DAILY_READ_LIMIT"],
+  // The signing secret of the PagerDuty webhook a tunnel delivers to; unset, hooks are refused.
+  "gatekeeper-pagerduty": ["PAGERDUTY_WEBHOOK_SECRET"],
+  // The most Google Drive connections may do; unset, read and write.
+  "gatekeeper-google": ["GOOGLE_DRIVE_ACCESS"],
+  // The Entra tenant (or allowlist of tenant IDs) to accept, which must be set or the gatekeeper
+  // refuses to start, the most agents may do in SharePoint, Outlook and Calendar (unset: write, send
+  // and schedule), and whether SharePoint asks for every site or only those granted to the app
+  // (unset, every site).
+  "gatekeeper-microsoft": ["MICROSOFT_TENANT_ID", "MICROSOFT_ALLOWED_TENANT_IDS", "MICROSOFT_SHAREPOINT_ACCESS", "MICROSOFT_SHAREPOINT_SITES", "MICROSOFT_OUTLOOK_ACCESS", "MICROSOFT_CALENDAR_ACCESS"],
 };
 
 for (const gk of gatekeepers) {
@@ -519,6 +552,12 @@ for (const gk of gatekeepers) {
     }
   }
 
+  // Workers AI always runs remotely, which needs a Cloudflare login, so it stays opt-in here too.
+  if (config.ai) {
+    if (useWorkersAi) config.ai.remote = true;
+    else delete config.ai;
+  }
+
   const outPath = join(gk.dir, "wrangler.dev.jsonc");
   writeFileSync(outPath, JSON.stringify(config, null, 2) + "\n");
   console.log(`generated: ${outPath}`);
@@ -537,6 +576,12 @@ for (const gk of gatekeepers) {
   // For local testing, create an account named "admin" to test admin features.
   config.vars = config.vars || {};
   config.vars.ADMINS = ["admin"];
+  // A local instance, where `cf-os api` may act as anyone. Never set by a deployment.
+  config.vars.WORKSHOP_ENVIRONMENT = "development";
+
+  if (cloudflareOsDeployment !== undefined) {
+    config.vars.CLOUDFLARE_OS_DEPLOYMENT = cloudflareOsDeployment;
+  }
 
   // Pass through the optional OAuth sign-in / AI Gateway billing env vars from the shell
   // environment, so you can run e.g.
@@ -553,6 +598,8 @@ for (const gk of gatekeepers) {
     // needs the token even when the binding is present.
     "CF_AI_GATEWAY", "CF_AI_GATEWAY_PROVIDERS", "CF_AI_GATEWAY_ACCOUNT_ID",
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
+    // The admin audit log's minimum retention (see docs/admin-access.md).
+    "ADMIN_AUDIT_RETENTION_MIN_DAYS",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).

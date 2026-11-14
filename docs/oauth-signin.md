@@ -63,6 +63,80 @@ email and is then discarded by the gatekeeper. To use a gatekeeper's capabilitie
 or Cloudflare AI Gateway billing, the user explicitly **connects** it afterward (which requests the
 full scopes and persists the connection).
 
+## Native app return after installation sign-in
+
+The native Cloudflare OS shell uses a system authentication session, rather than an embedded web
+view, to sign in to an installation. This is required for identity-provider and security-key flows
+that reject or cannot complete in embedded browsers. The app opens the installation with a fresh
+opaque `cfos_native_state` value and a fresh, non-extractable P-256 key pair, passing only the
+public key as `cfos_native_key`. That uncompressed 65-byte public key is encoded as 87 characters
+of unpadded base64url.
+
+Once the browser is authenticated, the Workshop presents an explicit **Continue in Cloudflare
+OS** confirmation. It does not mint a transfer merely because a specially formed URL was loaded.
+After confirmation:
+
+1. `AuthenticatedApi.beginDeviceSessionHandoff()` stages an encrypted transfer in the authenticated
+   user's Durable Object. Page JavaScript receives its routing `userDoId` and a single-use, 256-bit
+   hex `ticket`; only the ticket's SHA-256 hash is stored with the transfer. It never receives the
+   encrypted envelope or its credential. Retrying a staged state reissues the ticket without
+   minting another credential, invalidating the earlier ticket.
+2. The page performs a same-origin, top-level form POST containing `userDoId`, `state`, and `ticket`
+   to `/api/device-session/callback`. The ticket is required to redeem the transfer, while the
+   navigation headers are CSRF checks, not authentication. In Access mode the route also verifies
+   the Access JWT and requires its user to own the `userDoId`, including when the backend Worker
+   is reached directly. The endpoint rejects fetches, frames, cross-origin requests, duplicate
+   fields, malformed values, and wrong owners before it consumes anything.
+3. The endpoint atomically consumes the staged record and returns a `303` to the fixed claimed HTTPS
+   app link `https://os.cloudflare.app/oauthredirect?cfos_callback=install-connected&…` for mobile
+   (see below for desktop callback delivery). The native
+   app verifies the state, decrypts the envelope with its per-attempt private key, and validates the
+   credential before storing it in platform secure storage. A web page cannot claim this callback;
+   the app-domain association controls which installed native app receives it.
+
+The transfer is server-enforced as single-use and expires after two minutes, independently of the
+credential encrypted inside it. A password or gatekeeper-authenticated installation gets a new
+Workshop device session which remains unusable until the callback consumes the transfer and which
+the server expires after 30 days. A Cloudflare Access installation transfers its current Access
+JWT; that credential retains the Access policy and JWT `exp` chosen by the installation's Access
+configuration. The native app cannot refresh or extend it, and the user must complete Access again
+after it expires. The app also needs to preserve any Access binding cookie required by that
+installation's policy.
+
+The encrypted wire payload is a `DeviceSessionTransfer`: a discriminated credential plus the
+two-minute transfer deadline. Its `workshop` token is `<user-id>:<standard-base64-secret>` (the
+32-byte session secret is padded standard base64); its `cloudflare-access` token is the Access
+application JWT. The envelope's P-256 public key, salt, IV, and ciphertext are all unpadded
+base64url. Encryption uses ephemeral P-256 ECDH, HKDF-SHA-256, and AES-GCM with the opaque state as
+additional authenticated data. There is no central native-login relay, poller, or cross-install
+session store; each installation owns and consumes its transfers.
+
+Inside an installation's embedded web view, the native shell exposes the versioned
+`window.cloudflareOSNative` capability. The Workshop calls `loginReady()` only after its normal
+`whoami()` call confirms authentication. It may call `loginReady()` again after a reconnect, so the
+app treats that notification as idempotent. The Workshop offers **Back to installs** through
+`returnToInstalls()`.
+Notification enrollment is an optional capability on the same object. The legacy notification
+globals remain temporarily as a fallback for the currently distributed TestFlight build; new
+navigation and login behavior uses only the versioned object. These native hooks are available in
+every installation and are not conditioned on Cloudflare Access mode.
+
+### Desktop callback delivery
+
+Desktop clients use the same encrypted device-session protocol and explicit browser confirmation.
+They bind a fresh IPv4 loopback listener before opening the system browser and use state of the
+form `desktop-v1.<port>.<43-character-base64url-nonce>`. The callback route recognizes only this
+reserved form, a port in 1024–65535, and the fixed destination
+`http://127.0.0.1:<port>/oauthredirect`; malformed desktop state fails before ticket consumption.
+All other state retains the claimed HTTPS mobile callback. No arbitrary redirect URL, host,
+scheme, or path is accepted. Only ciphertext crosses loopback, authenticated against the complete
+state and decryptable by that attempt's private key. Desktop listeners validate their exact Host,
+state, envelope and deadline, consume one response, and close on completion/cancellation/timeout.
+Like mobile shells, desktop clients commit the credential only after their origin-bound main-frame
+native bridge reports authenticated `loginReady`. App sign-in is separate from any local Computer
+Operator registration or permission grant. Access policies requiring an additional binding cookie
+still need that cookie; encrypted JWT transfer does not bypass those policies.
+
 ## Configuration
 
 ```

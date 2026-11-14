@@ -6,7 +6,7 @@ export default {
 
   isReady({ values }) {
     return typeof values.repoFullName === "string" && values.repoFullName.length > 0 &&
-      typeof values.pullNumber === "string" && values.pullNumber.length > 0;
+      typeof values.pullNumber === "string" && /^\d+$/.test(values.pullNumber);
   },
 
   initialValuesFromResourceUrl({ resourceUrl }) {

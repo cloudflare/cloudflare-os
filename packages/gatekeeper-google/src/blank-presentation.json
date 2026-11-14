@@ -1,0 +1,1052 @@
+{
+  "presentation": {
+    "pageSize": {
+      "width": {
+        "magnitude": 9144000,
+        "unit": "EMU"
+      },
+      "height": {
+        "magnitude": 5143500,
+        "unit": "EMU"
+      }
+    },
+    "slides": [
+      {
+        "objectId": "p",
+        "pageElements": [
+          {
+            "objectId": "i0",
+            "shape": {
+              "placeholder": {
+                "type": "CENTERED_TITLE"
+              }
+            }
+          },
+          {
+            "objectId": "i1",
+            "shape": {
+              "placeholder": {
+                "type": "SUBTITLE"
+              }
+            }
+          }
+        ],
+        "slideProperties": {
+          "layoutObjectId": "p2",
+          "masterObjectId": "simple-light-2",
+          "notesPage": {
+            "pageElements": [
+              {
+                "objectId": "i2",
+                "shape": {}
+              },
+              {
+                "objectId": "i3",
+                "shape": {}
+              }
+            ],
+            "notesProperties": {
+              "speakerNotesObjectId": "i3"
+            }
+          }
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      }
+    ],
+    "masters": [
+      {
+        "objectId": "simple-light-2",
+        "masterProperties": {
+          "displayName": "Simple Light"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "solidFill": {
+              "color": {
+                "themeColor": "LIGHT1"
+              },
+              "alpha": 1
+            }
+          },
+          "colorScheme": {
+            "colors": [
+              {
+                "type": "DARK1",
+                "color": {}
+              },
+              {
+                "type": "LIGHT1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "DARK2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              },
+              {
+                "type": "LIGHT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "ACCENT1",
+                "color": {
+                  "red": 0.25882354,
+                  "green": 0.52156866,
+                  "blue": 0.95686275
+                }
+              },
+              {
+                "type": "ACCENT2",
+                "color": {
+                  "red": 0.12941177,
+                  "green": 0.12941177,
+                  "blue": 0.12941177
+                }
+              },
+              {
+                "type": "ACCENT3",
+                "color": {
+                  "red": 0.47058824,
+                  "green": 0.5647059,
+                  "blue": 0.6117647
+                }
+              },
+              {
+                "type": "ACCENT4",
+                "color": {
+                  "red": 1,
+                  "green": 0.67058825,
+                  "blue": 0.2509804
+                }
+              },
+              {
+                "type": "ACCENT5",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "ACCENT6",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 1,
+                  "blue": 0.25490198
+                }
+              },
+              {
+                "type": "HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "FOLLOWED_HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "TEXT1",
+                "color": {}
+              },
+              {
+                "type": "BACKGROUND1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "TEXT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "BACKGROUND2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "objectId": "p2",
+        "pageElements": [
+          {
+            "shape": {
+              "placeholder": {
+                "type": "CENTERED_TITLE"
+              }
+            }
+          },
+          {
+            "shape": {
+              "placeholder": {
+                "type": "SUBTITLE"
+              }
+            }
+          },
+          {
+            "shape": {
+              "placeholder": {
+                "type": "SLIDE_NUMBER"
+              }
+            }
+          }
+        ],
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Title slide"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p3",
+        "pageElements": [
+          {
+            "shape": {
+              "placeholder": {
+                "type": "TITLE"
+              }
+            }
+          },
+          {
+            "shape": {
+              "placeholder": {
+                "type": "SLIDE_NUMBER"
+              }
+            }
+          }
+        ],
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Section header"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p4",
+        "pageElements": [
+          {
+            "shape": {
+              "placeholder": {
+                "type": "TITLE"
+              }
+            }
+          },
+          {
+            "shape": {
+              "placeholder": {
+                "type": "BODY"
+              }
+            }
+          },
+          {
+            "shape": {
+              "placeholder": {
+                "type": "SLIDE_NUMBER"
+              }
+            }
+          }
+        ],
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Title and body"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p6",
+        "pageElements": [
+          {
+            "shape": {
+              "placeholder": {
+                "type": "TITLE"
+              }
+            }
+          },
+          {
+            "shape": {
+              "placeholder": {
+                "type": "SLIDE_NUMBER"
+              }
+            }
+          }
+        ],
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Title only"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p12",
+        "pageElements": [
+          {
+            "shape": {
+              "placeholder": {
+                "type": "SLIDE_NUMBER"
+              }
+            }
+          }
+        ],
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Blank"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      }
+    ],
+    "locale": "en"
+  },
+  "outline": {
+    "slides": [
+      {
+        "objectId": "p",
+        "slideProperties": {
+          "masterObjectId": "simple-light-2"
+        }
+      }
+    ],
+    "masters": [
+      {
+        "objectId": "simple-light-2",
+        "masterProperties": {
+          "displayName": "Simple Light"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "solidFill": {
+              "color": {
+                "themeColor": "LIGHT1"
+              },
+              "alpha": 1
+            }
+          },
+          "colorScheme": {
+            "colors": [
+              {
+                "type": "DARK1",
+                "color": {}
+              },
+              {
+                "type": "LIGHT1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "DARK2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              },
+              {
+                "type": "LIGHT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "ACCENT1",
+                "color": {
+                  "red": 0.25882354,
+                  "green": 0.52156866,
+                  "blue": 0.95686275
+                }
+              },
+              {
+                "type": "ACCENT2",
+                "color": {
+                  "red": 0.12941177,
+                  "green": 0.12941177,
+                  "blue": 0.12941177
+                }
+              },
+              {
+                "type": "ACCENT3",
+                "color": {
+                  "red": 0.47058824,
+                  "green": 0.5647059,
+                  "blue": 0.6117647
+                }
+              },
+              {
+                "type": "ACCENT4",
+                "color": {
+                  "red": 1,
+                  "green": 0.67058825,
+                  "blue": 0.2509804
+                }
+              },
+              {
+                "type": "ACCENT5",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "ACCENT6",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 1,
+                  "blue": 0.25490198
+                }
+              },
+              {
+                "type": "HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "FOLLOWED_HYPERLINK",
+                "color": {
+                  "green": 0.5921569,
+                  "blue": 0.654902
+                }
+              },
+              {
+                "type": "TEXT1",
+                "color": {}
+              },
+              {
+                "type": "BACKGROUND1",
+                "color": {
+                  "red": 1,
+                  "green": 1,
+                  "blue": 1
+                }
+              },
+              {
+                "type": "TEXT2",
+                "color": {
+                  "red": 0.93333334,
+                  "green": 0.93333334,
+                  "blue": 0.93333334
+                }
+              },
+              {
+                "type": "BACKGROUND2",
+                "color": {
+                  "red": 0.34901962,
+                  "green": 0.34901962,
+                  "blue": 0.34901962
+                }
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "layouts": [
+      {
+        "objectId": "p2",
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Title slide"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p3",
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Section header"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p4",
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Title and body"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p6",
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Title only"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      },
+      {
+        "objectId": "p12",
+        "layoutProperties": {
+          "masterObjectId": "simple-light-2",
+          "displayName": "Blank"
+        },
+        "pageProperties": {
+          "pageBackgroundFill": {
+            "propertyState": "INHERIT"
+          }
+        }
+      }
+    ]
+  },
+  "slides": {
+    "p": {
+      "objectId": "p",
+      "pageElements": [
+        {
+          "objectId": "i0",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.6841999888420105,
+            "translateX": 311708.349609375,
+            "translateY": 744575,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "shapeProperties": {
+              "shapeBackgroundFill": {
+                "propertyState": "INHERIT"
+              },
+              "outline": {
+                "propertyState": "INHERIT"
+              },
+              "shadow": {
+                "propertyState": "INHERIT"
+              },
+              "autofit": {
+                "fontScale": 1
+              }
+            },
+            "placeholder": {
+              "type": "CENTERED_TITLE",
+              "parentObjectId": "p2_i0"
+            }
+          }
+        },
+        {
+          "objectId": "i1",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.26420000195503235,
+            "translateX": 311700,
+            "translateY": 2834125,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "shapeProperties": {
+              "shapeBackgroundFill": {
+                "propertyState": "INHERIT"
+              },
+              "outline": {
+                "propertyState": "INHERIT"
+              },
+              "shadow": {
+                "propertyState": "INHERIT"
+              },
+              "autofit": {
+                "fontScale": 1
+              }
+            },
+            "placeholder": {
+              "type": "SUBTITLE",
+              "parentObjectId": "p2_i1"
+            }
+          }
+        }
+      ],
+      "slideProperties": {
+        "layoutObjectId": "p2",
+        "masterObjectId": "simple-light-2",
+        "notesPage": {
+          "pageElements": [
+            {
+              "objectId": "i2",
+              "size": {
+                "width": {
+                  "magnitude": 3000000,
+                  "unit": "EMU"
+                },
+                "height": {
+                  "magnitude": 3000000,
+                  "unit": "EMU"
+                }
+              },
+              "transform": {
+                "scaleX": 2.032025,
+                "scaleY": 1.143,
+                "translateX": 381300,
+                "translateY": 685800,
+                "unit": "EMU"
+              },
+              "shape": {
+                "shapeProperties": {
+                  "outline": {
+                    "propertyState": "INHERIT"
+                  }
+                },
+                "placeholder": {
+                  "type": "SLIDE_IMAGE",
+                  "parentObjectId": "n:slide"
+                }
+              }
+            },
+            {
+              "objectId": "i3",
+              "size": {
+                "width": {
+                  "magnitude": 3000000,
+                  "unit": "EMU"
+                },
+                "height": {
+                  "magnitude": 3000000,
+                  "unit": "EMU"
+                }
+              },
+              "transform": {
+                "scaleX": 1.8288,
+                "scaleY": 1.3716,
+                "translateX": 685800,
+                "translateY": 4343400,
+                "unit": "EMU"
+              },
+              "shape": {
+                "shapeType": "TEXT_BOX",
+                "shapeProperties": {
+                  "shapeBackgroundFill": {
+                    "propertyState": "INHERIT"
+                  },
+                  "outline": {
+                    "propertyState": "INHERIT"
+                  },
+                  "shadow": {
+                    "propertyState": "INHERIT"
+                  },
+                  "autofit": {
+                    "fontScale": 1
+                  }
+                },
+                "placeholder": {
+                  "type": "BODY",
+                  "index": 1,
+                  "parentObjectId": "n:text"
+                }
+              }
+            }
+          ],
+          "notesProperties": {
+            "speakerNotesObjectId": "i3"
+          }
+        }
+      },
+      "pageProperties": {
+        "pageBackgroundFill": {
+          "propertyState": "INHERIT"
+        }
+      }
+    }
+  },
+  "layouts": {
+    "p2": {
+      "objectId": "p2",
+      "pageElements": [
+        {
+          "objectId": "p2_i0",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.6841999888420105,
+            "translateX": 311708.349609375,
+            "translateY": 744575,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "CENTERED_TITLE"
+            }
+          }
+        },
+        {
+          "objectId": "p2_i1",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.26420000195503235,
+            "translateX": 311700,
+            "translateY": 2834125,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "SUBTITLE"
+            }
+          }
+        },
+        {
+          "objectId": "p2_i2",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 0.18289999663829803,
+            "scaleY": 0.13120000064373016,
+            "translateX": 8472457.8125,
+            "translateY": 4663216.796875,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "SLIDE_NUMBER"
+            }
+          }
+        }
+      ]
+    },
+    "p3": {
+      "objectId": "p3",
+      "pageElements": [
+        {
+          "objectId": "p3_i0",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.28060001134872437,
+            "translateX": 311700,
+            "translateY": 2150850,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "TITLE"
+            }
+          }
+        },
+        {
+          "objectId": "p3_i1",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 0.18289999663829803,
+            "scaleY": 0.13120000064373016,
+            "translateX": 8472457.8125,
+            "translateY": 4663216.796875,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "SLIDE_NUMBER"
+            }
+          }
+        }
+      ]
+    },
+    "p4": {
+      "objectId": "p4",
+      "pageElements": [
+        {
+          "objectId": "p4_i0",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.19089999794960022,
+            "translateX": 311700,
+            "translateY": 445025,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "TITLE"
+            }
+          }
+        },
+        {
+          "objectId": "p4_i1",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 1.138800024986267,
+            "translateX": 311700,
+            "translateY": 1152475,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "BODY"
+            }
+          }
+        },
+        {
+          "objectId": "p4_i2",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 0.18289999663829803,
+            "scaleY": 0.13120000064373016,
+            "translateX": 8472457.8125,
+            "translateY": 4663216.796875,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "SLIDE_NUMBER"
+            }
+          }
+        }
+      ]
+    },
+    "p6": {
+      "objectId": "p6",
+      "pageElements": [
+        {
+          "objectId": "p6_i0",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 2.8401999473571777,
+            "scaleY": 0.19089999794960022,
+            "translateX": 311700,
+            "translateY": 445025,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "TITLE"
+            }
+          }
+        },
+        {
+          "objectId": "p6_i1",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 0.18289999663829803,
+            "scaleY": 0.13120000064373016,
+            "translateX": 8472457.8125,
+            "translateY": 4663216.796875,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "SLIDE_NUMBER"
+            }
+          }
+        }
+      ]
+    },
+    "p12": {
+      "objectId": "p12",
+      "pageElements": [
+        {
+          "objectId": "p12_i0",
+          "size": {
+            "width": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            },
+            "height": {
+              "magnitude": 3000000,
+              "unit": "EMU"
+            }
+          },
+          "transform": {
+            "scaleX": 0.18289999663829803,
+            "scaleY": 0.13120000064373016,
+            "translateX": 8472457.8125,
+            "translateY": 4663216.796875,
+            "unit": "EMU"
+          },
+          "shape": {
+            "shapeType": "TEXT_BOX",
+            "placeholder": {
+              "type": "SLIDE_NUMBER"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

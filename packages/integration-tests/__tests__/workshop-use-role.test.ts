@@ -84,11 +84,12 @@ type UseSurface = "getMetadata" | "subscribeToMetadata" | "subscribeToPresence" 
 const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurface>,
     (ws: RpcStub<Overseer>) => unknown> = {
   setTitle: ws => ws.setTitle("Title"),
-  setPinned: ws => ws.setPinned(true),
   deleteSelf: ws => ws.deleteSelf(),
   createGadget: ws => ws.createGadget("App"),
   listTree: ws => ws.listTree(COMMIT),
+  listChangedPaths: ws => ws.listChangedPaths(COMMIT, COMMIT),
   readFilesAtCommit: ws => ws.readFilesAtCommit(COMMIT, ["client.js"]),
+  readBlob: ws => ws.readBlob(COMMIT),
   getCommitLog: ws => ws.getCommitLog(COMMIT),
   submitCodeChange: ws => ws.submitCodeChange(1, {
     generation: 0, revision: 0, clientId: "use", seq: 1, change: diffFiles(new Map(), new Map()),
@@ -111,6 +112,10 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   listPreApprovableActions: ws => ws.listPreApprovableActions(),
   acceptConnectionRequest: ws => ws.acceptConnectionRequest("request", { gatekeeperId: 1 }),
   denyConnectionRequest: ws => ws.denyConnectionRequest("request"),
+  markChatRead: ws => ws.markChatRead(1),
+  markChatUnread: ws => ws.markChatUnread(1),
+  approveWebFetchRequest: ws => ws.approveWebFetchRequest("1:request"),
+  denyWebFetchRequest: ws => ws.denyWebFetchRequest("1:request"),
   listChats: ws => ws.listChats(),
   listModels: ws => ws.listModels(),
   getChatHistory: ws => ws.getChatHistory(1),
@@ -119,13 +124,12 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
     using sink = stubFor(new ChatSink());
     return await ws.subscribeToChat(sink);
   },
+  viewChat: ws => ws.viewChat(1),
   listSlashCommands: ws => ws.listSlashCommands(),
   newChat: ws => ws.newChat("Hello", null),
   sendChatMessage: ws => ws.sendChatMessage(1, "Hello", null),
-  uploadChatAttachment: ws =>
-    ws.uploadChatAttachment({ mimeType: "text/plain", content: new Uint8Array() }, null),
+  uploadBlob: ws => ws.uploadBlob(new Uint8Array()),
   getChatAttachmentContent: ws => ws.getChatAttachmentContent(1, "attachment"),
-  deleteChatAttachment: ws => ws.deleteChatAttachment("attachment"),
   setChatTitle: ws => ws.setChatTitle(1, "Title"),
   mergeChanges: ws => ws.mergeChanges(1),
   updateChatFromMainline: ws => ws.updateChatFromMainline(1),
@@ -135,16 +139,17 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   deleteChat: ws => ws.deleteChat(1),
   stopAgent: ws => ws.stopAgent(1),
   retryAgent: ws => ws.retryAgent(1, "model"),
+  waitForAgent: ws => ws.waitForAgent(1),
   listBlueprints: ws => ws.listBlueprints(),
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
   retryBlueprintPublish: ws => ws.retryBlueprintPublish("blueprint"),
-  listObserverRequirements: ws => ws.listObserverRequirements("build"),
+  listObserverRequirements: ws => ws.listObserverRequirements("workspace"),
   listCollaborators: ws => ws.listCollaborators(),
-  addCollaborator: ws => ws.addCollaborator("someone", "build"),
+  addCollaborator: ws => ws.addCollaborator("someone", "workspace"),
   removeCollaborator: ws => ws.removeCollaborator("someone", []),
   previewRemoveCollaborator: ws => ws.previewRemoveCollaborator("someone"),
-  createShareLink: ws => ws.createShareLink("build"),
+  createShareLink: ws => ws.createShareLink("workspace"),
   newShareLinkKey: ws => ws.newShareLinkKey("link"),
   listShareLinks: ws => ws.listShareLinks(),
   updateShareLink: ws => ws.updateShareLink("link"),
@@ -170,6 +175,7 @@ const deniedGadget = (chatId: number): Record<
   getBlueprintAnnotation: g => g.getBlueprintAnnotation("DATA"),
   setBlueprintAnnotation: g => g.setBlueprintAnnotation("DATA", { title: "Data", description: "" }),
   createBlueprint: g => g.createBlueprint(),
+  applyBlueprint: g => g.applyBlueprint("blueprint", { modelId: null }),
 });
 
 it("a use collaborator reaches only the mainline gadget UI", async () => {
@@ -179,7 +185,7 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
   await ownerApi.provisionAmbientAccount(TEST_VENDOR_ID);
   const account = await waitFor("the test account", async () =>
     (await listConnectedAccounts(ownerApi)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
-  using ws = await ownerApi.newGadget();
+  using ws = await ownerApi.newWorkspace();
   const workspaceId = (await ws.getMetadata()).id;
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
@@ -214,8 +220,10 @@ it("a use collaborator reaches only the mainline gadget UI", async () => {
 
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
-  if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget(workspaceId);
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) {
+    throw new Error(`Failed to share with ${viewer}`);
+  }
+  using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
 
   expect(await outcomes(DENIED_OVERSEER, useWs)).toEqual(allDenied(DENIED_OVERSEER));
@@ -239,7 +247,7 @@ it("a use collaborator's UI bundle carries only what client.js reaches", async (
   const [owner, viewer] = nextUsernames("bundleowner", "bundleviewer");
   using ownerPublic = connect(harness.url);
   using ownerApi = await signUp(ownerPublic, owner!);
-  using ws = await ownerApi.newGadget();
+  using ws = await ownerApi.newWorkspace();
   const workspaceId = (await ws.getMetadata()).id;
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
@@ -271,8 +279,8 @@ it("a use collaborator's UI bundle carries only what client.js reaches", async (
 
   using viewerPublic = connect(harness.url);
   using viewerApi = await signUp(viewerPublic, viewer!);
-  if (!await ws.addCollaborator(viewer!, "use")) throw new Error(`Failed to share with ${viewer}`);
-  using useWs = await viewerApi.openGadget(workspaceId);
+  if (!await ws.addCollaborator(viewer!, { gadgetId })) throw new Error(`Failed to share with ${viewer}`);
+  using useWs = await viewerApi.openWorkspace(workspaceId);
   using useGadget = await useWs.getGadget(gadgetId);
   expect(await useGadget.getUiBundle()).toEqual({
     modules: [

@@ -291,6 +291,12 @@
             "GitHubGatekeeperImpl"
           ],
           "tag": "v0"
+        },
+        {
+          "new_sqlite_classes": [
+            "GitHubHookDriver"
+          ],
+          "tag": "v1"
         }
       ],
       "modules": [
@@ -314,8 +320,84 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/github"
       }
     },
+    "gatekeeper-gitlab": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://gitlab.com/-/user_settings/applications",
+          "help": "The link opens gitlab.com. For a self-managed GitLab, create the application on your own instance instead (the same User settings → Applications page there); the worker's GITLAB_URL must then name that instance.",
+          "kind": "secret",
+          "label": "OAuth application ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/gitlab/oauth",
+          "setupSteps": [
+            "In GitLab, open User settings → Applications (or a group's Settings → Applications) and add a new application.",
+            "Set the Redirect URI to the value below and leave Confidential checked.",
+            "Select the scopes: api, write_repository, and read_user.",
+            "Save the application, then copy the Application ID and Secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth application secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "gitlab.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "GitLabGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "gitlab.js",
+          "r2Key": "blobs/modules/e22ff8c153d0d137a829c9816ccaa05e65dac47ca4f676e687fc0df99dbb27ab",
+          "sha256": "e22ff8c153d0d137a829c9816ccaa05e65dac47ca4f676e687fc0df99dbb27ab",
+          "size": 59,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "gitlab",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/gitlab"
+      }
+    },
     "gatekeeper-google": {
       "bindings": [
+        {
+          "name": "AI",
+          "type": "ai"
+        },
         {
           "name": "CLIENT_ID",
           "text": "$SECRET(CLIENT_ID)",
@@ -341,7 +423,7 @@
           "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/google/oauth",
           "setupSteps": [
             "In the Google Cloud Console, create a project (or pick an existing one).",
-            "Enable the APIs gadgets should reach: Gmail, Google Docs, Google Drive, Google Sheets, Google Calendar, Google Chat, People (for Chat DM names), and BigQuery (APIs & Services > Library).",
+            "Enable the APIs gadgets should reach: Gmail, Google Docs, Google Drive, Google Sheets, Google Slides, Google Calendar, Google Chat, People (for Chat names and directory search), and BigQuery (APIs & Services > Library).",
             "For Chat, open the Google Chat API's Configuration tab, set an app name, avatar URL and description, turn off interactive features, and save. Without it Chat reads work but every send, edit and reaction fails.",
             "Configure the OAuth consent screen (External) and add yourself as a test user while the app is unverified.",
             "Create an OAuth client ID of type \"Web application\" and add the redirect URI below.",
@@ -395,6 +477,24 @@
             "GoogleChatGatekeeperImpl"
           ],
           "tag": "v5"
+        },
+        {
+          "new_sqlite_classes": [
+            "ChatHookDriver"
+          ],
+          "tag": "v6"
+        },
+        {
+          "new_sqlite_classes": [
+            "GmailHookDriver"
+          ],
+          "tag": "v7"
+        },
+        {
+          "new_sqlite_classes": [
+            "GoogleSlidesGatekeeperImpl"
+          ],
+          "tag": "v8"
         }
       ],
       "modules": [
@@ -615,6 +715,98 @@
         "MCP_ALLOW_INSECURE": "false"
       }
     },
+    "gatekeeper-microsoft": {
+      "bindings": [
+        {
+          "name": "AI",
+          "type": "ai"
+        },
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        },
+        {
+          "name": "MICROSOFT_TENANT_ID",
+          "text": "$SECRET(MICROSOFT_TENANT_ID)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade",
+          "help": "Agents reach SharePoint, OneDrive, Outlook and Outlook Calendar as the user who connected, through this app registration's delegated permissions, so they can never open more than that user can.",
+          "kind": "secret",
+          "label": "Application (client) ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/microsoft/oauth",
+          "setupSteps": [
+            "In the Microsoft Entra admin center, open App registrations and select New registration.",
+            "Choose Accounts in this organizational directory only (the package README describes a multitenant setup, which needs settings this wizard doesn't collect), add a Web redirect URI with the value below, and register.",
+            "Under API permissions, add Microsoft Graph delegated permissions: openid, profile, email, offline_access and User.Read; for SharePoint, Sites.ReadWrite.All and Files.ReadWrite.All; for Outlook, Mail.ReadWrite, Mail.ReadWrite.Shared, Mail.Send, Mail.Send.Shared, MailboxSettings.ReadWrite, People.Read and User.ReadBasic.All; for Calendar, Calendars.ReadWrite, Calendars.ReadWrite.Shared, MailboxSettings.Read, People.Read and User.ReadBasic.All. A wizard install asks users for this full set, so granting less makes connecting fail; a deployment that wants read-only access or only selected sites sets the environment variables the package README describes.",
+            "Select Grant admin consent, so users aren't asked to approve each permission themselves.",
+            "Under Certificates & secrets, create a client secret, and note when it expires: connections stop refreshing once it does.",
+            "Copy the Application (client) ID and Directory (tenant) ID from the Overview page, and the secret's Value (not its ID), here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "Client secret value",
+          "name": "CLIENT_SECRET"
+        },
+        {
+          "help": "Only accounts in this Microsoft 365 organization can connect. The tenant ID is on the app registration's Overview page.",
+          "kind": "secret",
+          "label": "Directory (tenant) ID",
+          "name": "MICROSOFT_TENANT_ID"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "microsoft.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "SharePointGatekeeper",
+            "OutlookGatekeeper",
+            "OutlookHookDriver",
+            "CalendarGatekeeper"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "microsoft.js",
+          "r2Key": "blobs/modules/e0f5bbefd9db0912a166959ce65bf15d62ab79f7b90942be03d3b97a9e6a27fb",
+          "sha256": "e0f5bbefd9db0912a166959ce65bf15d62ab79f7b90942be03d3b97a9e6a27fb",
+          "size": 62,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "microsoft",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/microsoft"
+      }
+    },
     "gatekeeper-notion": {
       "bindings": [
         {
@@ -684,6 +876,81 @@
       "shortName": "notion",
       "vars": {
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/notion"
+      }
+    },
+    "gatekeeper-pagerduty": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://app.pagerduty.com/developer/applications",
+          "help": "A Scoped OAuth app registered on your own PagerDuty account. Only users of that account can connect, and each sees only what PagerDuty shows them.",
+          "kind": "secret",
+          "label": "OAuth Client ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/pagerduty/oauth",
+          "setupSteps": [
+            "Sign in to your PagerDuty account as a Manager, Global Admin or Account Owner, open Integrations > Developer Tools > App Registration, and select New App.",
+            "Give it a name and a description. Under Functionality, tick \"OAuth 2.0\" only, and continue.",
+            "Set Authorization to \"Scoped OAuth\". The form starts on \"Classic User OAuth\", which the gatekeeper can't use.",
+            "Add the Redirect URL below.",
+            "Under Permission Scope, grant these permissions: Incidents (read and write), Schedules (read and write), and read access to Services, Teams, Users, On-Calls, Priorities and Escalation Policies.",
+            "Select Register App, and copy the Client ID and Client Secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth Client Secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "pagerduty.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "PagerDutyGatekeeperImpl",
+            "PagerDutyHookDriver"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "pagerduty.js",
+          "r2Key": "blobs/modules/71be11a59a8968cca5a7609ca0dda18e4aba2bb3778c9f393ddb37660c0d9eac",
+          "sha256": "71be11a59a8968cca5a7609ca0dda18e4aba2bb3778c9f393ddb37660c0d9eac",
+          "size": 62,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "pagerduty",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/pagerduty"
       }
     },
     "gatekeeper-scheduler": {
@@ -922,6 +1189,126 @@
         "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/supabase"
       }
     },
+    "gatekeeper-websearch": {
+      "bindings": [
+        {
+          "name": "AI",
+          "type": "ai"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage"
+      ],
+      "inputs": [],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "websearch.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "WebSearchGatekeeper"
+          ],
+          "tag": "v1"
+        }
+      ],
+      "modules": [
+        {
+          "name": "websearch.js",
+          "r2Key": "blobs/modules/ad0447137dd2a06fd9da6d2a6774f64fbc1f69a778aadd2f4d15dc2ac9a68705",
+          "sha256": "ad0447137dd2a06fd9da6d2a6774f64fbc1f69a778aadd2f4d15dc2ac9a68705",
+          "size": 62,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "preinstall": true,
+      "shortName": "websearch",
+      "singleton": true,
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/websearch"
+      }
+    },
+    "gatekeeper-x": {
+      "bindings": [
+        {
+          "name": "CLIENT_ID",
+          "text": "$SECRET(CLIENT_ID)",
+          "type": "secret_text"
+        },
+        {
+          "name": "CLIENT_SECRET",
+          "text": "$SECRET(CLIENT_SECRET)",
+          "type": "secret_text"
+        }
+      ],
+      "compatibilityDate": "2026-09-04",
+      "compatibilityFlags": [
+        "allow_irrevocable_stub_storage",
+        "nodejs_als"
+      ],
+      "inputs": [
+        {
+          "consoleUrl": "https://console.x.com",
+          "help": "X bills every API request to this app's prepaid credits, so the app's owner pays for every user's reads and posts. Posts containing a link cost more than other posts.",
+          "kind": "secret",
+          "label": "OAuth 2.0 Client ID",
+          "name": "CLIENT_ID",
+          "redirectUriTemplate": "{PUBLIC_BASE_URL}/gatekeeper/x/oauth",
+          "setupSteps": [
+            "In the X Developer Console, create a Project and an App.",
+            "Under User authentication settings, enable OAuth 2.0 with the type \"Web App, Automated App or Bot\" and the permission \"Read and write\".",
+            "Set the Callback URI to the value below, and give the app a website URL.",
+            "Buy credits and set a spending limit: X bills every request this app makes.",
+            "X requires its prior approval before an app posts AI-generated replies; replies drafted by agents are sent only once a user approves each one, but the obligation is the app owner's.",
+            "Copy the OAuth 2.0 Client ID and Client Secret here."
+          ]
+        },
+        {
+          "kind": "secret",
+          "label": "OAuth 2.0 Client Secret",
+          "name": "CLIENT_SECRET"
+        }
+      ],
+      "installable": true,
+      "kind": "gatekeeper",
+      "mainModule": "x.js",
+      "migrations": [
+        {
+          "new_sqlite_classes": [
+            "UserAccount",
+            "XGatekeeperImpl"
+          ],
+          "tag": "v0"
+        }
+      ],
+      "modules": [
+        {
+          "name": "x.js",
+          "r2Key": "blobs/modules/333bf2bc83e34163225a668eaf2545dcc98705a10aaf0b41cbc74554214a132c",
+          "sha256": "333bf2bc83e34163225a668eaf2545dcc98705a10aaf0b41cbc74554214a132c",
+          "size": 54,
+          "type": "esm"
+        }
+      ],
+      "observability": {
+        "enabled": true,
+        "head_sampling_rate": 1,
+        "logs": {
+          "invocation_logs": false
+        }
+      },
+      "shortName": "x",
+      "vars": {
+        "BASE_URL": "$PUBLIC_BASE_URL/gatekeeper/x"
+      }
+    },
     "gatekeeper-zoominfo": {
       "bindings": [
         {
@@ -1077,6 +1464,10 @@
           "type": "browser"
         },
         {
+          "name": "CF_VERSION_METADATA",
+          "type": "version_metadata"
+        },
+        {
           "name": "LOADER",
           "type": "worker_loader"
         },
@@ -1127,6 +1518,12 @@
             "UserDirectoryDurableObject"
           ],
           "tag": "v3"
+        },
+        {
+          "new_sqlite_classes": [
+            "AdminAuditDurableObject"
+          ],
+          "tag": "v4"
         }
       ],
       "modules": [

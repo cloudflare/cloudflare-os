@@ -36,6 +36,12 @@
         "UserAccount",
         "GitHubGatekeeperImpl"
       ]
+    },
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "GitHubHookDriver"
+      ]
     }
   ]
 }

@@ -5,6 +5,7 @@ import type {
   Overseer, PublicApi, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
+import type { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
 import {
   type ConnectedAccount, connect, listConnectedAccounts, logIn, nextUsernames, signUp, stubFor,
   waitFor, RpcTarget,
@@ -60,10 +61,15 @@ export type StepUsage = {
   modelSteps?: number;
 };
 
+/** One compaction checkpoint of a chat: the summary that replaces its messages before `to`. */
+export type ChatCompaction = { to: number; summary: string };
+
 /** Canonical state observed after one agent activation ends. */
 export type AgentTurnResult = {
   outcome: AgentTurnOutcome;
   history: AiChatMessage[];
+  /** The chat's compaction checkpoints, oldest first. */
+  compactions: ChatCompaction[];
   workpieces: WorkpieceSummary[];
   usage: {
     lastStepTokens?: number;
@@ -97,8 +103,19 @@ export interface WorkshopAgentSession extends AsyncDisposable {
   runTurn(prompt: string, options?: AgentTurnOptions): Promise<AgentTurnResult>;
   approveActionsAndWait(
       ids: readonly [number, ...number[]], options?: AgentTurnOptions): Promise<AgentTurnResult>;
+  approveWebFetchRequestsAndWait(
+      requestIds: readonly [string, ...string[]], options?: AgentTurnOptions): Promise<AgentTurnResult>;
+  /** Deny a web fetch request; the turn it paused stays ended. */
+  denyWebFetchRequest(requestId: string): Promise<void>;
   listActions(options?: ActionListOptions): Promise<ActionHistoryPage>;
   connectedAccount(vendorId: string): ConnectedAccount;
+  /**
+   * Turn on an optional ambient gatekeeper, as the Gatekeepers page does, then come back to the
+   * workspace, which provisions it there when it opens again, and wait until it has.
+   */
+  enableAmbientGatekeeper(vendorId: string): Promise<void>;
+  /** Open the management app of the user's account with `vendorId`, as its Workshop page does. */
+  openGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame>;
   openGadget(id: WorkpieceId): Promise<ProvisionalGadget>;
   acceptChanges(): Promise<void>;
   /** Rewind the chat's proposed changes from the given "changes" message on (see Overseer). */
@@ -448,6 +465,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   #terminal = false;
   #closed = false;
   #lastHistory: AiChatMessage[] = [];
+  #lastCompactions: ChatCompaction[] = [];
   #lastWorkpieces: WorkpieceSummary[] = [];
   #lastUsage: AgentTurnResult["usage"] = {};
 
@@ -491,7 +509,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
   }
 
   // The Workshop aborts a session on purpose when it loses its workspace DO (server.ts,
-  // #openGadgetInternal) and the browser reconnects (main.tsx); the DO itself resumes the
+  // #openWorkspaceInternal) and the browser reconnects (main.tsx); the DO itself resumes the
   // interrupted turn. This client does the same, so a turn is judged on what the product did
   // rather than on the socket. Without it the first eval run sat on a dead socket for the whole
   // 28-minute budget with zero model turns.
@@ -518,7 +536,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       try {
         await this.#beforeCancellationDeadline(async () => {
           const authenticated = await logIn(publicApi, this.username);
-          const workspace = await authenticated.openGadget(this.#workspaceId);
+          const workspace = await authenticated.openWorkspace(this.#workspaceId);
           this.#authenticatedApi = authenticated;
           this.#workspace = workspace;
           this.#publicApi = publicApi;
@@ -591,11 +609,32 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
 
   async approveActionsAndWait(
       ids: readonly [number, ...number[]], options: AgentTurnOptions = {}): Promise<AgentTurnResult> {
+    if (new Set(ids).size !== ids.length) throw new Error("Action IDs must be unique");
+    return this.#approveAndWait(ids, id => this.#workspace.approveAction(id), options,
+        () => this.#assertActionsPending(ids));
+  }
+
+  approveWebFetchRequestsAndWait(
+      requestIds: readonly [string, ...string[]], options: AgentTurnOptions = {})
+      : Promise<AgentTurnResult> {
+    return this.#approveAndWait(
+        requestIds, id => this.#workspace.approveWebFetchRequest(id), options);
+  }
+
+  async denyWebFetchRequest(requestId: string): Promise<void> {
+    await this.#ready();
+    await this.#workspace.denyWebFetchRequest(requestId);
+  }
+
+  // Approves each decision the paused turn waits on, in order, and observes the activation the
+  // last one resumes.
+  async #approveAndWait<Id>(
+      ids: readonly Id[], approve: (id: Id) => RpcPromise<void>, options: AgentTurnOptions,
+      preflight?: () => Promise<void>): Promise<AgentTurnResult> {
     this.#assertOpen();
     if (this.#activeTurn !== undefined || this.#reserved) {
       throw new Error("An agent activation is already running");
     }
-    if (new Set(ids).size !== ids.length) throw new Error("Action IDs must be unique");
     if (options.signal?.aborted) {
       return this.#resultWithLastState({
         status: "cancelled",
@@ -619,13 +658,15 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
         chatId, options.timeoutMs ?? this.#turnTimeoutMs, options.signal, undefined, true);
     let observationStarted = false;
     try {
-      const preflight = this.#assertActionsPending(ids);
-      preflight.catch(() => {});
-      try {
-        await observer.race(preflight);
-      } catch (error) {
-        const status = observer.outcome?.status;
-        if (status !== "timedOut" && status !== "cancelled") throw error;
+      if (preflight) {
+        const check = preflight();
+        check.catch(() => {});
+        try {
+          await observer.race(check);
+        } catch (error) {
+          const status = observer.outcome?.status;
+          if (status !== "timedOut" && status !== "cancelled") throw error;
+        }
       }
       if (observer.outcome !== undefined) {
         this.#terminal = true;
@@ -640,7 +681,7 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
             if (index === ids.length - 1) {
               observer.admit(this.#chatSubscriber.latestSequence(chatId));
             }
-            await this.#awaitRpc(this.#workspace.approveAction(id), chatId, observer);
+            await this.#awaitRpc(approve(id), chatId, observer);
           }
         } catch (error) {
           this.#terminal = true;
@@ -664,6 +705,22 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const account = this.#accounts.get(vendorId);
     if (account === undefined) throw new Error(`No connected account for vendor "${vendorId}"`);
     return account;
+  }
+
+  async enableAmbientGatekeeper(vendorId: string): Promise<void> {
+    await this.#ready();
+    await this.#authenticatedApi.provisionAmbientAccount(vendorId);
+    (await this.#authenticatedApi.openWorkspace(this.#workspaceId))[Symbol.dispose]();
+    await waitFor(`the workspace's ${vendorId} gatekeeper`, async () =>
+      (await this.#workspace.listObserverRequirements("workspace"))
+          .some(need => need.vendorId === vendorId) || null);
+  }
+
+  async openGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame> {
+    await this.#ready();
+    const app = await this.#authenticatedApi.getGatekeeperApp(vendorId);
+    if (app === null) throw new Error(`No management app for vendor "${vendorId}"`);
+    return app;
   }
 
   async openGadget(id: WorkpieceId): Promise<ProvisionalGadget> {
@@ -839,10 +896,19 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
       endSequence: number | undefined, cancellationDeadline?: number): Promise<AgentTurnResult> {
     const chatId = this.#chatId;
     if (chatId === undefined) {
-      return { outcome: observedOutcome, history: [], workpieces: [], usage: {} };
+      return { outcome: observedOutcome, history: [], compactions: [], workpieces: [], usage: {} };
     }
+    // Pages load newest first, each bounded below by the checkpoint before it.
+    const compactions: ChatCompaction[] = [];
+    const loadPage = async (before?: number) => {
+      const page = await this.#workspace.getChatHistory(chatId, before);
+      if (page.compacted !== undefined) {
+        compactions.unshift({ to: page.compacted.to, summary: page.compacted.summary });
+      }
+      return page;
+    };
     const loadState = () => Promise.all([
-      loadAllChatHistory(before => this.#workspace.getChatHistory(chatId, before)),
+      loadAllChatHistory(loadPage),
       this.#workspace.listChats(),
       this.#loadWorkpieces(),
     ]);
@@ -892,15 +958,17 @@ class WorkshopAgentSessionImpl implements WorkshopAgentSession {
     const steps = this.#chatSubscriber.steps(chatId);
     if (steps.length > 0) usage.steps = steps;
     this.#lastHistory = history;
+    this.#lastCompactions = compactions;
     this.#lastWorkpieces = workpieces;
     this.#lastUsage = usage;
-    return { outcome, history, workpieces, usage };
+    return { outcome, history, compactions, workpieces, usage };
   }
 
   #resultWithLastState(outcome: AgentTurnOutcome): AgentTurnResult {
     return {
       outcome,
       history: [...this.#lastHistory],
+      compactions: [...this.#lastCompactions],
       workpieces: [...this.#lastWorkpieces],
       usage: { ...this.#lastUsage },
     };
@@ -1028,7 +1096,7 @@ export async function openAgentSession(
       accounts.set(vendorId, account);
     }
 
-    workspace = await authenticated.newGadget();
+    workspace = await authenticated.newWorkspace();
     const { id: workspaceId } = await workspace.getMetadata();
     session = new WorkshopAgentSessionImpl({
       username,

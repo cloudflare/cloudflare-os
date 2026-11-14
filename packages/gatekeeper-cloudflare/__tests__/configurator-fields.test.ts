@@ -1,5 +1,5 @@
 // `clearFields` in the sandbox runtime only deletes the autocomplete's typed query
-// (`build-gatekeeper-configurator.ts`: `delete queryByName[name]`) -- it does not touch `values`.
+// (`packages/configurator-ui/src/runtime/store.ts`) -- it does not touch `values`.
 // So a dependent field has to be nulled through `setValues` as well, and forgetting the second half
 // is invisible: `isReady` still passes and `resourceUrl` still builds, just pairing the new account
 // with the old account's Worker. This test drives the real `render` against a recording JSX runtime
@@ -51,6 +51,7 @@ function renderWith(values: { accountId: string | null; workerName: string | nul
     values,
     setValues: patch => void patches.push(patch),
     clearFields: (...names) => void cleared.push(...names),
+    ensureResources: async () => { throw new Error("render must not request resources"); },
     ui: new Proxy({}, {
       get() { throw new Error("render must not call the ui capability"); },
     }) as never,

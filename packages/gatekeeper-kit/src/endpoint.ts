@@ -1,4 +1,4 @@
-/** Validation and normalization for operator-supplied provider endpoints. */
+/** Validation and encoding for provider URLs: operator-supplied endpoints, agent-supplied path segments. */
 
 import { stripTrailingSlashes } from "@gadgets/workshop-shared/gatekeeper";
 
@@ -55,4 +55,36 @@ export function normalizeVendorEndpoint(raw: string, options: {
   }
 
   return `${url.origin}${stripTrailingSlashes(url.pathname)}`;
+}
+
+/**
+ * Encodes one agent-supplied URL path segment. `encodeURIComponent` leaves `.` and `..` literal,
+ * and URL parsing resolves them, so an encoded segment could still climb out of the route prefix
+ * it is interpolated into; an empty segment changes the route too. Those three are refused. The
+ * provider's own id grammar (length, charset) remains the caller's to check.
+ * @param value One path segment, unencoded.
+ * @returns The percent-encoded segment.
+ * @throws Error naming the refused segment, which is at most two characters.
+ * @example
+ * ```ts
+ * const url = `${API_BASE}/files/${pathSegment(fileId)}`;
+ * ```
+ */
+export function pathSegment(value: string): string {
+  if (value === "" || value === "." || value === "..") {
+    throw new Error(`Refusing the path segment "${value}": empty and dot segments change the route.`);
+  }
+  return encodeURIComponent(value);
+}
+
+/**
+ * Encodes a `/`-separated hierarchical name, such as `group/sub/project`, segment by segment with
+ * `pathSegment`, keeping the slashes. A leading, trailing, or doubled slash makes an empty segment,
+ * so it is refused along with any `.` or `..` segment.
+ * @param value Slash-separated name, unencoded.
+ * @returns The encoded segments joined by `/`.
+ * @throws Error from `pathSegment` for an empty or dot segment.
+ */
+export function pathSegments(value: string): string {
+  return value.split("/").map(pathSegment).join("/");
 }

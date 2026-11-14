@@ -174,7 +174,13 @@ declared filters, so the field is dropped even if an agent sends it. Thread capa
 Writes use `space.post(text)`, `thread.post(text)`, `message.reply(text)`, and
 `message.edit(text)`. Memberships, users, and reactions are plain records. A message's
 metadata already lists its attachments; `message.getAttachment(id)` returns the capability that
-reads one. Event history, explicit message deletion, outgoing uploads, and generic
+reads one. It also carries `cards`, what a Chat app's cards show (current `cardsV2` and legacy
+`cards` alike): each card's header title and subtitle, its section headers, labels and text items
+as one `text` string, and the http(s) links its buttons, chips, images and clickable text open,
+with their labels. Card text keeps the app's own markup. This content never appears in `text` or
+`formattedText`, which keep their meaning. Cards are read-only data: form inputs, action
+callbacks, and other links are dropped, and the gatekeeper never fetches a card's links or runs
+its actions. Event history, explicit message deletion, outgoing uploads, and generic
 drafts/patches are absent. Undo-send remains supported internally.
 
 `space.post(text)` posts a top-level message, which in a threaded conversation starts a new
@@ -194,21 +200,23 @@ and edit actions require their target post first and apply in submission order, 
 approval can otherwise run them out of order and an older edit would overwrite a newer one.
 Rejection rewinds the corresponding overlay; an edit targeting a rejected post cannot be
 applied. An edit refuses to overwrite text changed in Google Chat since it was queued, and later
-queued edits follow the form Chat stored earlier ones in, such as a mention rendered as `@Name`.
-Undoing an applied edit restores the previous provider text.
+queued edits follow the form Chat stored earlier ones in, such as a mention posted by email and
+stored as `<users/{id}>`. These checks compare a message's `formattedText`, the markup form that
+keeps link URLs and mentions, never its plain `text`. Undoing an applied edit restores the
+previous `formattedText`, links and mentions included.
 
 Sends are idempotent through Google's `requestId`, so a transient failure is retried and a
 retried apply returns the message the first attempt created rather than posting again. Google
 may then echo only the request, so every send re-reads the created message for its stored text
 and thread. A retried edit rewrites its
-text rather than checking for conflicts, since it cannot tell Chat's rendering of its own lost
-write from an outside edit. Reactions re-find their own state on retry, and a retried one keeps
+text rather than checking for conflicts, since it cannot tell its own lost write, in the form
+Chat stored it, from an outside edit. Reactions re-find their own state on retry, and a retried one keeps
 its undo, since the state it finds may be its own lost write. Undoing an edit is likewise safe to
-retry. An action whose write may have landed cannot be rejected, except once its target message
-is deleted, which leaves nothing it could have changed. A reply Google posts outside its thread,
-from any binding, is deleted again, so that action stays rejectable; if removing it fails, the
-error says so, and once it is deleted by hand, the next apply reports the deletion and the action
-can be rejected. Replies to rejected roots disappear from the simulation. Undoing any change
+retry. Any action can be rejected unless it is being applied right now. Rejecting withdraws it
+but does not undo a write an earlier attempt may already have made, and a denied send's message
+capability then says it may have posted (for the binding's 100 most recent such sends; an
+older one reads as never created). A reply Google posts outside its thread, from any
+binding, is deleted again; if removing it fails, the error says so. Replies to rejected roots disappear from the simulation. Undoing any change
 whose message was since deleted counts as done, since nothing is left to restore. Authentication
 and permission errors during undo remain retryable rather than being counted as successful
 deletion.
@@ -216,6 +224,58 @@ deletion.
 The same capabilities keep working once writes are committed. Temporary IDs can also be used
 with the getters after a worker restart. Reactions to new messages require the post to complete;
 until then `listReactions()` returns none.
+
+## New-message hooks
+
+`space.subscribeNewMessages(hook)` and `thread.subscribeNewMessages(hook)` ask to have a gadget's
+`ChatMessageHook` called with each new message anyone else posts, in the whole conversation or in
+that thread. The hook takes effect once the user enables it in the Workshop, and `hook` must be a
+persistent stub from the gadget's `ctx.restore()`:
+
+```ts
+// In the gadget's DurableObject; RpcTarget and restore come from cloudflare:workers.
+async [restore](params) {
+  if (params.type === "chat-hook") return new StatusHook();
+}
+
+await space.subscribeNewMessages(await this.ctx.restore({ type: "chat-hook" }));
+
+class StatusHook extends RpcTarget {
+  async receiveMessage({ info, message }) {
+    if (info.text?.includes("status?")) await message.reply("All systems normal.");
+  }
+}
+```
+
+Each delivery is recorded as an observation on the hook's approval queue. `message` is the ordinary
+message capability, and `conversation` the `ChatSpace` or `ChatThread` the hook subscribed through,
+which can read around the message or post where a conversation has no threads and `reply()` throws.
+A write through either queues an approval action as any other write does, and both are released
+when `receiveMessage()` returns. By default, messages the connected account posts are never
+delivered, which keeps a hook from answering itself, but hooks of two connected accounts can still
+answer each other; approval is the only guard there.
+
+Subscribing with `{ includeOwnMessages: true }` also delivers what the connected user writes in
+Google Chat, so they can address their own gadget there. Such a hook still never receives what the
+account posts through the gatekeeper, so the account's hooks can't answer themselves or one another.
+Every send names its message `client-{requestId}`, and Google reports that name as the message's
+`clientAssignedMessageId`. Messages written in Chat don't carry one, so the space's driver drops
+only the account's messages that do.
+
+Delivery is at least once and unordered: Pub/Sub pushes are collapsed for 24 hours, but a failure
+after the hook ran redelivers the message. A firing that fails, whether the hook throws or the
+Workshop refuses to start it, is retried with backoff from one minute up to an hour, eight attempts
+in all, before the message is dropped; disabling or deleting the hook ends its retries.
+Actions a hook queued stay approvable after it is disabled.
+
+Underneath, each Google account has one Workspace Events subscription per conversation, shared by
+all of its hooks there, created with the account's own token when the first hook is enabled and
+renewed every three hours while any hook uses it, a failed renewal being retried every 15 minutes
+so one failure doesn't let it lapse; unused subscriptions lapse within four hours.
+If Google attributes a new subscription to a different account than the one the connection pinned,
+as after reconnecting another account, enabling deletes it and fails, so events are never attributed
+across accounts. Deployments that have not configured Pub/Sub (see the gatekeeper README) refuse to
+subscribe, and everything else works as before.
 
 ## Passing resources to callable agents
 
@@ -252,9 +312,14 @@ single-thread bindings, pending posts/replies/edits, edit ownership, rejection, 
 already-deleted sends), the apply/reject race, and retrieving temporary IDs after restart.
 Attenuation regressions cover every message creation path and its thread, attachment, and
 reaction descendants. Pure tests cover provider thread support, search keywords and mentions,
-conversation references, time bounds, scope filtering, and overlays. Durable `spawnCallable`
-handoff uses the existing gadget restoration mechanism; it is not exercised end-to-end by the
-Chat gatekeeper suite. An identity regression checks that Chat-provided names reach message,
+conversation references, time bounds, scope filtering, overlays, and card extraction (`cardsV2`
+and legacy cards, card-only messages, and malformed or unsupported widgets); workerd tests check
+that card content reaches history, `getMessage()`, metadata, and hook deliveries without its links
+being fetched. Durable `spawnCallable` handoff uses the existing gadget restoration mechanism; it
+is not exercised end-to-end by the Chat gatekeeper suite. Hook tests drive signed Pub/Sub pushes through the worker: push
+authentication, per-account and per-thread delivery, self-authored and duplicate messages,
+delivery and renewal retries, disable, the authority check, and a hook's reply applying as an
+action. An identity regression checks that Chat-provided names reach message,
 thread, member, and reaction results without extra identity lookups. DM tests cover on-demand
 peer resolution, lookup-free listings and picker searches, peer selection, pagination, and
 observer admission by space access.

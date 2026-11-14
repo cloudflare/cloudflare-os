@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GoogleDocsApi, type GoogleDocsTab } from "../src/docs-api";
+import { GOOGLE_SHEET_MIME_TYPE } from "../src/drive-session";
+import { explainUnopenedFile } from "../src/office-conversion";
 import { GoogleSheetsApi } from "../src/sheets-api";
-import { readGoogleJson } from "../src/google-response";
+import { GoogleApiError, readGoogleJson } from "../src/google-response";
 
 const token = async () => "access-token";
 
@@ -209,25 +211,26 @@ describe("native Google content API safety", () => {
     await expect(new GoogleDocsApi(token).getDocument("doc-1")).rejects.toThrow(message);
   });
 
-  it("revision-locks marked writes and returns the created range ID", async () => {
+  it("revision-locks marked writes and returns the range ID and the requests' replies", async () => {
     let requestInit: RequestInit | undefined;
+    const added = { addDocumentTab: { tabProperties: { tabId: "t.new", title: "New", index: 1 } } };
     vi.stubGlobal("fetch", vi.fn(async (
       _input: string | URL | Request, init?: RequestInit,
     ) => {
       requestInit = init;
       return Response.json({
-        replies: [{ createNamedRange: { namedRangeId: "range-1" } }],
+        replies: [{ createNamedRange: { namedRangeId: "range-1" } }, added],
         writeControl: { requiredRevisionId: "revision-2" },
       });
     }));
-    const request = { insertText: { text: "hello", location: { index: 1, tabId: "metrics" } } };
+    const request = { addDocumentTab: { tabProperties: { title: "New" } } };
 
     const result = await new GoogleDocsApi(token).batchUpdate(
       "doc-1", [request], "revision-1",
       { name: "gadgets-write-1", rangeStart: 1, tabId: "metrics" },
     );
 
-    expect(result).toEqual({ revisionId: "revision-2", writeMarkerId: "range-1" });
+    expect(result).toEqual({ revisionId: "revision-2", writeMarkerId: "range-1", replies: [added] });
     expect(JSON.parse(String(requestInit?.body))).toEqual({
       requests: [
         {
@@ -242,7 +245,7 @@ describe("native Google content API safety", () => {
     });
   });
 
-  it("deletes a named range by exact ID without write control", async () => {
+  it("deletes a named range by exact ID in its tab, without write control", async () => {
     let requestedUrl: string | undefined;
     let requestInit: RequestInit | undefined;
     vi.stubGlobal("fetch", vi.fn(async (
@@ -253,13 +256,13 @@ describe("native Google content API safety", () => {
       return Response.json({});
     }));
 
-    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1");
+    await new GoogleDocsApi(token).deleteNamedRange("doc-1", "range-1", "t.2");
 
     expect(requestedUrl).toBe(
       "https://docs.googleapis.com/v1/documents/doc-1:batchUpdate",
     );
     expect(JSON.parse(String(requestInit?.body))).toEqual({
-      requests: [{ deleteNamedRange: { namedRangeId: "range-1" } }],
+      requests: [{ deleteNamedRange: { namedRangeId: "range-1", tabsCriteria: { tabIds: ["t.2"] } } }],
     });
   });
   it("cancels an unknown-length response once streamed bytes exceed the limit", async () => {
@@ -344,5 +347,60 @@ describe("native Google content API safety", () => {
     if (!(error instanceof Error)) throw new Error("Expected provider read to fail");
     expect(error.message).toBe(expected);
     expect(error.message).not.toContain("secret provider");
+  });
+
+  it("keeps Google's status but not its prose when Sheets cannot open a file", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({
+      error: {
+        code: 400,
+        status: "FAILED_PRECONDITION",
+        message: "This operation is not supported for this document",
+      },
+    }, { status: 400 })));
+
+    const error = await new GoogleSheetsApi(token).getSpreadsheet("sheet-1").catch(value => value);
+
+    expect(error).toBeInstanceOf(GoogleApiError);
+    expect(error).toMatchObject({
+      providerStatus: "FAILED_PRECONDITION",
+      message: "Google Sheets get spreadsheet failed [http=400]",
+    });
+  });
+});
+
+describe("explainUnopenedFile for a spreadsheet", () => {
+  const unopened = new GoogleApiError(
+    "Google Sheets get spreadsheet failed [http=400]", "FAILED_PRECONDITION");
+  const XLSX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+  it("tells the caller to convert a file Drive says is not a Google Sheet", async () => {
+    const explained = await explainUnopenedFile("sheets", unopened, async () => XLSX_MIME_TYPE);
+
+    expect(explained).toBeInstanceOf(Error);
+    expect((explained as Error).message)
+      .toMatch(/is an Office file, such as \.xlsx.*offers to make a Google Sheets copy/);
+  });
+
+  it("keeps the original error for a native Google Sheet", async () => {
+    await expect(explainUnopenedFile("sheets", unopened, async () => GOOGLE_SHEET_MIME_TYPE))
+      .resolves.toBe(unopened);
+  });
+
+  it("keeps the original error when Drive cannot say what the file is", async () => {
+    await expect(explainUnopenedFile("sheets", unopened, async () => {
+      throw new Error("Google Drive get file failed [http=403]");
+    })).resolves.toBe(unopened);
+    await expect(explainUnopenedFile("sheets", unopened, async () => undefined))
+      .resolves.toBe(unopened);
+  });
+
+  it("does not ask Drive about any other failure", async () => {
+    const denied = new GoogleApiError(
+      "Google Sheets get spreadsheet failed [http=403]", "PERMISSION_DENIED");
+    const mimeType = vi.fn(async () => XLSX_MIME_TYPE);
+
+    await expect(explainUnopenedFile("sheets", denied, mimeType)).resolves.toBe(denied);
+    expect(mimeType).not.toHaveBeenCalled();
   });
 });

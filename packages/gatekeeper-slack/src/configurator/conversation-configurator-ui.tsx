@@ -7,22 +7,39 @@ export default {
   initial: {},
 
   isReady({ values }) {
-    return typeof values.conversationId === "string" && values.conversationId.length > 0;
+    return typeof values.teamId === "string" && /^T[A-Z0-9]+$/.test(values.teamId) &&
+        typeof values.conversationId === "string" && values.conversationId.length > 0;
   },
 
-  async resourceUrl({ values, ui }) {
-    const teamId = await ui.getTeamId();
-    return `https://app.slack.com/client/${teamId}/${encodeURIComponent(values.conversationId ?? "")}`;
+  resourceUrl({ values }) {
+    if (!values.teamId || !/^T[A-Z0-9]+$/.test(values.teamId) || !values.conversationId) {
+      throw new Error("Choose a workspace and conversation.");
+    }
+    return `https://app.slack.com/client/${values.teamId}/${encodeURIComponent(values.conversationId)}`;
   },
 
   initialValuesFromResourceUrl({ resourceUrl }) {
     const segments = new URL(resourceUrl).pathname.split("/").filter(Boolean);
+    const teamId = segments[1];
     const conversationId = segments[2];
-    return conversationId ? { conversationId: decodeURIComponent(conversationId) } : {};
+    return teamId && /^T[A-Z0-9]+$/.test(teamId) && conversationId
+        ? { teamId, conversationId: decodeURIComponent(conversationId) } : {};
   },
 
-  render({ values, setValues, ui }) {
+  render({ values, setValues, clearFields, ui }) {
     return <Section>
+      <Field label="Workspace" description="Choose where to look for channels and direct messages.">
+        <Autocomplete
+          name="teamId"
+          value={values.teamId}
+          placeholder="Choose a Slack workspace..."
+          loadOptions={query => ui.listWorkspaces(query)}
+          onChange={teamId => {
+            clearFields("conversationId");
+            setValues({ teamId, conversationId: null });
+          }}
+        />
+      </Field>
       <Field
         label="Conversation"
         description="Choose a channel or direct message this connection can read."
@@ -31,7 +48,8 @@ export default {
           name="conversationId"
           value={values.conversationId}
           placeholder="Search channels and DMs..."
-          loadOptions={query => ui.listConversations(query)}
+          disabled={!values.teamId}
+          loadOptions={query => values.teamId ? ui.listConversations(values.teamId, query) : Promise.resolve([])}
           onChange={conversationId => setValues({ conversationId })}
         />
       </Field>

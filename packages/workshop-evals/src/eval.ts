@@ -7,6 +7,7 @@ import {
   assertModelAccess, closeLocalEvalRuntimes, evalNetworkInterceptor, resolveModelAccess,
   runtimesStillRunning,
 } from "./target.js";
+import { closeViewBrowser } from "./view-host.js";
 
 const gitCommit = resolveEvalCommit();
 const modelAccess = resolveModelAccess();
@@ -37,10 +38,13 @@ const FunctionalJudge = createJudge<EvalRunInput, EvalRunOutput>(
  * the file's Workshop, so a file finishes in the time of its slowest trial rather than the sum.
  */
 export function defineTaskEval(task: EvalTask): void {
-  const matrix = evalMatrix();
+  const matrix = evalMatrix(task.id);
   const models = matrix.models.map(resolveEvalModel);
   // Fail at collection, before any inference, if the access cannot serve a model in the matrix.
   models.forEach(model => assertModelAccess(modelAccess, model));
+  if (task.modelSettings !== undefined && modelAccess.kind !== "gateway") {
+    throw new Error(`Eval task ${task.id} sets model settings, which only an AI Gateway has`);
+  }
   const identity = { gitCommit, taskVersion: taskVersion(task) };
   const harness = createWorkshopHarness(task, modelAccess, identity);
   const network = evalNetworkInterceptor(modelAccess, models);
@@ -50,7 +54,7 @@ export function defineTaskEval(task: EvalTask): void {
     // Fail closed: a Workshop that would not stop may still run model-authored code through this
     // process's fetch, so unrestricted network access is not restored while one may be alive.
     afterAll(async () => {
-      await closeLocalEvalRuntimes();
+      await Promise.all([closeLocalEvalRuntimes(), closeViewBrowser()]);
       if (runtimesStillRunning() === 0) network.uninstall();
     });
     for (const { model } of models) {

@@ -53,7 +53,7 @@ updates:
       # bites on security updates -- drop it if we'd rather see those.
       - dependency-name: "@types/node"
       - dependency-name: "@lezer/markdown"
-      # Deliberate alpha pin.
+      # Deliberate prerelease pin, bumped by hand to the miniflare the catalog wrangler depends on.
       - dependency-name: "miniflare"
       # Exact, and the two must move together.
       - dependency-name: "@earendil-works/pi-agent-core"

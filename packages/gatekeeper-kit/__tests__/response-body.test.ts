@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { readTextCapped, ResponseTooLargeError } from "../src/response-body";
+import { readTextCapped, readTextPrefix, ResponseTooLargeError } from "../src/response-body";
 
 /** A body delivered in chunks, reporting whether it was pulled and whether it was cancelled. */
 function streamed(chunks: string[]) {
@@ -93,5 +93,63 @@ describe("readTextCapped", () => {
 
     await expect(readTextCapped(new Response(body), 64)).rejects.toThrow("connection reset");
     expect(body.locked).toBe(false);
+  });
+});
+
+describe("readTextPrefix", () => {
+  it("returns a body at or below the cap whole", async () => {
+    expect(await readTextPrefix(new Response(streamed(["abc"]).body), 8)).toBe("abc");
+    expect(await readTextPrefix(new Response(streamed(["ab", "cd"]).body), 4)).toBe("abcd");
+  });
+
+  it("truncates a longer body at the cap, ignoring its advertised length, and cancels the rest", async () => {
+    const { body, cancel } = streamed(["abc", "def", "ghi"]);
+    const response = new Response(body, { headers: { "content-length": "9" } });
+
+    expect(await readTextPrefix(response, 5)).toBe("abcde");
+    expect(cancel).toHaveBeenCalled();
+    expect(body.locked).toBe(false);
+  });
+
+  it("ends a character cut at the cap in U+FFFD", async () => {
+    // "é" is two bytes; a cap after the first leaves an incomplete sequence.
+    expect(await readTextPrefix(new Response(streamed(["aé"]).body), 2)).toBe("a\uFFFD");
+  });
+
+  it("keeps what arrived before a stream error, and releases the reader", async () => {
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) throw new Error("connection reset");
+        sent = true;
+        controller.enqueue(new TextEncoder().encode("partial"));
+      },
+    });
+
+    expect(await readTextPrefix(new Response(body), 64)).toBe("partial");
+    expect(body.locked).toBe(false);
+  });
+
+  it("returns the prefix when cancelling the rest fails", async () => {
+    const { body, cancel } = streamed(["x".repeat(64)]);
+    cancel.mockRejectedValue(new Error("cancel failed"));
+
+    expect(await readTextPrefix(new Response(body), 4)).toBe("xxxx");
+    expect(body.locked).toBe(false);
+  });
+
+  it("returns an empty string for a missing, used, or locked body", async () => {
+    expect(await readTextPrefix(new Response(null, { status: 204 }), 8)).toBe("");
+    const used = new Response("hello");
+    await used.text();
+    expect(await readTextPrefix(used, 8)).toBe("");
+    const locked = new Response("hello");
+    locked.body!.getReader();
+    expect(await readTextPrefix(locked, 8)).toBe("");
+  });
+
+  it("refuses a cap that cannot bound anything", async () => {
+    await expect(readTextPrefix(new Response("x"), 0)).rejects.toThrow(/positive safe integer/);
+    await expect(readTextPrefix(new Response("x"), Infinity)).rejects.toThrow(/positive safe integer/);
   });
 });

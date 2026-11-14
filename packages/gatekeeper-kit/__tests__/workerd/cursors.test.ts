@@ -9,6 +9,7 @@ import { RpcStub, RpcTarget } from "cloudflare:workers";
 import {
   ArrayCursor,
   OffsetCursor,
+  PageHookCursor,
   PageNumberCursor,
   TokenCursor,
   type TokenPage,
@@ -42,6 +43,17 @@ class TestAuthorizer extends RpcTarget implements ObservationAuthorizer {
 
   async getGitCache(): Promise<GitCache> {
     throw new Error("Git cache is not used in this test.");
+  }
+
+  // The session never ends in this test.
+  async requireLive(): Promise<void> {}
+
+  async watchSession(): Promise<RpcStub<RpcTarget>> {
+    return new RpcStub(new (class extends RpcTarget {})());
+  }
+
+  async getExecutionId(): Promise<string | undefined> {
+    return undefined;
   }
 }
 
@@ -653,5 +665,562 @@ describe("TokenCursor", () => {
     expect(() => new TokenCursor<Issue>(
       { fetchPage, authorizePage, pageSize: 2, remotePageSize: 1.5 }))
       .toThrow(/positive safe integer/);
+    expect(() => new TokenCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 2, maxProviderPagesPerCall: 0 }))
+      .toThrow(/positive safe integer/);
+  });
+
+  it("fetches one provider page per call when bounded to one, returning [] for an empty window", async () => {
+    // A provider billing every row fetched must never be read ahead of what the caller asked for.
+    const fetchPage = tokenApi([
+      { items: [], nextToken: "a" },
+      { items: [{ id: 1, open: true }], nextToken: "b" },
+      { items: [{ id: 2, open: true }] },
+    ]);
+    const cursor = new TokenCursor<Issue>(
+      { fetchPage, authorizePage, pageSize: 10, maxProviderPagesPerCall: 1 });
+
+    expect(await cursor.next()).toEqual([]);
+    expect(fetchPage).toHaveBeenCalledTimes(1);
+    expect(ids(await cursor.next())).toEqual([1]);
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(ids(await cursor.next())).toEqual([2]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("injected rows", () => {
+  const issue = (id: number, open = true): Issue => ({ id, open });
+  const byId = (a: Issue, b: Issue) => a.id - b.id;
+
+  it("merges by the provider's order, ahead of an equal provider row, outside authorization", async () => {
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([
+        { items: [issue(2), issue(4)], nextToken: "a" },
+        { items: [issue(6)] },
+      ]),
+      inject: { items: [issue(1, false), issue(4, false), issue(5, false), issue(7, false)], compare: byId },
+      authorizePage: authorized,
+      pageSize: 10,
+      remotePageSize: 2,
+    });
+
+    expect(await cursor.next()).toEqual([
+      issue(1, false), issue(2), issue(4, false), issue(4), issue(5, false), issue(6), issue(7, false),
+    ]);
+    expect(await cursor.next()).toBeNull();
+    // Injected rows are the agent's own simulation, not something the provider disclosed.
+    expect(authorized.mock.calls).toEqual([[[issue(2), issue(4), issue(6)], { terminal: false }]]);
+  });
+
+  it("does not authorize a page made only of injected rows", async () => {
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(2)] }]),
+      inject: { items: [issue(1, false)], compare: byId },
+      authorizePage: authorized,
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1, false)]);
+    expect(authorized).not.toHaveBeenCalled();
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(authorized).toHaveBeenCalledOnce();
+  });
+
+  it("authorizes injected rows that carry provider data with their page's rows, in page order", async () => {
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(2), issue(4)] }]),
+      inject: { items: [issue(1, false), issue(3, false), issue(5, false)], compare: byId, authorize: true },
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1, false), issue(2)]);
+    expect(await cursor.next()).toEqual([issue(3, false), issue(4)]);
+    // A page made only of them is authorized too, and answers the query.
+    expect(await cursor.next()).toEqual([issue(5, false)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1, false), issue(2)], { terminal: false }],
+      [[issue(3, false), issue(4)], { terminal: false }],
+      [[issue(5, false)], { terminal: false }],
+    ]);
+  });
+
+  it("holds a refused page made only of injected rows it authorizes, serving it once allowed", async () => {
+    const authorized = vi.fn(async (_rows: readonly Issue[]) => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(2)] }]),
+      inject: { items: [issue(1, false)], compare: byId, authorize: true },
+      authorizePage: authorized,
+      pageSize: 1,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    expect(await cursor.next()).toEqual([issue(1, false)]);
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(authorized.mock.calls.map(([rows]) => rows)).toEqual([[issue(1, false)], [issue(1, false)], [issue(2)]]);
+  });
+
+  it("still owes the zero-result answer after serving only injected rows", async () => {
+    const seen: string[] = [];
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [] }]),
+      inject: { items: [issue(1, false)], compare: byId },
+      pageSize: 1,
+      authorizePage: async (items, { terminal }) =>
+        void seen.push(`${terminal ? "terminal" : "page"}:${items.length}`),
+    });
+
+    expect(await cursor.next()).toEqual([issue(1, false)]);
+    expect(await cursor.next()).toBeNull();
+    // Only the terminal answer is owed: the injected page disclosed nothing from the provider.
+    expect(seen).toEqual(["terminal:0"]);
+  });
+
+  it("drops a row revalidation rejects without returning an empty page", async () => {
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(2)] }]),
+      inject: {
+        items: [issue(1, false), issue(3, false)],
+        compare: byId,
+        revalidate: row => row.id === 1 ? null : { ...row, open: true },
+      },
+      authorizePage,
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(2)]);
+    // Re-read as served, not as built.
+    expect(await cursor.next()).toEqual([issue(3, true)]);
+    expect(await cursor.next()).toBeNull();
+  });
+
+  it("drops a row whose identity was served by either source, re-keying served injected rows", async () => {
+    // Issue 1 is a queued create's stand-in; once it lands, the provider lists it as issue 10.
+    const landed = new Map<number, number>();
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([
+        { items: [issue(3), issue(9)], nextToken: "a" },
+        { items: [issue(10)] },
+      ]),
+      inject: {
+        items: [issue(1, false), issue(9, false)],
+        compare: byId,
+        identity: row => String(landed.get(row.id) ?? row.id),
+      },
+      authorizePage,
+      pageSize: 2,
+      remotePageSize: 2,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1, false), issue(3)]);
+    landed.set(1, 10);
+    // Provider 9 duplicates the injected 9 on the same page; provider 10 is the landed create.
+    expect(await cursor.next()).toEqual([issue(9, false)]);
+    expect(await cursor.next()).toBeNull();
+  });
+
+  it("counts identities served only once their page is returned", async () => {
+    // A fetch failing, or an authorization refused, after an injected row was taken must not
+    // cost that row on the retry.
+    let attempt = 0;
+    let call = 0;
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: async token => {
+        if (token === undefined) return { items: [issue(2)], nextToken: "a" };
+        if (++attempt === 1) throw new Error("provider 503");
+        return { items: [issue(3)] };
+      },
+      inject: { items: [issue(1, false)], compare: byId, identity: row => String(row.id) },
+      authorizePage: async () => {
+        if (++call === 1) throw new Error("authorization unavailable");
+      },
+      pageSize: 3,
+      remotePageSize: 1,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("provider 503");
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    expect(await cursor.next()).toEqual([issue(1, false), issue(2), issue(3)]);
+  });
+
+  it("re-reads a refused page's injected rows, deferring a provider row one no longer hides", async () => {
+    // The stand-in hides provider 1 as the same row. Its create is discarded between refusal and
+    // retry: provider 1 must not join the refused page, nor be lost, nor overtake provider 2.
+    const queued = new Set([1]);
+    const authorized = vi.fn(async () => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
+      inject: {
+        items: [issue(1, false)],
+        compare: byId,
+        revalidate: row => (queued.has(row.id) ? row : null),
+        identity: row => String(row.id),
+      },
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    queued.delete(1);
+    expect(await cursor.next()).toEqual([]);
+    expect(await cursor.next()).toEqual([issue(1), issue(2)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(2)], { terminal: false }],
+      [[], { terminal: false }],
+      [[issue(1), issue(2)], { terminal: false }],
+    ]);
+  });
+
+  it("re-derives a buffered provider row as it is served, changing or dropping it", async () => {
+    // One fetch buffers all three rows; changes staged after it must still show.
+    const closed = new Set<number>();
+    const gone = new Set<number>();
+    const fetchPage = tokenApi([{ items: [issue(1), issue(2), issue(3)] }]);
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      overlay: row => gone.has(row.id) ? [] : [issue(row.id, !closed.has(row.id))],
+      authorizePage: authorized,
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1)]);
+    closed.add(2);
+    gone.add(3);
+    expect(await cursor.next()).toEqual([issue(2, false)]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledOnce();
+    // Authorization sees each row as served.
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1)], { terminal: false }],
+      [[issue(2, false)], { terminal: false }],
+    ]);
+  });
+
+  it("reads what the overlay derives from before every page, a buffered one included", async () => {
+    // One fetch buffers all three rows; the state the overlay reads changes after the first page.
+    let visible = new Set([1, 2, 3]);
+    let latest = new Set([1, 2, 3]);
+    const fetchPage = tokenApi([{ items: [issue(1), issue(2), issue(3)] }]);
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      refresh: async () => {
+        visible = latest;
+      },
+      overlay: row => visible.has(row.id) ? [row] : [],
+      authorizePage: async () => {},
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1)]);
+    latest = new Set([1, 3]);
+    expect(await cursor.next()).toEqual([issue(3)]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes before a refused page's retry, which fetches nothing", async () => {
+    // The state the overlay reads changes between the refusal and the retry.
+    let visible = new Set([1, 2]);
+    let latest = visible;
+    const fetchPage = tokenApi([{ items: [issue(1), issue(2)] }]);
+    const authorized = vi.fn(async () => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage,
+      refresh: async () => {
+        visible = latest;
+      },
+      overlay: row => visible.has(row.id) ? [row] : [],
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    latest = new Set([1]);
+    expect(await cursor.next()).toEqual([issue(1)]);
+    expect(await cursor.next()).toBeNull();
+    expect(fetchPage).toHaveBeenCalledOnce();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1), issue(2)], { terminal: false }],
+      [[issue(1)], { terminal: false }],
+    ]);
+  });
+
+  it("fails a next() whose refresh throws before deriving any row, losing none", async () => {
+    // One fetch buffers both rows; the refresh fails for the second page, then recovers.
+    let failing = false;
+    const overlay = vi.fn((row: Issue) => [row]);
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
+      refresh: async () => {
+        if (failing) throw new Error("scope unavailable");
+      },
+      overlay,
+      authorizePage: authorized,
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1)]);
+    failing = true;
+    await expect(cursor.next()).rejects.toThrow("scope unavailable");
+    expect(overlay).toHaveBeenCalledOnce();
+    expect(authorized).toHaveBeenCalledOnce();
+    failing = false;
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(await cursor.next()).toBeNull();
+  });
+
+  it("re-derives a refused page's provider rows, deferring one the overlay no longer drops", async () => {
+    // A pending change hides provider 2 when the page is refused, and is discarded before the
+    // retry. The overlay returns fresh objects, so the retry must match rows by queue entry.
+    const hidden = new Set([2]);
+    const authorized = vi.fn(async () => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2), issue(3)] }]),
+      overlay: row => hidden.has(row.id) ? [] : [{ ...row }],
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    hidden.delete(2);
+    expect(await cursor.next()).toEqual([issue(1)]);
+    expect(await cursor.next()).toEqual([issue(2), issue(3)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1), issue(3)], { terminal: false }],
+      [[issue(1)], { terminal: false }],
+      [[issue(2), issue(3)], { terminal: false }],
+    ]);
+  });
+
+  it("serves the rows a provider row splits into on one page, as the overlay splits it then", async () => {
+    // One fetch buffers all three rows; a change staged after the first page splits the third.
+    const split = new Set([1]);
+    const pieces = (row: Issue) => split.has(row.id) ? [issue(row.id), issue(row.id, false)] : [row];
+    const authorized = vi.fn(async () => {});
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2), issue(3)] }]),
+      overlay: pieces,
+      // Pieces share their row's identity, which must not drop one for another.
+      inject: { items: [], compare: byId, identity: row => String(row.id) },
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1), issue(1, false)]);
+    split.add(3);
+    // The second row leaves room for one more, which the third's two pieces don't fit.
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(await cursor.next()).toEqual([issue(3), issue(3, false)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls).toEqual([
+      [[issue(1), issue(1, false)], { terminal: false }],
+      [[issue(2)], { terminal: false }],
+      [[issue(3), issue(3, false)], { terminal: false }],
+    ]);
+  });
+
+  it("serves a row's pieces whole on a page too small for them", async () => {
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
+      overlay: row => [row, issue(row.id, false)],
+      authorizePage: async () => {},
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1), issue(1, false)]);
+    expect(await cursor.next()).toEqual([issue(2), issue(2, false)]);
+    expect(await cursor.next()).toBeNull();
+  });
+
+  it("serves one row per identity on a refused page's retry", async () => {
+    // The stand-in's create lands as issue 5 between refusal and retry, so the page holds it twice.
+    const landed = new Map<number, number>();
+    let call = 0;
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(5)] }]),
+      inject: {
+        items: [issue(1, false)],
+        compare: byId,
+        identity: row => String(landed.get(row.id) ?? row.id),
+      },
+      authorizePage: async () => {
+        if (++call === 1) throw new Error("authorization unavailable");
+      },
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    landed.set(1, 5);
+    expect(await cursor.next()).toEqual([issue(1, false)]);
+  });
+
+  it("keeps walking when a retry drops every row of a refused page", async () => {
+    // Provider 5 is the landed copy of a stand-in an earlier page served; the refused page holds it.
+    const landed = new Map<number, number>();
+    let call = 0;
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(5), issue(6)] }]),
+      inject: {
+        items: [issue(1, false)],
+        compare: byId,
+        identity: row => String(landed.get(row.id) ?? row.id),
+      },
+      authorizePage: async () => {
+        if (++call === 1) throw new Error("authorization unavailable");
+      },
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toEqual([issue(1, false)]);
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    landed.set(1, 5);
+    expect(await cursor.next()).toEqual([]);
+    expect(await cursor.next()).toEqual([issue(6)]);
+    expect(await cursor.next()).toBeNull();
+  });
+
+  it("re-derives a refused page's split, deferring the row its page no longer has room for", async () => {
+    // Row 1 splits in three between the refusal and the retry.
+    const pieces = new Map<number, number>();
+    const authorized = vi.fn(async (_rows: readonly Issue[]) => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1), issue(2)] }]),
+      overlay: row => Array.from({ length: pieces.get(row.id) ?? 1 }, (_, piece) => issue(row.id, piece === 0)),
+      authorizePage: authorized,
+      pageSize: 2,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    pieces.set(1, 3);
+    expect(await cursor.next()).toEqual([issue(1), issue(1, false), issue(1, false)]);
+    expect(await cursor.next()).toEqual([issue(2)]);
+    expect(await cursor.next()).toBeNull();
+    expect(authorized.mock.calls.map(([rows]) => rows.length)).toEqual([2, 3, 1]);
+  });
+
+  it("refreshes before a page it must fetch, and answers a walk whose every row the overlay drops", async () => {
+    const order: string[] = [];
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: async () => {
+        order.push("fetch");
+        return { items: [issue(1)] };
+      },
+      refresh: async () => void order.push("refresh"),
+      overlay: () => [],
+      authorizePage: async (rows, { terminal }) => void order.push(`${terminal ? "terminal" : "page"}:${rows.length}`),
+      pageSize: 1,
+    });
+
+    expect(await cursor.next()).toBeNull();
+    expect(order).toEqual(["refresh", "fetch", "terminal:0"]);
+  });
+
+  it("discards the rows a refused empty window dropped, rather than derive them again", async () => {
+    // Every row of each window is dropped, and the empty page's authorization fails once.
+    let fetched = 0;
+    const overlay = vi.fn((_row: Issue): Issue[] => []);
+    const authorized = vi.fn(async () => {
+      if (authorized.mock.calls.length === 1) throw new Error("authorization unavailable");
+    });
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: async () => ({ items: [issue(++fetched), issue(++fetched)], nextToken: String(fetched) }),
+      overlay,
+      authorizePage: authorized,
+      pageSize: 1,
+      maxProviderPagesPerCall: 1,
+    });
+
+    await expect(cursor.next()).rejects.toThrow("authorization unavailable");
+    expect(await cursor.next()).toEqual([]);
+    expect(overlay.mock.calls.map(([row]) => row.id)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("fails a next() whose overlay returns no rows array, rather than serve the row as fetched", async () => {
+    const cursor = new TokenCursor<Issue>({
+      fetchPage: tokenApi([{ items: [issue(1)] }]),
+      // What a one-row overlay returned to drop a row.
+      overlay: (() => null) as unknown as (row: Issue) => Issue[],
+      authorizePage: async () => {},
+      pageSize: 1,
+    });
+
+    await expect(cursor.next()).rejects.toThrow(TypeError);
+  });
+});
+
+describe("PageHookCursor", () => {
+  const issues: Issue[] = [{ id: 1, open: true }, { id: 2, open: false }, { id: 3, open: true }];
+
+  it("runs the hook on each page before returning it, and not at exhaustion", async () => {
+    const hooked: number[][] = [];
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 2), {
+      beforePage: async items => { hooked.push(items.map(issue => issue.id)); },
+    });
+
+    expect(await cursor.next()).toEqual(issues.slice(0, 2));
+    // The second page has not been fetched, so the hook has seen only the first.
+    expect(hooked).toEqual([[1, 2]]);
+    expect(await cursor.next()).toEqual(issues.slice(2));
+    expect(await cursor.next()).toBeNull();
+    expect(hooked).toEqual([[1, 2], [3]]);
+  });
+
+  it("holds a page whose hook threw, so the retry re-offers it rather than skipping it", async () => {
+    let failures = 1;
+    const hooked: number[][] = [];
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 2), {
+      beforePage: async items => {
+        if (failures-- > 0) throw new Error("hook failed");
+        hooked.push(items.map(issue => issue.id));
+      },
+    });
+
+    await expect(cursor.next()).rejects.toThrow(/hook failed/);
+    expect(await cursor.next()).toEqual(issues.slice(0, 2));
+    expect(await cursor.next()).toEqual(issues.slice(2));
+    expect(hooked).toEqual([[1, 2], [3]]);
+  });
+
+  it("serializes concurrent calls, so each page is hooked and returned once", async () => {
+    const hooked: number[][] = [];
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 1), {
+      beforePage: async items => {
+        await Promise.resolve();
+        hooked.push(items.map(issue => issue.id));
+      },
+    });
+
+    const pages = await Promise.all([cursor.next(), cursor.next(), cursor.next()]);
+    expect(pages).toEqual([[issues[0]], [issues[1]], [issues[2]]]);
+    expect(hooked).toEqual([[1], [2], [3]]);
+  });
+
+  it("runs the release hook once, however often it is disposed", () => {
+    const dispose = vi.fn();
+    const cursor = new PageHookCursor(new ArrayCursor(issues, 2), { beforePage: async () => {}, dispose });
+
+    cursor[Symbol.dispose]();
+    cursor[Symbol.dispose]();
+    expect(dispose).toHaveBeenCalledTimes(1);
   });
 });

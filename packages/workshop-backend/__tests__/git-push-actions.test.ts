@@ -15,8 +15,8 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import { concatBytes, decodePackBytes, encodeLooseObject, gitObjectOid }
-  from "../src/git-codec";
+import { concatBytes, encodeLooseObject, gitObjectOid } from "../src/git-codec";
+import { decodePack } from "./git-cache-fixtures";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -61,7 +61,7 @@ function commitPayload(tree: string, parents: string[], message: string): Uint8A
 }
 
 async function storeLocal(impl: any, type: string, payload: Uint8Array): Promise<string> {
-  let oid = await gitObjectOid(type as any, payload);
+  let oid = gitObjectOid(type as any, payload);
   impl.storage.gitObjects.put({ oid, data: encodeLooseObject(type as any, payload) });
   return oid;
 }
@@ -82,6 +82,7 @@ function pushDescription(heads: string[]): ActionDescription {
     description: "Pushes the listed commits.",
     implementsRevert: true,
     pushedCommits: heads,
+    autoApprovable: false,
   };
 }
 
@@ -125,7 +126,7 @@ describe("push authorization through the Overseer chokepoints", () => {
       });
       await impl.applyPendingAction(record, USER, false);
 
-      expect((await decodePackBytes(sawPack!, { maxObjectSize: 1 << 20 }))).toHaveLength(1);
+      expect(await decodePack(sawPack!)).toHaveLength(1);
       expect(impl.storage.actions.get(record.id)!.state).toBe("approved");
       expect(marksOf(impl, record.id)).toStrictEqual([]);
       let meta = impl.storage.gitObjectMetadata.get(head)!;

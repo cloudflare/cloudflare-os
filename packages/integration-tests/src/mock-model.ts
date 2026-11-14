@@ -41,6 +41,17 @@ function auxiliaryCompletion(body: unknown): AuxiliaryCompletion | undefined {
       completion => parsed.data.messages[0].content.startsWith(completion.promptPrefix));
 }
 
+const SYSTEM_PROMPT_REQUEST = z.object({
+  messages: z.array(z.object({ role: z.string(), content: z.unknown() })),
+});
+
+/** The system prompt of one recorded agent request. */
+export function systemPromptOf(request: unknown): string {
+  const system = SYSTEM_PROMPT_REQUEST.parse(request).messages.find(m => m.role === "system");
+  if (typeof system?.content !== "string") throw new Error("The request has no system prompt");
+  return system.content;
+}
+
 export const SCRIPTED_MODEL_ID = "@cf/zai-org/glm-5.2";
 export const SCRIPTED_MODEL_PROFILE: AiChatAuthorInfo = {
   type: "agent",
@@ -61,11 +72,12 @@ type ToolCall = {
 };
 
 // One model response: text, or one or more tool calls the agent runs in that step, with optional
-// token usage (pi sums prompt and completion tokens; it ignores `total_tokens`).
+// token usage (pi sums prompt and completion tokens; it ignores `total_tokens`). A response with
+// `after` waits for it to settle, so a test can act while the agent waits on the model.
 type StreamedCompletionStep = ({ text: string } | { toolCall: ToolCall } | { toolCalls: ToolCall[] }) &
-  { usage?: typeof USAGE };
+  { usage?: typeof USAGE; after?: Promise<void> };
 export type ChatCompletionStep = StreamedCompletionStep |
-  { error: { status: number; message: string } } |
+  { error: { status: number; message: string }; after?: Promise<void> } |
   { pending: true };
 
 export type ScriptedChatCompletions = {
@@ -143,6 +155,7 @@ export function scriptedChatCompletions(script: readonly ChatCompletionStep[])
         return response.promise.finally(() =>
           request.signal.removeEventListener("abort", onAbort));
       }
+      await step.after;
       if ("error" in step) {
         return new Response(step.error.message, { status: step.error.status });
       }

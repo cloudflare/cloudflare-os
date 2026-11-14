@@ -6,7 +6,7 @@ import {
   Plus,
   WarningCircle,
 } from "@phosphor-icons/react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   ManagementListOptions,
   ManagementSchedule,
@@ -169,6 +169,23 @@ export default function SchedulerPage({
     }
   }, []);
 
+  // Stable so a memoised row re-renders only when its own schedule, title, expansion, or the clock
+  // changes, not on every keystroke, page load, or title batch elsewhere in the list.
+  const toggleSchedule = useCallback((schedule: ManagementSchedule) => {
+    const rowKey = scheduleRowKey(schedule);
+    setExpanded((current) => {
+      const next = new Set(current);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  }, []);
+  const openSchedule = useCallback(
+    (schedule: ManagementSchedule) =>
+      void runHostAction(() => openWorkspace(schedule.workspaceId, schedule.gadgetId)),
+    [runHostAction, openWorkspace],
+  );
+
   // The account has no schedules at all: "all" spans every status, so an empty unfiltered page
   // means there is nothing for the search field or the status tabs to act on.
   const isEmpty =
@@ -249,7 +266,7 @@ export default function SchedulerPage({
         ) : (
           <div className="divide-y divide-kumo-line">
             {schedules.map((schedule) => {
-              const rowKey = `${schedule.scheduleId}:${schedule.workspaceId}`;
+              const rowKey = scheduleRowKey(schedule);
               const detailsOpen = expanded.has(rowKey);
               const targetTitle = workspaceTitles.get(schedule.workspaceId) ?? null;
               return (
@@ -259,17 +276,8 @@ export default function SchedulerPage({
                   targetTitle={targetTitle}
                   now={now}
                   expanded={detailsOpen}
-                  onToggle={() =>
-                    setExpanded((current) => {
-                      const next = new Set(current);
-                      if (next.has(rowKey)) next.delete(rowKey);
-                      else next.add(rowKey);
-                      return next;
-                    })
-                  }
-                  onOpen={() =>
-                    void runHostAction(() => openWorkspace(schedule.workspaceId, schedule.gadgetId))
-                  }
+                  onToggle={toggleSchedule}
+                  onOpen={openSchedule}
                 />
               );
             })}
@@ -328,7 +336,11 @@ export default function SchedulerPage({
   );
 }
 
-function ScheduleRow({
+function scheduleRowKey(schedule: ManagementSchedule): string {
+  return `${schedule.scheduleId}:${schedule.workspaceId}`;
+}
+
+const ScheduleRow = memo(function ScheduleRow({
   schedule,
   targetTitle,
   now,
@@ -342,8 +354,8 @@ function ScheduleRow({
   targetTitle: string | null;
   now: number;
   expanded: boolean;
-  onToggle: () => void;
-  onOpen: () => void;
+  onToggle: (schedule: ManagementSchedule) => void;
+  onOpen: (schedule: ManagementSchedule) => void;
 }) {
   const timing = formatTiming(schedule, now);
   const target = targetTitle ?? "Unavailable workspace";
@@ -360,7 +372,7 @@ function ScheduleRow({
           data-action="open-schedule"
           disabled={unavailable}
           className="flex min-w-0 flex-1 items-center gap-3 text-left"
-          onClick={onOpen}
+          onClick={() => onOpen(schedule)}
         >
           <span
             className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${needsAttention ? "bg-kumo-danger-tint text-kumo-danger" : "bg-kumo-fill text-kumo-subtle"}`}
@@ -396,7 +408,7 @@ function ScheduleRow({
             aria-expanded={expanded}
             aria-label={`${expanded ? "Hide" : "Show"} why ${schedule.title} needs attention`}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-kumo-inactive hover:bg-kumo-fill hover:text-kumo-default"
-            onClick={onToggle}
+            onClick={() => onToggle(schedule)}
           >
             <CaretDown
               size={14}
@@ -412,7 +424,7 @@ function ScheduleRow({
       )}
     </article>
   );
-}
+});
 
 const FILTERS: ReadonlyArray<{ value: Filter; label: string }> = [
   { value: "all", label: "All" },

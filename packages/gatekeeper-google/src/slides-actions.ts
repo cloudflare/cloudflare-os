@@ -1,0 +1,746 @@
+/**
+ * Approval-backed Google Slides changes: how each is described, and how an approved one is written.
+ *
+ * Every write is one `batchUpdate`, planned against a fresh read and pinned to that read's
+ * revision, so Google applies it only to the presentation it was planned against. A change that
+ * no longer applies fails without writing. The one hard case is a write whose response was lost:
+ * it may have been committed, so it is resent only exactly as first sent, at the same revision,
+ * which Google can commit at most once. If that is refused, a read decides whether it landed, and
+ * otherwise the outcome is unknown and never retried.
+ */
+
+import {
+  ActionApplyError, ActionOutcomeUnknownError, APPLY_OUTCOME_UNKNOWN_MESSAGE, defineActions,
+  type ActionDefinition,
+} from "@gadgets/gatekeeper-kit/actions";
+import {
+  buildDescription, codeSpan, plainInline, sanitizeTitle,
+} from "@gadgets/gatekeeper-kit/action-description";
+import type { ActionKind } from "@gadgets/workshop-shared/gatekeeper";
+import { obsContext } from "./observability";
+import { SlidesWriteRefused, type GoogleSlidesApi, type RestSlide } from "./slides-api";
+import {
+  designDeck, pageOf, slideIdOf, type DesignChange, type DesignPage, type DesignStep,
+} from "./slides-design";
+import { CREATES } from "./slides-design-input";
+import { backgroundOf, themeColorsOf } from "./slides-format";
+import { mastersOf, slideIds, themePagesOf } from "./slides-model";
+import type { SlideBounds } from "./slides-read-types";
+import {
+  movedOrder, newSlidePlace, requireNewSlide, requirePlaceholders, requireSlide, type Deck,
+  type DesignBatch, type SlideLabel, type SlidesActions, type ThemeLabel,
+} from "./slides-simulation";
+import { elementIdsOf, locate, textOfTarget, type TextAddress } from "./slides-target";
+import { ChangeConflict, projectedText, richTextOf } from "./slides-text";
+import type { ShapeOutline, TextFormatChange } from "./slides-types";
+
+const logger = obsContext.createLogger({ component: "gatekeeper.google.slides", vendorId: "google" });
+
+/** What an approved change is written with. */
+export type SlidesHost = { api: GoogleSlidesApi; presentationId: string };
+
+// What a user may let apply without asking: any change but deleting a slide, or a batch that
+// deletes elements, table rows or columns, or makes Google download an image from a URL the agent
+// chose, which would carry whatever it encoded there past the presentation. A batch is tried
+// against the narrow kinds first, and they are never widened, since a rule a user enabled for one
+// covers only what its label says.
+const EDIT_SLIDES_TEXT: ActionKind = { tag: "editSlidesText", label: "Slide text edits" };
+const FORMAT_SLIDES: ActionKind = { tag: "formatSlides", label: "Slide formatting and arrangement" };
+const EDIT_SLIDES: ActionKind = {
+  tag: "edit-slides", label: "Slide edits that keep every element, table row and column and download no images",
+};
+const UPDATE_SLIDES: ActionKind = {
+  tag: "update-slides", label: "Slide changes that delete elements, table rows or columns, or download images",
+};
+const ARRANGE_SLIDES: ActionKind = { tag: "arrange-slides", label: "Adding, copying and reordering slides" };
+const DELETE_SLIDES: ActionKind = { tag: "delete-slides", label: "Deleting slides" };
+const SKIP_SLIDES: ActionKind = { tag: "skipSlides", label: "Skipping slides" };
+
+function isFormatting(change: DesignChange): boolean {
+  switch (change.op) {
+    case "formatText":
+      return !change.format.link && !change.format.fontFamily;
+    case "formatParagraphs":
+    case "updateShape":
+    case "setBounds":
+    case "arrange":
+      return true;
+    case "setBackground":
+      return slideIdOf(change) !== undefined &&
+        (change.background === null || typeof change.background === "string");
+    default:
+      return false;
+  }
+}
+
+// Whether a change deletes content or makes Google download a URL. Exhaustive, so a new change
+// cannot join `edit-slides` without a decision here.
+function deletesOrDownloads(change: DesignChange): boolean {
+  switch (change.op) {
+    case "deleteElement":
+    case "deleteTableRows":
+    case "deleteTableColumns":
+    case "insertImage":
+    case "replaceImage":
+      return true;
+    case "setBackground":
+      return change.background !== null && typeof change.background === "object";
+    case "editText":
+    case "formatText":
+    case "formatParagraphs":
+    case "createShape":
+    case "updateShape":
+    case "setBounds":
+    case "setAltText":
+    case "arrange":
+    case "createTable":
+    case "insertTableRows":
+    case "insertTableColumns":
+    case "setThemeColors":
+    case "formatTableCells":
+      return false;
+  }
+}
+
+/** The kind a batch is queued as, so approving a kind approves no more than it says. */
+export function batchKind(
+  changes: readonly DesignChange[],
+): "editText" | "formatSlides" | "editSlides" | "updateSlides" {
+  if (changes.every(change => change.op === "editText")) return "editText";
+  if (changes.every(isFormatting)) return "formatSlides";
+  return changes.some(deletesOrDownloads) ? "updateSlides" : "editSlides";
+}
+
+// Planning against a fresh read, and resending a batch whose response was lost.
+const MAX_ATTEMPTS = 3;
+
+/**
+ * A fresh read: the revision to pin a write to, the slide order, the slides it fetched, the
+ * masters of every slide and layout, every master and layout, and which slides are skipped.
+ */
+type Fresh = Deck & { revisionId: string; skipped: ReadonlySet<string> };
+
+type Plan = {
+  requests: unknown[];
+  /** Whether a read taken after a lost response shows the write landed; a throw means it does not. */
+  landed(after: Fresh): boolean;
+};
+
+async function readFresh(host: SlidesHost, ids: readonly string[]): Promise<Fresh> {
+  let outline = await host.api.getOutline(host.presentationId);
+  let { revisionId } = outline;
+  if (!revisionId) {
+    throw new ActionApplyError(
+      "Google Slides did not report this presentation's revision, which it does only for an " +
+      "account that can edit it.");
+  }
+  let order = slideIds(outline);
+  // Read after the outline: a slide changed since then has also moved the revision this write is
+  // pinned to, so Google refuses it rather than applying it against what changed.
+  let slides = await host.api.getSlides(host.presentationId, ids, order);
+  let skipped = new Set(outline.slides?.flatMap(({ objectId, slideProperties }) =>
+    objectId && slideProperties?.isSkipped ? [objectId] : []));
+  return {
+    revisionId, order, slides, ...mastersOf(outline), themePages: themePagesOf(outline), skipped,
+  };
+}
+
+function noLongerApplies(error: unknown): never {
+  if (error instanceof ChangeConflict) {
+    throw new ActionApplyError(`This change no longer applies: ${error.message}.`);
+  }
+  throw error;
+}
+
+/** Writes the plan for `ids`, as the module comment describes. */
+async function write(
+  host: SlidesHost, ids: readonly string[], plan: (fresh: Fresh) => Plan | Promise<Plan>,
+): Promise<void> {
+  // Set once a dispatch's outcome is unknown; from then on only this batch is ever sent.
+  let sent: (Plan & { revisionId: string }) | undefined;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    let current = sent;
+    if (!current) {
+      let fresh = await readFresh(host, ids);
+      let planned: Plan;
+      try {
+        planned = await plan(fresh);
+      } catch (error) {
+        noLongerApplies(error);
+      }
+      if (planned.requests.length === 0) return;
+      current = { ...planned, revisionId: fresh.revisionId };
+    }
+    try {
+      await host.api.batchUpdate(host.presentationId, current.requests, current.revisionId);
+      return;
+    } catch (error) {
+      if (!(error instanceof SlidesWriteRefused)) {
+        sent = current;
+        continue;
+      }
+      if (sent) break;
+      // Nothing was applied. A 401, 403 or 429 may pass, so the action stays pending.
+      if (error.status !== 400) throw error;
+      let { revisionId } = await host.api.getOutline(host.presentationId);
+      if (revisionId === current.revisionId) {
+        throw new ActionApplyError("Google Slides refused this change as invalid [http=400].");
+      }
+      // A stale revision: someone edited the presentation since the read. Plan again.
+    }
+  }
+  if (!sent) {
+    throw new Error("The presentation kept changing while this change was applied. Try again.");
+  }
+  let landed: boolean;
+  try {
+    landed = sent.landed(await readFresh(host, ids));
+  } catch (error) {
+    // Unknown either way: the write may have landed, so it is never planned again.
+    logger.warn("could not confirm a lost Slides write", { event: "slides.apply.confirm.failed", error });
+    landed = false;
+  }
+  if (!landed) throw new ActionOutcomeUnknownError(APPLY_OUTCOME_UNKNOWN_MESSAGE);
+}
+
+function slideName({ number, title }: SlideLabel): string {
+  return title ? `slide ${number} ("${plainInline(title, 60)}")` : `slide ${number}`;
+}
+
+const quoted = (name: string) => `"${plainInline(name, 60)}"`;
+
+// A master or layout by the name it had when the change was queued, or by its ID without one.
+function pageName({ pageType, id }: DesignPage, themes: Record<string, ThemeLabel> = {}): string {
+  let label = Object.hasOwn(themes, id) ? themes[id] : undefined;
+  if (pageType === "MASTER") return `the master ${quoted(label?.name ?? id)}`;
+  return `layout ${quoted(label?.name ?? id)}` + (label?.master ? ` of master ${quoted(label.master)}` : "");
+}
+
+/** Names an element: by its ID, as a `noun`, unless the batch describing it creates it. */
+type ElementName = (id: string, noun?: string) => string;
+
+const byId: ElementName = (id, noun = "element") => `${noun} ${codeSpan(id)}`;
+
+function addressName(address: TextAddress, element: ElementName): string {
+  if (address.elementId === undefined) return "the speaker notes";
+  if (!address.cell) return element(address.elementId, "shape");
+  let { row, column } = address.cell;
+  return `row ${row + 1}, column ${column + 1} of ${element(address.elementId, "table")}`;
+}
+
+function boundsName({ x, y, width, height }: SlideBounds): string {
+  return `${width} × ${height} pt at (${x}, ${y})`;
+}
+
+type Field = (label: string, text: string) => void;
+
+// The formatting set, naming in a field what the approver must see verbatim.
+function formatNames(format: TextFormatChange, field: Field): string[] {
+  let names: string[] = [];
+  for (let key of ["bold", "italic", "underline", "strikethrough", "smallCaps"] as const) {
+    let value = format[key];
+    let name = key === "smallCaps" ? "small caps" : key;
+    if (value !== undefined) names.push(value === null ? `default ${name}` : value ? name : `not ${name}`);
+  }
+  let valued = (value: unknown, name: string, shown: (value: never) => string) => {
+    if (value !== undefined) names.push(value === null ? `default ${name}` : shown(value as never));
+  };
+  if (format.fontFamily) field("Font", format.fontFamily);
+  if (format.link) field("Link", format.link);
+  // A font is set at regular weight, which unbolds the text unless the change makes it bold.
+  valued(format.fontFamily, "font", () =>
+    format.bold === undefined ? "the font below, not bold" : "the font below");
+  valued(format.fontSize, "size", (size: number) => `${size} pt`);
+  valued(format.color, "colour", (color: string) => `colour ${color}`);
+  valued(format.highlight, "highlight", (color: string) => `highlight ${color}`);
+  valued(format.link, "link", () => "linked to the URL below");
+  valued(format.baseline, "baseline", (baseline: string) =>
+    baseline === "none" ? "no superscript or subscript" : baseline);
+  return names;
+}
+
+function fillName(fill: string): string {
+  return fill === "none" ? "no fill" : `fill ${fill}`;
+}
+
+function outlineName(outline: ShapeOutline | "none"): string {
+  if (outline === "none") return "no outline";
+  return `an outline${outline.color ? ` ${outline.color}` : ""}` +
+    `${outline.weight ? ` ${outline.weight} pt wide` : ""}`;
+}
+
+function paragraphNames(change: DesignChange & { op: "formatParagraphs" }): string[] {
+  let names: string[] = [];
+  let set = (value: unknown, unset: string, shown: () => string) => {
+    if (value !== undefined) names.push(value === null ? unset : shown());
+  };
+  set(change.alignment, "default alignment", () => `aligned ${change.alignment}`);
+  set(change.lineSpacing, "default line spacing", () => `line spacing ${change.lineSpacing}%`);
+  set(change.spaceAbove, "default space above", () => `${change.spaceAbove} pt above`);
+  set(change.spaceBelow, "default space below", () => `${change.spaceBelow} pt below`);
+  if (change.bullets !== undefined) {
+    let bullets = { bullet: "bulleted", checkbox: "a checklist", numbered: "numbered", none: "no bullets" };
+    names.push(bullets[change.bullets]);
+  }
+  return names;
+}
+
+function lineCount(noun: string, at: number, count: number): string {
+  return count === 1 ? `${noun} ${at + 1}` : `${noun}s ${at + 1} to ${at + count}`;
+}
+
+/** One line naming what a change does; `field` adds what the approver must see verbatim. */
+function describeChange(
+  change: DesignChange, element: ElementName, field: Field,
+): string {
+  switch (change.op) {
+    case "editText":
+      if (change.find === undefined) {
+        field("Current text", change.before ?? "");
+        field("New text", change.replace);
+      } else {
+        field("Find", change.find);
+        field("Replace with", change.replace);
+      }
+      return `edit the text of ${addressName(change, element)}`;
+    case "formatText":
+    case "formatParagraphs": {
+      let part = "all of the text";
+      if (change.find !== undefined || change.range) {
+        part = "the text below";
+        field("Text", change.range
+          ? (change.before ?? "").slice(change.range.start, change.range.end) : change.find!);
+      }
+      let target = `${part} of ${addressName(change, element)}`;
+      if (change.op === "formatParagraphs") {
+        return `format the paragraphs of ${target}: ${paragraphNames(change).join(", ")}`;
+      }
+      return `format ${target}: ${formatNames(change.format, field).join(", ")}`;
+    }
+    case "createShape": {
+      if (change.text) field("Text", change.text);
+      let extras = [
+        ...(change.text ? ["the text below"] : []),
+        ...(change.format ? [formatNames(change.format, field).join(", ")] : []),
+        ...(change.fill !== undefined ? [fillName(change.fill)] : []),
+        ...(change.outline !== undefined ? [outlineName(change.outline)] : []),
+      ];
+      return `add a ${change.shapeType} shape, ${boundsName(change.bounds)}` +
+        (extras.length > 0 ? `, with ${extras.join("; ")}` : "");
+    }
+    case "updateShape": {
+      let names = [
+        ...(change.fill !== undefined ? [fillName(change.fill)] : []),
+        ...(change.outline !== undefined ? [outlineName(change.outline)] : []),
+        ...(change.contentAlignment !== undefined ? [`text at the ${change.contentAlignment}`] : []),
+      ];
+      return `give ${element(change.elementId, "shape")} ${names.join(", ")}`;
+    }
+    case "setBounds": {
+      let names = (["x", "y", "width", "height"] as const)
+        .flatMap(key => change.bounds?.[key] === undefined ? [] : [`${key} ${change.bounds[key]}`]);
+      if (change.rotation !== undefined) names.push(`rotation ${change.rotation}°`);
+      return `move or resize ${element(change.elementId)} to ${names.join(", ")}`;
+    }
+    case "deleteElement":
+      return `delete ${element(change.elementId)}`;
+    case "setAltText":
+      if (change.title !== undefined) field("Alt-text title", change.title);
+      if (change.description !== undefined) field("Alt-text description", change.description);
+      return `set the alt text of ${element(change.elementId)}`;
+    case "arrange":
+      return change.to === "front"
+        ? `bring ${element(change.elementId)} in front of the other elements`
+        : `send ${element(change.elementId)} behind the other elements`;
+    case "insertImage":
+      field("Image URL", change.url);
+      return "add an image downloaded from the URL below, " +
+        (change.bounds ? `fitted in ${boundsName(change.bounds)}` : "at its own size");
+    case "replaceImage":
+      field("Image URL", change.url);
+      return `replace the picture of ${element(change.elementId, "image")} with one downloaded ` +
+        "from the URL below";
+    case "createTable":
+      if (change.cells?.some(line => line.some(Boolean))) field("Cells", JSON.stringify(change.cells));
+      return `add a table of ${change.rows} rows and ${change.columns} columns` +
+        (change.bounds ? `, ${boundsName(change.bounds)}` : "");
+    case "insertTableRows":
+    case "insertTableColumns": {
+      let noun = change.op === "insertTableRows" ? "row" : "column";
+      let count = change.count ?? 1;
+      return `insert ${count} ${noun}${count === 1 ? "" : "s"} before ${noun} ${change.at + 1} of ` +
+        element(change.elementId, "table");
+    }
+    case "deleteTableRows":
+    case "deleteTableColumns": {
+      let noun = change.op === "deleteTableRows" ? "row" : "column";
+      let lines = lineCount(noun, change.at, change.count ?? 1);
+      return `delete ${lines} of ${element(change.elementId, "table")}`;
+    }
+    case "setBackground": {
+      let { background } = change;
+      if (background === null) return "show the background it inherits";
+      if (background === "none") return "remove the background";
+      if (typeof background === "string") return `set the background to ${background}`;
+      field("Background image URL", background.imageUrl);
+      return "set the background to a picture downloaded from the URL below, stretched to fill it";
+    }
+    case "setThemeColors": {
+      let names = Object.entries(change.colors).flatMap(([name, color]) =>
+        color === undefined ? [] : [`${name} ${color}`]);
+      return `set the theme colours ${names.join(", ")}`;
+    }
+    case "formatTableCells": {
+      let { range } = change;
+      let cells = range
+        ? `the cells from row ${range.row + 1}, column ${range.column + 1}, ` +
+          `${range.rowSpan ?? 1} by ${range.columnSpan ?? 1}`
+        : "every cell";
+      let names = [
+        ...(change.fill !== undefined ? [fillName(change.fill)] : []),
+        ...(change.contentAlignment !== undefined ? [`text at the ${change.contentAlignment}`] : []),
+      ];
+      return `give ${cells} of ${element(change.elementId, "table")} ${names.join(", ")}`;
+    }
+  }
+}
+
+// One line per change, and the fields to show verbatim after them.
+function describeDesign(
+  { changes, slides, themes }: DesignBatch,
+): { lines: string[]; fields: [label: string, text: string][] } {
+  let created = new Map<string, string>();
+  let fields: [string, string][] = [];
+  let element: ElementName = (id, noun) => created.get(id) ?? byId(id, noun);
+  let lines = changes.map((change, i) => {
+    let label = changes.length === 1 ? "" : `Change ${i + 1}: `;
+    let line = describeChange(change, element, (name, text) => fields.push([`${label}${name}`, text]));
+    let noun = CREATES[change.op];
+    if (noun && "id" in change) created.set(change.id, `the ${noun} change ${i + 1} adds`);
+    let page = pageOf(change);
+    let name = page.pageType === "SLIDE" ? slideName(slides[page.id]) : pageName(page, themes);
+    return `On ${name}, ${line}`;
+  });
+  return { lines, fields };
+}
+
+// The text `address` names, or undefined if it is not there.
+function textIfThere(slide: RestSlide, address: TextAddress): string | undefined {
+  try {
+    return textOfTarget(slide, address);
+  } catch (error) {
+    if (error instanceof ChangeConflict) return undefined;
+    throw error;
+  }
+}
+
+// A layout or master reads as a slide with only page properties, which is all a change sets on one.
+const pageIn = (deck: Deck, { pageType, id }: DesignPage): RestSlide | undefined =>
+  pageType === "SLIDE" ? deck.slides.get(id) : deck.themePages.get(id);
+
+/** Rows or columns a change inserts or deletes. */
+type TableLines = { elementId: string; axis: "row" | "column"; insert: boolean; at: number; count: number };
+
+function tableLinesOf(change: DesignChange): TableLines | undefined {
+  switch (change.op) {
+    case "insertTableRows": case "insertTableColumns": case "deleteTableRows": case "deleteTableColumns": {
+      let { op, elementId, at, count = 1 } = change;
+      return { elementId, at, count, axis: op.endsWith("Rows") ? "row" : "column", insert: op.startsWith("insert") };
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Where the text `address` names is once `later` changes have inserted and deleted rows and
+ * columns of its table, or undefined if they delete its cell.
+ */
+function addressAfter(address: TextAddress, later: readonly DesignChange[]): TextAddress | undefined {
+  let { cell } = address;
+  if (!cell) return address;
+  for (let change of later) {
+    let lines = tableLinesOf(change);
+    if (!lines || lines.elementId !== address.elementId) continue;
+    let { axis, insert, at, count } = lines;
+    let index: number = cell[axis];
+    if (insert) {
+      if (at <= index) index += count;
+    } else if (at + count <= index) {
+      index -= count;
+    } else if (at <= index) {
+      return undefined;
+    }
+    cell = { ...cell, [axis]: index };
+  }
+  return { ...address, cell };
+}
+
+/**
+ * A table's size and cells, row by row: where each starts, its spans and its text, or undefined
+ * if the slide has no table `id`. Neither its size nor its cells' text alone tells it from a table
+ * a collaborator changed some other way, such as by merging cells.
+ */
+function cellsOf(slide: RestSlide, id: string): string | undefined {
+  let table = locate(slide.pageElements, id)?.element.table;
+  // Google omits a zero index, and a span of 1 may be omitted too.
+  return table && JSON.stringify([table.rows ?? 0, table.columns ?? 0, table.tableRows?.map(row =>
+    row.tableCells?.map(cell => [
+      cell.location?.rowIndex ?? 0, cell.location?.columnIndex ?? 0, cell.rowSpan ?? 1,
+      cell.columnSpan ?? 1, projectedText(richTextOf(cell.text).segments),
+    ]))]);
+}
+
+/**
+ * Whether a read taken after a lost response shows a design batch landed. Only what the batch
+ * would have changed counts, where it would leave it: which elements exist, the cells of a table
+ * it adds or deletes rows or columns of, text, found where later changes to its table move it, and
+ * the theme colours it sets and the backgrounds it leaves pages with, other than pictures. A batch
+ * with none of those, such as one that only formats or moves elements or leaves a page a picture,
+ * cannot be shown to have landed.
+ */
+function designLanded(
+  changes: readonly DesignChange[], steps: readonly (DesignStep | null)[],
+  before: Deck, planned: Deck, after: Deck,
+): boolean {
+  let checks = changes.flatMap((change, i) => {
+    let evidence: boolean[] = [];
+    let page = pageOf(change);
+    let witness = <T>(read: (page: RestSlide) => T | undefined) => {
+      let value = read(pageIn(planned, page) ?? {});
+      if (value !== undefined && value !== read(pageIn(before, page) ?? {})) {
+        // A page deleted since cannot show what the batch did to it.
+        let held = pageIn(after, page);
+        evidence.push(held !== undefined && read(held) === value);
+      }
+    };
+    let { created, deleted } = steps[i]!;
+    for (let id of [created, deleted]) {
+      if (id) witness(slide => locate(slide.pageElements, id) !== undefined);
+    }
+    const moved = change.op === "editText" && addressAfter(change, changes.slice(i + 1));
+    if (moved) witness(slide => textIfThere(slide, moved));
+    const lines = tableLinesOf(change);
+    if (lines) witness(slide => cellsOf(slide, lines.elementId));
+    // The page's background as the whole batch leaves it, unless that is a picture: every picture
+    // reads as "picture", so one a collaborator set would pass for the batch's own.
+    if (change.op === "setBackground") {
+      witness(held => {
+        let fill = held.pageProperties?.pageBackgroundFill;
+        let background = backgroundOf(fill) ?? "inherited";
+        if (background === "picture") return undefined;
+        if (background === "none" || background === "inherited") return background;
+        // A read of the background leaves out its opacity, which tells the batch's opaque fill from
+        // a translucent one of the same colour. Google omits an opacity of 1.
+        return `${background} ${fill?.solidFill?.alpha ?? 1}`;
+      });
+    }
+    if (change.op === "setThemeColors") {
+      witness(held => JSON.stringify(themeColorsOf(held.pageProperties?.colorScheme)));
+    }
+    return evidence;
+  });
+  return checks.length > 0 && checks.every(Boolean);
+}
+
+// The slides a batch's changes are on, leaving out its layouts and masters, which every read holds.
+function slideIdsOf(changes: readonly DesignChange[]): string[] {
+  return [...new Set(changes.flatMap(change => slideIdOf(change) ?? []))];
+}
+
+/** A design batch's definition, the same for each kind but its `kind` and verdict. */
+function designBatch(kind: ActionKind, autoApprovable: boolean): ActionDefinition<DesignBatch, SlidesHost> {
+  return {
+    kind,
+    autoApprovable,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: batch => {
+      let { changes, slides, themes } = batch;
+      let ids = slideIdsOf(changes);
+      let pages = changes.map(pageOf).filter(page => page.pageType !== "SLIDE");
+      let pageCount = new Set(pages.map(page => page.id)).size;
+      let { lines, fields } = describeDesign(batch);
+      let builder = buildDescription(lines.length === 1
+        ? `${lines[0]}.`
+        : `Makes ${lines.length} changes, all or none of which are applied:\n\n` +
+          lines.map((line, i) => `${i + 1}. ${line}`).join("\n"));
+      for (let [label, text] of fields) builder.verbatim(label, text);
+      if (pageCount > 0) {
+        builder.prose("Each change to a master or layout reaches every slide made from it.");
+      }
+      let slidesName = ids.length === 1 ? slideName(slides[ids[0]]) : `${ids.length} slides`;
+      let title = pageCount === 0 ? `Change ${slidesName}`
+        : ids.length > 0 ? `Change ${slidesName} and the theme`
+        : pageCount === 1 ? `Change ${pageName(pages[0], themes)}`
+        : "Change the theme";
+      return {
+        title: sanitizeTitle(title),
+        ...builder.finish(),
+        implementsRevert: false,
+      };
+    },
+    apply: ({ changes }, host) => write(host, slideIdsOf(changes), fresh => {
+      let { deck, steps } = designDeck(fresh, changes);
+      return {
+        requests: steps.flatMap(step => step!.requests),
+        landed: after => designLanded(changes, steps, fresh, deck, after),
+      };
+    }),
+  };
+}
+
+/** Each Slides change's definition, which a Drive connection reuses for the files it reaches. */
+export const SLIDES_DEFINITIONS: { [K in keyof SlidesActions]: ActionDefinition<SlidesActions[K], SlidesHost> } = {
+  editText: designBatch(EDIT_SLIDES_TEXT, true),
+  formatSlides: designBatch(FORMAT_SLIDES, true),
+  editSlides: designBatch(EDIT_SLIDES, true),
+  // Deletes content, or has Google download an agent-chosen URL.
+  updateSlides: designBatch(UPDATE_SLIDES, false),
+
+  duplicateSlide: {
+    kind: ARRANGE_SLIDES,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ slide }) => ({
+      title: sanitizeTitle(`Duplicate ${slideName(slide)}`),
+      description: `Adds a copy of ${slideName(slide)}, with its speaker notes, right after it.`,
+      descriptionIsComplete: true,
+      implementsRevert: false,
+    }),
+    apply: ({ slideId, newSlideId, objectIds }, host) => write(host, [slideId], fresh => {
+      requireNewSlide(fresh.order, newSlideId);
+      let source = fresh.slides.get(slideId);
+      if (!source) throw new ChangeConflict(`slide "${slideId}" no longer exists`);
+      // Google refuses a key naming no object, and the source may have lost elements since.
+      let present = new Set(elementIdsOf(source.pageElements));
+      let ids = Object.fromEntries(Object.entries(objectIds).filter(([id]) => present.has(id)));
+      return {
+        requests: [{ duplicateObject: { objectId: slideId, objectIds: { ...ids, [slideId]: newSlideId } } }],
+        landed: after => after.order.includes(newSlideId),
+      };
+    }),
+  },
+
+  // Deletes the slide's content and notes, and can take its master and layouts with it.
+  deleteSlide: {
+    kind: DELETE_SLIDES,
+    autoApprovable: false,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ slide }) => ({
+      title: sanitizeTitle(`Delete ${slideName(slide)}`),
+      description: `Deletes ${slideName(slide)}, with its content and speaker notes.`,
+      descriptionIsComplete: true,
+      implementsRevert: false,
+    }),
+    apply: ({ slideId }, host) => write(host, [], fresh => {
+      if (!fresh.order.includes(slideId)) throw new ChangeConflict(`slide "${slideId}" no longer exists`);
+      return {
+        requests: [{ deleteObject: { objectId: slideId } }],
+        landed: after => !after.order.includes(slideId),
+      };
+    }),
+  },
+
+  moveSlides: {
+    kind: ARRANGE_SLIDES,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ slides, afterSlide }) => {
+      let names = slides.map(slideName).join(", ");
+      let where = afterSlide ? `to follow ${slideName(afterSlide)}` : "to the start of the presentation";
+      return {
+        title: sanitizeTitle(slides.length === 1 ? `Move ${names}` : `Move ${slides.length} slides`),
+        description: `Moves ${names} ${where}, keeping their order.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      };
+    },
+    apply: ({ slideIds: ids, after }, host) => write(host, [], fresh => {
+      let moved = movedOrder(fresh.order, ids, after);
+      let unchanged = moved.every((id, i) => fresh.order[i] === id);
+      let moving = new Set(ids);
+      return {
+        requests: unchanged ? [] : [{
+          updateSlidesPosition: {
+            // Google wants them in presentation order, and the index before the move.
+            slideObjectIds: fresh.order.filter(id => moving.has(id)),
+            insertionIndex: after === null ? 0 : fresh.order.indexOf(after) + 1,
+          },
+        }],
+        landed: later => movedOrder(later.order, ids, after).every((id, i) => later.order[i] === id),
+      };
+    }),
+  },
+
+  createSlide: {
+    kind: ARRANGE_SLIDES,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ layout, after, afterSlide }) => {
+      let where = after === undefined ? "at the end of the presentation"
+        : afterSlide ? `after ${slideName(afterSlide)}` : "at the start of the presentation";
+      return {
+        title: sanitizeTitle("Add a slide"),
+        description: `Adds a slide with the layout "${plainInline(layout, 60)}" ${where}.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      };
+    },
+    apply: (payload, host) => write(host, [], async fresh => {
+      let { newSlideId, layoutId, after, placeholders } = payload;
+      let { at } = newSlidePlace(fresh, payload);
+      // The layout may have lost a placeholder the change maps since it was queued.
+      requirePlaceholders(await host.api.getLayout(host.presentationId, layoutId), placeholders);
+      return {
+        requests: [{
+          createSlide: {
+            objectId: newSlideId,
+            // Without an index, Google adds the slide at the end.
+            ...(after === undefined ? {} : { insertionIndex: at }),
+            slideLayoutReference: { layoutId },
+            placeholderIdMappings: placeholders.map(({ objectId, type, index }) =>
+              ({ layoutPlaceholder: { type, index }, objectId })),
+          },
+        }],
+        landed: later => later.order.includes(newSlideId),
+      };
+    }),
+  },
+
+  skipSlides: {
+    kind: SKIP_SLIDES,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    claimBeforeApply: true,
+    describe: ({ skipped, slides }) => {
+      let names = slides.map(slideName).join(", ");
+      let verb = skipped ? "Skip" : "Stop skipping";
+      return {
+        title: sanitizeTitle(slides.length === 1 ? `${verb} ${names}` : `${verb} ${slides.length} slides`),
+        description: skipped
+          ? `Skips ${names}, leaving ${slides.length === 1 ? "it" : "them"} out when presenting.`
+          : `Stops skipping ${names}, showing ${slides.length === 1 ? "it" : "them"} again when presenting.`,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      };
+    },
+    // Planned from the outline alone, which says which slides are skipped.
+    apply: ({ slideIds: ids, skipped }, host) => write(host, [], fresh => {
+      for (let id of ids) requireSlide(fresh.order, id);
+      return {
+        requests: ids.filter(id => fresh.skipped.has(id) !== skipped).map(objectId => ({
+          updateSlideProperties: { objectId, slideProperties: { isSkipped: skipped }, fields: "isSkipped" },
+        })),
+        landed: later => ids.every(id => later.order.includes(id) && later.skipped.has(id) === skipped),
+      };
+    }),
+  },
+};
+
+/** The Slides changes of a directly bound presentation. */
+export const SLIDES_ACTIONS = defineActions<SlidesHost, SlidesActions>(
+  SLIDES_DEFINITIONS, { fence: "none", vendorId: "google" });

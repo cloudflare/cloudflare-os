@@ -1,8 +1,7 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef, useId, type KeyboardEvent, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
-import { Checkbox, Dialog, DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
-import type { PortalContainer } from '@cloudflare/kumo'
-import { CaretDown, Check, Copy, Link, PencilSimple, ShieldCheck, ShieldWarning, Trash, UserPlus, X } from '@phosphor-icons/react'
+import { createPortal, flushSync } from 'react-dom'
+import { Checkbox, Dialog, DropdownMenu, Tooltip, useKumoToastManager } from '@cloudflare/kumo'
+import { CaretDown, CaretLeft, CaretRight, Check, Copy, Link, LockSimple, PencilSimple, ShieldWarning, Trash, UserPlus, UsersThree, X } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import {
   Overseer,
@@ -10,28 +9,44 @@ import {
   CollaboratorInfo,
   AffectedCollaborator,
   ShareLinkInfo,
-  GadgetMetadata,
+  WorkspaceMetadata,
   AiChatAuthorInfo,
-  CollaboratorRole,
+  CollaboratorGrant,
   ObserverBindingNeed,
-  UserDirectoryRecord,
+  PermissionEdge,
+  WorkpieceId,
 } from '@gadgets/workshop-shared/api'
 import { WorkshopButton, WorkshopIconButton } from './components/WorkshopControls'
 import { PersonAvatar } from './components/PersonAvatar'
+import { ComposerChip } from './components/ComposerChip'
 import { copyToClipboard } from './clipboard'
 import { isImeComposing } from './keyboardEvent'
 import { useServerConfig } from './ServerConfigContext'
+import { useUserDirectorySearch } from './features/user-directory/useUserDirectorySearch'
+import { GatekeeperIcon } from './components/GatekeeperIcon'
+import { useVendorBranding, type VendorBranding } from './useVendorBranding'
 
-type CollaboratorRow =
-  | { kind: 'owner'; profile: AiChatAuthorInfo }
-  | { kind: 'collaborator'; info: CollaboratorInfo }
+/**
+ * What a share dialog hands out: the workspace, whose members edit every gadget and use chat
+ * ("build"), or one gadget's deployed UI.
+ */
+export type ShareTarget =
+  | { kind: 'workspace' }
+  | { kind: 'gadget'; gadgetId: WorkpieceId; title: string }
 
-type DirectorySearch = {
-  status: 'loading' | 'failed' | 'ready'
-  query: string
-  results: UserDirectoryRecord[]
+function grantFor(gadgetId: WorkpieceId | undefined): CollaboratorGrant {
+  return gadgetId === undefined ? 'workspace' : { gadgetId }
 }
-const NO_DIRECTORY_SEARCH: DirectorySearch = { status: 'ready', query: '', results: [] }
+
+// Where a recipient lands: the workspace, opened on the shared gadget if there is one. A share
+// link carries its key in the fragment, which browsers never send to a server.
+function destinationUrl(workspaceId: string, gadgetId: WorkpieceId | undefined, key?: string): string {
+  const url = new URL(`/workspace/${workspaceId}`, window.location.origin)
+  if (gadgetId !== undefined) url.searchParams.set('w', String(gadgetId))
+  if (key !== undefined) url.hash = `share=${key}`
+  return url.href
+}
+
 // A person queued in the composer but not yet invited. `error` is set when their invite failed so
 // the chip stays for correction while everyone else's goes through.
 type StagedRecipient = { id: string; name: string; error?: string }
@@ -55,7 +70,8 @@ type Props = {
   open: boolean
   onClose: () => void
   overseer: RpcStub<Overseer>
-  metadata: GadgetMetadata
+  metadata: WorkspaceMetadata
+  target: ShareTarget
   currentUser: AiChatAuthorInfo | null
   authenticatedApi: RpcStub<AuthenticatedApi>
 }
@@ -73,93 +89,6 @@ function formatRelativeTime(date: Date): string {
   if (diffHours < 24) return `${diffHours}h ago`
   if (diffDays < 7) return `${diffDays}d ago`
   return date.toLocaleDateString()
-}
-
-const ROLE_LABELS: Record<CollaboratorRole, string> = {
-  build: 'Workspace',
-  use: 'Gadget only',
-}
-
-const ROLE_DESCRIPTIONS: Record<CollaboratorRole, string> = {
-  build: 'Edit gadgets, use chat, and manage access.',
-  use: 'Use gadgets without agent chat or editing.',
-}
-
-function roleLabel(role: CollaboratorRole | undefined): string {
-  return ROLE_LABELS[role ?? 'build']
-}
-
-const ROLE_OPTIONS: CollaboratorRole[] = ['build', 'use']
-
-function RoleMenu({
-  value,
-  onValueChange,
-  disabled,
-  ariaLabel,
-  container,
-}: {
-  value: CollaboratorRole
-  onValueChange: (role: CollaboratorRole) => void
-  disabled?: boolean
-  ariaLabel: string
-  container?: PortalContainer
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenu.Trigger
-        disabled={disabled}
-        render={
-          <button
-            type="button"
-            className="group inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg px-2 text-[12px] leading-4 font-medium text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-tint hover:text-kumo-default focus-visible:bg-kumo-tint focus-visible:text-kumo-default focus-visible:outline-none active:scale-[0.97] data-[popup-open]:bg-kumo-tint data-[popup-open]:text-kumo-default disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label={ariaLabel}
-          >
-            {roleLabel(value)}
-            <CaretDown size={11} weight="bold" className="text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180" />
-          </button>
-        }
-      />
-      <DropdownMenu.Content
-        container={container}
-        align="end"
-        sideOffset={6}
-        className="themed-floating-shadow-lg !z-[1100] !w-[300px] !min-w-0 rounded-2xl border border-kumo-line/70 bg-kumo-base p-1 !ring-kumo-line"
-      >
-        {ROLE_OPTIONS.map(role => (
-          <DropdownMenu.Item
-            key={role}
-            onClick={() => onValueChange(role)}
-            className="!h-auto cursor-pointer rounded-xl !px-2.5 !py-2 text-kumo-default transition-colors data-highlighted:bg-kumo-tint/70"
-          >
-            <span className="min-w-0 flex-1">
-              <span className="block text-[12px] leading-4 font-medium">{roleLabel(role)}</span>
-              <span className="mt-0.5 block text-[11px] leading-4 font-normal text-kumo-subtle">
-                {ROLE_DESCRIPTIONS[role]}
-              </span>
-            </span>
-            <span className="ml-2 flex h-4 w-4 shrink-0 items-center justify-center">
-              {value === role && <Check size={13} weight="bold" className="text-kumo-brand" />}
-            </span>
-          </DropdownMenu.Item>
-        ))}
-      </DropdownMenu.Content>
-    </DropdownMenu>
-  )
-}
-
-function RoleBadge({ role }: { role: CollaboratorRole | undefined }) {
-  const isBuild = (role ?? 'build') === 'build'
-  return (
-    <span
-      className={`shrink-0 rounded-full border px-2.5 py-[3px] text-[11px] leading-4 font-medium tracking-[-0.1px] ${
-        isBuild
-          ? 'border-kumo-line bg-kumo-tint/70 text-kumo-default'
-          : 'border-kumo-line/70 bg-kumo-base text-kumo-subtle'
-      }`}
-    >
-      {roleLabel(role)}
-    </span>
-  )
 }
 
 function InlineConfirm({
@@ -245,86 +174,100 @@ function DependentKeepList({
   )
 }
 
-// What a recipient is asked to do before the workspace will open for them. Recipients don't
-// inherit the owner's connections: they must point their own account at each connection in scope
-// for the selected access level, so sharers should know that cost before they invite anyone.
-function RecipientVerification({
-  requirements,
-  failed,
-  role,
-  headingId,
-  heading,
-}: {
-  requirements: ObserverBindingNeed[] | null
-  failed: boolean
-  role?: CollaboratorRole
-  headingId: string
-  heading: string
-}) {
-  let body: ReactNode
-  if (failed) {
-    body = (
-      <p className="px-1 text-[12px] leading-[16px] tracking-[-0.15px] text-kumo-subtle">
-        Couldn’t check which connections recipients will be asked to verify.
-      </p>
-    )
-  } else if (requirements === null || requirements.length === 0) {
-    // Still loading: stay silent rather than reserving space for an answer we don't have yet.
-    return null
-  } else {
-    body = (
-      <div className="rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 py-2.5">
-        <p className="text-[12px] leading-[16px] tracking-[-0.15px] text-kumo-subtle">
-          {role ? (
-            <>People with <span className="font-medium text-kumo-default">{roleLabel(role)}</span> access must</>
-          ) : 'Recipients must'} prove their own account can reach:
-        </p>
-        <ul className="mt-1.5 max-h-32 space-y-1 overflow-y-auto">
-          {requirements.map(requirement => (
-            <li key={requirement.gatekeeperId} className="min-w-0">
-              <p className="truncate text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-default">
-                {requirement.resourceTitle}
-              </p>
-              {requirement.resourceUrl && (
-                <p className="truncate font-mono text-[11px] leading-4 text-kumo-inactive">
-                  {requirement.resourceUrl}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      </div>
-    )
-  }
+// The trigger of a row's access menu, in the text style of the plain role labels beside it.
+const ACCESS_MENU_TRIGGER = 'inline-flex h-8 shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 text-[13px] text-kumo-default transition-colors hover:bg-kumo-tint disabled:cursor-not-allowed disabled:opacity-50 data-[popup-open]:bg-kumo-tint'
+const ACCESS_LABEL = 'shrink-0 px-2 text-[13px] text-kumo-default'
+const ROW_ICON = 'grid h-8 w-8 shrink-0 place-items-center rounded-full bg-kumo-tint text-kumo-subtle'
 
+// One row of the people list: someone, or something, with access, and what they hold.
+function AccessRow({
+  avatar,
+  title,
+  detail,
+  trailing,
+  highlighted = false,
+  children,
+}: {
+  avatar: ReactNode
+  title: ReactNode
+  detail?: string
+  trailing: ReactNode
+  highlighted?: boolean
+  children?: ReactNode
+}) {
   return (
-    <section aria-labelledby={headingId} className="mt-4">
-      <div className="mb-2 flex items-center gap-1.5 px-1">
-        <ShieldCheck size={13} className="text-kumo-inactive" />
-        <h3 id={headingId} className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
-          {heading}
-        </h3>
+    <div className={`group rounded-xl px-2 py-2 ${highlighted ? 'share-row-land' : ''}`}>
+      <div className="flex items-center gap-3">
+        {avatar}
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] leading-5 tracking-[-0.25px] text-kumo-default">{title}</p>
+          {detail && (
+            <p className="truncate text-[12px] leading-4 tracking-[-0.15px] text-kumo-subtle">{detail}</p>
+          )}
+        </div>
+        {trailing}
       </div>
-      {body}
-    </section>
+      {children}
+    </div>
   )
 }
 
-function sameRequirements(
-  left: ObserverBindingNeed[],
-  right: ObserverBindingNeed[],
-): boolean {
-  return left.length === right.length &&
-    left.every((requirement, index) => requirement.gatekeeperId === right[index].gatekeeperId)
+function DottedDivider() {
+  return <hr className="mx-2 my-2 border-0 border-t border-dotted border-kumo-line" />
 }
 
-export default function ShareModal({ open, onClose, overseer, metadata, currentUser, authenticatedApi }: Props) {
+// What a recipient is asked to do before what they were given will open for them. Recipients
+// don't inherit the owner's connections: they must point their own account at each connection in
+// scope, so sharers should know that cost before they invite anyone.
+function ProtectedResourceList({
+  requirements,
+  failed,
+  vendorBranding,
+}: {
+  requirements: ObserverBindingNeed[]
+  failed: boolean
+  vendorBranding: Map<string, VendorBranding>
+}) {
+  if (failed) {
+    return (
+      <p className="text-[13px] leading-5 tracking-[-0.15px] text-kumo-subtle">
+        Couldn’t check which resources recipients will be asked to verify.
+      </p>
+    )
+  }
+  return (
+    <ul className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base p-2">
+      {requirements.map(requirement => (
+        <li key={requirement.gatekeeperId} className="flex min-w-0 items-center gap-3 rounded-xl px-2 py-2">
+          <GatekeeperIcon
+            vendorId={requirement.vendorId}
+            fallbackText={requirement.resourceTitle}
+            {...vendorBranding.get(requirement.vendorId)}
+            size={20}
+            className="h-10 w-10 rounded-xl"
+          />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default">
+              {requirement.resourceTitle}
+            </p>
+            {requirement.resourceUrl && (
+              <p className="truncate text-[12px] leading-4 tracking-[-0.15px] text-kumo-subtle">
+                {requirement.resourceUrl}
+              </p>
+            )}
+          </div>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+export default function ShareModal({ open, onClose, overseer, metadata, target, currentUser, authenticatedApi }: Props) {
   const toasts = useKumoToastManager()
   const [collaborators, setCollaborators] = useState<CollaboratorInfo[]>([])
   const [membershipStatus, setMembershipStatus] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [shareLinks, setShareLinks] = useState<ShareLinkInfo[]>([])
   const [addUsername, setAddUsername] = useState('')
-  const [directory, setDirectory] = useState<DirectorySearch>(NO_DIRECTORY_SEARCH)
   const [staged, setStaged] = useState<StagedRecipient[]>([])
   // Focus stays in the field when a chip is added or removed, so the change is announced here.
   const [composerNotice, setComposerNotice] = useState('')
@@ -340,29 +283,41 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const wasOpenRef = useRef(false)
   const userSearchEnabled = useServerConfig()?.userSearchEnabled ?? false
   const isOwner = !metadata.owner
+  const gadgetId = target.kind === 'gadget' ? target.gadgetId : undefined
   const containsRestrictedData = metadata.containsRestrictedData === true
   // The server refuses share links and non-owner invites once this is set; hide those controls.
   const ownerInvitesOnly = metadata.ownerInvitesOnly === true
   const canInvite = !ownerInvitesOnly || isOwner
   const canUseShareLinks = !ownerInvitesOnly
   const directoryQuery = addUsername.trim()
-  // Everyone already on the workspace: the caller, the owner (absent from listCollaborators()
-  // when the caller is a collaborator), and every collaborator -- plus everyone already staged.
+  // Everyone who already holds what this dialog grants -- the caller, the owner (absent from
+  // listCollaborators() when the caller is a collaborator), and collaborators with the workspace or
+  // with this gadget -- plus everyone already staged. Anyone else can still be given it, such as a
+  // gadget's recipient being invited to the whole workspace.
   const directoryExcludeIds = useMemo(() => [
     ...(currentUser ? [currentUser.id] : []),
     ...(metadata.owner ? [metadata.owner.id] : []),
-    ...collaborators.map(({ profile }) => profile.id),
+    ...collaborators
+      .filter(({ access }) => access.role === 'build' ||
+        (gadgetId !== undefined && access.gadgetIds.includes(gadgetId)))
+      .map(({ profile }) => profile.id),
     ...staged.map(recipient => recipient.id),
-  ], [collaborators, currentUser, metadata.owner, staged])
+  ], [collaborators, currentUser, gadgetId, metadata.owner, staged])
   const membershipSettled = open && wasOpenRef.current && membershipStatus !== 'loading'
   const membershipReady = membershipSettled && membershipStatus === 'ready'
   const directorySearching = userSearchEnabled && membershipReady && directoryQuery !== ''
-  const directoryCurrent = directory.query === directoryQuery
+  const searchDirectory = useCallback((query: string) =>
+    authenticatedApi.searchUsers(query, directoryExcludeIds), [authenticatedApi, directoryExcludeIds])
+  const directory = useUserDirectorySearch({
+    query: directoryQuery,
+    enabled: open && directorySearching,
+    search: searchDirectory,
+  })
   // Gated on canInvite too: a live metadata update can set ownerInvitesOnly while results are
   // open, unmounting the search field without blurring it, and the popover's scroll lock on the
   // dialog body must not outlive the field.
-  const directoryOpen = canInvite && directorySearching && directoryCurrent && !directoryDismissed
-  const directorySettled = directory.status !== 'loading' && directoryCurrent
+  const directoryOpen = canInvite && directorySearching && directory.current && !directoryDismissed
+  const directorySettled = directory.settled
   const showDirectDirectoryOption = directory.status === 'ready' && directory.results.length > 0
   const directoryOptionCount = directory.results.length + (showDirectDirectoryOption ? 1 : 0)
   const activeDirectoryOptionId = directoryOpen && activeDirectoryIndex < directoryOptionCount
@@ -386,29 +341,43 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Nothing is sent while the field holds text that cannot be staged yet (its search is still
   // pending), so the button waits too: Enter already does, and a click would silently drop the name.
   const canSubmitInvite = inviteCount > 0 && (directoryQuery === '' || typedRecipient !== null)
-  const [addRole, setAddRole] = useState<CollaboratorRole>('use')
   const [adding, setAdding] = useState(false)
-  const [newLinkRole, setNewLinkRole] = useState<CollaboratorRole>('use')
   const [newLinkNote, setNewLinkNote] = useState('')
-  const [newShareLink, setNewShareLink] = useState<string | null>(null)
-  const [newShareLinkId, setNewShareLinkId] = useState<string | null>(null)
-  const [newShareLinkCopied, setNewShareLinkCopied] = useState(false)
-  const [invitedNames, setInvitedNames] = useState<string[]>([])
-  const [invitedLinkCopied, setInvitedLinkCopied] = useState(false)
-  const [requirements, setRequirements] =
-    useState<Record<CollaboratorRole, ObserverBindingNeed[]> | null>(null)
+  const [requirements, setRequirements] = useState<ObserverBindingNeed[] | null>(null)
   const [requirementsFailed, setRequirementsFailed] = useState(false)
+  // A page of the dialog that stands in for the sharing view until its back button.
+  const [subpage, setSubpage] = useState<'resources' | 'advanced' | null>(null)
+  const vendorBranding = useVendorBranding(authenticatedApi)
   const [creatingLink, setCreatingLink] = useState(false)
+  const [creatingDefaultLink, setCreatingDefaultLink] = useState(false)
   const [showLinkComposer, setShowLinkComposer] = useState(false)
   const [confirmationTarget, setConfirmationTarget] = useState<ConfirmationTarget | null>(null)
   const [confirmationBusy, setConfirmationBusy] = useState(false)
   const creatingLinkRef = useRef(false)
   const addingRef = useRef(false)
   const landedTimerRef = useRef<number | null>(null)
-  const [menuContainer, setMenuContainer] = useState<HTMLDivElement | null>(null)
   const [directoryPortalContainer, setDirectoryPortalContainer] =
     useState<HTMLDivElement | null>(null)
+  // Menus portal here, inside the dialog: Kumo's own body portal paints beneath the dialog, and a
+  // host elsewhere on the body is hidden from assistive technology while the dialog is modal.
+  const [menuPortalContainer, setMenuPortalContainer] = useState<HTMLDivElement | null>(null)
+  const [gadgetTooltip, setGadgetTooltip] = useState<{ linkId: string; pinned: boolean } | null>(null)
+  const gadgetTooltipId = useId()
   const [scrolled, setScrolled] = useState(false)
+  // A page replaces the view holding the button that opened it, and leaving it unmounts Back, so
+  // focus is handed across explicitly rather than left to fall back to the dialog.
+  const backButtonRef = useRef<HTMLButtonElement>(null)
+  const advancedButtonRef = useRef<HTMLButtonElement>(null)
+  const resourcesButtonRef = useRef<HTMLButtonElement>(null)
+  const openSubpage = (page: 'resources' | 'advanced') => {
+    flushSync(() => setSubpage(page))
+    backButtonRef.current?.focus()
+  }
+  const closeSubpage = () => {
+    const opener = subpage === 'resources' ? resourcesButtonRef : advancedButtonRef
+    flushSync(() => setSubpage(null))
+    opener.current?.focus()
+  }
   const [landedPersonIds, setLandedPersonIds] = useState<ReadonlySet<string>>(NO_IDS)
   const [landedShareLinkId, setLandedShareLinkId] = useState<string | null>(null)
   const [editingShareLinkId, setEditingShareLinkId] = useState<string | null>(null)
@@ -428,10 +397,10 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   // Focus the link-name field when the composer opens, without scrolling the sticky region
   // (autoFocus would jump the scroll position and shift layout).
   useEffect(() => {
-    if (showLinkComposer && !newShareLink) {
+    if (showLinkComposer) {
       linkNameRef.current?.focus({ preventScroll: true })
     }
-  }, [showLinkComposer, newShareLink])
+  }, [showLinkComposer])
 
   useEffect(() => {
     if (editingShareLinkId) {
@@ -448,30 +417,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [])
 
   useEffect(() => {
-    if (!open || !directorySearching) {
-      setDirectory(NO_DIRECTORY_SEARCH)
-      return
-    }
-    let cancelled = false
-    setDirectory({ status: 'loading', query: directoryQuery, results: [] })
-    setActiveDirectoryIndex(0)
-    // Debounced: every keystroke from every user would otherwise hit the one directory DO.
-    const timer = window.setTimeout(() => {
-      authenticatedApi.searchUsers(directoryQuery, directoryExcludeIds).then(
-        results => {
-          if (!cancelled) setDirectory({ status: 'ready', query: directoryQuery, results })
-        },
-        error => {
-          if (cancelled) return
-          console.error('Failed to search user directory:', error)
-          setDirectory({ status: 'failed', query: directoryQuery, results: [] })
-        })
-    }, 200)
-    return () => {
-      cancelled = true
-      window.clearTimeout(timer)
-    }
-  }, [authenticatedApi, directoryExcludeIds, directorySearching, directoryQuery, open])
+    if (open && directorySearching) setActiveDirectoryIndex(0)
+  }, [directorySearching, directoryQuery, open, searchDirectory])
 
   // Keep the listbox inside the dialog's accessibility tree, but outside its scrolling body so
   // opening results cannot make the dialog itself scroll. The anchor grows and shrinks as chips
@@ -527,18 +474,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }, [activeDirectoryIndex, directoryOpen, directory.results])
 
-  useEffect(() => {
-    const element = document.createElement('div')
-    element.style.position = 'relative'
-    element.style.zIndex = '1100'
-    document.body.appendChild(element)
-    setMenuContainer(element)
-    return () => {
-      setMenuContainer(null)
-      element.remove()
-    }
-  }, [])
-
   const loadData = useCallback(async () => {
     try {
       const [collabs, keys] = await Promise.all([
@@ -567,12 +502,9 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     const refresh = () => {
       const thisRequest = ++requestId
       setRequirementsFailed(false)
-      Promise.all([
-        overseer.listObserverRequirements('use'),
-        overseer.listObserverRequirements('build'),
-      ])
-        .then(([use, build]) => {
-          if (!cancelled && thisRequest === requestId) setRequirements({ use, build })
+      overseer.listObserverRequirements(grantFor(gadgetId))
+        .then(next => {
+          if (!cancelled && thisRequest === requestId) setRequirements(next)
         })
         .catch(err => {
           console.error('Failed to load observer requirements:', err)
@@ -585,7 +517,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       cancelled = true
       window.removeEventListener('focus', refresh)
     }
-  }, [open, overseer])
+  }, [open, overseer, gadgetId])
 
   useEffect(() => {
     if (open) {
@@ -594,22 +526,19 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       if (!wasOpenRef.current) {
         setAddUsername('')
         setComposerNotice('')
-        setNewShareLink(null)
         // A fresh open starts the composer over, except for people whose invite is still in flight
         // or has failed: their chip is the only record of the outcome.
         const inFlight = addingRef.current
         setStaged(current => inFlight ? current : current.filter(recipient => recipient.error))
-        setNewShareLinkId(null)
-        setNewShareLinkCopied(false)
-        setInvitedNames([])
-        setInvitedLinkCopied(false)
         setNewLinkNote('')
         setShowLinkComposer(false)
+        setSubpage(null)
         setConfirmationTarget(null)
         setEditingShareLinkId(null)
         setEditingShareLinkNote('')
         setCopiedLinkId(null)
         setCopyingLinkId(null)
+        setGadgetTooltip(null)
         if (copiedTimerRef.current !== null) {
           window.clearTimeout(copiedTimerRef.current)
           copiedTimerRef.current = null
@@ -623,105 +552,106 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   }, [open, loadData])
 
   const ownerProfile: AiChatAuthorInfo | null = isOwner ? currentUser : (metadata.owner ?? null)
-  const collaboratorRows: CollaboratorRow[] = [
-    ...(ownerProfile ? [{ kind: 'owner' as const, profile: ownerProfile }] : []),
-    ...collaborators.map(info => ({ kind: 'collaborator' as const, info })),
-  ]
+  // The workspace dialog lists the workspace's members. A gadget's lists the people given that
+  // gadget, since every member holds it anyway: the gadget dialog sums them up in one row. The
+  // workspace dialog gives the viewer their own row.
+  const members = collaborators.filter(({ profile, access }) => profile.id !== currentUser?.id &&
+    (gadgetId === undefined
+      ? access.role === 'build'
+      : access.role === 'use' && access.gadgetIds.includes(gadgetId)))
+  // Anyone besides the viewer who can open what the plain (secret-free) URL leads to.
+  const othersHaveAccess = !isOwner || collaborators.some(({ profile, access }) =>
+    profile.id !== currentUser?.id &&
+    (access.role === 'build' || (gadgetId !== undefined && access.gadgetIds.includes(gadgetId))))
   const sortedShareLinks = useMemo(
     () => [...shareLinks].toSorted((a, b) => b.created.getTime() - a.created.getTime()),
     [shareLinks],
   )
-  let recipientVerification: ReactNode = null
-  if (!canInvite) {
-    // Nothing this user can do here admits a recipient, so there is nothing to verify.
-  } else if (requirementsFailed) {
-    recipientVerification = (
-      <RecipientVerification
-        requirements={null}
-        failed
-        headingId="recipient-verification-heading"
-        heading="Recipient verification"
-      />
-    )
-  } else if (requirements !== null) {
-    const inviteRequirements = requirements[addRole]
-    if (!canUseShareLinks || (!showLinkComposer && !newShareLink)) {
-      recipientVerification = (
-        <RecipientVerification
-          requirements={inviteRequirements}
-          failed={false}
-          role={addRole}
-          headingId="recipient-verification-heading"
-          heading="Recipient verification"
-        />
-      )
-    } else {
-      const linkRequirements = requirements[newLinkRole]
-      if (sameRequirements(inviteRequirements, linkRequirements)) {
-        recipientVerification = (
-          <RecipientVerification
-            requirements={inviteRequirements}
-            failed={false}
-            role={addRole === newLinkRole ? addRole : undefined}
-            headingId="recipient-verification-heading"
-            heading="Recipient verification"
-          />
-        )
-      } else {
-        recipientVerification = (
-          <>
-            <RecipientVerification
-              requirements={inviteRequirements}
-              failed={false}
-              role={addRole}
-              headingId="invite-verification-heading"
-              heading="Direct invite verification"
-            />
-            <RecipientVerification
-              requirements={linkRequirements}
-              failed={false}
-              role={newLinkRole}
-              headingId="link-verification-heading"
-              heading="Share-link verification"
-            />
-          </>
-        )
-      }
-    }
-  }
+  // Links to one gadget name it; a link naming none grants the workspace, or the several gadgets
+  // it lists, which stay with the workspace since no one gadget's dialog owns them.
+  const visibleShareLinks = sortedShareLinks.filter(link => link.gadgetId === gadgetId)
+  // The viewer's own default link gets the "Anyone with your link" control; every other link,
+  // including other people's defaults, is managed on the dialog's Advanced page. Once share links
+  // are disabled (`ownerInvitesOnly`) no link grants anything, so the control would misstate the
+  // link's effect: it goes, and a leftover default link is listed with the others to be revoked.
+  const myDefaultLink = canUseShareLinks
+    ? visibleShareLinks.find(link => link.default && link.createdBy.id === currentUser?.id)
+    : undefined
+  // Only the owner and a link's creator can copy, rename or revoke it, so anyone else's links
+  // aren't listed to a collaborator; they still explain how people joined.
+  const advancedShareLinks = visibleShareLinks.filter(link => link !== myDefaultLink &&
+    (isOwner || link.createdBy.id === currentUser?.id))
+  const linkAccessLabel = gadgetId === undefined ? 'Can join' : 'Can use'
+  // Someone who can't invite has no recipient to verify. While loading, show nothing rather than
+  // reserve space for an answer we don't have yet.
+  const showResourcesPill = canInvite && (requirementsFailed || (requirements?.length ?? 0) > 0)
+  const showAdvancedButton = canUseShareLinks || advancedShareLinks.length > 0
+  const shownSubpage = subpage === 'resources' && showResourcesPill ? 'resources'
+    : subpage === 'advanced' && showAdvancedButton ? 'advanced'
+    : null
   const removeTarget = confirmationTarget?.kind === 'remove' ? confirmationTarget : null
   const revokeTarget = confirmationTarget?.kind === 'revoke' ? confirmationTarget : null
+  const defaultLinkRevoke = myDefaultLink && revokeTarget?.linkId === myDefaultLink.linkId
+    ? revokeTarget : null
 
-  const describeAccess = (info: CollaboratorInfo): string => {
-    if (info.addedBy.length > 1) return `Access from ${info.addedBy.length} sources`
-    const edge = info.addedBy[0]
-    if (!edge) return 'Collaborator'
-    if (edge.type === 'user') return `Added directly by ${edge.sharer}`
-    const key = shareLinks.find(item => item.linkId === edge.keyId)
-    return key?.note ? `Joined through “${key.note}”` : 'Joined through a share link'
+  // The edges granting what this dialog grants, ignoring someone's grants of anything else.
+  const scopedEdges = (info: CollaboratorInfo): PermissionEdge[] => info.addedBy.filter(edge =>
+    ((edge.role ?? 'build') === 'build' ? 'workspace' : edge.gadgetId) === (gadgetId ?? 'workspace'))
+
+  // The server lets a non-owner remove only the access they granted directly; see removeCollaborator.
+  const canRemove = (info: CollaboratorInfo): boolean => isOwner || scopedEdges(info).some(edge =>
+    edge.type === 'user' && edge.sharer === currentUser?.id)
+  const removableMembers = members.filter(canRemove)
+  const otherMembers = members.filter(info => !canRemove(info))
+
+  const sharerName = (profileId: string): string => {
+    if (profileId === currentUser?.id) return 'you'
+    if (ownerProfile && profileId === ownerProfile.id) return ownerProfile.name
+    return collaborators.find(({ profile }) => profile.id === profileId)?.profile.name ?? profileId
   }
 
-  const copyNewLink = async () => {
-    if (!newShareLink) return
-    const copied = await copyToClipboard(newShareLink)
-    if (copied) {
-      setNewShareLinkCopied(true)
-    } else {
-      toasts.add({ title: 'Could not copy share link.', variant: 'error' })
-    }
+  // Whether `sourceId` (a sharer, or a link's creator) still confers what they granted. Revocation
+  // is lazy (see the backend's sharing.ts): the graph keeps an edge from someone who has since lost
+  // access, so it comes back if they do, but until then it grants nothing. A grant counts only
+  // while its source is the owner or holds "build".
+  const sourceConfers = (sourceId: string): boolean => sourceId === ownerProfile?.id ||
+    collaborators.some(({ profile, access }) => profile.id === sourceId && access.role === 'build')
+
+  // Why someone is here, from the edges that still grant what this dialog grants; undefined if
+  // none do. A revoked link is absent from `shareLinks`, and once the workspace is
+  // owner-invites-only only the owner's direct grants count.
+  const describeAccess = (info: CollaboratorInfo): string | undefined => {
+    const reasons = scopedEdges(info).flatMap(edge => {
+      if (edge.type === 'user') {
+        if (ownerInvitesOnly ? edge.sharer !== ownerProfile?.id : !sourceConfers(edge.sharer)) return []
+        return [`Invited by ${sharerName(edge.sharer)}`]
+      }
+      const creator = shareLinks.find(item => item.linkId === edge.keyId)?.createdBy
+      if (!creator || ownerInvitesOnly || !sourceConfers(creator.id)) return []
+      return [creator.id === currentUser?.id ? 'Joined with your link' : `Joined with ${creator.name}’s link`]
+    })
+    return reasons.length > 0 ? [...new Set(reasons)].join(' · ') : undefined
   }
+  // The viewer's own row says how they got in, as everyone else's does.
+  const viewerRecord = collaborators.find(({ profile }) => profile.id === currentUser?.id)
+  const viewerAccessDetail = viewerRecord && describeAccess(viewerRecord)
 
-  // Where an invited collaborator opens the workspace. Adding them already granted access, so this
-  // carries no secret and is safe to show and re-show — unlike a share link, whose URL embeds a key.
-  const workspaceUrl = `${window.location.origin}/workspace/${metadata.id}`
+  // Where someone who already has access opens what this dialog grants. Access was granted
+  // already, so this carries no secret and is safe to show and re-show — unlike a share link's URL.
+  const accessUrl = destinationUrl(metadata.id, gadgetId)
 
-  const copyWorkspaceUrl = async () => {
-    if (await copyToClipboard(workspaceUrl)) {
-      setInvitedLinkCopied(true)
+  // The footer's link: the viewer's own link while it's on, else the plain URL, which opens only
+  // for people who already have access.
+  const copyDialogLink = async () => {
+    if (myDefaultLink && canUseShareLinks) {
+      await handleCopyShareLink(myDefaultLink)
+    } else if (await copyToClipboard(accessUrl)) {
+      toasts.add({ title: 'Link copied to clipboard.', variant: 'success' })
     } else {
       toasts.add({ title: 'Could not copy the workspace link.', variant: 'error' })
     }
   }
+  const footerCopiesMyLink = myDefaultLink !== undefined && canUseShareLinks
 
   const showLandedRow = (kind: 'person' | 'shareLink', ids: string[]) => {
     if (landedTimerRef.current !== null) window.clearTimeout(landedTimerRef.current)
@@ -801,7 +731,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     setAdding(true)
     try {
       const settled = await Promise.allSettled(
-        recipients.map(recipient => overseer.addCollaborator(recipient.id, addRole, undefined)))
+        recipients.map(recipient => overseer.addCollaborator(recipient.id, grantFor(gadgetId), undefined)))
       const added: AiChatAuthorInfo[] = []
       const failed: StagedRecipient[] = []
       settled.forEach((outcome, index) => {
@@ -829,8 +759,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       }))
       if (added.length > 0) {
         const names = added.map(profile => profile.name)
-        setInvitedNames(names)
-        setInvitedLinkCopied(false)
         await loadData()
         showLandedRow('person', added.map(profile => profile.id))
         toasts.add({
@@ -850,12 +778,11 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     setCreatingLink(true)
     try {
       const { key, linkId } = await overseer.createShareLink(
-        newLinkRole, newLinkNote.trim() || undefined)
-      const url = `${window.location.origin}/workspace/${metadata.id}#share=${key}`
-      setNewShareLink(url)
-      setNewShareLinkCopied(false)
+        grantFor(gadgetId), newLinkNote.trim() || undefined)
+      const url = destinationUrl(metadata.id, gadgetId, key)
       setNewLinkNote('')
-      setNewShareLinkId(linkId)
+      setShowLinkComposer(false)
+      // The new row's Copy reuses the key minted here, so its first copy needs no round trip.
       copiedUrlsRef.current.set(linkId, url)
       await loadData()
       showLandedRow('shareLink', [linkId])
@@ -868,9 +795,29 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }
 
+  // Turning "Anyone with your link" on. Turning it off is a revocation, confirmed in place.
+  const handleEnableDefaultLink = async () => {
+    setCreatingDefaultLink(true)
+    try {
+      const { key, linkId } = await overseer.createShareLink(
+        grantFor(gadgetId), undefined, { default: true })
+      // Kept so the first Copy needs no round trip and lands within the click's user activation.
+      copiedUrlsRef.current.set(linkId, destinationUrl(metadata.id, gadgetId, key))
+      await loadData()
+    } catch (err: unknown) {
+      toasts.add({
+        title: err instanceof Error && err.message ? err.message : 'Failed to turn on link sharing.',
+        variant: 'error',
+      })
+    } finally {
+      setCreatingDefaultLink(false)
+    }
+  }
+
   // Copy a share link again. Secrets are never stored, so the previously-shown URL can't be
   // re-displayed. We mint a new secret for the same logical link and copy that.
-  const handleCopyShareLink = async (linkId: string) => {
+  const handleCopyShareLink = async (link: ShareLinkInfo) => {
+    const { linkId } = link
     if (copyingLinkRef.current) return
     copyingLinkRef.current = true
     setCopyingLinkId(linkId)
@@ -879,7 +826,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
       let url = copiedUrlsRef.current.get(linkId)
       if (!url) {
         const { key } = await overseer.newShareLinkKey(linkId)
-        url = `${window.location.origin}/workspace/${metadata.id}#share=${key}`
+        url = destinationUrl(metadata.id, link.gadgetId, key)
         copiedUrlsRef.current.set(linkId, url)
       }
       const copied = await copyToClipboard(url)
@@ -906,7 +853,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
   const handleStartRemoveCollaborator = async (profileId: string) => {
     setConfirmationTarget({ kind: 'remove', profileId, dependents: [], previewing: true, keepSet: new Set() })
     try {
-      const dependents = await overseer.previewRemoveCollaborator(profileId)
+      const dependents = await overseer.previewRemoveCollaborator(profileId, gadgetId)
       setConfirmationTarget(current => current?.kind === 'remove' && current.profileId === profileId
         ? { ...current, dependents, previewing: false }
         : current)
@@ -920,11 +867,12 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     if (!removeTarget || removeTarget.previewing || confirmationBusy) return
     setConfirmationBusy(true)
     try {
-      const removed = await overseer.removeCollaborator(removeTarget.profileId, [...removeTarget.keepSet])
+      const removed = await overseer.removeCollaborator(
+        removeTarget.profileId, [...removeTarget.keepSet], gadgetId)
       setConfirmationTarget(null)
       toasts.add({
         title: removed.length > 0
-          ? 'Collaborator removed.'
+          ? (gadgetId === undefined ? 'Collaborator removed.' : 'Removed their access to this gadget.')
           : 'Your direct grant was removed. This collaborator still has access through another source.',
         variant: 'success',
       })
@@ -992,12 +940,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     try {
       await overseer.revokeShareLink(revokeTarget.linkId, [...revokeTarget.keepSet])
       setConfirmationTarget(null)
-      if (revokeTarget.linkId === newShareLinkId) {
-        setNewShareLink(null)
-        setNewShareLinkId(null)
-        setNewShareLinkCopied(false)
-        setShowLinkComposer(false)
-      }
       toasts.add({ title: 'Share link revoked.', variant: 'success' })
       await loadData()
     } catch (err: any) {
@@ -1007,6 +949,79 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
     }
   }
 
+  // One collaborator's row: who they are, why they're here, and, where the viewer may remove them,
+  // the removal flow with its choice of dependents to keep.
+  const renderCollaborator = (info: CollaboratorInfo) => {
+    const { profile } = info
+    const removing = removeTarget?.profileId === profile.id ? removeTarget : null
+    const downstreamDependents = removing
+      ? removing.dependents.filter(dep => dep.profile.id !== profile.id)
+      : []
+    // A gadget dialog lists only the people given that gadget, who use it rather than belong.
+    const accessLabel = gadgetId === undefined ? 'Member' : 'Can use'
+    let trailing: ReactNode = <span className={ACCESS_LABEL}>{accessLabel}</span>
+    if (removing) {
+      trailing = (
+        <InlineConfirm
+          label="Remove"
+          busy={removing.previewing || confirmationBusy}
+          busyLabel={removing.previewing ? 'Checking…' : undefined}
+          onConfirm={handleConfirmRemoveCollaborator}
+          onCancel={() => setConfirmationTarget(null)}
+        />
+      )
+    } else if (canRemove(info)) {
+      trailing = (
+        <DropdownMenu>
+          <DropdownMenu.Trigger
+            render={(
+              <button type="button" aria-label={`${profile.name}: ${accessLabel}`} className={ACCESS_MENU_TRIGGER} disabled={confirmationBusy}>
+                {accessLabel} <CaretDown size={13} />
+              </button>
+            )}
+          />
+          <DropdownMenu.Content container={menuPortalContainer} align="end">
+            <DropdownMenu.Item
+              variant="danger"
+              icon={<Trash size={14} />}
+              aria-label={`Remove ${profile.name}`}
+              onClick={() => handleStartRemoveCollaborator(profile.id)}
+            >
+              Remove
+            </DropdownMenu.Item>
+          </DropdownMenu.Content>
+        </DropdownMenu>
+      )
+    }
+    return (
+      <AccessRow
+        key={profile.id}
+        avatar={<PersonAvatar api={authenticatedApi} userId={profile.id} name={profile.name} size={32} />}
+        title={profile.name}
+        detail={describeAccess(info) ?? 'Member'}
+        trailing={trailing}
+        highlighted={landedPersonIds.has(profile.id)}
+      >
+        {removing && downstreamDependents.length > 0 && (
+          <div className="mt-2.5 share-expand-in">
+            <p className="mb-1.5 text-[12px] leading-4 text-kumo-subtle">
+              {downstreamDependents.length} other {downstreamDependents.length === 1 ? 'person loses' : 'people lose'} access through {profile.name}. Keep anyone?
+            </p>
+            <DependentKeepList
+              dependents={downstreamDependents}
+              keepSet={removing.keepSet}
+              onKeepSetChange={(keepSet) => setConfirmationTarget(current =>
+                current?.kind === 'remove' && current.profileId === profile.id
+                  ? { ...current, keepSet }
+                  : current
+              )}
+            />
+          </div>
+        )}
+      </AccessRow>
+    )
+  }
+
   return (
     <Dialog.Root open={open} onOpenChange={(o) => { if (!o) onClose() }}>
       <Dialog
@@ -1014,16 +1029,35 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
         size="lg"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 overflow-hidden px-4 pb-4 pt-5 sm:px-6 sm:pt-6">
-          <div className="min-w-0">
-            <Dialog.Title className="truncate text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
-              Share “{metadata.title}”
+          {shownSubpage ? (
+            <div className="flex min-w-0 items-center gap-1.5">
+              <WorkshopIconButton ref={backButtonRef} aria-label="Back to sharing" onClick={closeSubpage}>
+                <CaretLeft size={16} />
+              </WorkshopIconButton>
+              <Dialog.Title className="truncate text-[18px] leading-6 font-medium tracking-[-0.4px] text-kumo-default">
+                {shownSubpage === 'resources' ? 'Protected resources' : 'Advanced'}
+              </Dialog.Title>
+              <Dialog.Description className="sr-only">
+                {shownSubpage === 'resources'
+                  ? 'What recipients must verify before they can open what you share.'
+                  : 'Manage share links.'}
+              </Dialog.Description>
+            </div>
+          ) : (
+          <div className="min-w-0 pt-1">
+            <Dialog.Title className="truncate text-[17px] leading-6 font-medium tracking-[-0.3px] text-kumo-default">
+              {target.kind === 'gadget' ? 'Share' : 'Invite to'}{' '}
+              <span className="text-kumo-subtle">“{target.kind === 'gadget' ? target.title : metadata.title}”</span>
             </Dialog.Title>
-            <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-              {canUseShareLinks
-                ? 'Invite people or share a link.'
-                : canInvite ? 'Invite people.' : 'Manage access.'}
+            <Dialog.Description className="mt-1 text-[13px] leading-[18px] tracking-[-0.15px] text-kumo-subtle">
+              {target.kind === 'gadget'
+                ? 'People you add can use this gadget without seeing anything else in the workspace.'
+                : ownerInvitesOnly
+                  ? 'People you add can create chats and edit gadgets.'
+                  : 'People you add can create chats, edit gadgets, and invite other users.'}
             </Dialog.Description>
           </div>
+          )}
           <Dialog.Close
             render={(props) => (
               <WorkshopIconButton {...props} aria-label="Close">
@@ -1033,8 +1067,21 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           />
         </div>
 
+        {shownSubpage === 'resources' && (
+          <div className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6">
+            <p className="mb-4 text-[14px] leading-5 tracking-[-0.2px] text-kumo-subtle">
+              A recipient must have their own access to these resources before they can open
+              this {gadgetId === undefined ? 'workspace' : 'gadget'}.
+            </p>
+            <ProtectedResourceList
+              requirements={requirements ?? []}
+              failed={requirementsFailed}
+              vendorBranding={vendorBranding}
+            />
+          </div>
+        )}
         <div
-          className={`chat-panel min-h-0 flex-1 overscroll-contain px-4 pb-6 sm:px-6 ${directoryOpen ? 'overflow-hidden' : 'overflow-y-auto'}`}
+          className={`chat-panel min-h-0 flex-1 overscroll-contain px-4 pb-6 sm:px-6 ${shownSubpage ? 'hidden' : ''} ${directoryOpen ? 'overflow-hidden' : 'overflow-y-auto'}`}
           onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}
         >
           {(containsRestrictedData || ownerInvitesOnly) && (
@@ -1046,13 +1093,13 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
                   This workspace has read data from a connection that doesn’t allow share links, so
                   only the owner can add people. People the owner invites are asked to verify their
-                  own access to the connections it uses at their access level — some may be unable to
+                  own access to the connections it uses — some may be unable to
                   open it. Anything the workspace has already saved is visible to everyone who can.
                 </p>
               ) : (
                 <p className="text-[12px] leading-[18px] tracking-[-0.1px] text-kumo-default">
                   This workspace has read sensitive data. People you invite are asked to verify their
-                  own access to the connections it uses at their access level — some may be unable to
+                  own access to the connections it uses — some may be unable to
                   open it. Anything the workspace has already saved is visible to everyone who can.
                 </p>
               )}
@@ -1063,46 +1110,30 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           <div
             ref={directoryAnchorRef}
             data-testid="people-composer"
-            className="themed-compact-shadow grid min-h-12 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
+            className="grid min-h-12 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 rounded-2xl border border-kumo-line/80 bg-kumo-elevated p-1.5 pl-4 transition-[border-color,box-shadow] focus-within:border-kumo-fill sm:flex"
             data-keeper-ignore="true"
             data-1p-ignore="true"
             data-lpignore="true"
             data-bwignore="true"
           >
-            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
-              <UserPlus size={15} weight="duotone" />
-            </div>
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
               {staged.map(recipient => (
-                <span
+                <ComposerChip
                   key={recipient.id}
+                  label={recipient.name}
+                  detail={recipient.name !== recipient.id ? recipient.id : undefined}
                   title={recipient.error ?? (recipient.name !== recipient.id ? recipient.id : undefined)}
-                  className={`inline-flex max-w-full items-center gap-1 rounded-full border py-[3px] pl-2.5 pr-1 text-[11px] leading-4 font-medium tracking-[-0.1px] ${
-                    recipient.error
-                      ? 'border-kumo-danger bg-kumo-danger-tint/40 text-kumo-danger'
-                      : 'border-kumo-line bg-kumo-tint/70 text-kumo-default'
-                  }`}
-                >
-                  <span className="truncate">{recipient.name}</span>
-                  {recipient.name !== recipient.id && (
-                    <span className="truncate font-mono text-[10px] text-kumo-subtle">{recipient.id}</span>
-                  )}
-                  <button
-                    type="button"
-                    aria-label={`Remove ${recipientLabel(recipient)}`}
-                    onClick={() => removeStaged(recipient)}
-                    disabled={adding}
-                    className="grid h-4 w-4 shrink-0 cursor-pointer place-items-center rounded-full opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 disabled:cursor-not-allowed"
-                  >
-                    <X size={10} weight="bold" />
-                  </button>
-                </span>
+                  error={Boolean(recipient.error)}
+                  removeLabel={`Remove ${recipientLabel(recipient)}`}
+                  disabled={adding}
+                  onRemove={() => removeStaged(recipient)}
+                />
               ))}
               <input
                 ref={peopleInputRef}
                 type="search"
                 role={userSearchEnabled ? 'combobox' : undefined}
-                placeholder={userSearchEnabled ? 'Search by name or email' : 'Username or email'}
+                placeholder={userSearchEnabled ? 'Add emails or names…' : 'Username or email'}
                 aria-label={userSearchEnabled ? 'Search people' : 'Username or email'}
                 aria-autocomplete={userSearchEnabled ? 'list' : undefined}
                 aria-expanded={userSearchEnabled ? directoryOpen : undefined}
@@ -1129,15 +1160,8 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                 className="h-9 min-w-0 grow basis-32 appearance-none border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive disabled:cursor-not-allowed [&::-webkit-search-cancel-button]:hidden"
               />
             </div>
-            <RoleMenu
-              ariaLabel="Access to grant"
-              value={addRole}
-              onValueChange={setAddRole}
-              container={menuContainer}
-            />
             <WorkshopButton
-              tone="primary"
-              className="col-span-3 w-full !rounded-xl sm:col-span-1 sm:w-auto sm:min-w-[68px]"
+              className="col-span-2 w-full !h-9 !rounded-xl !bg-kumo-base shadow-xs sm:col-span-1 sm:w-auto sm:min-w-[68px]"
               onMouseDown={(event) => {
                 // Keep the visible result highlighted until the click handler chooses it.
                 if (directoryOpen) event.preventDefault()
@@ -1237,66 +1261,130 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
             </p>
           )}
 
-          {invitedNames.length > 0 && (
-            <div className="themed-compact-shadow mt-2 flex flex-wrap items-center gap-3 rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 py-2.5 share-fade-in">
-              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
-                {invitedLinkCopied ? <Check size={15} weight="bold" /> : <UserPlus size={15} weight="duotone" />}
-              </div>
-              <div className="min-w-[160px] flex-1">
-                <div className="flex items-baseline gap-1.5">
-                  <p className="text-[13px] leading-[18px] font-medium text-kumo-default">
-                    Added {NAME_LIST.format(invitedNames)}
-                  </p>
-                  <span className="text-[11px] leading-4 text-kumo-inactive">
-                    {invitedLinkCopied ? 'Link copied to your clipboard' : 'Send them this link to open it'}
-                  </span>
-                </div>
-                <p className="truncate font-mono text-[11px] leading-4 text-kumo-subtle">{workspaceUrl}</p>
-              </div>
-              <WorkshopButton tone="primary" onClick={copyWorkspaceUrl} className="gap-1.5 !rounded-xl">
-                {invitedLinkCopied ? <Check size={13} weight="bold" /> : <Copy size={13} />}
-                {invitedLinkCopied ? 'Copied' : 'Copy link'}
-              </WorkshopButton>
-              <WorkshopIconButton
-                aria-label="Dismiss added collaborator"
-                onClick={() => { setInvitedNames([]); setInvitedLinkCopied(false) }}
-              >
-                <X size={14} />
-              </WorkshopIconButton>
-            </div>
+          </div>
           )}
 
+          <section aria-labelledby="people-heading" className="mt-3">
+            <h3 id="people-heading" className="sr-only">People with access</h3>
+            {gadgetId !== undefined ? (
+              <AccessRow
+                avatar={<div className={ROW_ICON}><UsersThree size={15} /></div>}
+                title={<>Members of this workspace <span className="text-kumo-subtle">(You)</span></>}
+                trailing={<span className={ACCESS_LABEL}>Can edit</span>}
+              />
+            ) : currentUser && (
+              <AccessRow
+                avatar={<PersonAvatar api={authenticatedApi} userId={currentUser.id} name={currentUser.name} size={32} />}
+                title={<>{currentUser.name} <span className="text-kumo-subtle">(You)</span></>}
+                detail={isOwner ? 'Created this workspace' : viewerAccessDetail}
+                trailing={<span className={ACCESS_LABEL}>{isOwner ? 'Owner' : 'Member'}</span>}
+              />
+            )}
+            {currentUser && canUseShareLinks && (
+              <AccessRow
+                avatar={<div className={ROW_ICON}><Link size={15} /></div>}
+                title="Anyone with your link"
+                trailing={defaultLinkRevoke ? (
+                  <InlineConfirm
+                    label="Turn off"
+                    busy={defaultLinkRevoke.previewing || confirmationBusy}
+                    busyLabel={defaultLinkRevoke.previewing ? 'Checking…' : undefined}
+                    onConfirm={handleConfirmRevokeShareLink}
+                    onCancel={() => setConfirmationTarget(null)}
+                  />
+                ) : (
+                  <DropdownMenu>
+                    <DropdownMenu.Trigger
+                      render={(
+                        <button
+                          type="button"
+                          aria-label={`Anyone with your link: ${myDefaultLink ? linkAccessLabel : 'Requires invite'}`}
+                          className={ACCESS_MENU_TRIGGER}
+                          disabled={creatingDefaultLink || confirmationBusy}
+                        >
+                          {myDefaultLink ? linkAccessLabel : 'Requires invite'} <CaretDown size={13} />
+                        </button>
+                      )}
+                    />
+                    <DropdownMenu.Content container={menuPortalContainer} align="end">
+                      <DropdownMenu.RadioGroup
+                        value={myDefaultLink ? 'access' : 'none'}
+                        onValueChange={(value: 'access' | 'none') => {
+                          if (value === 'access' && !myDefaultLink) void handleEnableDefaultLink()
+                          if (value === 'none' && myDefaultLink) void handleStartRevokeShareLink(myDefaultLink.linkId)
+                        }}
+                      >
+                        <DropdownMenu.RadioItem value="access" closeOnClick>
+                          {linkAccessLabel}
+                          <DropdownMenu.RadioItemIndicator />
+                        </DropdownMenu.RadioItem>
+                        <DropdownMenu.RadioItem value="none" closeOnClick>
+                          Requires invite
+                          <DropdownMenu.RadioItemIndicator />
+                        </DropdownMenu.RadioItem>
+                      </DropdownMenu.RadioGroup>
+                    </DropdownMenu.Content>
+                  </DropdownMenu>
+                )}
+              >
+                {defaultLinkRevoke && defaultLinkRevoke.dependents.length > 0 && (
+                  <div className="mt-2.5 share-expand-in">
+                    <p className="mb-1.5 text-[12px] leading-4 text-kumo-subtle">
+                      {defaultLinkRevoke.dependents.length} {defaultLinkRevoke.dependents.length === 1 ? 'person loses' : 'people lose'} access through your link. Keep anyone?
+                    </p>
+                    <DependentKeepList
+                      dependents={defaultLinkRevoke.dependents}
+                      keepSet={defaultLinkRevoke.keepSet}
+                      onKeepSetChange={(keepSet) => setConfirmationTarget(current =>
+                        current?.kind === 'revoke' && current.linkId === defaultLinkRevoke.linkId
+                          ? { ...current, keepSet }
+                          : current
+                      )}
+                    />
+                  </div>
+                )}
+              </AccessRow>
+            )}
+            {/* In the link row's place, sized as it is (an AccessRow: 8px padding around a 32px
+                icon), so the list below doesn't shift when the restriction arrives mid-session. */}
+            {currentUser && !canUseShareLinks && (
+              <div role="note" aria-label="Share links are off" className="flex items-center gap-3 rounded-xl bg-kumo-warning-tint px-2 py-2">
+                <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-kumo-warning">
+                  <LockSimple size={15} weight="bold" />
+                </div>
+                <p className="min-w-0 flex-1 truncate text-[14px] leading-5 tracking-[-0.25px] text-kumo-default">
+                  Share links are off{' '}
+                  <span className="text-kumo-subtle">
+                    · {isOwner ? 'add each person directly' : 'only the owner can add people'}
+                  </span>
+                </p>
+              </div>
+            )}
+            {/* The gadget dialog lists only the people given the gadget, so it shows no owner. */}
+            {(removableMembers.length > 0 || otherMembers.length > 0 || (!isOwner && gadgetId === undefined)) && (
+              <DottedDivider />
+            )}
+            {removableMembers.map(renderCollaborator)}
+            {removableMembers.length > 0 && (otherMembers.length > 0 || (!isOwner && gadgetId === undefined)) && (
+              <DottedDivider />
+            )}
+            {!isOwner && gadgetId === undefined && ownerProfile && (
+              <AccessRow
+                avatar={<PersonAvatar api={authenticatedApi} userId={ownerProfile.id} name={ownerProfile.name} size={32} />}
+                title={ownerProfile.name}
+                detail="Created this workspace"
+                trailing={<span className={ACCESS_LABEL}>Owner</span>}
+              />
+            )}
+            {otherMembers.map(renderCollaborator)}
+          </section>
+        </div>
+
+        {shownSubpage === 'advanced' && (
+        <div className="chat-panel min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-6 sm:px-6">
           {canUseShareLinks && (
           <div className="mt-2">
-            {(showLinkComposer || newShareLink) ? (
-              newShareLink ? (
-                <div className="themed-compact-shadow flex flex-wrap items-center gap-3 rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 py-2.5 share-fade-in">
-                    <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
-                      {newShareLinkCopied ? <Check size={15} weight="bold" /> : <Link size={15} />}
-                    </div>
-                    <div className="min-w-[160px] flex-1">
-                      <div className="flex items-baseline gap-1.5">
-                        <p className="text-[13px] leading-[18px] font-medium text-kumo-default">
-                          {newShareLinkCopied ? 'Link copied' : 'Link ready'}
-                        </p>
-                        <span className="text-[11px] leading-4 text-kumo-inactive">
-                          You can copy it again anytime from Share links
-                        </span>
-                      </div>
-                      <p className="truncate font-mono text-[11px] leading-4 text-kumo-subtle">{newShareLink}</p>
-                    </div>
-                    <WorkshopButton tone="primary" onClick={copyNewLink} className="w-[78px] gap-1.5 !rounded-xl">
-                      {newShareLinkCopied ? <Check size={13} weight="bold" /> : <Copy size={13} />}
-                      {newShareLinkCopied ? 'Copied' : 'Copy'}
-                    </WorkshopButton>
-                    <WorkshopIconButton
-                      aria-label="Dismiss created link"
-                      onClick={() => { setNewShareLink(null); setNewShareLinkId(null); setNewShareLinkCopied(false); setShowLinkComposer(false) }}
-                    >
-                      <X size={14} />
-                    </WorkshopIconButton>
-                </div>
-              ) : (
+            {showLinkComposer ? (
                 <div className="themed-compact-shadow flex h-12 items-center gap-2 overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base p-1.5 pl-3 transition-[border-color,box-shadow] focus-within:border-kumo-fill share-fade-in">
                     <div className="grid h-8 w-8 shrink-0 place-items-center rounded-xl bg-kumo-tint text-kumo-subtle">
                       <Link size={15} />
@@ -1311,13 +1399,6 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       className="h-9 min-w-0 flex-1 border-0 bg-transparent p-0 text-[14px] leading-5 tracking-[-0.25px] text-kumo-default outline-none placeholder:text-kumo-inactive"
                       disabled={creatingLink}
                     />
-                    <RoleMenu
-                      ariaLabel="Access granted by link"
-                      value={newLinkRole}
-                      onValueChange={setNewLinkRole}
-                      disabled={creatingLink}
-                      container={menuContainer}
-                    />
                     <WorkshopButton tone="primary" className="shrink-0 !rounded-xl" onClick={handleCreateShareLink} disabled={creatingLink}>
                       {creatingLink ? 'Creating…' : 'Create link'}
                     </WorkshopButton>
@@ -1325,108 +1406,32 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                       <X size={14} />
                     </WorkshopIconButton>
                 </div>
-              )
             ) : (
               <button
                 type="button"
                 onClick={() => setShowLinkComposer(true)}
                 className="themed-compact-shadow flex h-12 w-full cursor-pointer items-center justify-center gap-1.5 rounded-2xl border border-kumo-line/80 bg-kumo-base px-3 text-[13px] font-medium text-kumo-subtle transition-[background-color,color,transform] duration-150 ease-out hover:bg-kumo-elevated/60 hover:text-kumo-default active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
               >
-                <Link size={14} /> Create a share link
+                <Link size={14} /> Create a custom share link
               </button>
             )}
           </div>
           )}
-          </div>
-          )}
-
-          {recipientVerification}
-
-          <section aria-labelledby="people-heading" className="mt-4">
-            <div className="mb-2 px-1">
-              <h3 id="people-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
-                People with access
-              </h3>
-            </div>
-            <div className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
-              {collaboratorRows.map((row, index) => {
-                const profile = row.kind === 'owner' ? row.profile : row.info.profile
-                const key = row.kind === 'owner' ? '__owner__' : row.info.profile.id
-                const isRemoving = row.kind === 'collaborator' && removeTarget?.profileId === row.info.profile.id
-                const downstreamDependents = isRemoving && removeTarget
-                  ? removeTarget.dependents.filter(dep => dep.profile.id !== profile.id)
-                  : []
-                return (
-                  <div key={key} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedPersonIds.has(profile.id) ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
-                    <div className="flex items-center gap-3">
-                      <PersonAvatar api={authenticatedApi} userId={profile.id} name={profile.name} size={32} />
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">
-                          {profile.name}{profile.id === currentUser?.id ? ' (you)' : ''}
-                        </p>
-                        <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">
-                          {row.kind === 'owner' ? profile.id : describeAccess(row.info)}
-                        </p>
-                      </div>
-                      {row.kind === 'owner' ? (
-                        <span className="px-2 text-[12px] text-kumo-subtle">Owner</span>
-                      ) : isRemoving ? (
-                        <InlineConfirm
-                          label="Remove"
-                          busy={removeTarget.previewing || confirmationBusy}
-                          busyLabel={removeTarget.previewing ? 'Checking…' : undefined}
-                          onConfirm={handleConfirmRemoveCollaborator}
-                          onCancel={() => setConfirmationTarget(null)}
-                        />
-                      ) : (
-                        <>
-                          <RoleBadge role={row.info.role} />
-                          <WorkshopIconButton
-                            danger
-                            className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                            onClick={() => handleStartRemoveCollaborator(row.info.profile.id)}
-                            aria-label={`Remove ${profile.name}`}
-                            disabled={confirmationBusy}
-                          >
-                            <Trash size={13} />
-                          </WorkshopIconButton>
-                        </>
-                      )}
-                    </div>
-                    {isRemoving && downstreamDependents.length > 0 && (
-                      <div className="mt-2.5 share-expand-in">
-                        <p className="mb-1.5 text-[12px] leading-4 text-kumo-subtle">
-                          {downstreamDependents.length} other {downstreamDependents.length === 1 ? 'person loses' : 'people lose'} access through {profile.name}. Keep anyone?
-                        </p>
-                        <DependentKeepList
-                          dependents={downstreamDependents}
-                          keepSet={removeTarget.keepSet}
-                          onKeepSetChange={(keepSet) => setConfirmationTarget(current =>
-                            current?.kind === 'remove' && current.profileId === removeTarget.profileId
-                              ? { ...current, keepSet }
-                              : current
-                          )}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </section>
-
-          {shareLinks.length > 0 && (
+          {advancedShareLinks.length > 0 && (
           <section aria-labelledby="links-heading" className="mt-4">
             <div className="mb-2 px-1">
               <h3 id="links-heading" className="text-[12px] leading-4 font-medium tracking-[-0.15px] text-kumo-subtle">
-                Share links
+                Custom share links
               </h3>
             </div>
 
               <div className="overflow-hidden rounded-2xl border border-kumo-line/80 bg-kumo-base">
-                {sortedShareLinks.map((sk, index) => {
+                {advancedShareLinks.map((sk, index) => {
                   const isRevoking = revokeTarget?.linkId === sk.linkId
                   const isRenaming = editingShareLinkId === sk.linkId
+                  // Default links are named for who made them, not by a note.
+                  const name = !sk.default ? sk.note
+                    : sk.createdBy.id === currentUser?.id ? 'Your link' : `${sk.createdBy.name}’s link`
                   return (
                     <div key={sk.linkId} className={`group ${index > 0 ? 'border-t border-kumo-line/70' : ''} ${landedShareLinkId === sk.linkId ? 'share-row-land' : 'transition-colors duration-150 hover:bg-kumo-elevated/50'} px-3 py-2.5`}>
                       <div className="flex items-center gap-3">
@@ -1450,7 +1455,7 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                               disabled={savingShareLinkNote}
                             />
                           ) : (
-                            <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">{sk.note || 'Untitled link'}</p>
+                            <p className="truncate text-[13px] leading-[17px] font-medium tracking-[-0.25px] text-kumo-default">{name || 'Untitled link'}</p>
                           )}
                           <p className="truncate text-[12px] leading-[15px] tracking-[-0.15px] text-kumo-subtle">Created by {sk.createdBy.name} · {formatRelativeTime(sk.created)}</p>
                         </div>
@@ -1472,30 +1477,64 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
                           />
                         ) : (
                           <>
-                            <RoleBadge role={sk.role} />
+                            {sk.gadgets && (
+                              <Tooltip
+                                open={open && gadgetTooltip?.linkId === sk.linkId}
+                                onOpenChange={(nextOpen, details) => {
+                                  // The button owns tap toggling; Kumo otherwise closes on pointerdown.
+                                  if (details.reason === 'trigger-press') return
+                                  setGadgetTooltip(current => {
+                                    // Hybrid devices synthesize mouseleave after a tap.
+                                    if (details.reason === 'trigger-hover' && current?.pinned) return current
+                                    if (nextOpen) return { linkId: sk.linkId, pinned: false }
+                                    return current?.linkId === sk.linkId ? null : current
+                                  })
+                                }}
+                                content={
+                                  <div role="tooltip" id={`${gadgetTooltipId}-${sk.linkId}`} data-share-link-gadgets>
+                                    <ul className="m-0 max-h-[min(20rem,calc(var(--available-height)_-_1rem))] max-w-xs list-none overflow-y-auto overscroll-contain p-0">
+                                      {sk.gadgets.map(gadget => <li key={gadget.id} className="truncate">{gadget.title}</li>)}
+                                    </ul>
+                                  </div>
+                                }
+                                asChild
+                              >
+                                <button
+                                  type="button"
+                                  aria-describedby={gadgetTooltip?.linkId === sk.linkId ? `${gadgetTooltipId}-${sk.linkId}` : undefined}
+                                  onClick={() => setGadgetTooltip(current => current?.linkId === sk.linkId
+                                    ? null : { linkId: sk.linkId, pinned: true })}
+                                  className="cursor-pointer rounded-md px-2 text-[12px] text-kumo-subtle underline decoration-dotted underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+                                >
+                                  {sk.gadgets.length} {sk.gadgets.length === 1 ? 'gadget' : 'gadgets'} · Cannot edit
+                                </button>
+                              </Tooltip>
+                            )}
+                            {!sk.default && (
+                              <WorkshopIconButton
+                                className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+                                onClick={() => startRenameShareLink(sk)}
+                                aria-label={`Rename ${name || 'share link'}`}
+                                disabled={confirmationBusy}
+                              >
+                                <PencilSimple size={13} />
+                              </WorkshopIconButton>
+                            )}
                             {canUseShareLinks && (
                               <WorkshopIconButton
                                 className="!h-7 !w-7"
-                                onClick={() => handleCopyShareLink(sk.linkId)}
-                                aria-label={`Copy ${sk.note || 'share link'}`}
+                                onClick={() => handleCopyShareLink(sk)}
+                                aria-label={`Copy ${name || 'share link'}`}
                                 disabled={confirmationBusy || copyingLinkId === sk.linkId}
                               >
                                 {copiedLinkId === sk.linkId ? <Check size={13} weight="bold" /> : <Copy size={13} />}
                               </WorkshopIconButton>
                             )}
                             <WorkshopIconButton
-                              className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-                              onClick={() => startRenameShareLink(sk)}
-                              aria-label={`Rename ${sk.note || 'share link'}`}
-                              disabled={confirmationBusy}
-                            >
-                              <PencilSimple size={13} />
-                            </WorkshopIconButton>
-                            <WorkshopIconButton
                               danger
                               className="!h-7 !w-7 opacity-35 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
                               onClick={() => handleStartRevokeShareLink(sk.linkId)}
-                              aria-label={`Revoke ${sk.note || 'share link'}`}
+                              aria-label={`Revoke ${name || 'share link'}`}
                               disabled={confirmationBusy}
                             >
                               <Trash size={13} />
@@ -1526,7 +1565,45 @@ export default function ShareModal({ open, onClose, overseer, metadata, currentU
           </section>
           )}
         </div>
+        )}
+        <div className={`${shownSubpage ? 'hidden' : 'flex'} shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 border-t border-kumo-line/70 px-4 py-3 sm:px-6`}>
+          {showResourcesPill ? (
+            <button
+              ref={resourcesButtonRef}
+              type="button"
+              className="inline-flex h-8 max-w-full cursor-pointer items-center gap-1.5 rounded-full bg-kumo-info-tint px-3 text-[13px] leading-4 font-medium tracking-[-0.15px] text-kumo-info transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumo-info"
+              onClick={() => openSubpage('resources')}
+            >
+              <LockSimple size={14} weight="bold" className="shrink-0" />
+              <span className="truncate">Protected resources</span>
+              {!requirementsFailed && <span className="shrink-0 opacity-70">({requirements?.length})</span>}
+              <CaretRight size={12} weight="bold" className="shrink-0 opacity-70" />
+            </button>
+          ) : <span />}
+          {/* Wraps below the pill, and then onto two lines, rather than squeezing it. */}
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          {showAdvancedButton && (
+            <WorkshopButton ref={advancedButtonRef} className="!h-9 !rounded-xl !border-0 !bg-kumo-tint enabled:hover:!bg-kumo-elevated" onClick={() => openSubpage('advanced')}>
+              Advanced settings
+            </WorkshopButton>
+          )}
+          <WorkshopButton
+            tone="primary"
+            className="gap-1.5 !rounded-xl"
+            onClick={() => void copyDialogLink()}
+            disabled={(!footerCopiesMyLink && !othersHaveAccess) ||
+              (myDefaultLink !== undefined && copyingLinkId === myDefaultLink.linkId)}
+          >
+            {footerCopiesMyLink && copiedLinkId === myDefaultLink?.linkId
+              ? <Check size={14} weight="bold" />
+              : <Link size={14} />}
+            {footerCopiesMyLink && copiedLinkId === myDefaultLink?.linkId ? 'Copied' : 'Copy link'}
+          </WorkshopButton>
+          </div>
+        </div>
         <div ref={setDirectoryPortalContainer} className="pointer-events-none absolute inset-0 z-30" />
+        {/* Zero-size so it takes no pointer events itself; the menus it holds overflow it. */}
+        <div ref={setMenuPortalContainer} className="absolute left-0 top-0 z-40" />
       </Dialog>
     </Dialog.Root>
   )

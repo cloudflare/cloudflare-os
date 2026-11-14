@@ -113,8 +113,7 @@ Tools · Choose how much of this server the Gadget may call.
 ( ) Choose tools   Only the tools you tick. Anything else is refused, including tools added later.
 
 Allowed tools · Read-only tools return data straight away. The rest queue for your approval.
-[ 🔍 Filter tools... ]
-12 of 12 selected                                                                     Clear
+[ 🔍 Filter tools...                                                   ]  12 of 12 selected
 ☑ List issues                                                                     read-only
 ☑ Create issue                                                               needs approval
 ```
@@ -194,12 +193,31 @@ tier is `byo` unless a deployment sets `MCP_PORTAL_TRUST_ANNOTATIONS=true`. That
 "trusted server" assertion MCP's guidance asks for, and it has to be about the upstreams themselves,
 not just the portal in front of them.
 
-`addObserver` refuses everyone, as it does for user-supplied endpoints. Reaching the portal is not
-the same as being allowed to see a particular tool result, and the Gadget runs on the owner's
-credentials regardless. A sharper check is available here than for a bare endpoint —
-`portal_list_servers` is per-user and Access-filtered, so it could confirm a collaborator may reach
-the same server — but that is still server-granular, not record-granular. See
+`addObserver` admits only the account a binding reads with, and refuses everyone else, another
+account of the same person or portal user included. Every read through a binding is made with that
+account's credentials, so its holder sees nothing they could not read themselves, and a collaborator
+who adds a portal connection to a workspace shared with them is not locked out of it. Reaching the
+portal is not the same as being allowed to see a particular tool result read on someone else's
+credentials. A sharper check is available here than for a bare endpoint — `portal_list_servers` is
+per-user and Access-filtered, so it could confirm a collaborator may reach the same server — but
+that is still server-granular, not record-granular. No portal user identity is consulted: with
+`none` or `token` auth every account shares one credential, and an OAuth access token is opaque.
+The verifier carries only its `McpAccount` id. See
 [`sharing-policy.ts`](../mcp-shared/src/sharing-policy.ts).
+
+Every read through a binding also reports `server/<upstreamServerId>` as its
+`ObservationDescription.subresources`, built with gatekeeper-kit's `formatSubresourceId()`: the
+catalog, an exact lookup, a search, a read-only call, and the result of an approved call, empty and
+stored results included. `<upstreamServerId>` is the grant's `scope.serverId`, never the portal's
+own `serverId` (`portal`) or the server's display name, and every portal binding has persisted it
+since portal grants existed, so existing bindings report it without migration. The ID names no
+endpoint, account or tool. The Workshop records and checks subresources per connection, and each
+connection's facet is pinned to the endpoint and account it was minted with, so the same upstream
+server behind two portals, or two grants onto one, is recorded and checked separately; a
+selected-tool grant reports the same server ID and still calls only its tools.
+`verifyObserverAccess()` refuses any other ID, then applies the `addObserver` rule to that ID
+through gatekeeper-kit's `observerAccessVerifier`. `addObserver` also covers reads made before they
+reported the ID, all made with the same account.
 
 ## Notes and current limitations
 

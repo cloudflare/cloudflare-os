@@ -1,11 +1,21 @@
 // The Worker the unit suites run inside: the production Worker's exports (so `ctx.exports` resolves
 // the real Durable Objects and callbacks) plus test-only entrypoints that stand in for other Workers.
 
-import { DurableObject, WorkerEntrypoint, restore } from "cloudflare:workers";
-import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
+import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint, restore } from "cloudflare:workers";
+import type {
+  AccountDescription,
+  AppUiContext,
+  GatekeeperUiFrame,
+  GatekeeperUserSelection,
+  GatekeeperUserVerifier,
+} from "@gadgets/workshop-shared/gatekeeper";
 import { GatekeeperConnectCallbackImpl } from "../src/user.js";
 import { LoginConnectCallbackImpl } from "../src/auth/login-flow.js";
 import { OverseerDurableObject as RealOverseerDurableObject } from "../src/server.js";
+import { FakeChatResponseTarget } from "./response-target";
+import {DELIM_PKT, encodePktLine, FLUSH_PKT} from "@gadgets/gatekeeper-kit/git-transport";
+import {startGitPull} from "@gadgets/gatekeeper-kit/git-pull-transfer";
+import type {GitOid, GitPullHints, GitPullTransfer} from "@gadgets/workshop-shared/gatekeeper";
 
 export * from "../src/server.js";
 export { default } from "../src/server.js";
@@ -34,6 +44,12 @@ export class OverseerDurableObject extends RealOverseerDurableObject {
     super(ctx, env);
     restoreTargets.set(ctx, this);
   }
+
+  [restore](params: Parameters<RealOverseerDurableObject[typeof restore]>[0] |
+      {type: "test-response-target"; name: string}) {
+    if (params.type === "test-response-target") return new FakeChatResponseTarget(params.name);
+    return super[restore](params);
+  }
 }
 /**
  * The `self` object / spawnCallable() stub entrypoint, named explicitly for the same reason as the
@@ -44,6 +60,8 @@ export { AgentSelfLoopback } from "../src/server.js";
 export { GatekeeperLoopback, GadgetTailLoopback } from "../src/server.js";
 /** What an executeCode run's tail worker is minted from, likewise. */
 export { CodeModeTailLoopback } from "../src/server.js";
+/** What an enabled hook delivers its events through, likewise. */
+export { GatekeeperHookLoopback } from "../src/server.js";
 /**
  * The Workshop's connect callback, reachable through `ctx.exports`: the pool derives those from this
  * module's own declarations, so an entrypoint a test reaches that way has to be named here rather
@@ -52,17 +70,38 @@ export { CodeModeTailLoopback } from "../src/server.js";
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
+/**
+ * The exchange a management app's account redeems picker tickets through, reachable through
+ * `ctx.exports` by the name startAccountAppUi mints it under.
+ */
+export { GatekeeperUserSelectionExchangeImpl } from "../src/user.js";
+
+/**
+ * Test identity capability returned by a fake connected account. `identify` stands in for the
+ * vendor-private method real verifiers expose to their own gatekeeper.
+ */
+export class FakeGatekeeperVerifier
+    extends WorkerEntrypoint<Cloudflare.Env, { name: string }>
+    implements GatekeeperUserVerifier {
+  identify(): string {
+    return this.ctx.props.name;
+  }
+}
 
 /** What each FakeGatekeeperAccount has been asked to do, by its `name` prop. */
 const accountCalls = new Map<string, string[]>();
+
+/** A ticket a FakeGatekeeperAccount redeems when its UI is next opened, by account name. */
+const stashedTickets = new Map<string, string>();
 
 /**
  * A gatekeeper account as the Workshop sees one: a persistent stub it can store and call back into.
  * Records calls by `props.name` so a test can ask any instance what happened (`calls()`); with
  * `failRevoke` / `failDescribe`, that method rejects after being recorded.
  */
-export class FakeGatekeeperAccount
-    extends WorkerEntrypoint<unknown, { name: string; failRevoke?: boolean; failDescribe?: boolean }> {
+export class FakeGatekeeperAccount extends WorkerEntrypoint<Cloudflare.Env, {
+  name: string; failRevoke?: boolean; failDescribe?: boolean; providesUi?: boolean;
+}> {
   #record(call: string) {
     const calls = accountCalls.get(this.ctx.props.name) ?? [];
     calls.push(call);
@@ -72,7 +111,11 @@ export class FakeGatekeeperAccount
   async describe(): Promise<AccountDescription> {
     this.#record("describe");
     if (this.ctx.props.failDescribe) throw new Error("describe failed");
-    return { displayName: this.ctx.props.name, uniqueName: this.ctx.props.name };
+    return {
+      displayName: this.ctx.props.name,
+      uniqueName: this.ctx.props.name,
+      ...(this.ctx.props.providesUi ? { providesUi: { title: this.ctx.props.name } } : {}),
+    };
   }
 
   async revoke(): Promise<void> {
@@ -99,7 +142,164 @@ export class FakeGatekeeperAccount
     return { url: `https://gk.example/expand/${this.ctx.props.name}` };
   }
 
+  async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
+    return this.ctx.exports.FakeGatekeeperVerifier({ props: { name: this.ctx.props.name } });
+  }
+
+  /**
+   * Redeems the account's stashed ticket, if any, through the exchange the Workshop supplied, and
+   * records what came back — proving the exchange in the AppUiContext is scoped to this account.
+   */
+  async startAppUi(context: AppUiContext): Promise<GatekeeperUiFrame> {
+    const ticket = stashedTickets.get(this.ctx.props.name);
+    stashedTickets.delete(this.ctx.props.name);
+    let outcome = "no ticket";
+    if (ticket !== undefined) {
+      try {
+        const results = await context.userSelectionExchange.redeem(ticket);
+        const outcomes = await Promise.all(results.map(async ({ verifier, profile }) => {
+          const identity = await (verifier as unknown as Fetcher<FakeGatekeeperVerifier>).identify();
+          return `${identity}, ${profile.displayName}`;
+        }));
+        outcome = outcomes.length === 0 ? "[]" : outcomes.join("; ");
+      } catch (error) {
+        outcome = `error: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    }
+    this.#record(`startAppUi(${context.isAdmin}, ${outcome})`);
+    return { iframeHtml: "<!doctype html>", ui: new RpcStub(new RpcTarget()) };
+  }
+
   async calls(): Promise<string[]> {
     return accountCalls.get(this.ctx.props.name) ?? [];
+  }
+}
+
+/** Test-only bridge to Workshop entrypoints that are otherwise reached through authenticated RPC. */
+export class GatekeeperUserPickerTestHooks extends DurableObject<Cloudflare.Env> {
+  async createUser(userId: string, displayName: string): Promise<void> {
+    const user = this.ctx.exports.UserDurableObject.getByName(userId);
+    await user.authenticateFromCfAccess(userId, true);
+    await user.setOwnDisplayName(displayName);
+  }
+
+  async renameUser(userId: string, displayName: string): Promise<void> {
+    await this.ctx.exports.UserDurableObject.getByName(userId).setOwnDisplayName(displayName);
+  }
+
+  async addAccount(
+      userId: string, vendorId: string, accountName: string,
+      options: { expired?: boolean; providesUi?: boolean } = {},
+  ): Promise<number> {
+    const user = this.ctx.exports.UserDurableObject.getByName(userId);
+    const account = this.ctx.exports.FakeGatekeeperAccount({
+      props: { name: accountName, providesUi: options.providesUi },
+    });
+    const accountId = await user.linkConnectedAccountFromLogin(account, vendorId);
+    if (options.expired) await user.markCredentialsExpired(accountId);
+    return accountId;
+  }
+
+  /**
+   * What `viewerId`'s browser gets when its app picks `selectedUserId`
+   * (UserDurableObject.createGatekeeperUserSelection). A rejection is returned as `{ error }`
+   * rather than rethrown, which the pool would otherwise report as an unhandled rejection inside
+   * the Durable Object even though the test awaits it.
+   */
+  async pick(
+      viewerId: string, accountId: number, selectedUserId: string,
+  ): Promise<GatekeeperUserSelection | null | { error: string }> {
+    try {
+      return await this.ctx.exports.UserDurableObject.getByName(viewerId)
+        .createGatekeeperUserSelection(accountId, selectedUserId);
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * What `viewerId`'s account learns by redeeming `ticket` through the exchange scoped to
+   * `accountId`, as the Workshop hands it in AppUiContext: each redeemed verifier's identity and
+   * fresh profile snapshot, or the redemption's `{ error }`.
+   */
+  async redeem(
+      viewerId: string, accountId: number, ticket: string,
+  ): Promise<{ identity: string; displayName: string }[] | { error: string }> {
+    const selectorUserId = this.ctx.exports.UserDurableObject.idFromName(viewerId).toString();
+    const exchange = this.ctx.exports.GatekeeperUserSelectionExchangeImpl({
+      props: { selectorUserId, appAccountId: accountId },
+    });
+    try {
+      const results = await exchange.redeem(ticket);
+      return await Promise.all(results.map(async ({ verifier, profile }) => {
+        const identity = await (verifier as unknown as Fetcher<FakeGatekeeperVerifier>).identify();
+        return { identity, displayName: profile.displayName };
+      }));
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Open `viewerId`'s app UI for `accountId` the way getGatekeeperApp does, with `ticket` stashed
+   * for the fake account to redeem through the exchange it is handed; the outcome lands in the
+   * account's recorded `startAppUi(...)` call. Returns the open's own `{ error }` if it fails.
+   */
+  async openAppUi(
+      viewerId: string, accountId: number, accountName: string, ticket: string,
+  ): Promise<{ error: string } | undefined> {
+    stashedTickets.set(accountName, ticket);
+    try {
+      const frame = await this.ctx.exports.UserDurableObject.getByName(viewerId)
+        .startAccountAppUi(accountId, { isAdmin: false });
+      frame.ui[Symbol.dispose]();
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async accountCalls(accountName: string): Promise<string[]> {
+    return this.ctx.exports.FakeGatekeeperAccount({ props: { name: accountName } }).calls();
+  }
+}
+
+/**
+ * Git provider fixture for worktree fetches beyond the workspace's own history: answers the
+ * workspace's commit-only history check, and streams any other pull's shallow-info followed by
+ * a pack that stays open until cancelled.
+ */
+export class ReplicaGitSource extends DurableObject<Cloudflare.Env> {
+  async getAgentCatalog() { return null; }
+  async describe() { return {title: "Fixture Git", snippet: "Git fixture", suggestedBindingName: "GIT", tsType: "Git"}; }
+  /** A commit the history check reports as outside the worktree's history. */
+  setUnrelated(oid: string): void { this.ctx.storage.kv.put("unrelated", oid); }
+  /** An error the pulls' packs end with partway, sent on Git's error band. */
+  setFailing(message: string): void { this.ctx.storage.kv.put("failing", message); }
+  /** The protocol-v2 fetch requests the pulls received, in order. */
+  requests(): string[] { return this.ctx.storage.kv.get<string[]>("requests") ?? []; }
+  async gitPull(oids: GitOid[], hints: GitPullHints): Promise<GitPullTransfer> {
+    return startGitPull(async request => {
+      const body = new TextDecoder().decode(request);
+      this.ctx.storage.kv.put("requests", [...this.requests(), body]);
+      // A pack holding one object for a history check of an unrelated commit, else none.
+      const unrelated = this.ctx.storage.kv.get<string>("unrelated");
+      const count = hints.filterTreeDepth === 0 && unrelated && oids.includes(unrelated) ? 1 : 0;
+      const header = new Uint8Array(12);
+      header.set(new TextEncoder().encode("PACK"));
+      new DataView(header.buffer).setUint32(4, 2);
+      new DataView(header.buffer).setUint32(8, count);
+      const pack = new Uint8Array([...header, ...new Uint8Array(await crypto.subtle.digest("SHA-1", header))]);
+      const band = new Uint8Array([...new TextEncoder().encode((pack.length + 5).toString(16).padStart(4, "0")), 1, ...pack]);
+      const shallow = hints.filterTreeDepth === 0 ? [] :
+        [encodePktLine("shallow-info"), ...oids.map(oid => encodePktLine(`shallow ${oid}`)), DELIM_PKT];
+      const failing = this.ctx.storage.kv.get<string>("failing");
+      if (failing !== undefined) {
+        const sideband = (n: number, data: Uint8Array) =>
+          new Uint8Array([...new TextEncoder().encode((data.length + 5).toString(16).padStart(4, "0")), n, ...data]);
+        return new Response(new Blob([...shallow, encodePktLine("packfile"), sideband(1, header),
+          sideband(3, new TextEncoder().encode(failing))]));
+      }
+      return new Response(new Blob([...shallow, encodePktLine("packfile"), band, FLUSH_PKT]));
+    }, oids, hints);
   }
 }

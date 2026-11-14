@@ -33,20 +33,51 @@ export const GMAIL_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** A single Google Doc. */
+/** The whole-Drive type's pattern, which names the card Docs, Sheets and Slides appear on too. */
+const DRIVE_CARD = "https://drive.google.com/drive/my-drive";
+
+/**
+ * A single Google Doc. On the Drive card, whose picker binds a native file as its editable type;
+ * Workshop asks for the card's types together, though their scopes differ.
+ */
 export const GOOGLE_DOC_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/document/d/:docId/*",
   title: "Google Doc",
-  description: "Read and edit documents you choose.",
+  description: "Read, edit and comment on documents you choose.",
   grantable: true,
+  creatable: true,
+  creationConfigurator: true,
+  groupedWith: DRIVE_CARD,
 };
 
-/** A single Google Sheet. */
+/**
+ * A single Google Sheet, read and edited with the read-write `spreadsheets` scope, which creating one
+ * (see GatekeeperVendor.createResource()) needs too.
+ */
 export const GOOGLE_SHEETS_RESOURCE: SupportedResource = {
   urlPattern: "https://docs.google.com/spreadsheets/d/:spreadsheetId/*",
   title: "Google Spreadsheet",
-  description: "Read values from a spreadsheet you choose.",
+  description:
+    "Read the values and formatting of a spreadsheet you choose, and change its values, tabs, " +
+    "rows, columns, and formatting, with your approval.",
   grantable: true,
+  creatable: true,
+  creationConfigurator: true,
+  groupedWith: DRIVE_CARD,
+};
+
+/** A single Google Slides presentation. */
+export const GOOGLE_SLIDES_RESOURCE: SupportedResource = {
+  urlPattern: "https://docs.google.com/presentation/d/:presentationId/*",
+  title: "Google Slides Presentation",
+  description:
+    "Read a presentation you choose, its slides, layouts, masters, and formatting, and, with " +
+    "your approval, edit its text and design, copy, move, or delete slides, and change its " +
+    "backgrounds and theme colours.",
+  grantable: true,
+  creatable: true,
+  creationConfigurator: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /** A single Google Calendar. */
@@ -73,14 +104,18 @@ export const GOOGLE_CHAT_RESOURCE: SupportedResource = {
   title: "Google Chat Account",
   description:
       "Find conversations, read and search messages across them, and post, react, or edit as " +
-      "you. Covers direct messages as well as spaces, so it cannot be shared with " +
-      "collaborators — connect a single conversation for that.",
+      "you. Can also look people up in your organization's directory and start direct messages " +
+      "or group chats with them. Covers direct messages as well as spaces, so it cannot be " +
+      "shared with collaborators — connect a single conversation for that.",
   grantable: true,
 };
 
-/** One selected Google Chat space, group chat, or direct message. */
+/**
+ * One selected Google Chat space, group chat, or direct message. Chat links to a direct message
+ * under `/dm/` rather than `/room/`.
+ */
 export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
-  urlPattern: "https://chat.google.com/room/:spaceId",
+  urlPattern: "https://chat.google.com/:kind(room|dm)/:spaceId",
   title: "Google Chat Conversation",
   description:
       "Read and post in one selected conversation as you, including its members, reactions, " +
@@ -88,9 +123,12 @@ export const GOOGLE_CHAT_SPACE_RESOURCE: SupportedResource = {
   grantable: true,
 };
 
-/** One thread in a Google Chat conversation: its first message, replies, and future replies. */
+/**
+ * One thread in a Google Chat conversation: its first message, replies, and future replies. A
+ * message's Copy link names its thread too, so a message id may follow the thread's.
+ */
 export const GOOGLE_CHAT_THREAD_RESOURCE: SupportedResource = {
-  urlPattern: "https://chat.google.com/room/:spaceId/:threadId",
+  urlPattern: "https://chat.google.com/:kind(room|dm)/:spaceId/:threadId{/:messageId}?",
   title: "Google Chat Thread",
   description:
       "Read and reply in one selected thread as you, including its reactions and attachments.",
@@ -107,37 +145,65 @@ export const BIGQUERY_RESOURCE: SupportedResource = {
 };
 
 /**
- * Files, folders, and read-only native Google Docs and Sheets available to the connected account.
+ * Files, folders, native Google Docs, Sheets and Slides, PDF text, any other file's bytes, and
+ * comments available to the connected account; with read and write access, edits of Docs, Sheets
+ * and Slides, comment writes, sharing and moves as well.
  *
  * Whole-account, not just My Drive: listings set `includeItemsFromAllDrives`, so a shared drive the
  * account belongs to is inside this grant.
  */
 export const GOOGLE_DRIVE_RESOURCE: SupportedResource = {
-  urlPattern: "https://drive.google.com/drive/my-drive",
-  title: "Google Drive Account",
+  urlPattern: DRIVE_CARD,
+  title: "Google Drive",
   description:
-      "Find files and folders anywhere this Google account can read in Drive, including shared " +
-      "drives. Full-text search examines indexed file content, descriptions, and OCR text; search " +
-      "results contain metadata only, while native Google Docs and Sheets can be opened read-only.",
+      "Find files you can open anywhere in Drive, including shared drives, and read Docs, Sheets, " +
+      "Slides, PDFs, other files and comments. Connect all of Drive, or just one shared drive, " +
+      "folder or file, as read only or as read and write, which also lets agents edit Docs, " +
+      "spreadsheets and presentations, comment on files, change who they are shared with and, " +
+      "in all of Drive or a folder, move them, each with your approval; a Doc, spreadsheet or " +
+      "presentation connected on its own can be edited, and a Doc commented on, with your " +
+      "approval, but none of them moved or shared. A connection request asks for read and write " +
+      "by adding ?access=write to the URL.",
   grantable: true,
 };
 
-/** A selected Drive folder or shared-drive root, exposed through direct-child navigation. */
+/**
+ * A selected Drive folder or shared-drive root, exposed through direct-child navigation, with its
+ * direct children's comments; with read and write access, edits of Docs, Sheets and Slides,
+ * comment writes, sharing and moves within it. Creating one (see GatekeeperVendor.createResource())
+ * makes an empty folder where its approver chooses.
+ */
 export const GOOGLE_DRIVE_FOLDER_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/drive/folders/:folderId",
   title: "Google Drive Folder",
   description:
       "Browse a selected folder or shared drive, search its direct children, and read native " +
-      "Google Docs and Sheets.",
+      "Google Docs, Sheets and Slides, PDFs as text, any other file's content as bytes, and " +
+      "comments. A read and write connection also lets agents edit its Docs, spreadsheets and " +
+      "presentations, comment on its files, move them within it and change who they are shared " +
+      "with, each with your approval; a connection request asks for one by adding ?access=write " +
+      "to the URL.",
   grantable: true,
+  creatable: true,
+  creationConfigurator: true,
+  groupedWith: DRIVE_CARD,
 };
 
-/** Metadata and, when native, read-only content for one immutable Drive file ID. */
+/**
+ * Metadata, comments and content of one immutable Drive file; with read and write access, edits
+ * of a Doc, spreadsheet or presentation, comment writes and sharing.
+ */
 export const GOOGLE_DRIVE_FILE_RESOURCE: SupportedResource = {
   urlPattern: "https://drive.google.com/file/d/:fileId/view",
   title: "Google Drive File",
-  description: "Read metadata and, for a native Google Doc or Sheet, content from one Drive file.",
+  description:
+      "Read metadata, comments and, for a native Google Doc, Sheet or Slides presentation, " +
+      "content from one Drive file, its text when it is a PDF, or otherwise its content as " +
+      "bytes. A read and write connection also lets agents edit the file when it is a Doc, " +
+      "spreadsheet or presentation, comment on it and change who it is shared with, each with " +
+      "your approval; a connection request asks for one by adding ?access=write to the URL.",
   grantable: true,
+  groupedWith: DRIVE_CARD,
 };
 
 /**
@@ -172,12 +238,27 @@ export const SCOPE_DERIVED_RESOURCE_URL_PATTERNS = [
 ];
 
 /**
+ * Scopes that still prove a scope-only account chose a resource whose requirements have since grown.
+ *
+ * Only scopes no other resource has ever requested belong here, so holding them cannot be a side
+ * effect of some other grant. Calendar's are its scopes from before it needed free/busy.
+ */
+const SCOPE_DERIVED_INTENT_SCOPES: Partial<Record<string, readonly string[]>> = {
+  [GOOGLE_CALENDAR_RESOURCE.urlPattern]: [
+    "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+  ],
+};
+
+/**
  * The user scopes the Chat resources need.
  *
  * `chat.messages` rather than the narrower `chat.messages.readonly` plus `chat.messages.create`
  * because the binding also edits messages and can undo its own sends, which need the combined
  * scope; it covers reactions too. Only the account resource adds `chat.users.readstate.readonly`,
- * for its `unreadOnly` search filter.
+ * for its `unreadOnly` search filter, and what starting a conversation needs: `chat.spaces.create`
+ * (not `chat.spaces`, which could also rename and reconfigure conversations) and
+ * `directory.readonly`, to find people and to confirm they belong to the organization.
  */
 const CHAT_SCOPES = [
   "https://www.googleapis.com/auth/chat.spaces.readonly",
@@ -198,15 +279,23 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
     resource: GOOGLE_DOC_RESOURCE,
     scopes: [
       "https://www.googleapis.com/auth/documents",
-      // Read-only Drive file metadata, used to power the doc picker when connecting a Google Doc.
+      // Read-only Drive file metadata, so the Drive picker can browse to the document.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
   {
     resource: GOOGLE_SHEETS_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/spreadsheets.readonly",
-      // Read-only Drive file metadata, used to power the spreadsheet picker.
+      "https://www.googleapis.com/auth/spreadsheets",
+      // Read-only Drive file metadata, so the Drive picker can browse to the spreadsheet.
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ],
+  },
+  {
+    resource: GOOGLE_SLIDES_RESOURCE,
+    scopes: [
+      "https://www.googleapis.com/auth/presentations",
+      // Read-only Drive file metadata, so the Drive picker can browse to the presentation.
       "https://www.googleapis.com/auth/drive.metadata.readonly",
     ],
   },
@@ -216,30 +305,39 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
       // Read-only calendar list, used to power the calendar picker when connecting a calendar.
       "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
       "https://www.googleapis.com/auth/calendar.events",
+      // Free/busy, which `calendar.events` does not cover: Google refuses `freeBusy.query` without
+      // this, `calendar.freebusy` (the account's own calendars only), or a whole-calendar scope.
+      "https://www.googleapis.com/auth/calendar.events.freebusy",
     ],
   },
   {
     resource: GOOGLE_DRIVE_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so PDFs and other files can be downloaded.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   {
     resource: GOOGLE_DRIVE_FOLDER_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so PDFs and other files can be downloaded.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   {
     resource: GOOGLE_DRIVE_FILE_RESOURCE,
     scopes: [
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      // File content, not only metadata, so PDFs and other files can be downloaded.
+      "https://www.googleapis.com/auth/drive.readonly",
       "https://www.googleapis.com/auth/documents.readonly",
       "https://www.googleapis.com/auth/spreadsheets.readonly",
+      "https://www.googleapis.com/auth/presentations.readonly",
     ],
   },
   // Every Chat resource requests the same scopes: Google grants Chat authority per API, not per
@@ -249,7 +347,12 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   // and `chat.delete` are all deliberately absent.
   {
     resource: GOOGLE_CHAT_RESOURCE,
-    scopes: [...CHAT_SCOPES, "https://www.googleapis.com/auth/chat.users.readstate.readonly"],
+    scopes: [
+      ...CHAT_SCOPES,
+      "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+      "https://www.googleapis.com/auth/chat.spaces.create",
+      "https://www.googleapis.com/auth/directory.readonly",
+    ],
   },
   {
     resource: GOOGLE_CHAT_SPACE_RESOURCE,
@@ -269,6 +372,79 @@ export const RESOURCE_SCOPES: {resource: SupportedResource, scopes: string[]}[] 
   },
 ];
 
+/**
+ * Wider Drive grants. `drive.readonly` is requested by the Drive resources, by
+ * {@link OFFICE_IMPORT_GRANT} and by {@link SHARED_DRIVES_GRANT}; full `drive` belongs only to
+ * {@link DRIVE_WRITES_GRANT}, and in {@link SCOPE_COVERED_BY} it truthfully subsumes the narrow
+ * requirements.
+ */
+const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
+const DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+/**
+ * The grant that lets a connect dialog copy a Drive Office file into a native Google file:
+ * `drive.readonly` to see and read a source this OAuth client did not create, and `drive.file` to
+ * create the copy.
+ *
+ * A private grant, not a resource: it is absent from {@link SUPPORTED_RESOURCES}, so nothing lists,
+ * offers or binds it, and only the configurators' Convert button asks for it. Its scopes reach
+ * Drive content beyond any bound resource, so binding scope is enforced by the gatekeepers' code.
+ */
+export const OFFICE_IMPORT_GRANT = "https://docs.google.com/import";
+
+/**
+ * The grant that lets the Drive picker list the shared drives this account belongs to:
+ * `drives.list` accepts only `drive.readonly` or `drive`.
+ *
+ * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the picker's Allow access
+ * button, so an account that never opens Shared drives is never asked for it. The picker uses it
+ * for nothing but that listing, and binding scope stays enforced by the gatekeepers' code.
+ */
+export const SHARED_DRIVES_GRANT = "https://drive.google.com/drive/shared-drives";
+
+/**
+ * The grant that lets the gatekeeper put what a creation makes where its approver chose:
+ * `drive.file`, which reaches only files this OAuth client created or the user opened or shared
+ * with it. A new Doc, Sheet or Presentation is made in My Drive and then moved into the chosen
+ * folder; a new folder is made in place, My Drive included.
+ *
+ * Private, as {@link OFFICE_IMPORT_GRANT} is, and asked for only by the creation configurator, so
+ * an approver who keeps a new Doc, Sheet or Presentation in My Drive is never asked for it.
+ */
+export const CREATED_FILES_GRANT = "https://drive.google.com/drive/created-files";
+
+/**
+ * The grant that lets a read and write Drive binding change files: full `drive`, because comment
+ * writes, sharing and moves need it and `drive.file` does not reach a file picked in Drive.
+ *
+ * Private, as {@link OFFICE_IMPORT_GRANT} is. Every consent that asks for a Google Drive resource
+ * asks for it too ({@link withDriveWrites}); the Drive connect dialog's Allow changes action asks
+ * for it on an account whose consent left it out. Declining it leaves the Drive resources granted
+ * and read-only. Once a consent asking for it has completed the grant is recorded, granted or not,
+ * so every later consent for the account asks for full `drive` again. One grant covers every Drive
+ * write.
+ * The token it yields reaches every file the account can, so a binding's scope and access level
+ * stay enforced by the gatekeeper's code. Its scope also covers, through {@link SCOPE_COVERED_BY},
+ * the `spreadsheets`, `drive.file` and `drive.readonly` requirements of grants the account has
+ * recorded, which then count as held.
+ */
+export const DRIVE_WRITES_GRANT = "https://drive.google.com/drive/writes";
+
+/** Grants requested and recorded like resources, but never bindable or shown to the Workshop. */
+const PRIVATE_GRANT_SCOPES: {urlPattern: string, scopes: string[]}[] = [
+  { urlPattern: OFFICE_IMPORT_GRANT, scopes: [DRIVE_READONLY_SCOPE, DRIVE_FILE_SCOPE] },
+  { urlPattern: SHARED_DRIVES_GRANT, scopes: [DRIVE_READONLY_SCOPE] },
+  { urlPattern: CREATED_FILES_GRANT, scopes: [DRIVE_FILE_SCOPE] },
+  { urlPattern: DRIVE_WRITES_GRANT, scopes: [DRIVE_READWRITE_SCOPE] },
+];
+
+/** Every grant's scopes, resources first: what consent asks for and what coverage is checked on. */
+const GRANT_SCOPES = [
+  ...RESOURCE_SCOPES.map(({resource, scopes}) => ({urlPattern: resource.urlPattern, scopes})),
+  ...PRIVATE_GRANT_SCOPES,
+];
+
 const DRIVE_RESOURCE_PATTERNS = new Set([
   GOOGLE_DRIVE_RESOURCE.urlPattern,
   GOOGLE_DRIVE_FOLDER_RESOURCE.urlPattern,
@@ -277,7 +453,24 @@ const DRIVE_RESOURCE_PATTERNS = new Set([
 
 /** Every grantable resource, in declaration order. */
 export const SUPPORTED_RESOURCES: SupportedResource[] = RESOURCE_SCOPES.map(entry => entry.resource);
-const KNOWN_RESOURCE_PATTERNS = new Set(SUPPORTED_RESOURCES.map(resource => resource.urlPattern));
+const KNOWN_RESOURCE_PATTERNS = new Set(GRANT_SCOPES.map(entry => entry.urlPattern));
+const PRIVATE_GRANT_PATTERNS = new Set(PRIVATE_GRANT_SCOPES.map(entry => entry.urlPattern));
+
+/** Whether `pattern` is a private grant, which an account description leaves out. */
+export function isPrivateGrant(pattern: string): boolean {
+  return PRIVATE_GRANT_PATTERNS.has(pattern);
+}
+
+/**
+ * Former `urlPattern`s of live resources, so a grant recorded under one is read under its new name.
+ * Only this gatekeeper's own records are translated. The Workshop keeps a resource type's
+ * `urlPattern` elsewhere too, compared exactly: an admin's opt-out saved under a former name no
+ * longer disables the resource, and a blueprint binding saved under one finds no account for it.
+ */
+const RENAMED_RESOURCE_PATTERNS: Record<string, string> = {
+  "https://chat.google.com/room/:spaceId": GOOGLE_CHAT_SPACE_RESOURCE.urlPattern,
+  "https://chat.google.com/room/:spaceId/:threadId": GOOGLE_CHAT_THREAD_RESOURCE.urlPattern,
+};
 
 /** Whether an account's recorded grant includes any Google Drive resource. */
 export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): boolean {
@@ -285,13 +478,17 @@ export function hasDriveResourceGrant(resourceUrlPatterns: readonly string[]): b
 }
 
 /**
- * Wider Drive grants an account may already hold. Never requested here; they appear only in
- * {@link SCOPE_COVERED_BY}, where they truthfully subsume the narrow requirements.
+ * What a consent asks for: `resourceUrlPatterns`, and with any Google Drive resource among them
+ * also {@link DRIVE_WRITES_GRANT}, so a Drive account can make read and write connections without a
+ * second consent. A read and write binding's scope and access level stay enforced in code.
  */
-const DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
-const DRIVE_READWRITE_SCOPE = "https://www.googleapis.com/auth/drive";
+export function withDriveWrites(resourceUrlPatterns: readonly string[]): string[] {
+  return hasDriveResourceGrant(resourceUrlPatterns)
+    ? [...new Set([...resourceUrlPatterns, DRIVE_WRITES_GRANT])]
+    : [...resourceUrlPatterns];
+}
 
-/** Rejects any pattern that is not a known grantable resource. */
+/** Rejects any pattern that is not a known grantable resource or private grant. */
 export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string[]): void {
   let unknown = resourceUrlPatterns.filter(pattern => !KNOWN_RESOURCE_PATTERNS.has(pattern));
   if (unknown.length > 0) {
@@ -299,13 +496,13 @@ export function validateResourceUrlPatterns(resourceUrlPatterns: readonly string
   }
 }
 
-/** The OAuth scopes required by the explicit grantable resource `urlPattern`s. */
+/** The OAuth scopes required by the explicit grantable resource and private grant `urlPattern`s. */
 export function resourceUrlPatternsToOAuthScopes(resourceUrlPatterns: readonly string[]): string[] {
   validateResourceUrlPatterns(resourceUrlPatterns);
 
   let scopes = new Set<string>(IDENTITY_SCOPES);
-  for (let entry of RESOURCE_SCOPES) {
-    if (resourceUrlPatterns.includes(entry.resource.urlPattern)) {
+  for (let entry of GRANT_SCOPES) {
+    if (resourceUrlPatterns.includes(entry.urlPattern)) {
       for (let scope of entry.scopes) scopes.add(scope);
     }
   }
@@ -329,7 +526,19 @@ const SCOPE_COVERED_BY: Record<string, readonly string[]> = {
   "https://www.googleapis.com/auth/spreadsheets.readonly": [
     "https://www.googleapis.com/auth/spreadsheets", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
   ],
+  "https://www.googleapis.com/auth/presentations.readonly": [
+    "https://www.googleapis.com/auth/presentations", DRIVE_READONLY_SCOPE, DRIVE_READWRITE_SCOPE,
+  ],
+  "https://www.googleapis.com/auth/spreadsheets": [DRIVE_READWRITE_SCOPE],
+  [DRIVE_READONLY_SCOPE]: [DRIVE_READWRITE_SCOPE],
+  [DRIVE_FILE_SCOPE]: [DRIVE_READWRITE_SCOPE],
+  "https://www.googleapis.com/auth/calendar.events.freebusy": [
+    "https://www.googleapis.com/auth/calendar", "https://www.googleapis.com/auth/calendar.readonly",
+  ],
   "https://www.googleapis.com/auth/chat.spaces.readonly": [
+    "https://www.googleapis.com/auth/chat.spaces",
+  ],
+  "https://www.googleapis.com/auth/chat.spaces.create": [
     "https://www.googleapis.com/auth/chat.spaces",
   ],
   "https://www.googleapis.com/auth/chat.memberships.readonly": [
@@ -356,10 +565,10 @@ export function resourcesCoveredByScopes(
     grantedOAuthScopes: readonly string[]): string[] {
   let granted = new Set(grantedOAuthScopes);
   let requested = new Set(resourceUrlPatterns);
-  return RESOURCE_SCOPES
-      .filter(entry => requested.has(entry.resource.urlPattern) &&
+  return GRANT_SCOPES
+      .filter(entry => requested.has(entry.urlPattern) &&
                        entry.scopes.every(scope => oauthScopeCovers(scope, granted)))
-      .map(entry => entry.resource.urlPattern);
+      .map(entry => entry.urlPattern);
 }
 
 /**
@@ -388,18 +597,26 @@ export type RecordedResourceGrant = {
  * scope-only generation is filtered by its own scopes, because there the list is an *inference* and
  * not a statement of intent: unfiltered, a Gmail-only account reconnecting would be asked to grant
  * writable Docs, writable Calendar, Sheets and BigQuery, and would have them recorded once it
- * accepted. That generation cannot express an outgrown grant either — a resource whose scopes it no
- * longer covers is indistinguishable from one it never held — so there is nothing to keep.
+ * accepted. That generation can express an outgrown grant only through
+ * {@link SCOPE_DERIVED_INTENT_SCOPES}; otherwise a resource whose scopes it no longer covers is
+ * indistinguishable from one it never held, so there is nothing to keep.
  *
- * A `urlPattern` a later deploy retired is dropped rather than returned: it maps to no scopes, so
- * requesting it would throw and take the reconnect that repairs the account down with it.
+ * A `urlPattern` a later deploy renamed is read under its new name. One it retired is dropped: it
+ * maps to no scopes, so requesting it would throw and take the reconnect that repairs the account
+ * down with it.
  */
 export function recordedResourceUrlPatterns(grant: RecordedResourceGrant): string[] {
   if (grant.resourceUrlPatterns !== undefined) {
-    return grant.resourceUrlPatterns.filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
+    return grant.resourceUrlPatterns
+        .map(pattern => RENAMED_RESOURCE_PATTERNS[pattern] ?? pattern)
+        .filter(pattern => KNOWN_RESOURCE_PATTERNS.has(pattern));
   }
   if (grant.oauthScopes === undefined) return [...LEGACY_GRANTED_RESOURCE_URL_PATTERNS];
-  return resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes);
+  let granted = new Set(grant.oauthScopes);
+  let covered = new Set(
+    resourcesCoveredByScopes(SCOPE_DERIVED_RESOURCE_URL_PATTERNS, grant.oauthScopes));
+  return SCOPE_DERIVED_RESOURCE_URL_PATTERNS.filter(pattern => covered.has(pattern) ||
+    (SCOPE_DERIVED_INTENT_SCOPES[pattern]?.every(scope => granted.has(scope)) ?? false));
 }
 
 /**
@@ -413,16 +630,31 @@ export function grantedResourceUrlPatterns(grant: RecordedResourceGrant): string
   return resourcesCoveredByScopes(recordedResourceUrlPatterns(grant), grant.oauthScopes);
 }
 
+/** The query parameter of a Drive resource URL that carries the connection's access level. */
+export const DRIVE_ACCESS_PARAM = "access";
+
+/**
+ * The access level a Drive resource URL can ask for beyond the default: read and write. A URL
+ * without it, or with any other value, is read-only.
+ */
+export type DriveAccessLevel = "write";
+
 /** A resource URL resolved to the binding parameters its gatekeeper takes. */
 export type ResourceTarget =
   | { kind: "gmail"; searchQuery?: string; labelName?: string }
   | { kind: "doc"; documentId: string }
   | { kind: "sheets"; spreadsheetId: string }
+  | { kind: "slides"; presentationId: string }
   | { kind: "calendar"; calendarId: string; availabilityMode: CalendarAvailabilityMode }
-  | { kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string }
-  | { kind: "driveAccount" }
-  | { kind: "driveFolder"; folderId: string }
-  | { kind: "driveFile"; fileId: string }
+  | {
+      kind: "bigquery"; projectId: string; datasetId?: string; tableId?: string;
+      /** Where query jobs run and are billed when not the data's own project (see parseBigQueryUrl). */
+      queryProjectId?: string;
+    }
+  /** All of Drive, a folder or a file: read and write when `access` is set, read-only without it. */
+  | { kind: "driveAccount"; access?: DriveAccessLevel }
+  | { kind: "driveFolder"; folderId: string; access?: DriveAccessLevel }
+  | { kind: "driveFile"; fileId: string; access?: DriveAccessLevel }
   | { kind: "chatAccount" }
   | { kind: "chatSpace"; spaceId: string }
   | { kind: "chatThread"; spaceId: string; threadId: string };
@@ -432,6 +664,7 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   gmail: GMAIL_RESOURCE,
   doc: GOOGLE_DOC_RESOURCE,
   sheets: GOOGLE_SHEETS_RESOURCE,
+  slides: GOOGLE_SLIDES_RESOURCE,
   calendar: GOOGLE_CALENDAR_RESOURCE,
   bigquery: BIGQUERY_RESOURCE,
   driveAccount: GOOGLE_DRIVE_RESOURCE,
@@ -441,6 +674,58 @@ export const RESOURCE_BY_KIND: Record<ResourceTarget["kind"], SupportedResource>
   chatSpace: GOOGLE_CHAT_SPACE_RESOURCE,
   chatThread: GOOGLE_CHAT_THREAD_RESOURCE,
 };
+
+/** A Drive binding's target: all of Drive, a folder or a file, with its access level. */
+export type DriveResourceTarget =
+    Extract<ResourceTarget, { kind: "driveAccount" | "driveFolder" | "driveFile" }>;
+
+/**
+ * The resource URL of a Drive target, which {@link parseResourceUrl} reads back into the same
+ * target: the natural Drive URL, with `?access=write` for a read and write one.
+ */
+export function driveResourceUrl(target: DriveResourceTarget): string {
+  let url: string;
+  switch (target.kind) {
+    case "driveAccount": url = GOOGLE_DRIVE_RESOURCE.urlPattern; break;
+    case "driveFolder":
+      url = `https://drive.google.com/drive/folders/${encodeURIComponent(target.folderId)}`;
+      break;
+    case "driveFile":
+      url = `https://drive.google.com/file/d/${encodeURIComponent(target.fileId)}/view`;
+      break;
+  }
+  return target.access === "write" ? `${url}?${DRIVE_ACCESS_PARAM}=write` : url;
+}
+
+/** The resource kinds createResource() can make: Google's native editor files, and Drive folders. */
+export type CreatableKind = "doc" | "sheets" | "slides" | "driveFolder";
+/** Each kind's home page, which also stands for one not yet created. */
+const CREATABLE_HOMES: Record<CreatableKind, string> = {
+  doc: "https://docs.google.com/document/",
+  sheets: "https://docs.google.com/spreadsheets/",
+  slides: "https://docs.google.com/presentation/",
+  driveFolder: "https://drive.google.com/drive/",
+};
+const CREATABLE_KINDS = Object.keys(CREATABLE_HOMES) as CreatableKind[];
+
+/** The kind of the creatable resource type `resourceUrlPattern`, or an agent-readable refusal. */
+export function creatableKind(resourceUrlPattern: string): CreatableKind {
+  let kind = CREATABLE_KINDS.find(candidate => {
+    let resource = RESOURCE_BY_KIND[candidate];
+    return resource.urlPattern === resourceUrlPattern && resource.creatable;
+  });
+  if (kind) return kind;
+  let types = CREATABLE_KINDS.map(candidate =>
+      `${RESOURCE_BY_KIND[candidate].title} (${RESOURCE_BY_KIND[candidate].urlPattern})`);
+  throw new Error(`Google can create only these resource types: ${types.join(", ")}.`);
+}
+
+/** A native file's or folder's canonical URL; with no `id`, its product's home page (one not yet created). */
+export function nativeFileUrl(kind: CreatableKind, id?: string): string {
+  let home = CREATABLE_HOMES[kind];
+  if (id === undefined) return home;
+  return kind === "driveFolder" ? `${home}folders/${id}` : `${home}d/${id}/edit`;
+}
 
 /**
  * Parses a bound resource URL into the target its gatekeeper needs.
@@ -513,7 +798,7 @@ function parseGmailUrl(parsed: URL): ResourceTarget {
 }
 
 function parseDocsUrl(parsed: URL): ResourceTarget {
-  // Both forms are /<type>/d/<id>/..., so the id is always the third segment.
+  // Every form is /<type>/d/<id>/..., so the id is always the third segment.
   let id = parsed.pathname.split("/")[3];
   if (parsed.pathname.startsWith("/document/d/")) {
     if (!id) throw new Error("Invalid Google Docs URL: no document ID found");
@@ -522,6 +807,10 @@ function parseDocsUrl(parsed: URL): ResourceTarget {
   if (parsed.pathname.startsWith("/spreadsheets/d/")) {
     if (!id) throw new Error("Invalid Google Sheets URL: no spreadsheet ID found");
     return { kind: "sheets", spreadsheetId: id };
+  }
+  if (parsed.pathname.startsWith("/presentation/d/")) {
+    if (!id) throw new Error("Invalid Google Slides URL: no presentation ID found");
+    return { kind: "slides", presentationId: id };
   }
   throw new Error(`Unsupported Google Docs resource URL: ${describeUrl(parsed)}`);
 }
@@ -545,14 +834,21 @@ function parseCalendarUrl(parsed: URL): ResourceTarget {
   return { kind: "calendar", calendarId, availabilityMode };
 }
 
+/**
+ * A Drive URL names all of Drive, a folder or a file by its path. `?access=write` asks for a read
+ * and write connection; without it, or with any other value, the connection is read-only, the
+ * least privilege. Every other query parameter is ignored.
+ */
 function parseDriveUrl(parsed: URL): ResourceTarget {
-  if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount" };
+  let access: { access?: DriveAccessLevel } =
+      parsed.searchParams.get(DRIVE_ACCESS_PARAM) === "write" ? { access: "write" } : {};
+  if (/^\/drive\/my-drive\/?$/.test(parsed.pathname)) return { kind: "driveAccount", ...access };
 
   let folder = /^\/drive\/folders\/([^/]+)\/?$/.exec(parsed.pathname);
-  if (folder) return { kind: "driveFolder", folderId: decodeURIComponent(folder[1]) };
+  if (folder) return { kind: "driveFolder", folderId: decodeURIComponent(folder[1]), ...access };
 
   let file = /^\/file\/d\/([^/]+)\/view\/?$/.exec(parsed.pathname);
-  if (file) return { kind: "driveFile", fileId: decodeURIComponent(file[1]) };
+  if (file) return { kind: "driveFile", fileId: decodeURIComponent(file[1]), ...access };
 
   throw new Error(`Unsupported Google Drive resource URL: ${describeUrl(parsed)}`);
 }
@@ -560,22 +856,26 @@ function parseDriveUrl(parsed: URL): ResourceTarget {
 /**
  * Chat's own URLs carry a view path and a fragment, so the grant is keyed on the canonical form
  * the configurator mints: the bare host for the whole account, `/room/{space}` for one
- * conversation, `/room/{space}/{thread}` for one thread. The ids are Chat's without their
- * `spaces/` and `threads/` prefixes, validated here because every downstream request
- * interpolates them into a path.
+ * conversation, `/room/{space}/{thread}` for one thread. A link Chat gives out to one of those
+ * spells a direct message's `/room/` as `/dm/` and adds a `cls` view parameter, which names no
+ * resource and is ignored, as is the message id that follows the thread's in a message's link; any
+ * other query, or a fragment, is refused rather than guessed at. The ids are Chat's without their
+ * `spaces/` and `threads/` prefixes, validated here because every downstream request interpolates
+ * them into a path.
  */
 function parseChatUrl(parsed: URL): ResourceTarget {
-  if (parsed.search || parsed.hash) {
-    throw new Error("Google Chat resource URLs must not include query strings or fragments.");
+  if (parsed.hash || [...parsed.searchParams.keys()].some(key => key !== "cls")) {
+    throw new Error(
+        "Google Chat resource URLs must not include fragments or query parameters other than cls.");
   }
   if (/^\/?$/.test(parsed.pathname)) return { kind: "chatAccount" };
 
-  let room = /^\/room\/([^/]+)\/?$/.exec(parsed.pathname);
+  let room = /^\/(?:room|dm)\/([^/]+)\/?$/.exec(parsed.pathname);
   if (room) {
     return { kind: "chatSpace", spaceId: validateChatSpaceId(decodeURIComponent(room[1])) };
   }
 
-  let thread = /^\/room\/([^/]+)\/([^/]+)\/?$/.exec(parsed.pathname);
+  let thread = /^\/(?:room|dm)\/([^/]+)\/([^/]+)(?:\/[^/]+)?\/?$/.exec(parsed.pathname);
   if (thread) {
     return {
       kind: "chatThread",
@@ -587,12 +887,31 @@ function parseChatUrl(parsed: URL): ResourceTarget {
   throw new Error(`Unsupported Google Chat resource URL: ${describeUrl(parsed)}`);
 }
 
+/** The one query parameter a BigQuery resource URL may carry. */
+export const BIGQUERY_QUERY_PROJECT_PARAM = "queryProject";
+
+/**
+ * A Google Cloud project ID as BigQuery accepts one in a job or table reference: the modern form
+ * (`my-project`) or a legacy domain-scoped one (`example.com:my-project`). Every downstream request
+ * interpolates it into a path, so anything else is refused here.
+ */
+const BIGQUERY_PROJECT_ID_RE = /^[a-z0-9][a-z0-9.-]{0,62}(?::[a-z0-9][a-z0-9-]{0,62})?$/;
+
+/**
+ * Synthetic URL: `/<projectId>[/<datasetId>[/<tableId>]]`, naming the data the connection reaches.
+ * `?queryProject=<id>` names the project query jobs run in and are billed to when the account cannot
+ * create jobs in the data's project, which BigQuery requires of every query but which a dataset
+ * shared from another project never grants. The query project widens nothing: scope checks and
+ * observer reporting stay on the data project. Naming the data project itself is the default, and
+ * is dropped so the URL has one spelling.
+ */
 function parseBigQueryUrl(parsed: URL): ResourceTarget {
-  if (parsed.search || parsed.hash) {
-    throw new Error("BigQuery resource URLs must not include query strings or fragments.");
+  if (parsed.hash || [...parsed.searchParams.keys()].some(key => key !== BIGQUERY_QUERY_PROJECT_PARAM)) {
+    throw new Error(
+        `BigQuery resource URLs must not include fragments or query parameters other than ` +
+        `${BIGQUERY_QUERY_PROJECT_PARAM}.`);
   }
 
-  // Synthetic path: /<projectId>/<datasetId>/<tableId> (each segment optional after the first).
   let segments = parsed.pathname.split("/").filter(Boolean).map(s => decodeURIComponent(s));
   if (segments.length > 3) {
     throw new Error(
@@ -606,5 +925,10 @@ function parseBigQueryUrl(parsed: URL): ResourceTarget {
   if (tableId && !datasetId) {
     throw new Error("Cannot scope to a table without specifying a dataset.");
   }
-  return { kind: "bigquery", projectId, datasetId, tableId };
+  let queryProjectId = parsed.searchParams.get(BIGQUERY_QUERY_PROJECT_PARAM) ?? undefined;
+  if (queryProjectId !== undefined && !BIGQUERY_PROJECT_ID_RE.test(queryProjectId)) {
+    throw new Error(`"${BIGQUERY_QUERY_PROJECT_PARAM}" must be a Google Cloud project ID.`);
+  }
+  if (queryProjectId === projectId) queryProjectId = undefined;
+  return { kind: "bigquery", projectId, datasetId, tableId, queryProjectId };
 }

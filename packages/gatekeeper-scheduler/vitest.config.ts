@@ -1,4 +1,4 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import capnwebValidate from "capnweb-validate/vite";
 import { kCurrentWorker } from "miniflare";
 import { defineConfig } from "vitest/config";
@@ -16,6 +16,7 @@ export default defineConfig({
         compatibilityFlags,
         durableObjects: {
           SCHEDULE_DRIVER: { className: "ScheduleDriver", useSQLite: true },
+          SCHEDULER_GATEKEEPER: { className: "SchedulerGatekeeper", useSQLite: true },
           SCHEDULER_SCOPE_TEST_PARENT: {
             className: "SchedulerScopeTestParent",
             useSQLite: true,

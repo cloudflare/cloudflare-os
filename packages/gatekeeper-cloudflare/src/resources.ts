@@ -1,8 +1,12 @@
 import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
+import { formatSubresourceId, parseSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 
 const OBSERVABILITY_SCOPE = "workers-observability.read";
 const DASHBOARD_ORIGIN = "https://dash.cloudflare.com";
 const ACCOUNT_ID_PATTERN = /^[a-f\d]{32}$/i;
+// How assertCloudflareAccountId spells an account ID, the only spelling a subresource ID may use.
+const CANONICAL_ACCOUNT_ID_PATTERN = /^[a-f\d]{32}$/;
+const ACCOUNT_FRAGMENT = "account";
 
 export const ACCOUNT_OBSERVABILITY_RESOURCE: SupportedResource = {
   urlPattern: `${DASHBOARD_ORIGIN}/:accountId/workers-and-pages/observability`,
@@ -34,6 +38,29 @@ export function assertCloudflareAccountId(accountId: string): string {
 
 export function accountObservabilityUrl(accountId: string): string {
   return `${DASHBOARD_ORIGIN}/${assertCloudflareAccountId(accountId)}/workers-and-pages/observability`;
+}
+
+/**
+ * The subresource ID every read reports, through an account or a Worker binding alike: the account
+ * whose telemetry it queried, `account/<accountId>`.
+ */
+export function observabilitySubresourceId(accountId: string): string {
+  return formatSubresourceId({
+    fragments: [{ name: ACCOUNT_FRAGMENT, id: assertCloudflareAccountId(accountId) }],
+  });
+}
+
+/**
+ * The account ID an ID from observabilitySubresourceId names. Throws for any other ID, another
+ * spelling of the same account's included.
+ */
+export function parseObservabilitySubresourceId(id: string): string {
+  const { namespace, fragments: [account, ...rest] } = parseSubresourceId(id);
+  if (namespace === undefined && rest.length === 0 && account?.name === ACCOUNT_FRAGMENT &&
+      CANONICAL_ACCOUNT_ID_PATTERN.test(account.id)) {
+    return account.id;
+  }
+  throw new Error("Not a Cloudflare Workers Observability subresource.");
 }
 
 export function workerObservabilityUrl(accountId: string, workerName: string): string {

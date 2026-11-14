@@ -4,12 +4,12 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  buildContent,
   extractFiles,
   parseArchive,
   readSourceFiles,
-  serializeArchive,
+  validatePortablePaths,
 } from "../src/files.ts";
+import { buildSnapshotContent, serializeArchive } from "./archives.ts";
 
 const temporaryDirectories: string[] = [];
 
@@ -18,7 +18,7 @@ afterEach(async () => {
     rm(path, {recursive: true, force: true})));
 });
 
-/** Writes `files` (archive-style relative paths) into a fresh temporary files/ tree. */
+/** Writes `files` (relative paths) into a fresh temporary files/ tree. */
 async function sourceTree(files: Record<string, string>): Promise<string> {
   let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
   temporaryDirectories.push(directory);
@@ -36,7 +36,7 @@ const gadgetLibraries = resolve(dirname(fileURLToPath(import.meta.url)), "..", "
 const LIBRARY = "@gadgets/bundled-blueprints/libraries";
 
 describe("bundled blueprint source", () => {
-  it("reconstructs files deterministically", () => {
+  it("reads the files out of a version 1 archive", () => {
     let files = new Map([
       ["server.js", "export default {};\n"],
       ["lib/util.js", "export const value = 1;\n"],
@@ -53,16 +53,31 @@ describe("bundled blueprint source", () => {
       bindings: {},
     };
 
-    let first = serializeArchive(metadata, buildContent(files, "example"), "example");
-    let second = serializeArchive(metadata, buildContent(files, "example"), "example");
+    let parsed = parseArchive(
+      serializeArchive(1, metadata, buildSnapshotContent(files)), "example");
 
-    expect(second).toEqual(first);
-    let parsed = parseArchive(first, "example");
+    expect(parsed.version).toBe(1);
     expect(parsed.metadata).toEqual(metadata);
     expect(extractFiles(parsed.content, "example")).toEqual(files);
   });
 
-  it("reads nested source files as archive paths", async () => {
+  it("takes a version 2 archive apart, leaving its content to whoever reads packs", () => {
+    let metadata = {title: "Example", commitId: "a".repeat(40)};
+    let pack = Uint8Array.of(0x50, 0x41, 0x43, 0x4b);
+
+    let parsed = parseArchive(serializeArchive(2, metadata, pack), "example");
+
+    expect(parsed.version).toBe(2);
+    expect(parsed.metadata).toEqual(metadata);
+    expect([...parsed.content]).toEqual([...pack]);
+  });
+
+  it("rejects an archive of a version it does not know", () => {
+    expect(() => parseArchive(serializeArchive(3, {}, new Uint8Array()), "example"))
+      .toThrow("example: unsupported archive version 3");
+  });
+
+  it("reads nested source files by their path under files/", async () => {
     let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
     temporaryDirectories.push(directory);
     await mkdir(join(directory, "lib"));
@@ -76,13 +91,13 @@ describe("bundled blueprint source", () => {
   });
 
   it.each(["", "/client.js", "lib/", "lib//util.js", "lib/./util.js", "lib/../util.js",
-    "lib\\util.js", "lib\0util.js"])("rejects unsafe archive path %j", path => {
-    expect(() => buildContent(new Map([[path, "source"]]), "example"))
+    "lib\\util.js", "lib\0util.js"])("rejects unsafe file path %j", path => {
+    expect(() => validatePortablePaths([path], "example"))
       .toThrow("unsafe blueprint file path");
   });
 
   it("rejects file and directory path conflicts", () => {
-    expect(() => buildContent(new Map([["lib", "file"], ["lib/util.js", "nested"]]), "example"))
+    expect(() => validatePortablePaths(["lib", "lib/util.js"], "example"))
       .toThrow("lib/util.js conflicts with file lib");
   });
 
@@ -92,43 +107,51 @@ describe("bundled blueprint source", () => {
     ["\u03a3.js", "\u03c2.js"],
     ["S.js", "\u017f.js"],
     ["\u00df.js", "\u1e9e.js"],
-  ])("rejects filesystem-equivalent archive paths %j and %j", (first, second) => {
-    expect(() => buildContent(new Map([[first, "first"], [second, "second"]]), "example"))
+  ])("rejects filesystem-equivalent file paths %j and %j", (first, second) => {
+    expect(() => validatePortablePaths([first, second], "example"))
       .toThrow("aliases");
   });
 
   it("rejects filesystem-equivalent file and directory conflicts", () => {
-    expect(() => buildContent(new Map([["LIB", "file"], ["lib/util.js", "nested"]]), "example"))
+    expect(() => validatePortablePaths(["LIB", "lib/util.js"], "example"))
       .toThrow("lib/util.js conflicts with file LIB");
   });
 
   it("rejects filesystem-equivalent directory aliases", () => {
-    expect(() => buildContent(new Map([
-      ["Foo/first.js", "first"],
-      ["foo/second.js", "second"],
-    ]), "example")).toThrow("foo aliases directory Foo");
+    expect(() => validatePortablePaths(["Foo/first.js", "foo/second.js"], "example"))
+      .toThrow("foo aliases directory Foo");
   });
 
   it("rejects portable file and directory conflicts", () => {
-    expect(() => buildContent(new Map([
-      ["Foo", "file"],
-      ["foo/child.js", "child"],
-    ]), "example")).toThrow("foo/child.js conflicts with file Foo");
-    expect(() => buildContent(new Map([
-      ["foo/child.js", "child"],
-      ["Foo", "file"],
-    ]), "example")).toThrow("Foo conflicts with directory foo");
+    expect(() => validatePortablePaths(["Foo", "foo/child.js"], "example"))
+      .toThrow("foo/child.js conflicts with file Foo");
+    expect(() => validatePortablePaths(["foo/child.js", "Foo"], "example"))
+      .toThrow("Foo conflicts with directory foo");
   });
 
   it.each(["CON", "aux.js", "COM\u00b9.log", "a:b.js", "client.js.", "client.js ",
-    ".git/config", ".gitignore"])("rejects non-portable archive path %j", path => {
-    expect(() => buildContent(new Map([[path, "source"]]), "example"))
+    ".git/config", ".gitignore"])("rejects non-portable file path %j", path => {
+    expect(() => validatePortablePaths([path], "example"))
       .toThrow("non-portable blueprint file path");
   });
 
-  it("rejects empty blueprints", () => {
-    expect(() => buildContent(new Map(), "example"))
-      .toThrow("blueprint must contain at least one source file");
+  // An archive is held to the same rules as a files/ tree, since its files become one.
+  it("rejects a version 1 archive whose files could not be written out", () => {
+    for (let [files, error] of [
+      [new Map([["../escape.js", "source"]]), "unsafe blueprint file path"],
+      [new Map([["Foo.js", "first"], ["foo.js", "second"]]), "aliases"],
+      [new Map(), "blueprint must contain at least one source file"],
+    ] as const) {
+      expect(() => extractFiles(buildSnapshotContent(files), "example")).toThrow(error);
+    }
+  });
+
+  it("rejects empty blueprints", async () => {
+    let directory = await mkdtemp(join(tmpdir(), "bundled-blueprint-"));
+    temporaryDirectories.push(directory);
+
+    await expect(readSourceFiles(directory, "example/files"))
+      .rejects.toThrow("blueprint must contain at least one source file");
   });
 
   it("preserves a leading UTF-8 BOM", async () => {
@@ -222,7 +245,7 @@ describe("bundled blueprint TypeScript sources", () => {
     expect(server).not.toContain("./lib/shared");
   });
 
-  it("keeps a non-TypeScript module a bundle inlined in the archive", async () => {
+  it("keeps a non-TypeScript module a bundle inlined in the blueprint", async () => {
     let directory = await sourceTree({
       "client.ts": 'import data from "./lib/data.json"; console.log(data.answer);',
       "lib/data.json": '{"answer": 42}',
@@ -231,7 +254,7 @@ describe("bundled blueprint TypeScript sources", () => {
     let files = await readSourceFiles(directory, "example/files");
 
     // Inlined into the bundle *and* still shipped: only TypeScript is build input, and dropping a
-    // file esbuild happened to inline would break whatever else in the archive imports it.
+    // file esbuild happened to inline would break whatever else in the blueprint imports it.
     expect([...files.keys()]).toEqual(["client.js", "lib/data.json"]);
     expect(files.get("client.js")).toContain("answer: 42");
     expect(files.get("lib/data.json")).toBe('{"answer": 42}');
@@ -250,7 +273,7 @@ describe("bundled blueprint TypeScript sources", () => {
     ]));
   });
 
-  // A module the archive ships as written cannot import what the bundle compiled away, so a tree
+  // A module the blueprint ships as written cannot import what the bundle compiled away, so a tree
   // is TypeScript or JavaScript, never both; only modules count, a data file is fine either way.
   it("rejects a JavaScript module in a TypeScript blueprint", async () => {
     let message = (path: string) => `example/files: ${path} is a JavaScript module in a ` +
@@ -296,7 +319,7 @@ describe("bundled blueprint TypeScript sources", () => {
       .rejects.toThrow("helpers.ts is not a gadget module");
   });
 
-  it("keeps a module imported only for its types out of the archive", async () => {
+  it("keeps a module imported only for its types out of the blueprint", async () => {
     let directory = await sourceTree({
       "client.ts": [
         'import { render } from "./lib/render.ts";',
@@ -501,7 +524,7 @@ describe("bundled blueprint TypeScript sources", () => {
   });
 
   // A library is inlined by the build into a TypeScript entry; a JavaScript module is copied into
-  // the archive as written, and the runtime has nothing to resolve the package name against, so
+  // the blueprint as written, and the runtime has nothing to resolve the package name against, so
   // the Durable Object would fail to load. The same class as any bare import in a JavaScript
   // blueprint, but the README advertises libraries, so the build says why this one is refused.
   it("rejects a library import from a JavaScript module, which ships as written", async () => {
@@ -800,8 +823,8 @@ describe("bundled blueprint TypeScript sources", () => {
 
       let files = await readSourceFiles(directory, "example/files");
 
-      // Nothing of the specifier survives: the archive is self-contained, and a gadget created from
-      // it carries its copy of the library. The fixture has no node_modules above it, so the
+      // Nothing of the specifier survives: the blueprint is self-contained, and a gadget created
+      // from it carries its copy of the library. The fixture has no node_modules above it, so the
       // package name resolved through the build's alias, not through an install.
       expect([...files.keys()]).toEqual(["client.js", "server.js"]);
       expect(files.get("client.js")).toContain("function el(");

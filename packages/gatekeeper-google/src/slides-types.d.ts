@@ -1,0 +1,330 @@
+import type {
+  GooglePresentationReadSession, ParagraphFormat, SlideBounds, SlideColor, ThemeColorName,
+} from "./slides-read-types";
+export type * from "./slides-read-types";
+
+/**
+ * One text edit. The text is a shape's, a table cell's, or a slide's speaker notes, exactly as
+ * `getSlides()` returns it.
+ */
+export type SlideTextEdit = {
+  /** The slide the text is on. */
+  slideId: string;
+  /**
+   * The shape or table holding the text, by `SlideElement.id`; a shape inside a group counts.
+   * Omit to edit the slide's speaker notes.
+   */
+  elementId?: string;
+  /** For a table, the cell to edit, zero-based as in `TableElement.cells`. */
+  cell?: { row: number; column: number };
+  /**
+   * The text to replace, which must occur exactly once in the target's text: include surrounding
+   * text to make it unique. Omit to replace all of the target's text.
+   */
+  find?: string;
+  /** The new text. `\n` starts a paragraph, `\u000b` breaks a line within one. */
+  replace: string;
+};
+
+/**
+ * Text in a shape or table cell, as `getSlides()` returns it: the one occurrence of `find`, the
+ * characters `range` covers, or, with neither, all of it.
+ */
+export type SlideTextTarget = {
+  /** The slide the text is on. */
+  slideId: string;
+  /** The shape or table, by ID or by the `ref` of a shape or table an earlier change creates. */
+  elementId: string;
+  /** For a table, the cell, zero-based as in `TableElement.cells`. */
+  cell?: { row: number; column: number };
+  /** Text that must occur exactly once in the target's text. */
+  find?: string;
+  /**
+   * Offsets into the target's text, as in `FormattedRange`. The change fails if that text is no
+   * longer what it was when the change was queued.
+   */
+  range?: { start: number; end: number };
+};
+
+/**
+ * Formatting to set on text. `null` unsets a value, so the text takes its placeholder's or the
+ * default; an omitted field is left as it is.
+ */
+export type TextFormatChange = {
+  bold?: boolean | null;
+  italic?: boolean | null;
+  underline?: boolean | null;
+  strikethrough?: boolean | null;
+  smallCaps?: boolean | null;
+  /** Font name, such as `Roboto` or `Georgia`, at regular weight: not bold unless `bold` is set. */
+  fontFamily?: string | null;
+  /** Font size in points. */
+  fontSize?: number | null;
+  /** Text colour. */
+  color?: SlideColor | null;
+  /** Highlight colour behind the text. */
+  highlight?: SlideColor | null;
+  /**
+   * An `https:`, `http:` or `mailto:` URL to link the text to. The text also turns the theme's
+   * link colour and underlined, unless `color` or `underline` is given too. Links cannot be
+   * removed, and newlines are never linked.
+   */
+  link?: string;
+  baseline?: "superscript" | "subscript" | "none" | null;
+};
+
+/** A shape's outline: its colour and weight in points, either kept as is when omitted. */
+export type ShapeOutline = { color?: SlideColor; weight?: number };
+
+/**
+ * A background to set: a colour, `"none"`, a picture Google downloads once from `imageUrl` when
+ * the change is applied (a public `https:` URL of a PNG, JPEG or GIF under 50 MB), stretched to
+ * fill the page, or `null` to show the background of the layout or master the page is made from.
+ */
+export type SlideBackgroundChange = SlideColor | "none" | { imageUrl: string } | null;
+
+/**
+ * One change in an `updateSlides()` batch. Every change names the page it is on, by its ID in
+ * `getPresentation()`: a slide, or a layout or master for `setBackground`, and a master for
+ * `setThemeColors`. `ref` names an element the change creates, so later changes in the same batch
+ * can pass it as an `elementId`; its real ID is returned under that name.
+ */
+export type SlideChange =
+  /**
+   * Replace the one occurrence of `find`, or all of the target's text. New text takes the style of
+   * the text it replaces, and text the edit leaves unchanged at either end keeps its own, so `find`
+   * and `replace` may share context. A slide number can be replaced whole, not in part.
+   */
+  | ({ op: "editText" } & SlideTextEdit)
+  /** Format text. */
+  | ({ op: "formatText"; format: TextFormatChange } & SlideTextTarget)
+  /**
+   * Format every paragraph the target text touches. `null` unsets a value. `bullets` makes the
+   * paragraphs list items, each nested by the tab characters it starts with, which are removed
+   * (`"\t\tItem"` becomes "Item" at level 2), or plain paragraphs again with `"none"`. Bullets
+   * cannot start right after a list item, which Google may continue: include that item too.
+   */
+  | ({
+    op: "formatParagraphs";
+    alignment?: ParagraphFormat["alignment"] | null;
+    lineSpacing?: number | null;
+    spaceAbove?: number | null;
+    spaceBelow?: number | null;
+    bullets?: "bullet" | "checkbox" | "numbered" | "none";
+  } & SlideTextTarget)
+  /**
+   * Add a shape, such as `TEXT_BOX`, `RECTANGLE`, `ROUND_RECTANGLE` or `ELLIPSE` (any Google
+   * Slides shape type but `CUSTOM`), in front of the slide's other elements.
+   */
+  | {
+    op: "createShape";
+    slideId: string;
+    ref?: string;
+    shapeType: string;
+    bounds: SlideBounds;
+    /** Text to put in the shape, with `\n` between paragraphs. */
+    text?: string;
+    /** Formatting for all of the shape's text. */
+    format?: TextFormatChange;
+    fill?: SlideColor | "none";
+    outline?: ShapeOutline | "none";
+  }
+  /** Set a shape's fill, which is set opaque, outline, or where its text sits vertically. */
+  | {
+    op: "updateShape";
+    slideId: string;
+    elementId: string;
+    fill?: SlideColor | "none";
+    outline?: ShapeOutline | "none";
+    contentAlignment?: "top" | "middle" | "bottom";
+  }
+  /**
+   * Move, resize or rotate an element that is not inside a group. Omitted fields keep their
+   * value, and `x` and `y` place the unrotated box's top-left corner, so resizing a rotated
+   * element moves its centre. A table can only be moved, and a video cannot be rotated. An element
+   * created in the same batch cannot be changed this way: give it the bounds it should have instead.
+   */
+  | {
+    op: "setBounds";
+    slideId: string;
+    elementId: string;
+    bounds?: Partial<SlideBounds>;
+    /** Clockwise, in degrees. */
+    rotation?: number;
+  }
+  /**
+   * Delete an element; a group is deleted with everything in it. An element inside a group can
+   * be deleted only while at least two others stay in the group.
+   */
+  | { op: "deleteElement"; slideId: string; elementId: string }
+  /** Set an element's alt text, which cannot be cleared. Groups have none. */
+  | { op: "setAltText"; slideId: string; elementId: string; title?: string; description?: string }
+  /** Bring an element that is not inside a group in front of the slide's others, or behind them. */
+  | { op: "arrange"; slideId: string; elementId: string; to: "front" | "back" }
+  /**
+   * Add an image, which Google downloads once from `url` when the change is applied: a public
+   * `https:` URL of a PNG, JPEG or GIF under 50 MB. The image is fitted inside `bounds` keeping
+   * its proportions, so once applied it may be narrower or shorter than `bounds`; without
+   * `bounds` it takes its own size at the slide's top-left corner, and has no `bounds` until
+   * applied. The URL is saved with the image.
+   */
+  | { op: "insertImage"; slideId: string; ref?: string; url: string; bounds?: SlideBounds }
+  /**
+   * Replace an image's picture with the one at `url`, as for `insertImage`. The new picture fills
+   * the image's box, cropped to fit, and the image loses some effects, such as recolouring.
+   */
+  | { op: "replaceImage"; slideId: string; elementId: string; url: string }
+  /**
+   * Add a table of up to 20 rows and 20 columns, with `cells[row][column]` as each cell's text.
+   * Google shares `bounds` evenly among its columns and rows, drawing a row taller than its share
+   * when its text needs it; without `bounds` it sizes the table and centres it on the slide, and it
+   * has no `bounds` until applied.
+   */
+  | {
+    op: "createTable";
+    slideId: string;
+    ref?: string;
+    rows: number;
+    columns: number;
+    bounds?: SlideBounds;
+    cells?: string[][];
+  }
+  /**
+   * Insert `count` (default 1, at most 20) empty rows or columns before row or column `at`, or
+   * after the last with `at` equal to the number of rows or columns. Neither the row or column
+   * beside them may hold a merged cell.
+   */
+  | {
+    op: "insertTableRows" | "insertTableColumns";
+    slideId: string;
+    elementId: string;
+    at: number;
+    count?: number;
+  }
+  /**
+   * Delete `count` (default 1) rows or columns starting at `at`, none of which may hold a merged
+   * cell. To delete every row or column, delete the table.
+   */
+  | {
+    op: "deleteTableRows" | "deleteTableColumns";
+    slideId: string;
+    elementId: string;
+    at: number;
+    count?: number;
+  }
+  /**
+   * Set the fill, which is set opaque, or vertical text alignment of the cells in `range`, or of
+   * every cell. The range may not cut through a merged cell.
+   */
+  | {
+    op: "formatTableCells";
+    slideId: string;
+    elementId: string;
+    range?: { row: number; column: number; rowSpan?: number; columnSpan?: number };
+    fill?: SlideColor | "none";
+    contentAlignment?: "top" | "middle" | "bottom";
+  }
+  /**
+   * Set the background of a slide, a layout or a master, named by exactly one of `slideId`,
+   * `layoutId` and `masterId`. A layout's or master's background shows on every slide made from
+   * it that sets none of its own. A master has nothing to inherit from, so `null` is refused for
+   * one: give it `"none"` instead.
+   */
+  | {
+    op: "setBackground";
+    slideId?: string;
+    layoutId?: string;
+    masterId?: string;
+    background: SlideBackgroundChange;
+  }
+  /**
+   * Set some of a master's theme colours, each `#rrggbb`, which every slide made from the master
+   * shows wherever it uses them. Colours not given keep the value the master has when the change
+   * is applied. `TEXT1`, `BACKGROUND1`, `TEXT2` and `BACKGROUND2` follow the colours they mirror.
+   */
+  | { op: "setThemeColors"; masterId: string; colors: Partial<Record<ThemeColorName, string>> };
+
+/**
+ * Read/write access to one Google Slides presentation: one bound directly, or one a Google Drive
+ * binding with read and write access opened.
+ *
+ * Changes are queued for the user's approval. `getPresentation()` and `getSlides()` show them as
+ * if already applied; `getSlideThumbnail()` renders the presentation as saved. A queued change
+ * that no longer applies, because the presentation was edited elsewhere, fails when approved, and
+ * reads of what it changes report it in `queuedChangeConflict`. Opened from a Drive binding, the
+ * presentation is checked to be still in the binding's reach, and editable by its account, both
+ * when a change is queued and when it is approved.
+ *
+ * The comments of a presentation bound directly are not part of its binding: a Google Drive
+ * binding that reaches the same file reads them, and writes them when it has read and write
+ * access. For this file alone, request the resource URL
+ * `https://drive.google.com/file/d/<id>/view`, where `<id>` is the `id` that `getPresentation()`
+ * returns: as it is to read the comments, or with `?access=write` added to write them too.
+ */
+export interface GooglePresentationSession extends GooglePresentationReadSession {
+  /**
+   * Queue changes, applied in order, together or not at all, as one approval: text edits,
+   * formatting, shapes, images, tables, where elements sit, and the backgrounds and theme colours
+   * of slides, layouts and masters. Returns the ID of each element created with a `ref`, under
+   * that ref.
+   *
+   * `setBackground` names its page by exactly one of `slideId`, `layoutId` and `masterId`, and
+   * sets a colour, `"none"`, a picture from an `https:` URL, which Google downloads when the batch
+   * is applied, or with `null` the background the page inherits, which a master cannot.
+   * `setThemeColors` names a master by `masterId` and sets some of its 12 theme colours; Google
+   * takes all 12 at once, so the others are sent as the master has them when the batch is
+   * applied. Which layout a slide is made from cannot be changed.
+   *
+   * The user may let a batch apply without asking unless it deletes an element or a table's rows
+   * or columns, or adds an image, replaces one, or sets a picture background, which Google
+   * downloads from the URL. Such a batch always waits for approval, so queue changes that need not
+   * apply together as separate batches.
+   *
+   * Reads show the changes as if applied, except what only Google can work out: a new element
+   * reads with just what the change sets until it is applied, and an image's fitted size, the
+   * borders and formatting new table rows and columns take, and how text wraps or shrinks to fit
+   * appear once applied. A picture background reads as `"picture"`. Throws, queuing nothing, when
+   * a change does not apply to the slides `getSlides()` would now return, or to the masters and
+   * layouts `getPresentation()` would.
+   */
+  updateSlides(changes: SlideChange[]): Promise<Record<string, string>>;
+
+  /**
+   * Queue copying a slide, with its speaker notes, to right after it. Returns the copy's slide ID.
+   * Its elements get new IDs too: read the copy with `getSlides()` to edit it. The user may let
+   * this apply without asking.
+   */
+  duplicateSlide(slideId: string): Promise<string>;
+
+  /**
+   * Queue deleting a slide. Deleting the last slide of any master but the presentation's first
+   * removes that master's layouts from `PresentationInfo.layouts`, as Google deletes them with it.
+   * This always waits for approval.
+   */
+  deleteSlide(slideId: string): Promise<void>;
+
+  /**
+   * Queue moving slides to follow the slide `after`, or to the start when `after` is null. They
+   * keep their current order relative to each other, whatever order `slideIds` lists them in.
+   * The user may let this apply without asking.
+   */
+  moveSlides(slideIds: string[], after: string | null): Promise<void>;
+
+  /**
+   * Queue adding a slide made from a layout, `layoutId` being one of `PresentationInfo.layouts`'
+   * IDs: right after the slide `after`, at the start when `after` is null, or at the end when it
+   * is omitted. The layout's `master` must be that of the slide before it, of the first slide when
+   * it goes first, or of the presentation's first master when it has no slides, as Google requires.
+   * Returns the new slide's ID. The slide gets the layout's placeholders, empty: read it with
+   * `getSlides()` to fill them with `updateSlides()`.
+   * Its speaker notes can be edited only once it is approved. The user may let this apply
+   * without asking.
+   */
+  createSlide(layoutId: string, after?: string | null): Promise<string>;
+
+  /**
+   * Queue skipping slides, which leaves them out when presenting, or with `skipped` false, showing
+   * them again. Reads show it as `SlideSummary.skipped`. The user may let this apply without asking.
+   */
+  setSlidesSkipped(slideIds: string[], skipped: boolean): Promise<void>;
+}

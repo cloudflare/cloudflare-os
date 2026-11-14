@@ -21,6 +21,7 @@ vi.mock('@tanstack/react-router', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@tanstack/react-router')>()),
   useRouterState: ({ select }: { select: (s: { location: { pathname: string } }) => unknown }) =>
     select({ location: { pathname: testState.pathname } }),
+  useMatch: () => undefined,
   Outlet: () => <div data-testid="outlet">routed page</div>,
 }))
 

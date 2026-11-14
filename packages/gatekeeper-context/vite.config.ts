@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite-plus'
-import { vitestTask } from '@gadgets/scripts/vitest-task'
+import { TESTS_WITH_TIMEOUT_ENV, vitestTask, withTestTimeout } from '@gadgets/scripts/vitest-task'
 
 /**
  * Vite+ settings for this package. The SPA's own build config lives in `vite.app.config.ts`;
@@ -9,8 +9,22 @@ export default defineConfig({
   run: {
     tasks: {
       // Shared by every package whose tests run under vitest; see the module for why the two
-      // vitest scratch paths have to be excluded for this to cache at all.
-      test: vitestTask(['vitest run', 'vitest run -c vitest.node.config.ts']),
+      // vitest scratch paths have to be excluded for this to cache at all. The workerd suite loads
+      // the collection Durable Object, which imports `@gadgets/typed-storage` from its `dist/`.
+      test: {
+        ...vitestTask(['vitest run', 'vitest run -c vitest.node.config.ts']),
+        dependsOn: ['@gadgets/typed-storage#build'],
+      },
+      // The integration harness boots this validated tree without rebuilding it per test file.
+      'build:integration-worker': {
+        command: withTestTimeout('capnweb-validate build --out .wrangler/validate'),
+        dependsOn: ['build:app'],
+        cache: {
+          env: TESTS_WITH_TIMEOUT_ENV,
+          input: [{ auto: true }, { pattern: '!**/.wrangler/**', base: 'workspace' }],
+          output: ['.wrangler/validate/**'],
+        },
+      },
       // Uncached: a cache hit restores archived outputs but never deletes files, so the sourcemap
       // artifacts of an enabled-reporting build (dist-app/gatekeeper-context.js + .js.map) would
       // survive a later disabled-reporting cache hit and could be collected as if they matched the

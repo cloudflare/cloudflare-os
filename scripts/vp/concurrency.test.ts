@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { after, describe, it } from "node:test";
 import {
-  BYTES_PER_TASK, ROOT_ENV_FILE, VP_DEFAULT_CONCURRENCY_LIMIT, VP_RUN_CONCURRENCY_LIMIT,
-  cgroupMemoryLimitBytes, cgroupMounts, concurrencyEnv, defaultConcurrencyLimit,
-  effectiveMemoryBytes, envFileConcurrencyLimit, overridesConcurrency, splitConcurrencyLimit,
-  vpRunEnv,
+  BYTES_PER_TASK, ROOT_ENV_FILE, VITEST_MAX_WORKERS, VP_DEFAULT_CONCURRENCY_LIMIT,
+  VP_RUN_CONCURRENCY_LIMIT, cgroupMemoryLimitBytes, cgroupMounts, concurrencyEnv,
+  defaultConcurrencyLimit, effectiveMemoryBytes, envFileConcurrencyLimit, flagConcurrencyLimit,
+  overridesConcurrency, splitConcurrencyLimit, vitestWorkerBudget, vpRunEnv,
+  withVitestWorkerBudget,
 } from "./concurrency.ts";
 
 const GiB = 1024 ** 3;
@@ -530,5 +531,169 @@ describe("vpRunEnv concurrentRuns", () => {
     assert.equal(perRun, Math.min(total, Math.max(VP_DEFAULT_CONCURRENCY_LIMIT, Math.floor(total / 2))));
     assert.equal(split.err, whole.err);
     assert.match(split.err, /^vp run: concurrency \d+ /);
+  });
+});
+
+describe("vitestWorkerBudget", () => {
+  const table: [cpus: number, tasks: number, expected: number][] = [
+    // 4-vCPU CI with 4 tasks: the floor, where unbudgeted vitest took 3.
+    [4, 4, 2],
+    [10, 10, 2],
+    [16, Number.POSITIVE_INFINITY, 2],
+    // Memory capped the concurrency below the core count, so each task gets the spare cores.
+    [16, 8, 2],
+    [24, 4, 6],
+    [32, 4, 8],
+    // Never above vitest's own `cpus - 1`, which is also what keeps a tiny machine at one worker.
+    [4, 1, 3],
+    [2, 4, 1],
+    [1, 4, 1],
+  ];
+
+  for (const [cpus, tasks, expected] of table) {
+    it(`${cpus} cpus / ${tasks} tasks -> ${expected}`, () => {
+      assert.equal(vitestWorkerBudget(cpus, tasks), expected);
+    });
+  }
+});
+
+describe("flagConcurrencyLimit", () => {
+  const table: [args: string[], expected: number | null][] = [
+    [[], null],
+    [["--filter=!cloudflare-os", "--cache", "test"], null],
+    [["--concurrency-limit", "2"], 2],
+    [["--concurrency-limit=3"], 3],
+    [["--cache", "test", "--concurrency-limit", "2"], 2],
+    // vp's flag beats the variable, and a later flag beats an earlier one.
+    [["--concurrency-limit", "2", "--concurrency-limit=5"], 5],
+    // Unbounded, unless a limit comes with it.
+    [["--parallel"], Number.POSITIVE_INFINITY],
+    [["--parallel", "--concurrency-limit", "2"], 2],
+    [["--concurrency-limitx", "2"], null],
+    [["--no-parallel"], null],
+  ];
+
+  for (const [args, expected] of table) {
+    it(`${JSON.stringify(args)} -> ${expected}`, () => {
+      assert.equal(flagConcurrencyLimit(args), expected);
+      // The note's check is this same scan.
+      assert.equal(overridesConcurrency(args), expected !== null);
+    });
+  }
+
+  it("hands a malformed value back for the caller to reject", () => {
+    assert.ok(Number.isNaN(flagConcurrencyLimit(["--concurrency-limit"])));
+    assert.ok(Number.isNaN(flagConcurrencyLimit(["--concurrency-limit=lots"])));
+  });
+});
+
+// The split, then the budget, as `vpRunEnv` composes them, with explicit `cpus` and env.
+function budget(
+  cpus: number, limit: string | undefined, runs: number, vpArgs: string[] = [],
+): string | undefined {
+  const env: NodeJS.ProcessEnv = limit === undefined ? {} : { [VP_RUN_CONCURRENCY_LIMIT]: limit };
+  return withVitestWorkerBudget(
+      splitConcurrencyLimit(env, runs), runs, { cpus, vpArgs })[VITEST_MAX_WORKERS];
+}
+
+describe("withVitestWorkerBudget", () => {
+  it("gives each task its share of the CPUs, floored at two", () => {
+    // The starved CI runner: 4 tasks on 4 vCPUs, 8 workers in all where unbudgeted vitest ran 12.
+    assert.equal(budget(4, "4", 1), "2");
+    assert.equal(budget(32, "4", 1), "8");
+    // An explicitly low limit leaves room for more workers per task.
+    assert.equal(budget(16, "2", 1), "8");
+  });
+
+  // The dev server's case: the division's floor means the runs together exceed the limit.
+  it("counts the tasks every concurrent run adds, after the split", () => {
+    assert.equal(budget(64, "8", 4), "4");   // 4 runs x 4 (the floor), not 8 tasks
+    assert.equal(budget(64, "16", 2), "4");  // 2 runs x 8
+    assert.equal(budget(48, "3", 2), "8");   // 2 runs x 3: the limit is never raised past itself
+  });
+
+  it("sizes by a concurrency flag over the variable, as vp does", () => {
+    assert.equal(budget(16, "16", 1, ["--concurrency-limit", "2"]), "8");
+    assert.equal(budget(16, "16", 1, ["--concurrency-limit=4"]), "4");
+    assert.equal(budget(16, "16", 1, ["--parallel"]), "2");
+    assert.equal(budget(16, "16", 1, ["--parallel", "--concurrency-limit", "2"]), "8");
+  });
+
+  // vp appends what follows the task name to each task's command, where vitest would rank the
+  // variable above the flag.
+  it("sets nothing for a run whose arguments set vitest's worker count", () => {
+    for (const vpArgs of [
+      ["--cache", "test", "--maxWorkers=4"],
+      ["test", "--max-workers", "4"],
+      ["test", "--no-file-parallelism"],
+      ["test", "--fileParallelism", "false"],
+      ["test", "--inspect-brk"],
+    ]) {
+      assert.equal(budget(16, "2", 1, vpArgs), undefined, JSON.stringify(vpArgs));
+    }
+    assert.equal(budget(16, "2", 1, ["test", "--maxWorkersish"]), "8");
+  });
+
+  it("leaves an explicit VITEST_MAX_WORKERS alone, whatever it says", () => {
+    for (const value of ["3", "", "50%"]) {
+      const env = withVitestWorkerBudget(
+          { [VP_RUN_CONCURRENCY_LIMIT]: "4", [VITEST_MAX_WORKERS]: value }, 1, { cpus: 4 });
+      assert.equal(env[VITEST_MAX_WORKERS], value);
+    }
+  });
+
+  // There is nothing to divide by, and vp reports a bad value itself.
+  it("sets nothing without a valid limit", () => {
+    for (const limit of [undefined, "abc", "2.5", "0"]) {
+      assert.equal(budget(16, limit, 1), undefined, JSON.stringify(limit));
+    }
+    assert.equal(budget(16, "16", 1, ["--concurrency-limit"]), undefined);
+    assert.equal(budget(16, "16", 1, ["--concurrency-limit=0"]), undefined);
+  });
+
+  it("returns a copy, never the input", () => {
+    const input: NodeJS.ProcessEnv = { [VP_RUN_CONCURRENCY_LIMIT]: "4" };
+    const env = withVitestWorkerBudget(input, 1, { cpus: 4 });
+    assert.notEqual(env, input);
+    assert.equal(input[VITEST_MAX_WORKERS], undefined);
+  });
+
+  // A caller composing its own `vpRunEnv` out of the pieces gets no budget it did not ask for.
+  it("is its own step: the split alone sets no budget", () => {
+    for (const runs of [1, 2]) {
+      const env = splitConcurrencyLimit({ [VP_RUN_CONCURRENCY_LIMIT]: "16" }, runs);
+      assert.equal(env[VITEST_MAX_WORKERS], undefined);
+    }
+  });
+});
+
+// `vpRunEnv` measures the real machine, so its cases compare with the formula rather than a number.
+const share = (tasks: number) => String(vitestWorkerBudget(availableParallelism(), tasks));
+
+describe("vpRunEnv's vitest worker budget", () => {
+  it("derives the budget from the limit it resolved", () => {
+    const { env } = captureStderr(() => vpRunEnv({ env: {} }));
+    assert.equal(env[VITEST_MAX_WORKERS], share(Number(env[VP_RUN_CONCURRENCY_LIMIT])));
+  });
+
+  it("divides by the flag that will win, and by every concurrent run", () => {
+    const flagged = captureStderr(() => vpRunEnv(
+        { env: { [VP_RUN_CONCURRENCY_LIMIT]: "1" }, vpArgs: ["--concurrency-limit", "2"] }));
+    assert.equal(flagged.env[VITEST_MAX_WORKERS], share(2));
+
+    // 2 runs x 8 each.
+    const split = captureStderr(() =>
+        vpRunEnv({ env: { [VP_RUN_CONCURRENCY_LIMIT]: "16" }, concurrentRuns: 2 }));
+    assert.equal(split.env[VITEST_MAX_WORKERS], share(16));
+  });
+
+  it("leaves a forwarded vitest worker count alone", () => {
+    const { env } = captureStderr(() => vpRunEnv({ env: {}, vpArgs: ["test", "--maxWorkers=4"] }));
+    assert.equal(env[VITEST_MAX_WORKERS], undefined);
+  });
+
+  it("keeps an explicit VITEST_MAX_WORKERS", () => {
+    const { env } = captureStderr(() => vpRunEnv({ env: { [VITEST_MAX_WORKERS]: "3" } }));
+    assert.equal(env[VITEST_MAX_WORKERS], "3");
   });
 });

@@ -1,4 +1,4 @@
-// Runs against the real workerd tracing API (vitest-pool-workers), pinning the platform
+// Runs against the real workerd tracing API (`@cloudflare/vitest-plugin`), pinning the platform
 // contract `traced` depends on: enterSpan ends its span when the returned promise settles, not
 // when the synchronous callback returns (docs: workers/observability/traces/custom-spans/).
 //

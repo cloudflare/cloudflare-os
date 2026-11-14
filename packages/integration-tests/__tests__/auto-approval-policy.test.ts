@@ -75,7 +75,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
   const [alice] = nextUsernames("alice");
   const aliceApi = await signUp(publicApi, alice);
   const account = await provisionAccount(aliceApi);
-  const overseer = await aliceApi.newGadget();
+  const overseer = await aliceApi.newWorkspace();
   const gatekeeper = await overseer.newGatekeeper(
       account.id, `https://gadgets-test.example/things/${thingName}`);
   if (!gatekeeper) throw new Error("Failed to create the test connection");
@@ -196,7 +196,7 @@ describe("auto-approval policy", () => {
       // A fixture write resolves once submitted. Eligible first: the drain stops at the first
       // ineligible pending action.
       await expect(ws.session.writeValue(1, { autoApprovable: true })).resolves.toBe(1);
-      await expect(ws.session.writeValue(2)).resolves.toBe(2);
+      await expect(ws.session.writeValue(2, { autoApprovable: false })).resolves.toBe(2);
       expect((await listWrites(ws)).map(write => write.state)).toEqual(["pending", "pending"]);
       await expect(actionState(ws.label)).resolves.toEqual(
           { pending: [{ id: 1, value: 1 }, { id: 2, value: 2 }], applyCount: 0 });

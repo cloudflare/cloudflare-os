@@ -1,159 +1,67 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { access, mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { promisify } from "node:util";
+import { runInNewContext } from "node:vm";
 import { after, before, describe, it } from "node:test";
-import ts from "typescript6"; // JS compiler API (decodeMappings); see build-gatekeeper-configurator.ts
+import ts from "typescript6"; // JS compiler API (decodeMappings); see configurator-ui/build/module.ts
 
-const { JSDOM } = createRequire(import.meta.url)("jsdom");
+// The builder's own concerns: which env it reads, what it writes beside the generated HTML for
+// error reporting, and how that lines up with what the frame runs. The runtime it embeds, and the
+// frame as a whole, are tested in `packages/configurator-ui`.
 
 const execFileAsync = promisify(execFile);
 const builder = resolve("scripts/build-gatekeeper-configurator.ts");
 const configuratorSource =
   'import { h } from "@gadgets/configurator-ui";\n' +
   'export default { render() { throw new Error("mapped configurator failure"); return <div />; } };\n';
-const checkboxConfiguratorSource =
-  'import { CheckboxList, h } from "@gadgets/configurator-ui";\n' +
-  'const options = Array.from({ length: 12 }, (_, index) => ({\n' +
-  '  value: `tool-${index}`, title: `Tool ${index}`,\n' +
-  '}));\n' +
-  'export default {\n' +
-  '  initial: { tools: null, failRender: false, listName: "tools" },\n' +
-  '  resourceUrl({ ui }) { return ui.resourceUrl(); },\n' +
-  '  render({ ui, values, setValues }) {\n' +
-  '    if (values.failRender) throw new Error("state-driven render failure");\n' +
-  '    return <div><button id="fail-render" onClick={() => setValues({ failRender: true })}>Fail</button>\n' +
-  '      <button id="recover-render" onClick={() => setValues({ failRender: false })}>Recover</button>\n' +
-  '      <button id="fail-options" onClick={() => setValues({ listName: "failing" })}>Fail options</button>\n' +
-  '      <CheckboxList name={values.listName} value={values.tools}\n' +
-  '        loadOptions={values.listName === "tools" ? async () => options : () => ui.failOptions()}\n' +
-  '        onChange={tools => setValues({ tools })} /></div>;\n' +
-  '  },\n' +
-  '};\n';
+const REPORT_MESSAGE_TYPE = "gadgets.frontend-error.v1";
+const reportingArtifacts = [
+  "test-ui.js", "test-ui.js.map", "configurator-runtime.js", "configurator-runtime.js.map",
+];
+
 let fixtureDir: string;
 let disabledFixtureDir: string;
 let devModeFixtureDir: string;
 let devEnvWithoutDevFlagFixtureDir: string;
-let checkboxFixtureDir: string;
 
 // `envFile` is the `.env.*` file that enables reporting, so which one is written decides which build
 // mode picks it up. `staleArtifacts` pre-seeds the outputs a reporting-disabled build must remove.
-async function createFixture(prefix: string, { envFile, builderArgs = [], staleArtifacts = false, source }: {
+async function createFixture(prefix: string, { envFile, builderArgs = [], staleArtifacts = false }: {
   envFile?: string;
   builderArgs?: string[];
   staleArtifacts?: boolean;
-  source?: string;
 } = {}): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), prefix));
   await mkdir(join(directory, "src", "configurator"), { recursive: true });
-  await mkdir(join(directory, "node_modules", "capnweb", "dist"), { recursive: true });
   if (envFile) {
     await writeFile(join(directory, envFile), "VITE_FRONTEND_ERROR_REPORTING=true\n");
   }
   if (staleArtifacts) {
     await mkdir(join(directory, "src", "generated"), { recursive: true });
-    await writeFile(join(directory, "src", "generated", "test-ui.js"), "stale");
-    await writeFile(join(directory, "src", "generated", "test-ui.js.map"), "stale");
+    for (const name of reportingArtifacts) {
+      await writeFile(join(directory, "src", "generated", name), "stale");
+    }
   }
-  await writeFile(join(directory, "node_modules", "capnweb", "dist", "index.js"),
-    "export class RpcTarget {}\nexport function newMessagePortRpcSession() {}\n");
-  await writeFile(join(directory, "src", "configurator", "test-ui.tsx"), source ?? configuratorSource);
+  await writeFile(join(directory, "src", "configurator", "test-ui.tsx"), configuratorSource);
   await execFileAsync(process.execPath, [builder, directory, ...builderArgs]);
   return directory;
 }
 
-async function readRuntime(directory: string): Promise<string> {
+/** The generated frame's inline scripts: the configurator module, then the runtime. */
+async function readScripts(directory: string): Promise<{ module: string; runtime: string }> {
   const html = await readFile(join(directory, "src", "generated", "test-ui.txt"), "utf8");
-  const match = html.match(
-    /<script type="module" src="data:text\/javascript;charset=utf-8,([^"]+)"/);
-  assert.ok(match, "generated HTML should contain its runtime module");
-  return decodeURIComponent(match[1]);
+  const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/gi)].map(match => match[1]);
+  assert.equal(scripts.length, 2, "generated HTML should inline the module and the runtime");
+  return { module: scripts[0], runtime: scripts[1] };
 }
 
-async function runConfiguratorRuntime(
-  directory: string,
-  waitFor: "checkbox" | "render-error" = "checkbox",
-) {
-  const dom = new JSDOM("<!DOCTYPE html><div id=\"root\"></div>", {
-    pretendToBeVisual: true,
-    runScripts: "outside-only",
-  });
-  const runtime = (await readRuntime(directory)).replace(/^import .*;\n/gm, "");
-  Object.defineProperty(dom.window, "postMessage", { value: () => {} });
-  dom.window.eval(`
-    class MessageChannel {
-      constructor() { this.port1 = {}; this.port2 = {}; }
-    }
-    class ResizeObserver {
-      observe() {}
-      disconnect() {}
-    }
-    class RpcTarget {}
-    const CSS = { escape: value => String(value) };
-    globalThis.selectionReadyEvents = [];
-    function newMessagePortRpcSession(_port, iframe) {
-      globalThis.configuratorIframe = iframe;
-      return {
-        gatekeeper: {
-          resourceUrl() {
-            return new Promise(resolve => { globalThis.resolveResourceUrl = resolve; });
-          },
-          failOptions() {
-            return new Promise((_, reject) => { globalThis.rejectOptions = reject; });
-          },
-        },
-        getInitialResource: async () => null,
-        setSelectionReady(ready) {
-          globalThis.selectionReadyEvents.push({
-            ready,
-            rendered: Boolean(document.getElementById("layout-root")),
-          });
-        },
-        resize() {},
-        forwardScroll() {},
-      };
-    }
-    ${runtime}
-  `);
-
-  for (let attempt = 0; attempt < 20; attempt++) {
-    if (waitFor === "checkbox"
-        ? dom.window.document.querySelector(".checkbox-rows")
-        : dom.window.document.querySelector(".error")) return dom;
-    await new Promise(done => setTimeout(done, 0));
+async function assertNoReportingArtifacts(directory: string): Promise<void> {
+  for (const name of reportingArtifacts) {
+    await assert.rejects(access(join(directory, "src", "generated", name)), { code: "ENOENT" });
   }
-  const error = dom.window.document.getElementById("root")?.textContent;
-  dom.window.close();
-  throw new Error(`Configurator did not render its checkbox list: ${error}`);
-}
-
-function readConfiguratorModule(runtime: string): string {
-  const match = runtime.match(/new Function\(("(?:\\.|[^"\\])*")\)/);
-  assert.ok(match, "generated runtime should embed the configurator module");
-  return JSON.parse(match[1]);
-}
-
-/**
- * The named functions from the generated runtime, evaluated in isolation. Typed loosely on purpose:
- * these are read back out of build output, so their real signatures live in the builder.
- */
-function readRuntimeFunctions(
-  runtime: string,
-  ...names: string[]
-): Record<string, (...args: any[]) => any> {
-  const constants = [...runtime.matchAll(/^const [A-Z_]+ = .*;$/gm)].map(match => match[0]);
-  const definitions = names.map(name => {
-    const match = runtime.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
-    assert.ok(match, `generated runtime should define ${name}`);
-    return match[0];
-  });
-  // The generated runtime is trusted build output and production executes the same function.
-  // oxlint-disable-next-line no-new-func
-  return new Function(
-    `${constants.join("\n")}\n${definitions.join("\n")}\nreturn { ${names.join(", ")} };`)();
 }
 
 /** The source map the builder writes beside each configurator artifact. */
@@ -201,34 +109,31 @@ function originalPositionFor(sourceMap: RawSourceMap, line: number, column: numb
 }
 
 before(async () => {
-  fixtureDir = await createFixture("configurator-reporting-", { envFile: ".env.production" });
-  disabledFixtureDir = await createFixture("configurator-no-reporting-", { staleArtifacts: true });
-  devModeFixtureDir = await createFixture("configurator-dev-mode-",
-    { envFile: ".env.development", builderArgs: ["--dev"] });
-  devEnvWithoutDevFlagFixtureDir = await createFixture("configurator-dev-env-oneshot-",
-    { envFile: ".env.development", staleArtifacts: true });
-  checkboxFixtureDir = await createFixture(
-    "configurator-checkbox-", { source: checkboxConfiguratorSource });
+  [fixtureDir, disabledFixtureDir, devModeFixtureDir, devEnvWithoutDevFlagFixtureDir] = await Promise.all([
+    createFixture("configurator-reporting-", { envFile: ".env.production" }),
+    createFixture("configurator-no-reporting-", { staleArtifacts: true }),
+    createFixture("configurator-dev-mode-", { envFile: ".env.development", builderArgs: ["--dev"] }),
+    createFixture("configurator-dev-env-oneshot-", { envFile: ".env.development", staleArtifacts: true }),
+  ]);
 });
 
 after(async () => {
-  await rm(fixtureDir, { recursive: true, force: true });
-  await rm(disabledFixtureDir, { recursive: true, force: true });
-  await rm(devModeFixtureDir, { recursive: true, force: true });
-  await rm(devEnvWithoutDevFlagFixtureDir, { recursive: true, force: true });
-  await rm(checkboxFixtureDir, { recursive: true, force: true });
+  for (const directory of [fixtureDir, disabledFixtureDir, devModeFixtureDir, devEnvWithoutDevFlagFixtureDir]) {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 describe("generated configurator error reporting", () => {
   it("maps executed configurator failures to the original TSX position", async () => {
-    const runtime = await readRuntime(fixtureDir);
-    const moduleCode = readConfiguratorModule(runtime);
+    const { module } = await readScripts(fixtureDir);
+    // Run as the frame runs it: a classic script defining the module, which the runtime then calls.
+    const frameGlobal: Record<string, unknown> = { h: () => null };
+    runInNewContext(module, frameGlobal);
+    const define = frameGlobal.__gadgetsConfiguratorModule;
+    assert.equal(typeof define, "function", "the module script should define the module");
     let stack: string | undefined;
     try {
-      // The generated source is trusted build output and production executes it the same way.
-      // oxlint-disable-next-line no-new-func
-      const configuratorModule = new Function(moduleCode)();
-      configuratorModule.render();
+      (define as () => { render(): unknown })().render();
     } catch (error) {
       stack = (error as Error).stack;
     }
@@ -249,334 +154,40 @@ describe("generated configurator error reporting", () => {
     });
   });
 
-  it("emits an upload artifact aligned with the executed virtual source", async () => {
-    const runtime = await readRuntime(fixtureDir);
-    const moduleCode = readConfiguratorModule(runtime);
-    const artifact = await readFile(
-      join(fixtureDir, "src", "generated", "test-ui.js"), "utf8");
+  it("emits upload artifacts identical to the scripts the frame runs", async () => {
+    const { module, runtime } = await readScripts(fixtureDir);
+    const generated = join(fixtureDir, "src", "generated");
 
-    assert.equal(artifact, `\n\n${moduleCode}\n`);
+    assert.equal(await readFile(join(generated, "test-ui.js"), "utf8"), `${module}\n`);
+    assert.equal(await readFile(join(generated, "configurator-runtime.js"), "utf8"), `${runtime}\n`);
+    assert.match(runtime, /\/\/# sourceMappingURL=app:\/\/\/gatekeeper\/[^/]+\/configurator\/configurator-runtime\.js\.map$/);
+    assert.ok(runtime.includes(REPORT_MESSAGE_TYPE), "the runtime should report to the host");
   });
 
-  it("uses the shared bounded exception serializer before posting", async () => {
-    const runtime = await readRuntime(fixtureDir);
-    const dataModules = [...runtime.matchAll(/base64,([A-Za-z0-9+/=]+)/g)]
-      .map(match => Buffer.from(match[1], "base64").toString("utf8"));
-    const serializerSource = dataModules.find(source => source.includes("serializeException"));
-    assert.ok(serializerSource, "generated runtime should embed the shared serializer");
+  it("builds reporting out and removes stale artifacts when reporting is disabled", async () => {
+    const { module, runtime } = await readScripts(disabledFixtureDir);
 
-    const serializer = await import(
-      `data:text/javascript;base64,${Buffer.from(serializerSource).toString("base64")}`);
-    const error = new Error("m".repeat(2_000));
-    error.name = "n".repeat(300);
-    error.stack = "s".repeat(20_000);
-    const exception = serializer.serializeException(error);
-
-    assert.equal(exception.type.length, 256);
-    assert.equal(exception.message.length, 1_024);
-    assert.equal(exception.stack.length, 16_384);
-    assert.equal(exception.truncated, true);
-  });
-
-  it("reports handled option-loading failures", async () => {
-    const runtime = await readRuntime(fixtureDir);
-
-    assert.match(runtime, /reportFrontendIssue\("configurator\.checkbox-list-load", error\)/);
-    assert.match(runtime, /reportFrontendIssue\("configurator\.autocomplete-load", error\)/);
-    assert.match(runtime, /reportFrontendIssue\("configurator\.initial-resource-load", error\)/);
-    assert.match(runtime, /reportFrontendIssue\("configurator\.initial-values-load", error\)/);
-  });
-
-  it("disables reporting and removes source-map artifacts when reporting is disabled", async () => {
-    const generatedDir = join(disabledFixtureDir, "src", "generated");
-    const runtime = await readRuntime(disabledFixtureDir);
-
-    assert.match(runtime, /const frontendReportingEnabled = false;/);
-    assert.doesNotMatch(runtime, /sourceURL=.*serialize-exception/);
-    await assert.rejects(access(join(generatedDir, "test-ui.js")), { code: "ENOENT" });
-    await assert.rejects(access(join(generatedDir, "test-ui.js.map")), { code: "ENOENT" });
+    assert.ok(!runtime.includes(REPORT_MESSAGE_TYPE), "a disabled build should ship no reporting");
+    assert.doesNotMatch(`${module}\n${runtime}`, /sourceMappingURL/);
+    await assertNoReportingArtifacts(disabledFixtureDir);
   });
 
   // `--dev` is what the `pnpm dev-server` pre-flight passes so its one-shot build resolves the same
   // env mode the watchers do. If these two ever agreed, the pre-flight's output would differ from the
   // watcher's and Wrangler would restart every gatekeeper worker mid-startup.
   it("reads .env.development when built with --dev", async () => {
-    const runtime = await readRuntime(devModeFixtureDir);
+    const { runtime } = await readScripts(devModeFixtureDir);
 
-    assert.match(runtime, /const frontendReportingEnabled = true;/);
-    // The serializer's own sourceURL is inside its base64 data module, not the runtime text, so the
-    // import is what is visible here.
-    assert.match(runtime, /import \{ serializeException \} from "data:text\/javascript/);
+    assert.ok(runtime.includes(REPORT_MESSAGE_TYPE));
     await access(join(devModeFixtureDir, "src", "generated", "test-ui.js"));
     await access(join(devModeFixtureDir, "src", "generated", "test-ui.js.map"));
   });
 
   it("ignores .env.development without --dev", async () => {
-    const generatedDir = join(devEnvWithoutDevFlagFixtureDir, "src", "generated");
-    const runtime = await readRuntime(devEnvWithoutDevFlagFixtureDir);
+    const { runtime } = await readScripts(devEnvWithoutDevFlagFixtureDir);
 
-    assert.match(runtime, /const frontendReportingEnabled = false;/);
-    assert.doesNotMatch(runtime, /sourceURL=.*serialize-exception/);
-    await assert.rejects(access(join(generatedDir, "test-ui.js")), { code: "ENOENT" });
-    await assert.rejects(access(join(generatedDir, "test-ui.js.map")), { code: "ENOENT" });
-  });
-});
-
-// The host decides to prefill with `matchesResourceUrlPattern`, which tries both slash forms, and
-// the server mints the capability from a parser that also accepts both. Extraction sits between
-// them, so a strict match here lands the caller on the right configurator with an empty field.
-describe("generated configurator prefill", () => {
-  const pattern = "https://drive.google.com/drive/folders/:folderId";
-
-  it("extracts named groups with or without a trailing slash", async () => {
-    const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
-
-    // The doubled form also proves the strip regex survived the runtime template literal, where a
-    // single backslash would have emitted `//` and commented out the rest of the line.
-    for (const url of [
-      "https://drive.google.com/drive/folders/FOLDER123",
-      "https://drive.google.com/drive/folders/FOLDER123/",
-      "https://drive.google.com/drive/folders/FOLDER123//",
-    ]) {
-      assert.deepEqual(defaultValuesFromResourceUrl(url, pattern), { folderId: "FOLDER123" });
-    }
-  });
-
-  it("decodes an encoded group and ignores a wildcard", async () => {
-    const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
-
-    assert.deepEqual(
-      defaultValuesFromResourceUrl(
-        "https://docs.google.com/document/d/doc%2F1/edit",
-        "https://docs.google.com/document/d/:docId/*"),
-      { docId: "doc/1" });
-  });
-
-  it("returns nothing for a URL the pattern does not describe", async () => {
-    const { defaultValuesFromResourceUrl } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "defaultValuesFromResourceUrl");
-
-    assert.deepEqual(
-      defaultValuesFromResourceUrl("https://drive.google.com/drive/my-drive", pattern), {});
-  });
-});
-
-describe("generated configurator option sanitizing", () => {
-  it("truncates an overflowing suggestion list but refuses an overflowing grant list", async () => {
-    const { sanitizeOptions } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "optionText", "sanitizeOptions");
-    const options = Array.from({ length: 201 }, (_, index) => ({
-      value: `tool-${index}`,
-      title: `Tool ${index}`,
-    }));
-
-    assert.equal(sanitizeOptions(options, "truncate").length, 200);
-    assert.throws(() => sanitizeOptions(options, "refuse"), /at most 200 options/i);
-  });
-
-  it("keeps every option when the list is within the limit", async () => {
-    const { sanitizeOptions } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "optionText", "sanitizeOptions");
-    const options = Array.from({ length: 200 }, (_, index) => ({
-      value: `tool-${index}`,
-      title: `Tool ${index}`,
-    }));
-
-    assert.equal(sanitizeOptions(options).length, options.length);
-  });
-
-  it("keeps stale selections visible so they can be cleared", async () => {
-    const { withUnavailableOptions } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "splitList", "withUnavailableOptions");
-    assert.deepEqual(withUnavailableOptions(
-      [{ value: "current", title: "Current" }], "current,removed"), [
-      { value: "current", title: "Current" },
-      { value: "removed", title: "removed (unavailable)" },
-    ]);
-  });
-
-  it("presents every option as selected when requested", async () => {
-    const { checkboxSelection } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "splitList", "checkboxSelection");
-    assert.deepEqual(
-        [...checkboxSelection([{ value: "read" }, { value: "write" }], null, true)],
-        ["read", "write"]);
-  });
-
-  it("only blocks failed checkbox lists that are enabled", async () => {
-    const { hasBlockingCheckboxFailure } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "hasBlockingCheckboxFailure");
-    assert.equal(hasBlockingCheckboxFailure({ tools: { status: "failed", disabled: true } }), false);
-    assert.equal(hasBlockingCheckboxFailure({ tools: { status: "failed", disabled: false } }), true);
-  });
-
-  it("prunes checkbox lists absent from the current render", async () => {
-    const { pruneCheckboxEntries } = readRuntimeFunctions(
-      await readRuntime(fixtureDir), "pruneCheckboxEntries");
-    const entries = {
-      "tools:old": { status: "failed", disabled: false },
-      "tools:new": { status: "ready", disabled: false },
-    };
-    pruneCheckboxEntries(entries, new Set(["tools:new"]));
-    assert.deepEqual(entries, { "tools:new": { status: "ready", disabled: false } });
-  });
-});
-
-describe("generated configurator checkbox behavior", () => {
-  it("keeps the tool list in place on selection and resets it when filtering", async () => {
-    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
-    try {
-      const root = dom.window.document.getElementById("root");
-      const rows = root.querySelector(".checkbox-rows");
-      const checkbox = root.querySelectorAll('input[type="checkbox"]')[8];
-      assert.ok(rows);
-      assert.ok(checkbox);
-      rows.scrollTop = 176;
-
-      checkbox.click();
-
-      const rowsAfterSelection = root.querySelector(".checkbox-rows");
-      assert.notEqual(rowsAfterSelection, rows);
-      assert.equal(rowsAfterSelection?.scrollTop, 176);
-      assert.match(root.textContent, /1 of 12 selected/);
-
-      const filter = root.querySelector('input[type="search"]');
-      assert.ok(filter);
-      rowsAfterSelection.scrollTop = 176;
-      filter.value = "tool";
-      filter.dispatchEvent(new dom.window.Event("input", { bubbles: true }));
-
-      assert.equal(root.querySelector(".checkbox-rows")?.scrollTop, 0);
-    } finally {
-      dom.window.close();
-    }
-  });
-});
-
-describe("generated configurator readiness", () => {
-  it("reports ready after rendering when the optional readiness predicate is absent", async () => {
-    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
-    try {
-      const selectionReadyEvents = (dom.window as unknown as {
-        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
-      }).selectionReadyEvents;
-      assert.equal(selectionReadyEvents.length, 1);
-      assert.equal(selectionReadyEvents[0].ready, true);
-      assert.equal(selectionReadyEvents[0].rendered, true);
-    } finally {
-      dom.window.close();
-    }
-  });
-
-  it("does not report ready when the initial render fails", async () => {
-    const dom = await runConfiguratorRuntime(fixtureDir, "render-error");
-    try {
-      const selectionReadyEvents = (dom.window as unknown as {
-        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
-      }).selectionReadyEvents;
-      assert.equal(selectionReadyEvents.length, 1);
-      assert.equal(selectionReadyEvents[0].ready, false);
-    } finally {
-      dom.window.close();
-    }
-  });
-
-  it("retracts readiness and refuses collection after a state-driven render fails", async () => {
-    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
-    try {
-      const failRender = dom.window.document.querySelector("#fail-render");
-      assert.ok(failRender);
-      dom.window.addEventListener("error", (event: Event) => event.preventDefault(), { once: true });
-      failRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
-
-      const runtime = dom.window as unknown as {
-        selectionReadyEvents: { ready: boolean; rendered: boolean }[];
-        configuratorIframe: { collectResourceUrl(): Promise<string> };
-      };
-      assert.deepEqual(Array.from(runtime.selectionReadyEvents, event => event.ready), [true, false]);
-      await assert.rejects(
-        runtime.configuratorIframe.collectResourceUrl(),
-        /failed to render its current state/i,
-      );
-
-      const recoverRender = dom.window.document.querySelector("#recover-render");
-      assert.ok(recoverRender);
-      recoverRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
-      assert.deepEqual(
-        Array.from(runtime.selectionReadyEvents, event => event.ready),
-        [true, false, true],
-      );
-    } finally {
-      dom.window.close();
-    }
-  });
-
-  it("rejects an in-flight collection when rendering fails", async () => {
-    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
-    try {
-      const runtime = dom.window as unknown as {
-        configuratorIframe: { collectResourceUrl(): Promise<string> };
-        resolveResourceUrl(url: string): void;
-      };
-      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
-      const failRender = dom.window.document.querySelector("#fail-render");
-      assert.ok(failRender);
-      dom.window.addEventListener("error", (event: Event) => event.preventDefault(), { once: true });
-      failRender.dispatchEvent(new dom.window.Event("click", { bubbles: true }));
-      runtime.resolveResourceUrl("https://example.com/");
-
-      await assert.rejects(resourceUrl, /failed to render its current state/i);
-    } finally {
-      dom.window.close();
-    }
-  });
-
-  it("rejects an in-flight collection when its rendered values change", async () => {
-    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
-    try {
-      const runtime = dom.window as unknown as {
-        configuratorIframe: { collectResourceUrl(): Promise<string> };
-        resolveResourceUrl(url: string): void;
-      };
-      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
-      const checkbox = dom.window.document.querySelector('input[type="checkbox"]');
-      assert.ok(checkbox);
-      checkbox.click();
-      runtime.resolveResourceUrl("https://example.com/");
-
-      await assert.rejects(resourceUrl, /changed while its resource URL was being collected/i);
-    } finally {
-      dom.window.close();
-    }
-  });
-
-  it("rejects an in-flight collection when configurator options fail", async () => {
-    const dom = await runConfiguratorRuntime(checkboxFixtureDir);
-    try {
-      const failOptions = dom.window.document.querySelector("#fail-options");
-      assert.ok(failOptions);
-      failOptions.click();
-      assert.ok(dom.window.document.querySelector('[data-name="failing"]'));
-      const runtime = dom.window as unknown as {
-        configuratorIframe: { collectResourceUrl(): Promise<string> };
-        rejectOptions(error: Error): void;
-        resolveResourceUrl(url: string): void;
-      };
-      for (let attempt = 0; attempt < 20 && !runtime.rejectOptions; attempt++) {
-        await new Promise(done => setTimeout(done, 0));
-      }
-      assert.ok(runtime.rejectOptions);
-      const resourceUrl = runtime.configuratorIframe.collectResourceUrl();
-      runtime.rejectOptions(new Error("options unavailable"));
-      await new Promise(done => setTimeout(done, 0));
-      runtime.resolveResourceUrl("https://example.com/");
-
-      await assert.rejects(resourceUrl, /options did not load/i);
-    } finally {
-      dom.window.close();
-    }
+    assert.ok(!runtime.includes(REPORT_MESSAGE_TYPE));
+    await assertNoReportingArtifacts(devEnvWithoutDevFlagFixtureDir);
   });
 });
 
@@ -587,11 +198,11 @@ describe("generated configurator readiness", () => {
 // the generated HTML that ships in the Worker.
 //
 // Deliberately an exact match rather than a `VITE_*` wildcard on the task. The builder is not vite:
-// it transpiles with `ts.transpileModule` and has no `define` pass, so no configurator source can
-// read `import.meta.env` and the set of variables that can affect its output is closed -- exactly
-// what this assertion pins. A wildcard would instead invalidate all 13 configurator builds whenever
-// any unrelated `VITE_` var moves (measured on workshop-frontend, whose wildcard is right for the
-// opposite reason: vite's `define` inlines any of them, so its set is open).
+// it transpiles with `ts.transpileModule` and bundles its runtime with a fixed `define`, so no
+// configurator or runtime source can read `import.meta.env` and the set of variables that can affect
+// its output is closed -- exactly what this assertion pins. A wildcard would instead invalidate every
+// configurator build whenever any unrelated `VITE_` var moves (measured on workshop-frontend, whose
+// wildcard is right for the opposite reason: vite's `define` inlines any of them, so its set is open).
 /**
  * `source` with comments removed, tracking string literals so that one cannot be mistaken for a
  * comment. A regex will not do here: the task below excludes `src/generated` with a glob whose

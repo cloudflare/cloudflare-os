@@ -1,0 +1,430 @@
+// The Overseer Durable Object's storage migrations: one function per step of the `version`
+// singleton (see makeOverseerStorage), each bringing a workspace up from the schema version
+// before it.
+//
+// The Overseer's constructor runs them, in version order, before anything else can touch storage
+// (see OverseerImpl's constructor for how they are sequenced around its own initialization). The
+// synchronous ones check the stored version themselves and return immediately at any other, so
+// they are called unconditionally; the git-storage migration is asynchronous, so the constructor
+// checks the version itself in order to run it under blockConcurrencyWhile.
+//
+// A change to what a workspace has stored needs a new version, a migration here, and a matching
+// bump of OVERSEER_STORAGE_VERSION.
+
+import type {
+  AgentSpawnerConfig, CollaboratorRole, CommitIdentity, GadgetUpstream, WorkpieceId,
+} from "@gadgets/workshop-shared/api";
+import {
+  chatKeyPrefix, type AgentSpawnerBindingProps, type BindingRecord, type GadgetRecord,
+  type LegacyAgentSpawnerConfig, type OverseerStorage,
+} from "./overseer-storage";
+import { migrateCodeLogToGit } from "./overseer-git-migration";
+import { retryOnDoReset } from "../do-retry";
+import { commitIdentityForAuthor, type WorkspaceGitCache } from "../git-cache";
+import type { createWorkshopLogger } from "../observability";
+import type { UserDurableObject } from "../user";
+
+/**
+ * The current storage schema version: the one the last migration below stamps, and the one a
+ * new workspace is born at (so it has nothing to migrate). The migrations themselves name
+ * their versions literally, since each one's source and target are fixed for good.
+ */
+export const OVERSEER_STORAGE_VERSION = 7;
+
+/**
+ * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
+ * chats. It runs in the constructor, so this bounds what a workspace's first wake waits on.
+ */
+export const UPSTREAM_BACKFILL_MESSAGE_LIMIT = 1000;
+
+/**
+ * What the migrations need from the Overseer. OverseerImpl satisfies this structurally and
+ * passes itself; the interface exists so this module names exactly what it depends on, without
+ * importing OverseerImpl.
+ */
+export interface OverseerMigrationHost {
+  /** The Durable Object's state: storage transactions, its own id, and its loopback exports. */
+  ctx: DurableObjectState;
+
+  /** The workspace's storage. */
+  storage: OverseerStorage;
+
+  /** The workspace's git store, which receives the commits the git migration writes. */
+  gitCache: WorkspaceGitCache;
+
+  /** The Overseer's logger, so migration logs carry the workspace's id like all its others. */
+  logger: ReturnType<typeof createWorkshopLogger>;
+
+  /** The workspace owner's user DO id. Absent if the workspace was never initialized. */
+  ownerId?: string;
+
+  /** The workspace's default gadget, as cached by the Overseer. */
+  defaultGadgetId?: WorkpieceId;
+
+  /** A fresh stub to the owner's user DO. Throws if the workspace was never initialized. */
+  ownerUserDo(): DurableObjectStub<UserDurableObject>;
+
+  /** Allocates a workpiece id from the shared counter. */
+  allocateWorkpieceId(): WorkpieceId;
+
+  /**
+   * Creates the workspace's default gadget, unless it already has one, and returns its id. The
+   * Overseer owns this because it also updates the cached `defaultGadgetId`.
+   */
+  ensureDefaultGadget(commitId: string | undefined): WorkpieceId;
+
+  /**
+   * A unique, monotonic chat-message timestamp. The Overseer owns this because uniqueness spans
+   * every message it writes, before and after the migrations.
+   */
+  getChatTimestamp(): Date;
+}
+
+/**
+ * Version 0 -> 1: the workspace predates multi-gadget support. Fully synchronous, so nothing
+ * can observe pre-migration state.
+ */
+export function migrateToMultiGadget(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 0) return;
+  if (host.ownerId === undefined) {
+    // Brand-new (or never-initialized) DO: there is nothing to migrate. We deliberately avoid
+    // writing anything here, so that probing a nonexistent DO leaves no storage behind; the
+    // version singleton is set when the workspace is first initialized (see
+    // OverseerDurableObject.open() / receiveExternalMessage()).
+    return;
+  }
+
+  // Run the whole migration in one transaction so that a mid-migration error can't leave the
+  // workspace half-migrated.
+  let startedAt = Date.now();
+  host.ctx.storage.transactionSync(() => {
+    // If the workspace has any gadget content (code beyond the initial empty snapshot, or named
+    // bindings), register that content as the workspace's single gadget and record it as the
+    // default gadget; binding names and blueprint annotations move from the gatekeeper records
+    // onto the gadget's binding edges. (The stale originals are left on the gatekeeper records;
+    // see GatekeeperRecord.) A workspace with no gadget content migrates to zero gadgets.
+    let hasCode = [...host.storage.code.list({limit: 1, start: 2})].length > 0;
+    let allGatekeepers = [...host.storage.gatekeepers.list()];
+    let namedGatekeepers = allGatekeepers.filter(gk => gk.bindingName !== undefined);
+
+    // The legacy flat env's named entries: each named gatekeeper, plus `GADGET -> the legacy
+    // gadget` when one is created below. Used to resolve spawner allowlists further down.
+    // (The workspace default binding list itself needs no migration step: it is derived on
+    // demand from the gadget record created below, whose bindingName and binding edges yield
+    // exactly this map -- so chats in old workspaces keep seeing `env.GADGET` and the same
+    // named bindings they always did.)
+    let legacyEnv: Record<string, WorkpieceId> = {};
+    for (let gk of namedGatekeepers) {
+      legacyEnv[gk.bindingName!] = gk.id;
+    }
+
+    if (hasCode || namedGatekeepers.length > 0) {
+      let id = host.allocateWorkpieceId();
+      // Set defaultGadgetId before putting the record, so that workpiece subscribers never see
+      // the gadget without its legacy names (see the `defaultGadgetId` singleton).
+      host.storage.defaultGadgetId.put(id);
+      let bindings: Record<string, BindingRecord> = {};
+      for (let gk of namedGatekeepers) {
+        bindings[gk.bindingName!] = {
+          target: gk.id,
+          ...(gk.blueprintAnnotation ? {blueprintAnnotation: gk.blueprintAnnotation} : {}),
+        };
+      }
+      host.storage.gadgets.put({
+        type: "gadget",
+        id,
+        title: host.storage.title.get(),
+        created: new Date(),
+        bindingName: "GADGET",
+        bindings,
+      });
+      legacyEnv["GADGET"] = id;
+    }
+
+    // Rewrite each agent-spawner gatekeeper's config from the old `env?: string[]` binding-name
+    // allowlist to the new `env: Record<name, WorkpieceId>` form (see AgentSpawnerConfig). The
+    // config lives in two places and both must be updated: the record's `creationSpec`, and the
+    // props baked into the record's `class` stub. Props can't be edited in place, so the stub
+    // is recreated the same way newAgentSpawnerGatekeeper() creates it -- except that
+    // `creatorUserId` isn't recoverable from the record, so it is omitted, relying on the
+    // documented legacy fallback to the workspace owner.
+    for (let gk of allGatekeepers) {
+      if (gk.creationSpec?.type !== "agentSpawner") continue;
+      // The stored (pre-migration) shape differs from the real type only in `env`; the
+      // conflicting `env` types force the cast through `unknown`.
+      let {env: legacyAllowlist, ...restConfig} =
+          gk.creationSpec.config as unknown as LegacyAgentSpawnerConfig;
+      let env: Record<string, WorkpieceId>;
+      if (legacyAllowlist !== undefined) {
+        // Resolve each allowlisted name against the gatekeepers' binding names, dropping any
+        // that no longer resolve.
+        env = {};
+        for (let name of legacyAllowlist) {
+          if (Object.hasOwn(legacyEnv, name)) env[name] = legacyEnv[name];
+        }
+      } else {
+        // An absent allowlist historically meant "unrestricted": the spawned agent saw every
+        // named binding plus GADGET -- exactly the legacy env map built above.
+        env = {...legacyEnv};
+      }
+      let config: AgentSpawnerConfig = {...restConfig, env};
+      gk.creationSpec = {...gk.creationSpec, config};
+      let props: AgentSpawnerBindingProps = {config};
+      gk.class = host.ctx.exports.AgentSpawnerGatekeeper({props});
+      host.storage.gatekeepers.put(gk);
+    }
+
+    host.storage.version.put(1);
+  });
+
+  host.logger.info("migrated workspace storage", {
+    event: "storage.migration.completed", durationMs: Date.now() - startedAt,
+  });
+}
+
+/**
+ * Version 1 -> 2: runs the git-storage migration (see overseer-git-migration.ts) and stamps
+ * schema version 2. The version stamp is written last: storage writes persist in order, so a
+ * crash mid-migration leaves the version at 1 and the next construction redoes the whole
+ * (re-runnable) migration.
+ *
+ * Unlike the others this awaits and does not check the stored version: the caller does, since
+ * it must run this under blockConcurrencyWhile.
+ */
+export async function migrateToGitStorage(host: OverseerMigrationHost): Promise<void> {
+  let startedAt = Date.now();
+  let { commits } = await migrateCodeLogToGit({
+    storage: host.storage,
+    gitCache: host.gitCache,
+    ownerIdentity: await ownerCommitIdentity(host),
+    defaultGadgetId: host.defaultGadgetId,
+    createDefaultGadget: () => host.ensureDefaultGadget(undefined),
+    getChatTimestamp: () => host.getChatTimestamp(),
+  });
+  host.storage.version.put(2);
+  host.logger.info("migrated workspace code to git storage", {
+    event: "storage.migration.git.completed",
+    durationMs: Date.now() - startedAt, commitCount: commits,
+  });
+}
+
+// The workspace owner's commit identity, for commits synthesized by the git-storage migration.
+// A transient user-DO reset is retried once (pure read on a fresh-stub helper); anything past
+// that degrades to a placeholder rather than failing: identity on synthesized history is
+// cosmetic, and blocking the migration on the owner's User DO would leave the workspace
+// unusable for as long as that DO is unreachable (or its account gone).
+async function ownerCommitIdentity(host: OverseerMigrationHost): Promise<CommitIdentity> {
+  try {
+    if (host.ownerId !== undefined) {
+      let profile = await retryOnDoReset(
+          () => host.ownerUserDo().whoamiIfExists(), host.logger);
+      if (profile) return commitIdentityForAuthor(profile);
+    }
+  } catch (err) {
+    host.logger.warn("failed to resolve owner identity for history import", {
+      event: "storage.migration.git.owner-identity.failed", error: err,
+    });
+  }
+  return { name: "Workspace owner", email: "owner@localhost" };
+}
+
+/**
+ * Version 2 -> 3: backfill the actions indexes. Indexes are only maintained at write time, so
+ * over records that predate their declaration they start empty -- and updating a pre-existing
+ * action would then throw on the index update. Synchronous (and chained after the git-storage
+ * migration when that one is still pending), so nothing can observe pre-migration state;
+ * transactionSync makes rebuilds-plus-stamp atomic, so a crash mid-rebuild retries whole. The
+ * `!== 2` guard keeps never-initialized DOs write-free (they stamp the current version at first
+ * initialization).
+ */
+export function migrateToActionIndexes(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 2) return;
+  host.ctx.storage.transactionSync(() => {
+    host.storage.actions.pendingByGatekeeper.rebuild();
+    host.storage.actions.byHistoryFilter.rebuild();
+    host.storage.actions.byLastChanged.rebuild();
+    host.storage.version.put(3);
+  });
+  host.logger.info("backfilled the action-log indexes", {
+    event: "storage.migration.action-indexes.completed",
+  });
+}
+
+/**
+ * Version 3 -> 4: stamp every pre-existing `gadgets` row with the WorkpieceRecord `type`
+ * discriminant (all such rows are gadgets; worktrees postdate this version). Required rather
+ * than an absent-means-gadget default, so consumers dispatch on `type` without carrying
+ * undefined-handling forever. Synchronous, and chained after migrateToActionIndexes on both of
+ * the constructor's paths so a v1 workspace runs 1→2, 2→3, 3→4 in one wake; transactionSync
+ * makes rewrite-plus-stamp atomic, so a crash mid-rewrite retries whole; and the `!== 3` guard
+ * keeps never-initialized DOs write-free. No byBindingName rebuild is needed: every
+ * pre-existing row carries a bindingName, so the keys the index already holds are exactly what
+ * its `?? null` function computes for them.
+ */
+export function migrateToWorkpieceTypes(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 3) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let record of Array.from(host.storage.gadgets.list())) {
+      // Pre-v4 rows lack the discriminant at runtime (whatever the type says), and all of
+      // them are gadgets.
+      host.storage.gadgets.put({...(record as GadgetRecord), type: "gadget"});
+    }
+    host.storage.version.put(4);
+  });
+  host.logger.info("stamped workpiece record types", {
+    event: "storage.migration.workpiece-types.completed",
+  });
+}
+
+/**
+ * Version 4 -> 5: record where each gadget came from (see GadgetRecord.upstream), for gadgets
+ * created before that was recorded, as far as the chat log still tells:
+ *
+ * - A gadget an agent created from a blueprint names that blueprint. Its `createGadget` call
+ *   names both. The release the gadget took is not recovered, so `upstream` is left without a
+ *   `commitId`: the blueprint is the one offered for the gadget's updates, and the first of
+ *   them is merged as into a gadget that follows nothing.
+ * - A gadget created from scratch names none. That is one an agent's `createGadget` call
+ *   created from no blueprint, or one a user created in a chat, which no blueprint could be
+ *   named for.
+ *
+ * Every other gadget is left with no `upstream`, its origin unknown: one instantiated from a
+ * blueprint outside any chat, which left no record of which, and one whose record in the log
+ * is gone or out of the scan's reach.
+ *
+ * The scan is skipped where no gadget lacks an `upstream`. Otherwise it is best-effort and
+ * bounded by UPSTREAM_BACKFILL_MESSAGE_LIMIT, spent on the start of each chat, which is where
+ * gadgets mostly are created. Synchronous and atomic, like migrateToWorkpieceTypes, which it is
+ * chained after; the `!== 4` guard keeps never-initialized DOs write-free.
+ */
+export function migrateToBlueprintUpstreams(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 4) return;
+  host.ctx.storage.transactionSync(() => {
+    // Many workspaces have no gadget at all, only chats that work on external resources, and
+    // their chats are not read. Nor are those of one whose gadgets all have an upstream.
+    let unknown = Array.from(host.storage.gadgets.list())
+        .some(record => record.type === "gadget" && record.upstream === undefined);
+
+    // No more chats than the budget, so that every chat listed gets at least one message.
+    let chats = unknown
+        ? Array.from(host.storage.chatMeta.list({limit: UPSTREAM_BACKFILL_MESSAGE_LIMIT})) : [];
+    let budget = UPSTREAM_BACKFILL_MESSAGE_LIMIT;
+    let upstreams = new Map<WorkpieceId, GadgetUpstream>();
+    chats.forEach((chat, index) => {
+      // An even share of what is left, so that what a short chat does not use goes to the
+      // chats after it.
+      let share = Math.ceil(budget / (chats.length - index));
+      for (let msg of host.storage.chats.list({prefix: chatKeyPrefix(chat.id), limit: share})) {
+        budget--;
+        if (msg.type === "message") {
+          for (let call of msg.toolCalls ?? []) {
+            // A call that failed recorded no output, whether or not it left a gadget behind.
+            if (call.toolName !== "createGadget" || call.output === undefined) continue;
+            let {blueprintId} = call.input;
+            upstreams.set(call.output.gadgetId, blueprintId === undefined ? {} : {blueprintId});
+          }
+        } else if (msg.type === "changes" && msg.author.type === "user" &&
+                   !msg.conversionBoundary) {
+          // A creation recorded in the user's name is the user's own, from the workspace UI.
+          // The agent's are recorded in its name, with or without a blueprint, and are told
+          // apart by its calls, above. The message that converted a chat from the storage
+          // before git is in the owner's name whoever made the gadgets it lists again.
+          for (let {gadgetId} of msg.createdGadgets ?? []) {
+            if (!upstreams.has(gadgetId)) upstreams.set(gadgetId, {});
+          }
+        }
+      }
+    });
+
+    // Written once the scan is done, so that nothing is written under its cursor.
+    for (let [gadgetId, upstream] of upstreams) {
+      let record = host.storage.gadgets.get(gadgetId);
+      // The record is gone if the creation was reverted, or the gadget deleted since.
+      if (record?.type !== "gadget" || record.upstream !== undefined) continue;
+      host.storage.gadgets.put({...record, upstream});
+    }
+    host.storage.version.put(5);
+  });
+  host.logger.info("recorded where gadgets came from", {
+    event: "storage.migration.blueprint-upstreams.completed",
+  });
+}
+
+/**
+ * Version 5 -> 6: agent spawners' bindings became editable, so they moved from the spawner's
+ * `creationSpec.config.env` into GatekeeperRecord.bindings, as permanent edges. Entries whose
+ * targets are gone are dropped: spawns always skipped them, and as edges they would hold their
+ * names for good. Synchronous and atomic, like migrateToWorkpieceTypes.
+ */
+export function migrateToSpawnerBindings(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 5) return;
+  host.ctx.storage.transactionSync(() => {
+    for (let record of Array.from(host.storage.gatekeepers.list())) {
+      if (record.creationSpec?.type !== "agentSpawner") continue;
+      // The stored config still has the `env` the current type omits (see AgentSpawnerConfig).
+      let stored: Omit<AgentSpawnerConfig, "env"> & {env?: Record<string, WorkpieceId>} =
+          record.creationSpec.config;
+      let {env = {}, ...config} = stored;
+      record.bindings = Object.fromEntries(Object.entries(env)
+          .filter(([, target]) => host.storage.gadgets.get(target)?.type === "gadget" ||
+                                  host.storage.gatekeepers.get(target))
+          .map(([name, target]) => [name, {target}]));
+      record.creationSpec = {...record.creationSpec, config};
+      host.storage.gatekeepers.put(record);
+    }
+    host.storage.version.put(6);
+  });
+  host.logger.info("moved agent spawners' bindings", {
+    event: "storage.migration.spawner-bindings.completed",
+  });
+}
+
+// A pre-v7 grant of every gadget, before use grants named individual gadgets.
+function isWorkspaceWide(grant: {
+  role?: CollaboratorRole; gadgetId?: WorkpieceId; gadgetIds?: WorkpieceId[];
+}): boolean {
+  return grant.role === "use" && grant.gadgetId === undefined && grant.gadgetIds === undefined;
+}
+
+/**
+ * Version 6 -> 7: each grant of every gadget, made before gadgets were shared individually, is
+ * frozen to the gadgets that can be shared now, so that a gadget created later is shared only on
+ * purpose. An edge keeps its source, timestamp and note; a link keeps its keys, creator and note.
+ * Inactive grants are frozen too, since they can confer access again when their sharer regains
+ * build. Like every migration this runs before anything reads the sharing graph. Synchronous and
+ * atomic, like migrateToWorkpieceTypes.
+ */
+export function migrateToFrozenGadgetGrants(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 6) return;
+  host.ctx.storage.transactionSync(() => {
+    // The gadgets that can be shared: permanent ones, not those still provisional to a chat.
+    let gadgetIds = Array.from(host.storage.gadgets.list())
+        .filter(record => record.type === "gadget" && !record.pending)
+        .map(record => record.id)
+        .toSorted((a, b) => a - b);
+    // Listed up front, so that nothing below writes while a listing is open.
+    for (let link of Array.from(host.storage.shareKeys.list())) {
+      if (link.alias !== undefined || !isWorkspaceWide(link)) continue;
+      if (gadgetIds.length === 0) {
+        link.revoked = true;
+        host.storage.shareKeys.byAlias.delete(link.id);
+      } else if (gadgetIds.length === 1) {
+        link.gadgetId = gadgetIds[0];
+      } else {
+        link.gadgetIds = gadgetIds;
+      }
+      host.storage.shareKeys.put(link);
+    }
+
+    for (let record of Array.from(host.storage.collaborators.list())) {
+      if (!record.addedBy.some(isWorkspaceWide)) continue;
+      record.addedBy = record.addedBy.flatMap(edge =>
+          isWorkspaceWide(edge) ? gadgetIds.map(gadgetId => ({...edge, gadgetId})) : [edge]);
+      host.storage.collaborators.put(record);
+    }
+    host.storage.version.put(7);
+  });
+  host.logger.info("froze grants of every gadget", {
+    event: "storage.migration.gadget-grants.completed",
+  });
+}

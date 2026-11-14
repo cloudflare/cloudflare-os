@@ -1,6 +1,6 @@
 import { expect, expectTypeOf, it, describe } from "vitest"
-import { createTypedStorage, collection, singleton, Singleton, SingletonSchema, UniqueIndex,
-         NonUniqueIndex }
+import { createTypedStorage, collection, singleton, keyString, Singleton, SingletonSchema,
+         UniqueIndex, NonUniqueIndex }
     from "../src/index.js";
 import { DurableObjectListOptions, DurableObjectStorage } from "@cloudflare/workers-types/experimental";
 
@@ -618,6 +618,65 @@ describe("basic collections with function primary key", () => {
   });
 });
 
+describe("deleteRecord", () => {
+  it("deletes by a computed primary key without the caller deriving it", () => {
+    let storage = createTypedStorage(makeMockStorage(), {
+      collections: {
+        users: collection<User>()({
+          primaryKey: (user: User) => `${user.level}.${user.name.toUpperCase()}`
+        })
+      }
+    });
+    storage.users.put(ALICE);
+    storage.users.put(BOB);
+    storage.users.put(CAROL);
+
+    // The typical use: delete records while walking a (buffered) listing of them.
+    for (let user of Array.from(storage.users.list({prefix: "8."}))) {
+      expect(storage.users.deleteRecord(user)).toStrictEqual(true);
+    }
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+
+    expect(storage.users.deleteRecord(ALICE)).toStrictEqual(false);
+    expect(storage.users.deleteRecord(EVE)).toStrictEqual(false);
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+  });
+
+  it("deletes by a property primary key", () => {
+    let storage = createTypedStorage(makeMockStorage(), PLAIN_SCHEMA);
+    storage.users.put(ALICE);
+    storage.users.put(BOB);
+
+    expect(storage.users.deleteRecord(ALICE)).toStrictEqual(true);
+    expect(storage.users.deleteRecord(ALICE)).toStrictEqual(false);
+    expect([...storage.users.list()]).toStrictEqual([BOB]);
+  });
+
+  it("reads only the primary key, unindexing the record as stored", () => {
+    let storage = createTypedStorage(makeMockStorage(), INDEXED_SCHEMA);
+    storage.users.put(ALICE);
+    storage.users.put(CAROL);
+
+    // A stale copy: were the index entry derived from it, removing the level-1 entry that was
+    // never written would report the index as inconsistent, and the level-8 one would be left
+    // dangling.
+    expect(storage.users.deleteRecord({...ALICE, level: 1})).toStrictEqual(true);
+    expect([...storage.users.byLevel.get(8)]).toStrictEqual([CAROL]);
+    expect([...storage.users.byLevel.list()]).toStrictEqual([CAROL]);
+  });
+
+  it("notifies subscribers with the stored record", () => {
+    let storage = createTypedStorage(makeMockStorage(), PLAIN_SCHEMA);
+    storage.users.put(ALICE);
+
+    let removed: User[] = [];
+    storage.users.subscribe({add() {}, update() {}, remove(user) { removed.push(user); }});
+    storage.users.deleteRecord({...ALICE, level: 1});
+    storage.users.deleteRecord(ALICE);  // already gone: no notification
+    expect(removed).toStrictEqual([ALICE]);
+  });
+});
+
 describe("unique index by string", () => {
   let mockStorage = makeMockStorage();
   let storage = createTypedStorage(mockStorage, {
@@ -807,6 +866,10 @@ describe("non-unique index by number", () => {
     expect([...index.list({limit: 2, reverse: true})]).toStrictEqual([CAROL, ALICE, BOB]);
   });
 
+  it("lists integer keys as keyString() encodes them", () => {
+    expect([...index.listKeys()]).toStrictEqual([keyString(1), keyString(4), keyString(8)]);
+  });
+
   it("supports delete", () => {
     expect(index.delete(8)).toStrictEqual(2);
     expect(index.delete(8)).toStrictEqual(0);
@@ -861,12 +924,39 @@ describe("non-unique index by array", () => {
         [DAVE, DAVE, CAROL, BOB, ALICE]);
   });
 
+  it("supports listKeys", () => {
+    expect([...index.listKeys()]).toStrictEqual(["admin", "everyone", "interns"]);
+    expect([...index.listKeys({reverse: true})]).toStrictEqual(["interns", "everyone", "admin"]);
+    expect([...index.listKeys({prefix: "e"})]).toStrictEqual(["everyone"]);
+    expect([...index.listKeys({startAfter: "admin", limit: 1})]).toStrictEqual(["everyone"]);
+  });
+
+  it("supports reading each group while iterating its keys", () => {
+    let storage = createTypedStorage(makeMockStorage(), GROUP_SCHEMA);
+    for (let user of [BOB, DAVE, CAROL, ALICE]) {
+      storage.users.put(user);
+    }
+
+    let groups: [string, User[]][] = [];
+    for (let key of storage.users.byGroup.listKeys()) {
+      groups.push([key, [...storage.users.byGroup.get(key)]]);
+    }
+
+    expect(groups).toStrictEqual([
+      ["admin", [ALICE, CAROL]],
+      ["everyone", [ALICE, BOB, CAROL, DAVE]],
+      ["interns", [DAVE]],
+    ]);
+  });
+
   it("supports delete", () => {
     expect(index.delete("admin")).toStrictEqual(2);
     expect(index.delete("admin")).toStrictEqual(0);
     expect(index.delete("nobody")).toStrictEqual(0);
 
     expect([...index.list()]).toStrictEqual([BOB, DAVE, DAVE]);
+    // A key goes once its last record does.
+    expect([...index.listKeys()]).toStrictEqual(["everyone", "interns"]);
   });
 });
 

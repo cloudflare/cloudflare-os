@@ -1,4 +1,6 @@
-import { resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns } from "./resources";
+import {
+  resourceUrlPatternsToOAuthScopes, validateResourceUrlPatterns, withDriveWrites,
+} from "./resources";
 
 const FLOW_KEY = "oauthFlow";
 const NONCE_LIFETIME_MS = 10 * 60 * 1000;
@@ -52,7 +54,7 @@ export function prepareOAuthFlow(kv: SynchronousKv, initiationNonce: string,
     expiresAt: now + NONCE_LIFETIME_MS,
     stage: "initiation",
     mode,
-    requestedResources: [...requestedResources],
+    requestedResources: withDriveWrites(requestedResources),
   });
 }
 
@@ -63,8 +65,14 @@ export function mergeGrantedResources(
   kv.put("grantedResources", [...new Set([...grantedResources, ...requestedResources])]);
 }
 
+/**
+ * Begins the stored consent attempt, or returns null when its initiation nonce is invalid.
+ * `withheld` names requested grants whose scopes this consent does not ask Google for. They stay
+ * part of the attempt, so completing it records them as it records the rest.
+ */
 export function beginStoredOAuthFlow(kv: SynchronousKv, initiationNonce: string,
-                                     oauthNonce: string, oauthRedirectUri: string, now: number)
+                                     oauthNonce: string, oauthRedirectUri: string, now: number,
+                                     withheld: readonly string[] = [])
     : {oauthNonce: string, scopes: string[]} | null {
   let flow = kv.get<StoredOAuthFlow>(FLOW_KEY);
   if (!matchesFlow(flow, "initiation", initiationNonce, now)) return null;
@@ -73,7 +81,8 @@ export function beginStoredOAuthFlow(kv: SynchronousKv, initiationNonce: string,
     ...flow, value: oauthNonce, expiresAt: now + NONCE_LIFETIME_MS, stage: "oauth",
     oauthRedirectUri,
   });
-  return { oauthNonce, scopes: resourceUrlPatternsToOAuthScopes(flow.requestedResources) };
+  let asked = flow.requestedResources.filter(pattern => !withheld.includes(pattern));
+  return { oauthNonce, scopes: resourceUrlPatternsToOAuthScopes(asked) };
 }
 
 export function claimStoredOAuthFlow(kv: SynchronousKv, oauthNonce: string, now: number)

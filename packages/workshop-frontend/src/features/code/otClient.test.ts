@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import type { CodeChangeSubmission } from '@gadgets/workshop-shared/api'
-import { applyCodeChange, transformCodeChange, type CodeContent, type CodeChange }
-  from '@gadgets/workshop-shared/code-change'
+import {
+  applyCodeChange, composeEpochChanges, transformCodeChange, requireTextFiles, type CodeContent, type CodeChange,
+} from '@gadgets/workshop-shared/code-change'
 import { ChatOtClient, type ChatChangeRow, type ChatOtClientDelegate, type RemoteFileEvent }
   from './otClient'
 
@@ -51,7 +52,7 @@ class TestHarness {
 }
 
 function filesOf(content: CodeContent, gadgetId: number): Record<string, string> {
-  return Object.fromEntries(content.get(gadgetId) ?? [])
+  return Object.fromEntries(requireTextFiles(content.get(gadgetId) ?? new Map()))
 }
 
 function row(generation: number, revision: number, change: CodeChange,
@@ -64,6 +65,29 @@ function row(generation: number, revision: number, change: CodeChange,
 }
 
 describe('ChatOtClient', () => {
+  it('keeps byte changes visible as opaque paths without fetching or showing old text', async () => {
+    const h = new TestHarness()
+    const value = {oid: '1'.repeat(40), byteLength: 3}
+    h.client.setDurableState({rowsThrough: 0, codeBase: {
+      pins: [{gadgetId: 1, baseCommit: 'c1', mergedCommit: 'c1'}], generation: 0, revision: 3,
+    }})
+    await flush()
+    h.client.pushRow(row(0, 1, {1: [['image.bin', {setBytes: value}]]}))
+    await flush()
+    expect(h.client.getFiles(1)?.get('image.bin')).toEqual(value)
+    expect(h.client.snapshot()(1, 'image.bin')).toEqual(value)
+    expect(h.client.snapshot()(1, 'untouched')).toBeUndefined()
+    const replacement = {oid: '2'.repeat(40), byteLength: 2}
+    h.client.pushRow(row(0, 2, {1: [['image.bin', {setBytes: replacement}]]}))
+    await flush()
+    expect(h.client.snapshot()(1, 'image.bin')).toEqual(replacement)
+    expect(h.fetches).toEqual([])
+    expect(h.fatal).toBeNull()
+    h.client.pushRow(row(0, 3, {1: [['image.bin', {remove: true}]]}))
+    await flush()
+    expect(h.client.snapshot()(1, 'image.bin')).toBeNull()
+  })
+
   it('builds content from pin bases, the epoch change, and rows', async () => {
     const h = new TestHarness()
     h.commits.set('c1', new Map([['a.txt', 'abc']]))
@@ -1017,5 +1041,62 @@ describe('ChatOtClient', () => {
     await flush()
     expect(h.fatal).toBe(null)
     expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abc!' })
+  })
+
+  // An update from mainline re-roots the gadget at the merge commit: its message declares the
+  // new pin and carries no change, and the metadata that follows it bumps the generation
+  // destructively (see Overseer.updateChatFromMainline()). The client rebuilds from the log as
+  // composed then, so the message has to be in it first.
+  it('rebuilds at the merge commit when a pin moves, with the message arriving first', async () => {
+    const h = new TestHarness()
+    h.commits.set('head', new Map([['a.txt', 'abc'], ['b.txt', 'one']]))
+    h.commits.set('merge', new Map([['a.txt', 'abc!'], ['b.txt', 'one, two']]))
+    const edits = { change: { 1: [['a.txt', { edit: [3, [0, '!']] }]] } satisfies CodeChange }
+    const reroot = { pins: [{ gadgetId: 1, baseCommit: 'merge', mergedCommit: 'head2' }] }
+    const pinnedAtHead = {
+      pins: [{ gadgetId: 1, baseCommit: 'head', mergedCommit: 'head' }], generation: 0, revision: 1,
+    }
+    h.client.setDurableState({
+      codeBase: pinnedAtHead, epochChange: composeEpochChanges([edits]), rowsThrough: 1,
+    })
+    await flush()
+    expect(filesOf(h.client.getContent(), 1)).toEqual({ 'a.txt': 'abc!' })
+
+    // A keystroke not yet acknowledged when the update lands.
+    h.submitResult = () => new Promise(() => {})
+    h.client.ensureFileEditable(1, 'head', 'b.txt', 'one')
+    h.client.applyLocalChange({ 1: [['b.txt', { edit: [3, [0, '?']] }]] })
+    await flush()
+
+    // The message first: same generation, so nothing is rebuilt yet.
+    h.client.setDurableState({
+      codeBase: pinnedAtHead, epochChange: composeEpochChanges([edits, reroot]), rowsThrough: 1,
+    })
+    await flush()
+    expect(h.discards).toBe(0)
+
+    // Then the metadata: the gadget's content is the merge commit's, with nothing touched, and
+    // the earlier edit is not applied to it a second time.
+    h.fetches.length = 0
+    h.client.setDurableState({
+      codeBase: {
+        pins: [{ gadgetId: 1, baseCommit: 'merge', mergedCommit: 'head2' }],
+        generation: 1, revision: 0,
+      },
+      epochChange: composeEpochChanges([edits, reroot]),
+      rowsThrough: 0,
+    })
+    await flush()
+    expect(h.client.hasGadget(1)).toBe(true)
+    expect(filesOf(h.client.getContent(), 1)).toEqual({})
+    expect(h.fetches).toEqual([])
+    expect(h.discards).toBe(1)
+    expect(h.client.hasLocalEdits()).toBe(false)
+
+    // An edit after the update applies over the merge commit.
+    h.client.pushRow(row(1, 1, { 1: [['b.txt', { edit: [8, [0, ', three']] }]] }))
+    await flush()
+    expect(filesOf(h.client.getContent(), 1)).toEqual({ 'b.txt': 'one, two, three' })
+    expect(h.fetches).toEqual([{ commitId: 'merge', paths: ['b.txt'] }])
   })
 })

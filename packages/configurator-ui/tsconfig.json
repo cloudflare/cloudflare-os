@@ -1,8 +1,16 @@
+// The authoring API (`src/index.ts`) and the sandbox runtime (`src/runtime/`). The runtime is
+// written against React's API and bundled with `react` aliased to `preact/compat`
+// (`build/runtime.ts`). `build/` runs under `node` and is type-checked by `scripts/tsconfig.json`
+// with the repo's other Node-only tooling.
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
-    "lib": ["ES2022", "DOM"]
+    "lib": ["ES2022", "ES2024.Promise", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    // No ambient @types: the runtime runs in a browser frame, so Node's globals must not type-check.
+    "types": []
   },
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]

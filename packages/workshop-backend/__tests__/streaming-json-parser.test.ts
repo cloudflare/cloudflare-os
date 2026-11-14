@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import * as fc from 'fast-check';
+import { PROPERTY_RUN_OPTIONS } from '@gadgets/scripts/property-runs';
 import { StreamingToolInputParser } from '../src/streaming-json-parser.js';
+import {
+  cutDeltas, decodableValue, deltaSizes, previewedToolCall, serialize, STREAMED_FIELD,
+  type PreviewedToolCall,
+} from './tool-input-streams.js';
 
 // Helper: feed a complete JSON string in one shot.
 function parseAll(streamingField: string, json: string) {
@@ -380,6 +386,58 @@ describe('StreamingToolInputParser', () => {
     it('reports error for missing colon', () => {
       let p = parseAll("content", '{"content" "oops"}');
       expect(p.hasError).toBe(true);
+    });
+  });
+});
+
+// ===========================================================================
+// Property: the live preview of a streamed tool call
+// ===========================================================================
+
+// While an agent streams a writeFile / editFile / executeCode call, the preview shows the
+// streamed field as far as it has arrived. fast-check generates the calls agents make (source
+// text with quotes, backslashes, CRLFs, accented text and emoji), serialized compactly or with
+// spaces, with raw or `\uXXXX`-escaped non-ASCII, and cut into provider deltas anywhere -- inside
+// an escape, or between a surrogate pair's halves. After every delta the parser must hold exactly
+// what that much input determines: no prefix fields until the streamed value opens, then all of
+// them; the streamed value decoded up to any escape still cut off, so it only grows and never
+// lags; and, at the end, the same input JSON.parse reads.
+describe('StreamingToolInputParser property', () => {
+  it('tracks the decodable prefix of a streamed tool input after every delta', () => {
+    let surrogateCall: PreviewedToolCall = {
+      toolName: "writeFile",
+      input: {filename: "app.ts", content: "label: '😀',\n\\\"end\\\""},
+      asciiOnly: true,
+      spaced: true,
+    };
+    fc.assert(fc.property(previewedToolCall, deltaSizes, (call, sizes) => {
+      let field = STREAMED_FIELD[call.toolName];
+      let {json, valueStart} = serialize(call);
+      let {[field]: value, ...prefix} = JSON.parse(json);
+      let parser = new StreamingToolInputParser(field);
+      let received = 0;
+      for (let delta of cutDeltas(json, sizes)) {
+        parser.append(delta);
+        received += delta.length;
+        let at = `after ${received} of ${json.length} chars of ${json}`;
+        expect(parser.hasError, at).toBe(false);
+        expect(parser.prefixFields, at).toEqual(received >= valueStart ? prefix : null);
+        // Compared JSON-encoded: the value may end in a lone high surrogate, which in a failure
+        // message is invalid UTF-8 to the vitest pool's WebSocket, which then drops the report.
+        expect(JSON.stringify(parser.streamingValue), at)
+            .toBe(JSON.stringify(decodableValue(json, valueStart, received)));
+        expect(parser.streamComplete, at).toBe(received >= json.length - 1);
+      }
+      expect(parser.prefixFields).toEqual(prefix);
+      expect(parser.streamingValue).toBe(value);
+    }), {
+      ...PROPERTY_RUN_OPTIONS,
+      numRuns: 200,
+      examples: [
+        // One UTF-16 code unit per delta: every escape and `\ud83d\ude00` pair split everywhere.
+        [surrogateCall, [1]],
+        [{...surrogateCall, asciiOnly: false}, [1]],
+      ],
     });
   });
 });

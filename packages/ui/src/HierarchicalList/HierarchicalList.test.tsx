@@ -145,6 +145,49 @@ describe("HierarchicalList", () => {
     expect(rowFor("Empty collection")?.textContent).toContain("Empty collection0");
   });
 
+  it("rejects prohibited parents without showing a drop target", () => {
+    const onMove = vi.fn<(
+      item: HierarchicalListItem,
+      destination: HierarchicalListDropDestination,
+    ) => void>();
+    const collectionItems: HierarchicalListItem[] = [
+      {
+        id: "collection-a",
+        name: "Collection A",
+        droppable: true,
+        children: [{ id: "source", name: "Source", draggable: true }],
+      },
+      {
+        id: "collection-b",
+        name: "Collection B",
+        droppable: true,
+        children: [],
+      },
+    ];
+    render(
+      <HierarchicalList
+        items={collectionItems}
+        label="Skills"
+        expandAll
+        dragAndDrop={{
+          canMoveTo: (_item, parent) => parent?.id === "collection-a",
+          onMove,
+        }}
+      />,
+    );
+    const source = rowFor("Source")!;
+    const prohibitedCollection = rowFor("Collection B")!;
+    setRect(source, { top: 0, height: 60 });
+    setRect(prohibitedCollection, { top: 60, height: 60 });
+    const transfer = dataTransfer();
+
+    dispatchDrag(source, "dragstart", transfer);
+    dispatchDrag(prohibitedCollection, "dragover", transfer, 90);
+    expect(transfer.dropEffect).toBe("none");
+    expect(prohibitedCollection.getAttribute("data-drop-target")).toBeNull();
+    dispatchDrag(prohibitedCollection, "drop", transfer, 90);
+    expect(onMove).not.toHaveBeenCalled();
+  });
   it("scrolls from draggable rows and reorders from their touch handles", () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: true,
@@ -340,103 +383,7 @@ describe("HierarchicalList", () => {
     expect(container?.querySelectorAll("button")).toHaveLength(1);
   });
 
-  it("opens an item's action drawer from a long press on touch devices", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
-    render(
-      <HierarchicalList
-        items={[{ id: "skill", name: "Review code" }]}
-        label="Skills"
-        interaction={{ actionDrawerMaxWidthPx: 800 }}
-        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
-      />,
-    );
-
-    const pointerDown = new MouseEvent("pointerdown", { bubbles: true, clientX: 20, clientY: 30 });
-    Object.defineProperties(pointerDown, {
-      isPrimary: { value: true },
-      pointerType: { value: "touch" },
-    });
-    act(() => rowFor("Review code")?.dispatchEvent(pointerDown));
-    act(() => vi.advanceTimersByTime(499));
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    act(() => vi.advanceTimersByTime(1));
-
-    expect(document.body.textContent).toContain("Delete");
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-  });
-
-  it("does not cancel a long press when a different touch ends", () => {
-    vi.useFakeTimers();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
-    render(
-      <HierarchicalList
-        items={[{ id: "skill", name: "Review code" }]}
-        label="Skills"
-        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
-      />,
-    );
-    const row = rowFor("Review code")!;
-
-    dispatchTouchPointer(row, "pointerdown", 20, 30, 1);
-    dispatchTouchPointer(row, "pointercancel", 25, 35, 2);
-    act(() => vi.advanceTimersByTime(500));
-
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-  });
-
-  it("opens an item's action drawer from a context-menu event on narrow layouts", () => {
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
-    render(
-      <HierarchicalList
-        items={[{ id: "skill", name: "Review code" }]}
-        label="Skills"
-        renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
-      />,
-    );
-    const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
-    const row = rowFor("Review code")!;
-
-    act(() => row.focus());
-    act(() => row.dispatchEvent(event));
-
-    expect(event.defaultPrevented).toBe(true);
-    expect(document.body.textContent).toContain("Delete");
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
-    expect(dialog.className).toContain("max-h-[calc(100dvh-1rem)]");
-    const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
-    expect(menu.parentElement?.className).toContain("overflow-y-auto");
-    const label = document.getElementById(menu.getAttribute("aria-labelledby")!);
-    expect(label?.textContent).toBe("Review code");
-    const menuItem = document.querySelector<HTMLElement>('[role="menuitem"]')!;
-    act(() => menuItem.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "Escape",
-      bubbles: true,
-      cancelable: true,
-    })));
-
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    expect(document.activeElement).toBe(row);
-  });
-
-  it("does not restore drawer focus over an action's destination", () => {
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
-    })));
+  it("does not restore row focus over an action's destination", () => {
     const destination = document.createElement("button");
     destination.textContent = "Dialog control";
     document.body.append(destination);
@@ -463,7 +410,6 @@ describe("HierarchicalList", () => {
       })));
     }
 
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(document.activeElement).not.toBe(row);
     destination.remove();
   });
@@ -491,30 +437,84 @@ describe("HierarchicalList", () => {
     expect(indicator.style.width).toBe("180px");
   });
 
-  it("does not suppress clicks when an item has no context actions", () => {
+  it("renders inline rename as a non-draggable, labeled editing row", () => {
+    let finishRename: (() => void) | undefined;
+    const Harness = () => {
+      const [renaming, setRenaming] = React.useState(true);
+      finishRename = () => setRenaming(false);
+      return (
+        <HierarchicalList
+          items={[{ id: "skill", name: "Review code", draggable: true }]}
+          label="Skills"
+          dragAndDrop={{ onMove: vi.fn() }}
+          renderContextMenu={() => <DropdownMenu.Item>Delete</DropdownMenu.Item>}
+          rename={{
+            isRenaming: (item) => renaming && item.id === "skill",
+            renderInput: () => <input aria-label="Rename skill" />,
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const input = container?.querySelector<HTMLInputElement>('input[aria-label="Rename skill"]');
+    const row = input?.closest<HTMLElement>("[data-hierarchical-list-row]");
+    expect(input?.closest("button")).toBeNull();
+    expect(row?.tagName).toBe("DIV");
+    expect(row?.draggable).toBe(false);
+
+    act(() => row?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    expect(document.body.textContent).not.toContain("Delete");
+
+    act(() => finishRename?.());
+    expect(document.activeElement).toBe(buttonFor("Review code"));
+  });
+
+  it("waits for context-menu focus restoration before rendering inline rename", () => {
     vi.useFakeTimers();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: vi.fn<() => void>(),
-      removeEventListener: vi.fn<() => void>(),
+    const Harness = () => {
+      const [renaming, setRenaming] = React.useState(false);
+      return (
+        <HierarchicalList
+          items={[{ id: "skill", name: "Review code" }]}
+          label="Skills"
+          renderContextMenu={() => (
+            <DropdownMenu.Item onClick={() => setRenaming(true)}>Rename</DropdownMenu.Item>
+          )}
+          rename={{
+            isRenaming: (item) => renaming && item.id === "skill",
+            renderInput: () => <input aria-label="Rename skill" />,
+          }}
+        />
+      );
+    };
+    render(<Harness />);
+
+    const trigger = rowFor("Review code")!;
+    act(() => trigger.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
     })));
-    const item: HierarchicalListItem = { id: "skill", name: "Review code" };
-    const onItemClick = vi.fn<(item: HierarchicalListItem) => void>();
+    const rename = [...document.body.querySelectorAll<HTMLElement>("[role=menuitem]")]
+      .find((item) => item.textContent === "Rename")!;
+    act(() => rename.click());
+
+    expect(trigger.isConnected).toBe(true);
+    expect(container?.querySelector('[aria-label="Rename skill"]')).toBeNull();
+
+    act(() => vi.runAllTimers());
+    expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
+
+  it("renders an inline item description next to its name", () => {
     render(
       <HierarchicalList
-        items={[item]}
+        items={[{ id: "skill", name: "Incident Response", description: "Handle incidents" }]}
         label="Skills"
-        onItemClick={onItemClick}
-        renderContextMenu={() => null}
       />,
     );
 
-    const row = rowFor("Review code")!;
-    dispatchTouchPointer(row, "pointerdown", 20, 30);
-    act(() => vi.advanceTimersByTime(500));
-    act(() => row.click());
-
-    expect(onItemClick).toHaveBeenCalledWith(item);
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(buttonFor("Incident Response")?.textContent)
+      .toContain("Incident ResponseHandle incidents");
   });
 });

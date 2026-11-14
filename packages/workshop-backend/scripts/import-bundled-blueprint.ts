@@ -3,18 +3,20 @@
 // (resolved against this package's root, as build-bundled-blueprints.ts resolves it). See that
 // package's README for the workflow this belongs to.
 
+import { mkdtempSync, rmSync } from "node:fs";
 import { access, cp, readdir, readFile, rename, rm, writeFile, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import type {
+  BlueprintArchive,
   BundledBlueprintManifest,
   BundledBlueprintPresentation,
 } from "@gadgets/bundled-blueprints";
 import {
   BUNDLED_BLUEPRINTS_DIR,
-  buildContent,
   extractFiles,
   findInterruptedImportBackups,
   parseArchive,
@@ -36,6 +38,10 @@ type BlueprintPresentation = BundledBlueprintPresentation & {
 type BlueprintManifest = BundledBlueprintManifest & {name: string; source: string};
 type BlueprintEntry = (BlueprintManifest & {layout: "extracted"}) |
     (BlueprintPresentation & {layout: "legacy"});
+
+// The most git may print for one command: a blob, or the listing of a tree. As much as a
+// blueprint's files may hold altogether.
+const MAX_GIT_OUTPUT_BYTES = 32 * 1024 * 1024;
 
 const sha = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex").slice(0, 12);
@@ -79,6 +85,77 @@ function rejectIgnoredBlueprintPaths(name: string, files: Iterable<string>): voi
   const ignored = result.stdout.split("\0").filter(Boolean)
       .map(path => relative(sourceDir, path));
   fail(`imported blueprint paths are ignored by Git: ${ignored.join(", ")}`);
+}
+
+/**
+ * Reads a `.gadget` archive of either version: its parts, and the files its content holds.
+ */
+function readArchive(bytes: Uint8Array, label: string): BlueprintArchive & {
+  files: Map<string, string>;
+} {
+  const archive = parseArchive(bytes, label);
+  if (archive.version === 1) return {...archive, files: extractFiles(archive.content, label)};
+  const files = readReleaseFiles(archive.content, archive.metadata.commitId, label);
+  // A snapshot's paths are checked as it is read. These are about to be written to disk too.
+  validatePortablePaths(files.keys(), label);
+  return {...archive, files};
+}
+
+/**
+ * Lists the files of the release that a version 2 archive holds. Its content is a git packfile
+ * of the release commit its metadata names, along with whatever of the blueprint's history the
+ * pack carries (see workshop-backend's src/blueprint-release.ts). So git is what reads it: the
+ * pack is unpacked into a repository made for the purpose, the commit's tree is listed, and its
+ * blobs are read out.
+ *
+ * Only what a release may hold is accepted: plain files (no symlinks, nothing executable) of
+ * UTF-8 text.
+ */
+function readReleaseFiles(
+  pack: Uint8Array,
+  commitId: unknown,
+  label: string,
+): Map<string, string> {
+  const invalid = (message: string): never => { throw new Error(`${label}: ${message}`); };
+  if (typeof commitId !== "string" || !/^[0-9a-f]{40}$/u.test(commitId)) {
+    return invalid("metadata does not name the release commit of a version 2 archive");
+  }
+
+  const repository = mkdtempSync(join(tmpdir(), "bundled-blueprint-release-"));
+  const git = (args: string[], input?: Uint8Array): Buffer => {
+    const result = spawnSync("git", ["--git-dir", repository, ...args],
+        {input, maxBuffer: MAX_GIT_OUTPUT_BYTES});
+    if (result.status !== 0) {
+      invalid(`git ${args.join(" ")} failed: ` +
+          `${result.error?.message ?? result.stderr.toString().trim()}`);
+    }
+    return result.stdout;
+  };
+  const decoder = new TextDecoder("utf-8", {fatal: true, ignoreBOM: true});
+  const text = (bytes: Uint8Array, what: string): string => {
+    try {
+      return decoder.decode(bytes);
+    } catch {
+      return invalid(`${what} is not valid UTF-8`);
+    }
+  };
+  try {
+    git(["init", "--quiet", "--bare"]);
+    git(["unpack-objects", "-q"], pack);
+    const files = new Map<string, string>();
+    // One `<mode> <type> <oid>\t<path>` record per file, each ended by a NUL.
+    const listing = text(git(["ls-tree", "-r", "-z", commitId]), "a file path");
+    for (const record of listing.split("\0").filter(Boolean)) {
+      const tab = record.indexOf("\t");
+      const [mode, , oid] = record.slice(0, tab).split(" ");
+      const path = record.slice(tab + 1);
+      if (mode !== "100644") invalid(`${path} is not a plain file (mode ${mode})`);
+      files.set(path, text(git(["cat-file", "blob", oid!]), path));
+    }
+    return files;
+  } finally {
+    rmSync(repository, {recursive: true, force: true});
+  }
 }
 
 let directoryEntries = await readdir(sourceDir, {withFileTypes: true});
@@ -181,14 +258,13 @@ try {
     `${archivePath}: ${errorMessage(err)}`);
 }
 
-let incoming: ReturnType<typeof parseArchive>;
-let files: Map<string, string>;
+let incoming: ReturnType<typeof readArchive>;
 try {
-  incoming = parseArchive(incomingBytes, archivePath);
-  files = extractFiles(incoming.content, archivePath);
+  incoming = readArchive(incomingBytes, archivePath);
 } catch (err) {
   fail(errorMessage(err));
 }
+const {files} = incoming;
 rejectIgnoredBlueprintPaths(entry.name, files.keys());
 
 // The outgoing files, read only for the change summary below; undefined if the current TypeScript
@@ -199,9 +275,11 @@ let current: BlueprintManifest | undefined;
 if ("scaffold" in entry) {
   oldFiles = new Map();
 } else if (entry.layout === "legacy") {
-  let existing = parseArchive(await readFile(join(sourceDir, `${entry.name}.gadget`)),
+  // Of either version: the build reads only a version 1 archive in this layout, and tells whoever
+  // put a newer export here to import it, which may well be what this is.
+  let existing = readArchive(await readFile(join(sourceDir, `${entry.name}.gadget`)),
       `${entry.name}.gadget`);
-  oldFiles = extractFiles(existing.content, `${entry.name}.gadget`);
+  oldFiles = existing.files;
   current = {
     ...entry,
     created: String(existing.metadata.created),
@@ -268,11 +346,8 @@ try {
   }
   // The staged tree is built before it replaces anything: the bundler policy the post-rename build
   // applies to files/ is applied here first, so an export it rejects is refused with the current
-  // source untouched. The snapshot is built too, since the bundles inline lib/ into each entry and
-  // can outgrow sources that were under the limit; buildContent holds the update-size limit
-  // generation applies. The metadata's own limit was met when the export's manifest was read.
+  // source untouched.
   newFiles = await readSourceFiles(join(stagedDir, "files"), `${entry.name}/files`);
-  buildContent(newFiles, entry.name);
   if (!scaffold && entry.layout === "extracted") {
     // Only blueprint.json and files/ are archive-owned; __tests__/ and anything else beside them
     // is repo-only and carried over -- copied, not moved, so a failure below leaves the current
@@ -331,7 +406,9 @@ console.log(`${scaffold ? "Imported" : "Updated"} ${entry.name}/ (${manifest.blu
 console.log(`  files        ${newFiles.size} (${changed === undefined
     ? "summary unavailable: current source does not build"
     : changed.length ? `changed: ${changed.join(", ")}` : "unchanged"})`);
-console.log(`  snapshot     ${incoming.content.byteLength} bytes (${sha(incoming.content)})`);
+console.log(incoming.version === 1
+    ? `  snapshot     ${incoming.content.byteLength} bytes (${sha(incoming.content)})`
+    : `  release      ${incoming.metadata.commitId} (${incoming.content.byteLength} bytes)`);
 console.log(`  bindings     ${newBindings || "(none)"}` +
     `${oldBindings !== newBindings ? `   [CHANGED from ${oldBindings || "(none)"}]` : ""}`);
 console.log(`  version      ${scaffold ? manifest.version : `${current!.version} -> ${manifest.version}`}`);

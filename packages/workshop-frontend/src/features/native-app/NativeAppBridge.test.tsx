@@ -1,0 +1,205 @@
+// @vitest-environment jsdom
+/* eslint-disable react/react-in-jsx-scope */
+
+import { act } from 'react'
+import { Toasty } from '@cloudflare/kumo'
+import { createRoot } from 'react-dom/client'
+import type { RpcStub } from 'capnweb'
+import type { AiChatAuthorInfo, AuthenticatedApi, UnreadStateSubscriber, UserUnreadState } from '@gadgets/workshop-shared/api'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { AuthProvider } from '../../AuthContext'
+import { NativeAppBridge } from './NativeAppBridge'
+import { inNativeApp, returnToInstalls } from './nativeApp'
+import { UnreadStateBridge } from '../notifications/UnreadStateBridge'
+
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
+const user: AiChatAuthorInfo = { type: 'user', id: 'tester@example.com', name: 'Tester' }
+
+const pendingWhoami = () => {
+  let resolve!: (info: AiChatAuthorInfo) => void
+  let reject!: (error: Error) => void
+  const promise = new Promise<AiChatAuthorInfo>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+const apiWithWhoami = (whoami: () => Promise<AiChatAuthorInfo>) => ({
+  whoami,
+  amIAdmin: async () => false,
+}) as RpcStub<AuthenticatedApi>
+
+describe('native app bridge', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('reports login only after whoami confirms a user, then uses the versioned native object for navigation', async () => {
+    const loginReady = vi.fn<() => void>()
+    const returnHome = vi.fn<() => void>()
+    const identity = pendingWhoami()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1,
+      isAvailable: () => true,
+      loginReady,
+      returnToInstalls: returnHome,
+    })
+    const container = document.createElement('div')
+    const root = createRoot(container)
+    await act(async () => root.render(
+      <AuthProvider authenticatedApi={apiWithWhoami(() => identity.promise)} onLogout={() => {}}>
+        <NativeAppBridge />
+      </AuthProvider>
+    ))
+
+    expect(inNativeApp()).toBe(true)
+    expect(loginReady).not.toHaveBeenCalled()
+    await act(async () => identity.resolve(user))
+    expect(loginReady).toHaveBeenCalledOnce()
+    returnToInstalls()
+    expect(returnHome).toHaveBeenCalledOnce()
+    act(() => root.unmount())
+  })
+
+  it('does not report login when authentication is rejected', async () => {
+    const loginReady = vi.fn<() => void>()
+    const identity = pendingWhoami()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1,
+      isAvailable: () => true,
+      loginReady,
+      returnToInstalls: vi.fn<() => void>(),
+    })
+    const root = createRoot(document.createElement('div'))
+    await act(async () => root.render(
+      <AuthProvider authenticatedApi={apiWithWhoami(() => identity.promise)} onLogout={() => {}}>
+        <NativeAppBridge />
+      </AuthProvider>
+    ))
+
+    await act(async () => identity.reject(new Error('session expired')))
+    expect(loginReady).not.toHaveBeenCalled()
+    act(() => root.unmount())
+  })
+
+  it('reports login again only after the reconnected session confirms its identity', async () => {
+    const loginReady = vi.fn<() => void>()
+    const sessionEnded = vi.fn<() => void>()
+    const nextIdentity = pendingWhoami()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1,
+      isAvailable: () => true,
+      loginReady,
+      sessionEnded,
+      returnToInstalls: vi.fn<() => void>(),
+    })
+    const firstApi = apiWithWhoami(async () => ({ ...user }))
+    const nextApi = apiWithWhoami(() => nextIdentity.promise)
+    const root = createRoot(document.createElement('div'))
+    await act(async () => root.render(
+      <AuthProvider authenticatedApi={firstApi} onLogout={() => {}}>
+        <NativeAppBridge />
+      </AuthProvider>
+    ))
+    expect(loginReady).toHaveBeenCalledOnce()
+
+    await act(async () => root.render(
+      <AuthProvider authenticatedApi={nextApi} onLogout={() => {}}>
+        <NativeAppBridge />
+      </AuthProvider>
+    ))
+    expect(loginReady).toHaveBeenCalledOnce()
+    expect(sessionEnded).not.toHaveBeenCalled()
+    // A real RPC call materializes a fresh profile object for the new connection.
+    await act(async () => nextIdentity.resolve({ ...user }))
+    expect(loginReady).toHaveBeenCalledTimes(2)
+    act(() => root.unmount())
+  })
+
+  it('forwards a snapshot that arrived before login confirmation, in login-then-badge order', async () => {
+    const identity = pendingWhoami()
+    const calls: string[] = []
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true,
+      loginReady: () => calls.push('login'), unreadStateChanged: () => calls.push('badge'),
+      returnToInstalls: () => {},
+    })
+    let subscriber!: RpcStub<UnreadStateSubscriber>
+    const api = {...apiWithWhoami(() => identity.promise),
+      subscribeToUnreadState: (_scope: unknown, value: RpcStub<UnreadStateSubscriber>) => {
+        subscriber = value
+        return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}})
+      },
+    } as unknown as RpcStub<AuthenticatedApi>
+    const root = createRoot(document.createElement('div'))
+    await act(async () => root.render(
+      <AuthProvider authenticatedApi={api} onLogout={() => {}}>
+        <Toasty><UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge></Toasty>
+      </AuthProvider>
+    ))
+    const state: UserUnreadState = {workspaces: [], unreadMessageCount: 8, unreadChatCount: 1, chats: []}
+    await act(async () => subscriber.updated(state))
+    expect(calls).toEqual([])
+    await act(async () => identity.resolve(user))
+    expect(calls).toEqual(['login', 'badge'])
+    act(() => root.unmount())
+  })
+
+  it.each([false, true])('keeps native badges subscribed while hidden (hidden on mount: %s)', async hiddenOnMount => {
+    let visibility: DocumentVisibilityState = hiddenOnMount ? 'hidden' : 'visible'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility)
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    const badge = vi.fn<(state: {unreadMessageCount: number}) => void>()
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1, isAvailable: () => true, loginReady: () => {},
+      unreadStateChanged: badge, returnToInstalls: () => {},
+    })
+    const dispose = vi.fn<() => void>()
+    let subscriber!: RpcStub<UnreadStateSubscriber>
+    const subscribeToUnreadState = vi.fn<(_scope: unknown, value: RpcStub<UnreadStateSubscriber>) => Promise<void> & Disposable>((_scope, value) => {
+      subscriber = value
+      return Object.assign(Promise.resolve(), {[Symbol.dispose]: dispose})
+    })
+    const api = {...apiWithWhoami(async () => user), subscribeToUnreadState} as unknown as RpcStub<AuthenticatedApi>
+    const root = createRoot(document.createElement('div'))
+    try {
+      await act(async () => root.render(
+        <AuthProvider authenticatedApi={api} onLogout={() => {}}>
+          <Toasty><UnreadStateBridge scope="summary" authenticatedApi={api}><NativeAppBridge /></UnreadStateBridge></Toasty>
+        </AuthProvider>
+      ))
+      expect(subscribeToUnreadState).toHaveBeenCalledOnce()
+      if (!hiddenOnMount) {
+        visibility = 'hidden'
+        await act(async () => document.dispatchEvent(new Event('visibilitychange')))
+      }
+      expect(dispose).not.toHaveBeenCalled()
+      const state: UserUnreadState = {workspaces: [], unreadMessageCount: 8, unreadChatCount: 1, chats: []}
+      await act(async () => subscriber.updated(state))
+      expect(badge).toHaveBeenLastCalledWith({unreadMessageCount: 8})
+      await act(async () => subscriber.summaryUpdated(
+        {workspace: {workspaceId: 'workspace-1', unreadMessageCount: 0, unreadChatCount: 0}, unreadMessageCount: 0, unreadChatCount: 0}))
+      expect(badge).toHaveBeenLastCalledWith({unreadMessageCount: 0})
+      expect(document.visibilityState).toBe('hidden')
+      expect(document.hasFocus()).toBe(false)
+      expect(subscribeToUnreadState).toHaveBeenCalledOnce()
+    } finally {
+      act(() => root.unmount())
+    }
+    expect(dispose).toHaveBeenCalledOnce()
+  })
+
+  it('ignores malformed, unavailable, and legacy-only bridges', () => {
+    vi.stubGlobal('cloudflareOSNative', {
+      version: 1,
+      isAvailable: () => false,
+      loginReady: vi.fn<() => void>(),
+      returnToInstalls: vi.fn<() => void>(),
+    })
+    vi.stubGlobal('webkit', { messageHandlers: { cloudflareOSLoginReady: {} } })
+    expect(inNativeApp()).toBe(false)
+  })
+})

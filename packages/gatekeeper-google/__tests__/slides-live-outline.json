@@ -1,0 +1,284 @@
+{
+ "presentationId": "12A02axdBbzTs-u3TuTX0VQ8SOPWcH3rN8Yr3MPSFs7U",
+ "pageSize": {
+  "width": {
+   "magnitude": 9144000,
+   "unit": "EMU"
+  },
+  "height": {
+   "magnitude": 5143500,
+   "unit": "EMU"
+  }
+ },
+ "slides": [
+  {
+   "objectId": "g7c11224212bb9f2f_8",
+   "pageElements": [
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "autoText": {
+          "content": "3"
+         }
+        },
+        {
+         "textRun": {
+          "content": "\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "SLIDE_NUMBER"
+      }
+     }
+    },
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "The £330M API Meltdown\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "TITLE"
+      }
+     }
+    },
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "In 2018, TSB Bank pushed a system migration that broke API compatibility overnight — locking millions of customers out of their accounts and costing over £330 million.\"\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "A single API contract change that broke an entire bank\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {},
+    {}
+   ],
+   "slideProperties": {
+    "layoutObjectId": "g22eec438119_14_5",
+    "notesPage": {
+     "pageElements": [
+      {
+       "objectId": "g7c11224212bb9f2f_11",
+       "shape": {}
+      },
+      {
+       "objectId": "g7c11224212bb9f2f_12",
+       "shape": {
+        "text": {
+         "textElements": [
+          {},
+          {
+           "textRun": {
+            "content": "Mention the £330M\n"
+           }
+          },
+          {},
+          {
+           "textRun": {
+            "content": "then demo\n"
+           }
+          }
+         ]
+        }
+       }
+      }
+     ],
+     "notesProperties": {
+      "speakerNotesObjectId": "g7c11224212bb9f2f_12"
+     }
+    }
+   }
+  },
+  {
+   "objectId": "g722ffecb27484c70_34",
+   "pageElements": [
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "This Isn't Just Their Problem\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "TITLE"
+      }
+     }
+    },
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "Developers"
+         }
+        },
+        {
+         "textRun": {
+          "content": "\u000b"
+         }
+        },
+        {
+         "textRun": {
+          "content": "254"
+         }
+        },
+        {
+         "textRun": {
+          "content": " Average APIs per company\n"
+         }
+        },
+        {},
+        {
+         "textRun": {
+          "content": "Every schema tells a different story\u000b"
+         }
+        },
+        {
+         "textRun": {
+          "content": "What's `orderId` here might be `shipment_ref` there\n"
+         }
+        },
+        {},
+        {
+         "textRun": {
+          "content": "Every integration needs an adapter"
+         }
+        },
+        {
+         "textRun": {
+          "content": "\u000bMapping, transformation, and retries\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "BODY"
+      }
+     }
+    },
+    {
+     "shape": {
+      "placeholder": {
+       "type": "BODY"
+      }
+     }
+    },
+    {
+     "shape": {}
+    },
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "⚙️"
+         }
+        },
+        {
+         "textRun": {
+          "content": "\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {
+     "shape": {
+      "text": {
+       "textElements": [
+        {},
+        {
+         "textRun": {
+          "content": "🔌"
+         }
+        },
+        {
+         "textRun": {
+          "content": "\n"
+         }
+        }
+       ]
+      }
+     }
+    },
+    {},
+    {}
+   ],
+   "slideProperties": {
+    "layoutObjectId": "g22ae4b1c657_0_2075",
+    "notesPage": {
+     "pageElements": [
+      {
+       "objectId": "g722ffecb27484c70_43",
+       "shape": {}
+      },
+      {
+       "objectId": "g722ffecb27484c70_44",
+       "shape": {}
+      }
+     ],
+     "notesProperties": {
+      "speakerNotesObjectId": "g722ffecb27484c70_44"
+     }
+    }
+   }
+  }
+ ],
+ "title": "Copy of Connect 2025: Babel Fix",
+ "layouts": [
+  {
+   "objectId": "g22eec438119_14_5",
+   "layoutProperties": {
+    "displayName": "G| Big Copy White"
+   }
+  },
+  {
+   "objectId": "g22ae4b1c657_0_2075",
+   "layoutProperties": {
+    "displayName": "H| Chart + Copy Left Column"
+   }
+  }
+ ],
+ "locale": "en"
+}

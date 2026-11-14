@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CloudflareUsageInfo, CloudflareAccountOption } from '@gadgets/workshop-shared/api'
 import { Dialog, Button, Loader, useKumoToastManager } from '@cloudflare/kumo'
 import { CloudWarning, Lightning } from '@phosphor-icons/react'
 import { useOptionalAuthenticatedApi } from '../../AuthContext'
 import { buildAddCreditsUrl } from './creditsUrl'
 import ResetCountdown from './ResetCountdown'
-import { openConnectWindow } from '../../connectHandoff'
+import { NATIVE_CONNECT_COMPLETE_EVENT, openConnectWindow } from '../../connectHandoff'
+import { AuthPopupCancelledError } from '../../features/native-app/authPopup'
 
 interface OutOfCreditsModalProps {
   open: boolean
@@ -22,13 +23,15 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
   const toasts = useKumoToastManager()
   const [usage, setUsage] = useState<CloudflareUsageInfo | null>(null)
   const [connecting, setConnecting] = useState(false)
+  const refreshVersion = useRef(0)
   const [accounts, setAccounts] = useState<CloudflareAccountOption[] | null>(null)
   const [selecting, setSelecting] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
     if (!auth) return
+    const version = ++refreshVersion.current
     auth.authenticatedApi.getCloudflareUsage()
-      .then((u: CloudflareUsageInfo) => setUsage(u))
+      .then((u: CloudflareUsageInfo) => { if (version === refreshVersion.current) setUsage(u) })
       .catch(() => {})
   }, [auth])
 
@@ -44,27 +47,35 @@ export default function OutOfCreditsModal({ open, onClose }: OutOfCreditsModalPr
       refresh()
     }
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
+    window.addEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onFocus)
+    return () => {
+      ++refreshVersion.current
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onFocus)
+    }
   }, [open, auth, refresh])
 
   // Load the account list when the server says the user must pick one.
   useEffect(() => {
     if (!auth) return
+    let cancelled = false
     if (usage?.connected && usage.needsAccountSelection && accounts === null) {
       auth.authenticatedApi.listCloudflareAccounts()
-        .then((list: CloudflareAccountOption[]) => setAccounts(list))
-        .catch(() => setAccounts([]))
+        .then((list: CloudflareAccountOption[]) => { if (!cancelled) setAccounts(list) })
+        .catch(() => { if (!cancelled) setAccounts([]) })
     }
+    return () => { cancelled = true }
   }, [auth, usage, accounts])
 
   const connect = async () => {
     if (!auth) return
     setConnecting(true)
     try {
-      openConnectWindow(await auth.authenticatedApi.connectAccount('cloudflare', []))
+      await openConnectWindow(await auth.authenticatedApi.connectAccount('cloudflare', []), auth.authenticatedApi)
     } catch (err) {
+      if (err instanceof AuthPopupCancelledError) return
       toasts.add({
-        title: 'Failed to start Cloudflare connection',
+        title: 'Could not connect Cloudflare',
         description: err instanceof Error ? err.message : undefined,
         variant: 'error',
       })

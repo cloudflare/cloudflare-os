@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   advanceToOAuth,
   claimOAuth,
+  isConnectAttempted,
+  markConnectAttempted,
+  NONCE_KEY,
   putInitiation,
   type ConnectNonceKv,
   type StoredNonce,
@@ -27,6 +30,16 @@ describe("two-stage connect handshake", () => {
     expect(claimOAuth(kv, oauthNonce!, 102)).toBeNull();
   });
 
+  it("carries initiation metadata to the claim, with OAuth-stage metadata taking precedence", () => {
+    const kv = makeKv();
+    putInitiation(kv, "init", 100, { firstConnect: true, scopes: ["read"] });
+
+    const oauthNonce = advanceToOAuth(kv, "init", 101, { scopes: ["read", "write"], verifier: "pkce" });
+
+    expect(claimOAuth<{ firstConnect: true; scopes: string[]; verifier: string }>(kv, oauthNonce!, 102))
+      .toMatchObject({ firstConnect: true, scopes: ["read", "write"], verifier: "pkce", stage: "oauth" });
+  });
+
   it("refuses metadata that would silently lose a reserved field", () => {
     const kv = makeKv();
     putInitiation(kv, "init", 100);
@@ -35,6 +48,13 @@ describe("two-stage connect handshake", () => {
       .toThrow(/reserved key "stage"/);
     // Rejected before the attempt was consumed, so the user's link still works.
     expect(advanceToOAuth(kv, "init", 101)).not.toBeNull();
+  });
+
+  it("refuses initiation metadata that would lose a reserved field", () => {
+    const kv = makeKv();
+
+    expect(() => putInitiation(kv, "init", 100, { expiresAt: 0 } as never)).toThrow(/reserved key "expiresAt"/);
+    expect(kv.get(NONCE_KEY)).toBeUndefined();
   });
 
   it("rejects an absent initiation nonce", () => {
@@ -95,5 +115,19 @@ describe("two-stage connect handshake", () => {
     // ...and is single-use, so a replay of the same URL finds nothing.
     expect(claimOAuth(kv, "oauth", 100)).toBeNull();
     expect(kv.get("nonce")).toBeUndefined();
+  });
+});
+
+describe("once-only complete()", () => {
+  it("shares the connectAttempted marker gatekeepers already store", () => {
+    // A hand-rolled account's stored marker must keep its connect closed after adopting the kit.
+    const legacy = makeKv();
+    legacy.put("connectAttempted", true);
+    expect(isConnectAttempted(legacy)).toBe(true);
+
+    const kv = makeKv();
+    expect(isConnectAttempted(kv)).toBe(false);
+    markConnectAttempted(kv);
+    expect(kv.get("connectAttempted")).toBe(true);
   });
 });

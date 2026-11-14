@@ -2,6 +2,44 @@
 
 Replace all `My`/`my`/`MY` prefixes with the service name.
 
+## Observer safety: new gatekeepers versus migrations
+
+This template is for a **new gatekeeper with no historical observations**. Explicitly report **all
+access dependencies** on every observation and authorize observers only in
+`verifyObserverAccess()`. The shared `subresources` field is currently optional, so the local typed
+helper below makes it required for reads and hook deliveries. Implement
+`getHistoricalSubresources()` returning `[]`: it is required even though the current `Gatekeeper`
+interface does not declare it, so type-checking will not catch its absence. Implement
+`addObserver(id, verifier)` / `removeObserver(id)`, which the current interface requires, as
+compatibility-only no-ops.
+
+**Do not copy the empty history export or no-op admission methods into an existing gatekeeper.**
+An existing migration must export its actual historical access requirements through
+`getHistoricalSubresources()`, not a blind `[]`, and preserve its old checks until all affected reads
+report complete requirements and a shipped kernel importer has committed the history to the
+observer ledger. The current kernel does not consume the export yet. This template needs no
+observer roster, observed-set log, `excludeObservers`, or legacy tracker.
+
+`subresources: []` means **no observer-access restriction**, never "the binding already checked".
+Private-only reads must still report a real resource ID and deny collaborators in
+`verifyObserverAccess()`. If tenant/workspace membership is required in addition to resource ACLs,
+report that membership resource on every affected observation and verify it explicitly too.
+
+The fictitious provider below has one atomic resource per `https://example.com/resources/:resourceId`,
+with nonempty ASCII alphanumeric, `_`, or `-` IDs. Its authenticated
+`GET /api/resources/:resourceId` returns the resource's complete data on success; this same ACL
+covers its hook events. A `403` or `404` definitively means the account cannot read the resource;
+`401`, network failures, and other errors are indeterminate and must propagate. Adapt these
+assumptions to the real provider: a public metadata probe is not proof of access to private data
+or hooks. The OAuth, action, and event-source scaffolding remains service-specific.
+
+This is the **B — One access-controlled unit** example, not a requirement that a binding have one resource kind or
+one permission level. Account discovery can be private while item reads are shareable; a broad
+binding can report several independently checked resources, and one provider object can expose
+different audiences for metadata, content, or availability. Choose the strategy for each disclosure
+before adapting this template; see [Choosing a strategy](SKILL.md#choosing-a-strategy-per-resource-type--binding)
+and the kit's [worked Google patterns](../../../packages/gatekeeper-kit/USAGE.md#worked-patterns-from-the-google-migrations).
+
 ## Main implementation (`src/<name>.ts`)
 
 ```typescript
@@ -16,6 +54,7 @@ import {
   HookTargetMetadata,    // Remove if no hooks
   ResourceDescription,
   ApprovalQueue,
+  ActionKind,
   ObservationDescription,
   VendorDescription,
   GatekeeperConnectCallback,
@@ -23,6 +62,8 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
 } from '@gadgets/workshop-shared/gatekeeper';
+import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
+import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { MySession, MyHook as MyHookIface } from "./types";  // Remove MyHook if no hooks
 import TYPES_CODE from "./types.txt";
 import MY_CONFIGURATOR_HTML from "./generated/my-configurator-ui.txt";
@@ -68,10 +109,31 @@ const SELF_CLOSING_HTML = `<!DOCTYPE html>
 </html>`;
 
 const MY_RESOURCE: SupportedResource = {
-  urlPattern: "https://example.com/*",
+  urlPattern: "https://example.com/resources/:resourceId",
   title: "My Resource",
   description: "Access a specific resource.",
 };
+
+// One product: omit the optional product namespace. Use this exact ID on every read and hook.
+function resourceSubresourceId(resourceId: string): string {
+  return formatSubresourceId({ fragments: [{ name: "resource", id: resourceId }] });
+}
+
+function resourceApiUrl(resourceId: string): string {
+  return `https://example.com/api/resources/${encodeURIComponent(resourceId)}`;
+}
+
+// The shared type still makes subresources optional; new observation paths must not omit them.
+function authorizeResourceObservation(
+    queue: Pick<RpcStub<ApprovalQueue>, "authorizeObservation">,
+    description: ObservationDescription & { subresources: string[] }): Promise<void> {
+  return queue.authorizeObservation(description);
+}
+
+// Every action declares an auto-approval verdict, and a kind when it can be true (SKILL.md
+// "Action kinds and auto-approval"). The user's "always approve" rule is stored under the tag, so never rename it
+// once shipped; the label is what the user sees.
+const MY_EDIT_KIND: ActionKind = { tag: "edit-data", label: "Edit data" };
 
 // ---------------------------------------------------------------------------
 // HTTP handler — serves the browser-based auth flow.
@@ -256,12 +318,15 @@ export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
     class: DurableObjectClass<Gatekeeper<any>>;
     resource: SupportedResource;
   }> {
-    // Parse URL to determine resource type and extract identifiers.
-    // Return a DO class with props baked in via ctx.exports.<ClassName>({props}).
-    // The Overseer will instantiate this class as a facet.
+    let parsed = new URL(url);
+    let match = /^\/resources\/([A-Za-z0-9_-]+)\/?$/.exec(parsed.pathname);
+    if (parsed.origin !== "https://example.com" || !match || parsed.search || parsed.hash) {
+      throw new Error("Unsupported resource URL");
+    }
+    // The Overseer instantiates this class as a facet, with the resource pinned in props.
     let props: MyGatekeeperImplProps = {
       userObjectId: this.ctx.props.userObjectId,
-      // TODO: resource-specific fields extracted from URL
+      resourceId: match[1],
     };
     return {
       class: this.ctx.exports.MyGatekeeperImpl({ props }),
@@ -278,9 +343,8 @@ export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
     return {};
   }
 
-  // Mint a verifier representing this account (see Observers in SKILL.md). The overseer only ever
-  // hands it back to a gatekeeper of THIS vendor, so MyGatekeeperImpl.addObserver may trust it.
-  // For a strategy-D (low-stakes) gatekeeper, MyVerifier has no methods and this still works.
+  // The overseer only hands this account verifier back to this vendor, so
+  // MyGatekeeperImpl.verifyObserverAccess may call its vendor-specific ACL probe.
   async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
     let props: MyVerifierProps = { userObjectId: this.ctx.props.userObjectId };
     return this.ctx.exports.MyVerifier({ props });
@@ -289,15 +353,14 @@ export class MyUserImpl extends WorkerEntrypoint<Env, MyUserImplProps>
 
 // ---------------------------------------------------------------------------
 // Verifier — answers "can this observer access X?" against the OBSERVER's own credentials.
-// For strategy D, replace this with a no-op public method; an empty WorkerEntrypoint is not registered
-// in ctx.exports. Keep/extend it for strategy B (single-unit ACL) or C (data-set tracking). See SKILL.md.
+// Probe the same data endpoint/ACL used by getData(), not public metadata or the owner's account.
 
 type MyVerifierProps = {
   userObjectId: string;
 };
 
-// A vendor-specific interface adding non-standard methods to the opaque GatekeeperUserVerifier.
-// addObserver casts the Fetcher back to this; the overseer's same-vendor guarantee makes that safe.
+// Vendor-specific methods on the otherwise opaque verifier. The overseer's same-vendor guarantee
+// lets verifyObserverAccess cast it back to this interface for this call only.
 export interface MyVerifierApi extends GatekeeperUserVerifier {
   hasResourceAccess(resourceId: string): Promise<boolean>;
 }
@@ -307,11 +370,19 @@ export class MyVerifier extends WorkerEntrypoint<Env, MyVerifierProps>
   async hasResourceAccess(resourceId: string): Promise<boolean> {
     let account = this.ctx.exports.UserAccount.get(
         this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId));
-    void account; void resourceId;
-    // TODO: query the service with the observer's own token. Return true on success; return false
-    // for access errors (e.g. 401/403/404); rethrow anything else so the open fails loudly rather
-    // than silently denying.
-    return false;
+    let token = await account.getAccessToken();
+    let response = await fetch(resourceApiUrl(resourceId), {
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: "manual",  // Workers has no "error"; a 3xx is not ok, so it throws below.
+    });
+    // Discard data: this probe answers an ACL question, it does not reveal data to a caller.
+    await response.body?.cancel();
+    if (response.status === 403 || response.status === 404) return false;
+    if (!response.ok) {
+      // Includes 401 (expired/invalid credentials), throttling, and provider outages.
+      throw new Error(`Could not determine resource access: HTTP ${response.status}`);
+    }
+    return true;
   }
 }
 
@@ -356,7 +427,7 @@ type MyHook = RpcTarget & MyHookIface;
 
 type MyGatekeeperImplProps = {
   userObjectId: string;
-  // ... resource-specific fields (e.g., documentId, repoOwner)
+  resourceId: string;
 };
 
 export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
@@ -364,7 +435,7 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
 
   async describe(): Promise<ResourceDescription> {
     return {
-      url: "TODO: canonical resource URL",
+      url: `https://example.com/resources/${encodeURIComponent(this.ctx.props.resourceId)}`,
       title: "TODO",
       snippet: "TODO",
       suggestedBindingName: "MY_RESOURCE",  // Based on type, not instance
@@ -375,6 +446,13 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
 
   async getTypeScriptTypes(): Promise<string> {
     return TYPES_CODE;
+  }
+
+  // The kinds this binding can submit with `autoApprovable: true`, offered to the user to enable.
+  // Approves nothing by itself. With gatekeeper-kit, return `autoApprovableKinds()` filtered to
+  // this binding; return [] if every action opts out.
+  async getAutoApprovableActions(): Promise<ActionKind[]> {
+    return [MY_EDIT_KIND];
   }
 
   async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<MySession> {
@@ -403,23 +481,39 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
     throw new Error("Revert not implemented");
   }
 
-  // Observers (see SKILL.md "Observer verification"). This skeleton shows strategy B — ACL check on
-  // a single atomic resource. The overseer calls addObserver on EVERY open by every observer, so it
-  // re-verifies live access; throw to deny.
-  //   - Strategy A (private-only): `async addObserver() { throw new Error("...not shareable..."); }`
-  //   - Strategy D (low-stakes):   make both methods no-ops.
-  //   - Strategy C (data-set tracking): record observed sets + store verifiers, and route every read
-  //     through an authorizeSetObservation helper that sets `excludeObservers` (see SKILL.md).
-  async addObserver(_id: string, user: Fetcher<GatekeeperUserVerifier>): Promise<void> {
-    let verifier = user as unknown as Fetcher<MyVerifierApi>;
-    if (!(await verifier.hasResourceAccess(/* this.ctx.props.resourceId */ "TODO"))) {
-      throw new Error(
-        "This collaborator does not have access to the bound resource, so they cannot observe " +
-        "data the Gadget read from it.");
-    }
+  // Judges each observer by the verifier this call brings, against every reported ID, and stores
+  // nothing. If the oracle throws, the whole call fails and the Workshop denies everyone in it.
+  readonly #verifyObserverAccess = observerAccessVerifier({
+    hasCollectionAccess: async (verifier: Fetcher<MyVerifierApi>, subresources) => {
+      // Every ID this binding reports names its one atomic resource, so one live ACL probe
+      // covers them all.
+      let allowed = await verifier.hasResourceAccess(this.ctx.props.resourceId);
+      return subresources.map(() => allowed);
+    },
+  });
+
+  // Required, though the current Gatekeeper interface does not declare it. A new gatekeeper
+  // observed nothing under the legacy observer protocol, so the export is empty and reads no state.
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [];
   }
 
-  // Idempotent: ignore unknown ids. A no-op for strategy A/B (nothing is tracked).
+  async verifyObserverAccess(
+      observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+      subresources: string[]): Promise<{ allowedObserverIds: string[] }> {
+    let expected = resourceSubresourceId(this.ctx.props.resourceId);
+    // Refuse an ID this binding never reports rather than guessing what it names.
+    if (subresources.some(id => id !== expected)) {
+      throw new Error("This connection was asked about a resource it never reported.");
+    }
+    return this.#verifyObserverAccess(observers, subresources);
+  }
+
+  // Compatibility only: the current interface requires these. All access dependencies are
+  // explicit on observations; observer authorization is above, never here.
+  async addObserver(_id: string, _verifier: Fetcher<GatekeeperUserVerifier>): Promise<void> {}
+
+  // Compatibility only; there is no observer state to remove.
   async removeObserver(_id: string): Promise<void> {}
 }
 
@@ -461,18 +555,20 @@ export class MyHookControllerImpl extends WorkerEntrypoint<Env, MyHookController
 }
 
 // Event delivery (sketch). When the external event arrives — e.g. in the event-source DO that
-// holds the `initiator` — invoke the hook like so:
+// holds the `initiator` — invoke the hook like so. The resource ID comes from the enabled
+// registration's props, never an untrusted event field; events reveal only that resource:
 //
-//   async onEvent(initiator: Fetcher<HookInitiator<MyHook>>, event: MyEvent) {
+//   async onEvent(initiator: Fetcher<HookInitiator<MyHook>>, resourceId: string, event: MyEvent) {
 //     // startHook() begins a fresh session and returns the callback (re-bound to it) plus an
-//     // ApprovalQueue. `using` disposes the result (and its stubs) at end of scope.
-//     using result = initiator.startHook();
+//     // ApprovalQueue. Await the disposable result so `using` releases its stubs even on denial.
+//     using result = await initiator.startHook();
 //
 //     // A hook event is almost always an observation. (Register actions too if invoking the
-//     // callback can cause side effects.) Pipeline through the not-yet-resolved promise.
-//     await result.approvalQueue.authorizeObservation({
-//       title: "TODO: short event summary",
-//       description: "TODO: details about the event being delivered",
+//     // callback can cause side effects.) Authorize before delivering any event data.
+//     await authorizeResourceObservation(result.approvalQueue, {
+//       title: "Resource event",
+//       description: "Delivered an event from the bound resource.",
+//       subresources: [resourceSubresourceId(resourceId)],
 //     });
 //
 //     // Deliver the event to the Gadget's callback.
@@ -500,11 +596,20 @@ class MySessionImpl extends RpcTarget implements MySession {
 
   // Example: observation (read). Fetch data, then authorize before returning.
   async getData(): Promise<string> {
-    let result = "TODO: fetch from service or cache";
+    let account = this.#ctx.exports.UserAccount.get(
+        this.#ctx.exports.UserAccount.idFromString(this.#ctx.props.userObjectId));
+    let token = await account.getAccessToken();
+    let response = await fetch(resourceApiUrl(this.#ctx.props.resourceId), {
+      headers: { Authorization: `Bearer ${token}` },
+      redirect: "manual",  // Workers has no "error"; a 3xx is not ok, so it throws below.
+    });
+    if (!response.ok) throw new Error(`Resource read failed: HTTP ${response.status}`);
+    let result = await response.text();
 
-    await this.#approvalQueue.authorizeObservation({
+    await authorizeResourceObservation(this.#approvalQueue, {
       title: "Read data",
-      description: "Fetched data from the service.",
+      description: "Fetched data from the bound resource.",
+      subresources: [resourceSubresourceId(this.#ctx.props.resourceId)],
     });
 
     return result;
@@ -522,6 +627,11 @@ class MySessionImpl extends RpcTarget implements MySession {
       title: "Update data",
       description: `Update value to: ${newValue}`,
       implementsRevert: true,
+      actionKind: MY_EDIT_KIND,
+      // `true` unless the action falls under the opt-out policy in SKILL.md. Where it depends on
+      // the payload, compute it, with a comment naming the rule:
+      //   autoApprovable: !removesContent(newValue),  // rule 1: deletes or removes content
+      autoApprovable: true,
     });
 
     // TODO: Update cache/simulation state so subsequent reads reflect this
@@ -603,7 +713,8 @@ Add package scripts:
     "deploy": "vp run --no-cache build:configurator && wrangler deploy"
   },
   "dependencies": {
-    "@gadgets/configurator-ui": "workspace:*"
+    "@gadgets/configurator-ui": "workspace:*",
+    "@gadgets/gatekeeper-kit": "workspace:*"
   },
   "devDependencies": {
     "@gadgets/scripts": "workspace:*"

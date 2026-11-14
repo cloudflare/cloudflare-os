@@ -43,7 +43,7 @@ export default function ComposerFormatMenuItems({
           disabled={creating !== null}
           onClick={() => choose(format)}
         >
-          <span className="mr-2 inline-flex h-4 w-4 items-center justify-center text-kumo-inactive">
+          <span className="inline-flex h-4 w-4 items-center justify-center text-kumo-inactive">
             <FormatGlyph
               output={format.output}
               size="md"

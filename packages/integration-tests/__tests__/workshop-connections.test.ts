@@ -1,17 +1,20 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
-import type { AiChatMessage } from "@gadgets/workshop-shared/api";
+import type { AiChatMessage, ConnectedAccountsSubscriber } from "@gadgets/workshop-shared/api";
+import type { AccountDescription } from "@gadgets/workshop-shared/gatekeeper";
 import type { TestSession } from "../fixtures/gatekeeper-test/src/test-gatekeeper.js";
 import { loadAllChatHistory, openAgentSession } from "../src/agent-session.js";
 import {
-  startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState, type Harness,
+  startTestGatekeeperHarness, TEST_VENDOR_ID, testActionState, testControl, type Harness,
 } from "../src/harness.js";
 import {
   SCRIPTED_MODEL_ID, scriptedModelRouter, type ChatCompletionStep, type RoutedScriptedModel,
 } from "../src/mock-model.js";
 import { NetworkInterceptor } from "../src/network-interceptor.js";
 import {
-  accountLabel, restartWorkspace, waitFor, waitForIdleChat, withOwnerWorkspace,
+  accountLabel, connect, listConnectedAccounts, logIn, nextUsernames, restartWorkspace, RpcTarget,
+  signUp, streamGeneration, stubFor, waitFor, waitForIdleChat, withOwnerWorkspace,
+  type ConnectedAccount,
 } from "../src/rpc-client.js";
 
 let harness: Harness;
@@ -150,6 +153,70 @@ it.concurrent("denying a connection request leaves the agent stopped", async () 
   expect(model.remainingSteps()).toBe(0);
 });
 
+interface Spawner extends RpcTarget {
+  spawn(title: string, prompt: string): Promise<void>;
+}
+
+it.concurrent("an agent spawner request is granted, and the bindings the agent gives it reach " +
+    "spawned agents once accepted", async () => {
+  const describeDesk: ChatCompletionStep = {
+    toolCall: { id: "describe-desk", name: "describeBinding", arguments: { name: "DESK" } },
+  };
+  const model = models.script([
+    { toolCall: { id: "create-desk", name: "createGadget",
+                  arguments: { title: "Desk", bindingName: "DESK" } } },
+    { toolCall: { id: "request", name: "requestConnection", arguments: {
+      vendorId: "agent-spawner", reason: "Triage each new ticket.", bindingName: "TRIAGE",
+    } } },
+    // Resumed once the user grants the spawner.
+    { toolCall: { id: "bind-desk", name: "setGadgetBinding",
+                  arguments: { gadget: "TRIAGE", source: "DESK" } } },
+    { toolCall: { id: "describe-triage", name: "describeBinding", arguments: { name: "TRIAGE" } } },
+    { text: "Wired up." },
+    // An agent spawned before the user accepts the chat's changes, then one spawned after.
+    describeDesk,
+    { text: "No desk yet." },
+    describeDesk,
+    { text: "Triaged." },
+  ]);
+  await using session = await openSession(model, "spawnerrequest");
+
+  const first = await session.runTurn("Give a new desk gadget its own triage agent.");
+  expect(first.outcome).toEqual({ status: "completed" });
+  const pending = connectionCard(first.history);
+  expect(pending).toMatchObject(
+      { state: "pending", vendorId: "agent-spawner", bindingName: "TRIAGE" });
+
+  await withOwnerWorkspace(harness.url, session.username, async ws => {
+    using spawner = await ws.newAgentSpawnerGatekeeper(
+        { displayName: "Triage", modelId: SCRIPTED_MODEL_ID, env: {} });
+    await ws.acceptConnectionRequest(pending.requestId, { gatekeeperId: await spawner.getId() });
+    await waitFor("the resumed turn", async () => model.requests.length === 5 || null);
+    await waitForIdleChat(ws, pending.chatId);
+
+    // newAgentSpawnerGatekeeper types its session as `any`, as connectToGadget does a gadget's.
+    using binding = await spawner.openSession() as RpcStub<Spawner>;
+    const spawnAndFinish = async (title: string, requests: number) => {
+      await binding.spawn(title, "Triage the newest ticket.");
+      await waitFor(`the ${title} agent's turn`,
+          async () => model.requests.length === requests || null);
+      const chat = (await ws.listChats()).find(entry => entry.title === title);
+      if (!chat) throw new Error(`No spawned chat titled ${title}`);
+      await waitForIdleChat(ws, chat.id);
+    };
+    await spawnAndFinish("Before", 7);
+    await session.acceptChanges();
+    await spawnAndFinish("After", 9);
+  });
+
+  expect(JSON.stringify(model.requests[2])).toContain("accepted your connection request");
+  expect(JSON.stringify(model.requests[4])).toContain(
+      `DESK: \\"Desk\\" (proposed in this chat`);
+  expect(JSON.stringify(model.requests[6])).toContain(`There is no binding named \\"DESK\\"`);
+  expect(JSON.stringify(model.requests[8])).toContain("Binding: env.DESK");
+  expect(model.remainingSteps()).toBe(0);
+});
+
 it.concurrent("removing a connection cuts off its pending action, its bindings and its sessions",
     async () => {
   const model = models.script([
@@ -203,7 +270,7 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
     await thing.remove();
 
     expect((await app.listBindings()).some(binding => binding.target === thingId)).toBe(false);
-    await expect(ws.approveAction(action.id)).rejects.toThrow(/no such gatekeeper/i);
+    await expect(ws.approveAction(action.id)).rejects.toThrow(/removed from the workspace/);
     expect((await ws.listActions({ filter: "pending" })).entries.map(entry => entry.id))
         .toEqual([action.id]);
     expect(await actionState(label)).toEqual({
@@ -231,6 +298,45 @@ it.concurrent("removing a connection cuts off its pending action, its bindings a
   });
 
   expect(model.remainingSteps()).toBe(0);
+});
+
+it.concurrent("a connection's stubs to itself outlive its session and a restart, not its removal",
+    async () => {
+  const [username] = nextUsernames("selfstub");
+  const callSelfStub = () => testControl(harness, "call-self-stub", { key: username });
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, username);
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the test account", async () =>
+    (await listConnectedAccounts(api)).find(a => a.vendorId === TEST_VENDOR_ID) ?? null);
+  using ws = await api.newWorkspace();
+  const { id: workspaceId } = await ws.getMetadata();
+  using thing = await ws.newGatekeeper(account.id, "https://gadgets-test.example/things/self");
+  if (!thing) throw new Error("Failed to create the test connection");
+  const thingId = await thing.getId();
+  {
+    using session = await thing.openSession() as RpcStub<TestSession>;
+    await session.keepSelfStub(username);
+  }
+  const reached = { label: accountLabel(account) };
+  expect(await callSelfStub()).toEqual(reached);
+
+  let restarted = false;
+  ws.onRpcBroken(() => { restarted = true; });
+  const generation = await streamGeneration(ws);
+  await restartWorkspace(harness.url, ws);
+  await waitFor("the workspace restart", async () => restarted || null);
+
+  // The restart ends the whole RPC session, not just the workspace.
+  using reconnected = connect(harness.url);
+  using reopenedApi = await logIn(reconnected, username);
+  using reopened = await reopenedApi.openWorkspace(workspaceId);
+  expect(await streamGeneration(reopened)).not.toBe(generation);
+  expect(await callSelfStub()).toEqual(reached);
+  using connection = await reopened.getGatekeeperById(thingId);
+  await connection.remove();
+  expect(await callSelfStub())
+      .toEqual({ error: "This connection has been removed from the workspace." });
 });
 
 it.concurrent("the agent resumes once, only after every connection request of its turn is accepted",
@@ -343,4 +449,37 @@ it.concurrent("a connection request left pending across a workspace restart is d
   expect(model.requests).toHaveLength(2);
   expect(JSON.stringify(model.requests[1])).toContain("env.REQUESTED_THING");
   expect(model.remainingSteps()).toBe(0);
+});
+
+/** What the Connectors page hears while it stays open. */
+class ConnectorsPage extends RpcTarget implements ConnectedAccountsSubscriber {
+  readonly added: ConnectedAccount[] = [];
+  readonly removed: number[] = [];
+  add(id: number, description: AccountDescription, _vendor: unknown, _resources: unknown,
+      credentialsValid: boolean, vendorId: string) {
+    this.added.push({ id, description, credentialsValid, vendorId });
+  }
+  remove(id: number) { this.removed.push(id); }
+  ready() {}
+}
+
+it.concurrent("disconnecting an account from the Connectors page removes it and revokes it",
+    async () => {
+  const [username] = nextUsernames("disconnect");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, username!);
+  const page = new ConnectorsPage();
+  using pageStub = stubFor(page);
+  using _subscription = await api.subscribeConnectedAccounts(pageStub);
+
+  await api.provisionAmbientAccount(TEST_VENDOR_ID);
+  const account = await waitFor("the new account to appear on the page", async () =>
+    page.added.find(added => added.vendorId === TEST_VENDOR_ID) ?? null);
+  await api.disconnectAccount(account.id);
+
+  await waitFor("the account to leave the page", async () =>
+    page.removed.includes(account.id) || null);
+  expect((await listConnectedAccounts(api)).map(listed => listed.id)).not.toContain(account.id);
+  expect(await testControl(harness, "revocation-count", { label: accountLabel(account) }))
+      .toEqual({ count: 1 });
 });

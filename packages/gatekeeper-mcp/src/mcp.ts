@@ -9,8 +9,10 @@
 import { RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { validateRpc, skipRpcValidation } from "capnweb-validate";
 import { createLogger } from "@gadgets/observability/logger";
+import { readTextCapped } from "@gadgets/gatekeeper-kit/response-body";
 import {
   stripTrailingSlashes,
+  workerVersionTag,
   type AvatarImage,
   type Gatekeeper,
   type GatekeeperConnectCallback,
@@ -64,6 +66,7 @@ import {
 } from "@gadgets/mcp-shared/user";
 import { connectFormHtml } from "./connect-form.js";
 import { serverIdFromEndpoint } from "./server-id.js";
+import { assertOwnServerSubresources, serverSubresourceId } from "./server-subresources.js";
 import { mcpResourceFor, mcpResources } from "./resources.js";
 import type { ConfiguratorUIOption } from "@gadgets/configurator-ui";
 import { MCP_BASE_TYPES } from "@gadgets/mcp-shared/base-types";
@@ -92,6 +95,9 @@ function getBaseUrl(env: Env): string {
 // ---------------------------------------------------------------------------
 // HTTP handler — serves the connect form and the OAuth callback.
 
+// The route checks only path shape before reading the form; the account checks the nonce after.
+const MAX_CONNECT_FORM_BYTES = 16 * 1024;
+
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     return handleMcpHttpRequest(req, {
@@ -114,7 +120,12 @@ export default {
           }
           return htmlResponse(connectFormHtml(path));
         }
-        const form = await request.formData();
+        let form: URLSearchParams;
+        try {
+          form = new URLSearchParams(await readTextCapped(request, MAX_CONNECT_FORM_BYTES));
+        } catch {
+          return new Response("Invalid form submission.", { status: 400 });
+        }
         return continueConnect(
           account, initiationNonce, String(form.get("url") ?? ""), env, path);
       },
@@ -179,6 +190,10 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
         "Connect a Model Context Protocol server and use its tools from a Gadget. Reads happen " +
         "straight away. Anything that writes waits for your approval.",
     };
+  }
+
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   async connectAccount(
@@ -329,8 +344,8 @@ export class GatekeeperUserImpl
 // ---------------------------------------------------------------------------
 // Verifier
 
-// Required by the `GatekeeperUser` contract but never interrogated, since `addObserver` refuses
-// everyone. Carries no props for the same reason.
+// Required by the `GatekeeperUser` contract but never interrogated, since `addObserver` and
+// `verifyObserverAccess` refuse everyone. Carries no props for the same reason.
 @validateRpc()
 export class McpVerifier extends WorkerEntrypoint<Env> implements GatekeeperUserVerifier {
   verify(): void {}
@@ -442,6 +457,38 @@ export class McpGatekeeperImpl
 
   get serverName(): string {
     return this.ctx.props.serverName;
+  }
+
+  /**
+   * Every read through this binding reports `server/<serverId>`. `serverId` has been written into
+   * the props of every binding since this gatekeeper was added, so no older binding lacks it. It is
+   * a display slug and can collide across hosts, which is harmless: `verifyObserverAccess` admits
+   * nobody, and endpoint equality and action-kind tags keep using the full endpoint.
+   */
+  get observationSubresources(): string[] {
+    return [serverSubresourceId(this.ctx.props.serverId)];
+  }
+
+  /**
+   * Private-only: a valid `server/<serverId>` for this binding admits no observer, since being
+   * able to authenticate to a pasted endpoint is not evidence of being allowed to see what the
+   * owner read from it. Any other ID fails the whole call, which denies everyone in it. The
+   * inherited `addObserver` still refuses everyone, for reads recorded before subresources.
+   */
+  async verifyObserverAccess(
+    _observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    assertOwnServerSubresources(subresources, this.ctx.props.serverId);
+    return { allowedObserverIds: [] };
+  }
+
+  /**
+   * The inherited `addObserver` refused everyone, and nothing recorded proves a binding never
+   * read, so history exports the same `server/<serverId>` reads report, which admits nobody.
+   */
+  async getHistoricalSubresources(): Promise<string[]> {
+    return [serverSubresourceId(this.ctx.props.serverId)];
   }
 
   async describe(): Promise<ResourceDescription> {

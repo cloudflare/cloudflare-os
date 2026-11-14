@@ -6,10 +6,14 @@ import { createRateLimitedCapability } from './rateLimitedCapability'
 import { useTheme } from './ThemeContext'
 import { forwardTrustedFrameError } from './errorReporting'
 
-// Upper bound on iframe height. Sized to leave room for a typical configurator form plus an open
-// autocomplete popup, while staying within a reasonable viewport even on short screens.
-const MAX_CONFIGURATOR_HEIGHT = 720
+// Upper bound on the height a frame may claim. A taller form than the window shows is scrolled with
+// the modal, the iframe clipped to its scroll area or the window; the bound only stops a broken
+// frame from claiming an absurd height.
+const MAX_CONFIGURATOR_HEIGHT = 4000
 const MIN_CONFIGURATOR_HEIGHT = 80
+// How far past its layout an open popup may paint unclipped: the runtime's popups are at most 240px
+// tall and sit just below their field. Anything taller is the form itself, which stays clipped.
+const MAX_POPUP_OVERFLOW = 320
 // Cap on each scroll delta forwarded from the iframe, so a misbehaving iframe can't post
 // extreme values to scroll-jack the host modal.
 const SCROLL_FORWARD_MAX_DELTA = 1000
@@ -21,6 +25,7 @@ function clamp(value: number, min: number, max: number): number {
 
 class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfiguratorHost {
   readonly #gatekeeper: RpcStub<RpcTarget>
+  #ensuringResources = false
 
   constructor(
     configurator: any,
@@ -28,6 +33,8 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
     private readonly onSelectionReady: (ready: boolean) => void,
     private readonly onScroll: (deltaX: number, deltaY: number) => void,
     private readonly getInitialResourceImpl: () => { resourceUrl: string; resourceUrlPattern: string } | null,
+    private readonly getEnsureResources: () => ((resourceUrlPatterns: string[]) => Promise<boolean>) | undefined,
+    private readonly getAcceptedResourceUrlPatternsImpl: () => readonly string[],
   ) {
     super()
     // The configurator form is short-lived, so a burst past the per-minute cap is always a bug:
@@ -49,6 +56,10 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
     return this.getInitialResourceImpl()
   }
 
+  async getAcceptedResourceUrlPatterns(): Promise<string[]> {
+    return [...this.getAcceptedResourceUrlPatternsImpl()]
+  }
+
   resize(height: number, layoutHeight: number): void {
     this.onResize(height, layoutHeight)
   }
@@ -60,6 +71,19 @@ class ResourceConfiguratorHostImpl extends RpcTarget implements ResourceConfigur
   forwardScroll(deltaX: number, deltaY: number): void {
     this.onScroll(deltaX, deltaY)
   }
+
+  // One request at a time: each may open a consent pop-up, and a second would replace the first's.
+  async ensureResources(resourceUrlPatterns: string[]): Promise<boolean> {
+    const ensureResources = this.getEnsureResources()
+    if (!ensureResources) throw new Error('This configurator cannot request access here.')
+    if (this.#ensuringResources) throw new Error('An access request is already in progress.')
+    this.#ensuringResources = true
+    try {
+      return await ensureResources(resourceUrlPatterns)
+    } finally {
+      this.#ensuringResources = false
+    }
+  }
 }
 
 export default function SandboxedResourceConfigurator({
@@ -67,13 +91,20 @@ export default function SandboxedResourceConfigurator({
   topOffset = 0,
   onCollectResourceUrlChange,
   onSelectionReadyChange,
+  onEnsureResources,
   initialResourceUrl,
   resourceUrlPattern,
+  acceptedResourceUrlPatterns,
 }: {
   frame: ResourceConfiguratorFrame,
   topOffset?: number,
   onCollectResourceUrlChange?: (collect: (() => Promise<string>) | null) => void,
   onSelectionReadyChange?: (ready: boolean | null) => void,
+  /**
+   * Serves the configurator's `ensureResources` requests for the account it was started on. Absent,
+   * those requests are refused.
+   */
+  onEnsureResources?: (resourceUrlPatterns: string[]) => Promise<boolean>,
   /**
    * When set, the configurator opens pre-filled to this concrete resource URL (e.g. supplied by an
    * AI agent's connection request). `resourceUrlPattern` is this resource's pattern, used by the
@@ -81,6 +112,8 @@ export default function SandboxedResourceConfigurator({
    */
   initialResourceUrl?: string,
   resourceUrlPattern?: string,
+  /** The resource types the caller will accept a URL of (see `getAcceptedResourceUrlPatterns`). */
+  acceptedResourceUrlPatterns: readonly string[],
 }) {
   const { resolvedThemeMode } = useTheme()
   const placeholderRef = useRef<HTMLDivElement>(null)
@@ -106,11 +139,15 @@ export default function SandboxedResourceConfigurator({
   const topOffsetRef = useRef(topOffset)
   topOffsetRef.current = topOffset
   configuratorRef.current = frame.ui
+  const onEnsureResourcesRef = useRef(onEnsureResources)
+  onEnsureResourcesRef.current = onEnsureResources
   // Resource to pre-fill the configurator with, read lazily when the iframe connects.
   const initialResourceRef = useRef<{ resourceUrl: string; resourceUrlPattern: string } | null>(null)
   initialResourceRef.current = (initialResourceUrl && resourceUrlPattern)
     ? { resourceUrl: initialResourceUrl, resourceUrlPattern }
     : null
+  const acceptedResourceUrlPatternsRef = useRef(acceptedResourceUrlPatterns)
+  acceptedResourceUrlPatternsRef.current = acceptedResourceUrlPatterns
 
   // Cached scroll ancestor of the placeholder. We rediscover it lazily because the modal DOM is
   // stable for the lifetime of the configurator, so walking up via getComputedStyle on every event is
@@ -165,29 +202,31 @@ export default function SandboxedResourceConfigurator({
       // Clip the iframe to the nearest scrollable ancestor (typically the modal's scroll area).
       // In normal viewports the modal grows tall enough that no clipping is needed, but when the
       // viewport is too short for the modal to fully expand, the inner scroll-area takes over and
-      // this clip prevents the iframe from rendering over the modal's footer.
-      const ancestor = findScrollAncestor()
-      let nextClip: { top: number, right: number, bottom: number, left: number } | null = null
-      if (ancestor) {
-        const ancestorRect = ancestor.getBoundingClientRect()
-        // When popup is open (iframe taller than layout), allow bottom overflow so dropdowns can
-        // extend past the modal like native autocomplete behavior.
-        const popupOpen = heightRef.current > layoutHeightRef.current + 8
-        nextClip = {
-          top: Math.max(0, ancestorRect.top - visualTop),
-          right: Math.max(0, (rect.left + rect.width) - ancestorRect.right),
-          bottom: popupOpen ? 0 : Math.max(0, (visualTop + heightRef.current) - ancestorRect.bottom),
-          left: Math.max(0, ancestorRect.left - rect.left),
-        }
+      // this clip prevents the iframe from rendering over the modal's footer. With no such ancestor
+      // the window bounds it, so a frame's claimed height can never cover the page.
+      const bounds = findScrollAncestor()?.getBoundingClientRect()
+        ?? { top: 0, right: window.innerWidth, bottom: window.innerHeight, left: 0 }
+      // A popup reaching past the frame's layout (the iframe is taller than it) may extend past the
+      // modal, as a native dropdown does, but only while the layout's end is in view, only by a
+      // popup's worth, and never past the window: otherwise what lies past the scroll area is the
+      // rest of the form, which stays clipped.
+      const layoutEnd = visualTop + layoutHeightRef.current
+      const popupOpen = heightRef.current > layoutHeightRef.current + 8 && layoutEnd <= bounds.bottom + 1
+      const visibleEnd = popupOpen
+        ? Math.min(layoutEnd + MAX_POPUP_OVERFLOW, bounds.bottom + MAX_POPUP_OVERFLOW, window.innerHeight)
+        : bounds.bottom
+      const nextClip = {
+        top: Math.max(0, bounds.top - visualTop),
+        right: Math.max(0, (rect.left + rect.width) - bounds.right),
+        bottom: Math.max(0, (visualTop + heightRef.current) - visibleEnd),
+        left: Math.max(0, bounds.left - rect.left),
       }
       const prevClip = lastClipRef.current
-      const clipChanged = !prevClip !== !nextClip
-        || (prevClip && nextClip && (
-          prevClip.top !== nextClip.top
-          || prevClip.right !== nextClip.right
-          || prevClip.bottom !== nextClip.bottom
-          || prevClip.left !== nextClip.left
-        ))
+      const clipChanged = !prevClip
+        || prevClip.top !== nextClip.top
+        || prevClip.right !== nextClip.right
+        || prevClip.bottom !== nextClip.bottom
+        || prevClip.left !== nextClip.left
       if (clipChanged) {
         lastClipRef.current = nextClip
         setClipInsets(nextClip)
@@ -215,10 +254,9 @@ export default function SandboxedResourceConfigurator({
       configuratorRef.current,
       (nextHeight, nextLayoutHeight) => {
         if (!Number.isFinite(nextHeight)) return
-        const maxHeight = Math.max(MIN_CONFIGURATOR_HEIGHT, Math.min(MAX_CONFIGURATOR_HEIGHT, window.innerHeight - 120))
-        setHeight(clamp(Math.ceil(nextHeight), MIN_CONFIGURATOR_HEIGHT, maxHeight))
+        setHeight(clamp(Math.ceil(nextHeight), MIN_CONFIGURATOR_HEIGHT, MAX_CONFIGURATOR_HEIGHT))
         const layoutHeight = Number.isFinite(nextLayoutHeight) ? nextLayoutHeight : nextHeight
-        setLayoutHeight(clamp(Math.ceil(layoutHeight), MIN_CONFIGURATOR_HEIGHT, maxHeight))
+        setLayoutHeight(clamp(Math.ceil(layoutHeight), MIN_CONFIGURATOR_HEIGHT, MAX_CONFIGURATOR_HEIGHT))
       },
       ready => onSelectionReadyChange?.(Boolean(ready)),
       (deltaX, deltaY) => applyForwardedScroll(
@@ -226,6 +264,8 @@ export default function SandboxedResourceConfigurator({
         clamp(Number(deltaY) || 0, -SCROLL_FORWARD_MAX_DELTA, SCROLL_FORWARD_MAX_DELTA),
       ),
       () => initialResourceRef.current,
+      () => onEnsureResourcesRef.current,
+      () => acceptedResourceUrlPatternsRef.current,
     ))
     rpcSessionRef.current = iframe
     iframeRpcRef.current?.[Symbol.dispose]?.()

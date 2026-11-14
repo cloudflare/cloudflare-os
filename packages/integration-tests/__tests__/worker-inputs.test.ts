@@ -6,7 +6,7 @@
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
-import { isWorkerInput, WATCH_PATHS } from "../src/worker-inputs.js";
+import { isWorkerInput } from "../src/worker-inputs.js";
 
 const WORKSPACE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const inWorkspace = (path: string) => resolve(WORKSPACE_DIR, path).replaceAll("\\", "/");
@@ -24,6 +24,8 @@ it.each([
   "packages/bundled-blueprints/libraries/ui/client.ts",
   "packages/integration-tests/fixtures/gatekeeper-test/wrangler.jsonc",
   "packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts",
+  "packages/gatekeeper-context/src/library-read.ts",
+  "packages/gatekeeper-context/cloudflare.config.ts",
   "pnpm-lock.yaml",
 ])("treats %s as a Worker input", path => {
   expect(isWorkerInput(inWorkspace(path))).toBe(true);
@@ -35,40 +37,13 @@ it.each([
   "packages/typed-storage/dist/index.js",
   "packages/workshop-backend/.wrangler/validate/src/server.ts",
   "packages/integration-tests/fixtures/gatekeeper-test/.wrangler/validate/src/test-gatekeeper.ts",
+  "packages/gatekeeper-context/.wrangler/validate/src/index.ts",
+  "packages/gatekeeper-context/src/generated/app.txt",
+  "packages/gatekeeper-context/dist-app/app/index.html",
   "packages/workshop-backend/node_modules/capnweb/index.js",
   "packages/typed-storage/node_modules/.bin/tsc",
   // Another package's tests reach the Worker through none of this.
   "packages/workshop-frontend/src/main.tsx",
 ])("does not treat %s as a Worker input", path => {
   expect(isWorkerInput(inWorkspace(path))).toBe(false);
-});
-
-// Each entry's own root is what `server.watcher.add` receives, so a file directly inside any of
-// them must sit under a watched path -- otherwise the predicate above accepts events that never
-// arrive.
-const covered = (path: string) =>
-  WATCH_PATHS.some(root => path === root || path.startsWith(`${root}/`));
-
-it("watches a root covering every entry in the table", () => {
-  const roots = [
-    "packages/workshop-backend",
-    "packages/workshop-backend/src",
-    "packages/workshop-shared",
-    "packages/observability",
-    "packages/error-reporting",
-    "packages/gatekeeper-kit",
-    "packages/typed-storage",
-    "packages/bundled-blueprints",
-    // The one entry the environment can add, resolved as the blueprint generator resolves it.
-    ...(process.env.BUNDLED_BLUEPRINTS_DIR
-      ? [resolve(WORKSPACE_DIR, "packages/workshop-backend", process.env.BUNDLED_BLUEPRINTS_DIR)]
-      : []),
-    "packages/integration-tests/fixtures",
-    "packages/integration-tests/fixtures/gatekeeper-test",
-    "tsconfig.json",
-    "pnpm-lock.yaml",
-  ].map(inWorkspace);
-
-  expect(roots.filter(root => !covered(root))).toEqual([]);
-  expect(WATCH_PATHS.length).toBe(roots.length);
 });

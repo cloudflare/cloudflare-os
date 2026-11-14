@@ -13,9 +13,11 @@ import type {
 } from "@gadgets/workshop-shared/api";
 import { applyCodeChange, type CodeContent } from "@gadgets/workshop-shared/code-change";
 import { makeMockStorage } from "./mock-storage";
-import { makeOverseerStorage, type GadgetRecord, type OverseerStorage } from "../src/overseer";
-import { GitStore } from "../src/git-store";
-import type { GitMigrationHost } from "../src/git-migration";
+import { makeOverseerStorage, type GadgetRecord, type OverseerStorage }
+  from "../src/storage-schema/overseer-storage";
+import type { WorkspaceGitCache } from "../src/git-cache";
+import { makeLocalGitCache } from "./local-git-cache";
+import type { GitMigrationHost } from "../src/storage-schema/overseer-git-migration";
 
 export const USER: AiChatAuthorInfo = { type: "user", id: "alice@example.com", name: "Alice" };
 export const AGENT: AiChatAuthorInfo = { type: "agent", id: "some-model", name: "Agent" };
@@ -33,7 +35,7 @@ export const MINUTE = 60_000;
  */
 export class LegacyWorkspace {
   readonly storage: OverseerStorage;
-  readonly gitStore: GitStore;
+  readonly gitCache: WorkspaceGitCache;
 
   #doc = new Y.Doc();
   #version = 0;
@@ -42,7 +44,7 @@ export class LegacyWorkspace {
 
   constructor(storage: OverseerStorage = makeOverseerStorage(makeMockStorage())) {
     this.storage = storage;
-    this.gitStore = new GitStore(storage.gitObjects);
+    this.gitCache = makeLocalGitCache(storage);
     // Legacy workspaces always wrote an (often empty) version 1 at initialization.
     this.edit(T0, () => {});
   }
@@ -106,7 +108,7 @@ export class LegacyWorkspace {
     return sequence;
   }
 
-  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer.ts). */
+  /** Records a legacy live draft (see ChatDraftUpdateRecord in overseer-storage.ts). */
   addDraft(chatId: number, update: Uint8Array): void {
     this.storage.chatDraftUpdates.put({
       chatId, timestamp: new Date(T0 + ++this.#timestamp), author: USER, update,
@@ -116,29 +118,21 @@ export class LegacyWorkspace {
   host(defaultGadgetId?: number): GitMigrationHost {
     return {
       storage: this.storage,
-      gitStore: this.gitStore,
+      gitCache: this.gitCache,
       ownerIdentity: OWNER,
       defaultGadgetId,
       createDefaultGadget: () => {
         // Mirrors OverseerImpl.ensureDefaultGadget(undefined): allocate from the real counter,
-        // record the default (so gadgetRootName below maps it to ""), leave the head to the
-        // migration. A fixed `created` keeps synthesized empty-tree commits deterministic.
+        // record the default, leave the head to the migration. A fixed `created` keeps
+        // synthesized empty-tree commits deterministic.
         let id = this.storage.nextGatekeeperId.get();
         this.storage.nextGatekeeperId.put(id + 1);
         this.storage.defaultGadgetId.put(id);
-        defaultGadgetId = id;
         // A legacy row, like addGadget's (the migration host predates the v4 type stamp).
         this.storage.gadgets.put({
           id, title: "Workspace", created: new Date(T0), bindingName: "GADGET", bindings: {},
         } as GadgetRecord);
         return id;
-      },
-      gadgetRootName: (id) => id === defaultGadgetId ? "" : `${id}`,
-      getActiveChatCompaction: (chatId) => {
-        let compactedTo = this.storage.chatMeta.get(chatId)?.compactedTo;
-        return compactedTo === undefined ? undefined
-            : this.storage.chatCompactions.get(
-                `${keyString(chatId)}.${keyString(compactedTo)}`);
       },
       // The shared counter keeps conversion timestamps unique against every message's (the
       // chats collection's byTimestamp index is unique), like the real getChatTimestamp().
@@ -171,7 +165,7 @@ export class LegacyWorkspace {
     let conversion = this.conversionMessage(chatId);
     let content: CodeContent = new Map();
     for (let pin of conversion.pins ?? []) {
-      content.set(pin.gadgetId, await this.gitStore.readCommitFiles(pin.baseCommit));
+      content.set(pin.gadgetId, this.gitCache.readCommitFiles(pin.baseCommit));
     }
     return conversion.change !== undefined ? applyCodeChange(content, conversion.change) : content;
   }
@@ -195,8 +189,8 @@ export function captureEdit(doc: Y.Doc, fn: (doc: Y.Doc) => void): Uint8Array {
 }
 
 /**
- * `name -> text` snapshot of one root map of a legacy code doc, mirroring git-migration.ts's
- * private reader of the same name.
+ * `name -> text` snapshot of one root map of a legacy code doc, mirroring
+ * overseer-git-migration.ts's private reader of the same name.
  */
 export function readDocFiles(doc: Y.Doc, rootName: string): Map<string, string> {
   let files = new Map<string, string>();
@@ -214,7 +208,7 @@ export function readDocFiles(doc: Y.Doc, rootName: string): Map<string, string> 
  * update log rather than against the migration's own doc.
  */
 export async function expectHeadsMatchDoc(
-    storage: Pick<OverseerStorage, "gadgets">, gitStore: GitStore, doc: Y.Doc,
+    storage: Pick<OverseerStorage, "gadgets">, gitCache: WorkspaceGitCache, doc: Y.Doc,
     defaultGadgetId?: WorkpieceId): Promise<void> {
   for (let record of storage.gadgets.list()) {
     let gadget = record as GadgetRecord;  // legacy workspaces hold only gadgets
@@ -224,6 +218,6 @@ export async function expectHeadsMatchDoc(
     }
     let root = gadget.id === defaultGadgetId ? "" : `${gadget.id}`;
     expect(gadget.commitId).toBeDefined();
-    expect(await gitStore.readCommitFiles(gadget.commitId!)).toEqual(readDocFiles(doc, root));
+    expect(gitCache.readCommitFiles(gadget.commitId!)).toEqual(readDocFiles(doc, root));
   }
 }

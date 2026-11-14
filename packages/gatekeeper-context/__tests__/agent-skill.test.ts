@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_SKILL_CATALOG_MAX_ENTRIES,
   isSkillManifestPath, buildAgentSkillCatalogEntries, buildAgentSkillCommands,
-  buildAgentSkillMessage, buildContextCatalog, parseSkillManifest,
+  buildAgentSkillMessage, buildContextCatalog, parseSkillManifest, updateSkillManifestName,
   type CollectionSkills,
 } from "../src/agent-skill";
 import { isTextContentType } from "../src/context-types";
@@ -131,6 +131,77 @@ Instructions
     )).toEqual({name: "example", description: "Example."});
   });
 
+});
+
+describe("updateSkillManifestName", () => {
+  it("updates CRLF frontmatter while preserving other fields and body content", () => {
+    const source = "\uFEFF--- \r\nname: \"old-name\" # keep\r\ndescription: Existing skill.\r\nowner: platform\r\n---\r\n\r\nInstructions\r\n";
+    const updated = updateSkillManifestName(source, "new-name");
+
+    expect(parseSkillManifest("new-name/SKILL.md", updated)).toEqual({
+      name: "new-name",
+      description: "Existing skill.",
+    });
+    expect(updated).toBe(source.replace("\"old-name\"", "\"new-name\""));
+  });
+
+  it.each(["123", "true", "false", "null"])(
+    "keeps scalar-like renamed names as YAML strings: %s",
+    (newName) => {
+      const source = `---\nname: old-name\ndescription: Existing skill.\n---\nInstructions\n`;
+      const updated = updateSkillManifestName(source, newName);
+
+      expect(parseSkillManifest(`${newName}/SKILL.md`, updated).name).toBe(newName);
+    },
+  );
+
+  it.each([
+    [">-", "\n"],
+    ["|-", "\n"],
+    [">-", "\r\n"],
+    ["|-", "\r\n"],
+  ])("preserves the separator after a %s block-scalar name using %j", (style, newline) => {
+    const source = [
+      "---",
+      `name: ${style}`,
+      "  old-name",
+      "description: Existing skill.",
+      "owner: platform",
+      "---",
+      "Instructions",
+      "",
+    ].join(newline);
+    const updated = updateSkillManifestName(source, "new-name");
+
+    expect(parseSkillManifest("new-name/SKILL.md", updated)).toEqual({
+      name: "new-name",
+      description: "Existing skill.",
+    });
+    expect(updated).toBe([
+      "---",
+      'name: "new-name"',
+      "description: Existing skill.",
+      "owner: platform",
+      "---",
+      "Instructions",
+      "",
+    ].join(newline));
+  });
+
+  it("preserves a block-scalar name's header comment", () => {
+    const source = `---
+name: >-  # explain the name
+  old-name
+description: Existing skill.
+---
+Instructions
+`;
+    const updated = updateSkillManifestName(source, "new-name");
+
+    expect(parseSkillManifest("new-name/SKILL.md", updated).name).toBe("new-name");
+    expect(updated).toBe(source
+        .replace(">-  # explain the name\n  old-name", '"new-name"  # explain the name'));
+  });
 });
 
 describe("buildAgentSkillCommands", () => {

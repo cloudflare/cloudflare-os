@@ -6,7 +6,7 @@ export type FakeKv = {
   get<T>(key: string): T | undefined;
   put<T>(key: string, value: T): void;
   delete(key: string): void;
-  list<T>(options: { prefix: string; startAfter?: string; limit?: number }): Iterable<[string, T]>;
+  list<T>(options: { prefix: string; startAfter?: string; end?: string; limit?: number }): Iterable<[string, T]>;
   /** Test-only: every key ever written, in write order, including repeats. */
   readonly writes: string[];
   /** Test-only: the keys currently present, lexicographically. */
@@ -29,11 +29,11 @@ export function fakeKv(): FakeKv {
       values.set(key, structuredClone(value));
     },
     delete: (key: string) => void values.delete(key),
-    list: <T>({ prefix, startAfter, limit }:
-      { prefix: string; startAfter?: string; limit?: number }) => {
+    list: <T>({ prefix, startAfter, end, limit }:
+      { prefix: string; startAfter?: string; end?: string; limit?: number }) => {
       const found = [...values.entries()]
         .filter(([key]) => key.startsWith(prefix)
-          && (startAfter === undefined || key > startAfter))
+          && (startAfter === undefined || key > startAfter) && (end === undefined || key < end))
         .toSorted(byKey)
         .map(([key, value]) => [key, structuredClone(value)] as [string, T]);
       return limit === undefined ? found : found.slice(0, limit);

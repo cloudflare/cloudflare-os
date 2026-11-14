@@ -1,9 +1,11 @@
 import { defineConfig, loadEnv } from 'vite'
+import { configDefaults } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import tsconfigPaths from 'vite-tsconfig-paths'
 import { TanStackRouterVite } from '@tanstack/router-plugin/vite'
 import { vitestTask } from '@gadgets/scripts/vitest-task'
+import { pdfjsAssets } from './vite-pdfjs-assets'
 
 // `dist/` is this package's own build output, excluded from the inputs of the bundle and test
 // tasks: vp declines to cache a task that reads a path it also wrote. Package-relative rather than
@@ -59,7 +61,8 @@ const runConfig = {
         command: viteBuildCommand,
         ...frontendBundleTaskOptions,
       },
-      test: vitestTask('vitest run', [ownDist]),
+      // The browser suite second, under its own config (see vitest.browser.config.ts).
+      test: vitestTask(['vitest run', 'vitest run -c vitest.browser.config.ts'], [ownDist]),
     },
   },
 }
@@ -77,15 +80,21 @@ export default defineConfig(({ mode }) => {
       react(),
       tailwindcss(),
       tsconfigPaths(),
+      pdfjsAssets(),
     ],
     server: {
       port: 3000,
       host: true,
       proxy: {
         '/api/client-errors': `http://${backendHost}`,
+        '/api/device-session/callback': `http://${backendHost}`,
         '/blueprint-screenshot': `http://${backendHost}`,
         '/api/site-logo': `http://${backendHost}`,
       },
+    },
+    test: {
+      // Chromium's, under vitest.browser.config.ts.
+      exclude: [...configDefaults.exclude, 'src/**/*.browser.test.tsx'],
     },
     build: {
       // Production reporting uploads these separately; hidden maps never reveal a map URL to users.

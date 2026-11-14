@@ -5,12 +5,14 @@
 // harness at the package and plug in a handler module", not a forked copy of this file. Per-vendor
 // suites in consumer repos use this as-is.
 
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
-import { createTestHarness, type TestHarness } from "wrangler";
+import { createTestHarness, type TestHarness, type TestHarnessOptions } from "wrangler";
 import { z } from "zod";
+import { waitFor } from "./rpc-client.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -45,6 +47,8 @@ const WORKER_CONFIG = z.looseObject({
   name: z.string(),
   main: z.string(),
   account_id: z.string().optional(),
+  alias: z.record(z.string(), z.string()).optional(),
+  define: z.record(z.string(), z.string()).optional(),
   ai: z.looseObject({
     binding: z.string(),
     remote: z.boolean().optional(),
@@ -112,7 +116,13 @@ function workshopConfig(
 
   // No CF_ACCESS_AUD, so /api takes the unauthenticated path and password signup is available.
   // PUBLIC_BASE_URL mirrors run-dev-server.ts; only connect handoffs read it, as their target origin.
-  config.vars = { ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test" };
+  // WORKSHOP_ENVIRONMENT "test" makes it a local instance, where `cf-os api` may act as anyone, as
+  // on `pnpm dev-server`. A suite deletes it in `patchWorkshop` to run as a deployment, where the
+  // CLI is for admins only.
+  config.vars = {
+    ...config.vars, ADMINS: [ADMIN_USERNAME], PUBLIC_BASE_URL: "http://workshop.test",
+    WORKSHOP_ENVIRONMENT: "test",
+  };
 
   // Most integration tests need no Gadget execution. Keep the loader only for tests that exercise
   // executeCode or a generated Gadget server.
@@ -137,6 +147,15 @@ export type Harness = {
    */
   fetchWorker(name: string, ...args: Parameters<TestHarness["fetch"]>)
       : ReturnType<TestHarness["fetch"]>;
+  /**
+   * Deploy another build of the Workshop over the running one, as releasing a new version does.
+   * `patchWorkshop` takes the place of the patch the harness was started with. Resolves once every
+   * Worker runs the new build; see deploy().
+   *
+   * Storage and `url` are kept. Every Worker restarts, which breaks the RPC sessions open at the
+   * time, so only a suite that started its own harness should call this.
+   */
+  redeployWorkshop(patchWorkshop?: (config: WorkerConfig) => void): Promise<void>;
 };
 
 export async function startHarness(opts: {
@@ -153,21 +172,120 @@ export async function startHarness(opts: {
   });
 
   mkdirSync(HARNESS_ROOT, { recursive: true });
-  const server = createTestHarness({
+  const options = (patchWorkshop?: (config: WorkerConfig) => void) => ({
     root: HARNESS_ROOT,
     // workshop-backend is primary, so unrouted requests (e.g. /api) go to it.
     workers: [
-      { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false,
-          opts.patchWorkshop) },
+      { config: workshopConfig(gatekeepers, opts.enableGadgetExecution ?? false, patchWorkshop) },
       ...gatekeepers.map(({ config }) => ({ config })),
     ],
   });
+  const server = createTestHarness(options(opts.patchWorkshop));
 
   const { url } = await server.listen();
   return {
     server,
     url,
     fetchWorker: (name, ...args) => server.getWorker(name).fetch(...args),
+    redeployWorkshop: patchWorkshop => deploy(server, () => options(patchWorkshop)),
+  };
+}
+
+/**
+ * `server.update(next)`, resolving only once every Worker runs the options `next` returns.
+ *
+ * update() resolves at the first reload, but each Worker rebuilds and reloads on its own, so that
+ * reload can still be running any one's earlier build, with another to come. Every Worker is
+ * deployed with a fresh mark in its vars, and this is done once each reports it. Reading the env
+ * asks the runtime again after each reload, so a read that meets a later reload loses its
+ * connection: that Worker has not reported yet.
+ */
+export async function deploy(
+    server: TestHarness, next: (current: TestHarnessOptions) => TestHarnessOptions): Promise<void> {
+  const mark = randomUUID();
+  const workers: string[] = [];
+  await server.update(current => {
+    const options = next(current);
+    return {
+      ...options,
+      workers: options.workers.map(worker => {
+        if (!("config" in worker)) throw new Error("The harness boots inline configs only");
+        workers.push(worker.config.name!);
+        const { config } = worker;
+        return { ...worker, config: { ...config, vars: { ...config.vars, TEST_DEPLOY_MARK: mark } } };
+      }),
+    };
+  });
+  await waitFor("every Worker to run the new deployment", async () => {
+    for (const name of workers) {
+      try {
+        if ((await server.getWorker(name).getEnv()).TEST_DEPLOY_MARK !== mark) return null;
+      } catch (error) {
+        if (isReloadDisconnect(error)) return null;
+        throw error;
+      }
+    }
+    return true;
+  });
+}
+
+/**
+ * Miniflare reads the env with a synchronous fetch on a worker thread and rethrows its failure
+ * here, which drops the cause's `code`, so the cause is matched by its message.
+ */
+function isReloadDisconnect(error: unknown): boolean {
+  return error instanceof TypeError && error.message === "fetch failed" &&
+    error.cause instanceof Error && /\bECONN(RESET|REFUSED)\b/.test(error.cause.message);
+}
+
+// Takes the place of the module the Workshop's build generates its bundled blueprints into.
+const BUNDLED_BLUEPRINTS_MODULE = resolve(HERE, "../fixtures/bundled-blueprints.ts");
+
+/** A blueprint for a Workshop to ship with. See bundleBlueprints(). */
+export type BundledBlueprintSpec = {
+  blueprintId: string;
+  title: string;
+  /** The `BlueprintMetadata.version` it installs as. */
+  version: number;
+  /** Its files, by path. */
+  files: Record<string, string>;
+};
+
+/**
+ * A Workshop patch (for `patchWorkshop`, or `Harness.redeployWorkshop()`) that builds the Workshop
+ * with `blueprints` as its bundled blueprints, in place of the ones this repo ships. The Workshop
+ * installs them on its first `/api` request, and again when a redeploy changes them.
+ *
+ * The Workshop's build compiles the repo's own blueprints into a generated module. This has
+ * wrangler resolve that module to a fixture instead, which takes the list from a `define`.
+ */
+export function bundleBlueprints(blueprints: BundledBlueprintSpec[])
+    : (config: WorkerConfig) => void {
+  // Each in the shape of an entry of workshop-backend's `src/generated/bundled-blueprints.ts`.
+  const entries = blueprints.map(({ blueprintId, title, version, files }) => {
+    const sorted = Object.entries(files).toSorted(([a], [b]) => a < b ? -1 : 1);
+    return {
+      blueprintId,
+      title,
+      description: "",
+      output: { id: "fixture", noun: "Fixture", plural: "Fixtures", icon: "appWindow" },
+      author: { type: "user", id: "bundled@gadgets-test.example", name: "Bundled" },
+      revision: 1,
+      created: new Date(0).toISOString(),
+      version,
+      lastUpdated: new Date(0).toISOString(),
+      bindings: {},
+      contentHash: createHash("sha256").update(JSON.stringify([version, sorted])).digest("hex"),
+      files: sorted,
+    };
+  });
+  return config => {
+    // Keyed by the specifier exactly as the Workshop's source imports it, which is all that
+    // wrangler matches an alias on.
+    config.alias = {
+      ...config.alias, "./generated/bundled-blueprints.js": BUNDLED_BLUEPRINTS_MODULE,
+    };
+    config.define = { ...config.define, TEST_BUNDLED_BLUEPRINTS: JSON.stringify(entries) };
   };
 }
 

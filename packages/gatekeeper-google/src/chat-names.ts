@@ -52,8 +52,14 @@ async function nameAfterParticipants(
   const names = named.flatMap(user => user.name ?? []);
   if (names.length === 0) return info;
   // memberCount includes the connected user but not apps, and the listing may be cut short.
-  const rest = Math.max(others.length, (info.memberCount ?? 0) - 1) - names.length;
-  return { ...info, name: LIST_FORMAT.format(rest > 0 ? [...names, `${rest} more`] : names) };
+  return { ...info, name: participantNames(names, Math.max(others.length, (info.memberCount ?? 0) - 1)) };
+}
+
+/** "A, B, and C", or past the first few, "A, B, C, and 2 more", out of `total` people. */
+export function participantNames(names: readonly string[], total = names.length): string {
+  const shown = names.slice(0, LABELLED_PARTICIPANTS);
+  const rest = total - shown.length;
+  return LIST_FORMAT.format(rest > 0 ? [...shown, `${rest} more`] : shown);
 }
 
 /** The conversation's joined people and apps other than the connected user, in Chat's order. */

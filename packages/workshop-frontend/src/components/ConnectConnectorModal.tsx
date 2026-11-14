@@ -20,6 +20,7 @@ interface ConnectConnectorModalProps {
   autoProvisions?: boolean
   onOpenChange: (open: boolean) => void
   connecting?: boolean
+  onCancelConnect?: () => void
   // Connect mode: invoked with the `urlPattern`s of the grantable resources the user chose to
   // enable. `undefined` means "enable everything" (no toggle was deselected), matching the
   // gatekeeper's default behavior.
@@ -45,6 +46,7 @@ export default function ConnectConnectorModal({
   autoProvisions = false,
   onOpenChange,
   connecting = false,
+  onCancelConnect,
   onConfirm,
   accountDescription,
   credentialsValid = true,
@@ -412,13 +414,17 @@ export default function ConnectConnectorModal({
               </>
             ) : (
               <>
-                <Dialog.Close
+                {connecting && onCancelConnect ? (
+                  <WorkshopButton onClick={onCancelConnect} className="!h-9">
+                    Cancel connection
+                  </WorkshopButton>
+                ) : <Dialog.Close
                   render={(props) => (
                     <WorkshopButton {...props} disabled={connecting} className="!h-9">
                       Cancel
                     </WorkshopButton>
                   )}
-                />
+                />}
                 <WorkshopButton
                   tone="primary"
                   onClick={handleConfirm}

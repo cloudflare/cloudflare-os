@@ -9,6 +9,10 @@ gatekeeper deployment.
 - Only Layer 1 leaf modules are shipped. Layer 2 remains a proposal in
   [`../../plans/gatekeeper-kit.md`](../../plans/gatekeeper-kit.md).
 - Keep leaf modules independently usable. Do not make one depend on a future assembly layer.
+- Add a leaf, or a leaf option, only for behavior several gatekeepers share under one contract.
+  Behavior only one gatekeeper has belongs in that gatekeeper. Support it with a plain TypeScript
+  hook or callback on the leaf, or by implementing the canonical interface by hand. Do not add a
+  variant for a single provider.
 - Accept the narrowest structural KV surface a module needs. Pass stable `ctx.storage.kv` objects to
   modules that coordinate work by storage identity.
 - Treat shipped storage keys and prefixes as compatibility. Use existing key and prefix options when

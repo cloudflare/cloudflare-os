@@ -17,7 +17,7 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "vitest": "catalog:"

@@ -1,63 +1,155 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, SUGGESTED_MODELS, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, BlueprintOutput, OutputSummary, WorkpieceId, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail } from '@gadgets/workshop-shared/api';
-import { Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
-import { createTypedStorage, collection } from "@gadgets/typed-storage";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
+import type { Singleton } from "@gadgets/typed-storage";
+import {
+  makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
+  type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
+  type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
+  type ChatReadCursor,
+} from "./storage-schema/user-storage.js";
+import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
 import { createWorkshopLogger } from "./observability";
-import { getAiGatewayConfig, type AiGatewayConfig } from "./ai-gateway.js";
+import { getGatewayModels, type GatewayModels } from "./ai-gateway.js";
 import { utcDayKey, nextUtcMidnightIso, DailyQuotaResult } from "./ai-gateway-billing/limits/config.js";
+import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import type { AdminSettings } from "./admin-settings.js";
-import { isReservedBlueprintKey, readBlueprintKvRecord } from "./blueprint-archive.js";
+import { deleteBlueprintContent } from "./blueprint-archive.js";
+import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
-import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
+import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
+import {
+  authorizeDevice, deliver, deliverBadge, registerAuthorizedDevice, registerDevice,
+} from "./notification-service.js";
+import {
+  DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
+  type DeviceSessionCredential, type DeviceSessionHandoff,
+} from "./auth/device-session-handoff.js";
 
 const logger = createWorkshopLogger("workshop.user");
 
 // How many workspaces one Outputs catch-up pass examines, bounding the Durable Objects a single
 // listOutputs() call wakes and how long it waits. The client calls again until catch-up is done.
 const OUTPUTS_BACKFILL_PAGE = 16;
+const NOTIFICATION_RETRY_LIFETIME_MS = 10 * 60_000;
+const NOTIFICATION_ATTEMPT_TIMEOUT_MS = 15_000;
 
-type ConnectedAccountRecord = {
-  id: number;
-  account: Fetcher<GatekeeperUser>;
-  description: AccountDescription;
-  vendorId: string;   // Derived from the GATEKEEPER_ binding name (e.g. "google", "email").
-  credentialExpiresAt?: Date;    // When credentials are expected to expire, if known.
-  credentialsExpired?: boolean;  // Set true by async notification from gatekeeper.
-  // True if the Workshop created this account automatically via GatekeeperVendor.createAccount()
-  // (no OAuth flow), rather than the user connecting it. Such accounts are protected from manual
-  // disconnect, since deleting one permanently destroys the user's data in that gatekeeper.
-  autoProvisioned?: boolean;
+// Carries only failed destinations back to the local outbox; successful devices leave the retry set.
+class NotificationDeliveryError extends Error {
+  constructor(readonly failedSubscriptions: string[], cause: unknown) {
+    super(cause instanceof Error ? cause.message : "Notification delivery failed.", {cause});
+  }
+}
+
+// How many notification-service calls (device authorizations and registrations) one user may make
+// per minute; see #countNotificationServiceCall().
+const NOTIFICATION_SERVICE_CALLS_PER_MINUTE = 20;
+
+// A user's notifications go to at most this many of their phones and as many browsers, the most
+// recently registered of each kind, as the service keeps that many of each.
+const NOTIFICATION_DEVICES_PER_KIND = 10;
+
+/** Server-enforced lifetime of a Workshop session issued to a native device. */
+export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * A workspace's update about one chat, sent to `messageArrived()`. It may cover several changes
+ * made since the last update. It carries the chat's current state rather than a diff, so receiving
+ * it twice is harmless. "Sequence" and "visible sequence" are as described on `ChatReadCursor`.
+ */
+export type ChatMessageProgress = {
+  /** The chat's current title and latest-message preview, for the inbox. */
+  head: ChatTimelineHead;
+  /**
+   * The chat's `lastActive` time in the workspace. Decides which of two updates with the same latest
+   * message (e.g. from before and after a rename) is newer.
+   */
+  headUpdatedAt: Date;
+  /**
+   * Visible sequence of the chat's latest message: the total that unread counts are computed from.
+   * An update older than one already received never lowers it.
+   */
+  latestVisibleSequence: number;
+  /**
+   * Profile ID of the latest visible message's author, if it's a person rather than the agent. If
+   * the user wrote that message themselves while caught up, it doesn't count as unread for them.
+   */
+  latestMessageAuthorId?: string;
+  /**
+   * Sequence of the earliest new message or notification this update covers. For a user who has no
+   * read state for the chat yet, everything before it counts as read and already notified. Absent
+   * if only the chat's details (e.g. its title) changed.
+   */
+  firstMessageSequence?: number;
+  /** Visible sequence of the earliest new visible message this update covers, if any. */
+  firstVisibleSequence?: number;
+  /**
+   * Notifications for this user that this update covers. The User DO queues them for delivery; the
+   * workspace won't send them again once this call succeeds.
+   */
+  notifications: {
+    /** Stable event ID shared by retries and delivery attempts. */
+    id: string;
+    /** Whether the task finished or needs permission. */
+    kind: UserNotification["kind"];
+    /** Chat title included in this update. */
+    chatTitle: string;
+    /** Timeline sequence where the event happened. */
+    sequence: number;
+  }[];
 };
 
-// A connect ("connect") or reconnect/ensureResources ("restore") flow that a gatekeeper has finished
-// but the user's browser has not yet confirmed (see connect-handoff.ts). Keyed by the SHA-256 of the
-// ticket; single-use, and swept by alarm() once `expiresAt` passes.
-type PendingHandoffRecord = {
-  ticketHash: string;
-  kind: "connect" | "restore";
-  accountId: number;
-  expiresAt: Date;
-  credentialExpiresAt?: Date;
-  // The staged account, present for `kind: "connect"` only; becomes the ConnectedAccountRecord.
-  connect?: Pick<ConnectedAccountRecord, "account" | "description" | "vendorId">;
-  // The gatekeeper's id for the staged credentials, present for `kind: "restore"` only; passed back
-  // in commitReconnect() so this ticket can activate no other stage's credentials.
-  stageId?: string;
+/**
+ * A new read position for one chat, sent by a workspace to `applyReadHorizon()` when the user marks
+ * the chat read or unread there. The workspace has already checked the user's access and converted
+ * the client's sequence number into a visible sequence. "Sequence" and "visible sequence" are as
+ * described on `ChatReadCursor`.
+ */
+export type ChatReadPosition = {
+  /** The chat's current title and latest-message preview. */
+  head: ChatTimelineHead;
+  /** Workspace metadata time used to order otherwise identical heads. */
+  headUpdatedAt: Date;
+  /** Visible sequence of the chat's latest message. */
+  latestVisibleSequence: number;
+  /** Sequence of the last record to count as read, inclusive. */
+  readThroughSequence: number;
+  /** The same read position, as a visible sequence. */
+  readThroughVisibleSequence: number;
+  /**
+   * Sequence through which notifications count as already handled. Used only if the user has no
+   * read state for this chat yet, so that notifications from before unread tracking began are
+   * never sent.
+   */
+  notificationBaseline: number;
 };
 
-// A started connect / reconnect / ensure-resources flow, keyed by the hash of the nonce the Workshop
-// tab gave the popup (see ConnectFlowStart); completeConnectHandoff requires the ticket's record and
-// the nonce's flow to name the same account. Single-use, and swept by alarm() once `expiresAt` passes.
-type PendingConnectFlow = {
-  nonceHash: string;
-  accountId: number;
-  expiresAt: Date;
+/** Captured chat state sent on shared-workspace admission to initialize read and alert horizons. */
+export type ChatAdmissionBaseline = {
+  /** The chat's ID within the workspace. */
+  chatId: number;
+  /** Earlier notifications, through this timeline sequence, are already handled. */
+  notifiedThroughSequence: number;
+  /** Visible position to count as read on first admission. */
+  readThroughVisibleSequence?: number;
+  /** Captured title and latest-message preview, if the chat still exists. */
+  head?: ChatTimelineHead;
+  /** Workspace metadata time used to order this captured head. */
+  headUpdatedAt?: Date;
 };
+
+/**
+ * How long a user selection ticket (GatekeeperUserSelection) remains
+ * redeemable.
+ */
+export const GATEKEEPER_USER_SELECTION_LIFETIME_MS = 30 * 60 * 1000;
 
 /**
  * Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
@@ -79,7 +171,9 @@ export type ProvidedAccountInfo = {
 // shape keeps the methods' declared return types (e.g. createAccount's Fetcher<GatekeeperUser>)
 // usable directly, the way the runtime stub actually behaves.
 type AccountCreatorStub = Required<Pick<GatekeeperVendor, "createAccount">>;
+type ResourceCreatorStub = Required<Pick<GatekeeperVendor, "createResource">>;
 type SingletonAccountStub = Required<Pick<GatekeeperUser, "getSingletonGatekeeperClass" | "startAppUi">>;
+type CreationConfiguratorStub = Required<Pick<GatekeeperUser, "startCreationConfigurator">>;
 
 function areCredentialsValid(record: ConnectedAccountRecord): boolean {
   if (record.credentialsExpired) return false;
@@ -92,11 +186,6 @@ function areCredentialsValid(record: ConnectedAccountRecord): boolean {
  * Gateway billing flow is Cloudflare-specific, so several places key off this literal.
  */
 export const CLOUDFLARE_VENDOR_ID = "cloudflare";
-
-export type UserAiModelRecord = {
-  profile: AiChatAuthorInfo;
-  config: AiModelConfig;
-}
 
 const withholdSecret = (secret: string) => secret === "" ? "" : null;
 
@@ -151,69 +240,9 @@ export type UserChatContext = {
   quickModel?: AiModelConfig;
 }
 
-type LoginSessionRecord = {
-  tokenId: string,  // sha256 hash of token, hex-formatted
-  created: Date,
-}
-
-// Blueprint record stored in the user's `blueprints` collection.
-type BlueprintUserRecord = {
-  id: string;
-  metadata: BlueprintMetadata;
-  gadgetId?: string;
-  // Source of truth for whether the blueprint is featured deployment-wide.
-  featured?: boolean;
-};
-
-type LibraryBlueprintRecord = {
-  id: string;
-  metadata: BlueprintMetadata;
-  addedAt: Date;
-  uploaded: boolean;
-};
-
-type GadgetRecord = GadgetMetadata & {
-  created: Date;
-  lastActive?: Date;  // if missing, gadget is provisional
-  // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
-  // GadgetMetadata).
-};
-
-function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
+function isFullyCreated(g: GadgetRecord): g is WorkspaceMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
-
-/**
- * One output of a workspace, as pushed into a user's output index by the Overseer that owns it
- * (see `syncWorkspaceOutputs()`). Carries only what the workspace itself knows: its title,
- * activity time and ownership are joined in from the `gadgets` collection on read, so they can't
- * go stale here.
- */
-export type WorkspaceOutputEntry = {
-  workpieceId: WorkpieceId;
-  title: string;
-  created: Date;
-
-  /** The format the gadget was built as, if it was instantiated from a blueprint declaring one. */
-  output?: BlueprintOutput;
-};
-
-type OutputRecord = WorkspaceOutputEntry & {
-  // The workspace containing this output (an Overseer DO id).
-  workspaceId: string;
-};
-
-// AI Gateway billing state for the optional top-up flow: which Cloudflare account to bill and a
-// cached credit balance. The OAuth tokens themselves live in the connected Cloudflare *gatekeeper*
-// account (vendorId "cloudflare"); billing reads a usable token from there via getUsableAccessToken.
-type CloudflareBilling = {
-  // Selected account, once chosen (auto-selected when the grant sees exactly one).
-  accountId?: string;
-  accountName?: string;
-  // Cached credit balance (USD) and when it was last fetched (unix ms).
-  creditsRemaining?: number | null;
-  creditsUpdatedAt?: number;
-};
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length != b.length) {
@@ -227,93 +256,6 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 
   return result === 0;
 }
-
-function makeUserStorage(storage: DurableObjectStorage) {
-  return createTypedStorage(storage, {
-    collections: {
-      aiModels: collection<UserAiModelRecord>()({
-        primaryKey: record => record.profile.id,
-      }),
-      gadgets: collection<GadgetRecord>()({
-        primaryKey: "id"
-      }),
-      connectedAccounts: collection<ConnectedAccountRecord>()({
-        primaryKey: "id"
-      }),
-      sessions: collection<LoginSessionRecord>()({
-        primaryKey: "tokenId",
-      }),
-      pendingHandoffs: collection<PendingHandoffRecord>()({
-        primaryKey: "ticketHash",
-      }),
-      pendingConnectFlows: collection<PendingConnectFlow>()({
-        primaryKey: "nonceHash",
-      }),
-      blueprints: collection<BlueprintUserRecord>()({
-        primaryKey: "id",
-      }),
-      libraryBlueprints: collection<LibraryBlueprintRecord>()({
-        primaryKey: "id",
-      }),
-      // Outputs of every workspace in `gadgets`, mirrored here by each workspace's Overseer so the
-      // Outputs page is one cheap read of the user's own DO. Entries are meaningful only while the
-      // corresponding `gadgets` record exists; `syncWorkspaceOutputs()` and the `gadgets` deletion
-      // paths keep the two in step.
-      outputs: collection<OutputRecord>()({
-        primaryKey: record => `${record.workspaceId}:${record.workpieceId}`,
-        nonUniqueIndexes: {
-          byWorkspace(record: OutputRecord) { return record.workspaceId; },
-        },
-      }),
-    },
-    singletons: {
-      // AI Gateway billing state (selected account + cached balance) for the optional top-up flow;
-      // null until a Cloudflare account is connected and resolved.
-      cloudflareBilling: <CloudflareBilling | null>null,
-
-      created: false,
-      profile: <AiChatAuthorInfo>{
-        type: "user",
-        name: "User",
-        id: "user@example.com",
-      },
-      quickModel: <string | null>null,
-      preferredModel: <string | null>null,
-      onboardingCompleted: false,
-
-      // Set once the user's pre-existing workspaces have been asked to populate the outputs index
-      // (see #backfillOutputs()). Workspaces created since push on their own.
-      outputsBackfilled: false,
-
-      // How far that catch-up has got: the last workspace id examined. The sweep runs a page at a
-      // time and resumes here on the next visit.
-      outputsBackfillCursor: "",
-
-      nextAccountId: 0,
-      pinnedBlueprints: <string[]>[],
-
-      // Per-user free-tier daily LLM-call counter (only used when ENABLE_CLOUDFLARE_LIMITS is on).
-      // Stores the current UTC day and the calls made that day; a stale `day` implicitly resets the
-      // count. Folds the former standalone RateLimitDO into the user object.
-      dailyLlmCount: <{ day: string; count: number } | null>null,
-
-      // `passwordHash` value as passed to `login()`, but with an extra round of SHA-256 applied.
-      //
-      // null = password disabled (e.g. because some other auth mechanism is used)
-      passwordHashHash: <Uint8Array | null>null,
-      // Current profile revision, bumped every time the user updates their
-      // public-facing profile. Currently this is only bumped when the user
-      // changes their display name.
-      profileRev: 0,
-      // Profile revision the deployment-wide user directory last acknowledged
-      // (-1 = never, which also lazily backfills users created before the
-      // directory existed). See #syncDirectory().
-      directoryRev: -1,
-    }
-  });
-}
-
-type UserStorage = ReturnType<typeof makeUserStorage>;
 
 function unavailableGatekeeperVendorInfo(id: string): GatekeeperVendorInfo {
   return {
@@ -371,22 +313,66 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   private storage: UserStorage;
   private vendors: Map<string, Service<GatekeeperVendor>>;
   private adminSettings: DurableObjectNamespace<AdminSettings>;
+  #notificationSubscribers = new Map<object, RpcStub<NotificationSubscriber>>();
+  // The current minute of notification-service calls: when it began, and the calls made in it.
+  #notificationCallWindowStart = -Infinity;
+  #notificationCallsInWindow = 0;
+  // The latest registration with the notification service; the next one waits for it to settle.
+  #notificationRegistration: Promise<unknown> = Promise.resolve();
+  #unreadSubscribers = new Map<object, {scope: UnreadStateScope; subscriber: RpcStub<UnreadStateSubscriber>}>();
 
   constructor(ctx: DurableObjectState, env: Cloudflare.Env) {
     super(ctx, env);
 
-    // Migrate data created prior to the minions -> gadgets rename.
-    // TODO(cleanup): Eventually remove this, very few people ever used it as "minions".
-    for (let [key, value] of Array.from(ctx.storage.kv.list({prefix: "minions:"}))) {
-      let newKey = "gadgets:" + key.slice("minions:".length);
-      ctx.storage.kv.put(newKey, value);
-      ctx.storage.kv.delete(key);
-    }
-
     this.storage = makeUserStorage(ctx.storage);
+    for (let cursor of this.storage.chatReadCursors.list()) {
+      this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor);
+    }
+    this.storage.chatReadCursors.subscribe({
+      add: cursor => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      update: (_old, cursor) => { this.#readCursors.set(`${cursor.workspaceId}:${cursor.chatId}`, cursor); },
+      remove: cursor => { this.#readCursors.delete(`${cursor.workspaceId}:${cursor.chatId}`); },
+    });
+    // Only headers/counts are cached. The queue's durable rows remain the source of work.
+    const queued = (workspaceId: string, chatId: number, delta: number) => {
+      let key = `${workspaceId}:${chatId}`;
+      let count = (this.#notificationChats.get(key)?.count ?? 0) + delta;
+      if (count) this.#notificationChats.set(key, {workspaceId, chatId, count});
+      else this.#notificationChats.delete(key);
+    };
+    for (let event of this.storage.notificationOutbox.list()) queued(event.workspaceId, event.chatId, 1);
+    this.storage.notificationOutbox.subscribe({
+      add: event => queued(event.workspaceId, event.chatId, 1),
+      update: () => {},
+      remove: event => queued(event.workspaceId, event.chatId, -1),
+    });
+    for (let listing of this.storage.gadgets.list()) {
+      if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, new AbortController());
+    }
+    this.storage.gadgets.subscribe({
+      add: listing => { if (listing.role !== "use") this.#unreadWorkspaces.set(listing.id, new AbortController()); },
+      update: (_old, listing) => {
+        if (listing.role === "use") {
+          this.#unreadWorkspaces.get(listing.id)?.abort();
+          this.#unreadWorkspaces.delete(listing.id);
+        } else if (!this.#unreadWorkspaces.has(listing.id)) this.#unreadWorkspaces.set(listing.id, new AbortController());
+      },
+      remove: listing => {
+        this.#unreadWorkspaces.get(listing.id)?.abort();
+        this.#unreadWorkspaces.delete(listing.id);
+      },
+    });
     this.adminSettings = this.ctx.exports.AdminSettings;
 
     this.vendors = buildGatekeeperVendorMap(env);
+    if (this.#notificationChats.size) {
+      this.ctx.waitUntil((async () => {
+        if (await this.ctx.storage.getAlarm() === null) await this.#armExpirySweep();
+        await this.#deliverNotifications();
+      })().catch(error => {
+        logger.warn("unread recovery deferred", {event: "chat.unread.recovery.deferred", error});
+      }));
+    }
   }
 
   // Mirrors the profile into the deployment-wide user directory. Best-effort
@@ -427,6 +413,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!session) {
       throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
     }
+    const now = Date.now();
+    if ((session.expiresAt && session.expiresAt.getTime() <= now) ||
+        (session.pendingUntil && session.pendingUntil.getTime() <= now)) {
+      this.storage.sessions.delete(tokenId);
+      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    }
+    if (session.pendingUntil) {
+      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    }
     this.#syncDirectory();
   }
 
@@ -453,10 +448,111 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return isNew;
   }
 
-  async #newSessionToken(): Promise<string> {
+  async #newSessionToken(options: { expiresAt?: Date; pendingUntil?: Date } = {}): Promise<string> {
     let { secret, hash: tokenId } = await newSecretToken();
-    this.storage.sessions.put({ tokenId, created: new Date() });
+    this.storage.sessions.put({ tokenId, created: new Date(), ...options });
     return secret.toBase64();
+  }
+
+  /**
+   * Stage an idempotent, single-use transfer without returning encrypted credentials to page
+   * JavaScript. A Workshop session remains inactive until the HTTPS callback consumes the record;
+   * an Access token is already bounded by its JWT expiry and is stored only inside `handoff`.
+   */
+  async stageDeviceSessionHandoff(publicKey: string, state: string, accessJwt?: string)
+      : Promise<DeviceSessionHandoffStart> {
+    if (!this.storage.created.get()) {
+      throw createAuthError(AUTH_ERROR_CODES.invalidSessionToken);
+    }
+    if (!isDeviceHandoffState(state)) throw new Error("Invalid device sign-in state.");
+    const stateHash = await hashSecret(new TextEncoder().encode(state));
+    const existing = this.storage.pendingDeviceHandoffs.get(stateHash);
+    if (existing && existing.expiresAt.getTime() > Date.now()) {
+      if (existing.publicKey !== publicKey) {
+        throw new Error("This device sign-in state is already bound to another key.");
+      }
+      // Reissue only the one-use ticket; a retry must not mint another credential or session.
+      const { secret, hash: ticketHash } = await newSecretToken();
+      this.storage.pendingDeviceHandoffs.put({ ...existing, ticketHash });
+      return { userDoId: this.ctx.id.toString(), ticket: secret.toHex() };
+    }
+    if (existing) this.#dropPendingDeviceHandoff(existing);
+
+    const { secret: ticket, hash: ticketHash } = await newSecretToken();
+    const now = Date.now();
+    const handoffExpiresAt = now + DEVICE_HANDOFF_LIFETIME_MS;
+    let credential: DeviceSessionCredential;
+    let sessionTokenId: string | undefined;
+    let deviceSessionExpiresAt: number | undefined;
+    if (accessJwt) {
+      credential = { kind: "cloudflare-access", token: accessJwt };
+    } else {
+      const { secret, hash } = await newSecretToken();
+      sessionTokenId = hash;
+      deviceSessionExpiresAt = now + DEVICE_SESSION_LIFETIME_MS;
+      credential = {
+        kind: "workshop",
+        token: `${this.storage.profile.get().id}:${secret.toBase64()}`,
+        expiresAt: deviceSessionExpiresAt,
+      };
+    }
+    const handoff = await sealDeviceSessionHandoff(
+        publicKey, state, credential, handoffExpiresAt);
+    if (sessionTokenId && deviceSessionExpiresAt) {
+      this.storage.sessions.put({
+        tokenId: sessionTokenId,
+        created: new Date(now),
+        expiresAt: new Date(deviceSessionExpiresAt),
+        pendingUntil: new Date(handoffExpiresAt),
+      });
+    }
+    this.storage.pendingDeviceHandoffs.put({
+      stateHash,
+      ticketHash,
+      publicKey,
+      handoff,
+      expiresAt: new Date(handoffExpiresAt),
+      sessionTokenId,
+    });
+    await this.#armExpirySweep();
+    logger.info("device session handoff staged", {
+      event: "auth.device_handoff.staged",
+      credentialKind: credential.kind,
+    });
+    return { userDoId: this.ctx.id.toString(), ticket: ticket.toHex() };
+  }
+
+  /** Consume a staged handoff once and activate its pending Workshop device session, if any. */
+  async consumeDeviceSessionHandoff(state: string, ticket: string): Promise<DeviceSessionHandoff | null> {
+    if (!isDeviceHandoffState(state)) return null;
+    const presentedHash = hashPresentedSecret(ticket);
+    if (!presentedHash) return null;
+    const stateHash = await hashSecret(new TextEncoder().encode(state));
+    const pending = this.storage.pendingDeviceHandoffs.get(stateHash);
+    if (!pending) return null;
+    if (pending.expiresAt.getTime() <= Date.now()) {
+      this.#dropPendingDeviceHandoff(pending);
+      await this.#armExpirySweep();
+      return null;
+    }
+    if (pending.ticketHash !== await presentedHash) return null;
+    this.storage.pendingDeviceHandoffs.delete(stateHash);
+    if (pending.sessionTokenId) {
+      const session = this.storage.sessions.get(pending.sessionTokenId);
+      if (!session || !session.pendingUntil || session.pendingUntil.getTime() <= Date.now()) {
+        if (session) this.storage.sessions.delete(pending.sessionTokenId);
+        await this.#armExpirySweep();
+        return null;
+      }
+      const { pendingUntil: _pendingUntil, ...active } = session;
+      this.storage.sessions.put(active);
+    }
+    await this.#armExpirySweep();
+    logger.info("device session handoff consumed", {
+      event: "auth.device_handoff.consumed",
+      credentialKind: pending.sessionTokenId ? "workshop" : "cloudflare-access",
+    });
+    return pending.handoff;
   }
 
   async login(passwordHash: Uint8Array): Promise<string | null> {
@@ -478,20 +574,6 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       : Promise<string | null> {
     if (this.storage.created.get()) {
       return null;
-    }
-
-    // Do a little migration here for old data.
-    // TODO(soon): Delete this.
-    for (let gadget of Array.from(this.storage.gadgets.list())) {
-      if (!gadget.created || !gadget.lastActive) {
-        if (!gadget.created) {
-          gadget.created = new Date("2026-01-01");
-        }
-        if (!gadget.lastActive) {
-          gadget.lastActive = new Date("2026-01-01");;
-        }
-        this.storage.gadgets.put(gadget);
-      }
     }
 
     this.storage.created.put(true);
@@ -549,6 +631,562 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.passwordHashHash.get() !== null;
   }
 
+  /** Vouch for this authenticated user using the installation's registered signing identity. */
+  async authorizeNotificationDevice(): Promise<string> {
+    this.#countNotificationServiceCall();
+    return authorizeDevice(this.env, this.#notificationSubject);
+  }
+
+  /**
+   * Exchange a native app's one-time device registration, or a browser's Web Push subscription,
+   * for that device's push subscription.
+   */
+  async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
+    this.#countNotificationServiceCall();
+    let store = typeof registration === "string"
+        ? this.storage.phoneNotificationSubscriptions
+        : this.storage.browserNotificationSubscriptions;
+    await this.#registerNotificationSubscription(
+        store, () => registerDevice(this.env, registration, this.#notificationSubject));
+  }
+
+  /** Exchange a CFOS-authorized native registration under this User DO's central subject. */
+  async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    this.#countNotificationServiceCall();
+    await this.#registerNotificationSubscription(this.storage.phoneNotificationSubscriptions,
+        () => registerAuthorizedDevice(this.env, deviceRegistrationId, this.#notificationSubject));
+  }
+
+  // Counts one signed request to the notification service, throwing past
+  // NOTIFICATION_SERVICE_CALLS_PER_MINUTE in a minute-long window so the caller signs and sends
+  // nothing. Each request touches this installation's records at the central service, which all its
+  // users share, so one user's loop would make them hot for the whole installation. The check and
+  // the increment run before any await, so concurrent calls can't race past the limit. The count is
+  // kept in memory, so a reset forgets at most one window.
+  #countNotificationServiceCall(): void {
+    let now = Date.now();
+    if (now - this.#notificationCallWindowStart >= 60_000) {
+      this.#notificationCallWindowStart = now;
+      this.#notificationCallsInWindow = 0;
+    }
+    if (++this.#notificationCallsInWindow > NOTIFICATION_SERVICE_CALLS_PER_MINUTE) {
+      throw new Error("Too many notification requests. Try again in a minute.");
+    }
+  }
+
+  get #notificationSubject(): string {
+    return this.ctx.id.toString();
+  }
+
+  // Registers one device at a time, so `store` lists them in the order the service received them,
+  // and keeps the latest NOTIFICATION_DEVICES_PER_KIND. That bounds each notification's fan-out: a
+  // device the service evicted would otherwise stay until a push to it was refused as dead, so a
+  // registration loop could pile up devices to push to. It mirrors the service's caps but isn't
+  // authoritative, so a live device can still be dropped (see docs/notifications.md).
+  #registerNotificationSubscription(
+      store: Singleton<Record<string, string>>,
+      register: () => ReturnType<typeof registerDevice>): Promise<void> {
+    let registered = this.#notificationRegistration.then(async () => {
+      let { deviceKey, subscriptionId } = await register();
+      let others = Object.entries(store.get()).filter(([key]) => key !== deviceKey);
+      store.put(Object.fromEntries(
+          [...others, [deviceKey, subscriptionId]].slice(-NOTIFICATION_DEVICES_PER_KIND)));
+      if (store === this.storage.phoneNotificationSubscriptions) this.#queueBadge(true);
+    });
+    this.#notificationRegistration = registered.catch(() => {});
+    return registered;
+  }
+
+  /** Subscribe an authenticated client, including background listeners, to live notifications. */
+  async subscribeToNotifications(
+      subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
+    subscriber = subscriber.dup();
+    let token = {};
+    this.#notificationSubscribers.set(token, subscriber);
+    let unsubscribe = () => {
+      let existing = this.#notificationSubscribers.get(token);
+      if (!existing) return;
+      this.#notificationSubscribers.delete(token);
+      existing[Symbol.dispose]();
+    };
+    subscriber.onRpcBroken(unsubscribe);
+    return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
+  }
+
+  /** See `AuthenticatedApi.setWorkspaceNotificationMute()`. */
+  async setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null)
+      : Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
+    if (!record) throw new Error("No such workspace belonging to user.");
+    record.notificationMute = mute ?? undefined;
+    this.storage.gadgets.put(record);
+  }
+
+  #readCursors = new Map<string, ChatReadCursor>();
+  // Each listing lifetime has an identity so pre-removal work cannot commit after readmission.
+  #unreadWorkspaces = new Map<string, AbortController>();
+  #chatWork = new Map<string, Promise<void>>();
+  #notificationChats = new Map<string, {workspaceId: string; chatId: number; count: number}>();
+
+  #cursor(workspaceId: string, chatId: number): ChatReadCursor {
+    return this.#readCursors.get(`${workspaceId}:${chatId}`) ??
+      {workspaceId, chatId, readThroughSequence: -1, unreadCount: 0, notifiedThroughSequence: -1};
+  }
+
+  #storeCursor(cursor: ChatReadCursor): boolean {
+    let old = this.#readCursors.get(`${cursor.workspaceId}:${cursor.chatId}`);
+    if (old && old.readThroughSequence === cursor.readThroughSequence &&
+        old.readThroughVisibleSequence === cursor.readThroughVisibleSequence &&
+        old.latestVisibleSequence === cursor.latestVisibleSequence &&
+        old.unreadCount === cursor.unreadCount &&
+        old.notifiedThroughSequence === cursor.notifiedThroughSequence &&
+        old.notifiedEventIds?.join() === cursor.notifiedEventIds?.join() && old.deleted === cursor.deleted &&
+        old.head?.chatTitle === cursor.head?.chatTitle && old.head?.latestSequence === cursor.head?.latestSequence &&
+        old.head?.latestMessagePreview === cursor.head?.latestMessagePreview &&
+        old.headUpdatedAt?.getTime() === cursor.headUpdatedAt?.getTime() &&
+        old.head?.latestActivityAt?.getTime() === cursor.head?.latestActivityAt?.getTime()) return false;
+    this.storage.chatReadCursors.put(cursor);
+    return true;
+  }
+
+  #mergeHead(current: ChatReadCursor, incoming: {head?: ChatTimelineHead; headUpdatedAt?: Date}) {
+    let at = incoming.headUpdatedAt?.getTime(), previous = current.headUpdatedAt?.getTime();
+    let newer = incoming.head && (!current.head || incoming.head.latestSequence > current.head.latestSequence ||
+      (incoming.head.latestSequence === current.head.latestSequence &&
+        at !== undefined && (previous === undefined || at > previous)));
+    return newer ? {head: incoming.head, headUpdatedAt: incoming.headUpdatedAt} :
+      {head: current.head, headUpdatedAt: current.headUpdatedAt};
+  }
+
+  #hasWorkspace(workspaceId: string): boolean {
+    return this.#unreadWorkspaces.has(workspaceId);
+  }
+
+  #wasNotified(cursor: ChatReadCursor, event: {sequence: number; id: string}): boolean {
+    return event.sequence < cursor.notifiedThroughSequence ||
+      (event.sequence === cursor.notifiedThroughSequence &&
+        (!cursor.notifiedEventIds || cursor.notifiedEventIds.includes(event.id)));
+  }
+
+  // Only alert delivery awaits under the mutex. Counts and read commands commit synchronously
+  // so a slow notification provider cannot delay read horizons or badge updates.
+  async #serialize(key: string, operation: () => Promise<void>) {
+    let previous = this.#chatWork.get(key) ?? Promise.resolve();
+    let current = previous.catch(() => {}).then(operation);
+    this.#chatWork.set(key, current);
+    try { await current; }
+    finally { if (this.#chatWork.get(key) === current) this.#chatWork.delete(key); }
+  }
+
+  #unreadSnapshot(scope: UnreadStateScope, summary = this.#unreadSummary()): UserUnreadState {
+    let chats: ChatReadState[] = [];
+    if (scope !== "summary") {
+      for (let cursor of this.#readCursors.values()) {
+        if (this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted &&
+            (scope === "unread" ? cursor.unreadCount > 0 : cursor.workspaceId === scope.workspaceId)) {
+          chats.push(this.#readState(cursor));
+        }
+      }
+    }
+    return {...summary, chats};
+  }
+
+  #readState(cursor: ChatReadCursor): ChatReadState {
+    return {workspaceId: cursor.workspaceId, chatId: cursor.chatId,
+      readThroughSequence: cursor.readThroughSequence, unreadMessageCount: cursor.unreadCount};
+  }
+
+  /**
+   * Called by a workspace when the user marks one of its chats read (`rewind` false) or unread
+   * (`rewind` true); see `Overseer.markChatRead()` / `markChatUnread()`. Returns whether the user's
+   * read state changed. Uses only this DO's own state, and never delivers queued notifications, so
+   * a delivery failure can't make the read command fail.
+   */
+  async applyReadHorizon(workspaceId: string, chatId: number, position: ChatReadPosition,
+      rewind: boolean): Promise<boolean> {
+    if (!this.#hasWorkspace(workspaceId)) return false;
+    let key = `${workspaceId}:${chatId}`;
+    let current = this.#cursor(workspaceId, chatId);
+    if (current.deleted) return false;
+    let through = position.readThroughSequence;
+    let visible = position.readThroughVisibleSequence;
+    // An own-message arrival may already have advanced beyond this source-authorized boundary.
+    if (!rewind && current.readThroughSequence > through) {
+      through = current.readThroughSequence;
+      visible = current.readThroughVisibleSequence!;
+    }
+    let latest = Math.max(current.latestVisibleSequence ?? 0, position.latestVisibleSequence);
+    let changed = this.#storeCursor({...current, ...this.#mergeHead(current, position),
+      readThroughSequence: through, readThroughVisibleSequence: visible,
+      latestVisibleSequence: latest, unreadCount: latest - visible,
+      notifiedThroughSequence: this.#readCursors.has(key) ? current.notifiedThroughSequence : position.notificationBaseline});
+    if (changed) this.#unreadChanged(workspaceId, chatId);
+    return changed;
+  }
+
+  // Only notification delivery takes this path. All payloads needed for recovery are local.
+  async #processChat(workspaceId: string, chatId: number, retryFailures = false): Promise<void> {
+    let admission = this.#unreadWorkspaces.get(workspaceId);
+    let key = `${workspaceId}:${chatId}`;
+    let hadNotifications = this.#notificationChats.has(key);
+    try {
+      await this.#serialize(key, async () => {
+        if (!admission || this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+        let failures: unknown[] = [];
+        let events = [...this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`})];
+        for (let event of events) {
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+          let cursor = this.#readCursors.get(key);
+          if (!cursor || cursor.deleted) return;
+          let expired = event.expiresAt.getTime() <= Date.now();
+          // Arrivals deliver new work; only alarm/restart recovery retries failed destinations.
+          if (!expired && event.failedSubscriptions !== undefined && !retryFailures) continue;
+          if (!expired) {
+            let {sequence: _, expiresAt, failedSubscriptions, ...notification} = event;
+            try {
+              await this.publishNotification(notification, expiresAt.getTime(), failedSubscriptions);
+            } catch (error) {
+              if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+              if (this.#readCursors.get(key)?.deleted) return;
+              if (Date.now() < expiresAt.getTime()) {
+                let failed = error instanceof NotificationDeliveryError ? error.failedSubscriptions : failedSubscriptions;
+                failed ??= [];
+                if (event.failedSubscriptions?.join() !== failed.join()) {
+                  this.storage.notificationOutbox.put({...event, failedSubscriptions: failed});
+                }
+                failures.push(error);
+                continue;
+              }
+              expired = true;
+            }
+          }
+          if (this.#unreadWorkspaces.get(workspaceId) !== admission) return;
+          let checkpoint = this.#readCursors.get(key);
+          if (!checkpoint || checkpoint.deleted) return;
+          if (expired) logger.warn("notification delivery expired", {
+            event: "notification.delivery.expired", gadgetId: workspaceId, chatId, sequence: event.sequence,
+          });
+          this.ctx.storage.transactionSync(() => {
+            this.storage.notificationOutbox.deleteRecord(event);
+            // Lower positions can remain queued for failed devices after a later event completes.
+            if (!this.#wasNotified(checkpoint, event)) {
+              this.#storeCursor({...checkpoint, notifiedThroughSequence: event.sequence,
+                notifiedEventIds: [...(event.sequence === checkpoint.notifiedThroughSequence
+                  ? checkpoint.notifiedEventIds ?? [] : []), event.id]});
+            }
+          });
+        }
+        if (failures.length) throw failures[0];
+      });
+    } finally {
+      if (hadNotifications || this.#notificationChats.has(key)) await this.#armExpirySweep();
+    }
+  }
+
+  /** Read inbox rows directly from the user's local projection. */
+  async getUnreadThreads(): Promise<UnreadThread[]> {
+    return [...this.#readCursors.values()]
+      .filter(cursor => this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted && cursor.unreadCount > 0)
+      .map(cursor => ({...this.#readState(cursor),
+        chatTitle: cursor.head?.chatTitle ?? `Thread ${cursor.chatId}`,
+        latestSequence: cursor.head?.latestSequence ?? -1,
+        latestMessagePreview: cursor.head?.latestMessagePreview,
+        latestActivityAt: cursor.head?.latestActivityAt}))
+      .toSorted((a, b) => (b.latestActivityAt?.getTime() ?? 0) - (a.latestActivityAt?.getTime() ?? 0) ||
+        a.chatTitle.localeCompare(b.chatTitle) || a.workspaceId.localeCompare(b.workspaceId) || a.chatId - b.chatId);
+  }
+
+  /** Only tracked private state for this workspace; its ordinary thread list stays source-owned. */
+  async getWorkspaceUnreadState(workspaceId: string): Promise<ChatReadState[]> {
+    if (!this.#hasWorkspace(workspaceId)) return [];
+    return [...this.#readCursors.values()]
+      .filter(cursor => cursor.workspaceId === workspaceId && !cursor.deleted)
+      .map(cursor => this.#readState(cursor));
+  }
+
+  /** Rollups are calculated from the same hydrated rows as live badge updates. */
+  async getUnreadSummary(): Promise<UserUnreadSummary> {
+    return this.#unreadSummary();
+  }
+
+  #unreadSummary(): UserUnreadSummary {
+    let workspaces = new Map<string, WorkspaceUnreadSummary>();
+    let unreadChatCount = 0, unreadMessageCount = 0;
+    for (let cursor of this.#readCursors.values()) {
+      if (!this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || cursor.unreadCount <= 0) continue;
+      unreadChatCount++;
+      unreadMessageCount += cursor.unreadCount;
+      let summary = workspaces.get(cursor.workspaceId) ??
+        {workspaceId: cursor.workspaceId, unreadChatCount: 0, unreadMessageCount: 0};
+      summary.unreadChatCount++;
+      summary.unreadMessageCount += cursor.unreadCount;
+      workspaces.set(cursor.workspaceId, summary);
+    }
+    return {unreadChatCount, unreadMessageCount, workspaces: [...workspaces.values()]};
+  }
+
+  async subscribeToUnreadState(scope: UnreadStateScope, subscriber: RpcStub<UnreadStateSubscriber>): Promise<RpcStub<{}>> {
+    subscriber = subscriber.dup();
+    let token = {};
+    this.#unreadSubscribers.set(token, {scope, subscriber});
+    let unsubscribe = () => {
+      let existing = this.#unreadSubscribers.get(token);
+      if (existing) { this.#unreadSubscribers.delete(token); existing.subscriber[Symbol.dispose](); }
+    };
+    subscriber.onRpcBroken(unsubscribe);
+    this.ctx.waitUntil(subscriber.updated(this.#unreadSnapshot(scope)).catch(unsubscribe));
+    return new RpcStub<{}>({[Symbol.dispose]: unsubscribe});
+  }
+
+  #unreadChanged(workspaceId?: string, chatId?: number): void {
+    this.#queueBadge();
+    let cursor = workspaceId === undefined || chatId === undefined ? undefined :
+      this.#readCursors.get(`${workspaceId}:${chatId}`);
+    let chat = cursor && this.#hasWorkspace(cursor.workspaceId) && !cursor.deleted ? this.#readState(cursor) : null;
+    if (!this.#unreadSubscribers.size) return;
+    let summary = this.#unreadSummary();
+    let change = workspaceId === undefined || chatId === undefined ? undefined : {workspaceId, chatId,
+      summary: {unreadChatCount: summary.unreadChatCount, unreadMessageCount: summary.unreadMessageCount,
+        workspace: summary.workspaces.find(workspace => workspace.workspaceId === workspaceId) ??
+          {workspaceId, unreadChatCount: 0, unreadMessageCount: 0}}};
+    for (let [token, {scope, subscriber}] of this.#unreadSubscribers) {
+      let update: Promise<void>;
+      if (!change) {
+        update = subscriber.updated(this.#unreadSnapshot(scope, summary));
+      } else if (scope === "summary" || (scope !== "unread" && scope.workspaceId !== change.workspaceId)) {
+        update = subscriber.summaryUpdated(change.summary);
+      } else {
+        update = subscriber.chatUpdated(change.workspaceId, change.chatId,
+          scope === "unread" && !chat?.unreadMessageCount ? null : chat, change.summary);
+      }
+      this.ctx.waitUntil(update.catch(() => {
+        this.#unreadSubscribers.delete(token);
+        subscriber[Symbol.dispose]();
+      }));
+    }
+  }
+
+  // This version belongs to the existing push-service replacement protocol, not read state.
+  #queueBadge(force = false): void {
+    if (!this.env.NOTIFICATION_SERVICE_URL ||
+        !Object.keys(this.storage.phoneNotificationSubscriptions.get()).length) return;
+    let previous = this.storage.notificationBadge.get();
+    let {unreadMessageCount} = this.#unreadSummary();
+    if (!force && previous.count === unreadMessageCount) return;
+    this.storage.notificationBadge.put({version: previous.version + 1,
+      count: unreadMessageCount, retryAt: Math.min(previous.retryAt ?? Infinity, Date.now() + 1_000),
+      expiresAt: Date.now() + NOTIFICATION_RETRY_LIFETIME_MS});
+    this.ctx.waitUntil(this.#armExpirySweep());
+  }
+
+  async #flushBadge(): Promise<void> {
+    let pending = this.storage.notificationBadge.get();
+    if (pending.count === null || pending.retryAt === undefined) return;
+    let now = Date.now();
+    // Pending replacements from before expiry was introduced get one bounded retry window.
+    let expiresAt = pending.expiresAt ?? now + NOTIFICATION_RETRY_LIFETIME_MS;
+    if (expiresAt <= now) {
+      this.storage.notificationBadge.put({version: pending.version, count: pending.count});
+      await this.#armExpirySweep();
+      return;
+    }
+    if (pending.retryAt > now) return;
+    // Persist the retry before dispatch, so eviction or a lost ACK replays the same replacement.
+    this.storage.notificationBadge.put({...pending, expiresAt, retryAt: Math.min(expiresAt, now + 30_000)});
+    await this.#armExpirySweep();
+    let store = this.storage.phoneNotificationSubscriptions;
+    let {version, count} = pending;
+    let results = await Promise.allSettled(Object.entries(store.get()).map(async ([deviceKey, subscriptionId]) => {
+      if (!await deliverBadge(this.env, subscriptionId, version, count)) {
+        let current = store.get();
+        if (current[deviceKey] === subscriptionId) {
+          delete current[deviceKey];
+          store.put(current);
+        }
+      }
+    }));
+    let failed = false;
+    for (let result of results) if (result.status === "rejected") {
+      failed = true;
+      logger.warn("unread badge delivery deferred", {event: "notification.badge.deferred", error: result.reason});
+    }
+    if (!failed && this.storage.notificationBadge.get().version === version) {
+      this.storage.notificationBadge.put({version, count});
+    }
+    await this.#armExpirySweep();
+  }
+
+  /**
+   * Called by a workspace when one of its chats changes (see `ChatMessageProgress`), or with null
+   * when the chat was deleted. Saves the new unread count and queues any notifications before
+   * returning, so the workspace can stop retrying. Notifications are then delivered in the
+   * background, so a slow delivery never holds up the workspace.
+   */
+  async messageArrived(workspaceId: string, chatId: number, progress: ChatMessageProgress | null): Promise<void> {
+    if (!this.#hasWorkspace(workspaceId)) return;
+    let key = `${workspaceId}:${chatId}`;
+    if (!progress) {
+      let hadNotifications = this.#notificationChats.has(key);
+      this.#forgetChat(workspaceId, chatId);
+      if (hadNotifications) await this.#armExpirySweep();
+      return;
+    }
+    let cursor = this.#cursor(workspaceId, chatId);
+    if (cursor.deleted) return;
+    // Metadata changes don't enroll history. Wait for a new message or an explicit command.
+    if (progress.firstMessageSequence === undefined && !this.#readCursors.has(key)) return;
+    let readThroughVisibleSequence = cursor.readThroughVisibleSequence;
+    if (readThroughVisibleSequence === undefined) {
+      readThroughVisibleSequence = (progress.firstVisibleSequence ?? progress.latestVisibleSequence + 1) - 1;
+      cursor = {...cursor,
+        readThroughSequence: (progress.firstMessageSequence ?? 0) - 1,
+        readThroughVisibleSequence,
+        notifiedThroughSequence: this.#readCursors.has(key) ? cursor.notifiedThroughSequence :
+          (progress.firstMessageSequence ?? 0) - 1};
+    }
+    let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
+    // Consume only a single own message when already caught up. Gaps/coalesced arrivals keep
+    // the ordinary count: their other messages have not been read merely because the user sent.
+    if ((cursor.latestVisibleSequence ?? readThroughVisibleSequence) === readThroughVisibleSequence &&
+        latest === readThroughVisibleSequence + 1 &&
+        progress.latestMessageAuthorId === this.storage.profile.get().id) {
+      readThroughVisibleSequence = latest;
+      cursor = {...cursor, readThroughSequence: progress.head.latestSequence, readThroughVisibleSequence};
+    }
+    cursor = {...cursor, ...this.#mergeHead(cursor, progress), latestVisibleSequence: latest,
+      unreadCount: latest - readThroughVisibleSequence};
+    let changed = this.ctx.storage.transactionSync(() => {
+      let stored = this.#storeCursor(cursor);
+      for (let event of progress.notifications) {
+        let eventKey = `${workspaceId}:${chatKey(chatId, event.sequence)}:${event.id}`;
+        if (!this.#wasNotified(cursor, event) && !this.storage.notificationOutbox.get(eventKey)) {
+          this.storage.notificationOutbox.put({...event, workspaceId, chatId,
+            expiresAt: new Date(Date.now() + NOTIFICATION_RETRY_LIFETIME_MS)});
+        }
+      }
+      return stored;
+    });
+    if (changed) this.#unreadChanged(workspaceId, chatId);
+    if (this.#notificationChats.has(key)) {
+      await this.#armExpirySweep();
+      this.ctx.waitUntil(this.#processChat(workspaceId, chatId).catch(error => {
+        logger.warn("notification delivery deferred", {event: "notification.delivery.deferred", error});
+      }));
+    }
+  }
+
+  /** Mark the locally known heads in one workspace read, without waking the workspace. */
+  async markWorkspaceRead(workspaceId: string): Promise<void> {
+    this.#markRead(workspaceId);
+  }
+
+  /** Mark all locally known heads read; later source updates remain unread. */
+  async markAllRead(): Promise<void> {
+    this.#markRead();
+  }
+
+  #markRead(workspaceId?: string): void {
+    let changed = false;
+    for (let cursor of this.#readCursors.values()) {
+      if ((workspaceId !== undefined && cursor.workspaceId !== workspaceId) ||
+          !this.#hasWorkspace(cursor.workspaceId) || cursor.deleted || !cursor.unreadCount) continue;
+      // No await: the head and paired read positions belong to the same source update.
+      if (this.#storeCursor({...cursor, readThroughSequence: cursor.head!.latestSequence,
+          readThroughVisibleSequence: cursor.latestVisibleSequence!, unreadCount: 0})) changed = true;
+    }
+    if (changed) this.#unreadChanged();
+  }
+
+  async #deliverNotifications(): Promise<void> {
+    let results = await Promise.allSettled([...this.#notificationChats.values()]
+      .map(({workspaceId, chatId}) => this.#processChat(workspaceId, chatId, true)));
+    await this.#armExpirySweep();
+    for (let result of results) if (result.status === "rejected") throw result.reason;
+  }
+
+  #forgetChat(workspaceId: string, chatId: number): void {
+    this.ctx.storage.transactionSync(() => {
+      for (let event of Array.from(this.storage.notificationOutbox.list({prefix: `${workspaceId}:${chatKeyPrefix(chatId)}`}))) {
+        this.storage.notificationOutbox.deleteRecord(event);
+      }
+      // A tombstone fences delayed source retries, including after eviction, without a source
+      // existence check. There is no undelete and the workspace never reuses a chat ID.
+      this.#storeCursor({...this.#cursor(workspaceId, chatId), unreadCount: 0, deleted: true});
+    });
+    this.#unreadChanged(workspaceId, chatId);
+  }
+
+  /** Remove the listing and its accepted work before the source is destroyed; no callback read. */
+  async workspaceRemoved(workspaceId: string): Promise<void> {
+    await this.deleteWorkspace(workspaceId);
+    await this.#armExpirySweep();
+  }
+
+  #forgetUnreadWorkspace(workspaceId: string): void {
+    let cursors = [...this.#readCursors.values()].filter(cursor => cursor.workspaceId === workspaceId);
+    this.ctx.storage.transactionSync(() => {
+      if (cursors.length) this.storage.chatReadCursors.byWorkspace.delete(workspaceId);
+      for (let event of Array.from(this.storage.notificationOutbox.list({prefix: `${workspaceId}:`}))) {
+        this.storage.notificationOutbox.deleteRecord(event);
+      }
+    });
+    if (cursors.length) this.#unreadChanged();
+  }
+
+  /**
+   * Offer a notification to visible clients, otherwise use push. The caller advances its
+   * notifiedThroughSequence only once this delivery succeeds or policy intentionally skips it.
+   */
+  async publishNotification(notification: UserNotification,
+      retryUntil = Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS, retrySubscriptions?: string[]): Promise<void> {
+    let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
+    if (notification.kind === "taskCompleted" && mute &&
+        ("indefinite" in mute || mute.until.getTime() > Date.now())) {
+      return;
+    }
+    let stores = [this.storage.phoneNotificationSubscriptions, this.storage.browserNotificationSubscriptions];
+    let subscriptions = stores.flatMap(store => Object.entries(store.get())
+      .filter(([, id]) => retrySubscriptions === undefined || retrySubscriptions.includes(id))
+      .map(([deviceKey, subscriptionId]) => ({store, deviceKey, subscriptionId})));
+    let attemptUntil = Math.min(retryUntil, Date.now() + NOTIFICATION_ATTEMPT_TIMEOUT_MS);
+    let admission = this.#unreadWorkspaces.get(notification.workspaceId);
+    let controller = new AbortController();
+    let deadline = setTimeout(() => controller.abort(
+      new DOMException("Notification delivery attempt timed out.", "TimeoutError")),
+      Math.max(1, attemptUntil - Date.now()));
+    let signal = AbortSignal.any([controller.signal,
+      ...(admission ? [admission.signal] : [])]);
+    try {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let acknowledged = retrySubscriptions === undefined && await Promise.race([
+        Promise.any([...this.#notificationSubscribers.values()]
+            .map(subscriber => subscriber.notify(notification))).then(() => true, () => false),
+        new Promise<boolean>(resolve => {
+          timeout = setTimeout(() => resolve(false), Math.max(1, Math.min(3_000, attemptUntil - Date.now())));
+        }),
+      ]).finally(() => clearTimeout(timeout));
+      if (acknowledged) return;
+      signal.throwIfAborted();
+      if (Date.now() >= attemptUntil) throw new Error("Notification delivery attempt timed out.");
+      let results = await Promise.allSettled(subscriptions.map(async ({store, deviceKey, subscriptionId}) => {
+        if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification, signal)) return;
+        // Retire only the failed subscription, preserving a registration made during delivery.
+        let { [deviceKey]: current, ...others } = store.get();
+        if (current === subscriptionId) store.put(others);
+      }));
+      let failed = subscriptions.filter((_, index) => results[index].status === "rejected");
+      if (failed.length) {
+        let failure = results.find(result => result.status === "rejected")!;
+        throw new NotificationDeliveryError(failed.map(({subscriptionId}) => subscriptionId), failure.reason);
+      }
+    } catch (error) {
+      if (error instanceof NotificationDeliveryError) throw error;
+      throw new NotificationDeliveryError(subscriptions.map(({subscriptionId}) => subscriptionId), error);
+    } finally {
+      clearTimeout(deadline);
+    }
+  }
+
   async changePassword(oldHash: Uint8Array, newHash: Uint8Array): Promise<void> {
     let actualHashHash = this.storage.passwordHashHash.get();
     if (!actualHashHash) {
@@ -577,20 +1215,22 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Called by the overseer every time a collaborator opens a shared gadget.
+   * Called by the overseer every time a collaborator opens a shared workspace.
    * Creates the record on first open; updates lastActive on subsequent opens.
    *
    * `role` is cached so listings built from this DO can offer the actions it permits without
    * reopening the workspace to ask. Presentation only: every operation is still authorized by the
    * Overseer when attempted.
    */
-  async recordSharedGadgetOpen(
-      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+  async recordSharedWorkspaceOpen(
+      workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role: CollaboratorRole,
+      notificationBaselines: ChatAdmissionBaseline[]
   ): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
+    let firstAdmission = !record || record.role !== "build";
     let now = new Date();
     if (record) {
       // Already tracked -- update lastActive and cached fields.
@@ -600,15 +1240,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       record.role = role;
       this.storage.gadgets.put(record);
     } else {
-      // First time opening this shared gadget.
+      // First time opening this shared workspace.
       this.storage.gadgets.put({
-        id: gadgetId,
+        id: workspaceId,
         title,
         owner: ownerProfile,
         role,
         created: now,
         lastActive: now,
       });
+    }
+    if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
+    else {
+      let changed = false;
+      this.ctx.storage.transactionSync(() => {
+        for (let baseline of notificationBaselines) {
+          let cursor = this.#readCursors.get(`${workspaceId}:${baseline.chatId}`);
+          if (cursor?.deleted || (!cursor && !firstAdmission)) continue;
+          let visible = baseline.readThroughVisibleSequence ?? 0;
+          if (!cursor || cursor.readThroughVisibleSequence === undefined) {
+            this.#storeCursor({workspaceId, chatId: baseline.chatId,
+              head: baseline.head, headUpdatedAt: baseline.headUpdatedAt,
+              readThroughSequence: baseline.notifiedThroughSequence, readThroughVisibleSequence: visible,
+              latestVisibleSequence: visible, unreadCount: 0, notifiedThroughSequence: baseline.notifiedThroughSequence});
+            changed = true;
+          } else {
+            let latest = Math.max(visible, cursor.latestVisibleSequence ?? 0);
+            changed = this.#storeCursor({...cursor, ...this.#mergeHead(cursor, baseline), latestVisibleSequence: latest,
+              unreadCount: latest - cursor.readThroughVisibleSequence}) || changed;
+          }
+        }
+      });
+      if (changed) this.#unreadChanged();
+      await this.#armExpirySweep();
     }
   }
 
@@ -617,23 +1281,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * comes from the Overseer's live sharing graph; this only keeps the listing's available actions
    * accurate after a collaborator is downgraded.
    */
-  async updateSharedGadgetRole(gadgetId: string, role: CollaboratorRole): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateSharedWorkspaceRole(workspaceId: string, role: CollaboratorRole): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
+    if (role === "use") this.#forgetUnreadWorkspace(workspaceId);
   }
 
   /**
-   * Forgets a gadget shared with this user: drops it from their workspace listing and its outputs
+   * Forgets a workspace shared with this user: drops it from their workspace listing and its outputs
    * from their Outputs index. Called both when the user dismisses it and when their access is
    * revoked (Overseer.refreshAffectedCollaboratorListings()); it grants and revokes nothing.
    */
-  async forgetSharedGadget(gadgetId: string): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async forgetSharedWorkspace(workspaceId: string): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && record.owner) {
-      this.storage.gadgets.delete(gadgetId);
-      this.storage.outputs.byWorkspace.delete(gadgetId);
+      this.storage.gadgets.delete(workspaceId);
+      this.storage.outputs.byWorkspace.delete(workspaceId);
+      this.#forgetUnreadWorkspace(workspaceId);
     }
   }
 
@@ -656,22 +1322,24 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.profile.put(profile);
   }
 
-  async listModels(): Promise<AiChatAuthorInfo[]> {
-    return this.#listModels(getAiGatewayConfig(this.env));
+  async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
+    return this.#listModels(await getGatewayModels(this.env), kind);
   }
 
-  #listModels(gwConfig: AiGatewayConfig | null): AiChatAuthorInfo[] {
+  #listModels(models: GatewayModels | null, kind: ModelKind): AiChatAuthorInfo[] {
     let result: AiChatAuthorInfo[] = [];
 
-    // When AI Gateway mode is active, include the suggested models offered on enabled providers.
-    if (gwConfig) {
-      result.push(...gwConfig.getModelList());
+    // When AI Gateway mode is active, include the gateway models the deployment offers.
+    if (models) {
+      result.push(...models.list(kind));
     }
 
-    // Also include user-configured models, skipping any that a gateway model shadows, including
-    // a hidden one (see #resolveModel()).
+    // Also include user-configured models, where users may add their own, skipping any that a
+    // gateway model shadows, whatever its mode (see #resolveModel()).
+    if (models && !models.userModels) return result;
     for (let model of this.storage.aiModels.list()) {
-      if (!gwConfig?.resolveModel(model.profile.id)) {
+      if (!models?.get(model.profile.id) &&
+          modelKind(model.config.provider, model.config.model) === kind) {
         result.push(model.profile);
       }
     }
@@ -680,45 +1348,50 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   async addModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig,
                  copySecretsFrom?: string): Promise<void> {
+    let models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
     let source: AiModelConfig | undefined;
     if (copySecretsFrom !== undefined) {
-      source = this.#getHandAddedModel(copySecretsFrom).config;
+      source = this.#getHandAddedModel(copySecretsFrom, models).config;
     }
-    // A gateway model, hidden or not, would shadow the new model and leave it unreachable.
-    if (this.storage.aiModels.get(profile.id) ||
-        getAiGatewayConfig(this.env)?.resolveModel(profile.id)) {
+    // A gateway model, whatever its mode, would shadow the new model and leave it unreachable.
+    if (this.storage.aiModels.get(profile.id) || models?.get(profile.id)) {
       throw new Error(`A model with ID "${profile.id}" already exists.`);
     }
-    this.#putModel(profile, resolveWithheldSecrets(config, source));
+    this.#putModel(profile, resolveWithheldSecrets(config, source), models);
   }
 
   async getModelConfig(id: string): Promise<{profile: AiChatAuthorInfo, config: RedactedAiModelConfig}> {
-    let {profile, config} = this.#getHandAddedModel(id);
+    let {profile, config} = this.#getHandAddedModel(id, await getGatewayModels(this.env));
     return {profile, config: redactModelConfig(config)};
   }
 
   async updateModel(profile: AiChatAuthorInfo, config: RedactedAiModelConfig): Promise<void> {
-    let stored = this.#getHandAddedModel(profile.id).config;
+    let models = await getGatewayModels(this.env);
+    models?.refuseUserModel();
+    let stored = this.#getHandAddedModel(profile.id, models).config;
     if (config.provider !== stored.provider || config.model !== stored.model) {
       throw new Error("A model's provider and model ID can't be changed.");
     }
-    this.#putModel(profile, resolveWithheldSecrets(config, stored));
+    this.#putModel(profile, resolveWithheldSecrets(config, stored), models);
   }
 
   /** The stored record of a model the user added, throwing for AI Gateway models. */
-  #getHandAddedModel(id: string): UserAiModelRecord {
+  #getHandAddedModel(id: string, models: GatewayModels | null): UserAiModelRecord {
     let record = this.storage.aiModels.get(id);
     // A stored model sharing a gateway model's ID is shadowed by it (see listModels()).
-    if (!record || getAiGatewayConfig(this.env)?.resolveModel(id)) {
+    if (!record || models?.get(id)) {
       throw new Error(`No such hand-added model: ${id}`);
     }
     return record;
   }
 
-  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig) {
-    let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig && !gwConfig.providers.has(config.provider)) {
+  #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
+    if (models && !models.addableProviders.includes(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
+    }
+    if (config.provider === "cloudflare-auto-router") {
+      throw new Error("The Auto Router model runs only through an AI Gateway.");
     }
     for (let limit of [config.contextWindow, config.outputLimit]) {
       if (limit !== undefined && !(Number.isSafeInteger(limit) && limit > 0)) {
@@ -726,35 +1399,41 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     }
 
+    // capnweb-validate lets through properties that RedactedAiModelConfig omits, and these are a
+    // deployment's to set on its own models.
+    let {reasoning, compactionInputBudget, behavesLike, capabilities, ...own} = config;
+
     profile.type = "agent";
-    this.storage.aiModels.put({profile, config});
+    this.storage.aiModels.put({profile, config: own});
   }
 
   async deleteModel(id: string): Promise<void> {
-    // In AI Gateway mode, don't allow deleting built-in suggested models.
-    let gwConfig = getAiGatewayConfig(this.env);
-    if (gwConfig) {
-      for (let [provider, models] of Object.entries(SUGGESTED_MODELS)) {
-        if (gwConfig.providers.has(provider) && id in models) {
-          throw new Error(`Cannot delete built-in model "${models[id].name}".`);
-        }
-      }
-    }
+    // In AI Gateway mode, don't allow deleting the gateway's own models, whatever their mode.
+    let model = (await getGatewayModels(this.env))?.get(id);
+    if (model) throw new Error(`Cannot delete built-in model "${model.name}".`);
 
     this.storage.aiModels.delete(id);
   }
 
   async setQuickModel(id: string | null): Promise<void> {
+    if (id !== null && isCloudflareLimitsEnabled(this.env)) {
+      throw new Error("Quick tasks run on the deployment's own model while it applies " +
+          "Cloudflare usage limits.");
+    }
     this.storage.quickModel.put(id);
   }
 
   async getQuickModel(): Promise<null | string> {
-    let result = this.storage.quickModel.get();
-    if (result && this.storage.aiModels.get(result)) {
-      return result;
-    } else {
-      return null;
-    }
+    return this.#chosenQuickModel(await getGatewayModels(this.env))?.profile.id ?? null;
+  }
+
+  // The quick model the user chose, while it resolves. A gateway model is not stored here, so
+  // the choice is looked up the way a chat's model is. Quick tasks are counted against no usage
+  // limit, so a deployment that applies Cloudflare limits keeps them on its own quick model.
+  #chosenQuickModel(models: GatewayModels | null): UserAiModelRecord | undefined {
+    let id = this.storage.quickModel.get();
+    if (!id || isCloudflareLimitsEnabled(this.env)) return undefined;
+    return this.#resolveModel(id, models);
   }
 
   async getPreferredModel(): Promise<string | null> {
@@ -764,7 +1443,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   async setPreferredModel(id: string | null): Promise<void> {
     if (id !== null) {
       // Any model that resolves is accepted, hidden ones included (see getExternalMessageChatContext()).
-      if (!this.#resolveModel(id, getAiGatewayConfig(this.env))) {
+      if (!this.#resolveModel(id, await getGatewayModels(this.env))) {
         throw new Error(`No such model: ${id}`);
       }
     }
@@ -865,31 +1544,30 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   /** DO NOT MAKE PUBLIC -- returns API keys. Pure read: call sites replay it across DO resets
    * via retryOnDoReset, so it must stay free of writes and side effects. */
   async getChatContext(modelId: string | null): Promise<UserChatContext> {
-    return this.#getChatContext(modelId, getAiGatewayConfig(this.env));
+    return this.#getChatContext(modelId, await getGatewayModels(this.env));
   }
 
-  #getChatContext(modelId: string | null, gwConfig: AiGatewayConfig | null): UserChatContext {
+  #getChatContext(modelId: string | null, models: GatewayModels | null): UserChatContext {
     let result: UserChatContext = {
       profile: this.storage.profile.get()
     };
     if (modelId) {
-      result.aiModel = this.#resolveModel(modelId, gwConfig);
-      if (!result.aiModel) throw new Error(`No such model: ${modelId}`);
-    }
-
-    // Resolve the quick model (used for lightweight tasks like title generation).
-    if (gwConfig) {
-      // In AI Gateway mode, always use the hardcoded quick model.
-      result.quickModel = gwConfig.getQuickModelConfig();
-    } else {
-      let quickModelId = this.storage.quickModel.get();
-      if (quickModelId) {
-        let quickModel = this.storage.aiModels.get(quickModelId);
-        if (quickModel) {
-          result.quickModel = quickModel.config;
-        }
+      result.aiModel = this.#resolveModel(modelId, models);
+      if (!result.aiModel) {
+        models?.refuseDisabled(modelId);
+        // No gateway model has the ID, so a stored model with it is one the deployment keeps
+        // users from running.
+        let stored = this.storage.aiModels.get(modelId);
+        if (stored) models?.refuseUserModel(stored.profile.name);
+        throw new Error(`No such model: ${modelId}`);
       }
     }
+
+    // Resolve the quick model (used for lightweight tasks like title generation): the user's
+    // choice where it may be used (see #chosenQuickModel), else in AI Gateway mode the
+    // deployment's own.
+    result.quickModel = this.#chosenQuickModel(models)?.config ??
+        models?.gateway.getQuickModelConfig();
     return result;
   }
 
@@ -897,37 +1575,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     // An existing chat keeps its model while it still resolves, even once no longer offered. A new
     // conversation takes the user's preferred model only while it is still offered, as the web
     // composer does with its stored choice, and otherwise the first available model.
-    let gwConfig = getAiGatewayConfig(this.env);
+    let models = await getGatewayModels(this.env);
     let selectedModelId = existingChatModelId;
-    if (selectedModelId === null || !this.#resolveModel(selectedModelId, gwConfig)) {
-      let models = this.#listModels(gwConfig);
+    if (selectedModelId === null || !this.#resolveModel(selectedModelId, models)) {
+      let offered = this.#listModels(models, "language");
       let preferredModel = this.storage.preferredModel.get();
-      selectedModelId = (models.find(model => model.id === preferredModel) ?? models[0])?.id ?? null;
+      selectedModelId = (offered.find(model => model.id === preferredModel) ?? offered[0])?.id ?? null;
     }
 
-    return this.#getChatContext(selectedModelId, gwConfig);
+    return this.#getChatContext(selectedModelId, models);
   }
 
   /**
-   * Resolve a model ID the way chats do: a gateway model, hidden ones included, shadows a stored
-   * model with the same ID.
+   * Resolve a model ID the way chats do: a gateway model shadows a stored model with the same ID
+   * whatever its mode, so a disabled one resolves to nothing rather than to the stored model. No
+   * stored model resolves on a gateway deployment whose users may not add their own.
    */
-  #resolveModel(id: string, gwConfig: AiGatewayConfig | null): UserAiModelRecord | undefined {
-    return gwConfig?.resolveModel(id) ?? this.storage.aiModels.get(id);
+  #resolveModel(id: string, models: GatewayModels | null): UserAiModelRecord | undefined {
+    if (models?.get(id)) return models.resolve(id);
+    return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
-  async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    let result: GadgetMetadataWithTimestamps[] = [];
-    for (let gadget of this.storage.gadgets.list()) {
-      if (isFullyCreated(gadget)) {
-        result.push(gadget);
+  async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
+    let result: WorkspaceMetadataWithTimestamps[] = [];
+    for (let workspace of this.storage.gadgets.list()) {
+      if (isFullyCreated(workspace)) {
+        result.push(workspace);
       }
     }
     return result;
   }
 
-  async updateTitle(gadgetId: string, title: string) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateTitle(workspaceId: string, title: string) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -935,8 +1615,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async updatePinned(gadgetId: string, pinned: boolean) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updatePinned(workspaceId: string, pinned: boolean) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -944,34 +1624,35 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async getGadget(id: string): Promise<GadgetMetadata | null> {
+  async getWorkspace(id: string): Promise<WorkspaceMetadata | null> {
     return this.storage.gadgets.get(id) || null;
   }
 
-  async newGadget(id: string, title: string): Promise<void> {
+  async newWorkspace(id: string, title: string): Promise<void> {
     let created = new Date();
     this.storage.gadgets.put({id, title, created});
   }
 
-  async ensureGadgetRegistered(id: string, title: string): Promise<void> {
+  async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
     if (this.storage.gadgets.get(id)) return;
-    await this.newGadget(id, title);
+    await this.newWorkspace(id, title);
   }
 
-  async setGadgetLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
-    let gadget = this.storage.gadgets.get(id);
-    if (gadget) {
-      gadget.lastActive = time;
+  async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
+    let workspace = this.storage.gadgets.get(id);
+    if (workspace) {
+      workspace.lastActive = time;
       if (totalCost) {
-        gadget.totalCost = totalCost;
+        workspace.totalCost = totalCost;
       }
-      this.storage.gadgets.put(gadget);
+      this.storage.gadgets.put(workspace);
     }
   }
 
-  async deleteGadget(id: string): Promise<void> {
+  async deleteWorkspace(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
+    this.#forgetUnreadWorkspace(id);
   }
 
   /**
@@ -1178,9 +1859,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
 
       // Delete all R2 objects with the blueprint ID prefix.
-      for (let v = 1; v <= kvRecord.metadata.version; v++) {
-        await this.env.BLUEPRINT_CONTENT.delete(`${id}/${v}`);
-      }
+      await deleteBlueprintContent(this.env, id);
       await this.env.BLUEPRINT_CONTENT.delete(`${BLUEPRINT_SCREENSHOT_R2_PREFIX}${id}`);
 
       // Delete from KV.
@@ -1300,9 +1979,10 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
             vendor.getSupportedResources(options),
           ]);
           let enabledResources =
-              filterEnabledResources(config, id, supportedResources);
-          if (enabledResources.length == 0) {
-            // Every resource for this vendor is disabled (or it advertised none) — hide the vendor.
+              filterEnabledResources(config, id, supportedResources)
+                  .filter(resource => resource.connectable !== false || resource.creatable);
+          if (enabledResources.length === 0) {
+            // No admin-enabled resource offers connection or creation — hide the vendor.
             return null;
           }
 
@@ -1543,18 +2223,115 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Open the full-page management UI for an account that declares one. `context.isAdmin` is supplied
    * fresh by the caller so admin-gated features reflect the user's current status.
    */
-  async startAccountAppUi(accountId: number, context: AppUiContext): Promise<GatekeeperUiFrame> {
+  async startAccountAppUi(
+      accountId: number, options: Pick<AppUiContext, "isAdmin">,
+  ): Promise<GatekeeperUiFrame> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record?.description.providesUi) throw new Error("No such app.");
-    return (record.account as unknown as SingletonAccountStub).startAppUi(context);
+    let userSelectionExchange = this.ctx.exports.GatekeeperUserSelectionExchangeImpl({
+      props: { selectorUserId: this.ctx.id.toString(), appAccountId: accountId },
+    });
+    return (record.account as unknown as SingletonAccountStub)
+        .startAppUi({ isAdmin: options.isAdmin, userSelectionExchange });
   }
 
+  // The account record behind one of this user's gatekeeper apps, or undefined
+  // if `accountId` is not a UI-providing account the deployment currently
+  // offers (the same test listProvidedAccounts applies, since a "disabled"
+  // ambient gatekeeper's account stays dormant).
+  async #uiAccountRecord(accountId: number): Promise<ConnectedAccountRecord | undefined> {
+    let record = this.storage.connectedAccounts.get(accountId);
+    if (!record?.description.providesUi) return undefined;
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(record.vendorId)) return undefined;
+    if (record.autoProvisioned) {
+      if (ambientGatekeeperMode(config, record.vendorId) === "disabled") return undefined;
+    }
+    return record;
+  }
+
+  /**
+   * Mint a single-use ticket for a user selected on behalf of a gatekeeper app,
+   * redeemable through that gatekeeper app's exchange capability (see
+   * GatekeeperUserSelectionExchangeImpl). Returns null if the selected user is
+   * this user or does not exist. Self-selection uses stable DO identity because
+   * ctx.id.name may be absent after a cold start through idFromString().
+   */
+  async createGatekeeperUserSelection(
+      appAccountId: number, selectedUserId: string,
+  ): Promise<GatekeeperUserSelection | null> {
+    let app = await this.#uiAccountRecord(appAccountId);
+    if (!app) throw new Error("No such app.");
+    let selectedId = this.ctx.exports.UserDurableObject.idFromName(selectedUserId);
+    if (this.ctx.id.equals(selectedId)) return null;
+    let selectedProfile = await this.ctx.exports.UserDurableObject.get(selectedId).whoamiIfExists();
+    if (!selectedProfile) return null;
+    let profile = { displayName: selectedProfile.name };
+    let { secret, hash: ticketHash } = await newSecretToken();
+    let expiresAt = new Date(Date.now() + GATEKEEPER_USER_SELECTION_LIFETIME_MS);
+    this.storage.pendingUserSelections.put({
+      ticketHash, appAccountId, vendorId: app.vendorId, selectedUserId, expiresAt,
+    });
+    await this.#armExpirySweep();
+    return { ticket: secret.toHex(), profile };
+  }
+
+  /**
+   * Redeem a ticket returned from createGatekeeperUserSelection. A ticket can
+   * only be redeemed once by the gatekeeper app account that minted it. A
+   * ticket minted for a different gatekeeper app account is refused without
+   * being spent, so a later valid exchange can still redeem it. Returns all of
+   * the selected user's eligible same-vendor accounts. The gatekeeper handles
+   * zero or multiple results. A ticket represents a Workshop user, not a
+   * connected account, so a 1:1 mapping with a connected account is not
+   * guaranteed.
+   */
+  async redeemGatekeeperUserSelection(
+      appAccountId: number, ticket: string,
+  ): Promise<RedeemedGatekeeperUserSelection[]> {
+    let ticketHash = await hashPresentedSecret(ticket);
+    let record = ticketHash === undefined
+        ? undefined : this.storage.pendingUserSelections.get(ticketHash);
+    if (!record || record.appAccountId !== appAccountId) {
+      throw new Error("This selection has expired. Please select the user again.");
+    }
+    this.storage.pendingUserSelections.delete(record.ticketHash);
+    if (record.expiresAt.getTime() <= Date.now()) {
+      throw new Error("This selection has expired. Please select the user again.");
+    }
+    let app = await this.#uiAccountRecord(appAccountId);
+    if (!app || app.vendorId !== record.vendorId) throw new Error("No such app.");
+    return this.ctx.exports.UserDurableObject.getByName(record.selectedUserId)
+        .selectableGatekeeperUsers(record.vendorId);
+  }
+
+  /**
+   * Make the account's grant cover the resource types `resourceUrlPatterns` names. Only the
+   * gatekeeper knows what it was granted, so it decides: it returns the URL of a consent flow that
+   * widens the grant, opened here as a connect flow, or no URL when the grant already covers them.
+   */
   async ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
       : Promise<ConnectFlowStart | null> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
     let { url } = await record.account.ensureResources(resourceUrlPatterns);
-    if (url === undefined) return null;
+    if (url === undefined) {
+      // Nothing to grant, yet callers ask for what the account's stored description doesn't list as
+      // granted, so that list is out of date. A gatekeeper that renames a resource type's
+      // `urlPattern` reads the grants it recorded under the new name, but the description stored
+      // here keeps the old one until it is fetched again. Fetch it now, or the UI keeps offering a
+      // grant the account already has. Best-effort: null still means nothing needed granting.
+      try {
+        let description = await record.account.describe();
+        let current = this.storage.connectedAccounts.get(accountId);
+        if (current) this.storage.connectedAccounts.put({ ...current, description });
+      } catch (err) {
+        logger.warn("failed to refresh a stale account description", {
+          event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
+        });
+      }
+      return null;
+    }
     return { url, nonce: await this.openConnectFlow(accountId) };
   }
 
@@ -1737,6 +2514,14 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return record.account.startResourceConfigurator(resourceUrlPattern);
   }
 
+  async startCreationConfigurator(accountId: number, resourceUrlPattern: string)
+      : Promise<GatekeeperUiFrame> {
+    let record = this.storage.connectedAccounts.get(accountId);
+    if (!record) throw new Error("No such account.");
+    return (record.account as unknown as CreationConfiguratorStub)
+        .startCreationConfigurator(resourceUrlPattern);
+  }
+
   /**
    * Persist a connected gatekeeper account that was established during sign-in (rather than via the
    * usual logged-in connectAccount flow). Used for providers like Cloudflare where signing in also
@@ -1872,7 +2657,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let { secret, hash: nonceHash } = await newSecretToken();
     let expiresAt = new Date(Date.now() + CONNECT_FLOW_LIFETIME_MS);
     this.storage.pendingConnectFlows.put({ nonceHash, accountId, expiresAt });
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
     return secret.toHex();
   }
 
@@ -1886,7 +2671,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let { secret, hash: ticketHash } = await newSecretToken();
     let expiresAt = new Date(Date.now() + PENDING_HANDOFF_LIFETIME_MS);
     this.storage.pendingHandoffs.put({ ...record, ticketHash, expiresAt });
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
     return { targetOrigin, ticket: secret.toHex() };
   }
 
@@ -1986,11 +2771,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     });
   }
 
-  // Arm the alarm for the soonest pending expiry (the alarm is used for nothing else).
-  async #armHandoffSweep(): Promise<void> {
+  #dropPendingDeviceHandoff(pending: PendingDeviceHandoffRecord): void {
+    this.storage.pendingDeviceHandoffs.delete(pending.stateHash);
+    if (pending.sessionTokenId) this.storage.sessions.delete(pending.sessionTokenId);
+  }
+
+  // Arm the alarm for the soonest pending expiry, including device sessions and picker selections.
+  async #armExpirySweep(): Promise<void> {
+    let scheduled = await this.ctx.storage.getAlarm();
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
+    if (this.#notificationChats.size) {
+      // Other activity must not postpone an outstanding retry; a fired alarm can schedule anew.
+      consider(Math.min(scheduled ?? Infinity, Date.now() + 30_000));
+    }
+    let badgeRetry = this.storage.notificationBadge.get().retryAt;
+    if (badgeRetry !== undefined) consider(badgeRetry);
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
+    for (let pending of this.storage.pendingDeviceHandoffs.list()) {
+      consider(pending.expiresAt.getTime());
+    }
+    for (let session of this.storage.sessions.list()) {
+      if (session.expiresAt) consider(session.expiresAt.getTime());
+    }
+    for (let selection of this.storage.pendingUserSelections.list()) {
+      consider(selection.expiresAt.getTime());
+    }
     try {
       for (let pending of this.storage.pendingHandoffs.list()) consider(pending.expiresAt.getTime());
     } catch (err) {
@@ -2006,19 +2812,26 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (next === undefined) {
       await this.ctx.storage.deleteAlarm();
     } else {
-      await this.ctx.storage.setAlarm(next);
+      await this.ctx.storage.setAlarm(Math.max(1, next));
     }
   }
 
   /**
-   * Drop pending handoffs whose ticket never came back (see #dropPendingConnect) and flows whose
-   * nonce was never presented (nothing to revoke for those).
+   * Drop unconfirmed connect handoffs, abandoned connect flows and picker selections, and expired
+   * device handoffs and sessions. Device handoff cleanup also deletes its unactivated session.
    */
   async alarm(): Promise<void> {
+    // A stalled workspace/push service must not prevent unrelated auth expiry cleanup.
+    let deliveries = Promise.allSettled([this.#deliverNotifications(), this.#flushBadge()]);
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
     for (let flow of expiredFlows) this.storage.pendingConnectFlows.delete(flow.nonceHash);
+    let expiredSelections = Array.from(this.storage.pendingUserSelections.list())
+        .filter(selection => selection.expiresAt.getTime() <= now);
+    for (let selection of expiredSelections) {
+      this.storage.pendingUserSelections.delete(selection.ticketHash);
+    }
     let expired: PendingHandoffRecord[] = [];
     try {
       for (let pending of this.storage.pendingHandoffs.list()) {
@@ -2026,7 +2839,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     } catch (err) {
       // Same failure mode as #connectedAccountRecords: a stub for a Worker that is no longer bound
-      // fails to deserialize. Leave the sweep for next time (#armHandoffSweep bounds the retry).
+      // fails to deserialize. Leave the sweep for next time (#armExpirySweep bounds the retry).
       logger.warn("failed to list pending handoffs", {
         event: "connect.handoff.sweep.failed", error: err,
       });
@@ -2035,7 +2848,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       this.storage.pendingHandoffs.delete(pending.ticketHash);
       await this.#dropPendingConnect(pending);
     }
-    await this.#armHandoffSweep();
+    for (let pending of Array.from(this.storage.pendingDeviceHandoffs.list())) {
+      if (pending.expiresAt.getTime() <= now) this.#dropPendingDeviceHandoff(pending);
+    }
+    for (let session of Array.from(this.storage.sessions.list())) {
+      if ((session.expiresAt?.getTime() ?? Infinity) <= now) {
+        this.storage.sessions.delete(session.tokenId);
+      }
+    }
+    await this.#armExpirySweep();
+    for (let result of await deliveries) if (result.status === "rejected") {
+      // The durable outbox already has a retry alarm; don't also trigger platform alarm retries.
+      logger.warn("notification delivery deferred", {event: "notification.delivery.deferred", error: result.reason});
+    }
   }
 
   async getGatekeeperClassFor(accountId: number, url: string)
@@ -2044,35 +2869,72 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let account = this.storage.connectedAccounts.get(accountId);
     if (!account) throw new Error("No such account.");
     let {class: cls, resource} = await account.account.getGatekeeperClassFor(url);
-
-    // Block whole gatekeepers + disabled resources at this single core-side chokepoint where a
-    // resourceUrl becomes a capability (reached only via the user/UI-facing Overseer.newGatekeeper
-    // and blueprint instantiation — never from gadget or agent code). An ambient gatekeeper an admin
-    // set to "disabled" is blocked here too.
-    let config = await readAdminConfig(this.env);
-    let vendorId = account.vendorId.toLowerCase();
-    if (config.disabledGatekeepers.includes(vendorId) ||
-        ambientGatekeeperMode(config, vendorId) === "disabled") {
-      throw new Error(
-          `The "${account.vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
-    }
-
-    // Blocking here prevents minting a new capability to a disabled resource even if the request
-    // bypasses the (separately filtered) picker/agent listings.
-    if (isResourceDisabled(config, vendorId, resource.urlPattern)) {
-      throw new Error(
-          `The "${resource.title}" resource is disabled on this deployment by an administrator.`);
-    }
-
+    await this.#assertResourceEnabled(account.vendorId, resource);
     return {class: cls, vendorId: account.vendorId, typeUrlPattern: resource.urlPattern};
   }
 
   /**
+   * Mint a gatekeeper class simulating a new resource of a creatable type (see
+   * GatekeeperVendor.createResource()). It belongs to no account; the returned `action` is the
+   * creation to queue. A suggested `configuration` must be a URL, for a type that describes one
+   * (see SupportedResource.creationConfigurationDescription).
+   */
+  async createResourceGatekeeper(vendorId: string, resourceUrlPattern: string, title: string,
+                                 configuration?: string)
+      : Promise<{class: DurableObjectClass<Gatekeeper<any>>, typeUrlPattern: string,
+                  action: ActionDescription}> {
+    let vendor = this.vendors.get(vendorId);
+    if (!vendor) throw new Error(`Unknown vendor "${vendorId}".`);
+    let advertised = (await vendor.getSupportedResources({ userId: this.storage.profile.get().id }))
+        .find(r => r.urlPattern === resourceUrlPattern && r.creatable);
+    if (!advertised) {
+      throw new Error(`This vendor does not advertise creation of "${resourceUrlPattern}". ` +
+          "Call listConnectableResources to see the available creations.");
+    }
+    let takes = advertised.creationConfigurator && advertised.creationConfigurationDescription;
+    if (configuration !== undefined && !takes) {
+      throw new Error(`A new ${advertised.title} takes no configuration. Leave configuration out.`);
+    }
+    if (configuration !== undefined && !URL.canParse(configuration)) {
+      throw new Error(`configuration must be ${takes}.`);
+    }
+    await this.#assertResourceEnabled(vendorId, advertised);
+    let {class: cls, resource, action} = await (vendor as unknown as ResourceCreatorStub)
+        .createResource(resourceUrlPattern, title);
+    if (resource.urlPattern !== resourceUrlPattern) {
+      throw new Error("Created resource type does not match the requested type.");
+    }
+    return {class: cls, typeUrlPattern: resource.urlPattern, action};
+  }
+
+  // Block whole gatekeepers + disabled resources at the core-side chokepoints where a gatekeeper
+  // class is minted (reached only via the user/UI-facing Overseer.newGatekeeper, blueprint
+  // instantiation, and the agent's createExternalResource -- never from gadget code). An ambient
+  // gatekeeper an admin set to "disabled" is blocked here too. Blocking here prevents minting a
+  // capability to a disabled resource even if the request bypasses the (separately filtered)
+  // picker/agent listings.
+  async #assertResourceEnabled(vendorId: string, resource: SupportedResource) {
+    let config = await readAdminConfig(this.env);
+    let normalized = vendorId.toLowerCase();
+    if (config.disabledGatekeepers.includes(normalized) ||
+        ambientGatekeeperMode(config, normalized) === "disabled") {
+      throw new Error(
+          `The "${vendorId}" gatekeeper is disabled on this deployment by an administrator.`);
+    }
+    if (isResourceDisabled(config, normalized, resource.urlPattern)) {
+      throw new Error(
+          `The "${resource.title}" resource is disabled on this deployment by an administrator.`);
+    }
+  }
+
+  /**
    * Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
-   * overseer passes the returned verifier to a gatekeeper's `addObserver()` so the gatekeeper can
-   * check whether this user is allowed to observe the data read through it. Returns null if the
-   * account no longer exists (or never existed). Throws if the account belongs to a different
-   * vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
+   * overseer passes the returned verifier to a gatekeeper's `addObserver()` or
+   * `verifyObserverAccess()` so the gatekeeper can check whether this user is allowed to observe
+   * the data read through it, or to a gatekeeper's `applyCreation()` to create the resource in
+   * this account. Returns null if the account no longer exists (or never existed). Throws if the
+   * account belongs to a different vendor (not a legitimate UI state — only reachable by bypassing
+   * client-side filtering).
    *
    * Account *selection* (which of the user's accounts to use for a given binding) is done by the
    * frontend; this method validates and resolves a chosen account to its verifier.
@@ -2089,6 +2951,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error("Invalid account selection for this service.");
     }
     return await account.account.getVerifier();
+  }
+
+  // All currently eligible accounts this selected user has with the requested vendor. The
+  // gatekeeper, not the Workshop, decides what zero or multiple accounts mean for its operation.
+  async #eligibleGatekeeperAccounts(vendorId: string): Promise<ConnectedAccountRecord[]> {
+    if (!this.storage.created.get()) return [];
+    vendorId = vendorId.toLowerCase();
+
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(vendorId)) return [];
+
+    await this.#ensureAutoProvisionedAccounts();
+
+    return [...this.#connectedAccountRecords()].filter((record) =>
+      record.vendorId === vendorId && areCredentialsValid(record) &&
+      (!record.autoProvisioned || ambientGatekeeperMode(config, vendorId) !== "disabled")
+    );
+  }
+
+  /**
+   * Return every currently eligible account belonging to this selected user and
+   * vendor, each with its own identity capability and the user's fresh
+   * display-name snapshot. Returns an empty array when none qualify; does not
+   * choose between multiple accounts. Accounts are resolved at redemption time
+   * and need not be the same accounts the user had when the ticket was minted.
+   */
+  async selectableGatekeeperUsers(vendorId: string): Promise<RedeemedGatekeeperUserSelection[]> {
+    let accounts = await this.#eligibleGatekeeperAccounts(vendorId);
+    if (accounts.length === 0) return [];
+    let profile = { displayName: this.storage.profile.get().name };
+    return Promise.all(accounts.map(async account => ({
+      verifier: await account.account.getVerifier(), profile,
+    })));
   }
 
   /**
@@ -2133,6 +3028,37 @@ export class GatekeeperConnectCallbackImpl
   async credentialsRestored(expiresAt?: Date): Promise<void> {
     let userStub = this.#getUserStub();
     await userStub.markCredentialsRestored(this.ctx.props.accountId, expiresAt);
+  }
+}
+
+type GatekeeperUserSelectionExchangeProps = {
+  selectorUserId: string;
+  appAccountId: number;
+};
+
+/**
+ * The capability exposed to a gatekeeper app for redeeming user selection
+ * tickets (AppUiContext.userSelectionExchange). Its props contain the selecting
+ * user's ID and the one gatekeeper account startAccountAppUi was called on.
+ * Every ticket is redeemed against that scope, so the capability cannot resolve
+ * anything that the Workshop did not mint for it.
+ */
+@validateRpc()
+export class GatekeeperUserSelectionExchangeImpl
+    extends WorkerEntrypoint<Cloudflare.Env, GatekeeperUserSelectionExchangeProps>
+    implements GatekeeperUserSelectionExchange {
+  /**
+   * RPC validation is skipped for the same reason every gatekeeper's
+   * getVerifier() skips it: the generated return validator wraps the native
+   * Fetcher in a Proxy that Workers RPC then refuses to serialize. The ticket
+   * itself is checked by hashPresentedSecret before it is looked up.
+   */
+  @skipRpcValidation()
+  redeem(ticket: string): Promise<RedeemedGatekeeperUserSelection[]> {
+    let { selectorUserId, appAccountId } = this.ctx.props;
+    let users = this.ctx.exports.UserDurableObject;
+    return users.get(users.idFromString(selectorUserId))
+        .redeemGatekeeperUserSelection(appAccountId, ticket);
   }
 }
 

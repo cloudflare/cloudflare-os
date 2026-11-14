@@ -61,6 +61,9 @@ const model = scriptedChatCompletions([
     },
   },
   { text: "The test value is still 42." },
+  // A persistent outage: the turn retries twice before it reports the error.
+  { error: { status: 503, message: "scripted provider outage" } },
+  { error: { status: 503, message: "scripted provider outage" } },
   { error: { status: 503, message: "scripted provider outage" } },
   { pending: true },
 ]);
@@ -202,14 +205,14 @@ it("keeps multi-turn history and returns provider errors", async () => {
       message: expect.stringContaining("scripted provider outage"),
     }),
   ]));
-  expect(model.requests).toHaveLength(5);
+  expect(model.requests).toHaveLength(7);
   const controller = new AbortController();
   const cancelling = session.runTurn("Trigger a model request that never resolves.", {
     timeoutMs: 40_000,
     signal: controller.signal,
   });
   await waitFor("the pending model request", () =>
-    Promise.resolve(model.requests.length === 6 ? true : null));
+    Promise.resolve(model.requests.length === 8 ? true : null));
   controller.abort();
   const cancelled = await cancelling;
   expect(cancelled.outcome).toMatchObject({ status: "cancelled" });

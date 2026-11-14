@@ -47,7 +47,7 @@ if (unchanged) {
   await mkdir(dirname(outFile), { recursive: true });
   await writeFile(outFile, generated);
   console.log(`Bundled ${count} blueprint(s) from ${sourceDir}, ` +
-      `${(totalBytes / 1024).toFixed(0)} KiB raw -> ${outFile}`);
+      `${(totalBytes / 1024).toFixed(0)} KiB of files -> ${outFile}`);
 }
 
 function isErrorCode(err: unknown, code: string): boolean {

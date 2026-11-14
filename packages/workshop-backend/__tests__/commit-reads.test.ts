@@ -1,32 +1,47 @@
-// The client-facing commit reads (Overseer.listTree / readFilesAtCommit) through the real
-// OverseerInterface class: oid validation and the per-call path cap. The read semantics themselves
-// are covered by git-cache.test.ts; this file covers the RPC surface -- and, because
+// The client-facing commit reads (Overseer.listTree / readFilesAtCommit / listChangedPaths /
+// readBlob) through the real OverseerInterface class: oid validation, the per-call path cap, the
+// order of listed paths, and the "use" role's denial. The read semantics themselves are covered by
+// git-cache.test.ts; this file covers the RPC surface -- and, because
 // capnweb-validate is *not* mocked here, importing overseer.ts compiles the generated validators,
 // including the recursive TreeNode return shape.
 
 import { describe, expect, it } from "vitest";
-import { createTypedStorage } from "@gadgets/typed-storage";
-import { MAX_READ_FILES_PER_CALL } from "@gadgets/workshop-shared/api";
-import { WorkspaceGitCache, gitObjectMetadataCollection } from "../src/git-cache";
-import { gitObjectsCollection } from "../src/git-store";
+import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { MAX_READ_FILES_PER_CALL, type Overseer } from "@gadgets/workshop-shared/api";
+import type { FileContent } from "@gadgets/workshop-shared/code-change";
+import type { OverseerDurableObject } from "../src/overseer.js";
+import { WorkspaceGitCache } from "../src/git-cache";
+import { makeOverseerStorage } from "../src/storage-schema/overseer-storage";
 import { makeMockStorage } from "./mock-storage";
 import { openFakeOverseer } from "./fixtures";
-import { COMMIT_1, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes } from "./git-cache-fixtures";
+import { COMMIT_1, COMMIT_2, FIXTURE_OBJECTS, PACKED_OIDS, b64Bytes }
+  from "./git-cache-fixtures";
 
-// A real git cache over the fixture repo (fully local, so nothing pulls), forged into the fake
-// overseer's impl -- the only member the reads dereference.
-async function openWithFixtureRepo() {
-  let storage = createTypedStorage(makeMockStorage(), {
-    collections: {
-      gitObjects: gitObjectsCollection(),
-      gitObjectMetadata: gitObjectMetadataCollection(),
+declare module "cloudflare:workers" {
+  interface ProvidedEnv {
+    TEST_OVERSEER: DurableObjectNamespace<OverseerDurableObject>;
+  }
+}
+
+// A real git cache over the fixture repo, forged into the fake overseer's impl -- the only member
+// the reads dereference. All of it is local but the `remote` objects, which gatekeeper 1 provides
+// when pulled; any other pull fails.
+async function openWithFixtureRepo(remote: readonly string[] = []) {
+  let storage = makeOverseerStorage(makeMockStorage());
+  let gitCache: WorkspaceGitCache = new WorkspaceGitCache(storage, {
+    pull: async (gatekeeperId, oids) => {
+      for (let oid of oids) {
+        let object = FIXTURE_OBJECTS.find(candidate => candidate.oid === oid);
+        if (object === undefined || !remote.includes(oid)) {
+          throw new Error(`test: unexpected pull of ${oid}`);
+        }
+        gitCache.putFromGatekeeper(gatekeeperId, object.type, b64Bytes(object.payload));
+      }
     },
   });
-  let gitCache = new WorkspaceGitCache(storage, {
-    pull: async () => { throw new Error("test: nothing should pull"); },
-  });
   for (let object of FIXTURE_OBJECTS) {
-    if (PACKED_OIDS.includes(object.oid)) {
+    if (PACKED_OIDS.includes(object.oid) && !remote.includes(object.oid)) {
       await gitCache.putFromGatekeeper(1, object.type, b64Bytes(object.payload));
     }
   }
@@ -62,5 +77,85 @@ describe("commit reads over the Overseer interface", () => {
     // Exactly the cap is fine.
     expect(await client.readFilesAtCommit(COMMIT_1, paths.slice(1)))
         .toHaveLength(MAX_READ_FILES_PER_CALL);
+  });
+
+  // The client's file cache is page-wide, so it can hold a blob entry that another workspace
+  // fetched, for a commit this workspace mounts but has not read the file of.
+  it("pulls a blob the workspace does not hold yet", async () => {
+    let readme = "ca69e6d08b5b8bb4f11a74f9695e329c203cbfd8";  // README.md at COMMIT_1
+    let client = await openWithFixtureRepo([readme]);
+    let stream = await client.readBlob(readme);
+    expect(new TextDecoder().decode(await new Response(stream).arrayBuffer())).toBe("# Fixture\n");
+  });
+});
+
+// A parentless commit of the files, through the Overseer's own store.
+async function commitFiles(impl: { gitCache: WorkspaceGitCache },
+                           files: Record<string, FileContent>): Promise<string> {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
+    parents: [],
+    author: { name: "Alice", email: "alice@example.com" },
+    message: "test commit",
+    timestamp: new Date(1700000000_000),
+  });
+}
+
+describe("listChangedPaths and readBlob over the Overseer interface", () => {
+  // The real client interface, opened as its owner over a fresh Overseer.
+  let doCounter = 0;
+  async function withClient(fn: (impl: any, client: Overseer) => Promise<void>): Promise<void> {
+    let stub = env.TEST_OVERSEER.getByName(`commit-reads-${++doCounter}`);
+    await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
+      let impl = (instance as unknown as { impl: any }).impl;
+      let ownerId = impl.users.newUniqueId().toString();
+      impl.ownerId = ownerId;
+      impl.ensureAmbientCapsules = async () => {};
+      impl.markOutputsDirty = () => {};
+      using notifyClosed = new NativeRpcStub<() => void>(() => {});
+      using client = await instance.open(ownerId, "owner-profile", notifyClosed);
+      await fn(impl, client);
+    });
+  }
+
+  it("lists the paths that differ, sorted, whichever commit comes first", async () => {
+    await withClient(async (impl, client) => {
+      let before = await commitFiles(impl, { "z.js": "z\n", "src/b.js": "b\n", "c.js": "c\n" });
+      let after = await commitFiles(impl,
+          { "z.js": "Z\n", "src/b.js": "b\n", "src/a.js": "a\n", "a.js": "a\n" });
+      // The tree walk meets them as c.js, src/a.js, z.js, a.js: a name that only the second
+      // tree has comes last.
+      let expected = ["a.js", "c.js", "src/a.js", "z.js"];
+      expect(await client.listChangedPaths(before, after)).toStrictEqual(expected);
+      expect(await client.listChangedPaths(after, before)).toStrictEqual(expected);
+      expect(await client.listChangedPaths(after, after)).toStrictEqual([]);
+    });
+  });
+
+  it("validates both commit ids before touching the store", async () => {
+    await withClient(async (impl, client) => {
+      let commit = await commitFiles(impl, { "a.js": "a\n" });
+      await expect(client.listChangedPaths("HEAD", commit)).rejects.toThrow("Invalid commit id.");
+      await expect(client.listChangedPaths(commit, commit.slice(0, 12)))
+          .rejects.toThrow("Invalid commit id.");
+    });
+  });
+
+  it("is denied to a \"use\" collaborator", async () => {
+    let client = await openFakeOverseer({}, { role: "use" });
+    await expect(client.listChangedPaths(COMMIT_1, COMMIT_2)).rejects.toThrow(/^Unauthorized/);
+  });
+
+  it("reads back the blob a binary file's entry names", async () => {
+    await withClient(async (impl, client) => {
+      let png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]);
+      let commit = await commitFiles(impl, { "logo.png": impl.gitCache.writeBlob(png) });
+      let [[, file]] = await client.readFilesAtCommit(commit, ["logo.png"]);
+      if (file.kind !== "blob") throw new Error(`expected a blob entry, got ${file.kind}`);
+      expect(file.blob.byteLength).toBe(png.byteLength);
+      let stream = await client.readBlob(file.blob.oid);
+      expect(new Uint8Array(await new Response(stream).arrayBuffer())).toStrictEqual(png);
+      await expect(client.readBlob("0".repeat(40))).rejects.toThrow(/Could not pull git object/);
+      await expect(client.readBlob("HEAD")).rejects.toThrow(/Invalid git object id/);
+    });
   });
 });

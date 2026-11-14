@@ -47,7 +47,7 @@ async function recordFirstTurn(username: string, model: RoutedScriptedModel) {
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, username);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const { id: workspaceId } = await ws.getMetadata();
   const recorder = new ChatRecorder();
   using recorderStub = stubFor(recorder);
@@ -70,11 +70,33 @@ async function recordFirstTurn(username: string, model: RoutedScriptedModel) {
   return { chatId, generation, lastSeen, seen, workspaceId };
 }
 
-it.concurrent(
-    "a provider failure leaves the chat idle, retry answers once, and a busy chat refuses messages",
+it.concurrent("a transient provider failure is retried, and the turn answers without an error",
     async () => {
   const model = models.script([
-    { error: { status: 500, message: "scripted provider outage" } },
+    { error: { status: 503, message: "scripted provider outage" } },
+    { text: "Answered after a retry." },
+  ]);
+  const [owner] = nextUsernames("transientowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newWorkspace();
+
+  const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
+  await waitFor("the retried model request", async () => model.requests.length === 2 || null);
+  await waitForIdleChat(ws, chatId);
+  const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  expect(history.filter(message => message.type === "error")).toEqual([]);
+  expect(messageTexts(history)).toEqual(["Prompt once", "Answered after a retry."]);
+});
+
+it.concurrent(
+    "a provider failure leaves the chat idle, retry answers once, and a busy chat refuses commands",
+    async () => {
+  const outage = { error: { status: 500, message: "scripted provider outage" } };
+  // The turn retries the failed request twice before it reports the error.
+  const model = models.script([
+    outage, outage, outage,
     { text: "Retry succeeded." },
     { pending: true },
   ]);
@@ -82,10 +104,10 @@ it.concurrent(
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("Prompt once", SCRIPTED_MODEL_ID);
-  await waitFor("the failed model request", async () => model.requests.length === 1 || null);
+  await waitFor("the failed model requests", async () => model.requests.length === 3 || null);
   await waitForIdleChat(ws, chatId);
   let history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   expect(history.filter(message =>
@@ -96,7 +118,7 @@ it.concurrent(
     .toHaveLength(1);
 
   await ws.retryAgent(chatId, SCRIPTED_MODEL_ID);
-  await waitFor("the retry model request", async () => model.requests.length === 2 || null);
+  await waitFor("the retry model request", async () => model.requests.length === 4 || null);
   await waitForIdleChat(ws, chatId);
   history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
   expect(history.filter(message =>
@@ -109,18 +131,18 @@ it.concurrent(
     type: "error",
     message: expect.stringContaining("scripted provider outage"),
   }));
-  expect(JSON.stringify(model.requests[1])).toContain("Prompt once");
+  expect(JSON.stringify(model.requests[3])).toContain("Prompt once");
 
   try {
     await ws.sendChatMessage(chatId, "Hold open", SCRIPTED_MODEL_ID);
-    await waitFor("the pending model request", async () => model.requests.length === 3 || null);
-    await expect(ws.sendChatMessage(chatId, "Rejected", SCRIPTED_MODEL_ID))
-      .rejects.toThrow("Agent is running, wait for it to finish.");
+    await waitFor("the pending model request", async () => model.requests.length === 5 || null);
+    // Plain text steers a running agent (see workshop-steering.test.ts); a command can't.
     history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
-    expect(history).not.toContainEqual(expect.objectContaining({
-      type: "message",
-      message: "Rejected",
-    }));
+    await expect(ws.sendChatMessage(
+        chatId, { id: { builtin: true, commandId: "compact" }, args: "" }, SCRIPTED_MODEL_ID))
+      .rejects.toThrow("Agent is running, wait for it to finish.");
+    expect(await loadAllChatHistory(before => ws.getChatHistory(chatId, before)))
+      .toEqual(history);
   } finally {
     await ws.stopAgent(chatId);
   }
@@ -144,7 +166,7 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using workpiecesStub = stubFor(workpieces);
   using _workpieces = await ws.subscribeToWorkpieces(workpiecesStub);
@@ -157,6 +179,8 @@ it.concurrent("stopping a running agent keeps its completed steps and leaves the
   await waitForIdleChat(ws, chatId);
 
   const history = await loadAllChatHistory(before => ws.getChatHistory(chatId, before));
+  // Stopping is not a failure, so the turn ends marked as stopped.
+  expect(history.at(-1)).toMatchObject({ type: "error", code: "stopped" });
   const gadgetId = history.flatMap(message =>
     message.type === "changes" ? message.createdGadgets ?? [] : [])[0]?.gadgetId;
   if (gadgetId === undefined) throw new Error("The stopped turn recorded no created gadget");
@@ -193,14 +217,14 @@ it.concurrent("resubscribing during a running turn replays exactly what history 
 
   using publicApi = connect(harness.url);
   using api = await logIn(publicApi, owner!);
-  using ws = await api.openGadget(first.workspaceId);
+  using ws = await api.openWorkspace(first.workspaceId);
   try {
     await ws.sendChatMessage(first.chatId, "Second", SCRIPTED_MODEL_ID);
     await waitFor("the pending second turn", async () => model.requests.length === 3 || null);
 
     using replayPublicApi = connect(harness.url);
     using replayApi = await logIn(replayPublicApi, owner!);
-    using replayWs = await replayApi.openGadget(first.workspaceId);
+    using replayWs = await replayApi.openWorkspace(first.workspaceId);
     const replay = new ChatRecorder();
     using replayStub = stubFor(replay);
     using _replaySubscription = await replayWs.subscribeToChat(replayStub, first.lastSeen);
@@ -228,7 +252,7 @@ it.concurrent("resubscribing after a workspace restart replays exactly what hist
   {
     using publicApi = connect(harness.url);
     using api = await logIn(publicApi, owner!);
-    using ws = await api.openGadget(first.workspaceId);
+    using ws = await api.openWorkspace(first.workspaceId);
     await ws.sendChatMessage(first.chatId, "Second", SCRIPTED_MODEL_ID);
     await waitFor("the second model request", async () => model.requests.length === 2 || null);
     await waitForIdleChat(ws, first.chatId);
@@ -238,7 +262,7 @@ it.concurrent("resubscribing after a workspace restart replays exactly what hist
 
   using publicApi = connect(harness.url);
   using api = await logIn(publicApi, owner!);
-  using ws = await api.openGadget(first.workspaceId);
+  using ws = await api.openWorkspace(first.workspaceId);
   const replay = new ChatRecorder();
   using replayStub = stubFor(replay);
   using _replaySubscription = await ws.subscribeToChat(replayStub, first.lastSeen);
@@ -270,7 +294,7 @@ it.concurrent("a chat over its context budget compacts, and history pages across
   using publicApi = connect(harness.url);
   using api = await signUp(publicApi, owner!);
   await api.addModel(model.userModel.profile, model.userModel.config);
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
 
   const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
   await waitFor("the first model request", async () => model.requests.length === 1 || null);
@@ -302,12 +326,50 @@ it.concurrent("a chat over its context budget compacts, and history pages across
     .toEqual(["First question", "First reply.", secondPrompt, "Second reply."]);
 });
 
+// "Discard pending changes" reverts from sequence 0, below any compaction boundary. The chat keeps
+// its summary, so the next turn does not replay the whole conversation.
+it.concurrent("discarding a compacted chat's changes keeps its summary", async () => {
+  const model = models.script([
+    { toolCall: { id: "create", name: "createGadget",
+                  arguments: { title: "Notes", bindingName: "NOTES" } } },
+    { toolCall: { id: "write", name: "writeFile",
+                  arguments: { workpiece: "NOTES", filename: "notes.txt", content: "draft\n" } } },
+    { text: "First reply.", usage: { prompt_tokens: 195_000, completion_tokens: 1, total_tokens: 195_001 } },
+    { text: "Summary of the first turn." },
+    { text: "Second reply." },
+    { text: "Third reply." },
+  ]);
+  const [owner] = nextUsernames("discardowner");
+  using publicApi = connect(harness.url);
+  using api = await signUp(publicApi, owner!);
+  await api.addModel(model.userModel.profile, model.userModel.config);
+  using ws = await api.newWorkspace();
+
+  const chatId = await ws.newChat("First question", SCRIPTED_MODEL_ID);
+  await waitFor("the first turn's requests", async () => model.requests.length === 3 || null);
+  await waitForIdleChat(ws, chatId);
+  await ws.sendChatMessage(chatId, "Second question.", SCRIPTED_MODEL_ID);
+  await waitFor("the summary and resumed requests", async () => model.requests.length === 5 || null);
+  await waitForIdleChat(ws, chatId);
+  const boundary = (await ws.getChatHistory(chatId)).compacted!.to;
+
+  await ws.revertChanges(chatId, 0);
+  const tail = await ws.getChatHistory(chatId);
+  expect(tail.compacted).toMatchObject({ to: boundary, summary: "Summary of the first turn." });
+  expect(tail.compacted!.proposedChange).toBeUndefined();
+
+  await ws.sendChatMessage(chatId, "Third question.", SCRIPTED_MODEL_ID);
+  await waitFor("the third turn's request", async () => model.requests.length === 6 || null);
+  await waitForIdleChat(ws, chatId);
+  const third = JSON.stringify(model.requests[5]);
+  expect(third).toContain("Summary of the first turn.");
+  expect(third).not.toContain("First question");
+});
+
 it.concurrent("switching models keeps history, refuses a deleted model, and recovers with another",
     async () => {
-  const modelA = models.script([
-    { text: "A's first reply." },
-    { error: { status: 500, message: "scripted provider outage" } },
-  ]);
+  const outage = { error: { status: 500, message: "scripted provider outage" } };
+  const modelA = models.script([{ text: "A's first reply." }, outage, outage, outage]);
   const modelB = models.script([{ text: "B saw model A's history." }, { text: "B retried the chat." }]);
   // Every script shares SCRIPTED_MODEL_ID; B keeps its routed accountId under its own model id.
   const MODEL_B_ID = "scripted-model-b";
@@ -318,7 +380,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   await api.addModel(
       { ...modelB.userModel.profile, id: MODEL_B_ID, name: "Scripted model B" },
       { ...modelB.userModel.config, model: MODEL_B_ID });
-  using ws = await api.newGadget();
+  using ws = await api.newWorkspace();
   await api.setQuickModel(SCRIPTED_MODEL_ID);
   expect(await api.getQuickModel()).toBe(SCRIPTED_MODEL_ID);
   await api.setPreferredModel(SCRIPTED_MODEL_ID);
@@ -339,7 +401,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   }
   // The user switches back to A, whose provider fails, and deletes it.
   await ws.sendChatMessage(chatId, "Ask model A again.", SCRIPTED_MODEL_ID);
-  await settled(modelA, 2);
+  await settled(modelA, 4);
 
   await api.deleteModel(SCRIPTED_MODEL_ID);
   expect(await api.getQuickModel()).toBeNull();
@@ -348,7 +410,7 @@ it.concurrent("switching models keeps history, refuses a deleted model, and reco
   await expect(ws.sendChatMessage(chatId, "This must not be saved.", SCRIPTED_MODEL_ID))
     .rejects.toThrow(`No such model: ${SCRIPTED_MODEL_ID}`);
   expect(await history()).toEqual(beforeRefused);
-  expect(modelA.requests).toHaveLength(2);
+  expect(modelA.requests).toHaveLength(4);
 
   // Retry answers the failed turn's message; after a completed reply it would have nothing to do.
   await ws.retryAgent(chatId, MODEL_B_ID);

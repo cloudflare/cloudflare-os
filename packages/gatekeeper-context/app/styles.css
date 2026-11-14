@@ -1,4 +1,5 @@
 @source "../node_modules/@cloudflare/kumo/dist/**/*.{js,jsx,ts,tsx}";
+@source "../../ui/src/**/*.{js,jsx,ts,tsx}";
 @import "@cloudflare/kumo/styles";
 @import "tailwindcss";
 @custom-variant dark (&:where([data-mode="dark"], [data-mode="dark"] *));
@@ -9,6 +10,11 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
+}
+
+/* Keep page controls below Kumo's overlays, which portal outside the app root. */
+#root {
+  isolation: isolate;
 }
 
 @theme {

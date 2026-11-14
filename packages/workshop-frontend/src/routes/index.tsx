@@ -1,10 +1,11 @@
-import { classifyRpcError, logRpcFailure } from "../rpcErrors";
+import { classifyRpcError, logRpcFailure, rpcFailureDescription } from "../rpcErrors";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatComposer } from "../features/chat/composer/ChatComposer";
 import MeshBackground from "../components/MeshBackground";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
+import { UpdateAvailableNotice } from "../features/deployment-updates/UpdateAvailableNotice";
 import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
@@ -16,19 +17,30 @@ import {
   SlashCommandRequest,
 } from "@gadgets/workshop-shared/api";
 import {
+  cacheModels,
+  getCachedModels,
   getStoredSelectedModel,
   persistSelectedModel,
+  syncSelectedModel,
 } from "../modelSelection";
 import { useDocumentTitle } from "../useDocumentTitle";
 import { homePromptFromSearch } from "../homePrompt";
 import { composerDraftStorageKey } from "../features/chat/composer/draft/composerDraft";
 
-type HomeSearch = { prompt?: string };
+type HomeSearch = {
+  prompt?: string;
+  cfos_native_state?: string;
+  cfos_native_key?: string;
+};
 
 export const Route = createFileRoute("/")({
   component: HomePage,
   validateSearch: (search: Record<string, unknown>): HomeSearch => ({
     prompt: homePromptFromSearch(search.prompt),
+    cfos_native_state: typeof search.cfos_native_state === "string"
+      ? search.cfos_native_state : undefined,
+    cfos_native_key: typeof search.cfos_native_key === "string"
+      ? search.cfos_native_key : undefined,
   }),
 });
 
@@ -42,12 +54,18 @@ function HomePage() {
 export function HomePageContent({ prompt }: HomeSearch) {
   useDocumentTitle("Home");
 
-  const { authenticatedApi, currentUser } = useAuthenticatedApi();
+  const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi();
+  // Whose remembered models to show: nobody's until the server has confirmed who is signed in.
+  const userId = isCurrentUserConfirmed ? currentUser?.id : undefined;
   const navigate = useNavigate();
   const toasts = useKumoToastManager();
 
-  const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
-  const [selectedModel, setSelectedModel] = useState<string | null>(null);
+  // Starts on what this browser last saw, so the selector doesn't wait on the server.
+  const [models, setModels] = useState<AiChatAuthorInfo[]>(() => getCachedModels(userId));
+  const [selectedModel, setSelectedModel] = useState<string | null>(
+    () => getStoredSelectedModel(userId, models),
+  );
+  const [modelsLoading, setModelsLoading] = useState(models.length === 0);
   // Bumped each time a task suggestion is picked; the composer re-seeds its text off the nonce.
   const [seed, setSeed] = useState<{ text: string; nonce: number } | null>(null);
 
@@ -59,13 +77,16 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   useEffect(() => {
     let cancelled = false;
-    authenticatedApi.listModels()
-      .then((list) => {
+    Promise.all([authenticatedApi.listModels(), syncSelectedModel(authenticatedApi)])
+      .then(([list, syncedUserId]) => {
         if (cancelled) return;
+        cacheModels(syncedUserId, list);
         setModels(list);
-        setSelectedModel(getStoredSelectedModel(list));
+        setSelectedModel(getStoredSelectedModel(syncedUserId, list));
+        setModelsLoading(false);
       })
       .catch((err) => {
+        if (!cancelled) setModelsLoading(false);
         logRpcFailure("Failed to fetch models:", err);
         // Toast unless it's a connection error (reconnect refetches); a do-reset here already
         // survived the Worker's same-colo retry, so the user should hear about it.
@@ -80,8 +101,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const handleModelChange = useCallback((value: string | null) => {
     setSelectedModel(value);
-    persistSelectedModel(value);
-  }, []);
+    persistSelectedModel(authenticatedApi, userId, value);
+  }, [authenticatedApi, userId]);
 
   // Pre-create a provisional gadget as soon as the user starts interacting, so that navigation
   // after submit is instant. Same pattern as before — disposed on unmount if never consumed.
@@ -89,7 +110,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const ensureProvisionalGadget = useCallback(() => {
     if (!provisionalOverseerRef.current) {
-      const overseer = authenticatedApi.newGadget();
+      const overseer = authenticatedApi.newWorkspace();
       provisionalOverseerRef.current = { stub: overseer };
     }
   }, [authenticatedApi]);
@@ -130,7 +151,11 @@ export function HomePageContent({ prompt }: HomeSearch) {
           provisionalOverseerRef.current = null;
         }
         if (!transient) {
-          toasts.add({ title: "Failed to create workspace", variant: "error" });
+          toasts.add({
+            title: "Failed to create workspace",
+            description: rpcFailureDescription(err),
+            variant: "error",
+          });
         }
         throw err;
       }
@@ -155,6 +180,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
     // Flat enterprise treatment: no mesh, no watermark hexagon, no prompt-glow. The AppShell's
     // <main> already supplies a faint dotted grid as the page background.
     <div className="relative isolate flex min-h-full w-full flex-col items-center justify-start px-4 pb-16 pt-10 sm:px-8 sm:pt-16 lg:pt-24">
+      <UpdateAvailableNotice />
       {/* The brand hex mesh, restored and de-warmed for the new system: a gentle perspective hex
           grid receding upward. Masked to fade out before the composer so it stays a quiet backdrop. */}
       <div
@@ -188,6 +214,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           isAgentActive={false}
           models={models}
           selectedModel={selectedModel === null ? null : { id: selectedModel }}
+          modelsLoading={modelsLoading}
           onModelChange={handleModelChange}
           newChat
           offerFormats

@@ -6,7 +6,7 @@
 import { tracing } from "cloudflare:workers";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessageEventStream, Model, Usage } from "@earendil-works/pi-ai";
-import type { AiChatAgentContext } from "./agent";
+import type { AiChatAgentContext } from "./storage-schema/overseer-storage";
 import { AgentTurnError, httpStatusFromError } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import { obsContext } from "./observability";
@@ -136,6 +136,7 @@ export function traceChat(
         "gen_ai.response.id": message.responseId,
         "cloudflare.agents.response.finish_reason": message.stopReason,
         "cloudflare.ai_gateway.log.id": received?.aiGatewayLogId,
+        "cloudflare.ai_gateway.routed_model": received?.routedModel,
         ...usageAttributes(message.usage),
       });
       if (message.stopReason === "aborted") {

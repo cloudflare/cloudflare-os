@@ -1,4 +1,4 @@
-import { SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
+import { matchesResourceUrlPattern, type SupportedResource } from '@gadgets/workshop-shared/gatekeeper'
 
 /**
  * Extract a base URL from a resource pattern, e.g. "https://jira.cfdata.org/*" → "https://jira.cfdata.org/"
@@ -22,160 +22,115 @@ export function extractHostname(pattern: string): string | null {
   return hostname || null
 }
 
-const stripScheme = (s: string) => s.replace(/^https?:\/\//, '').toLowerCase()
-
-/**
- * Segment-based URL match: split by "/" and compare segments, treating ":name" as a
- * single-segment named parameter and "*" as a greedy wildcard that matches all remaining
- * segments. Handles partial typing (user mid-keystroke on the last segment). Also handles
- * wildcard subdomain patterns like "*.prometheus-access.cfdata.org".
- */
-export function matchesResourceUrl(search: string, pattern: string): boolean {
-  const s = stripScheme(search)
-  const p = stripScheme(pattern)
-  if (!s) return false
-
-  // Wildcard subdomain: *.foo.com matches anything.foo.com
-  if (p.startsWith('*.')) {
-    const suffixHost = p.slice(1).split('/')[0] // ".foo.com"
-    const searchHost = s.split('/')[0]
-    if (searchHost.endsWith(suffixHost) || suffixHost.startsWith('.' + searchHost)) return true
-  }
-
-  const searchParts = s.split('/')
-  const patternParts = p.split('/')
-
-  for (let i = 0; i < Math.max(searchParts.length, patternParts.length); i++) {
-    const sp = searchParts[i]
-    const pp = patternParts[i]
-
-    if (pp === '*') {
-      // Greedy wildcard – matches all remaining segments
-      return true
-    }
-    if (pp !== undefined && pp.startsWith(':')) {
-      // Named parameter – matches any single non-empty segment
-      if (sp === undefined || sp === '') {
-        return true // user still typing
-      }
-      continue
-    }
-    if (sp === undefined) {
-      // Search exhausted, pattern has more – user is still typing
-      return true
-    }
-    if (pp === undefined) {
-      // Pattern exhausted, search has more – URL is more specific than pattern.
-      // Allow trailing slash, otherwise no match.
-      return sp === '' && i === searchParts.length - 1
-    }
-    // Literal segment: allow partial match on last search segment
-    if (i === searchParts.length - 1) {
-      return pp.startsWith(sp) || sp.startsWith(pp)
-    }
-    if (sp !== pp) {
-      return false
-    }
-  }
-
-  return true
-}
-
 /** Classification of how a search URL relates to a resource pattern. */
 export type MatchClassification =
   | { type: 'full' }
   | { type: 'prefix'; suffix: string }  // suffix e.g. "/issues/:number"
   | { type: 'none' }
 
+/** Splits a URL into its path and the query or fragment after it. */
+const splitAtQuery = (url: string): [path: string, tail: string] => {
+  const at = url.search(/[?#]/)
+  return at < 0 ? [url, ''] : [url.slice(0, at), url.slice(at)]
+}
+
+/** A parameter choosing between words, such as `:kind(room|dm)`, capturing the words. */
+const WORD_CHOICE = /^:\w+\(([\w-]+(?:\|[\w-]+)*)\)$/
+
+type Requirements = { parts: string[][]; query: string; anyQuery: URLPattern }
+
 /**
- * Classify a search URL against a resource pattern. Returns 'full' when the URL
- * satisfies all segments, 'prefix' when the URL is a valid prefix that could be
- * extended (with the remaining suffix), or 'none' when there's no match.
+ * What a URL needs to match a pattern, as URLPattern normalizes it: the host and path segments up to
+ * the first optional one (`:rest*`, `*?`), each as the words it accepts, then the query. A
+ * {@link WORD_CHOICE} accepts each of its words; any other parameter drops its regex and `+`, so a
+ * completion, which spells each segment's first word, holds plain placeholders. A query keeps its
+ * names but not its values, which are left for the user to type, as a value starting with a colon is
+ * not a placeholder. `anyQuery` is the pattern with any query, which a URL must already match to
+ * complete to the query alone. Null for a pattern this browser can't parse.
  */
-export function classifyMatch(search: string, pattern: string): MatchClassification {
-  const s = stripScheme(search)
-  const p = stripScheme(pattern)
-
-  // Empty after scheme stripping (e.g. search is "https://") — every pattern is a prefix.
-  if (!s) return { type: 'prefix', suffix: p }
-
-  // If the search is a partial scheme prefix (e.g. "h", "https", "https:/") that hasn't
-  // reached the hostname yet, treat as a prefix of the full pattern. The suffix completes
-  // the scheme + the schemeless pattern so that searchText + suffix = full pattern URL.
-  const lowerSearch = search.toLowerCase().trim()
-  if (pattern.toLowerCase().startsWith(lowerSearch) &&
-      lowerSearch.length <= pattern.indexOf('://') + 3) {
-    return { type: 'prefix', suffix: pattern.slice(lowerSearch.length) }
+const requirements = (pattern: string): Requirements | null => {
+  let parsed: URLPattern
+  try {
+    parsed = new URLPattern(pattern)
+  } catch {
+    return null
   }
-
-  // Wildcard subdomain – treat as full for simplicity (no current patterns use this)
-  if (p.startsWith('*.')) {
-    const suffixHost = p.slice(1).split('/')[0]
-    const searchHost = s.split('/')[0]
-    if (searchHost.endsWith(suffixHost) || suffixHost.startsWith('.' + searchHost)) {
-      return { type: 'full' }
-    }
+  const { protocol, hostname, port, pathname, search } = parsed
+  const segments = [port ? `${hostname}:${port}` : hostname, ...pathname.split('/').slice(1)]
+  const optional = segments.findIndex(segment => segment !== '*' && /[?*]$/.test(segment))
+  return {
+    parts: segments.slice(0, optional < 0 ? undefined : optional).map(segment =>
+      WORD_CHOICE.exec(segment)?.[1].split('|') ?? [segment.replace(/\(.*\)|\+$/g, '')]),
+    query: search === '*' ? '' : `?${search.replace(/:\w+(\(.*?\))?/g, '')}`,
+    anyQuery: new URLPattern({ protocol, hostname, port, pathname }),
   }
+}
 
-  const searchParts = s.split('/')
-  const patternParts = p.split('/')
+// The picker classifies every resource on each keystroke, so each pattern's requirements are worked
+// out once. The patterns are the deployment's resource types, a fixed set, so the cache needs no bound.
+const requirementsByPattern = new Map<string, Requirements | null>()
 
-  for (let i = 0; i < Math.max(searchParts.length, patternParts.length); i++) {
-    const sp = searchParts[i]
-    const pp = patternParts[i]
-
-    if (pp === '*') {
-      // Greedy wildcard – matches all remaining segments
-      if (sp === undefined) {
-        return { type: 'prefix', suffix: '/*' }
-      }
-      return { type: 'full' }
-    }
-    if (pp !== undefined && pp.startsWith(':')) {
-      // Named parameter – needs a non-empty segment
-      if (sp === undefined || sp === '') {
-        const suffix = '/' + patternParts.slice(i).join('/')
-        return { type: 'prefix', suffix }
-      }
-      continue
-    }
-    if (sp === undefined) {
-      // Search exhausted, pattern has more literal/named/wildcard segments
-      const suffix = '/' + patternParts.slice(i).join('/')
-      return { type: 'prefix', suffix }
-    }
-    if (pp === undefined) {
-      // Pattern exhausted, search has more segments
-      // Trailing slash is OK (still full), otherwise URL is more specific → none
-      if (sp === '' && i === searchParts.length - 1) {
-        return { type: 'full' }
-      }
-      return { type: 'none' }
-    }
-    // Literal segment
-    if (sp !== pp) {
-      // On the last search segment, allow partial match (user is still typing).
-      // The suffix completes the current segment plus the rest of the pattern.
-      if (i === searchParts.length - 1 && pp.startsWith(sp)) {
-        const segmentRemainder = pp.slice(sp.length)
-        const rest = patternParts.slice(i + 1)
-        const suffix = segmentRemainder + (rest.length > 0 ? '/' + rest.join('/') : '')
-        return { type: 'prefix', suffix }
-      }
-      return { type: 'none' }
-    }
-  }
-
-  return { type: 'full' }
+/** Whether a URL's segment, which is its host when `isHost`, is one a part's word accepts. */
+const acceptsSegment = (word: string, segment: string, isHost: boolean): boolean => {
+  if (word === '*' || word.startsWith(':')) return segment !== ''
+  if (isHost && word.startsWith('*.')) return segment.endsWith(word.slice(1))
+  return segment === word
 }
 
 /**
- * Find all placeholder ranges in a URL string. Placeholders are ":name" named parameters
- * and standalone "*" wildcards. Returns ranges sorted by position.
+ * Classify a search URL, which may be half-typed and lack its scheme, against a resource pattern.
+ * 'full' when it names a resource the pattern matches, by the URLPattern test the backend applies;
+ * 'prefix' when `completeUrl(search, suffix)` would continue its path toward one; otherwise 'none'.
+ */
+export function classifyMatch(search: string, pattern: string): MatchClassification {
+  const typed = search.trim()
+  const url = normalizeResourceUrl(typed)
+  if (matchesResourceUrlPattern(pattern, url)) return { type: 'full' }
+
+  let required = requirementsByPattern.get(pattern)
+  if (required === undefined) requirementsByPattern.set(pattern, required = requirements(pattern))
+  if (!required) return { type: 'none' }
+  const { parts } = required
+  const words = parts.map(([word]) => word)
+
+  // A scheme still being typed ("h", "https:/") completes to the whole pattern.
+  const scheme = pattern.slice(0, pattern.indexOf('://') + 3)
+  if (scheme.toLowerCase().startsWith(typed.toLowerCase())) {
+    return { type: 'prefix', suffix: scheme.slice(typed.length) + words.join('/') + required.query }
+  }
+
+  const [path, tail] = splitAtQuery(typed.replace(/^https?:\/\//i, ''))
+  // A link's own query stays as it is, so only a link without one completes to the pattern's.
+  const query = tail ? '' : required.query
+  // A host matches in any case, as URLPattern lowercases the pattern's; a path only in its own.
+  const [host, ...rest] = path.split('/')
+  const segments = [host.toLowerCase(), ...rest]
+  for (const [i, part] of parts.entries()) {
+    const segment = segments[i]
+    if (segment === undefined) return { type: 'prefix', suffix: `/${words.slice(i).join('/')}${query}` }
+    if (part.some(word => acceptsSegment(word, segment, i === 0))) continue
+    // The segment still being typed completes to a word of this part, then the rest of the pattern.
+    const word = i === segments.length - 1 && part.find(w => !w.startsWith('*') && w.startsWith(segment))
+    if (!word) return { type: 'none' }
+    return { type: 'prefix', suffix: [word.slice(segment.length), ...words.slice(i + 1)].join('/') + query }
+  }
+  // The path is all there, so if the rest of the URL matches, all it can still lack is the query.
+  return query && required.anyQuery.test(url) ? { type: 'prefix', suffix: query } : { type: 'none' }
+}
+
+/** Appends a `classifyMatch` suffix to a URL's path, keeping any query or fragment after it. */
+export function completeUrl(url: string, suffix: string): string {
+  const [path, tail] = splitAtQuery(url.trim())
+  // A trailing "*" stands for everything under the path, which the URL needn't spell out.
+  return path + suffix.replace(/\*$/, '') + tail
+}
+
+/**
+ * Find all placeholder ranges in a URL string. Placeholders are ":name" named parameters and
+ * standalone "*" wildcards. Returns ranges sorted by position.
  */
 export function getPlaceholderRanges(url: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = []
-  // Named parameters: colon followed by word characters, preceded by / or start
   const namedParamRegex = /(?<=\/):([a-zA-Z_]\w*)/g
   let match
   while ((match = namedParamRegex.exec(url)) !== null) {
@@ -196,15 +151,6 @@ export function matchesResourceText(search: string, resource: SupportedResource)
   const corpus = `${resource.title} ${resource.description} ${resource.urlPattern}`.toLowerCase()
   const tokens = search.toLowerCase().split(/\s+/).filter(Boolean)
   return tokens.length > 0 && tokens.every(t => corpus.includes(t))
-}
-
-/**
- * Check if search text matches a resource. Tries URL prefix matching (scheme-optional),
- * then falls back to multi-word token matching against title/description/pattern.
- */
-export function matchesResource(search: string, resource: SupportedResource): boolean {
-  if (matchesResourceUrl(search.trim(), resource.urlPattern)) return true
-  return matchesResourceText(search, resource)
 }
 
 /**

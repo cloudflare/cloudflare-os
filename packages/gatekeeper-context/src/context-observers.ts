@@ -1,111 +1,61 @@
+import {
+  observerAccessVerifier, trackedCollectionObservers, type ObserverKv, type ObserverStrategy,
+  type VerifyObserverAccess,
+} from "@gadgets/gatekeeper-kit/observers";
 import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import { VENDOR_ID } from "./context-types.js";
 
 /**
  * The non-standard method Context gatekeepers call on their own verifier. The overseer only passes
  * a verifier back to the vendor that minted it, so the gatekeeper may trust this result.
  */
 export interface ContextVerifierApi extends GatekeeperUserVerifier {
-  hasCollectionAccess(sharingDomain: string, collectionId: string): Promise<boolean>;
+  /** One verdict per collection ID: whether this account can read that collection. */
+  hasCollectionsAccess(sharingDomain: string, collectionIds: string[]): Promise<boolean[]>;
+  /**
+   * The account's ID, so a collection can be shared with the person a user-picker ticket names.
+   * Null for any other sharing domain, which this account has no collections in.
+   */
+  getAccountId(sharingDomain: string): Promise<string | null>;
 }
 
-type ObserverKv = Pick<DurableObjectStorage["kv"], "get" | "put" | "delete" | "list">;
+/**
+ * Shown to a collaborator refused admission for a collection read before reads reported them as
+ * subresources. It must not name the collection: the collaborator cannot read it, and a private
+ * collection's title is its members' data.
+ */
+export const CONTEXT_OBSERVER_DENIED =
+  "This workspace has read from a Skills collection that hasn't been shared with your account, so " +
+  "you can't open it. Only collaborators who can read every collection the workspace has used may " +
+  "open it.";
 
-export type ContextObservationCheck = {
-  excludeObservers?: string[];
-  pendingCollections: string[];
-  commit(): void;
-};
-
-type ObservedCollectionState = true | "pending" | "observed";
+// The ACL oracle both checks share: collections are the data sets, so a subresource is a collection
+// ID, spelled as the legacy tracker stored it. Public collections are domain-wide; private ones
+// admit their grantees and, when enabled, everyone in the sharing domain.
+function collectionAccess(sharingDomain: string) {
+  return {
+    hasCollectionAccess: (verifier: Fetcher<ContextVerifierApi>, collectionIds: readonly string[]) =>
+      verifier.hasCollectionsAccess(sharingDomain, [...collectionIds]),
+  };
+}
 
 /**
- * Strategy C observer state for the broad Context Library singleton. Collections are the data sets:
- * public collections are domain-wide, while each private collection belongs to one account.
+ * Strategy C for the broad Context Library singleton, kept for what reads recorded before they
+ * reported their collections as subresources: its `addObserver()` still refuses a collaborator who
+ * cannot read one. Reads now record nothing here. The prefix keeps markers recorded before this
+ * tracker moved to the kit.
  */
-export class ContextObserverTracker {
-  constructor(private kv: ObserverKv, private sharingDomain: string) {}
+export function contextObserverStrategy(kv: ObserverKv, sharingDomain: string): ObserverStrategy {
+  return trackedCollectionObservers({
+    kv,
+    collectionPrefix: "observedCollection:",
+    ...collectionAccess(sharingDomain),
+    denyMessage: () => CONTEXT_OBSERVER_DENIED,
+    vendorId: VENDOR_ID,
+  });
+}
 
-  #observerKey(id: string): string { return `observer:${id}`; }
-  #observedCollectionKey(collectionId: string): string {
-    return `observedCollection:${collectionId}`;
-  }
-
-  #isCollectionObserved(collectionId: string): boolean {
-    let state = this.#collectionState(collectionId);
-    return state === true || state === "observed";
-  }
-
-  #collectionState(collectionId: string): ObservedCollectionState | undefined {
-    return this.kv.get<ObservedCollectionState>(this.#observedCollectionKey(collectionId));
-  }
-
-  #listTrackedCollections(): string[] {
-    let prefix = "observedCollection:";
-    return [...this.kv.list<ObservedCollectionState>({ prefix })]
-        .map(([key]) => key.slice(prefix.length));
-  }
-
-  *#listObservers(): IterableIterator<[string, Fetcher<ContextVerifierApi>]> {
-    let prefix = "observer:";
-    for (let [key, verifier] of this.kv.list<Fetcher<ContextVerifierApi>>({ prefix })) {
-      yield [key.slice(prefix.length), verifier];
-    }
-  }
-
-  async addObserver(id: string, verifier: Fetcher<ContextVerifierApi>): Promise<void> {
-    let checked = new Set<string>();
-    while (true) {
-      let collections = this.#listTrackedCollections()
-          .filter(collectionId => !checked.has(collectionId));
-      if (collections.length === 0) {
-        this.kv.put(this.#observerKey(id), verifier);
-        return;
-      }
-      let access = await Promise.all(collections.map(
-        collectionId => verifier.hasCollectionAccess(this.sharingDomain, collectionId),
-      ));
-      if (access.some(hasAccess => !hasAccess)) {
-        throw new Error(
-          "This collaborator does not have access to a Context collection whose data this workspace " +
-          "has read, so they cannot be allowed to observe it.",
-        );
-      }
-      for (let collectionId of collections) checked.add(collectionId);
-    }
-  }
-
-  removeObserver(id: string): void {
-    this.kv.delete(this.#observerKey(id));
-  }
-
-  async prepareObservation(collectionIds: string[]): Promise<ContextObservationCheck> {
-    let pendingCollections = [...new Set(collectionIds)]
-        .filter(collectionId => !this.#isCollectionObserved(collectionId));
-    if (pendingCollections.length === 0) return { pendingCollections, commit() {} };
-
-    for (let collectionId of pendingCollections) {
-      if (this.#collectionState(collectionId) === undefined) {
-        this.kv.put(this.#observedCollectionKey(collectionId), "pending");
-      }
-    }
-
-    let observerAccess = await Promise.all([...this.#listObservers()].map(async ([id, verifier]) => {
-      let access = await Promise.all(pendingCollections.map(
-        collectionId => verifier.hasCollectionAccess(this.sharingDomain, collectionId),
-      ));
-      return [id, access.every(hasAccess => hasAccess)] as const;
-    }));
-    let excluded = observerAccess.filter(([, hasAccess]) => !hasAccess).map(([id]) => id);
-    return {
-      excludeObservers: excluded.length > 0 ? excluded : undefined,
-      pendingCollections,
-      commit: () => this.commitObservation(pendingCollections),
-    };
-  }
-
-  commitObservation(pendingCollections: string[]): void {
-    for (let collectionId of pendingCollections) {
-      this.kv.put(this.#observedCollectionKey(collectionId), "observed");
-    }
-  }
+/** `Gatekeeper.verifyObserverAccess()` for the collections reads report as subresources. */
+export function contextObserverAccessVerifier(sharingDomain: string): VerifyObserverAccess {
+  return observerAccessVerifier(collectionAccess(sharingDomain));
 }

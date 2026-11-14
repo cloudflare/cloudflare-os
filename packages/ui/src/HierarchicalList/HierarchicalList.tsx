@@ -1,22 +1,22 @@
 import { Button, DropdownMenu, LayerCard, Text } from "@cloudflare/kumo";
 import { ContextMenu } from "@cloudflare/kumo/primitives/context-menu";
-import { Drawer } from "@cloudflare/kumo/primitives/drawer";
-import { Menu } from "@cloudflare/kumo/primitives/menu";
 import { cn } from "@cloudflare/kumo/utils";
 import { CaretDownIcon, DotsSixVerticalIcon, FolderIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
-import React, { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   HierarchicalListPrimitive,
   type HierarchicalListPrimitiveRowProps,
   type HierarchicalListPrimitiveRowState,
 } from "./HierarchicalListPrimitive";
 import type { HierarchicalListDragAndDropOptions } from "./HierarchicalListDragAndDrop";
-import {
-  useHierarchicalListActionDrawer,
-  type HierarchicalListActionPresentationOptions,
-  type HierarchicalListTouchInteractionOptions,
-} from "./useHierarchicalListTouchInteractions";
+import type { HierarchicalListTouchInteractionOptions } from "./useHierarchicalListTouchInteractions";
 import type {
   HierarchicalListExpansionProps,
   HierarchicalListItem,
@@ -34,9 +34,13 @@ const itemIcon = (item: HierarchicalListItem) => item.icon ?? (
     : null
 );
 
-/** Touch behavior and responsive action presentation settings for the styled list. */
-export type HierarchicalListInteractionOptions = HierarchicalListTouchInteractionOptions
-  & HierarchicalListActionPresentationOptions;
+/** Render state for an item that is being renamed inline. */
+export type HierarchicalListRenameOptions = {
+  /** Whether the given item is currently in rename mode. */
+  isRenaming: (item: HierarchicalListItem) => boolean;
+  /** Renders the inline rename control for the given item. */
+  renderInput: (item: HierarchicalListItem) => ReactNode;
+};
 
 /** Props for {@link HierarchicalList}. */
 export type HierarchicalListProps = HierarchicalListExpansionProps & {
@@ -47,36 +51,40 @@ export type HierarchicalListProps = HierarchicalListExpansionProps & {
   expandAll?: boolean;
   /** Enables item movement and its mouse and touch drag interactions. */
   dragAndDrop?: HierarchicalListDragAndDropOptions;
-  /** Customizes the touch-drag threshold and action-drawer breakpoint. */
-  interaction?: HierarchicalListInteractionOptions;
+  /** Customizes the touch-drag threshold. */
+  interaction?: HierarchicalListTouchInteractionOptions;
+  /** Whether draggable rows expose a dedicated touch drag handle. */
+  showTouchDragHandle?: boolean;
   onItemClick?: (item: HierarchicalListItem) => void;
   onSelectionClear?: () => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
+  /** Optional inline rename rendering and state. */
+  rename?: HierarchicalListRenameOptions;
 };
 
 type StyledRowProps = {
   rowProps: HierarchicalListPrimitiveRowProps;
   state: HierarchicalListPrimitiveRowState;
   actionsOpen: boolean;
-  useActionDrawer: boolean;
+  showTouchDragHandle: boolean;
   onActionsOpenChange: (open: boolean) => void;
   renderContextMenu?: (item: HierarchicalListItem) => ReactNode;
+  rename?: HierarchicalListRenameOptions;
 };
-
-type OpenActions = { itemId: string; drawer: boolean };
 
 const StyledRow = ({
   rowProps,
   state,
   actionsOpen,
-  useActionDrawer,
+  showTouchDragHandle,
   onActionsOpenChange,
   renderContextMenu,
+  rename,
 }: StyledRowProps) => {
-  const drawerPopupRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLButtonElement>(null);
-  const restoreDrawerFocusRef = useRef(true);
-  const drawerTitleId = useId();
+  const wasRenamingRef = useRef(false);
+  const [actionsClosing, setActionsClosing] = useState(false);
+  const actionsClosedTimerRef = useRef<number | null>(null);
   const {
     item,
     depth,
@@ -87,79 +95,105 @@ const StyledRow = ({
     coarsePointer,
   } = state;
   const highlighted = selected || actionsOpen || pressed;
-  const contextMenu = renderContextMenu?.(item);
-  useEffect(() => {
-    if (!actionsOpen || !useActionDrawer) return;
-    restoreDrawerFocusRef.current = true;
-    const trackFocusDestination = (event: FocusEvent) => {
-      const target = event.target;
-      if (
-        target instanceof Node
-        && !drawerPopupRef.current?.contains(target)
-        && !rowRef.current?.contains(target)
-      ) restoreDrawerFocusRef.current = false;
-    };
-    document.addEventListener("focusin", trackFocusDestination, true);
-    return () => document.removeEventListener("focusin", trackFocusDestination, true);
-  }, [actionsOpen, useActionDrawer]);
-  const row = (
-    <Button
-      ref={rowRef}
-      {...rowProps as React.ComponentProps<typeof Button>}
-      type="button"
-      variant="ghost"
-      size="base"
-      aria-current={selected ? "true" : undefined}
-      aria-expanded={collapsible ? expanded : undefined}
-      onClick={(event) => {
-        rowProps.onClick?.(event);
-        if (!event.defaultPrevented && collapsible) state.toggleExpanded();
-      }}
-      onContextMenu={(event) => {
-        rowProps.onContextMenu?.(event);
-        if (event.defaultPrevented || !useActionDrawer || !contextMenu) return;
-        event.preventDefault();
-        onActionsOpenChange(true);
-      }}
-      className={cn(
-        rowProps.className,
-        "group relative focus-visible:z-20",
-        "!flex !h-auto w-full min-h-11 min-w-0 justify-start gap-2 pr-3 text-left active:!bg-kumo-recessed",
-        state.draggable && "cursor-grab active:cursor-grabbing",
-        state.draggable && "[@media(any-pointer:coarse)]:pr-11",
-        highlighted && "bg-kumo-recessed",
-        coarsePointer && (
-          highlighted
-            ? "hover:!bg-kumo-recessed"
-            : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
-        ),
-      )}
-      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
-    >
-      {itemIcon(item)}
-      {collapsible && (
-        <CaretDownIcon
-          aria-hidden="true"
-          size={14}
-          className={cn(
-            "shrink-0 text-kumo-inactive transition-transform duration-100 ease-out motion-reduce:transition-none",
-            !expanded && "-rotate-90",
-          )}
-        />
-      )}
-      <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
-        {item.name}
-      </Text>
-      {item.metadata !== null && item.metadata !== undefined && (
+  const passiveMessage = item.appearance === "message" && !item.interactive;
+  const renameRequested = rename?.isRenaming(item) ?? false;
+  const renaming = renameRequested && !actionsOpen && !actionsClosing;
+  const handleActionsOpenChange = (open: boolean) => {
+    if (actionsClosedTimerRef.current !== null) {
+      window.clearTimeout(actionsClosedTimerRef.current);
+      actionsClosedTimerRef.current = null;
+    }
+    if (!open && actionsOpen) setActionsClosing(true);
+    onActionsOpenChange(open);
+  };
+  const handleActionsOpenChangeComplete = (open: boolean) => {
+    if (!open) {
+      if (document.activeElement === document.body) rowRef.current?.focus();
+      // Base UI restores final focus in a microtask after this callback. Preserve the trigger until
+      // the next task so rename cannot replace it before that restoration completes.
+      actionsClosedTimerRef.current = window.setTimeout(() => {
+        actionsClosedTimerRef.current = null;
+        setActionsClosing(false);
+      });
+    }
+  };
+  useEffect(() => () => {
+    if (actionsClosedTimerRef.current !== null) {
+      window.clearTimeout(actionsClosedTimerRef.current);
+    }
+  }, []);
+  useLayoutEffect(() => {
+    if (wasRenamingRef.current && !renaming) {
+      const active = document.activeElement;
+      // Only restore focus when the user completed the rename via Enter/Escape. If focus
+      // has already moved elsewhere (blur/Tab), leave it where the user put it.
+      if (!active || active === document.body || rowRef.current?.contains(active)) {
+        rowRef.current?.focus();
+      }
+    }
+    wasRenamingRef.current = renaming;
+  }, [renaming]);
+  const contextMenu = renaming ? null : renderContextMenu?.(item);
+  const contents = (
+    <>
+      {item.appearance === "message" ? (
         <Text
           as="span"
-          size="xs"
+          size="sm"
           variant="secondary"
-          truncate
-          DANGEROUS_className="min-w-0 max-w-1/2 shrink tabular-nums"
+          DANGEROUS_className="min-w-0 flex-1 text-left font-normal"
         >
-          {item.metadata}
+          {item.name}
         </Text>
+      ) : (
+        <>
+          {itemIcon(item)}
+          {collapsible && (
+            <CaretDownIcon
+              aria-hidden="true"
+              size={14}
+              className={cn(
+                "shrink-0 text-kumo-inactive transition-transform duration-100 ease-out motion-reduce:transition-none",
+                !expanded && "-rotate-90",
+              )}
+            />
+          )}
+          {renaming ? (
+            <span className="min-w-0 flex-1">
+              {rename!.renderInput(item)}
+            </span>
+          ) : item.description ? (
+            <span className="flex min-w-0 flex-1 items-center gap-2">
+              <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 shrink">
+                {item.name}
+              </Text>
+              <Text
+                as="span"
+                size="sm"
+                variant="secondary"
+                truncate
+                DANGEROUS_className="min-w-0 flex-1 font-normal"
+              >
+                {item.description}
+              </Text>
+            </span>
+          ) : (
+            <Text as="span" size="sm" truncate DANGEROUS_className="min-w-0 flex-1">
+              {item.name}
+            </Text>
+          )}
+          {item.metadata !== null && item.metadata !== undefined && (
+            <Text
+              as="span"
+              size="xs"
+              variant="secondary"
+              truncate
+              DANGEROUS_className="max-w-1/2 shrink-0 whitespace-nowrap font-normal tabular-nums"
+            >
+              {item.metadata}
+            </Text>
+          )}
+        </>
       )}
       <AnimatePresence>
         {state.insideDropTarget && (
@@ -173,7 +207,7 @@ const StyledRow = ({
           />
         )}
       </AnimatePresence>
-      {state.draggable && (
+      {!renaming && state.draggable && showTouchDragHandle && (
         <span
           {...state.touchDragHandleProps}
           aria-hidden="true"
@@ -185,107 +219,78 @@ const StyledRow = ({
           <DotsSixVerticalIcon aria-hidden="true" size={18} />
         </span>
       )}
+    </>
+  );
+  const rowClassName = cn(
+    rowProps.className,
+    "group relative focus-visible:z-20",
+    "!flex !h-auto w-full min-h-11 min-w-0 items-center justify-start gap-2 pr-3 text-left",
+    !renaming && !passiveMessage && "active:!bg-kumo-recessed",
+    !renaming && state.draggable && "cursor-grab active:cursor-grabbing",
+    !renaming && state.draggable && showTouchDragHandle && "[@media(any-pointer:coarse)]:pr-11",
+    highlighted && "bg-kumo-recessed",
+    coarsePointer && !renaming && (
+      highlighted
+        ? "hover:!bg-kumo-recessed"
+        : "hover:!bg-transparent data-[popup-open]:!bg-kumo-recessed"
+    ),
+  );
+  const row = renaming || passiveMessage ? (
+    <div
+      data-hierarchical-list-row=""
+      data-depth={depth}
+      tabIndex={-1}
+      className={rowClassName}
+      style={{ paddingLeft: `${itemPadding(depth)}px` }}
+    >
+      {contents}
+    </div>
+  ) : (
+    <Button
+      ref={rowRef}
+      {...rowProps as React.ComponentProps<typeof Button>}
+      type="button"
+      variant="ghost"
+      size="base"
+      aria-current={selected ? "true" : undefined}
+      aria-expanded={collapsible ? expanded : undefined}
+      onClick={(event) => {
+        rowProps.onClick?.(event);
+        if (!event.defaultPrevented && collapsible) state.toggleExpanded();
+      }}
+      className={rowClassName}
+      style={{ ...rowProps.style, paddingLeft: `${itemPadding(depth)}px` }}
+    >
+      {contents}
     </Button>
   );
 
   if (!contextMenu) return row;
-  if (!useActionDrawer) {
-    return (
-      <ContextMenu.Root open={actionsOpen} onOpenChange={onActionsOpenChange}>
-        <ContextMenu.Trigger render={row} />
-        <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
-      </ContextMenu.Root>
-    );
-  }
-
   return (
-    <>
-      {row}
-      <Drawer.Root
-        open={actionsOpen}
-        onOpenChange={onActionsOpenChange}
-        onOpenChangeComplete={(open) => {
-          if (
-            !open
-            && restoreDrawerFocusRef.current
-            && (document.activeElement === document.body
-              || drawerPopupRef.current?.contains(document.activeElement))
-          ) rowRef.current?.focus();
-        }}
-      >
-        <Drawer.Portal>
-          <Drawer.Backdrop
-            onClick={() => onActionsOpenChange(false)}
-            className={cn(
-              "fixed inset-0 z-40 bg-kumo-recessed",
-              "[opacity:calc(0.8*(1-var(--drawer-swipe-progress)))]",
-              "transition-opacity duration-300 ease-out motion-reduce:transition-none",
-              "data-ending-style:opacity-0 data-starting-style:opacity-0",
-            )}
-          />
-          <Drawer.Viewport className="pointer-events-none fixed inset-0 z-50 flex items-end">
-            <Drawer.Popup
-              ref={drawerPopupRef}
-              className={cn(
-                "pointer-events-auto flex max-h-[calc(100dvh-1rem)] w-full flex-col overflow-hidden",
-                "rounded-t-2xl bg-kumo-control px-2 pt-2",
-                "pb-[max(0.5rem,env(safe-area-inset-bottom))] text-kumo-default shadow-xl",
-                "ring-1 ring-kumo-line",
-                "[transform:translateY(var(--drawer-swipe-movement-y))]",
-                "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)]",
-                "motion-reduce:transition-none data-swiping:transition-none",
-                "data-ending-style:translate-y-full data-starting-style:translate-y-full",
-              )}
-            >
-              <div className="mx-auto mb-3 h-1 w-10 rounded-full bg-kumo-line" />
-              <Drawer.Title id={drawerTitleId} className="px-2 pb-2 text-xs text-kumo-subtle">
-                {item.name}
-              </Drawer.Title>
-              <Menu.Root open={actionsOpen} modal={false} onOpenChange={onActionsOpenChange}>
-                <Menu.Portal container={drawerPopupRef}>
-                  <Menu.Positioner
-                    className="!static !block !min-h-0 !w-full !flex-1 !transform-none overflow-y-auto overscroll-contain"
-                    sideOffset={0}
-                  >
-                    <Menu.Popup
-                      aria-labelledby={drawerTitleId}
-                      className="flex w-full flex-col gap-1"
-                    >
-                      {contextMenu}
-                    </Menu.Popup>
-                  </Menu.Positioner>
-                </Menu.Portal>
-              </Menu.Root>
-            </Drawer.Popup>
-          </Drawer.Viewport>
-        </Drawer.Portal>
-      </Drawer.Root>
-    </>
+    <ContextMenu.Root
+      open={actionsOpen}
+      onOpenChange={handleActionsOpenChange}
+      onOpenChangeComplete={handleActionsOpenChangeComplete}
+    >
+      <ContextMenu.Trigger render={row} />
+      <DropdownMenu.Content>{contextMenu}</DropdownMenu.Content>
+    </ContextMenu.Root>
   );
 };
 
 /** A nested Kumo resource list with optional context-menu and drag-and-drop behaviors. */
 export const HierarchicalList = ({
   renderContextMenu,
+  rename,
+  showTouchDragHandle = true,
   ...props
 }: HierarchicalListProps) => {
-  const [openActions, setOpenActions] = useState<OpenActions | null>(null);
-  const useActionDrawer = useHierarchicalListActionDrawer(props.interaction);
-
-  useEffect(() => {
-    if (openActions && openActions.drawer !== useActionDrawer) setOpenActions(null);
-  }, [openActions, useActionDrawer]);
+  const [openActionsItemId, setOpenActionsItemId] = useState<string | null>(null);
 
   return (
-    <LayerCard className="p-1">
+    <LayerCard className="bg-kumo-control p-1">
       <HierarchicalListPrimitive
         {...props}
-        hasLongPressAction={renderContextMenu && useActionDrawer
-          ? (item) => Boolean(renderContextMenu(item))
-          : undefined}
-        onItemLongPress={renderContextMenu && useActionDrawer
-          ? (item) => setOpenActions({ itemId: item.id, drawer: true })
-          : undefined}
         getDropIndicatorInset={itemPadding}
         slots={{
           root: { className: "relative" },
@@ -322,13 +327,11 @@ export const HierarchicalList = ({
           <StyledRow
             rowProps={rowProps}
             state={state}
-            actionsOpen={openActions?.itemId === state.item.id
-              && openActions.drawer === useActionDrawer}
-            useActionDrawer={useActionDrawer}
-            onActionsOpenChange={(open) => setOpenActions(open
-              ? { itemId: state.item.id, drawer: useActionDrawer }
-              : null)}
+            actionsOpen={openActionsItemId === state.item.id}
+            showTouchDragHandle={showTouchDragHandle}
+            onActionsOpenChange={(open) => setOpenActionsItemId(open ? state.item.id : null)}
             renderContextMenu={renderContextMenu}
+            rename={rename}
           />
         )}
         renderDropIndicator={(indicator) => (

@@ -16,21 +16,24 @@ const AUTOCOMPLETE_OPTION_LIMIT = 100;
 const GITHUB_OWNER_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 const GITHUB_REPO_PATTERN = /^[A-Za-z0-9._-]+$/;
 
-const githubTokenGetters = new WeakMap<object, () => Promise<string>>();
+/** Runs `fn` against GitHub as the configuring account; `fn` may run twice, so it must only read. */
+export type GitHubApiRunner = <T>(fn: (api: GitHubApi) => Promise<T>) => Promise<T>;
+
+const githubRunners = new WeakMap<object, GitHubApiRunner>();
 // Per-instance cache of the authenticated user's login. Used to scope `searchRepos` to repos
 // the user can access. Fetched lazily on first need and reused for the configurator's lifetime.
 const githubViewerLogins = new WeakMap<object, Promise<string>>();
 
-function githubApi(target: object): GitHubApi {
-  const getToken = githubTokenGetters.get(target);
-  if (!getToken) throw new Error("GitHub configurator is not initialized.");
-  return new GitHubApi(getToken);
+function withGitHub<T>(target: object, fn: (api: GitHubApi) => Promise<T>): Promise<T> {
+  const run = githubRunners.get(target);
+  if (!run) throw new Error("GitHub configurator is not initialized.");
+  return run(fn);
 }
 
 function viewerLogin(target: object): Promise<string> {
   const cached = githubViewerLogins.get(target);
   if (cached) return cached;
-  const pending = githubApi(target).getViewerConditional()
+  const pending = withGitHub(target, api => api.getViewerConditional())
     .then(result => {
       if (result.status === 304) throw new Error("GitHub unexpectedly returned 304 for viewer lookup.");
       return result.data.login;
@@ -120,24 +123,23 @@ function pullRequestSearchOption(pullRequest: GitHubIssueResponse) {
 // Capability exposed to the configurator iframe.
 @validateRpc()
 export class GitHubRepoConfiguratorUI extends RpcTarget implements GitHubRepoConfiguratorRpc {
-  constructor(getToken: () => Promise<string>) {
+  constructor(run: GitHubApiRunner) {
     super();
-    githubTokenGetters.set(this, getToken);
+    githubRunners.set(this, run);
   }
 
   async listRepos(query: string): Promise<ConfiguratorOption[]> {
     const trimmedQuery = query.trim();
-    const api = githubApi(this);
 
     // No query: show the user's most-recently-updated accessible repos from /user/repos.
     if (!trimmedQuery) {
-      const repos = await api.listRepos({
+      const repos = await withGitHub(this, api => api.listRepos({
         affiliation: "owner,collaborator,organization_member",
         sort: "updated",
         direction: "desc",
         per_page: AUTOCOMPLETE_OPTION_LIMIT,
         page: 1,
-      });
+      }));
       return repos.map(repoToOption);
     }
 
@@ -145,19 +147,19 @@ export class GitHubRepoConfiguratorUI extends RpcTarget implements GitHubRepoCon
     const exactRepo = splitRepoFullName(trimmedQuery);
     const normalizedQuery = exactRepo ? `${exactRepo.owner}/${exactRepo.repo}` : trimmedQuery;
     const login = await viewerLogin(this);
-    const repos = await api.searchRepos({
+    const repos = await withGitHub(this, api => api.searchRepos({
       q: `${normalizedQuery} user:${login} fork:true`,
       per_page: AUTOCOMPLETE_OPTION_LIMIT,
       page: 1,
       sort: "updated",
       order: "desc",
-    });
+    }));
     const matches = repos.map(repoToOption);
 
     // Fall back to a direct lookup for exact names or URLs that scoped search didn't return.
     if (exactRepo && !matches.some(option => option.value.toLowerCase() === normalizedQuery.toLowerCase())) {
       try {
-        const repo = await api.getRepo(exactRepo.owner, exactRepo.repo);
+        const repo = await withGitHub(this, api => api.getRepo(exactRepo.owner, exactRepo.repo));
         matches.unshift(repoToOption(repo));
       } catch {
         // Ignore exact lookup failures; the dropdown will show search matches or "No matches".
@@ -179,20 +181,20 @@ export class GitHubIssueConfiguratorUI extends GitHubRepoConfiguratorUI implemen
     const trimmedQuery = query.trim();
 
     const issues = trimmedQuery
-      ? await githubApi(this).searchIssues(
+      ? await withGitHub(this, api => api.searchIssues(
           `${trimmedQuery} repo:${parsed.owner}/${parsed.repo} is:issue`,
           1,
           100,
           "updated",
           "desc",
-        )
-      : await githubApi(this).listIssues(parsed.owner, parsed.repo, {
+        ))
+      : await withGitHub(this, api => api.listIssues(parsed.owner, parsed.repo, {
           state: "all",
           sort: "updated",
           direction: "desc",
           per_page: 100,
           page: 1,
-        });
+        }));
 
     const options = issues
       .filter(issue => !issue.pull_request)
@@ -203,7 +205,7 @@ export class GitHubIssueConfiguratorUI extends GitHubRepoConfiguratorUI implemen
     const issueNumber = issueNumberFromQuery(query);
     if (issueNumber && !options.some(option => option.value === String(issueNumber))) {
       try {
-        const issue = await githubApi(this).getIssue(parsed.owner, parsed.repo, issueNumber);
+        const issue = await withGitHub(this, api => api.getIssue(parsed.owner, parsed.repo, issueNumber));
         if (!issue.pull_request) options.unshift(issueOption(issue));
       } catch {}
     }
@@ -223,13 +225,13 @@ export class GitHubPullRequestConfiguratorUI extends GitHubRepoConfiguratorUI im
     const trimmedQuery = query.trim();
 
     if (trimmedQuery) {
-      const pullRequests = await githubApi(this).searchIssues(
+      const pullRequests = await withGitHub(this, api => api.searchIssues(
         `${trimmedQuery} repo:${parsed.owner}/${parsed.repo} is:pr`,
         1,
         100,
         "updated",
         "desc",
-      );
+      ));
       const options: ConfiguratorOption[] = pullRequests
         .slice(0, 100)
         .map(pullRequestSearchOption);
@@ -237,20 +239,21 @@ export class GitHubPullRequestConfiguratorUI extends GitHubRepoConfiguratorUI im
       const pullNumber = issueNumberFromQuery(query);
       if (pullNumber && !options.some(option => option.value === String(pullNumber))) {
         try {
-          options.unshift(pullRequestOption(await githubApi(this).getPullRequest(parsed.owner, parsed.repo, pullNumber)));
+          options.unshift(pullRequestOption(
+            await withGitHub(this, api => api.getPullRequest(parsed.owner, parsed.repo, pullNumber))));
         } catch {}
       }
 
       return options.slice(0, 100);
     }
 
-    const pullRequests = await githubApi(this).listPullRequests(parsed.owner, parsed.repo, {
+    const pullRequests = await withGitHub(this, api => api.listPullRequests(parsed.owner, parsed.repo, {
       state: "all",
       sort: "updated",
       direction: "desc",
       per_page: 100,
       page: 1,
-    });
+    }));
 
     const options = pullRequests
       .filter(pullRequest => optionMatches([
@@ -267,7 +270,8 @@ export class GitHubPullRequestConfiguratorUI extends GitHubRepoConfiguratorUI im
     const pullNumber = issueNumberFromQuery(query);
     if (pullNumber && !options.some(option => option.value === String(pullNumber))) {
       try {
-        options.unshift(pullRequestOption(await githubApi(this).getPullRequest(parsed.owner, parsed.repo, pullNumber)));
+        options.unshift(pullRequestOption(
+          await withGitHub(this, api => api.getPullRequest(parsed.owner, parsed.repo, pullNumber))));
       } catch {}
     }
 

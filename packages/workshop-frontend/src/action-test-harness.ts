@@ -30,11 +30,16 @@ export function flushFrames() {
 export function entry(id: number, over: Partial<Record<string, unknown>> = {}): ActionLogEntry {
   return {
     id,
+    // Every real action is queued against a connection; only an observation from a built-in
+    // agent tool reaches the client without one. Surfaces that group by resource depend on it.
+    gatekeeperId: 1,
     resourceTitle: `Resource ${id}`,
     createdAt: new Date(1700000000000 + id * 60_000),
     state: 'pending',
     type: 'action',
-    description: { title: `Action ${id}`, description: '', implementsRevert: false },
+    description: {
+      title: `Action ${id}`, description: '', implementsRevert: false, autoApprovable: false,
+    },
     ...over,
   } as ActionLogEntry
 }
@@ -79,6 +84,11 @@ export function makeOverseer() {
   const pendingSubscribes: Array<Parked<RpcStub<{}>>> = []
   const historyQueue = parkedQueue()
   const pendingQueue = parkedQueue()
+  // Decisions park until the test settles them, so a run can be observed mid-flight -- which is
+  // when the surfaces that must not decide alongside it are worth asserting on.
+  const decisions: Array<{ call: string, settle: Parked<void> }> = []
+  const decide = (call: string) => new Promise<void>((resolve, reject) =>
+    decisions.push({ call, settle: { resolve, reject } }))
   const subscriptionDispose = vi.fn<() => void>()
   let subscriber: ActionsSubscriber | undefined
   const overseer = {
@@ -89,6 +99,8 @@ export function makeOverseer() {
       return new Promise<RpcStub<{}>>((resolve, reject) =>
         pendingSubscribes.push({ resolve, reject }))
     },
+    approveAction: (id: number) => decide(`approve:${id}`),
+    rejectAction: (id: number) => decide(`reject:${id}`),
     listActions: (options?: ListOptions) => {
       if (options?.filter === 'pending') {
         ops.push('listPending')
@@ -115,6 +127,16 @@ export function makeOverseer() {
     async rejectSubscription(err: unknown) {
       await act(async () => { pendingSubscribes.shift()!.reject(err) })
     },
+    /** The decisions sent so far, as `approve:<id>` / `reject:<id>`, oldest first. */
+    get decisionCalls() { return decisions.map(decision => decision.call) },
+    /** Settles the oldest decision still in flight. */
+    async settleDecision() {
+      await act(async () => { decisions.shift()!.settle.resolve() })
+    },
+    /** Fails the oldest parked decision, as a provider refusing it would. */
+    async failDecision(error: unknown) {
+      await act(async () => { decisions.shift()!.settle.reject(error) })
+    },
     resolvePage: historyQueue.resolveNext,
     rejectPage: historyQueue.rejectNext,
     resolvePendingQuery: pendingQueue.resolveNext,
@@ -123,6 +145,34 @@ export function makeOverseer() {
       await act(async () => { subscriber!.entry(record) })
     },
   }
+}
+
+/** A promise for a test to settle when it chooses, inside act(). */
+export function deferred<T = void>() {
+  let settle!: { resolve: (value: T) => void, reject: (error: unknown) => void }
+  const promise = new Promise<T>((resolve, reject) => { settle = { resolve, reject } })
+  return {
+    promise,
+    async resolve(value: T) { await act(async () => settle.resolve(value)) },
+    async reject(error: unknown) { await act(async () => settle.reject(error)) },
+  }
+}
+
+/** The switch of the hook titled `title`, found by its accessible name. */
+export function hookSwitch(title: string): HTMLButtonElement {
+  const element = document.querySelector(`[role="switch"][aria-label="Hook: ${title}"]`)
+  if (!(element instanceof HTMLButtonElement)) throw new Error(`No switch for the hook "${title}"`)
+  return element
+}
+
+/**
+ * Flip the switch of the hook titled `title`, as a click would: through the checkbox the switch
+ * forwards its clicks to, since jsdom has no PointerEvent to forward them with.
+ */
+export async function clickHookSwitch(title: string): Promise<void> {
+  const checkbox = hookSwitch(title).nextElementSibling
+  if (!(checkbox instanceof HTMLInputElement)) throw new Error(`No checkbox behind the hook "${title}"`)
+  await act(async () => checkbox.click())
 }
 
 /** A DOM root with act()-wrapped render/unmount. cleanup() resets it for the next test. */

@@ -1,4 +1,6 @@
-import type { FileAtCommit, TreeNode } from '@gadgets/workshop-shared/api'
+import type { TreeNode } from '@gadgets/workshop-shared/api'
+import type { CommitFile } from './commitFileStore'
+import type { FileContent } from '@gadgets/workshop-shared/code-change'
 
 // The displayed shape of a workpiece's files: the content base's tree (Overseer.listTree(), see
 // TreeNode) with the chat's overlay folded in. Pure derivations, kept apart from the view so the
@@ -178,12 +180,12 @@ export function resolveRenamePath(path: string, name: string): string | null {
  * review base at all (a pending gadget), where every displayed file is an addition.
  *
  * A removal of a path the review base lacks (added, then deleted, within the chat) is nothing to
- * review and reads as unchanged; an unreadable original (a binary the chat overwrote) can only be
- * reported as modified.
+ * review and reads as unchanged; an unreadable original (a symlink or submodule the chat
+ * overwrote) can only be reported as modified.
  */
 export function fileChangeStatus(
-  displayed: string | null,
-  original: FileAtCommit | undefined,
+  displayed: FileContent | null,
+  original: CommitFile | undefined,
   hasReviewBase: boolean,
 ): FileChangeStatus | undefined {
   if (original === undefined) {
@@ -192,29 +194,76 @@ export function fileChangeStatus(
   }
   if (original.kind === 'absent') return displayed !== null ? 'added' : 'unchanged'
   if (displayed === null) return 'deleted'
-  if (original.kind === 'unreadable' || original.text !== displayed) return 'modified'
-  return 'unchanged'
+  if (original.kind === 'text') return original.text === displayed ? 'unchanged' : 'modified'
+  if (original.kind === 'blob' && typeof displayed !== 'string' &&
+      displayed.oid === original.blob.oid) return 'unchanged'
+  return 'modified'
 }
 
 /**
- * The Changes list and the per-path statuses for the touched paths, in the paths' order.
- * `displayed(path)` is the view's text for a touched path (`null` when removed; `undefined` is
- * skipped as untouched after all); `originals` holds the review-base content loaded so far.
- * A touched path whose original is still loading gets no status; if it is a removal it is
- * listed as `pending` (see ChangedFile), since no other listing would show it.
+ * The statuses of the paths that a merge changed (see Overseer.listChangedPaths()), as an
+ * untouched path displays them: the content base's entry against the review base's. Only
+ * trees are read, never content, which is enough because the merge says the two differ. A
+ * path neither tree has a leaf at (a file one side made a directory) has no status.
+ */
+export function mergedPathStatuses(
+  paths: readonly string[],
+  contentTree: readonly TreeNode[],
+  reviewTree: readonly TreeNode[],
+): Map<string, FileChangeStatus> {
+  const statuses = new Map<string, FileChangeStatus>()
+  for (const path of paths) {
+    const displayed = hasTreeLeaf(contentTree, path)
+    const original = hasTreeLeaf(reviewTree, path)
+    if (displayed || original) {
+      statuses.set(path, !original ? 'added' : !displayed ? 'deleted' : 'modified')
+    }
+  }
+  return statuses
+}
+
+function hasTreeLeaf(nodes: readonly TreeNode[], path: string): boolean {
+  let level = nodes
+  const segments = path.split('/')
+  for (let i = 0; i < segments.length; i++) {
+    const node = level.find(candidate => candidate.name === segments[i])
+    if (node === undefined) return false
+    if (i === segments.length - 1) return node.kind !== 'dir'
+    if (node.kind !== 'dir') return false
+    level = node.children
+  }
+  return false
+}
+
+/**
+ * The Changes list and the per-path statuses for the touched paths, in the paths' order, which
+ * is sorted wherever `merged` adds to them. `displayed(path)` is the view's text for a touched
+ * path (`null` when removed; `undefined` is skipped as untouched after all); `originals` holds
+ * the review-base content loaded so far. A touched path whose original is still loading gets no
+ * status; if it is a removal it is listed as `pending` (see ChangedFile), since no other listing
+ * would show it.
+ *
+ * `merged` holds the statuses of the paths that a merge the chat's pin is rooted at changed
+ * (see mergedPathStatuses). They count for the paths the chat has not touched since, which no
+ * other listing would show: the chat's own content for a path takes precedence.
  */
 export function deriveChanges(
   touchedPaths: readonly string[],
-  displayed: (path: string) => string | null | undefined,
-  originals: ReadonlyMap<string, FileAtCommit>,
+  displayed: (path: string) => FileContent | null | undefined,
+  originals: ReadonlyMap<string, CommitFile>,
   hasReviewBase: boolean,
+  merged: ReadonlyMap<string, FileChangeStatus> = new Map(),
 ): { statuses: Map<string, FileChangeStatus>; changes: ChangedFile[] } {
   const statuses = new Map<string, FileChangeStatus>()
   const changes: ChangedFile[] = []
-  for (const path of touchedPaths) {
+  const paths = merged.size === 0
+    ? touchedPaths
+    : [...new Set([...touchedPaths, ...merged.keys()])].toSorted()
+  for (const path of paths) {
     const text = displayed(path)
-    if (text === undefined) continue
-    const status = fileChangeStatus(text, originals.get(path), hasReviewBase)
+    const status = text === undefined
+      ? merged.get(path)
+      : fileChangeStatus(text, originals.get(path), hasReviewBase)
     if (status === undefined) {
       if (text === null) changes.push({ path, status: 'pending' })
       continue

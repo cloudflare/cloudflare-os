@@ -22,10 +22,12 @@ function message(name: string, text: string, extra: Partial<ChatMessageInfo> = {
     id: `${SPACE}/messages/${name}`,
     spaceId: SPACE,
     text,
+    formattedText: text,
     mentions: [],
     createdAt: new Date("2024-01-01T00:00:00Z"),
     isReply: false,
     attachments: [],
+    cards: [],
     reactions: [],
     ...extra,
   } satisfies ChatMessageInfo;

@@ -1,0 +1,637 @@
+import { describe, expect, it } from "vitest";
+import type { RestPageElement, RestPresentation, RestSlide } from "../src/slides-api";
+import { designDeck } from "../src/slides-design";
+import { prepareChanges } from "../src/slides-design-input";
+import { presentationInfo, slideOf, themePagesOf } from "../src/slides-model";
+import type { ShapeElement, TableElement } from "../src/slides-read-types";
+import type { Deck } from "../src/slides-simulation";
+import type { SlideChange } from "../src/slides-types";
+import {
+  colorScheme, layout, master, presentation, shape, SIMPLE_LIGHT, slide, text,
+} from "./slides-fixture";
+
+const EMU = 12_700;
+const pt = (magnitude: number) => ({ magnitude, unit: "PT" as const });
+
+/** A deck of `pages`, with the masters and layouts of `theme`. */
+function deckOf(pages: RestSlide[], theme: RestPresentation = presentation([])): Deck {
+  return {
+    order: pages.map(page => page.objectId!),
+    slides: new Map(pages.map(page => [page.objectId!, page])),
+    masters: new Map(),
+    themePages: themePagesOf(theme),
+  };
+}
+
+/** Runs `changes` over the slides as `updateSlides()` would queue them. */
+function run(pages: RestSlide[], changes: SlideChange[], theme?: RestPresentation) {
+  let { changes: prepared, refs } = prepareChanges(changes);
+  let { deck: next, steps } = designDeck(deckOf(pages, theme), prepared);
+  return {
+    refs,
+    deck: next,
+    requests: steps.flatMap(step => step!.requests) as Record<string, any>[],
+    read: (id = "s1") => slideOf(next.slides.get(id)!, next.order.indexOf(id), new Map()),
+    // The presentation as `getPresentation()` would project it.
+    info: () => presentationInfo(
+      { ...(theme ?? presentation([])), slides: next.order.map(id => next.slides.get(id)!) },
+      next.themePages),
+  };
+}
+
+/** What `prepareChanges()` refuses `change` with, or undefined if it takes it. */
+function refusal(change: SlideChange): string | undefined {
+  try {
+    prepareChanges([change]);
+  } catch (error) {
+    return (error as Error).message;
+  }
+  return undefined;
+}
+
+/** The request setting a page's background. */
+function backgroundRequest(objectId: string, pageBackgroundFill: unknown) {
+  return {
+    updatePageProperties: { objectId, pageProperties: { pageBackgroundFill }, fields: "pageBackgroundFill" },
+  };
+}
+
+function element(id: string, fields: Partial<RestPageElement>): RestPageElement {
+  return { objectId: id, ...fields };
+}
+
+// A box `width` by `height` points, turned 90° clockwise about its centre at (`cx`, `cy`).
+function turned(id: string, cx: number, cy: number, width: number, height: number): RestPageElement {
+  return element(id, {
+    size: { width: { magnitude: width * EMU, unit: "EMU" }, height: { magnitude: height * EMU, unit: "EMU" } },
+    transform: {
+      shearY: 1, shearX: -1,
+      translateX: (cx + height / 2) * EMU, translateY: (cy - width / 2) * EMU, unit: "EMU",
+    },
+    shape: { shapeType: "RECTANGLE" },
+  });
+}
+
+function table(id: string, rows: string[][], merged?: { row: number; column: number; columnSpan: number }) {
+  return element(id, {
+    table: {
+      rows: rows.length,
+      columns: rows[0].length,
+      tableRows: rows.map((line, rowIndex) => ({
+        tableCells: line.flatMap((cell, columnIndex) => {
+          if (merged && rowIndex === merged.row && columnIndex > merged.column &&
+            columnIndex < merged.column + merged.columnSpan) return [];
+          let span = merged && rowIndex === merged.row && columnIndex === merged.column
+            ? { columnSpan: merged.columnSpan } : {};
+          return [{ location: { rowIndex, columnIndex }, text: text([cell]), ...span }];
+        }),
+      })),
+    },
+  });
+}
+
+function cellTexts(read: TableElement): (string | undefined)[][] {
+  return read.cells.map(line => line.map(cell => cell?.text));
+}
+
+describe("Slides design changes", () => {
+  it("links text as Google does: link colour and underline, and the link it overlaps retargeted", () => {
+    let page = slide("s1", [shape("box", text(["See ", { content: "docs", style: { link: { url: "https://old.example" } } }, " here"]))]);
+    let { read, requests } = run([page], [
+      { op: "formatText", slideId: "s1", elementId: "box", find: "See do", format: { link: "https://new.example/" } },
+    ]);
+
+    expect((read().elements[0] as ShapeElement).formats).toEqual([
+      { start: 0, end: 6, underline: true, color: "HYPERLINK", link: "https://new.example/" },
+      // The rest of the old link follows it to the new URL, but keeps its own style.
+      { start: 6, end: 8, link: "https://new.example/" },
+    ]);
+    expect(requests).toEqual([{
+      updateTextStyle: {
+        objectId: "box",
+        style: {
+          foregroundColor: { opaqueColor: { themeColor: "HYPERLINK" } },
+          link: { url: "https://new.example/" }, underline: true,
+        },
+        fields: "foregroundColor,link,underline",
+        textRange: { type: "FIXED_RANGE", startIndex: 0, endIndex: 6 },
+      },
+    }]);
+  });
+
+  it("unsets formatting given null, and addresses text by offsets guarded on the whole text", () => {
+    let page = slide("s1", [shape("box", text([{ content: "Bold", style: { bold: true, fontSize: { magnitude: 20, unit: "PT" } } }]))]);
+    let { read, requests } = run([page], [
+      { op: "formatText", slideId: "s1", elementId: "box", range: { start: 0, end: 4 }, format: { bold: null } },
+    ]);
+    expect((read().elements[0] as ShapeElement).formats).toEqual([{ start: 0, end: 4, fontSize: 20 }]);
+    expect(requests[0].updateTextStyle).toMatchObject({ style: {}, fields: "bold" });
+
+    let { changes } = prepareChanges([
+      { op: "formatText", slideId: "s1", elementId: "box", range: { start: 0, end: 4 }, format: { italic: true } },
+    ]);
+    expect(() => designDeck(deckOf([page]), [{ ...changes[0], before: "Bolder" }]))
+      .toThrow("change 1 (formatText): the text has changed since this change was made");
+  });
+
+  it("makes paragraphs list items nested by their leading tabs, which it removes", () => {
+    let page = slide("s1", [shape("box", text(["Plan"], ["\tShip"], ["\t\tTest"]))]);
+    let { read, requests } = run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", alignment: "center", bullets: "numbered" },
+    ]);
+    expect(read().elements[0]).toMatchObject({
+      text: "Plan\nShip\nTest",
+      paragraphs: [
+        { start: 0, end: 4, alignment: "center", bullet: { level: 0 } },
+        { start: 5, end: 9, alignment: "center", bullet: { level: 1 } },
+        { start: 10, end: 14, alignment: "center", bullet: { level: 2 } },
+      ],
+    });
+    // Google removes the tabs itself, so both requests address the text as it was.
+    let range = { type: "FIXED_RANGE", startIndex: 0, endIndex: 18 };
+    expect(requests).toEqual([
+      { updateParagraphStyle: { objectId: "box", style: { alignment: "CENTER" }, fields: "alignment", textRange: range } },
+      { createParagraphBullets: { objectId: "box", textRange: range, bulletPreset: "NUMBERED_DIGIT_ALPHA_ROMAN" } },
+    ]);
+  });
+
+  it("refuses bullets after a list item, which Google may join to its list", () => {
+    let page = slide("s1", [shape("box", text(["Intro"], { runs: ["Item"], marker: { bullet: { listId: "l" } } }, ["New"]))]);
+    expect(() => run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "New", bullets: "bullet" },
+    ])).toThrow("the paragraph before is a list item");
+    // The item keeps the indents Google leaves where its bullet was.
+    expect(run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "Item", bullets: "none" },
+    ]).read().elements[0]).toMatchObject({ paragraphs: [{ start: 6, end: 10, indentStart: 0, indentFirstLine: 0 }] });
+  });
+
+  it("starts a new list each time, so text cannot join a paragraph to the list it left", () => {
+    let page = slide("s1", [shape("box", text(["A"], ["B"]))]);
+    expect(() => run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", bullets: "bullet" },
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "A", bullets: "none" },
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", find: "A", bullets: "numbered" },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A\nB", replace: "AB" },
+    ])).toThrow("not items of the same list");
+  });
+
+  // Read back live: Google indents new items 36/18, 72/54 pt, …, and removing their bullets leaves
+  // 0/0, 36/36, ….
+  it("indents list items by their nesting as Google does, which a later join keeps", () => {
+    let joined = (page: RestSlide, bullets: "bullet" | "none") => run([page], [
+      { op: "formatParagraphs", slideId: "s1", elementId: "box", bullets },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A\nB", replace: "AB" },
+    ]).requests.at(-1)!.updateParagraphStyle.style;
+    expect(joined(slide("s1", [shape("box", text(["\tA"], ["\tB"]))]), "bullet")).toMatchObject({
+      indentStart: pt(72), indentFirstLine: pt(54),
+    });
+    let item = (content: string, nestingLevel: number, start: number, firstLine: number) => ({
+      runs: [content],
+      marker: {
+        bullet: { listId: "l", ...(nestingLevel ? { nestingLevel } : {}) },
+        style: { indentStart: pt(start), indentFirstLine: pt(firstLine) },
+      },
+    });
+    let list = slide("s1", [shape("box", text(item("A", 0, 36, 18), item("B", 1, 72, 54)))]);
+    expect(joined(list, "none")).toMatchObject({ indentStart: pt(36), indentFirstLine: pt(36) });
+  });
+
+  // Read back live: a style reaches the newline ending its range's paragraph, which text added
+  // before it then takes, but no other newline: not a further one, nor one a replacement keeps.
+  it("carries a style set to a paragraph's end onto its newline, and no further", () => {
+    let target = { slideId: "s1", elementId: "box" };
+    let formats = (paragraphs: string[], ...changes: SlideChange[]) => {
+      let page = slide("s1", [shape("box", text(...paragraphs.map(paragraph => [paragraph])))]);
+      return (run([page], changes).read().elements[0] as ShapeElement).formats;
+    };
+    let bold = (find: string): SlideChange => ({ op: "formatText", ...target, find, format: { bold: true } });
+    let edit = (find: string, replace: string): SlideChange => ({ op: "editText", ...target, find, replace });
+    expect(formats(["ABC", "DEF"], bold("ABC"), edit("ABC", "ABCX"))).toEqual([{ start: 0, end: 4, bold: true }]);
+    expect(formats(["ABC", "DEF"], bold("DEF"), edit("DEF", "DEFX"))).toEqual([{ start: 4, end: 8, bold: true }]);
+    expect(formats(["ABC", "DEF"], bold("DEF"), edit("ABC", "ABCX"))).toEqual([{ start: 5, end: 8, bold: true }]);
+    expect(formats(["ABC", "DEF"], bold("B"), edit("BC", "XY"), edit("XY", "XYZ")))
+      .toEqual([{ start: 1, end: 3, bold: true }]);
+    expect(formats(["ABC", "", "DEF"], bold("ABC\n"), edit("\n\n", "\nY\n")))
+      .toEqual([{ start: 0, end: 3, bold: true }]);
+  });
+
+  it("creates a shape that later changes in the batch address by its ref", () => {
+    let page = slide("s1", [shape("title", text(["Q3"]), { placeholder: "TITLE" })]);
+    let { read, requests, refs } = run([page], [
+      {
+        op: "createShape", slideId: "s1", ref: "badge", shapeType: "ROUND_RECTANGLE",
+        bounds: { x: 10, y: 20, width: 100, height: 40 }, text: "New", format: { bold: true }, fill: "#ff8800",
+      },
+      { op: "formatText", slideId: "s1", elementId: "badge", format: { fontSize: 18 } },
+    ]);
+    expect(refs).toEqual({ badge: expect.stringMatching(/^gk[0-9a-f]{32}$/) });
+    expect(read().elements.at(-1)).toEqual({
+      id: refs.badge, kind: "shape", shapeType: "ROUND_RECTANGLE",
+      bounds: { x: 10, y: 20, width: 100, height: 40 },
+      text: "New", formats: [{ start: 0, end: 3, bold: true, fontSize: 18 }], fill: "#ff8800",
+    });
+    expect(requests.map(request => Object.keys(request)[0])).toEqual([
+      "createShape", "insertText", "updateTextStyle", "updateTextStyle", "updateShapeProperties", "updateTextStyle",
+    ]);
+    // A `SolidFill` takes its `OpaqueColor` bare, unlike text's `OptionalColor`.
+    expect(requests[4].updateShapeProperties.shapeProperties.shapeBackgroundFill).toEqual({
+      propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 136 / 255 } }, alpha: 1 },
+    });
+    expect(requests.every(request => Object.values(request)[0].objectId === refs.badge)).toBe(true);
+  });
+
+  it("moves an element by translating it alone, and resizes a rotated one about its new box", () => {
+    // 100 by 50 points, turned 90°, centred at (175, 150): the editor shows it at (125, 125).
+    let page = () => slide("s1", [turned("box", 175, 150, 100, 50)]);
+    expect(run([page()], [{ op: "setBounds", slideId: "s1", elementId: "box", bounds: { x: 1 } }])
+      .read().elements[0]).toMatchObject({ bounds: { x: 1, y: 125, width: 100, height: 50 }, rotation: 90 });
+    let moved = run([page()], [{ op: "setBounds", slideId: "s1", elementId: "box", bounds: { x: 130 } }]);
+    expect(moved.requests[0].updatePageElementTransform).toEqual({
+      objectId: "box", applyMode: "ABSOLUTE",
+      transform: {
+        scaleX: 0, shearY: 1, shearX: -1, scaleY: 0,
+        translateX: 205 * EMU, translateY: 100 * EMU, unit: "EMU",
+      },
+    });
+    expect(run([page()], [
+      { op: "setBounds", slideId: "s1", elementId: "box", bounds: { width: 120 }, rotation: 45 },
+    ]).read().elements[0]).toMatchObject({ bounds: { x: 125, y: 125, width: 120, height: 50 }, rotation: 45 });
+  });
+
+  it("refuses to move a grouped element, one made in the same batch, or to resize a table", () => {
+    let group = element("group", { elementGroup: { children: [shape("a"), shape("b"), shape("c")] } });
+    let page = slide("s1", [group, table("grid", [["A"]])]);
+    expect(() => run([page], [{ op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 0 } }]))
+      .toThrow('element "a" is inside group "group"');
+    expect(() => run([page], [
+      { op: "createShape", slideId: "s1", ref: "new", shapeType: "TEXT_BOX", bounds: { x: 0, y: 0, width: 10, height: 10 } },
+      { op: "setBounds", slideId: "s1", elementId: "new", bounds: { x: 5 } },
+    ])).toThrow("change 2 (setBounds): an element created in the same batch cannot be moved");
+    // Google places a table by its columns and rows; its `size` is nominal.
+    let grid = table("grid", [["A"]]);
+    grid.table = { ...grid.table, tableColumns: [{ columnWidth: pt(20) }],
+      tableRows: grid.table!.tableRows!.map(row => ({ ...row, rowHeight: pt(20) })) };
+    let positioned = slide("s1", [{ ...grid, ...turned("grid", 50, 50, 20, 20), shape: undefined }]);
+    expect(() => run([positioned], [{ op: "setBounds", slideId: "s1", elementId: "grid", bounds: { width: 40 } }]))
+      .toThrow("a table can only be moved");
+  });
+
+  it("deletes a grouped element only while two others stay grouped", () => {
+    let children = (...ids: string[]) => element("group", { elementGroup: { children: ids.map(id => shape(id)) } });
+    expect(() => run([slide("s1", [children("a", "b")])], [{ op: "deleteElement", slideId: "s1", elementId: "a" }]))
+      .toThrow("would leave group");
+    expect(run([slide("s1", [children("a", "b", "c")])], [{ op: "deleteElement", slideId: "s1", elementId: "a" }])
+      .read().elements[0]).toMatchObject({ kind: "group", children: [{ id: "b" }, { id: "c" }] });
+  });
+
+  it("creates a table with its text, and inserts and deletes rows and columns", () => {
+    let { read, refs } = run([slide("s1", [])], [
+      { op: "createTable", slideId: "s1", ref: "grid", rows: 2, columns: 2, cells: [["A", "B"], ["C"]] },
+      { op: "insertTableRows", slideId: "s1", elementId: "grid", at: 2 },
+      { op: "insertTableColumns", slideId: "s1", elementId: "grid", at: 0, count: 2 },
+      { op: "deleteTableColumns", slideId: "s1", elementId: "grid", at: 1 },
+      { op: "deleteTableRows", slideId: "s1", elementId: "grid", at: 0 },
+    ]);
+    let grid = read().elements[0] as TableElement;
+    expect(grid).toMatchObject({ id: refs.grid, rows: 2, columns: 3 });
+    expect(cellTexts(grid)).toEqual([["", "C", ""], ["", "", ""]]);
+  });
+
+  it("writes rows and columns against a reference cell Google takes", () => {
+    let { requests } = run([slide("s1", [table("grid", [["A", "B"]])])], [
+      { op: "insertTableRows", slideId: "s1", elementId: "grid", at: 1, count: 2 },
+      { op: "insertTableColumns", slideId: "s1", elementId: "grid", at: 0 },
+      { op: "deleteTableRows", slideId: "s1", elementId: "grid", at: 1, count: 2 },
+    ]);
+    expect(requests).toEqual([
+      { insertTableRows: { tableObjectId: "grid", cellLocation: { rowIndex: 0, columnIndex: 0 }, insertBelow: true, number: 2 } },
+      { insertTableColumns: { tableObjectId: "grid", cellLocation: { rowIndex: 0, columnIndex: 0 }, insertRight: false, number: 1 } },
+      { deleteTableRow: { tableObjectId: "grid", cellLocation: { rowIndex: 1, columnIndex: 0 } } },
+      { deleteTableRow: { tableObjectId: "grid", cellLocation: { rowIndex: 1, columnIndex: 0 } } },
+    ]);
+  });
+
+  // Read back live: new lines copy the one beside them, new columns then all narrow so the table
+  // keeps its width, and lines left by a deletion keep theirs.
+  it("sizes a table's rows and columns as Google does when they change, and drops its borders", () => {
+    let edge = { tableBorderProperties: { tableBorderFill: { solidFill: { color: { rgbColor: {} } } }, weight: pt(1) } };
+    let laidOut = () => {
+      let grid = table("grid", [["A", "B"], ["C", "D"]]);
+      grid.table = {
+        ...grid.table,
+        tableColumns: [{ columnWidth: pt(50) }, { columnWidth: pt(70) }],
+        tableRows: grid.table!.tableRows!.map((row, i) => ({ ...row, rowHeight: pt(20 + i) })),
+        horizontalBorderRows: Array.from({ length: 3 }, (_, rowIndex) => ({ tableBorderCells: [0, 1].map(
+          columnIndex => ({ location: { rowIndex, columnIndex }, ...edge })) })),
+        verticalBorderRows: Array.from({ length: 2 }, (_, rowIndex) => ({ tableBorderCells: [0, 1, 2].map(
+          columnIndex => ({ location: { rowIndex, columnIndex }, ...edge })) })),
+      };
+      return slide("s1", [{ ...grid, transform: { scaleX: 1, scaleY: 1, unit: "EMU" } }]);
+    };
+    let after = (change: SlideChange) => run([laidOut()], [change]).read().elements[0] as TableElement;
+
+    expect(after({ op: "formatTableCells", slideId: "s1", elementId: "grid", fill: "ACCENT1" })).toMatchObject({
+      bounds: { width: 120, height: 41 }, columnWidths: [50, 70], rowHeights: [20, 21],
+      border: { color: "#000000", weight: 1 },
+    });
+    let rowAdded = after({ op: "insertTableRows", slideId: "s1", elementId: "grid", at: 1, count: 2 });
+    expect(rowAdded).toMatchObject({ columnWidths: [50, 70], rowHeights: [20, 21, 21, 21] });
+    expect(rowAdded).not.toHaveProperty("border");
+    expect(rowAdded).not.toHaveProperty("borders");
+    expect(after({ op: "insertTableColumns", slideId: "s1", elementId: "grid", at: 2 }))
+      .toMatchObject({ bounds: { width: 120 }, columnWidths: [31.58, 44.21, 44.21] });
+    expect(after({ op: "deleteTableRows", slideId: "s1", elementId: "grid", at: 0 })).toMatchObject({ rowHeights: [21] });
+    expect(after({ op: "deleteTableColumns", slideId: "s1", elementId: "grid", at: 0 }))
+      .toMatchObject({ bounds: { width: 70 }, columnWidths: [70] });
+  });
+
+  it("shares a new table's size evenly among its columns and rows, as Google does", () => {
+    let { read } = run([slide("s1", [])], [
+      { op: "createTable", slideId: "s1", rows: 20, columns: 3, bounds: { x: 10, y: 20, width: 300, height: 40 } },
+    ]);
+    expect(read().elements[0]).toMatchObject({
+      bounds: { x: 10, y: 20, width: 300, height: 40 },
+      columnWidths: [100, 100, 100], rowHeights: Array.from({ length: 20 }, () => 2),
+    });
+  });
+
+  it("refuses table changes that cut through a merged cell", () => {
+    // Row 0's first cell spans both columns.
+    let page = () => slide("s1", [table("grid", [["Wide", ""], ["A", "B"]], { row: 0, column: 0, columnSpan: 2 })]);
+    expect(() => run([page()], [{ op: "insertTableColumns", slideId: "s1", elementId: "grid", at: 1 }]))
+      .toThrow("holds a merged cell, at row 0, column 0");
+    expect(() => run([page()], [{ op: "deleteTableColumns", slideId: "s1", elementId: "grid", at: 1 }]))
+      .toThrow("a merged cell, at row 0, column 0, is in them");
+    expect(() => run([page()], [
+      { op: "formatTableCells", slideId: "s1", elementId: "grid", range: { row: 0, column: 1 }, fill: "#000000" },
+    ])).toThrow("cuts through the merged cell");
+    let filled = run([page()], [{ op: "formatTableCells", slideId: "s1", elementId: "grid", fill: "ACCENT1" }]);
+    expect((filled.read().elements[0] as TableElement).cells.flat().map(cell => cell?.fill))
+      .toEqual(["ACCENT1", undefined, "ACCENT1", "ACCENT1"]);
+  });
+
+  it("sets a font at regular weight, unbolding the text in the request and the replay alike", () => {
+    let page = () => slide("s1", [shape("box", text([{ content: "AB", style: { bold: true } }]))]);
+    let font = (format: { bold?: boolean }) => run([page()], [
+      { op: "formatText", slideId: "s1", elementId: "box", format: { fontFamily: "Roboto", ...format } },
+      { op: "editText", slideId: "s1", elementId: "box", find: "B", replace: "X" },
+    ]);
+    let { read, requests } = font({});
+    expect(requests[0].updateTextStyle).toMatchObject({
+      style: { bold: false, fontFamily: "Roboto", weightedFontFamily: { fontFamily: "Roboto", weight: 400 } },
+    });
+    // The edit restyles its text as what it replaces now is, not as it was.
+    expect(requests[2].updateTextStyle.style.bold).toBe(false);
+    expect((read().elements[0] as ShapeElement).formats).toEqual([{ start: 0, end: 2, bold: false, fontFamily: "Roboto" }]);
+    expect((font({ bold: true }).read().elements[0] as ShapeElement).formats)
+      .toEqual([{ start: 0, end: 2, bold: true, fontFamily: "Roboto" }]);
+  });
+
+  it("edits text in a shrunk shape at the sizes Google fixes when it turns the autofit off", () => {
+    let box = shape("box", text([{ content: "AB", style: { fontSize: pt(40) } }]));
+    box.shape!.shapeProperties = { autofit: { autofitType: "TEXT_AUTOFIT", fontScale: 0.5 } };
+    let { read, requests } = run([slide("s1", [box])], [
+      { op: "editText", slideId: "s1", elementId: "box", find: "B", replace: "X" },
+      // The autofit is off by now, so this edit scales nothing again.
+      { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "Z" },
+    ]);
+    expect(requests.filter(request => request.updateTextStyle).map(request => request.updateTextStyle.style))
+      .toEqual([{ fontSize: pt(20) }, { fontSize: pt(20) }]);
+    expect((read().elements[0] as ShapeElement).formats).toEqual([{ start: 0, end: 2, fontSize: 20 }]);
+  });
+
+  it("refuses new text filling a list item whose bullet is styled apart from its text", () => {
+    let black = { foregroundColor: { opaqueColor: { rgbColor: {} } }, fontSize: pt(20) };
+    let red = { foregroundColor: { opaqueColor: { rgbColor: { red: 1 } } }, fontSize: pt(30) };
+    let list = (content: string, bulletStyle: object) => slide("s1", [shape("box", text({
+      runs: [{ content, style: black }], marker: { bullet: { listId: "l", bulletStyle } },
+    }))]);
+    let edit = (page: RestSlide, find: string, replace: string) =>
+      run([page], [{ op: "editText", slideId: "s1", elementId: "box", find, replace }]);
+    expect(() => edit(list("A", red), "A", "X\nY")).toThrow("the new text fills a list item");
+    expect(() => edit(list("A", red), "A", "A\nY")).toThrow("the new text fills a list item");
+    // Splitting the item's own text leaves each part of it beside the new text.
+    expect(edit(list("AB", red), "AB", "AX\nYB").read().elements[0]).toMatchObject({ text: "AX\nYB" });
+    // Google lists a style's fields in its own order, which does not make it another style.
+    let same = { fontSize: pt(20), foregroundColor: { opaqueColor: { rgbColor: {} } } };
+    expect(edit(list("A", same), "A", "X\nY").read().elements[0]).toMatchObject({ text: "X\nY" });
+  });
+
+  it.each([false, true])("uses updated bullet styles after formatting, with a separate pending batch: %s", separate => {
+    let page = slide("s1", [shape("box", text(...["A", "B"].map(content => ({
+      runs: [{ content, style: { bold: false } }],
+      marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
+    }))))]);
+    let deck = deckOf([page]);
+    let { changes } = prepareChanges([
+      { op: "formatText", slideId: "s1", elementId: "box", find: "A\n", format: { bold: true } },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },
+    ]);
+    let pending = separate ? designDeck(deck, changes.slice(0, 1)).deck : deck;
+    let { deck: next } = designDeck(pending, separate ? changes.slice(1) : changes);
+    let body = next.slides.get("s1")!.pageElements![0].shape!.text!;
+    expect(body.textElements!.flatMap(entry => entry.paragraphMarker
+      ? [entry.paragraphMarker.bullet?.bulletStyle] : []))
+      .toEqual([{ bold: true }, { bold: true }, { bold: false }]);
+    expect(slideOf(next.slides.get("s1")!, 0, new Map()).elements[0]).toMatchObject({ text: "X\nY\nB" });
+  });
+
+  it("keeps a bullet's independent style when only part of its paragraph is formatted", () => {
+    let page = slide("s1", [shape("box", text({
+      runs: [{ content: "AB", style: { bold: false } }],
+      marker: { bullet: { listId: "l", bulletStyle: { bold: false } } },
+    }))]);
+    expect(() => run([page], [
+      { op: "formatText", slideId: "s1", elementId: "box", find: "A", format: { bold: true } },
+      { op: "editText", slideId: "s1", elementId: "box", find: "A", replace: "X\nY" },
+    ])).toThrow("the new text fills a list item");
+  });
+
+  it("refuses to rotate a video, which Google cannot shear, but resizes and half-turns it", () => {
+    let video = () => slide("s1", [element("vid", {
+      size: { width: { magnitude: 100 * EMU, unit: "EMU" }, height: { magnitude: 50 * EMU, unit: "EMU" } },
+      transform: { scaleX: 1, scaleY: 1, translateX: 10 * EMU, translateY: 20 * EMU, unit: "EMU" },
+      video: {},
+    })]);
+    let transform = (change: { bounds?: { width: number }; rotation?: number }) =>
+      run([video()], [{ op: "setBounds", slideId: "s1", elementId: "vid", ...change }])
+        .requests[0].updatePageElementTransform.transform;
+    expect(() => transform({ rotation: 45 })).toThrow("Google Slides cannot place a video rotated or skewed");
+    expect(transform({ rotation: 180 })).toMatchObject({ scaleX: -1, scaleY: -1, shearX: 0, shearY: 0 });
+    expect(transform({ bounds: { width: 200 } })).toMatchObject({ scaleX: 2, scaleY: 1, shearX: 0, shearY: 0 });
+  });
+
+  it("sets a slide's, a layout's and a master's background, each as Google takes it", () => {
+    let url = "https://img.example/bg.png";
+    let { requests, deck, info } = run([slide("s1", [])], [
+      { op: "setBackground", slideId: "s1", background: "#ff8800" },
+      { op: "setBackground", layoutId: "layout-title", background: "none" },
+      { op: "setBackground", layoutId: "layout-title-body", background: "ACCENT1" },
+      { op: "setBackground", masterId: "master-1", background: { imageUrl: url } },
+    ]);
+    expect(requests).toEqual([
+      backgroundRequest("s1", { propertyState: "RENDERED", solidFill: { color: { rgbColor: { red: 1, green: 136 / 255 } }, alpha: 1 } }),
+      backgroundRequest("layout-title", { propertyState: "NOT_RENDERED" }),
+      backgroundRequest("layout-title-body", { propertyState: "RENDERED", solidFill: { color: { themeColor: "ACCENT1" }, alpha: 1 } }),
+      backgroundRequest("master-1", { propertyState: "RENDERED", stretchedPictureFill: { contentUrl: url } }),
+    ]);
+    let read = info();
+    expect(read.slides[0].background).toBe("#ff8800");
+    expect(read.layouts).toEqual([
+      expect.objectContaining({ id: "layout-title", master: "master-1", background: "none" }),
+      expect.objectContaining({ id: "layout-title-body", master: "master-1", background: "ACCENT1" }),
+    ]);
+    expect(read.masters[0].background).toBe("picture");
+    // Only the request carries the picture's URL: no read can return it.
+    expect(JSON.stringify([...deck.slides, ...deck.themePages])).not.toContain("img.example");
+  });
+
+  it("resets a slide's or layout's background to the one it inherits", () => {
+    let blue = { solidFill: { color: { rgbColor: { blue: 1 } }, alpha: 1 } };
+    let theme = { ...presentation([]), layouts: [layout("layout-title", "Title slide", { background: blue })] };
+    let { requests, info } = run([slide("s1", [], { background: blue })], [
+      { op: "setBackground", slideId: "s1", background: null },
+      { op: "setBackground", layoutId: "layout-title", background: null },
+    ], theme);
+    expect(requests).toEqual(["s1", "layout-title"].map(objectId => ({
+      updatePageProperties: { objectId, pageProperties: {}, fields: "pageBackgroundFill" },
+    })));
+    expect(info().slides[0]).not.toHaveProperty("background");
+    expect(info().layouts[0]).not.toHaveProperty("background");
+  });
+
+  it("sends all 12 theme colours in Google's order, those not given as the master has them", () => {
+    let { requests, info } = run([], [
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT1: "#FF0000", DARK1: "#112233" } },
+      { op: "setThemeColors", masterId: "master-1", colors: { ACCENT2: "#00ff00" } },
+    ]);
+    let expected = { ...SIMPLE_LIGHT, DARK1: "#112233", ACCENT1: "#ff0000", ACCENT2: "#00ff00" };
+    // The second change keeps the colours the first set, and no colour that only follows another.
+    expect(requests[1]).toEqual({
+      updatePageProperties: {
+        objectId: "master-1",
+        pageProperties: { colorScheme: { colors: colorScheme(expected).colors!.slice(0, 12) } },
+        fields: "colorScheme",
+      },
+    });
+    expect(requests[1].updatePageProperties.pageProperties.colorScheme.colors.map((pair: any) => pair.type))
+      .toEqual([
+        "DARK1", "LIGHT1", "DARK2", "LIGHT2", "ACCENT1", "ACCENT2", "ACCENT3", "ACCENT4", "ACCENT5",
+        "ACCENT6", "HYPERLINK", "FOLLOWED_HYPERLINK",
+      ]);
+    expect(info().masters[0].themeColors).toEqual(expected);
+  });
+
+  it("refuses theme colours a master's theme cannot complete, unless the change gives the rest", () => {
+    let partial = master("master-1");
+    let scheme = partial.pageProperties!.colorScheme!;
+    scheme.colors = scheme.colors!.filter(pair => pair.type !== "ACCENT6");
+    let theme = { ...presentation([]), masters: [partial] };
+    expect(() => run([], [{ op: "setThemeColors", masterId: "master-1", colors: { DARK1: "#000000" } }], theme))
+      .toThrow("change 1 (setThemeColors): the master's theme has no ACCENT6, which Google needs; give it too");
+    expect(run([], [{ op: "setThemeColors", masterId: "master-1", colors: { ACCENT6: "#123456" } }], theme)
+      .info().masters[0].themeColors).toEqual({ ...SIMPLE_LIGHT, ACCENT6: "#123456" });
+  });
+
+  it("refuses a layout or master that is not there, or is the other kind of page", () => {
+    expect(() => run([], [{ op: "setBackground", layoutId: "master-1", background: "none" }]))
+      .toThrow('change 1 (setBackground): the presentation has no layout "master-1"');
+    expect(() => run([], [{ op: "setBackground", masterId: "gone", background: "#000000" }]))
+      .toThrow('change 1 (setBackground): the presentation has no master "gone"');
+    expect(() => run([], [{ op: "setThemeColors", masterId: "layout-title", colors: { DARK1: "#000000" } }]))
+      .toThrow('change 1 (setThemeColors): the presentation has no master "layout-title"');
+    expect(() => run([], [{ op: "setBackground", slideId: "s9", background: "none" }]))
+      .toThrow('change 1 (setBackground): slide "s9" no longer exists');
+    // A page an earlier change in the batch edited is checked again.
+    expect(() => run([], [
+      { op: "setBackground", masterId: "master-1", background: "#000000" },
+      { op: "setBackground", layoutId: "master-1", background: null },
+    ])).toThrow('change 2 (setBackground): the presentation has no layout "master-1"');
+  });
+
+  it("returns the deck it was given when no change is on a page it holds", () => {
+    let deck = { ...deckOf([]), order: ["s1"] };
+    let { changes } = prepareChanges([{ op: "setBackground", slideId: "s1", background: "none" }]);
+    expect(designDeck(deck, changes)).toEqual({ deck, steps: [null] });
+    expect(designDeck(deck, changes).deck).toBe(deck);
+  });
+
+  it("refuses what Google would not take before reading anything", () => {
+    let bounds = { x: 0, y: 0, width: 10, height: 10 };
+    expect(refusal({ op: "createShape", slideId: "s1", shapeType: "BLOB", bounds }))
+      .toContain('shapeType "BLOB" is not a Google Slides shape type');
+    expect(refusal({ op: "updateShape", slideId: "s1", elementId: "a", fill: "red" }))
+      .toContain('fill "red" is not a #rrggbb colour');
+    // Google would read an empty colour as black, under an approval naming none.
+    expect(refusal({ op: "createShape", slideId: "s1", shapeType: "RECTANGLE", bounds, fill: "" }))
+      .toContain('fill "" is not a #rrggbb colour');
+    expect(refusal({ op: "insertImage", slideId: "s1", url: "http://example.com/a.png" }))
+      .toContain("url must be an https: URL");
+    // 420 characters as given, but 2,420 once percent-encoded, past Google's limit.
+    expect(refusal({ op: "replaceImage", slideId: "s1", elementId: "a", url: `https://example.com/${"é".repeat(400)}` }))
+      .toContain("at most 2048 characters once percent-encoded");
+    expect(refusal({ op: "formatText", slideId: "s1", elementId: "a", format: {} })).toContain("format sets nothing");
+    expect(refusal({ op: "setAltText", slideId: "s1", elementId: "a", title: "" }))
+      .toContain("alt text cannot be cleared");
+    expect(() => prepareChanges([
+      { op: "createShape", slideId: "s1", ref: "x", shapeType: "TEXT_BOX", bounds },
+      { op: "createShape", slideId: "s1", ref: "x", shapeType: "TEXT_BOX", bounds },
+    ])).toThrow('Change 2 (createShape): ref "x" names an element an earlier change creates.');
+  });
+
+  it("refuses a background or theme colours Google would not take, before reading anything", () => {
+    let target = "name exactly one of slideId, layoutId and masterId";
+    expect(refusal({ op: "setBackground", background: "none" })).toContain(target);
+    expect(refusal({ op: "setBackground", slideId: "s1", masterId: "m", background: "none" })).toContain(target);
+    // Google turns a master's background reset into none.
+    expect(refusal({ op: "setBackground", masterId: "m", background: null }))
+      .toContain('a master has no background to inherit; give it "none" instead');
+    expect(refusal({ op: "setBackground", masterId: "m", background: "none" })).toBeUndefined();
+    expect(refusal({ op: "setBackground", layoutId: "l", background: null })).toBeUndefined();
+    expect(refusal({ op: "setBackground", slideId: "s1", background: "red" }))
+      .toContain('background "red" is not a #rrggbb colour');
+    expect(refusal({ op: "setBackground", slideId: "s1", background: "picture" }))
+      .toContain('background "picture" is not a #rrggbb colour');
+    expect(refusal({ op: "setBackground", slideId: "s1", background: { imageUrl: "http://img.example/a.png" } }))
+      .toContain("background.imageUrl must be an https: URL");
+    expect(refusal({ op: "setThemeColors", masterId: "m", colors: {} })).toContain("colors sets nothing");
+    let colors = (given: Record<string, string>) =>
+      refusal({ op: "setThemeColors", masterId: "m", colors: given });
+    expect(colors({ "": "#000000" }))
+      .toContain('colors names "", which is not one of the 12 theme colours, such as ACCENT1');
+    expect(colors({ BLUE: "#000000" })).toContain('colors names "BLUE", which is not one of the 12');
+    expect(colors({ TEXT1: "#000000" })).toContain("it follows DARK1, so set that");
+    expect(colors({ DARK1: "ACCENT1" })).toContain('colors.DARK1 "ACCENT1" is not a #rrggbb colour');
+    expect(colors({ DARK1: "#fff" })).toContain('colors.DARK1 "#fff" is not a #rrggbb colour');
+    expect(colors({ DARK1: "#AbCdEf" })).toBeUndefined();
+  });
+
+  it("drops what a change does not declare, so it is neither checked around nor described", () => {
+    // capnweb-validate forwards undeclared properties: here, prose for the approval, an `id` that
+    // would pass an existing element off as created, and a format key that sets nothing.
+    let { changes } = prepareChanges([
+      { op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 1, "**Safe to approve**": 2 }, id: "b" },
+      { op: "insertImage", slideId: "s1", url: "  https://img.example/a b.png" },
+      { op: "setBackground", slideId: "s1", background: { imageUrl: " https://img.example/b c.png", contentUrl: "x" } },
+      { op: "setThemeColors", slideId: "s1", masterId: "m", colors: { DARK1: "#000000" } },
+    ] as unknown as SlideChange[]);
+    expect(changes[0]).toEqual({ op: "setBounds", slideId: "s1", elementId: "a", bounds: { x: 1 } });
+    expect(changes[1]).toMatchObject({ url: "https://img.example/a%20b.png" });
+    expect(changes[2]).toEqual({
+      op: "setBackground", slideId: "s1", background: { imageUrl: "https://img.example/b%20c.png" },
+    });
+    // A theme colour change is on its master alone, so a slide it names would only mislead.
+    expect(changes[3]).toEqual({ op: "setThemeColors", masterId: "m", colors: { DARK1: "#000000" } });
+    expect(() => prepareChanges([
+      { op: "formatText", slideId: "s1", elementId: "a", format: { shout: true } },
+    ] as unknown as SlideChange[])).toThrow("format sets nothing");
+  });
+
+  it("takes a ref named before the change that creates it as an element ID", () => {
+    expect(() => run([slide("s1", [])], [
+      { op: "deleteElement", slideId: "s1", elementId: "later" },
+      { op: "createShape", slideId: "s1", ref: "later", shapeType: "TEXT_BOX", bounds: { x: 0, y: 0, width: 1, height: 1 } },
+    ])).toThrow('change 1 (deleteElement): the slide has no element "later"');
+  });
+});

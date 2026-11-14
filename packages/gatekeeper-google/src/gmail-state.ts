@@ -10,10 +10,10 @@ import type {GmailLabelRaw, GmailNormalizedRecipients, GmailParsedDraft} from ".
 /** Bytes per stored forward-source chunk, leaving ample headroom below the 2 MiB value limit. */
 export const GMAIL_FORWARD_SNAPSHOT_CHUNK_BYTES = ACTION_FILE_CHUNK_BYTES;
 
-/** Maximum aggregate raw forward-source bytes retained by one Gmail binding. */
+/** Maximum aggregate bytes (forward sources and uploaded attachments) retained by one Gmail binding. */
 export const MAX_GMAIL_PENDING_FORWARD_SNAPSHOT_BYTES = 50 * 1024 * 1024;
 
-/** Integrity metadata persisted in an action instead of the forward source bytes themselves. */
+/** Integrity metadata persisted in an action instead of the retained file bytes themselves. */
 export type GmailForwardSnapshotReference = ActionFileReference;
 
 type GmailSnapshotStorage = Pick<DurableObjectStorage, "kv" | "transactionSync">;
@@ -21,7 +21,10 @@ type GmailSnapshotStorage = Pick<DurableObjectStorage, "kv" | "transactionSync">
 const FORWARD_SNAPSHOT_PREFIX = "gmail:forwardSnapshot:";
 const FORWARD_SNAPSHOT_ALLOCATION_PREFIX = "gmail:forwardSnapshotAllocation:";
 
-/** Stores and verifies exact forward source bytes in bounded private Durable Object chunks. */
+/**
+ * Stores and verifies exact retained bytes — forward sources and uploaded attachments — in
+ * bounded private Durable Object chunks.
+ */
 export class GmailForwardSnapshotStore extends ActionFileStore {
   constructor(storage: GmailSnapshotStorage) {
     super(storage, {
@@ -44,6 +47,8 @@ export type GmailDraftAttachmentState = {
   key: string;
   info: GmailAttachmentInfo;
   contentDigest?: string;
+  /** Exact uploaded bytes retained independently of the action payload. */
+  file?: GmailForwardSnapshotReference;
 };
 
 export type GmailDraftState = GmailNormalizedRecipients & {
@@ -69,6 +74,13 @@ export type GmailDraftState = GmailNormalizedRecipients & {
 export type GmailDraftResource = {
   logicalId: string;
   providerId?: string;
+  /**
+   * Identities of the parts in the last provider revision this gatekeeper wrote, in MIME order.
+   * Uploaded parts keep their retained file and its digest.
+   */
+  appliedAttachments?: Pick<GmailDraftAttachmentState, "key" | "contentDigest" | "file">[];
+  /** Provider message revision that owns appliedAttachments. */
+  attachmentMessageId?: string;
   source?: GmailDraftSource;
   /** Exact source retained while an inline forward draft remains editable. */
   forwardSnapshot?: GmailForwardSnapshotReference;
@@ -291,7 +303,9 @@ function canonicalMailboxes(values: readonly string[]): Array<ReturnType<typeof 
   return values.map(canonicalMailbox);
 }
 
-/** Fingerprint only send-relevant semantics, including attachment bytes, to detect unsafe drift. */
+const GMAIL_FINGERPRINT_VERSION = "v2:";
+
+/** Versioned, byte-exact fingerprint of send-relevant semantics for detecting unsafe drift. */
 export async function gmailDraftFingerprint(
     draft: GmailParsedDraft, threadId?: string): Promise<string> {
   const attachmentDigests = await Promise.all(draft.attachments.map(async attachment => ({
@@ -317,10 +331,10 @@ export async function gmailDraftFingerprint(
     threadId: draft.inReplyTo ? threadId ?? null : null,
     attachments: attachmentDigests,
   });
-  return sha256(new TextEncoder().encode(stable));
+  return `${GMAIL_FINGERPRINT_VERSION}${await sha256(new TextEncoder().encode(stable))}`;
 }
 
-/** Fingerprint a simulated state using the attachment digests captured from its base snapshot. */
+/** Versioned fingerprint using the attachment digests captured from a simulated base snapshot. */
 export async function gmailDraftStateFingerprint(draft: GmailDraftState): Promise<string> {
   if (draft.attachments.some(attachment => !attachment.contentDigest)) {
     throw new Error("Draft attachment bytes must be captured before fingerprinting.");
@@ -347,7 +361,17 @@ export async function gmailDraftStateFingerprint(draft: GmailDraftState): Promis
       digest: attachment.contentDigest,
     })),
   });
-  return sha256(new TextEncoder().encode(stable));
+  return `${GMAIL_FINGERPRINT_VERSION}${await sha256(new TextEncoder().encode(stable))}`;
+}
+
+/** Whether a persisted fingerprint is byte-exact, rather than one recorded before versioning. */
+export function isVersionedGmailFingerprint(fingerprint: string): boolean {
+  return fingerprint.startsWith(GMAIL_FINGERPRINT_VERSION);
+}
+
+/** The unversioned form a pre-upgrade worker persisted for a fingerprint of legacy-parsed content. */
+export function unversionedGmailFingerprint(fingerprint: string): string {
+  return fingerprint.slice(GMAIL_FINGERPRINT_VERSION.length);
 }
 
 export function newGmailLogicalId(kind: "draft" | "label"): string {

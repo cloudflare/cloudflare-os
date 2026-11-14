@@ -10,6 +10,7 @@
     "./actions": "./src/actions.ts",
     "./auth-retry": "./src/auth-retry.ts",
     "./cache": "./src/cache.ts",
+    "./ci": "./src/ci.ts",
     "./connect-handshake": "./src/connect-handshake.ts",
     "./connect-nonce": "./src/connect-nonce.ts",
     "./connect-pages": "./src/connect-pages.ts",
@@ -18,12 +19,22 @@
     "./credentials": "./src/credentials.ts",
     "./cursors": "./src/cursors.ts",
     "./endpoint": "./src/endpoint.ts",
+    "./git-diff": "./src/git-diff.ts",
+    "./git-objects": "./src/git-objects.ts",
+    "./git-pull-transfer": "./src/git-pull-transfer.ts",
+    "./git-transport": "./src/git-transport.ts",
+    "./git-upload-pack": "./src/git-upload-pack.ts",
+    "./hook-delivery-queue": "./src/hook-delivery-queue.ts",
+    "./hook-registry": "./src/hook-registry.ts",
     "./http-errors": "./src/http-errors.ts",
     "./observers": "./src/observers.ts",
     "./oauth-client": "./src/oauth-client.ts",
     "./preview-oauth": "./src/preview-oauth.ts",
     "./response-body": "./src/response-body.ts",
-    "./simulation": "./src/simulation.ts"
+    "./serial-queue": "./src/serial-queue.ts",
+    "./simulation": "./src/simulation.ts",
+    "./single-flight": "./src/single-flight.ts",
+    "./subresource-ids": "./src/subresource-ids.ts"
   },
   "scripts": {
     "test:run": "vitest run && vitest run -c vitest.worker.config.ts",
@@ -33,12 +44,14 @@
   "dependencies": {
     "@gadgets/observability": "workspace:*",
     "@gadgets/workshop-shared": "workspace:*",
-    "jose": "^6.2.12"
+    "diff": "catalog:",
+    "jose": "^6.2.13"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@gadgets/scripts": "workspace:*",
+    "fast-check": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

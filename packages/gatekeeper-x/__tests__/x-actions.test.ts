@@ -1,0 +1,343 @@
+// What the approver is shown, and what is refused before it reaches them. The apply paths need X and
+// a Durable Object, and are covered by the workerd suite.
+
+import { describe, expect, it } from "vitest";
+import type { ActionDescription, ActionField } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
+import type { XPostDraft, XPostInfo, XUserInfo } from "../src/types";
+import {
+  actions, dependedRefs, imageHandles, providedRefs, validateDraft, validateReplyParent, type StoredDraft, type XAction,
+  type XActionHost,
+  type XActions,
+} from "../src/x-actions";
+import type { StoredIdentity } from "../src/x-credentials";
+import { fakeKv } from "./fake-kv";
+
+const me: StoredIdentity = {
+  id: "1", username: "alice", name: "Alice", protected: false, verified: false, fetchedAt: 0,
+};
+const premium: StoredIdentity = { ...me, subscriptionType: "Premium" };
+
+const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 0]);
+const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+const IMAGE = { handle: "0d6f0f2e-7c0b-4c1e-9b43-5f2d6d1f8a10", size: 6, digest: "a".repeat(64) };
+
+const theirPost: XPostInfo = {
+  id: "50", url: "https://x.com/bob/status/50", text: "Bob's post", author: {
+    id: "2", username: "bob", name: "Bob", verified: false, protected: false,
+  },
+  createdAt: new Date(0), conversationId: "50", mentions: [], hashtags: [], links: [], media: [],
+  metrics: { likes: 0, reposts: 0, replies: 0, quotes: 0, bookmarks: 0, impressions: 0 },
+  replySettings: "everyone", possiblySensitive: false,
+};
+
+const bob: XUserInfo = {
+  ...theirPost.author, url: "https://x.com/bob", description: "", followersCount: 0, followingCount: 0,
+  postCount: 0, listedCount: 0,
+};
+
+/** Submits through the real action set, capturing what the approver would be shown. */
+async function describeAction<K extends keyof XActions>(kind: K, payload: XActions[K]): Promise<ActionDescription> {
+  const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
+  // Every temporary ID counts as created, so an action on a pending post can be described alone.
+  const host = { me: async () => me, refs: { isResolved: () => true } } as unknown as XActionHost;
+  const shown: ActionDescription[] = [];
+  const queue = { submitAction: async (_id: number, description: ActionDescription) => void shown.push(description) };
+  await actions.bind(journal, host).submit(queue as never, kind, payload, { fence: { generation: me.id } });
+  return shown[0];
+}
+
+function field(description: ActionDescription, label: string): ActionField | undefined {
+  return description.fields?.find(candidate => candidate.label === label);
+}
+
+const draft = (text: string, extra: Partial<StoredDraft> = {}): StoredDraft => ({ text, ...extra });
+
+describe("descriptions", () => {
+  it("names the acting account and shows a post's every value in fields", async () => {
+    const description = await describeAction("createPost", {
+      refs: ["~1"], drafts: [draft("Hi @bob, see https://example.com")], submittedAt: 0,
+    });
+    expect(description.title).toBe("Post on X as @alice");
+    expect(description.description).toContain("as @alice");
+    expect(description.description).toContain("bills posts with links");
+    expect(field(description, "Post")).toEqual({ label: "Post", kind: "text", value: "Hi @bob, see https://example.com" });
+    expect(field(description, "Post: mentions")).toMatchObject({ kind: "list", items: ["@bob"] });
+    expect(field(description, "Post: links")).toMatchObject({ kind: "list", items: ["https://example.com"] });
+    expect(description.descriptionIsComplete).toBe(true);
+    expect(description.implementsRevert).toBe(true);
+    expect(description.actionKind).toEqual({ tag: "x.post.create", label: "Publish X posts" });
+    expect(description.autoApprovable).toBe(false);
+  });
+
+  it("can't call a post with images complete: the approver can't read the bytes", async () => {
+    const description = await describeAction("createPost", {
+      refs: ["~1"],
+      drafts: [draft("Look", { images: [{ file: IMAGE, mediaType: "image/png", altText: "A chart" }] })],
+      submittedAt: 0,
+    });
+    expect(field(description, "Post: image 1")).toMatchObject({
+      kind: "file", name: "image-1.png", mediaType: "image/png", size: 6, sha256: IMAGE.digest, origin: "agent",
+    });
+    expect(field(description, "Post: image 1 alt text")).toMatchObject({ kind: "text", value: "A chart" });
+    expect(description.descriptionIsComplete).toBeUndefined();
+  });
+
+  it("numbers a thread's posts", async () => {
+    const description = await describeAction("createPost", {
+      refs: ["~1", "~2"], drafts: [draft("one"), draft("two", { poll: { options: ["a", "b"], durationMinutes: 60 } })],
+      submittedAt: 0,
+    });
+    expect(description.title).toBe("Post a 2-post thread on X as @alice");
+    expect(field(description, "Post 1")).toMatchObject({ value: "one" });
+    expect(field(description, "Post 2: poll options")).toMatchObject({ items: ["a", "b"] });
+    expect(field(description, "Post 2: poll open for")).toMatchObject({ value: "60 minutes" });
+  });
+
+  it("shows what a reply answers, as context", async () => {
+    const description = await describeAction("reply", {
+      ref: "~1", draft: draft("Agreed"), parent: { id: "50", info: theirPost }, conversationId: "50", submittedAt: 0,
+    });
+    expect(description.title).toBe("Reply on X to @bob as @alice");
+    expect(field(description, "Replying to")).toMatchObject({ value: "https://x.com/bob/status/50" });
+    expect(field(description, "Their post")).toMatchObject({ value: "Bob's post" });
+    expect(field(description, "Reply")).toMatchObject({ value: "Agreed" });
+  });
+
+  it("shows the target of an engagement", async () => {
+    const like = await describeAction("like", { post: { id: "50", info: theirPost }, on: true });
+    expect(like.title).toBe("Like a post by @bob on X");
+    expect(field(like, "Post")).toMatchObject({ value: "https://x.com/bob/status/50" });
+    expect(field(like, "Post text")).toMatchObject({ value: "Bob's post" });
+    expect(like.autoApprovable).toBe(false);
+
+    const follow = await describeAction("follow", { user: { ...bob, protected: true }, on: true });
+    expect(follow.description).toContain("follow request");
+    expect(follow.autoApprovable).toBe(false);
+  });
+
+  it.each(["author", "quote", "repost"] as const)("redacts a protected %s from every post-action preview", async source => {
+    const restricted: XPostInfo = {
+      ...theirPost, text: "private source text", author: { ...theirPost.author, username: "private_writer", protected: true },
+    };
+    const info: XPostInfo = source === "author" ? restricted : {
+      ...theirPost, text: "private source text", [source === "quote" ? "quoteOf" : "repostOf"]: restricted,
+    };
+    const post = { id: "50", info };
+    const previews = await Promise.all([
+      describeAction("deletePost", { post }),
+      describeAction("like", { post, on: true }),
+      describeAction("repost", { post, on: false }),
+      describeAction("bookmark", { post, on: true }),
+      describeAction("hide", { post, hidden: false }),
+      describeAction("reply", { ref: "~1", draft: draft("My reply"), parent: post, conversationId: "50", submittedAt: 0 }),
+    ]);
+    for (const preview of previews) {
+      expect(JSON.stringify(preview)).not.toMatch(/private source text|private_writer|@bob|x\.com\/bob/);
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "https://x.com/i/web/status/50" }));
+    }
+    expect(field(previews.at(-1)!, "Reply")).toMatchObject({ value: "My reply" });
+  });
+
+  it("points at a protected account's own pending post by its temporary ID, showing the draft", async () => {
+    const { url: _published, ...unpublished } = theirPost;
+    const mine: XPostInfo = {
+      ...unpublished, id: "~3", text: "My draft", author: { ...theirPost.author, username: "alice", protected: true },
+    };
+    const post = { id: "~3", info: mine };
+    for (const preview of await Promise.all([
+      describeAction("like", { post, on: true }),
+      describeAction("deletePost", { post }),
+      describeAction("reply", { ref: "~4", draft: draft("Follow-up"), parent: post, conversationId: "~3", submittedAt: 0 }),
+    ])) {
+      expect(JSON.stringify(preview)).not.toContain("status/~3");
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "your pending post ~3" }));
+      expect(preview.fields).toContainEqual(expect.objectContaining({ value: "My draft" }));
+    }
+  });
+
+  it("redacts private List names while warning of a List a pending change makes public", async () => {
+    const list = { id: "70", nameRestricted: true as const, info: {
+      id: "70", url: "https://x.com/i/lists/70", name: "Private List title", description: "Private description",
+      private: false, owner: theirPost.author, memberCount: 0, followerCount: 0,
+    } };
+    const previews = await Promise.all([
+      describeAction("updateList", { list, changes: { private: false } }),
+      describeAction("deleteList", { list }),
+      describeAction("listMember", { list, user: bob, add: true }),
+    ]);
+    for (const preview of previews) {
+      expect(JSON.stringify(preview)).not.toMatch(/Private List title|Private description/);
+    }
+    expect(previews[2].description).toMatch(/X may tell them/);
+  });
+
+  it("offers only private, reversible actions for auto-approval", async () => {
+    expect((await describeAction("bookmark", { post: { id: "50", info: theirPost }, on: true })).autoApprovable).toBe(true);
+    expect((await describeAction("mute", { user: bob, on: true })).autoApprovable).toBe(true);
+    const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
+    const kinds = actions.bind(journal, {} as XActionHost).autoApprovableKinds().map(kind => kind.tag).toSorted();
+    expect(kinds).toEqual(["x.post.bookmark", "x.post.hide", "x.user.mute"]);
+  });
+
+  it("declares a kind and verdict for every action, both ways of every toggle", async () => {
+    const post = { id: "50", info: theirPost };
+    const list = {
+      id: "70", info: {
+        id: "70", url: "https://x.com/i/lists/70", name: "Friends", description: "", private: true,
+        owner: theirPost.author, memberCount: 0, followerCount: 0,
+      },
+    };
+    const reply = { ref: "~1", draft: draft("Agreed"), parent: post, conversationId: "50", submittedAt: 0 };
+    const createList = { ref: "~1", name: "Friends", owner: theirPost.author, submittedAt: 0 };
+    // Mapped over every kind, so a new action can't be added without declaring its verdict here.
+    const cases: { [K in keyof XActions]: { tag: string; autoApprovable: boolean; payloads: XActions[K][] } } = {
+      createPost: {
+        tag: "x.post.create", autoApprovable: false, payloads: [{ refs: ["~1"], drafts: [draft("Hi")], submittedAt: 0 }],
+      },
+      reply: { tag: "x.post.reply", autoApprovable: false, payloads: [reply] },
+      deletePost: { tag: "x.post.delete", autoApprovable: false, payloads: [{ post }] },
+      like: { tag: "x.post.like", autoApprovable: false, payloads: [{ post, on: true }, { post, on: false }] },
+      repost: { tag: "x.post.repost", autoApprovable: false, payloads: [{ post, on: true }, { post, on: false }] },
+      bookmark: { tag: "x.post.bookmark", autoApprovable: true, payloads: [{ post, on: true }, { post, on: false }] },
+      hide: { tag: "x.post.hide", autoApprovable: true, payloads: [{ post, hidden: true }, { post, hidden: false }] },
+      follow: { tag: "x.user.follow", autoApprovable: false, payloads: [{ user: bob, on: true }, { user: bob, on: false }] },
+      mute: { tag: "x.user.mute", autoApprovable: true, payloads: [{ user: bob, on: true }, { user: bob, on: false }] },
+      createList: { tag: "x.list.manage", autoApprovable: false, payloads: [createList, { ...createList, private: true }] },
+      updateList: {
+        tag: "x.list.manage", autoApprovable: false,
+        payloads: [{ list, changes: { name: "Pals" } }, { list, changes: { private: false } }],
+      },
+      deleteList: { tag: "x.list.manage", autoApprovable: false, payloads: [{ list }] },
+      listMember: {
+        tag: "x.list.members", autoApprovable: false,
+        payloads: [{ list, user: bob, add: true }, { list, user: bob, add: false }],
+      },
+    };
+    for (const [kind, { tag, autoApprovable, payloads }] of Object.entries(cases)) {
+      for (const payload of payloads) {
+        const description = await describeAction(kind as keyof XActions, payload as never);
+        expect({ kind, tag: description.actionKind?.tag, autoApprovable: description.autoApprovable })
+          .toEqual({ kind, tag, autoApprovable });
+      }
+    }
+  });
+
+  it("refuses to stage an action without the X user it is fenced to", async () => {
+    const journal = new ActionJournal<XAction>(fakeKv(), { namespace: "x" });
+    const set = actions.bind(journal, { me: async () => me } as unknown as XActionHost);
+    await expect(set.submit({ submitAction: async () => {} } as never, "like", { post: { id: "50", info: theirPost }, on: true }))
+      .rejects.toThrow(/authority-fenced/);
+  });
+});
+
+describe("rejection", () => {
+  /** A host recording what a reject leaves of a publish's progress and send attempts. */
+  function rejectingHost() {
+    const progress = new Map<number, string[]>();
+    const attempts = new Map<string, { at: number; mediaIds: string[] }>();
+    const released: StoredDraft[][] = [];
+    const host = {
+      me: async () => me,
+      progress: { get: (id: number) => progress.get(id) ?? [], put: progress.set.bind(progress), delete: progress.delete.bind(progress) },
+      attempts: { get: attempts.get.bind(attempts), put: attempts.set.bind(attempts), delete: attempts.delete.bind(attempts) },
+      releaseImages: (drafts: StoredDraft[]) => void released.push(drafts),
+      invalidate: async () => {},
+    } as unknown as XActionHost;
+    const set = actions.bind(new ActionJournal<XAction>(fakeKv(), { namespace: "x" }), host);
+    const submit = <K extends keyof XActions>(kind: K, payload: XActions[K]) =>
+      set.submit({ submitAction: async () => {} } as never, kind, payload, { fence: { generation: me.id } });
+    return { set, submit, progress, attempts, released };
+  }
+
+  it("withdraws a part-published thread, forgetting its progress and the send X never confirmed", async () => {
+    const t = rejectingHost();
+    const id = await t.submit("createPost", { refs: ["~1", "~2"], drafts: [draft("one"), draft("two")], submittedAt: 0 });
+    t.progress.set(id, ["100"]);
+    t.attempts.set(`${id}:1`, { at: 0, mediaIds: [] });
+    await t.set.reject(id);
+    expect(t.progress.size).toBe(0);
+    expect(t.attempts.size).toBe(0);
+    expect(t.released).toHaveLength(1);
+  });
+
+  it("withdraws a List creation X never confirmed, forgetting the attempt", async () => {
+    const t = rejectingHost();
+    const id = await t.submit("createList", { ref: "~1", name: "Friends", owner: theirPost.author, submittedAt: 0 });
+    t.attempts.set(`${id}:0`, { at: 0, mediaIds: [] });
+    await t.set.reject(id);
+    expect(t.attempts.size).toBe(0);
+  });
+});
+
+describe("references between actions", () => {
+  it("tracks what a create provides and what depends on it", () => {
+    const create: XAction = { kind: "createPost", payload: { refs: ["~1", "~2"], drafts: [], submittedAt: 0 } };
+    const like: XAction = { kind: "like", payload: { post: { id: "~2", info: theirPost }, on: true } };
+    const likeReal: XAction = { kind: "like", payload: { post: { id: "50", info: theirPost }, on: true } };
+    expect(providedRefs(create)).toEqual(["~1", "~2"]);
+    expect(dependedRefs(like)).toEqual(["~2"]);
+    expect(dependedRefs(likeReal)).toEqual([]);
+  });
+
+  it("names the images a pending post holds", () => {
+    const create: XAction = {
+      kind: "createPost",
+      payload: { refs: ["~1"], drafts: [draft("x", { images: [{ file: IMAGE, mediaType: "image/png" }] })], submittedAt: 0 },
+    };
+    expect(imageHandles(create)).toEqual([IMAGE.handle]);
+  });
+});
+
+describe("validateReplyParent", () => {
+  it("takes a reply only where X does: to a post that summons the account", () => {
+    expect(() => validateReplyParent(theirPost, me)).toThrow(/only to a post by @alice.*does none of those/);
+    expect(() => validateReplyParent({ ...theirPost, author: { ...theirPost.author, id: me.id } }, me)).not.toThrow();
+    expect(() => validateReplyParent({ ...theirPost, mentions: ["ALICE"] }, me)).not.toThrow();
+    const quoting = { ...theirPost, quoteOf: { id: "9", url: "https://x.com/alice/status/9", text: "mine", author: { ...theirPost.author, id: me.id }, createdAt: new Date(0) } };
+    expect(() => validateReplyParent(quoting, me)).not.toThrow();
+  });
+});
+
+describe("validateDraft", () => {
+  const none = new Set<string>();
+  const valid = (overrides: Partial<XPostDraft>): XPostDraft => ({ text: "hello", ...overrides });
+
+  it("accepts an ordinary post", () => {
+    expect(() => validateDraft(valid({}), me, none)).not.toThrow();
+    expect(() => validateDraft(valid({ text: "", images: [{ data: JPEG, mediaType: "image/jpeg" }] }), me, none)).not.toThrow();
+  });
+
+  it("measures text as X does, against the account's own limit", () => {
+    expect(() => validateDraft(valid({ text: "a".repeat(281) }), me, none)).toThrow(/281 characters.*280-character limit for @alice/);
+    expect(() => validateDraft(valid({ text: "a".repeat(281) }), premium, none)).not.toThrow();
+    expect(() => validateDraft(valid({ text: `${"a".repeat(257)} https://example.com/long` }), me, none)).toThrow(/281/);
+  });
+
+  it("refuses what X would refuse", () => {
+    expect(() => validateDraft(valid({ text: "  " }), me, none)).toThrow(/text or at least one image/);
+    const image = { data: PNG, mediaType: "image/png" as const };
+    expect(() => validateDraft(valid({ images: [image, image, image, image, image] }), me, none)).toThrow(/at most 4/);
+    expect(() => validateDraft(valid({ images: [image], poll: { options: ["a", "b"], durationMinutes: 60 } }), me, none))
+      .toThrow(/both a poll and images/);
+    expect(() => validateDraft(valid({ images: [{ data: PNG, mediaType: "image/jpeg" }] }), me, none))
+      .toThrow(/don't match its mediaType, image\/jpeg/);
+    expect(() => validateDraft(valid({ images: [{ data: new Uint8Array(), mediaType: "image/png" }] }), me, none))
+      .toThrow(/empty/);
+    expect(() => validateDraft(valid({ poll: { options: ["only"], durationMinutes: 60 } }), me, none)).toThrow(/2 to 4/);
+    expect(() => validateDraft(valid({ poll: { options: ["a", "b"], durationMinutes: 1 } }), me, none)).toThrow(/5 to 10,080/);
+  });
+
+  it("refuses more than the one cashtag X takes from the API", () => {
+    expect(() => validateDraft(valid({ text: "Watching $AAPL and $MSFT" }), me, none)).toThrow(/at most one cashtag/);
+    expect(() => validateDraft(valid({ text: "Watching $AAPL, up $10 today" }), me, none)).not.toThrow();
+  });
+
+  it("refuses a duplicate of a post already waiting, as X refuses duplicates", () => {
+    expect(() => validateDraft(valid({ text: "Hello  world https://a.co" }), me, new Set(["Hello world https://a.co"])))
+      .toThrow(/already waiting/);
+    // A different link makes a different post.
+    expect(() => validateDraft(valid({ text: "Hello world https://b.co" }), me, new Set(["Hello world https://a.co"])))
+      .not.toThrow();
+  });
+});

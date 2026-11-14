@@ -6,6 +6,9 @@ type GadgetSearch = {
   // Selected workpiece (gadget) ID. Workpiece IDs start at 0, so parsing must not treat 0 as
   // absent.
   w?: number
+  // Show the chat even where the workspace pane hides it (a notification's "Open task" asks for
+  // this). The editor drops it once honoured.
+  showChat?: true
 }
 
 function parseIntParam(value: unknown): number | undefined {
@@ -24,5 +27,6 @@ export const Route = createFileRoute('/workspace/$id')({
       : typeof search.chat === 'string' ? Number(search.chat) || undefined
       : undefined,
     w: parseIntParam(search.w),
+    showChat: search.showChat === true || undefined,
   }),
 })

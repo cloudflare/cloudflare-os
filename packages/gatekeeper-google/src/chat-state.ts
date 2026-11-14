@@ -21,6 +21,7 @@ type ChatActionBase = { submittedAt: number };
 
 export type ChatSendMessageAction = ChatActionBase & {
   type: "sendMessage";
+  /** The conversation, or for a send that creates it, a temporary {@link pendingSpaceName}. */
   spaceName: string;
   text: string;
   /** Set when the message is a threaded reply. */
@@ -28,6 +29,21 @@ export type ChatSendMessageAction = ChatActionBase & {
   /** A top-level send in a conversation that supports threading. */
   startsThread?: boolean;
   /** Makes the eventual create idempotent across a retried apply. */
+  requestId: string;
+  /** Set when the conversation does not exist yet: applying the send creates it first. */
+  newConversation?: ChatNewConversation;
+  /**
+   * For a send to exactly some people in their existing group chat, their `users/{user}` ids: it
+   * posts only while they are still exactly who else is there.
+   */
+  recipients?: string[];
+};
+
+/** A direct message or group chat that a queued send creates. */
+export type ChatNewConversation = {
+  /** Everyone besides the connected user, as a known Chat id or a directory profile. */
+  members: Array<{ id: string; name?: string; email?: string }>;
+  /** Makes creating the conversation idempotent across a retried apply. */
   requestId: string;
 };
 
@@ -58,6 +74,7 @@ export type PendingChatAction = { id: number; action: ChatAction };
 /** Prefix of the temporary name a submitted-but-uncommitted message carries. */
 const PENDING_MESSAGE_PREFIX = "pending:send:";
 const PENDING_THREAD_PREFIX = "pending:thread:";
+const PENDING_SPACE_PREFIX = "pending:space:";
 
 export function pendingMessageName(actionId: number): string {
   return `${PENDING_MESSAGE_PREFIX}${actionId}`;
@@ -76,6 +93,16 @@ export function pendingThreadName(actionId: number): string {
 /** The root send action id inside a temporary thread name. */
 export function pendingThreadActionId(name: string): number | undefined {
   return pendingActionId(name, PENDING_THREAD_PREFIX);
+}
+
+/** The temporary name of the conversation a queued send creates, keyed by its setup request. */
+export function pendingSpaceName(requestId: string): string {
+  return `${PENDING_SPACE_PREFIX}${requestId}`;
+}
+
+/** The setup request id inside a temporary conversation name, or undefined when it is not one. */
+export function pendingSpaceRequestId(name: string): string | undefined {
+  return name.startsWith(PENDING_SPACE_PREFIX) ? name.slice(PENDING_SPACE_PREFIX.length) : undefined;
 }
 
 function pendingActionId(name: string, prefix: string): number | undefined {
@@ -104,10 +131,12 @@ export function pendingMessageInfo(
     ...(threadName !== undefined ? { threadId: threadName } : {}),
     sender: self,
     text: action.text,
+    formattedText: action.text,
     mentions: [],
     createdAt: new Date(action.submittedAt),
     isReply: action.threadName !== undefined,
     attachments: [],
+    cards: [],
     reactions: [],
     pending: true,
   };
@@ -121,7 +150,9 @@ export function overlayMessage(
   let result = info;
   for (const { action } of pending) {
     if (action.type === "updateMessage" && action.messageName === info.id) {
-      result = { ...result, text: action.text, editedAt: new Date(action.submittedAt) };
+      result = {
+        ...result, text: action.text, formattedText: action.text, editedAt: new Date(action.submittedAt),
+      };
     }
   }
   return result;

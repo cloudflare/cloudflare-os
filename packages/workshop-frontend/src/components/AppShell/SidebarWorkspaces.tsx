@@ -20,9 +20,10 @@ import { openCommandPalette } from './commandPaletteBus'
 import { useKumoToastManager } from '@cloudflare/kumo'
 import type { RpcStub } from 'capnweb'
 import {
-  GadgetMetadataWithTimestamps,
+  WorkspaceMetadataWithTimestamps,
   Overseer,
   AiChatAuthorInfo,
+  NotificationMute,
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
@@ -42,15 +43,16 @@ type WorkspacesContextValue = {
   search: string
   setSearch: (v: string) => void
 
-  gadgets: GadgetMetadataWithTimestamps[]
+  gadgets: WorkspaceMetadataWithTimestamps[]
   gadgetsLoading: boolean
-  favorites: GadgetMetadataWithTimestamps[]
-  recent: GadgetMetadataWithTimestamps[]
+  favorites: WorkspaceMetadataWithTimestamps[]
+  recent: WorkspaceMetadataWithTimestamps[]
 
-  onTogglePin: (g: GadgetMetadataWithTimestamps) => void
-  onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
-  onShare: (g: GadgetMetadataWithTimestamps) => void
-  onDelete: (g: GadgetMetadataWithTimestamps) => void
+  onTogglePin: (g: WorkspaceMetadataWithTimestamps) => void
+  onRename: (g: WorkspaceMetadataWithTimestamps, newTitle: string) => void
+  onShare: (g: WorkspaceMetadataWithTimestamps) => void
+  onNotificationMuteChange: (g: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) => void
+  onDelete: (g: WorkspaceMetadataWithTimestamps) => void
 }
 
 const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -72,15 +74,15 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   const { authenticatedApi } = useAuthenticatedApi()
   const toasts = useKumoToastManager()
 
-  const [gadgets, setGadgets] = useState<GadgetMetadataWithTimestamps[]>([])
+  const [gadgets, setGadgets] = useState<WorkspaceMetadataWithTimestamps[]>([])
   const [gadgetsLoading, setGadgetsLoading] = useState(true)
 
   const [search, setSearch] = useState('')
 
   // Delete / share dialog state (workspaces).
-  const [deleteTarget, setDeleteTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<WorkspaceMetadataWithTimestamps | null>(null)
   const [isDeleting, setIsDeleting] = useState(false)
-  const [shareTarget, setShareTarget] = useState<GadgetMetadataWithTimestamps | null>(null)
+  const [shareTarget, setShareTarget] = useState<WorkspaceMetadataWithTimestamps | null>(null)
   const [shareOverseer, setShareOverseer] = useState<{ stub: RpcStub<Overseer> } | null>(null)
   const [currentUser, setCurrentUser] = useState<AiChatAuthorInfo | null>(null)
 
@@ -92,7 +94,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   useEffect(() => {
     let cancelled = false
     setGadgetsLoading(true)
-    authenticatedApi.listGadgets()
+    authenticatedApi.listWorkspaces()
       .then((list) => {
         if (cancelled) return
         setGadgets(list)
@@ -123,14 +125,14 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
   )
 
   const { favorites, recent } = useMemo(() => {
-    const favs: GadgetMetadataWithTimestamps[] = []
-    const rest: GadgetMetadataWithTimestamps[] = []
+    const favs: WorkspaceMetadataWithTimestamps[] = []
+    const rest: WorkspaceMetadataWithTimestamps[] = []
     for (const g of gadgets) {
       if (!matchText(g.title)) continue
       if (g.pinned) favs.push(g)
       else rest.push(g)
     }
-    const byActive = (a: GadgetMetadataWithTimestamps, b: GadgetMetadataWithTimestamps) =>
+    const byActive = (a: WorkspaceMetadataWithTimestamps, b: WorkspaceMetadataWithTimestamps) =>
       b.lastActive.getTime() - a.lastActive.getTime()
     favs.sort(byActive)
     rest.sort(byActive)
@@ -139,24 +141,21 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
 
   // --- Workspace actions ---------------------------------------------------
 
-  const onTogglePin = useCallback(async (g: GadgetMetadataWithTimestamps) => {
+  const onTogglePin = useCallback(async (g: WorkspaceMetadataWithTimestamps) => {
     const newPinned = !g.pinned
     setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, pinned: newPinned } : x)))
-    const overseer = authenticatedApi.openGadget(g.id) // pipelining
     try {
-      await overseer.setPinned(newPinned)
+      await authenticatedApi.setWorkspacePinned(g.id, newPinned)
     } catch (err) {
       console.error('Failed to toggle pin:', err)
       setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, pinned: g.pinned } : x)))
       toasts.add({ title: 'Failed to update favorite', variant: 'error' })
-    } finally {
-      overseer[Symbol.dispose]()
     }
   }, [authenticatedApi, toasts])
 
-  const onRename = useCallback(async (g: GadgetMetadataWithTimestamps, newTitle: string) => {
+  const onRename = useCallback(async (g: WorkspaceMetadataWithTimestamps, newTitle: string) => {
     setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, title: newTitle } : x)))
-    const overseer = authenticatedApi.openGadget(g.id)
+    const overseer = authenticatedApi.openWorkspace(g.id)
     try {
       await overseer.setTitle(newTitle)
     } catch (err) {
@@ -168,10 +167,10 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     }
   }, [authenticatedApi, toasts])
 
-  const onShare = useCallback(async (g: GadgetMetadataWithTimestamps) => {
+  const onShare = useCallback(async (g: WorkspaceMetadataWithTimestamps) => {
     let overseer: RpcStub<Overseer> | null = null
     try {
-      overseer = authenticatedApi.openGadget(g.id)
+      overseer = authenticatedApi.openWorkspace(g.id)
       const metadata = await overseer.getMetadata()
       setShareOverseer({ stub: overseer })
       setShareTarget({ ...g, ...metadata })
@@ -183,14 +182,17 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     }
   }, [authenticatedApi, toasts])
 
+  const onNotificationMuteChange = (g: WorkspaceMetadataWithTimestamps, mute: NotificationMute | undefined) =>
+    setGadgets((prev) => prev.map((x) => (x.id === g.id ? { ...x, notificationMute: mute } : x)))
+
   const handleDeleteConfirm = useCallback(async () => {
     if (!deleteTarget) return
     setIsDeleting(true)
     try {
       if (deleteTarget.owner) {
-        await authenticatedApi.dismissSharedGadget(deleteTarget.id)
+        await authenticatedApi.dismissSharedWorkspace(deleteTarget.id)
       } else {
-        const overseer = authenticatedApi.openGadget(deleteTarget.id) // pipelining
+        const overseer = authenticatedApi.openWorkspace(deleteTarget.id) // pipelining
         try {
           await overseer.deleteSelf()
         } finally {
@@ -221,6 +223,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     onTogglePin,
     onRename,
     onShare,
+    onNotificationMuteChange,
     onDelete: setDeleteTarget,
   }
 
@@ -251,6 +254,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
           onClose={() => setShareTarget(null)}
           overseer={shareOverseer.stub}
           metadata={shareTarget}
+          target={{ kind: 'workspace' }}
           currentUser={currentUser}
           authenticatedApi={authenticatedApi}
         />
@@ -301,6 +305,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     onTogglePin,
     onRename,
     onShare,
+    onNotificationMuteChange,
     onDelete,
   } = useWorkspacesContext()
 
@@ -319,6 +324,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             onTogglePin={onTogglePin}
             onRename={onRename}
             onShare={onShare}
+            onNotificationMuteChange={onNotificationMuteChange}
             onDelete={onDelete}
           />
         ))}
@@ -352,6 +358,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                 onTogglePin={onTogglePin}
                 onRename={onRename}
                 onShare={onShare}
+                onNotificationMuteChange={onNotificationMuteChange}
                 onDelete={onDelete}
               />
             ))}
@@ -385,6 +392,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
                   onTogglePin={onTogglePin}
                   onRename={onRename}
                   onShare={onShare}
+                  onNotificationMuteChange={onNotificationMuteChange}
                   onDelete={onDelete}
                 />
               ))}

@@ -80,6 +80,17 @@ export interface NonUniqueIndex<T, Key, PK extends string | number = string | nu
    */
   get(key: Key, options?: ListOptions<PK>): Iterable<T>;
   list(options?: ListOptions<Key>): Iterable<T>;
+
+  /**
+   * List the distinct keys at least one record is indexed under, in key order, without reading
+   * the records: string keys verbatim, integer keys as keyString() encodes them (the index can't
+   * tell at runtime that its keys are integers). `options` ranges and pages over the keys;
+   * `dedupe` does not apply.
+   *
+   * Keys are buffered before returning so callers can read groups while iterating without
+   * invalidating the key iterator.
+   */
+  listKeys(options?: ListOptions<Key>): Iterable<string>;
   delete(key: Key): number;
 
   /**
@@ -124,6 +135,15 @@ export interface Collection<T extends object, PrimaryKey = string> {
   get(key: PrimaryKey): T | undefined;
   list(options?: ListOptions<PrimaryKey>): Iterable<T>;
   delete(key: PrimaryKey): boolean;
+
+  /**
+   * Delete the record stored under `record`'s primary key, returning whether there was one. This
+   * is `delete()` for a caller holding a record (typically one it just listed) rather than a key:
+   * the collection derives the key the same way `put()` does, so the caller need not repeat how a
+   * computed primary key is built. Only the primary key is read from `record`; its other
+   * properties need not match what is stored.
+   */
+  deleteRecord(record: T): boolean;
 
   put(value: T): void;
 
@@ -447,6 +467,9 @@ function createCollection<
         });
       }
     },
+    deleteRecord(record: T): boolean {
+      return collection.delete(pkForT(record));
+    },
 
     subscribe(subscriber: Subscriber<T>): void {
       subscribers.add(subscriber);
@@ -671,6 +694,9 @@ function createCollection<
             }
           }
         }
+      },
+      listKeys(options: ListOptions<Key> = {}): Iterable<string> {
+        return Array.from(idxKv.listKeys(options));
       },
       delete(key: Key): number {
         let id = idxKv.get(key);

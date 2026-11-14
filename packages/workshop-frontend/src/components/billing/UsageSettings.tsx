@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { CloudflareUsageInfo, CloudflareAccountOption } from '@gadgets/workshop-shared/api'
 import { Button, useKumoToastManager } from '@cloudflare/kumo'
 import { Lightning, CloudCheck, Warning } from '@phosphor-icons/react'
@@ -7,7 +7,8 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import { useCloudflareLimitsEnabled } from '../../ServerConfigContext'
 import { buildAddCreditsUrl } from './creditsUrl'
 import ResetCountdown from './ResetCountdown'
-import { openConnectWindow } from '../../connectHandoff'
+import { NATIVE_CONNECT_COMPLETE_EVENT, openConnectWindow } from '../../connectHandoff'
+import { AuthPopupCancelledError } from '../../features/native-app/authPopup'
 
 /**
  * Shows the user's free-tier usage and Cloudflare connection / credit status on the profile page.
@@ -20,16 +21,18 @@ export default function UsageSettings() {
   const [usage, setUsage] = useState<CloudflareUsageInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
+  const refreshVersion = useRef(0)
 
   // Account-selection state (only used when the user has multiple Cloudflare accounts).
   const [accounts, setAccounts] = useState<CloudflareAccountOption[] | null>(null)
   const [selecting, setSelecting] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
+    const version = ++refreshVersion.current
     authenticatedApi.getCloudflareUsage()
-      .then((u: CloudflareUsageInfo) => setUsage(u))
+      .then((u: CloudflareUsageInfo) => { if (version === refreshVersion.current) setUsage(u) })
       .catch(() => {})
-      .finally(() => setLoading(false))
+      .finally(() => { if (version === refreshVersion.current) setLoading(false) })
   }, [authenticatedApi])
 
   useEffect(() => {
@@ -39,18 +42,25 @@ export default function UsageSettings() {
     }
     refresh()
     // Re-check when the tab regains focus (e.g. after connecting / topping up elsewhere).
-    const onFocus = () => refresh()
+    const onFocus = () => { setAccounts(null); refresh() }
     window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
+    window.addEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onFocus)
+    return () => {
+      ++refreshVersion.current
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener(NATIVE_CONNECT_COMPLETE_EVENT, onFocus)
+    }
   }, [limitsEnabled, refresh])
 
   // When the server says the user must pick an account, load the list of accounts to choose from.
   useEffect(() => {
+    let cancelled = false
     if (usage?.connected && usage.needsAccountSelection && accounts === null) {
       authenticatedApi.listCloudflareAccounts()
-        .then((list: CloudflareAccountOption[]) => setAccounts(list))
-        .catch(() => setAccounts([]))
+        .then((list: CloudflareAccountOption[]) => { if (!cancelled) setAccounts(list) })
+        .catch(() => { if (!cancelled) setAccounts([]) })
     }
+    return () => { cancelled = true }
   }, [usage, accounts, authenticatedApi])
 
   // Hidden entirely when the feature is off, or while the unlimited (self-hosted) default applies.
@@ -60,11 +70,12 @@ export default function UsageSettings() {
     setBusy(true)
     try {
       // Connecting (or signing in with) Cloudflare is handled by the Cloudflare gatekeeper. Open its
-      // OAuth popup; the popup redeems the ticket itself, and the account arrives through the
-      // accounts subscription (plus the focus refresh).
-      openConnectWindow(await authenticatedApi.connectAccount('cloudflare', []))
-    } catch {
-      toasts.add({ title: 'Failed to start Cloudflare connection', variant: 'error' })
+      // OAuth flow; native redemption triggers the refresh above after focus has already returned.
+      await openConnectWindow(await authenticatedApi.connectAccount('cloudflare', []), authenticatedApi)
+    } catch (error) {
+      if (error instanceof AuthPopupCancelledError) return
+      toasts.add({ title: 'Could not connect Cloudflare',
+        description: error instanceof Error ? error.message : undefined, variant: 'error' })
     } finally {
       setBusy(false)
     }

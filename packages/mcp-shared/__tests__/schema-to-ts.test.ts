@@ -30,39 +30,47 @@ function generate(tools: ClassifiedTool[], baseTypes = "// base\n"): string {
 // runtime (portal.ts, mcp.ts) from live MCP schemas, so tsgo never sees it. Note this is 6.0.3's
 // checker, not the 7.0.2 one the repo type-checks with -- forced, while TS 7 ships no compiler API.
 // The generated types are structural, not the inference corners where the port might plausibly differ.
-function expectTypeScriptToCompile(source: string): void {
-  const fileName = "generated.d.ts";
-  const options: ts.CompilerOptions = { noEmit: true, strict: true };
-  const host = ts.createCompilerHost(options);
-  const getSourceFile = host.getSourceFile.bind(host);
-  host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) =>
-    name === fileName
-      ? ts.createSourceFile(name, source, languageVersion, true, ts.ScriptKind.TS)
-      : getSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
-  host.fileExists = name => name === fileName || ts.sys.fileExists(name);
-  host.readFile = name => name === fileName ? source : ts.sys.readFile(name);
+const compilerOptions: ts.CompilerOptions = { noEmit: true, strict: true };
+const defaultHost = ts.createCompilerHost(compilerOptions);
+// One parse of the default lib (~3M chars), shared by every program; sound only because all of them
+// use the same options.
+const libFiles = new Map<string, ts.SourceFile | undefined>();
 
-  const errors = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
-    .filter(diagnostic => diagnostic.file?.fileName === fileName)
+function typeScriptErrors(fileName: string, source: string): string[] {
+  const host: ts.CompilerHost = {
+    ...defaultHost,
+    getSourceFile: (name, languageVersion, onError) => {
+      if (name === fileName) {
+        return ts.createSourceFile(name, source, languageVersion, true, ts.ScriptKind.TS);
+      }
+      if (!libFiles.has(name)) {
+        libFiles.set(name, defaultHost.getSourceFile(name, languageVersion, onError));
+      }
+      return libFiles.get(name);
+    },
+    fileExists: name => name === fileName || defaultHost.fileExists(name),
+    readFile: name => name === fileName ? source : defaultHost.readFile(name),
+  };
+  const program = ts.createProgram([fileName], compilerOptions, host);
+  const file = program.getSourceFile(fileName)!;
+  // Only this file's diagnostics, without checking the lib: lib errors were always filtered out,
+  // and generated output is a module, so nothing in it merges into a lib global.
+  return [
+    ...program.getOptionsDiagnostics(), ...program.getGlobalDiagnostics(),
+    ...program.getSyntacticDiagnostics(file), ...program.getSemanticDiagnostics(file),
+  ].filter(diagnostic => diagnostic.file?.fileName === fileName)
     .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
-  expect(errors).toEqual([]);
+}
+
+// Parse the lib while the file loads, where no per-test timeout applies.
+typeScriptErrors("warm-up.ts", "export {};\n");
+
+function expectTypeScriptToCompile(source: string): void {
+  expect(typeScriptErrors("generated.d.ts", source)).toEqual([]);
 }
 
 function expectTypeScriptProgramToCompile(source: string): void {
-  const fileName = "generated.ts";
-  const options: ts.CompilerOptions = { noEmit: true, strict: true };
-  const host = ts.createCompilerHost(options);
-  const getSourceFile = host.getSourceFile.bind(host);
-  host.getSourceFile = (name, languageVersion, onError, shouldCreateNewSourceFile) =>
-    name === fileName
-      ? ts.createSourceFile(name, source, languageVersion, true, ts.ScriptKind.TS)
-      : getSourceFile(name, languageVersion, onError, shouldCreateNewSourceFile);
-  host.fileExists = name => name === fileName || ts.sys.fileExists(name);
-  host.readFile = name => name === fileName ? source : ts.sys.readFile(name);
-  const errors = ts.getPreEmitDiagnostics(ts.createProgram([fileName], options, host))
-    .filter(diagnostic => diagnostic.file?.fileName === fileName)
-    .map(diagnostic => ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
-  expect(errors).toEqual([]);
+  expect(typeScriptErrors("generated.ts", source)).toEqual([]);
 }
 
 describe("sessionTypeName", () => {
@@ -102,9 +110,7 @@ describe("sessionTypeName", () => {
   });
 });
 
-// These tests invoke the TypeScript compiler, which can exceed Vitest's 5s default when package
-// test suites compete for CPU in CI.
-describe("generateSessionTypes", { timeout: 15_000 }, () => {
+describe("generateSessionTypes", () => {
   it("emits an overload per tool, keyed on the literal tool name", () => {
     const output = generate([
       tool({ name: "search", inputSchema: { type: "object", properties: { q: { type: "string" } },

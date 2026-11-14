@@ -7,7 +7,8 @@
     "dev": "echo \"run 'pnpm dev-server' in the root directory instead\" >&2 && exit 1",
     "deploy": "vp run --no-cache build:configurator && wrangler deploy",
     "clean": "rm -rf dist src/generated",
-    "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts && vitest run -c vitest.docs-worker.config.ts"
+    "test:run": "vp run -F @gadgets/google-gatekeeper build:configurator && vitest run && vitest run -c vitest.worker.config.ts && vitest run -c vitest.docs-worker.config.ts",
+    "record:blank-presentation": "node scripts/record-blank-presentation.ts"
   },
   "dependencies": {
     "@gadgets/configurator-ui": "workspace:*",
@@ -16,11 +17,12 @@
     "@gadgets/workshop-shared": "workspace:*",
     "capnweb": "catalog:",
     "capnweb-validate": "catalog:",
+    "jose": "^6.2.13",
     "mimetext": "^3.0.28",
-    "postal-mime": "^2.7.6"
+    "postal-mime": "^4.0.11"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "catalog:",
+    "@cloudflare/vitest-plugin": "catalog:",
     "@gadgets/scripts": "workspace:*",
     "miniflare": "catalog:",
     "typescript": "catalog:",

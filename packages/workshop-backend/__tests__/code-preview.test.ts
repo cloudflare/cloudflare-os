@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { CodePreviewManager, ExecuteCodeStreamManager } from '../src/code-preview';
 import type { AiChatStreamEvent } from '@gadgets/workshop-shared/api';
+import * as fc from 'fast-check';
+import { PROPERTY_RUN_OPTIONS } from '@gadgets/scripts/property-runs';
+import {
+  cutDeltas, decodableValue, deltaSizes, previewedToolCall, serialize, STREAMED_FIELD,
+  type PreviewedToolCall,
+} from './tool-input-streams';
 
 // ===========================================================================
 // Helpers
@@ -212,5 +218,85 @@ describe('ExecuteCodeStreamManager', () => {
       expect(last >= 0xd800 && last <= 0xdbff).toBe(false);
     }
     expect(deltas.map(ev => ev.delta).join("")).toBe("run('😀')");
+  });
+});
+
+// ===========================================================================
+// Property: preview deltas of a streamed tool call
+// ===========================================================================
+
+// The client rebuilds a streamed tool call's preview by concatenating its deltas (editPreviewDelta
+// for writeFile / editFile, toolCodeDelta for executeCode), which reach it UTF-8 encoded. For the
+// calls agents make, cut into provider deltas anywhere (see tool-input-streams.ts), every delta must
+// be well-formed UTF-16 -- a lone surrogate would arrive as U+FFFD -- the text must keep up with
+// the input, holding back only a high surrogate whose low half is still to come, and the whole
+// must be exactly the field's value.
+describe('code preview property', () => {
+  it('streams well-formed deltas that keep up with the input and add up to it', () => {
+    let surrogateCall: PreviewedToolCall = {
+      toolName: "writeFile",
+      input: {workpiece: "app", filename: "app.ts", content: "a😀b\\\"😀"},
+      asciiOnly: true,
+      spaced: true,
+    };
+    fc.assert(fc.property(previewedToolCall, deltaSizes, (call, sizes) => {
+      let field = STREAMED_FIELD[call.toolName];
+      let value = call.input[field];
+      let {json, valueStart} = serialize(call);
+      let events: AiChatStreamEvent[] = [];
+      let edits = new CodePreviewManager(ev => events.push(ev), () => ({workpieceId: 7}));
+      let code = new ExecuteCodeStreamManager(ev => events.push(ev));
+
+      edits.startToolCall(CALL, call.toolName);
+      code.startToolCall(CALL, call.toolName);
+      let received = 0;
+      let checked = 0;
+      let text = "";
+      for (let delta of cutDeltas(json, sizes)) {
+        edits.appendInput(CALL, delta);
+        code.appendInput(CALL, delta);
+        received += delta.length;
+        let at = `after ${received} of ${json.length} chars of ${json}`;
+        for (let ev of events.slice(checked)) {
+          if (ev.type !== "editPreviewDelta" && ev.type !== "toolCodeDelta") continue;
+          expect(ev.delta.isWellFormed(), `${at}: delta ${JSON.stringify(ev.delta)}`).toBe(true);
+          text += ev.delta;
+        }
+        checked = events.length;
+        let expected = decodableValue(json, valueStart, received);
+        if (received < json.length - 1 && /[\ud800-\udbff]$/.test(expected)) {
+          expected = expected.slice(0, -1);
+        }
+        // Compared JSON-encoded: a lone surrogate in a failure message is invalid UTF-8 to the
+        // vitest pool's WebSocket, which then drops the report.
+        expect(JSON.stringify(text), at).toBe(JSON.stringify(expected));
+      }
+      edits.finishToolCall(CALL, true);
+      code.finishToolCall(CALL);
+
+      let finalText = events.map(ev =>
+          ev.type === "editPreviewDelta" || ev.type === "toolCodeDelta" ? ev.delta : "").join("");
+      expect(finalText).toBe(value);
+      expect(ofType(events, "editPreviewClear")).toEqual([]);
+      if (call.toolName !== "executeCode") {
+        let filename = call.input.filename;
+        expect(ofType(events, "editPreviewStart")).toEqual([{
+          type: "editPreviewStart",
+          toolCallId: CALL,
+          file: {workpieceId: 7, filename},
+          ...call.toolName === "editFile" ? {textToReplace: call.input.textToReplace} : {},
+        }]);
+      }
+    }), {
+      ...PROPERTY_RUN_OPTIONS,
+      numRuns: 200,
+      examples: [
+        // One UTF-16 code unit per delta, so both a raw pair and a `\ud83d\ude00` pair split.
+        [surrogateCall, [1]],
+        [{...surrogateCall, asciiOnly: false}, [1]],
+        [{toolName: "executeCode", input: {code: "run('😀')"}, asciiOnly: true, spaced: false},
+         [1]],
+      ],
+    });
   });
 });

@@ -54,7 +54,7 @@ function seedGadget(impl: any): void {
 }
 
 async function commitFiles(impl: any, files: Record<string, string>): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents: [],
     author: { name: "Alice", email: "alice@example.com" },
     message: "test commit",
@@ -63,11 +63,15 @@ async function commitFiles(impl: any, files: Record<string, string>): Promise<st
 }
 
 // Spawns a chat through the spawner binding a gadget would hold, returning its chat id.
-async function spawnChat(impl: any, config: AgentSpawnerConfig): Promise<number> {
+async function spawnChat(impl: any, {env, ...config}: AgentSpawnerConfig): Promise<number> {
   let cls = impl.ctx.exports.AgentSpawnerGatekeeper({ props: {
-    overseerId: impl.ctx.id.toString(), config, creatorUserId: OWNER_USER_ID,
+    config, creatorUserId: OWNER_USER_ID,
   } });
-  let binding: AgentSpawnerBinding = await impl.getGatekeeperFacet(900, cls).startSession(undefined);
+  let bindings = Object.fromEntries(
+      Object.entries(env).map(([name, target]) => [name, { target }]));
+  let client = await impl.addGatekeeper(
+      cls, { type: "agentSpawner", config }, OWNER_USER_ID, undefined, bindings);
+  let binding: AgentSpawnerBinding = await client.openSession();
   await binding.spawn("Task", "Do the task.");
   let [meta] = [...impl.storage.chatMeta.list()];
   return meta.id;

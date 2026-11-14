@@ -52,7 +52,7 @@ export function AccountChooser({
   resourceTitle?: string
   connecting: boolean
   reconnectingAccountId: number | null
-  requiredResourceUrlPatterns?: string[]
+  requiredResourceUrlPatterns?: string[] | ((account: AccountOption) => string[])
   grantingAccountId?: number | null
   onSelect: (id: number) => void
   onConnect: () => void
@@ -78,12 +78,15 @@ export function AccountChooser({
           const expired = !account.credentialsValid
           const reconnecting = reconnectingAccountId === account.id
           const granted = account.description.grantedResourceUrlPatterns
+          const required = typeof requiredResourceUrlPatterns === 'function'
+            ? requiredResourceUrlPatterns(account) : requiredResourceUrlPatterns
           const accountMissing =
-            requiredResourceUrlPatterns && granted !== undefined
-              ? requiredResourceUrlPatterns.filter(p => !granted.includes(p))
+            required && granted !== undefined
+              ? required.filter(p => !granted.includes(p))
               : []
           const needsAccess = !expired && accountMissing.length > 0
           const granting = grantingAccountId === account.id
+          const grantInProgress = grantingAccountId !== null
           return (
             <div
               key={account.id}
@@ -128,7 +131,7 @@ export function AccountChooser({
                 <button
                   type="button"
                   onClick={() => onGrantAccess?.(account.id)}
-                  disabled={granting}
+                  disabled={grantInProgress}
                   className="shrink-0 cursor-pointer rounded-md border border-kumo-line px-2 py-1 text-[12px] leading-4 font-medium tracking-[-0.2px] text-kumo-default transition-colors hover:bg-kumo-elevated disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {granting ? 'Opening...' : 'Grant access'}

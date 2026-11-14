@@ -10,6 +10,22 @@ declare global {
       // (which is what a secret binding, can carry).
       ADMINS?: string[] | string;
 
+      // The Models tab's admin settings a deployment has until an admin changes one: a JSON object
+      // of the AdminConfig fields ADMIN_CONFIG_SEED_FIELDS lists, or the same object as a JSON
+      // string (a secret's form). See effectiveAdminConfig() in admin-config.ts.
+      ADMIN_CONFIG_SEED?: object | string;
+
+      // Where this Workshop runs: "development" under `pnpm dev-server` (scripts/run-dev-server.ts),
+      // "test" in the integration harness. A deployment never sets it, and must not: an absent or
+      // any other value is a deployment. A local instance lifts the limit on what `cf-os api` may do
+      // (see the /api route in server.ts).
+      WORKSHOP_ENVIRONMENT?: "development" | "test";
+      // The fewest days the admin audit log keeps a record, whatever admins choose in the admin
+      // panel: a positive whole number, 90 when unset, blank or invalid (see admin-access.ts, and
+      // docs/admin-access.md, which also says where each kind of deployment sets it). An
+      // environment variable so that a compromised admin session cannot shorten it.
+      ADMIN_AUDIT_RETENTION_MIN_DAYS?: string;
+
       // Workers AI binding (injected by generate-wrangler-prod / run-dev-server; not in base wrangler.jsonc).
       WORKERS_AI: Ai;
 
@@ -34,6 +50,17 @@ declare global {
       // Note: gatekeeper service bindings (GATEKEEPER_*) are intentionally NOT declared here. Core
       // discovers them generically by scanning env for the GATEKEEPER_ prefix (buildGatekeeperVendorMap)
       // and never references a specific gatekeeper by name, so naming one here would be wrong.
+
+      // Push delivery through the Cloudflare-operated notification service. The deploy service
+      // injects all four for installs it provisions; when any is missing, push is unavailable and
+      // notifications reach open browser tabs only. See docs/notifications.md.
+      NOTIFICATION_SERVICE_URL?: string;  // service origin
+      CFOS_INSTALL_ID?: string;           // this installation's central identity
+      CFOS_INSTALL_KEY_ID?: string;       // active signing-key generation
+      CFOS_INSTALL_PRIVATE_KEY?: string;  // secret: base64 PKCS#8 P-256 key that signs requests
+      // Browser push alone needs this VAPID key, which browsers subscribe with; without it the
+      // profile page offers no browser notifications, and native push is unaffected.
+      NOTIFICATION_WEB_PUSH_PUBLIC_KEY?: string;
 
       // Optional product analytics stream. Deployments can bind this to a
       // structured Cloudflare Pipelines stream; local/dev configs omit it and analytics no-op.
@@ -76,6 +103,11 @@ declare global {
 
       // Public base URL of the deployment.
       PUBLIC_BASE_URL?: string;
+
+      // What the service that installed this deployment wrote on its last upload of this Worker: a
+      // JSON binding of the release, its version tag and its update links. Typed `unknown` because
+      // deployServiceInstall() (deployment-updates.ts) is its only reader, and shape-checks it.
+      CLOUDFLARE_OS_DEPLOYMENT?: unknown;
 
       // Daily free-tier LLM-call limit (per user). Defaults to DEFAULT_DAILY_LLM_CALL_LIMIT.
       DAILY_LLM_CALL_LIMIT?: string;

@@ -21,12 +21,6 @@ export type HierarchicalListTouchInteractionOptions = {
   touchDragThresholdPx?: number;
 };
 
-/** Styled action presentation settings. */
-export type HierarchicalListActionPresentationOptions = {
-  /** Maximum width at which item actions use a drawer. Defaults to 639px. */
-  actionDrawerMaxWidthPx?: number;
-};
-
 /** Props that activate touch reordering when applied to a dedicated drag handle. */
 export type HierarchicalListTouchDragHandleProps = HTMLAttributes<HTMLElement> & {
   "data-hierarchical-list-touch-drag-handle": string;
@@ -46,13 +40,6 @@ const useMediaQuery = (queryText: string) => {
 
   return matches;
 };
-
-/** Whether item actions should use the narrow-layout drawer presentation. */
-export const useHierarchicalListActionDrawer = (
-  options?: HierarchicalListActionPresentationOptions,
-) => useMediaQuery(
-  `(max-width: ${Math.max(0, options?.actionDrawerMaxWidthPx ?? 639)}px)`,
-);
 
 /** Whether the primary pointer has coarse precision. */
 export const useHierarchicalListCoarsePointer = () => useMediaQuery("(pointer: coarse)");

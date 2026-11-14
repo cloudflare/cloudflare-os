@@ -1,150 +1,131 @@
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:test";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { ObserverKv } from "@gadgets/gatekeeper-kit/observers";
+import type { GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import type { ContextCollectionDurableObject } from "../src/context-collection.js";
 import {
-  ContextObserverTracker, type ContextVerifierApi,
+  CONTEXT_OBSERVER_DENIED, contextObserverAccessVerifier, contextObserverStrategy,
 } from "../src/context-observers.js";
+import { domainName } from "../src/domain.js";
+import { ContextVerifier } from "../src/library-gatekeeper.js";
 
-type TrackerKv = ConstructorParameters<typeof ContextObserverTracker>[0];
-
-function makeKv(): TrackerKv {
+function makeKv(): ObserverKv & { map: Map<string, unknown> } {
   let map = new Map<string, unknown>();
   return {
+    map,
     get: <T>(key: string) => map.get(key) as T | undefined,
     put: <T>(key: string, value: T) => void map.set(key, value),
-    delete: (key: string) => void map.delete(key),
-    list: <T>({ prefix }: { prefix: string }) =>
-      [...map.entries()].filter(([key]) => key.startsWith(prefix)) as [string, T][],
-  };
+    delete: (key: string) => map.delete(key),
+    list: <T>({ prefix }: { prefix?: string } = {}) =>
+      [...map.entries()].filter(([key]) => key.startsWith(prefix ?? "")) as Iterable<[string, T]>,
+  } as ObserverKv & { map: Map<string, unknown> };
 }
 
 function verifier(allowed: string[]) {
-  let calls: Array<{ sharingDomain: string; collectionId: string }> = [];
-  let api = {
-    async hasCollectionAccess(sharingDomain: string, collectionId: string) {
-      calls.push({ sharingDomain, collectionId });
-      return allowed.includes(collectionId);
+  let calls: Array<{ sharingDomain: string; collectionIds: string[] }> = [];
+  let user = {
+    async hasCollectionsAccess(sharingDomain: string, collectionIds: string[]) {
+      calls.push({ sharingDomain, collectionIds });
+      return collectionIds.map(id => allowed.includes(id));
     },
-  } as unknown as Fetcher<ContextVerifierApi>;
-  return { api, calls };
+  } as unknown as Fetcher<GatekeeperUserVerifier>;
+  return { user, calls };
 }
 
-async function observe(tracker: ContextObserverTracker, collectionIds: string[]) {
-  let check = await tracker.prepareObservation(collectionIds);
-  check.commit();
-  return check.excludeObservers;
-}
+describe("contextObserverStrategy", () => {
+  it("keeps enforcing collections recorded before reads reported them as subresources", async () => {
+    for (let legacy of [true, "observed", "pending"]) {
+      let kv = makeKv();
+      kv.put("observedCollection:private", legacy);
+      let strategy = contextObserverStrategy(kv, "workshop.example");
 
-describe("ContextObserverTracker", () => {
-  it("checks every past collection before storing an observer", async () => {
-    let tracker = new ContextObserverTracker(makeKv(), "workshop.example");
-    await observe(tracker, ["public", "private"]);
-    let denied = verifier(["private"]);
-
-    await expect(tracker.addObserver("observer", denied.api)).rejects.toThrow(
-      /does not have access to a Context collection/,
-    );
-    expect(denied.calls).toEqual([
-      { sharingDomain: "workshop.example", collectionId: "public" },
-      { sharingDomain: "workshop.example", collectionId: "private" },
-    ]);
-
-    await observe(tracker, ["later"]);
-    expect(denied.calls).toHaveLength(2);
+      await expect(strategy.addObserver("denied", verifier([]).user))
+        .rejects.toThrow(CONTEXT_OBSERVER_DENIED);
+      let allowed = verifier(["private"]);
+      await strategy.addObserver("allowed", allowed.user);
+      expect(allowed.calls).toEqual([
+        { sharingDomain: "workshop.example", collectionIds: ["private"] },
+      ]);
+    }
   });
 
-  it("excludes observers from new collections and removes them idempotently", async () => {
-    let tracker = new ContextObserverTracker(makeKv(), "workshop.example");
-    let allowed = verifier(["first", "second", "third"]);
-    let limited = verifier(["first"]);
-    await tracker.addObserver("allowed", allowed.api);
-    await tracker.addObserver("limited", limited.api);
-
-    expect(await observe(tracker, ["first"])).toBeUndefined();
-    expect(await observe(tracker, ["second", "second"])).toEqual(["limited"]);
-    expect(await observe(tracker, ["second"])).toBeUndefined();
-
-    tracker.removeObserver("limited");
-    tracker.removeObserver("limited");
-    expect(await observe(tracker, ["third"])).toBeUndefined();
-    expect(limited.calls.map(call => call.collectionId)).toEqual(["first", "second"]);
-  });
-
-  it("keeps blocked collections pending and rechecks them on retry", async () => {
+  it("refuses without disclosing which collection the collaborator cannot read", async () => {
     let kv = makeKv();
-    let tracker = new ContextObserverTracker(kv, "workshop.example");
-    let limited = verifier([]);
-    await tracker.addObserver("limited", limited.api);
+    let strategy = contextObserverStrategy(kv, "workshop.example");
+    let check = await strategy.prepare!(["private-collection-id"]);
+    check.commit();
 
-    let first = await tracker.prepareObservation(["private"]);
-    expect(first.excludeObservers).toEqual(["limited"]);
-    expect(kv.get("observedCollection:private")).toBe("pending");
+    let denial = strategy.addObserver("denied", verifier([]).user);
+    await expect(denial).rejects.toThrow(CONTEXT_OBSERVER_DENIED);
+    await expect(denial).rejects.not.toThrow(/private-collection-id/);
+  });
+});
 
-    let retry = await tracker.prepareObservation(["private"]);
-    expect(retry.excludeObservers).toEqual(["limited"]);
-    tracker.removeObserver("limited");
-    let allowedRetry = await tracker.prepareObservation(["private"]);
-    expect(allowedRetry.excludeObservers).toBeUndefined();
-    allowedRetry.commit();
-    expect(kv.get("observedCollection:private")).toBe("observed");
-    expect(limited.calls.map(call => call.collectionId)).toEqual(["private", "private"]);
+describe("contextObserverAccessVerifier", () => {
+  // The miniflare bindings vitest.config.ts declares, which Cloudflare.Env does not.
+  const testEnv = env as unknown as { COLLECTIONS: DurableObjectNamespace<ContextCollectionDurableObject> };
+  const collections = testEnv.COLLECTIONS;
+
+  // Storage persists across the file's tests, so each gets its own sharing domain.
+  let domain = "";
+  let domains = 0;
+  beforeEach(() => {
+    domain = `observers-${domains++}.example`;
   });
 
-  it("checks pending collections when admitting a concurrent observer", async () => {
-    let kv = makeKv();
-    let tracker = new ContextObserverTracker(kv, "workshop.example");
-    let release!: () => void;
-    let waiting = new Promise<void>(resolve => { release = resolve; });
-    let current = {
-      async hasCollectionAccess() { await waiting; return true; },
-    } as unknown as Fetcher<ContextVerifierApi>;
-    await tracker.addObserver("current", current);
+  const collection = (id: string) => collections.get(collections.idFromName(domainName(domain, id)));
 
-    let preparing = tracker.prepareObservation(["new"]);
-    expect(kv.get("observedCollection:new")).toBe("pending");
-    let denied = verifier([]);
-    await expect(tracker.addObserver("new", denied.api)).rejects.toThrow(/does not have access/);
-    release();
-    (await preparing).commit();
-    expect(denied.calls.map(call => call.collectionId)).toEqual(["new"]);
+  async function createCollection(id: string, visibility: "private" | "public") {
+    let now = new Date();
+    await collection(id).initialize({
+      id, title: id, description: "", visibility,
+      created: now, lastUpdated: now, documentCount: 0, content: { source: "web" },
+    }, domain, visibility === "private" ? "alice" : "");
+  }
+
+  // An observer as the Workshop hands it over: their account's own verifier. The test runner's
+  // exports hold only the Durable Objects, so the verifier gets a context giving it theirs.
+  const observer = (accountId: string, sharingDomain = domain) => ({
+    id: accountId,
+    verifier: new ContextVerifier({
+      props: { sharingDomain, accountId },
+      exports: { ContextCollectionDurableObject: collections },
+    } as unknown as ConstructorParameters<typeof ContextVerifier>[0], env as Cloudflare.Env) as
+      unknown as Fetcher<GatekeeperUserVerifier>,
   });
 
-  it("rechecks collections added while observer admission is awaiting", async () => {
-    let tracker = new ContextObserverTracker(makeKv(), "workshop.example");
-    await observe(tracker, ["old"]);
-    let release!: () => void;
-    let waiting = new Promise<void>(resolve => { release = resolve; });
-    let calls: string[] = [];
-    let candidate = {
-      async hasCollectionAccess(_domain: string, collectionId: string) {
-        calls.push(collectionId);
-        if (collectionId === "old") await waiting;
-        return collectionId === "old";
-      },
-    } as unknown as Fetcher<ContextVerifierApi>;
+  const allowed = async (accountIds: string[], collectionIds: string[]) =>
+    (await contextObserverAccessVerifier(domain)(
+      accountIds.map(accountId => observer(accountId)), collectionIds)).allowedObserverIds;
 
-    let admission = tracker.addObserver("candidate", candidate);
-    await tracker.prepareObservation(["new"]);
-    release();
-    await expect(admission).rejects.toThrow(/does not have access/);
-    expect(calls).toEqual(["old", "new"]);
+  it("allows exactly the observers whose account can read every collection now", async () => {
+    await createCollection("shared", "private");
+    await collection("shared").share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
+    await createCollection("everyone", "private");
+    await collection("everyone").setEveryoneCanView("alice", true);
+    await createCollection("public", "public");
+    await createCollection("unshared", "private");
+    await createCollection("deleted", "private");
+    await collection("deleted").removeAccount("alice");
+
+    let everyone = ["alice", "bob", "carol"];
+    expect(await allowed(everyone, ["everyone", "public"])).toEqual(everyone);
+    expect(await allowed(everyone, ["shared", "everyone", "public"])).toEqual(["alice", "bob"]);
+    expect(await allowed(everyone, ["unshared", "public"])).toEqual(["alice"]);
+    expect(await allowed(everyone, ["deleted"])).toEqual([]);
+    expect(await allowed(everyone, ["never-created"])).toEqual([]);
+    // Another sharing domain's account, even one with the same ID, reads none of this domain.
+    expect((await contextObserverAccessVerifier(domain)(
+      [observer("alice", "elsewhere.example")], ["public"])).allowedObserverIds).toEqual([]);
   });
 
-  it("handles concurrent mixed collection attempts and legacy markers", async () => {
-    let kv = makeKv();
-    kv.put("observedCollection:legacy", true);
-    let tracker = new ContextObserverTracker(kv, "workshop.example");
-    let limited = verifier(["legacy"]);
-    await tracker.addObserver("limited", limited.api);
+  it("denies an observer as soon as their access is revoked", async () => {
+    await createCollection("shared", "private");
+    await collection("shared").share("alice", [{ accountId: "bob", displayName: "bob" }], "viewer");
+    expect(await allowed(["bob"], ["shared"])).toEqual(["bob"]);
 
-    let first = tracker.prepareObservation(["pending"]);
-    let concurrent = tracker.prepareObservation(["pending"]);
-    expect((await first).excludeObservers).toEqual(["limited"]);
-    expect((await concurrent).excludeObservers).toEqual(["limited"]);
+    await collection("shared").removeMember("alice", "bob");
 
-    let mixed = await tracker.prepareObservation(["legacy", "pending", "new", "new"]);
-    expect(mixed.pendingCollections).toEqual(["pending", "new"]);
-    expect(mixed.excludeObservers).toEqual(["limited"]);
-    mixed.commit();
-    expect((await tracker.prepareObservation(["legacy", "pending", "new"]))
-      .pendingCollections).toEqual([]);
+    expect(await allowed(["bob"], ["shared"])).toEqual([]);
   });
 });

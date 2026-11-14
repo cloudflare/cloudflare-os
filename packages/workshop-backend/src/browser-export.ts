@@ -41,7 +41,7 @@ const EXPORT_DOCUMENT_URL = "https://gadget-export.invalid/";
 // 'unsafe-inline' admits the inline import map, as in the live iframe; `data:` scripts already let
 // gadget code run anything.
 const EXPORT_DOCUMENT_CSP = "default-src 'none'; frame-src 'none'; " +
-  "script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; " +
+  "script-src data: 'unsafe-inline' 'wasm-unsafe-eval'; style-src data: 'unsafe-inline'; " +
   "img-src data: blob:; media-src data: blob:; font-src data:; object-src 'none'; " +
   "base-uri 'none'; form-action 'none'; connect-src 'none'; sandbox allow-scripts;";
 const STATIC_HTML_CSP = "default-src 'none'; frame-src 'none'; script-src 'none'; " +

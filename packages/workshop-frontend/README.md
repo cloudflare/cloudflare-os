@@ -18,6 +18,32 @@ It always produces a production bundle, whatever `NODE_ENV` the shell holds, and
 before building — a cache hit restores archived files without deleting any, so the previous build's
 sourcemaps would otherwise linger. `vite.config.ts` documents both.
 
+## Gatekeeper user selection
+
+Gatekeeper management apps can open the Workshop-owned **Select users** picker through
+`selectUsers(receiver)`. Selections are delivered through the receiver's `receive(selection)` method.
+With directory search enabled, users select only directory results; empty or failed searches do not
+offer an exact-username/email fallback. With search disabled, users enter an exact identifier
+directly. Arrow keys navigate options while focus stays in the input; Tab moves to the next control
+without selecting a user. Picking someone does not re-run the current search: people already added
+or being added are excluded when each search is issued and hidden from results returned earlier.
+If minting or delivery fails, the current query is refreshed so the person can be selected again,
+including when the server excluded them from a search made while their selection was pending.
+Refreshed results stay dismissed after blur or Escape until the user focuses, types, or uses an
+arrow key to reopen them.
+Each person the app accepts is announced to assistive technology by their snapshotted name.
+
+**Done** and the close button both wait for ticket minting and selection deliveries before closing.
+If a pending mint or delivery fails, closing is cancelled so the error remains visible and the user
+can retry or choose **Done** again. Every picker session starts with fresh search and selection state,
+including when closing one and opening another are batched in the same render.
+**Stop waiting and close** cancels the picker and disposes its outstanding mint and delivery RPC
+promises as well as its receiver; frame teardown does the same. Closing and cancelling both resolve
+`selectUsers()`; after a cancellation, a delivery already sent to the app may still settle, and
+cancellation cannot undo a selection the app already accepted. `selectUsers()` rejects only when the
+picker cannot be opened or, on teardown, when the app's connection to the host closes. A superseded
+or abandoned directory search is disposed as soon as it is no longer needed.
+
 ## Authentication modes
 
 The frontend supports two authentication modes, selected at build time.

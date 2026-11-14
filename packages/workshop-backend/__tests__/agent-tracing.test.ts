@@ -1,17 +1,18 @@
-// Agent turns emit the spans Cloudflare's Agents dashboard reads (src/agent-tracing.ts). Drives
-// real turns on a real OverseerDurableObject, with the model provider's HTTP API stubbed, and
-// reads the spans back from the streaming tail worker in vitest.config.ts.
+// Agent turns emit the spans Cloudflare's Agents dashboard reads (src/agent-tracing.ts) and notify
+// the user how they ended. Drives real turns on a real OverseerDurableObject, with the model
+// provider's HTTP API stubbed, and reads the spans back from the streaming tail worker in
+// vitest.config.ts.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type {
-  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig,
+  AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiModelConfig, UserNotification,
 } from "@gadgets/workshop-shared/api";
 import type { ActionDescription } from "@gadgets/workshop-shared/gatekeeper";
-import type {
-  ActionRecord, AutoApproveTagRecord, OverseerDurableObject,
-} from "../src/overseer.js";
+import type { OverseerDurableObject } from "../src/overseer.js";
+import type { ActionRecord, AutoApproveTagRecord }
+  from "../src/storage-schema/overseer-storage.js";
 
 // The OverseerImpl members these tests drive; the class itself is private to overseer.ts.
 interface OverseerInternals {
@@ -19,20 +20,24 @@ interface OverseerInternals {
   ownerId: string;
   users: {
     idFromString(id: string): string;
-    get(): {
+    get(id: string): {
       getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: AiModel }>;
       getCloudflareGatekeeperAccount(): Promise<null>;
       consumeDailyLlmCall(): Promise<{ withinLimits: boolean }>;
+      whoami(): Promise<AiChatAuthorInfo>;
+      messageArrived(): Promise<void>;
     };
   };
   storage: {
     chatMeta: { put(meta: AiChatMetadata): void };
     chats: { put(message: AiChatMessage): void };
     gatekeepers: { put(record: object): void };
-    actions: { list(): Iterable<ActionRecord> };
+    actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
+    chatNotifications: OverseerDurableObject["impl"]["storage"]["chatNotifications"];
   };
   nextChatSequence(chatId: number): number;
+  commitAgentStep(...args: unknown[]): Promise<boolean>;
   startAgent(chatId: number, aiModel: AiModel, initiator: AiChatAuthorInfo,
              initiatorUserId: string): void;
   deliverAgentCallback(chatId: number, methodName: string, args: unknown[],
@@ -42,7 +47,7 @@ interface OverseerInternals {
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
   drainAutoApprovals(gatekeeperId: number): Promise<void>;
-  getGatekeeperFacet(): { applyAction(): Promise<void> };
+  getGatekeeperFacet(): Promise<{ applyAction(): Promise<void> }>;
   applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo, autoApproved: boolean)
       : Promise<void>;
 }
@@ -68,6 +73,8 @@ declare module "cloudflare:workers" {
 }
 
 const OWNER_USER_ID = "owner-user-do";
+// A collaborator, so a notification routed to the workspace owner instead is caught.
+const INITIATOR_USER_ID = "collaborator-user-do";
 const OWNER: AiChatAuthorInfo = { type: "user", id: "owner@example.com", name: "Owner" };
 const MODEL: AiChatAuthorInfo = { type: "agent", id: "claude", name: "Claude" };
 const MODEL_ID = "claude-tracing-test";
@@ -81,6 +88,8 @@ interface Turn {
   gadgetId: string;
   // The request that started the turn, which stays open until the turn ends.
   session: Promise<void>;
+  // The user each notification of the turn went to, and what it said.
+  notifications: [string, UserNotification][];
   // Resolves once the turn has started its first model request.
   requested: Promise<void>;
   // Lets that first request respond.
@@ -157,6 +166,8 @@ interface TurnOptions {
   config?: AiModelConfig;
   // Turns on the free-tier usage limit, which the owner has used up.
   usageLimited?: boolean;
+  // Who starts the turn: the owner by default, or a gadget, as for a spawned agent.
+  initiator?: AiChatAuthorInfo;
 }
 
 // Seeds a chat whose owner asked something, then starts a turn from a request that stays open
@@ -164,18 +175,28 @@ interface TurnOptions {
 function startTurn(responses: (() => Response)[], {
   config = { provider: "anthropic", model: MODEL_ID, apiToken: "test-key", apiUrl: API_URL },
   usageLimited = false,
+  initiator = OWNER,
 }: TurnOptions = {}): Turn {
   let provider = stubProvider(responses);
+  let notifications: [string, UserNotification][] = [];
   let workspace = `agent-tracing-${crypto.randomUUID()}`;
   let session = inOverseer(workspace, async impl => {
+    // The workspace records eligible outcomes; delivery/retry is covered by unread-state.test.
+    impl.storage.chatNotifications.subscribe({
+      add: event => { notifications.push([event.userId, {id: event.id, kind: event.kind,
+        workspaceId: gadgetId, chatId: event.chatId, chatTitle: "Chat"}]); },
+      update: () => {}, remove: () => {},
+    });
     if (usageLimited) impl.env = { ...impl.env, ENABLE_CLOUDFLARE_LIMITS: "true" };
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
       idFromString: (id: string) => id,
-      get: () => ({
+      get: (userId: string) => ({
         getChatContext: async () => ({ profile: OWNER, aiModel: { profile: MODEL, config } }),
         getCloudflareGatekeeperAccount: async () => null,
         consumeDailyLlmCall: async () => ({ withinLimits: false }),
+        whoami: async () => OWNER,
+        messageArrived: async () => {},
       }),
     };
     impl.storage.chatMeta.put({
@@ -186,11 +207,11 @@ function startTurn(responses: (() => Response)[], {
       chatId: CHAT_ID, sequence: impl.nextChatSequence(CHAT_ID), timestamp: new Date(0),
       author: OWNER, type: "message", message: `Please look at ${SECRET}.`,
     });
-    impl.startAgent(CHAT_ID, { profile: MODEL, config }, OWNER, OWNER_USER_ID);
+    impl.startAgent(CHAT_ID, { profile: MODEL, config }, initiator, INITIATOR_USER_ID);
     await impl.waitForAllAgentsToComplete();
   });
   let gadgetId = env.TEST_OVERSEER.idFromName(workspace).toString();
-  return { workspace, gadgetId, session, ...provider };
+  return { workspace, gadgetId, session, notifications, ...provider };
 }
 
 async function inOverseer(
@@ -380,7 +401,7 @@ describe("agent tracing", () => {
         },
       });
       impl.storage.autoApproveTags.put({ gatekeeperId: 7, actionKind: poke, enabledBy: OWNER });
-      impl.getGatekeeperFacet = () => ({ applyAction: async () => {} });
+      impl.getGatekeeperFacet = async () => ({ applyAction: async () => {} });
 
       // A rule approves this action without a request. (Submitted first: a pending manual gate
       // holds back every later action of its connection.)
@@ -391,10 +412,11 @@ describe("agent tracing", () => {
       await impl.drainAutoApprovals(7);
       await impl.submitAction(7, 2, {
         title: `Send ${SECRET}`, description: SECRET, implementsRevert: false,
+        autoApprovable: false,
       }, { from: "agent", chatId: CHAT_ID });
       // Actions a user submits are not the agent's.
       await impl.submitAction(7, 3, {
-        title: "Mine", description: "", implementsRevert: false,
+        title: "Mine", description: "", implementsRevert: false, autoApprovable: false,
       }, { from: "user" });
 
       let records = [...impl.storage.actions.list()];
@@ -425,5 +447,86 @@ describe("agent tracing", () => {
       ["tool_approval testvendor", { "cloudflare.agents.tool.approval.state": "approved" }],
     ]);
     for (let span of approvals) expect(JSON.stringify(span.attributes)).not.toContain(SECRET);
+  });
+});
+
+describe("turn notifications", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  let reply = () => anthropicResponse([{ type: "text", text: "Done." }], "end_turn",
+      { input: 1, cacheRead: 0, cacheWrite: 0, output: 1 });
+  let notification = (turn: Turn, kind: UserNotification["kind"]) => [INITIATOR_USER_ID, {
+    id: expect.any(String), kind, workspaceId: turn.gadgetId, chatId: CHAT_ID, chatTitle: "Chat",
+  }];
+
+  it("tells the initiator a turn completed, but not a callback turn nobody started", async () => {
+    let turn = startTurn([reply, reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, impl =>
+        impl.deliverAgentCallback(CHAT_ID, "ping", [], OWNER_USER_ID, MODEL.id));
+    turn.release();
+
+    await turnSpans(turn, 2);
+    expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
+  it("does not tell anyone a spawned agent's turn completed", async () => {
+    let turn = startTurn([reply], {
+      initiator: { type: "gadget", id: "spawner", name: "Spawner" },
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([]);
+  });
+
+  it("sends nothing for a turn that failed", async () => {
+    let turn = startTurn([() => Response.json(
+        { type: "error", error: { type: "invalid_request_error", message: "bad" } },
+        { status: 400 })]);
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([]);
+  });
+
+  // The agent submits an action that waits for the user's decision while its step runs; the user
+  // decides (or not) during the step, or once it is over and persisting.
+  it.each([
+    { state: "pending", when: "during its step", kind: "permissionRequested" },
+    { state: "rejected", when: "during its step", kind: "taskCompleted" },
+    { state: "rejected", when: "as its step persists", kind: "taskCompleted" },
+  ] as const)("sends $kind when the awaited action is $state $when",
+      async ({ state, when, kind }) => {
+    let turn = startTurn([reply]);
+    await turn.requested;
+    await inOverseer(turn.workspace, async impl => {
+      impl.storage.gatekeepers.put({
+        id: 7, resourceTitle: "Repository", class: {},
+        creationSpec: {
+          type: "gatekeeper", vendorId: "testvendor",
+          resourceUrl: "https://example.com/repo", typeUrlPattern: "https://*",
+        },
+      });
+      await impl.submitAction(7, 1, {
+        title: "Send", description: "", implementsRevert: false, awaitDecision: true,
+        autoApprovable: false,
+      }, { from: "agent", chatId: CHAT_ID });
+      let [record] = impl.storage.actions.list();
+      let decide = () => impl.storage.actions.put({ ...record, state });
+      if (when === "as its step persists") {
+        let commit = impl.commitAgentStep.bind(impl);
+        impl.commitAgentStep = (...args) => {
+          decide();
+          return commit(...args);
+        };
+      } else {
+        decide();
+      }
+    });
+    turn.release();
+
+    await turn.session;
+    expect(turn.notifications).toEqual([notification(turn, kind)]);
   });
 });

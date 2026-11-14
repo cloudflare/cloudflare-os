@@ -1,0 +1,421 @@
+{
+ "presentationId": "12dPoi4tT0Uf89eFjddC2s_Pwg99WQ9NOqqSvtMnMYnc",
+ "pageSize": {
+  "width": {
+   "magnitude": 9144000,
+   "unit": "EMU"
+  },
+  "height": {
+   "magnitude": 5143500,
+   "unit": "EMU"
+  }
+ },
+ "slides": [
+  {
+   "objectId": "p",
+   "pageElements": [
+    {
+     "objectId": "i0",
+     "shape": {
+      "placeholder": {
+       "type": "CENTERED_TITLE"
+      }
+     }
+    },
+    {
+     "objectId": "i1",
+     "shape": {
+      "placeholder": {
+       "type": "SUBTITLE"
+      }
+     }
+    }
+   ],
+   "slideProperties": {
+    "layoutObjectId": "p2",
+    "masterObjectId": "simple-light-2",
+    "notesPage": {
+     "pageElements": [
+      {
+       "objectId": "i2",
+       "shape": {}
+      },
+      {
+       "objectId": "i3",
+       "shape": {}
+      }
+     ],
+     "notesProperties": {
+      "speakerNotesObjectId": "i3"
+     }
+    }
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "stretchedPictureFill": {
+      "size": {
+       "width": {
+        "magnitude": 13600,
+        "unit": "EMU"
+       },
+       "height": {
+        "magnitude": 4600,
+        "unit": "EMU"
+       }
+      }
+     }
+    }
+   }
+  },
+  {
+   "objectId": "probe_s2",
+   "pageElements": [
+    {
+     "objectId": "probe_t2",
+     "shape": {
+      "text": {
+       "textElements": [
+        {
+         "endIndex": 27
+        },
+        {
+         "endIndex": 27,
+         "textRun": {
+          "content": "Inherits a coloured layout\n"
+         }
+        }
+       ]
+      },
+      "placeholder": {
+       "type": "TITLE"
+      }
+     }
+    },
+    {
+     "objectId": "SLIDES_API532873051_0",
+     "shape": {
+      "placeholder": {
+       "type": "BODY"
+      }
+     }
+    }
+   ],
+   "slideProperties": {
+    "layoutObjectId": "p4",
+    "masterObjectId": "simple-light-2",
+    "notesPage": {
+     "pageElements": [
+      {
+       "objectId": "SLIDES_API532873051_1",
+       "shape": {}
+      },
+      {
+       "objectId": "SLIDES_API532873051_2",
+       "shape": {}
+      }
+     ],
+     "notesProperties": {
+      "speakerNotesObjectId": "SLIDES_API532873051_2"
+     }
+    }
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  }
+ ],
+ "title": "gk theme probe",
+ "masters": [
+  {
+   "objectId": "simple-light-2",
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "solidFill": {
+      "color": {
+       "themeColor": "LIGHT1"
+      },
+      "alpha": 1
+     }
+    },
+    "colorScheme": {
+     "colors": [
+      {
+       "type": "DARK1",
+       "color": {
+        "red": 0.06666667,
+        "green": 0.13333334,
+        "blue": 0.2
+       }
+      },
+      {
+       "type": "LIGHT1",
+       "color": {
+        "red": 1,
+        "green": 1,
+        "blue": 1
+       }
+      },
+      {
+       "type": "DARK2",
+       "color": {
+        "red": 0.34901962,
+        "green": 0.34901962,
+        "blue": 0.34901962
+       }
+      },
+      {
+       "type": "LIGHT2",
+       "color": {
+        "red": 0.8,
+        "green": 0.8980392,
+        "blue": 1
+       }
+      },
+      {
+       "type": "ACCENT1",
+       "color": {
+        "red": 0.25882354,
+        "green": 0.52156866,
+        "blue": 0.95686275
+       }
+      },
+      {
+       "type": "ACCENT2",
+       "color": {
+        "red": 0.12941177,
+        "green": 0.12941177,
+        "blue": 0.12941177
+       }
+      },
+      {
+       "type": "ACCENT3",
+       "color": {
+        "red": 0.47058824,
+        "green": 0.5647059,
+        "blue": 0.6117647
+       }
+      },
+      {
+       "type": "ACCENT4",
+       "color": {
+        "red": 1,
+        "green": 0.67058825,
+        "blue": 0.2509804
+       }
+      },
+      {
+       "type": "ACCENT5",
+       "color": {
+        "green": 0.5921569,
+        "blue": 0.654902
+       }
+      },
+      {
+       "type": "ACCENT6",
+       "color": {
+        "red": 0.93333334,
+        "green": 1,
+        "blue": 0.25490198
+       }
+      },
+      {
+       "type": "HYPERLINK",
+       "color": {
+        "green": 0.5921569,
+        "blue": 0.654902
+       }
+      },
+      {
+       "type": "FOLLOWED_HYPERLINK",
+       "color": {
+        "green": 0.5921569,
+        "blue": 0.654902
+       }
+      },
+      {
+       "type": "TEXT1",
+       "color": {
+        "red": 0.06666667,
+        "green": 0.13333334,
+        "blue": 0.2
+       }
+      },
+      {
+       "type": "BACKGROUND1",
+       "color": {
+        "red": 1,
+        "green": 1,
+        "blue": 1
+       }
+      },
+      {
+       "type": "TEXT2",
+       "color": {
+        "red": 0.8,
+        "green": 0.8980392,
+        "blue": 1
+       }
+      },
+      {
+       "type": "BACKGROUND2",
+       "color": {
+        "red": 0.34901962,
+        "green": 0.34901962,
+        "blue": 0.34901962
+       }
+      }
+     ]
+    }
+   },
+   "masterProperties": {
+    "displayName": "Simple Light"
+   }
+  }
+ ],
+ "layouts": [
+  {
+   "objectId": "p2",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Title slide"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "NOT_RENDERED"
+    }
+   }
+  },
+  {
+   "objectId": "p3",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Section header"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p4",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Title and body"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "solidFill": {
+      "color": {
+       "rgbColor": {
+        "red": 0.101960786,
+        "green": 0.2,
+        "blue": 0.3019608
+       }
+      },
+      "alpha": 1
+     }
+    }
+   }
+  },
+  {
+   "objectId": "p5",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Title and two columns"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p6",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Title only"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p7",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "One column text"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p8",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Main point"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p9",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Section title and description"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p10",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Caption"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p11",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Big number"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  },
+  {
+   "objectId": "p12",
+   "layoutProperties": {
+    "masterObjectId": "simple-light-2",
+    "displayName": "Blank"
+   },
+   "pageProperties": {
+    "pageBackgroundFill": {
+     "propertyState": "INHERIT"
+    }
+   }
+  }
+ ],
+ "locale": "en"
+}

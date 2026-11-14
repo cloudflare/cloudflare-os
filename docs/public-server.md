@@ -16,6 +16,7 @@ connect the account's capabilities. There's no single switch — the pieces turn
 | Each gatekeeper's OAuth credentials (on the gatekeeper Worker) | Required for that gatekeeper to actually authenticate. In dev, seeded from `GOOGLE_*` / `GITHUB_*` / `CLOUDFLARE_OAUTH_*` shell vars (see `run-dev-server.ts`). |
 | `ENABLE_CLOUDFLARE_LIMITS=true` | Enables the free daily limit + Cloudflare-credits top-up flow. Billing reads a token from the connected Cloudflare gatekeeper. |
 | `DISABLE_PASSWORD_AUTH=true` | Hides username/password, leaving gatekeeper sign-in only (ignored unless `AUTH_GATEKEEPERS` is non-empty, to avoid lockout). |
+| `ADMIN_AUDIT_RETENTION_MIN_DAYS=90` | The fewest days the admin audit log keeps a record; admins choose at least this in the admin panel. Default 90; at most 3650, and a larger value counts as 3650. Set on the backend Worker (its vars, or `.dev.vars` locally); a deploy tool that rewrites the backend's variables must carry it, or it falls back to its default. See [admin-access.md](admin-access.md), which says where each kind of deployment sets it. |
 
 The primary account key is always the user's **verified email**: signing in with any allowlisted
 gatekeeper that yields the same verified email maps to the same account.
@@ -38,6 +39,7 @@ CLOUDFLARE_OAUTH_CLIENT_SECRET=...
 
 # Platform AI Gateway used for the free tier:
 CF_AI_GATEWAY=your-gateway
+# The providers that are always on. An admin can turn on others on the Models tab of /admin:
 CF_AI_GATEWAY_PROVIDERS=anthropic,openai,google
 
 # Required whenever CF_AI_GATEWAY is set:
@@ -63,12 +65,72 @@ binding (the model SDK adapter refuses the binding's fetch — note the platform
 it, so the platform server itself still needs the token). Every provider, Workers AI included,
 routes through the same Gateway.
 
+Which models the Gateway offers is managed on the **Models** tab of `/admin`, not in the
+environment. `CF_AI_GATEWAY_PROVIDERS` names the providers that are always on, and an admin can
+turn on the others there. Each model is **Enabled**, **Hidden** (out of the model pickers, still
+works where it is already in use) or **Disabled** (stops working everywhere, including existing
+chats, gadget model bindings and scheduled tasks). The tab also sets reasoning levels and
+compaction budgets, adds models the catalog doesn't list, and tests a provider or a model with
+one real request. A decision model (Clef) has only a mode there: the settings and the test
+apply to language models. The tab also orders the providers, and each provider's models, added
+ones among them; the pickers list them in that order, and the first enabled model is the default
+for a new user or chat. A provider or model left out of an order, such as one a later release adds,
+follows the ordered ones in catalog order, the added models last.
+
+A deployment can start with Models tab settings already in place: `ADMIN_CONFIG_SEED` is a JSON
+object of the admin config's model fields (`modelModes`, `addedProviders`, `providerOrder`,
+`addedModels`, `modelOrder`, `modelSettings`, `defaultReasoning`, `userModelsEnabled` and
+`modelsDevSuggestions`), set as a secret or a JSON var. It decides those settings until an admin
+changes one of them on the Models tab. Until then, a changed seed applies on the next deploy, and
+other admin settings leave it in force. The first change stores the seeded values with it, and from
+then on the tab alone decides. A deployment that had a stored config before the seed was supported
+counts as changed already, so a seed never overrides its admins' choices. A seed that is not a JSON
+object, or that names any other field, is ignored whole and logged. Previews take theirs from the
+`PREVIEW_ADMIN_CONFIG_SEED` repository secret, and fail to deploy if it is not a JSON object.
+
+The **AI Gateway Auto Router** provider (`cloudflare-auto-router`) adds one model, **Auto**,
+which has the Gateway's [Auto Router](https://developers.cloudflare.com/ai-gateway/features/auto-router/)
+pick the model behind each request by its difficulty and each candidate's cost. While the
+provider is on and the model enabled, Auto leads the model pickers and is the default for a new
+user or chat, unless an admin moves another provider above it. It picks among the models of the
+other providers that are on, from
+[the Gateway's pool](https://developers.cloudflare.com/ai-gateway/features/auto-router/#models),
+which can include models this catalog doesn't list. The model's settings can instead list the
+models it may pick, as the Gateway names them (`anthropic/claude-sonnet-5.5`, `anthropic/*`,
+`openai/gpt-6-luna`, `@cf/*/*` for Workers AI); only models of providers that are on are
+accepted, and a listed model drops out of the pool if its provider is turned off. Disabling one
+model doesn't take it out of Auto's pool; list the models Auto may pick to leave it out. A name the
+Gateway doesn't know fails every request, so press Test after saving a list; a pass names the
+model that answered. Within a chat turn Auto keeps the model its first request got, so the
+prompt cache holds. It takes no reasoning level, and each chat is priced by the Gateway's log of
+the model that answered. A provider that is on but has no key in the Gateway runs on the
+account's Cloudflare credits (Unified Billing) unless the Gateway requires provider credentials.
+Auto Router routes to Anthropic, OpenAI and Workers AI models; while none of those providers is
+on, Auto is not offered.
+
+Disabling a model or turning a provider off is not a spend control while **Users may add their
+own models** is on: a user can still add a model under any provider that is on, and it runs
+through the deployment's Gateway. Turn that switch off to make the listed models the only ones.
+An admin session can turn on any provider the Gateway serves.
+
+The **Web Search** gatekeeper (`packages/gatekeeper-websearch`) spends money outside these
+controls. Each search spends the deployment account's AI Gateway credits, or bills the operator's
+Ceramic account when the gateway holds a Ceramic key. That gateway is the one its Worker's
+`CF_AI_GATEWAY` names: the instance's gateway when the deploy service installs it, `default`
+otherwise, unless you set it on that Worker. The free daily allowance and top-up flow do not apply
+to it. Every new deploy
+installs it, and under the default mode, **Optional**, onboarding offers it switched on to every
+new user. On a public server, set it to **Disabled** in the admin Gatekeepers panel unless you
+accept that spend. A change applies to each workspace when it next opens; uninstalling the Worker
+stops searches at once.
+
 When using `CF_AI_GATEWAY*` in local development, start the server with
 `pnpm run dev-server -- --use-workers-ai-binding` so the server has a `WORKERS_AI` binding for
 the webFetch tool's document-to-Markdown conversion and for the gateway transport above (without
 it, gateway traffic falls back to HTTPS with `CF_AI_GATEWAY_API_TOKEN`). If your dev Gateway
 lives in a different account than the binding, also set `CF_AI_GATEWAY_USE_BINDING=false` — keep
 `--use-workers-ai-binding` on, since the Markdown conversion still needs the binding.
+The same flag gives the Web Search gatekeeper its own `AI` binding, which it needs for every search.
 
 Each gatekeeper's OAuth app must be registered with that gatekeeper's redirect URI (replace the host
 with `PUBLIC_BASE_URL`):

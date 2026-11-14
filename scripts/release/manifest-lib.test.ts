@@ -171,6 +171,12 @@ test("worker entries carry the deploy contract", () => {
   assert.deepEqual(workers["gatekeeper-scheduler"].inputs, []);
   assert.equal(google.preinstall, undefined);
   assert.equal(google.singleton, undefined);
+  // Web Search is ambient and preinstalled too, and calls Workers AI through its own binding.
+  const websearch = workers["gatekeeper-websearch"];
+  assert.equal(websearch.preinstall, true);
+  assert.equal(websearch.singleton, true);
+  assert.deepEqual(websearch.inputs, []);
+  assert.deepEqual(websearch.bindings, [{ type: "ai", name: "AI" }]);
   for (const [name, entry] of Object.entries(workers)) {
     if (entry.preinstall) {
       assert.ok(entry.installable, `${name}: preinstall requires installable`);

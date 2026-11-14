@@ -100,12 +100,13 @@ type ApiOverrides = {
 function fakeApi(
   accountEntries: ReturnType<typeof account>[],
   overrides: ApiOverrides = {},
+  resources: SupportedResource[] = [DOC_RESOURCE],
 ): RpcStub<AuthenticatedApi> {
   return {
     subscribeConnectedAccounts: overrides.subscribeConnectedAccounts ?? ((subscriber: ConnectedAccountsSubscriber) => {
       for (const entry of accountEntries) {
         subscriber.add(
-          entry.id, entry.description, VENDOR, [DOC_RESOURCE], entry.credentialsValid, 'google')
+          entry.id, entry.description, VENDOR, resources, entry.credentialsValid, 'google')
       }
       subscriber.ready()
       return Object.assign(Promise.resolve({ [Symbol.dispose]() {} }), {
@@ -115,7 +116,7 @@ function fakeApi(
     listGatekeeperVendors: async () => [{
       id: 'google',
       description: VENDOR,
-      supportedResources: [DOC_RESOURCE],
+      supportedResources: resources,
     }],
     listAddableGatekeepers: async () => [],
     connectAccount: overrides.connectAccount ??
@@ -135,7 +136,7 @@ function mockConnectPopup() {
   const popup = {
     close() {},
     opener: window as Window | null,
-    sessionStorage: { setItem: vi.fn<(key: string, value: string) => void>() },
+    sessionStorage: { setItem: vi.fn<(key: string, value: string) => void>(), removeItem: vi.fn<(key: string) => void>() },
     location: { replace: vi.fn<(url: string) => void>() },
   }
   vi.spyOn(window, 'open').mockImplementation(() => popup as unknown as Window)
@@ -215,13 +216,13 @@ describe('ObserverConfigModal account selection', () => {
     expect(rendered.querySelectorAll('[data-testid="account-select"]')).toHaveLength(1)
   })
 
-  it('requests the resource scope when connecting a new account', async () => {
+  it.each([true, false])('requests the observer scope when connecting a new account (connectable: %s)', async connectable => {
     const connectAccount = vi.fn<
       (vendorId: string, resourceUrlPatterns?: string[]) => Promise<ConnectFlowStart>
     >().mockResolvedValue(FLOW)
     const popup = mockConnectPopup()
     const rendered = await render([], {
-      api: fakeApi([], { connectAccount }),
+      api: fakeApi([], { connectAccount }, [{ ...DOC_RESOURCE, connectable, creatable: true }]),
     })
 
     const connect = [...rendered.querySelectorAll('button')]
@@ -234,14 +235,14 @@ describe('ObserverConfigModal account selection', () => {
     expect(popup.location.replace).toHaveBeenCalledWith('https://accounts.google.test/oauth')
   })
 
-  it('expands an existing account grant before allowing verification', async () => {
+  it.each([true, false])('expands an observer account grant before verification (connectable: %s)', async connectable => {
     const ensureAccountResources = vi.fn<
       (accountId: number, resourceUrlPatterns: string[]) => Promise<ConnectFlowStart | null>
     >().mockResolvedValue(FLOW)
     const popup = mockConnectPopup()
     const underScoped = account(1, 'dan@cloudflare.com', [GMAIL_RESOURCE_PATTERN])
     const rendered = await render([underScoped], {
-      api: fakeApi([underScoped], { ensureAccountResources }),
+      api: fakeApi([underScoped], { ensureAccountResources }, [{ ...DOC_RESOURCE, connectable, creatable: true }]),
     })
 
     const verify = [...rendered.querySelectorAll('button')]

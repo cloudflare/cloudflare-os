@@ -22,7 +22,7 @@
 // Gatekeeper OAuth app credentials (CLIENT_ID/CLIENT_SECRET) are absent from the generated configs
 // for the same reason the backend's secrets are — Wrangler prints what it finds in one, and this
 // workflow's logs are public. Where an OAuth app is configured for previews, preview.ts uploads the
-// pair to that gatekeeper's Previews settings instead; see resolveGatekeeperSecrets.
+// pair to that gatekeeper's Preview base config instead; see resolveGatekeeperSecrets.
 
 import { writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -686,8 +686,8 @@ export function resolveGatekeeperSecrets({
  * are public — so a maintainer's email, the audience tag and the team domain would all end up
  * there. GitHub's secret masking does not save them either: it replaces exact occurrences of a
  * registered secret, and what reaches the log is a reformatted, truncated slice of one. preview.ts
- * uploads these over stdin instead, with `wrangler preview secret bulk`, which prints names and
- * `********`.
+ * uploads these over stdin instead, with `wrangler preview base-config secret bulk`, which prints
+ * names and `********`.
  *
  * Setting the Access pair is also what closes the password path — the backend's `login()` and
  * `createAccount()` both throw once CF_ACCESS_AUD is set — so DISABLE_PASSWORD_AUTH is not needed.
@@ -696,10 +696,12 @@ export function backendSecrets({
   admins = resolveAdmins(),
   access = resolveAccess(),
   aiGateway = resolveAiGateway(),
+  adminConfigSeed = resolveAdminConfigSeed(),
 }: {
   admins?: string[];
   access?: AccessConfig;
   aiGateway?: Record<string, string>;
+  adminConfigSeed?: Record<string, string>;
 } = {}): Record<string, string> {
   return {
     // A secret is always text, so the array goes over as JSON. `#isAdmin()` already accepts that
@@ -711,7 +713,37 @@ export function backendSecrets({
     // The gateway name and its account are not secret in the way the token is, but they travel the
     // same way rather than as vars: one mechanism, and nothing about the deployment in the log.
     ...aiGateway,
+    ...adminConfigSeed,
   };
+}
+
+/**
+ * The Models tab's admin settings a preview starts with, from PREVIEW_ADMIN_CONFIG_SEED, as the
+ * backend's ADMIN_CONFIG_SEED (see effectiveAdminConfig in workshop-backend's admin-config.ts). A
+ * secret rather than a var, like the rest of backendSecrets, because the model ids it names are a
+ * deployment's own business. Empty when unset, and the preview starts from the defaults.
+ *
+ * Checked here only for being a JSON object. The backend ignores, whole, any seed that is not one
+ * or that sets a field outside the Models tab, and logs why; failing the deploy on the first case
+ * is cheap, while the second would need this script to keep its own copy of the field list.
+ *
+ * Like every base-config secret, an upload outlives the variable: unsetting the repository secret
+ * leaves the last value in place, so clear a seed by setting it to `{}`.
+ */
+export function resolveAdminConfigSeed(
+  { seed = process.env.PREVIEW_ADMIN_CONFIG_SEED }: { seed?: string } = {},
+): Record<string, string> {
+  if (!seed?.trim()) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(seed);
+  } catch {
+    throw new Error("PREVIEW_ADMIN_CONFIG_SEED is not JSON.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("PREVIEW_ADMIN_CONFIG_SEED is not a JSON object.");
+  }
+  return { ADMIN_CONFIG_SEED: seed };
 }
 
 

@@ -4,7 +4,7 @@ import { MutationQueue, SubscriberRegistry } from "@gadgets/bundled-blueprints/l
 import { ExportHandler, Gadget } from "../files/server.ts";
 import type { Operation, SheetsDocument } from "../files/lib/protocol.ts";
 import { workbookToXlsx } from "../files/lib/xlsx.ts";
-import { createZip, crc32 } from "../files/lib/zip.ts";
+import { createZip, crc32 } from "@gadgets/bundled-blueprints/libraries/zip/server";
 
 // The exporter is exercised on state as stored, including shapes it has to tolerate rather than
 // ones the protocol describes (an empty document, v5-only metadata, a format with keys the server

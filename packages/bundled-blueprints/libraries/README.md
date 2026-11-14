@@ -5,8 +5,8 @@ Shared code the bundled blueprints import instead of carrying their own copies. 
 `package.json` exports, `@gadgets/bundled-blueprints/libraries/<name>/client` and
 `.../<name>/server`; the blueprint build (`../src/files.ts`) resolves each to the library's entry
 here and inlines what the entry uses into the `client.js` / `server.js` the blueprint ships, the way
-it inlines a blueprint's own `lib/` modules. The archive stays self-contained, and a gadget created from the
-blueprint carries its own copy of the library as of its creation; nothing resolves the package name
+it inlines a blueprint's own `lib/` modules. The blueprint stays self-contained, and a gadget created from
+it carries its own copy of the library as of its creation; nothing resolves the package name
 at runtime, and a gadget the agent writes cannot import one.
 
 Nothing here is deployed on its own. The package name is how tsc, vitest and an editor resolve the
@@ -39,7 +39,7 @@ the exported subpath is the only door.
 - **es2022.** A blueprint's bundles target `es2022`, and the gadget loader's `compatibilityDate` is
   `"2026-02-01"` (`loadGadgetWorker` in overseer.ts). A library that needs a newer runtime feature
   bumps that date for every gadget, and says so in its README.
-- **No npm.** What a library imports is inlined into a blueprint's archive, which nothing audits
+- **No npm.** What a library imports is inlined into a blueprint's files, which nothing audits
   afterwards, so the blueprint build rejects an input from `node_modules`. A library is written
   against the platform alone, like a gadget.
 - **Readable.** The inlined code is what the agent reads and edits in an instantiated gadget. The
@@ -71,4 +71,14 @@ test runs against a stub of `cloudflare:workers` that the package's vitest confi
 - [`sync`](sync/README.md) -- collaboration plumbing: on the server a mutation queue, a subscriber
   registry with presence seeding and broadcast, and versioned upserts; on the client a save scheduler
   with retry backoff, a presence roster and a subscribe helper. The Docs, Sheets and Slides
-  blueprints build on it.
+  blueprints build on it (Docs without presence).
+- `zip` -- a server-only streaming ZIP32 writer shared by the Sheets XLSX exporter and PPTX library.
+- `pptx` -- a server-only PresentationML renderer for block-based slide decks, inlined into each
+  importing blueprint's `server.js`, not shipped as a separate `pptx.js`. `deckToPptx(deck, adaptBlock)`
+  validates authored quotas before a per-block adapter replaces brand-specific blocks; adapted
+  output is bounded separately. Besides the editor's block types it draws `logo` (a wordmark text
+  box; `LOGO_DEFAULT_TEXT` is the name an unnamed one shows) and two blocks an adapter can emit:
+  `brandBar` (a native gradient strip) and an `image` carrying `svgMarkup`, which embeds the SVG
+  (stripped of scripts, event handlers and outside links) as a picture with its `src` PNG as the
+  fallback for viewers without SVG support.
+  Installed gadgets cannot resolve these package imports at runtime.

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { FileAtCommit, TreeNode } from '@gadgets/workshop-shared/api'
-import { commitFileStore, type CommitFileReader } from './commitFileStore'
+import type { TreeNode } from '@gadgets/workshop-shared/api'
+import { commitFileStore, type CommitFile, type CommitFileReader } from './commitFileStore'
 
 // React bindings for the per-commit file store. The store is the source of truth and already
 // memoizes by commit, so these hooks hold no copy of its data: each render reads what is loaded
@@ -8,8 +8,9 @@ import { commitFileStore, type CommitFileReader } from './commitFileStore'
 // counter re-renders when the fetch settles. That keeps a value an editor already loaded from
 // ever showing a loading state again, and lets the same base be shared with the OT client.
 
-const NO_FILES: ReadonlyMap<string, FileAtCommit> = new Map()
+const NO_FILES: ReadonlyMap<string, CommitFile> = new Map()
 const NO_TREE: TreeNode[] = []
+const NO_PATHS: readonly string[] = []
 
 /**
  * The commit's nested tree: `null` while loading, `[]` for no commit (a pending gadget has no
@@ -35,7 +36,38 @@ export function useCommitTree(
 }
 
 /**
- * The named files at the commit, as far as loaded: one FileAtCommit per path the store holds
+ * The paths whose entry differs between two commits' trees (see Overseer.listChangedPaths()):
+ * `null` while loading, `[]` when either commit is missing or the two are the same. `error` is
+ * set when the fetch failed; bump `retryToken` to try again.
+ */
+export function useChangedPaths(
+  reader: CommitFileReader, fromCommit: string | undefined, toCommit: string | undefined,
+  retryToken = 0,
+): { paths: readonly string[] | null; error: unknown } {
+  const [, bump] = useState(0)
+  const [failure, setFailure] = useState<{ key: string; error: unknown } | null>(null)
+  const pair = fromCommit !== undefined && toCommit !== undefined && fromCommit !== toCommit
+    ? { fromCommit, toCommit } : undefined
+  const loaded = pair !== undefined
+    ? commitFileStore.peekChangedPaths(pair.fromCommit, pair.toCommit) : NO_PATHS
+  const key = `${fromCommit}\u0000${toCommit}`
+  useEffect(() => {
+    if (pair === undefined || loaded !== undefined) return
+    let cancelled = false
+    commitFileStore.listChangedPaths(reader, pair.fromCommit, pair.toCommit).then(
+      () => { if (!cancelled) bump(version => version + 1) },
+      (error: unknown) => { if (!cancelled) setFailure({ key, error }) })
+    return () => { cancelled = true }
+    // `pair` is rebuilt per render; `key` stands for it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reader, key, loaded, retryToken])
+  const error = failure !== null && failure.key === key && loaded === undefined
+    ? failure.error : null
+  return { paths: loaded ?? null, error }
+}
+
+/**
+ * The named files at the commit, as far as loaded: one CommitFile per path the store holds
  * (an empty map for no commit), `loading` while any requested path is still in flight -- a
  * consumer degrades per path rather than all-or-nothing, so a newly touched file never blanks
  * the rest of the view. `error` is set when a fetch failed; bump `retryToken` to try again
@@ -44,7 +76,7 @@ export function useCommitTree(
 export function useFilesAtCommit(
   reader: CommitFileReader, commitId: string | undefined, paths: readonly string[],
   retryToken = 0,
-): { files: ReadonlyMap<string, FileAtCommit>; loading: boolean; error: unknown } {
+): { files: ReadonlyMap<string, CommitFile>; loading: boolean; error: unknown } {
   const [version, bump] = useState(0)
   const [failure, setFailure] =
     useState<{ commitId: string; retryToken: number; error: unknown } | null>(null)
@@ -68,7 +100,7 @@ export function useFilesAtCommit(
   // OT client's, say) can complete a path this hook never asked for.
   const files = useMemo(() => {
     if (commitId === undefined) return NO_FILES
-    const out = new Map<string, FileAtCommit>()
+    const out = new Map<string, CommitFile>()
     for (const path of paths) {
       const file = commitFileStore.peekFile(commitId, path)
       if (file !== undefined) out.set(path, file)

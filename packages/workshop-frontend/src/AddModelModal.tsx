@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Dialog, Button, Input, Select, Collapsible, useKumoToastManager } from '@cloudflare/kumo'
-import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS } from '@gadgets/workshop-shared/api'
+import { AiChatAuthorInfo, AiModelProvider, AiGatewayInfo, RedactedAiModelConfig, SUGGESTED_MODELS, modelKind } from '@gadgets/workshop-shared/api'
 import { RpcStub } from 'capnweb'
 import { AuthenticatedApi } from '@gadgets/workshop-shared/api'
 import { ExtraHeadersEditor } from './features/ai-models/ExtraHeadersEditor'
@@ -8,6 +8,7 @@ import { StoredSecretInput } from './features/ai-models/StoredSecretInput'
 import {
   headerRowsFromRecord, headerRowsToRecord, validateHeaderRows, type HeaderRow,
 } from './features/ai-models/extraHeaders'
+import { PROVIDER_LABELS, parseTokenLimit } from './features/ai-models/modelForm'
 
 /**
  * Whether the modal adds a model from scratch, edits a stored one, or adds a model based on a
@@ -24,19 +25,13 @@ interface AddModelModalProps {
   authenticatedApi: RpcStub<AuthenticatedApi>
   aiConfig: AiGatewayInfo | null
   mode?: ModelModalMode
+  /** Leave decision models out, for callers choosing the user's chat model. */
+  chatModelsOnly?: boolean
 }
 
 type SelectionType =
   | { type: 'suggested', provider: AiModelProvider, modelId: string, displayName: string }
   | { type: 'custom', provider: AiModelProvider }
-
-const PROVIDER_LABELS: Record<AiModelProvider, string> = {
-  anthropic: 'Anthropic',
-  openai: 'OpenAI',
-  google: 'Google',
-  cloudflare: 'Cloudflare Workers AI',
-  ollama: 'Ollama',
-}
 
 // Placeholder hinting at the shape of each provider's API token.
 const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
@@ -45,6 +40,8 @@ const API_TOKEN_PLACEHOLDERS: Record<AiModelProvider, string> = {
   google: 'AIza...',
   cloudflare: 'Cloudflare API token',
   ollama: '(optional)',
+  // Never shown: Auto Router's one model is the deployment's (see AiGatewayInfo.enabledProviders).
+  'cloudflare-auto-router': '',
 }
 
 // Providers whose client can send no API key at all, so a proxy that extra headers authenticate
@@ -66,15 +63,6 @@ function exampleModel(provider: AiModelProvider): { modelId: string, name: strin
   return first ? { modelId: first[0], name: first[1].name } : FALLBACK_EXAMPLE_MODEL
 }
 
-// Parse an optional token-limit field: undefined when blank, null when invalid.
-function parseTokenLimit(text: string): number | undefined | null {
-  const trimmed = text.trim()
-  if (!trimmed) return undefined
-  if (!/^\d+$/.test(trimmed)) return null
-  const value = Number(trimmed)
-  return Number.isSafeInteger(value) && value > 0 ? value : null
-}
-
 // Encode a selection into a string value for the Select component.
 function encodeSelection(provider: AiModelProvider, modelId?: string): string {
   return modelId ? `${provider}:${modelId}` : `other-${provider}`
@@ -93,17 +81,19 @@ function decodeSelection(value: string): SelectionType {
 }
 
 // Build the flat list of options for the Select dropdown.
-function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null) {
+function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null, chatModelsOnly: boolean) {
   const options: { value: string; label: string; provider: string }[] = []
   const providerOrder = Object.keys(SUGGESTED_MODELS) as AiModelProvider[]
 
   for (const provider of providerOrder) {
+    // Auto Router's one model is the deployment's; it runs only through a gateway.
+    if (provider === 'cloudflare-auto-router') continue
     if (enabledProviders && !enabledProviders.has(provider)) continue
 
     // In gateway mode, suggested models are already built-in, so don't list them.
     if (!gatewayMode) {
       for (const [modelId, model] of Object.entries(SUGGESTED_MODELS[provider])) {
-        if (model.hidden) continue
+        if (model.hidden || (chatModelsOnly && model.kind === 'decision')) continue
         options.push({
           value: encodeSelection(provider, modelId),
           label: model.name,
@@ -122,7 +112,7 @@ function buildOptions(gatewayMode: boolean, enabledProviders: Set<string> | null
   return options
 }
 
-export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' } }: AddModelModalProps) {
+export default function AddModelModal({ visible, onCancel, onSuccess, authenticatedApi, aiConfig, mode = { type: 'add' }, chatModelsOnly = false }: AddModelModalProps) {
   const toasts = useKumoToastManager()
 
   // Edit and clone modes take their initial state from the source model, so the caller remounts
@@ -213,6 +203,10 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
 
     if (selection?.type === 'custom') {
       if (!modelId.trim()) newErrors.modelId = 'Please enter the model ID'
+      // The caller lists only language models, so a decision model saved here would never show up there.
+      else if (chatModelsOnly && modelKind(selection.provider, modelId.trim()) === 'decision') {
+        newErrors.modelId = "This is a decision model, which can't chat. Add it from AI Providers instead."
+      }
       if (!displayName.trim()) newErrors.displayName = 'Please enter a display name'
     }
 
@@ -308,7 +302,7 @@ export default function AddModelModal({ visible, onCancel, onSuccess, authentica
     }
   }
 
-  const options = buildOptions(gatewayMode, enabledProviders)
+  const options = buildOptions(gatewayMode, enabledProviders, chatModelsOnly)
   const showCustomFields = selection?.type === 'custom'
   const example = selection ? exampleModel(selection.provider) : null
   const isOllama = selection?.provider === 'ollama'

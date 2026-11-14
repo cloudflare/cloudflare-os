@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isDoResetError, retryOnDoReset } from "../src/do-retry";
+import {
+  isDoResetError, isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry,
+} from "../src/do-retry";
 import { createWorkshopLogger } from "../src/observability";
 
 // Synthetic errors shaped like workerd's tagged rejections (jsg/util.c++). Local aborts reject
@@ -36,6 +38,112 @@ describe("isDoResetError", () => {
     expect(isDoResetError(null)).toBe(false);
     expect(isDoResetError(undefined)).toBe(false);
     expect(isDoResetError("boom")).toBe(false);
+  });
+});
+
+// The runtime's two "Subrequest depth limit exceeded" messages. They report different counters,
+// and only the first is cleared by restarting the calling object.
+const LOOP_LIMIT_MESSAGE =
+    "Subrequest depth limit exceeded. This request looped back into the Workers runtime too " +
+    "many times. This can happen e.g. if you have a Worker or Durable Object that calls other " +
+    "Workers or objects recursively.";
+const STAGE_LIMIT_MESSAGE =
+    "Subrequest depth limit exceeded. This request passed through too many Workers stages " +
+    "within the Workers runtime while being handled.";
+
+describe("isLoopLimitError", () => {
+  it("matches the runtime's looped-back rejection", () => {
+    expect(isLoopLimitError(new Error(LOOP_LIMIT_MESSAGE))).toBe(true);
+  });
+
+  it("rejects the wording quoted inside another message", () => {
+    expect(isLoopLimitError(new Error(`No such model: ${LOOP_LIMIT_MESSAGE}`))).toBe(false);
+  });
+
+  it("rejects the sibling too-many-stages rejection", () => {
+    expect(isLoopLimitError(new Error(STAGE_LIMIT_MESSAGE))).toBe(false);
+  });
+
+  it("rejects other errors", () => {
+    expect(isLoopLimitError(new Error("some app error"))).toBe(false);
+    expect(isLoopLimitError(new Error("Subrequest depth limit exceeded."))).toBe(false);
+    expect(isLoopLimitError(resetError(PRODUCTION_RESET))).toBe(false);
+  });
+
+  it("rejects values that are not an Error, even carrying the text", () => {
+    expect(isLoopLimitError(LOOP_LIMIT_MESSAGE)).toBe(false);
+    expect(isLoopLimitError({ message: LOOP_LIMIT_MESSAGE })).toBe(false);
+    expect(isLoopLimitError(null)).toBe(false);
+    expect(isLoopLimitError(undefined)).toBe(false);
+  });
+
+  it("rejects an Error whose message is not a string", () => {
+    expect(isLoopLimitError(Object.assign(new Error(), { message: 42 }))).toBe(false);
+    expect(isLoopLimitError(Object.assign(new Error(), { message: undefined }))).toBe(false);
+    expect(isLoopLimitError(Object.assign(new Error(), { message: [LOOP_LIMIT_MESSAGE] })))
+        .toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// wrapDoStubForTelemetry's onRejection. A plain object stands in for the stub: the wrapper needs
+// only its `id` and whichever members are reached through it.
+
+function wrappedStub(members: Record<string, unknown>) {
+  const reported: unknown[] = [];
+  const stub = wrapDoStubForTelemetry(
+      { id: { toString: () => "user-do-id" }, ...members } as any, undefined,
+      e => reported.push(e));
+  return { stub, reported };
+}
+
+describe("wrapDoStubForTelemetry onRejection", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is called once with a rejection, which is rethrown by identity", async () => {
+    const error = new Error("some app error");
+    const { stub, reported } = wrappedStub({ read: async () => { throw error; } });
+
+    await expect(stub.read()).rejects.toBe(error);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toBe(error);
+  });
+
+  it("is called for a DO reset as well, alongside the reset telemetry", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error = resetError(PRODUCTION_RESET);
+    const { stub, reported } = wrappedStub({ read: async () => { throw error; } });
+
+    await expect(stub.read()).rejects.toBe(error);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toBe(error);
+    const surfaced = warn.mock.calls.map(([entry]) => entry as Record<string, unknown>)
+        .filter(entry => entry.event === "user_do.reset.surfaced");
+    expect(surfaced).toEqual(
+        [expect.objectContaining({ operation: "read", durableObjectId: "user-do-id" })]);
+  });
+
+  it("is not called for a resolving call, a synchronous return or a non-function property",
+      async () => {
+    const error = new Error("some app error");
+    const { stub, reported } = wrappedStub({
+      read: async () => "ok",
+      name: () => "sync",
+      limit: 3,
+      fail: async () => { throw error; },
+    });
+
+    expect(await stub.read()).toBe("ok");
+    expect(stub.name()).toBe("sync");
+    expect(stub.limit).toBe(3);
+    expect(reported).toEqual([]);
+
+    // The same wrapper does report the one call that rejects.
+    await expect(stub.fail()).rejects.toBe(error);
+    expect(reported).toHaveLength(1);
+    expect(reported[0]).toBe(error);
   });
 });
 

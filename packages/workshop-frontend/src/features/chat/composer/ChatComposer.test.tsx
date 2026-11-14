@@ -4,20 +4,37 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { RpcStub } from "capnweb";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { Overseer, SlashCommandChoice } from "@gadgets/workshop-shared/api";
 
+type TestToast = {
+  title: string;
+  description?: string;
+  variant: string;
+  timeout?: number;
+  actions?: { children: string; onClick: () => void }[];
+};
+
 const testState = vi.hoisted(() => ({
-  addToast: vi.fn<(toast: unknown) => void>(),
+  addToast: vi.fn<(toast: TestToast) => string>(() => "toast-1"),
+  closeToast: vi.fn<(toastId?: string) => void>(),
   gatekeeperModalProps: undefined as undefined | {
     open: boolean;
     onCreated: (gatekeeper: unknown) => Promise<void>;
+    initialVendorId?: string;
+    initialResourceUrl?: string;
+    initialResourceUrlPattern?: string;
+    initialAccountId?: number;
+  },
+  capsuleOverlayProps: undefined as undefined | {
+    url: string;
+    onSelectAccount: (accountId: number, vendorId: string, resource: { urlPattern: string }) => void;
   },
 }));
 
 vi.mock("@cloudflare/kumo", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@cloudflare/kumo")>()),
-  useKumoToastManager: () => ({ add: testState.addToast }),
+  useKumoToastManager: () => ({ add: testState.addToast, close: testState.closeToast }),
 }));
 
 vi.mock("../../../AuthContext", () => ({
@@ -26,6 +43,14 @@ vi.mock("../../../AuthContext", () => ({
 
 vi.mock("../../../useVendorBranding", () => ({
   useVendorBranding: () => new Map(),
+}));
+
+vi.mock("../../../CapsuleOverlay", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../CapsuleOverlay")>()),
+  default: (props: typeof testState.capsuleOverlayProps) => {
+    testState.capsuleOverlayProps = props;
+    return null;
+  },
 }));
 
 vi.mock("../../../GatekeeperModal", () => ({
@@ -47,6 +72,18 @@ class TestResizeObserver {
 
 vi.stubGlobal("ResizeObserver", TestResizeObserver);
 
+const typeText = async (textarea: HTMLTextAreaElement, text: string) => {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+      textarea,
+      text,
+    );
+    textarea.setSelectionRange(text.length, text.length);
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(requestAnimationFrame);
+  });
+};
+
 describe("ChatComposer", () => {
   let container: HTMLDivElement | undefined;
   let root: Root | undefined;
@@ -56,7 +93,9 @@ describe("ChatComposer", () => {
     container?.remove();
     sessionStorage.clear();
     testState.addToast.mockClear();
+    testState.closeToast.mockClear();
     testState.gatekeeperModalProps = undefined;
+    testState.capsuleOverlayProps = undefined;
   });
 
   it("sends on Enter without clearing document changes made while sending", async () => {
@@ -159,6 +198,93 @@ describe("ChatComposer", () => {
     expect(consoleError).toHaveBeenCalledTimes(transient ? 0 : 1);
     consoleError.mockRestore();
   });
+
+  describe("while the agent works", () => {
+    type ComposerProps = Parameters<typeof ChatComposer>[0];
+
+    const mountRoot = () => {
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+    };
+    const render = (props: Partial<ComposerProps>) => act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={async () => null}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={() => {}}
+        isAgentActive
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+        chatKey={7}
+        draftStorageKey="draft:chat-7"
+        {...props}
+      />,
+    ));
+    const textarea = () => container!.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    const button = (label: string) =>
+      container!.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`);
+    const pressEnter = () => act(async () => {
+      textarea().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+
+    it("steers on Enter, and keeps Stop disabled while the steer sends", async () => {
+      let finishSend: (() => void) | undefined;
+      const onSend = vi.fn<ComposerProps["onSend"]>(
+        () => new Promise<void>((resolve) => { finishSend = resolve; }),
+      );
+      mountRoot();
+      await render({ onSend, onStop: async () => {} });
+
+      await typeText(textarea(), "Make it dark.");
+      await pressEnter();
+      expect(onSend).toHaveBeenCalledWith("Make it dark.", "model-a", undefined, undefined, undefined);
+      expect(button("Stop agent")!.disabled).toBe(true);
+      await act(async () => finishSend!());
+      expect(textarea().value).toBe("");
+      expect(button("Stop agent")!.disabled).toBe(false);
+    });
+
+    it("puts the dropped steers after the draft, and steers nothing until the agent is idle",
+        async () => {
+      const onSend = vi.fn<ComposerProps["onSend"]>();
+      const onStop = vi.fn<() => Promise<void>>(async () => {});
+      mountRoot();
+      await render({ onSend, onStop, queuedSteers: ["A"] });
+
+      await typeText(textarea(), "Half a thought  ");
+      expect(button("Send message")).not.toBeNull();
+      await act(async () => button("Stop agent")!.click());
+      expect(onStop).toHaveBeenCalledOnce();
+      expect(textarea().value).toBe("Half a thought\n\nA");
+      expect(button("Stop agent")!.disabled).toBe(true);
+      expect(button("Send message")).toBeNull();
+      await pressEnter();
+      expect(onSend).not.toHaveBeenCalled();
+
+      await render({ onSend, onStop, queuedSteers: [], isAgentActive: false });
+      await pressEnter();
+      expect(onSend).toHaveBeenCalledWith("Half a thought\n\nA", "model-a", undefined, undefined, undefined);
+    });
+
+    it("keeps the dropped steers in the draft when Stop fails", async () => {
+      let failStop: ((err: Error) => void) | undefined;
+      const onStop = vi.fn<() => Promise<void>>(
+        () => new Promise<void>((_, reject) => { failStop = reject; }),
+      );
+      mountRoot();
+      await render({ onStop, queuedSteers: ["A"] });
+      await typeText(textarea(), "Draft");
+
+      await act(async () => button("Stop agent")!.click());
+      expect(button("Stop agent")!.disabled).toBe(true);
+      await act(async () => failStop!(new Error("Peer closed WebSocket")));
+      expect(textarea().value).toBe("Draft\n\nA");
+      expect(button("Stop agent")!.disabled).toBe(false);
+    });
+  });
+
   it("keeps add-menu actions enabled after inserting a skill and removes the legacy button", async () => {
     const skill = {
       selection: { gatekeeperId: 42, commandId: "review" },
@@ -370,5 +496,122 @@ describe("ChatComposer", () => {
     await act(async () => vi.waitFor(() => expect(document.body.textContent)
       .toContain("new connection skill")));
     expect(listSlashCommands).toHaveBeenCalledTimes(2);
+  });
+
+  const url = "https://docs.google.com/spreadsheets/d/abc123/edit";
+  const reason = "This file is an Office file rather than a Google Sheets file.";
+
+  // Pastes `url` after "Summarize ", picks account 4 for it, and has the connection fail.
+  const pasteFailingUrl = async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    // jsdom has no Range layout; the URL panel measures the line its URL sits on.
+    Range.prototype.getBoundingClientRect = () => new DOMRect();
+    onTestFinished(() => {
+      delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+    });
+    const createCapsuleGatekeeper = vi.fn<
+      Parameters<typeof ChatComposer>[0]["createCapsuleGatekeeper"]
+    >(async () => {
+      throw new Error(reason);
+    });
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(
+      <ChatComposer
+        createCapsuleGatekeeper={createCapsuleGatekeeper}
+        getOverseer={() => ({} as RpcStub<Overseer>)}
+        onSend={() => {}}
+        isAgentActive={false}
+        models={[]}
+        selectedModel={{ id: "model-a" }}
+        onModelChange={() => {}}
+      />,
+    ));
+
+    const textarea = container.querySelector<HTMLTextAreaElement>('[role="combobox"]')!;
+    const text = `Summarize ${url}`;
+    await typeText(textarea, text);
+    expect(testState.capsuleOverlayProps?.url).toBe(url);
+
+    await act(async () => testState.capsuleOverlayProps!.onSelectAccount(
+      4,
+      "google",
+      { urlPattern: "https://docs.google.com/spreadsheets/d/*" },
+    ));
+    await act(async () => vi.waitFor(() => expect(testState.addToast).toHaveBeenCalledOnce()));
+    consoleError.mockRestore();
+
+    expect(createCapsuleGatekeeper).toHaveBeenCalledWith(4, url);
+    return { textarea, toast: testState.addToast.mock.calls[0][0] };
+  };
+
+  it("offers to configure a pasted URL that could not be connected, then replaces it", async () => {
+    const { textarea, toast } = await pasteFailingUrl();
+
+    expect(toast).toMatchObject({
+      title: "Failed to add resource",
+      description: reason,
+      variant: "error",
+      timeout: 0,
+    });
+    expect(toast.actions?.map((action) => action.children)).toEqual(["Configure…"]);
+    expect(testState.gatekeeperModalProps?.open).toBe(false);
+
+    act(() => toast.actions![0].onClick());
+
+    expect(testState.closeToast).toHaveBeenCalledWith("toast-1");
+    expect(testState.gatekeeperModalProps).toMatchObject({
+      open: true,
+      initialVendorId: "google",
+      initialResourceUrl: url,
+      initialResourceUrlPattern: "https://docs.google.com/spreadsheets/d/*",
+      initialAccountId: 4,
+    });
+
+    const gatekeeper = {
+      getId: async () => 9,
+      describe: async () => ({ title: "Budget", url: "https://docs.google.com/spreadsheets/d/copy" }),
+      getCreationSpec: async () => ({ type: "gatekeeper", vendorId: "google" }),
+      remove: vi.fn<() => Promise<void>>(async () => {}),
+      [Symbol.dispose]: vi.fn<() => void>(),
+    };
+    await act(async () => {
+      await testState.gatekeeperModalProps!.onCreated(gatekeeper);
+      await new Promise(requestAnimationFrame);
+    });
+
+    expect(textarea.value).toBe("Summarize Budget ");
+    expect(gatekeeper.remove).not.toHaveBeenCalled();
+    expect(testState.gatekeeperModalProps?.open).toBe(false);
+    expect(testState.gatekeeperModalProps?.initialResourceUrl).toBeUndefined();
+  });
+
+  it("closes its Configure… toast when the composer unmounts", async () => {
+    const { toast } = await pasteFailingUrl();
+    expect(toast.actions?.map((action) => action.children)).toEqual(["Configure…"]);
+    expect(testState.closeToast).not.toHaveBeenCalled();
+
+    act(() => root!.unmount());
+    root = undefined;
+
+    expect(testState.closeToast).toHaveBeenCalledExactlyOnceWith("toast-1");
+  });
+
+  it("reports a URL gone before Configure with a toast that times out as usual", async () => {
+    const { textarea, toast } = await pasteFailingUrl();
+    await typeText(textarea, "Summarize nothing");
+
+    act(() => toast.actions![0].onClick());
+
+    expect(testState.gatekeeperModalProps?.open).toBe(false);
+    expect(testState.addToast).toHaveBeenCalledTimes(2);
+    const changed = testState.addToast.mock.calls[1][0];
+    expect(changed).toMatchObject({
+      title: "The prompt changed before the resource could be added",
+      variant: "error",
+    });
+    expect(changed.timeout).toBeUndefined();
+    expect(changed.actions).toBeUndefined();
   });
 });

@@ -25,6 +25,7 @@ describe('Vite development proxy', () => {
     const resolved = await resolveConfig(config)
     expect(resolved.server?.proxy).toMatchObject({
       '/api/client-errors': 'http://backend.from-env.test:9999',
+      '/api/device-session/callback': 'http://backend.from-env.test:9999',
       '/api/site-logo': 'http://backend.from-env.test:9999',
     })
     expect(resolved.build?.sourcemap).toBe('hidden')

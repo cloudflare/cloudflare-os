@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 import { flushSync } from 'react-dom'
-import type { RpcStub } from 'capnweb'
+import type { RpcStub, RpcTarget } from 'capnweb'
 import type { ContextApi } from '../src/context-types'
 import { getThemeMode, subscribeThemeMode, type ResolvedThemeMode } from './theme'
 
@@ -32,6 +32,38 @@ export function useContextApi(): RpcStub<ContextApi> {
   const api = useContext(ContextApiContext)
   if (!api) throw new Error('useContextApi() used outside ContextApiProvider')
   return api
+}
+
+// ---------------------------------------------------------------------------
+// Workshop user picker
+//
+// These mirror GatekeeperUserSelection and GatekeeperUserSelectionReceiver from
+// `@gadgets/workshop-shared/gatekeeper`, narrowed to what this app reads. That module imports Workers
+// types, which this DOM-only build cannot resolve.
+// ---------------------------------------------------------------------------
+
+/** One person picked in the Workshop's user picker. */
+export type UserSelection = { ticket: string }
+
+/** Called once per picked person while the picker is open; the picker shows a rejection's message. */
+export interface UserSelectionReceiver extends RpcTarget {
+  receive(selection: UserSelection): Promise<void>
+}
+
+/**
+ * Opens the host's picker; resolves when it closes, including on cancellation, when deliveries may
+ * still be running. Rejects when the picker cannot be opened or the connection to the host is lost.
+ */
+export type SelectUsers = (receiver: UserSelectionReceiver) => Promise<void>
+
+const SelectUsersContext = createContext<SelectUsers | null>(null)
+
+export const SelectUsersProvider = SelectUsersContext.Provider
+
+export function useSelectUsers(): SelectUsers {
+  const selectUsers = useContext(SelectUsersContext)
+  if (!selectUsers) throw new Error('useSelectUsers() used outside SelectUsersProvider')
+  return selectUsers
 }
 
 // ---------------------------------------------------------------------------

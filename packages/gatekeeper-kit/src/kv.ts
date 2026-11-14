@@ -41,11 +41,12 @@ export type KvMutable = KvReadWrite & {
 /** Reads, writes, removal, and a prefix scan. */
 export type KvScannable = KvMutable & {
   /**
-   * Scans entries by key prefix.
-   * @param options Prefix and optional storage-level page bounds.
+   * Scans entries by key prefix, in key order.
+   * @param options Prefix and optional storage-level page bounds: keys after `startAfter`, before
+   *   `end`, and at most `limit` of them.
    * @returns Matching key-value pairs.
    */
   list<T>(
-    options: { prefix: string; startAfter?: string; limit?: number },
+    options: { prefix: string; startAfter?: string; end?: string; limit?: number },
   ): Iterable<[string, T]>;
 };
