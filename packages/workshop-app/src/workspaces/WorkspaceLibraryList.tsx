@@ -1,50 +1,37 @@
-import { workspaceAsideItems, type AsideItem } from '@/aside/asideItems'
-import { asideItemIcon } from '@/aside/asideItemIcon'
-import { FileListItem } from '@/blocks/FileListItem'
-import { ListGroup } from '@/blocks/ListGroup'
-import { groupByTime } from '@/chat/timeGroups'
+import { useMemo } from 'react'
 import { Button } from '@/components/Button'
-import { useLibrary } from '@/library/useLibrary'
+import { libraryGroups, type LibraryEntry } from '@/library/libraryEntries'
+import { LibraryList } from '@/library/LibraryList'
+import { useLibraryEntries } from '@/library/useLibraryEntries'
 
 export type WorkspaceLibraryListProps = {
   workspaceId: string
-  onOpenItem: (item: AsideItem) => void
-  /** Where an item opens, for its row to link to so that it can be opened in another tab. */
-  itemHref?: (item: AsideItem) => string
+  onOpen: (entry: LibraryEntry) => void
+  /** Where an entry opens, for its row to link to so that it can be opened in another tab. */
+  href?: (entry: LibraryEntry) => string
 }
 
-/** What a workspace has made, from the library, latest first, grouped by when. */
-export const WorkspaceLibraryList = ({ workspaceId, onOpenItem, itemHref }: WorkspaceLibraryListProps) => {
-  const library = useLibrary(workspaceId)
-  const items = library.status === 'ready' ? workspaceAsideItems(workspaceId, undefined, library.outputs, []) : []
-  const groups = groupByTime(items.map((item) => ({ value: item, at: item.at })))
+/**
+ * What a workspace has made, was sent and worked on, as the Library lists it, on the same rows:
+ * what is starred first, then latest first, grouped by when.
+ */
+export const WorkspaceLibraryList = ({ workspaceId, onOpen, href }: WorkspaceLibraryListProps) => {
+  const library = useLibraryEntries(workspaceId)
+  const groups = useMemo(() => libraryGroups(library.entries, { tab: 'all', sort: 'recent' }), [library.entries])
 
   return (
     <>
-      {library.status === 'loading' && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the library…</p>}
-      {library.status === 'failed' && (
+      {library.loading && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the library…</p>}
+      {library.problem && (
         <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">
-          Couldn’t load the library: {library.message}
-          <Button variant="ghost" onClick={library.retry}>Try again</Button>
+          Couldn’t load the library: {library.problem}
+          {library.retry && <Button variant="ghost" onClick={library.retry}>Try again</Button>}
         </p>
       )}
-      {library.status === 'ready' && items.length === 0 && (
+      {!library.loading && !library.problem && groups.length === 0 && (
         <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. What this workspace makes shows here.</p>
       )}
-      {groups.map(({ key, label, entries }) => (
-        <ListGroup key={key} label={label}>
-          {entries.map(({ value: item, time }) => (
-            <FileListItem
-              key={item.key}
-              title={item.title}
-              icon={asideItemIcon(item)}
-              time={time}
-              href={itemHref?.(item)}
-              onSelect={() => onOpenItem(item)}
-            />
-          ))}
-        </ListGroup>
-      ))}
+      {groups.length > 0 && <LibraryList groups={groups} library={library} onOpen={onOpen} href={href} />}
     </>
   )
 }

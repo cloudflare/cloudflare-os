@@ -110,12 +110,12 @@ const AppFrame = () => {
   const [sidebarAt, setSidebarAt] = useState<string>()
   const sidebarOpen = sidebarAt === pathname
   const leaveSidebar = () => setSidebarAt(undefined)
-  // Up from an item's own page on a narrow screen, to what it is in: the chat it was shown from,
-  // or the Library page it was opened from, or else its workspace's library.
+  // Up from an item's own page on a narrow screen, to what it is in: the Library page it was opened
+  // from, or the chat it was shown from, or else its workspace's library.
   const up = () => {
     if (!pageItem) return
+    if (router.state.location.state.fromLibrary) return router.history.back()
     if (pageChatId !== undefined) return void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageItem.workspaceId, chatId: pageChatId } })
-    if (router.state.location.state.fromLibrary) return void navigate({ to: '/library' })
     void navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageItem.workspaceId }, search: { tab: 'library' } })
   }
 
@@ -143,7 +143,7 @@ const AppFrame = () => {
         // narrow screen, where it is beside nothing, it goes up.
         onCollapse={narrow ? up : expandedHere
           ? () => router.history.back()
-          : fromChat !== undefined
+          : fromChat !== undefined && !router.state.location.state.fromLibrary
             ? () => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: fromChat }, search: { open } })
             : undefined}
       />

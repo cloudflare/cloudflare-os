@@ -64,6 +64,8 @@ export const removalKey = (ref: LibraryItemRef) =>
     : ref.kind === 'file' ? `${ref.workspaceId}:file:${ref.chatId}:${ref.fileId}`
       : `${ref.workspaceId}:external:${ref.subjectId}`
 
+const latest = (a: LibraryEntry, b: LibraryEntry) => b.at.getTime() - a.at.getTime()
+
 const entryKey = (workspaceId: string, item: AsideItem) => `${workspaceId}/${item.key}`
 
 /** A file's name, or else what it is. */
@@ -170,7 +172,6 @@ export type LibraryEntries = { gadgets: LibraryEntry[]; files: LibraryEntry[]; f
  */
 export const libraryEntries = (sources: LibrarySources): LibraryEntries => {
   const starred = new Set(sources.favorites.map(favoriteKey))
-  const latest = (a: LibraryEntry, b: LibraryEntry) => b.at.getTime() - a.at.getTime()
   const gadgets = sources.outputs
     .map((output) => gadgetEntry({ ...output, at: output.lastActive }, sources, starred))
     .filter((entry) => kept(entry, sources.removals))
@@ -217,12 +218,12 @@ const byName = (a: LibraryEntry, b: LibraryEntry) => a.title.localeCompare(b.tit
 /**
  * What a tab lists, in groups: what is starred leads, then the rest, latest first and grouped by
  * when (as `groupByTime` groups), or by name in one group. Favorites has its starred items, then
- * a group of what was worked on last. A search keeps what has every word of it in its name or its
- * workspace's.
+ * a group of what was worked on last; `all`, as a workspace lists them, has gadgets and files
+ * together. A search keeps what has every word of it in its name or its workspace's.
  */
 export const libraryGroups = (
   entries: LibraryEntries,
-  { tab, sort, query = '' }: { tab: LibraryTab; sort: LibrarySort; query?: string },
+  { tab, sort, query = '' }: { tab: LibraryTab | 'all'; sort: LibrarySort; query?: string },
   now: Date = new Date(),
 ): LibraryGroup[] => {
   const found = (list: LibraryEntry[]) => (query.trim() ? list.filter((entry) => matches(entry, query)) : list)
@@ -234,12 +235,13 @@ export const libraryGroups = (
   if (tab === 'favorites') {
     const starred = found(entries.favorites)
     const rest = found([...entries.gadgets, ...entries.files].filter((entry) => !entry.starred))
-      .toSorted((a, b) => b.at.getTime() - a.at.getTime())
+      .toSorted(latest)
       .slice(0, RECENT)
     return [...starredGroup(starred), ...(rest.length > 0 ? [{ key: 'recent', label: 'Recent', rows: rest.map(timed) }] : [])]
   }
 
-  const all = found(tab === 'gadgets' ? entries.gadgets : entries.files)
+  const listed = tab === 'gadgets' ? entries.gadgets : tab === 'files' ? entries.files : [...entries.gadgets, ...entries.files].toSorted(latest)
+  const all = found(listed)
   const rest = all.filter((entry) => !entry.starred)
   const groups = starredGroup(all.filter((entry) => entry.starred))
   if (rest.length === 0) return groups

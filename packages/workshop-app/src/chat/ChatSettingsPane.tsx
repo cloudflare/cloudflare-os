@@ -1,10 +1,5 @@
 import { useState } from 'react'
 import { CaretLeftIcon } from '@phosphor-icons/react'
-import type { AsideItem } from '@/aside/asideItems'
-import { asideItemIcon } from '@/aside/asideItemIcon'
-import { useChatLibrary } from '@/aside/useChatLibrary'
-import { FileListItem } from '@/blocks/FileListItem'
-import { ListGroup } from '@/blocks/ListGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
 import { EditableTitle } from '@/components/EditableTitle'
@@ -12,10 +7,11 @@ import { HeaderBubble } from '@/components/HeaderBubble'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { PageLayout } from '@/layouts/PageLayout'
+import type { LibraryEntry } from '@/library/libraryEntries'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
+import { WorkspaceLibraryList } from '@/workspaces/WorkspaceLibraryList'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
-import { groupByTime } from './timeGroups'
 import { useChatSession } from './useChatSession'
 
 export type ChatSettingsPaneProps = {
@@ -27,16 +23,16 @@ export type ChatSettingsPaneProps = {
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
   /** Shows a file or an output, such as beside the chat. */
-  onOpenItem: (item: AsideItem) => void
-  /** Where an item opens, for its row to link to so that it can be opened in another tab. */
-  itemHref?: (item: AsideItem) => string
+  onOpen: (entry: LibraryEntry) => void
+  /** Where an entry opens, for its row to link to so that it can be opened in another tab. */
+  href?: (entry: LibraryEntry) => string
 }
 
 /**
- * What a chat has, apart from the conversation: for now, what its workspace has made, as beside
- * the chat (`useChatLibrary`), latest first, grouped by when.
+ * What a chat has, apart from the conversation: for now, what its workspace has made, was sent and
+ * worked on, on the Library's rows (`WorkspaceLibraryList`).
  */
-export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, onOpenWorkspace, onOpenItem, itemHref }: ChatSettingsPaneProps) => {
+export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, onOpenWorkspace, onOpen, href }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -52,9 +48,6 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
     })
   }
   useDocumentTitle(title ? `Settings · ${title}` : 'Chat settings')
-
-  const library = useChatLibrary({ workspaceId, chatId })
-  const groups = groupByTime(library.items.map((item) => ({ value: item, at: item.at })))
 
   return (
     <PageLayout
@@ -84,30 +77,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, onBack, on
           {renameProblem && <p role="alert" className="text-base text-kumo-subtle">{renameProblem}</p>}
         </div>
         {chat.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading the chat…</p>}
-        {chat.status === 'ready' && groups.length === 0 && !library.reading && !library.problem && (
-          <p className="px-4 text-center text-base text-kumo-subtle">Nothing here yet. What this workspace makes shows here.</p>
-        )}
-        {groups.map(({ key, label, entries }) => (
-          <ListGroup key={key} label={label}>
-            {entries.map(({ value: item, time }) => (
-              <FileListItem
-                key={item.key}
-                title={item.title}
-                icon={asideItemIcon(item)}
-                time={time}
-                href={itemHref?.(item)}
-                onSelect={() => onOpenItem(item)}
-              />
-            ))}
-          </ListGroup>
-        ))}
-        {library.reading && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading the library…</p>}
-        {library.problem && (
-          <p className="flex items-center gap-3 px-4 text-base text-kumo-subtle">
-            Couldn’t load the library: {library.problem}
-            {library.retry && <Button variant="ghost" onClick={library.retry}>Try again</Button>}
-          </p>
-        )}
+        <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpen} href={href} />
       </div>
     </PageLayout>
   )

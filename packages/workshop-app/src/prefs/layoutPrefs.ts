@@ -7,18 +7,24 @@ export type LayoutPrefs = {
   asideShare?: number
   /** The aside was showing when last left, so a chat is opened with it showing. */
   asideOpen?: boolean
+  /** The Library is shown as a list, or as a grid of tiles. */
+  libraryView?: 'list' | 'grid'
+  /** The Library is ordered latest first, or by name. */
+  librarySort?: 'recent' | 'name'
 }
 
 const finite = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined)
 
 const parse = (value: unknown): LayoutPrefs | undefined => {
   if (!isRecord(value)) return undefined
-  const { sidebar, asideShare, asideOpen } = value
+  const { sidebar, asideShare, asideOpen, libraryView, librarySort } = value
   const width = isRecord(sidebar) ? finite(sidebar.width) : undefined
   return {
     sidebar: isRecord(sidebar) && width !== undefined ? { collapsed: sidebar.collapsed === true, width } : undefined,
     asideShare: finite(asideShare),
     asideOpen: typeof asideOpen === 'boolean' ? asideOpen : undefined,
+    libraryView: libraryView === 'list' || libraryView === 'grid' ? libraryView : undefined,
+    librarySort: librarySort === 'recent' || librarySort === 'name' ? librarySort : undefined,
   }
 }
 

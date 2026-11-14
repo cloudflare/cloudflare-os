@@ -16,9 +16,9 @@ export const connectedFileKind = (mediaType: string | undefined): ConnectedFileK
 
 /** What a file is from the address its editor opens at, when that says. */
 export const connectedKindOfUrl = (url: string): ConnectedFileKind | undefined => {
-  if (/^https:\/\/docs\.google\.com\/document\//.test(url)) return 'document'
-  if (/^https:\/\/docs\.google\.com\/spreadsheets\//.test(url)) return 'spreadsheet'
-  if (/^https:\/\/docs\.google\.com\/presentation\//.test(url)) return 'presentation'
+  if (url.startsWith('https://docs.google.com/document/')) return 'document'
+  if (url.startsWith('https://docs.google.com/spreadsheets/')) return 'spreadsheet'
+  if (url.startsWith('https://docs.google.com/presentation/')) return 'presentation'
   return undefined
 }
 
