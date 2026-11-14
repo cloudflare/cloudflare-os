@@ -102,7 +102,7 @@ const LibraryItemsPreview = () => {
           : (
               <div className="flex flex-col gap-4">
                 {groups.map(({ key, label, rows }) => (
-                  <section key={key} aria-label={label} className="appears grid grid-cols-[repeat(auto-fill,minmax(min(8.5rem,calc(50%-0.375rem)),1fr))] gap-3 px-1">
+                  <section key={key} aria-label={label} className="appears grid grid-cols-[repeat(auto-fill,minmax(min(7rem,calc(50%-0.375rem)),1fr))] gap-3 px-1">
                     {rows.map(({ key: row }) => {
                       const item = ITEMS.find(({ key: itemKey }) => itemKey === row)!
                       return <LibraryTile key={row} {...propsOf(item)} />

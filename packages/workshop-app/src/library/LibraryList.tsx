@@ -111,7 +111,7 @@ export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: Li
             />
           )
         : groups.map(({ key, label, rows }) => (
-            <section key={key} aria-label={label} className="appears grid grid-cols-[repeat(auto-fill,minmax(min(8.5rem,calc(50%-0.375rem)),1fr))] gap-3 px-1">
+            <section key={key} aria-label={label} className="appears grid grid-cols-[repeat(auto-fill,minmax(min(7rem,calc(50%-0.375rem)),1fr))] gap-3 px-1">
               {rows.map(({ entry, time }) => <Tile key={entry.key} {...propsOf(entry, time)} />)}
             </section>
           ))}
