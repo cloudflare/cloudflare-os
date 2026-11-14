@@ -199,7 +199,28 @@ name, each a tile with its picture. A blueprint has its own page: its picture, w
 needs, and Use, which sets up what it needs and makes it in a new workspace or adds it to one.
 Home offers a few featured ones under the composer. Publishing takes the gadget's picture.
 
-**Kernel.** None beyond the gadget picture.
+As built, the page is a tab of the Library rather than a page of its own in the sidebar. A new
+place in the design is first a tab of a page that is already there, and the kernel already calls a
+saved blueprint "in the library" (`addBlueprintToLibrary`), so Blueprints sits beside Skills and
+Automations. The tab shows Featured, then Yours (published or saved, not already featured), as
+tiles with their pictures. A tile with no picture shows the glyph and noun of what it makes. A
+blueprint's page leads with its picture at full width, then its name, who published it and when,
+what it is for, and a list of what it needs, each with its service's logo. Its header has Save
+(not for one's own), Use, and a More menu with Copy link, Download file and Open its workspace.
+Use is one dialog with a row for each need: a connection opens its service's own form and comes
+back with a tick; a model or an agent's model is a menu, starting with the author's suggestion
+where the user has that model, else their default ("No agent" is a choice only for an agent). A
+blueprint with needs is made in a new workspace named after it, and marked as a workspace so it is
+listed with them. One with no needs can instead go into a workspace the user builds in. Either way
+the gadget opens at once. Home shows three featured blueprints under the composer, those with
+pictures first, in the space below it so the composer does not move when they arrive. Publishing
+draws the gadget's picture as the dialog opens, shows it, sends it (if under the server's 1 MB
+limit), and afterwards offers Open blueprint. Upload in the tab's header takes in a `.gadget`
+file. The no-access screen's blueprint card stays unwired: a gadget the viewer cannot open does not
+say which blueprint it came from.
+
+**Kernel.** None. The gadget picture is `getThumbnail()` from §2, sent with `createBlueprint()`'s
+existing `screenshot` argument.
 
 ## 9. The user's profile
 

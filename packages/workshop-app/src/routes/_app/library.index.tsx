@@ -9,8 +9,9 @@ const validateTab = (value: unknown): LibraryPageTab | undefined =>
 
 /**
  * Everything the user can open, from all their workspaces: what is starred, or with `?tab=`, the
- * gadgets, the files, what runs by itself, or their skills. Each opens as its own page, a file shown from the chat it was
- * sent in; a skill can also start a chat of its own.
+ * gadgets, the files, what runs by itself, their skills, or the blueprints they can start a gadget
+ * from. Each opens as its own page, a file shown from the chat it was sent in; a skill can also
+ * start a chat of its own.
  */
 export const Route = createFileRoute('/_app/library/')({
   validateSearch: (search: Record<string, unknown>): { tab?: LibraryPageTab } => ({ tab: validateTab(search.tab) }),
@@ -19,6 +20,7 @@ export const Route = createFileRoute('/_app/library/')({
 
 const page = (entry: LibraryEntry) => ({ ...pageOf(entry.workspaceId, entry.item), search: { chat: entry.chatId } })
 const skillPage = (skillId: string) => ({ to: '/skills/$skillId', params: { skillId } }) as const
+const blueprintPage = (blueprintId: string) => ({ to: '/blueprints/$blueprintId', params: { blueprintId } }) as const
 
 function Library() {
   const { tab = 'favorites' } = Route.useSearch()
@@ -36,6 +38,8 @@ function Library() {
       skillHref={(skillId) => router.buildLocation(skillPage(skillId)).href}
       automationLink={automationLink}
       onUseSkill={({ id, name, description }) => navigate({ to: '/', state: { useSkill: { id, name, description } } })}
+      onOpenBlueprint={(blueprintId, use) => navigate({ ...blueprintPage(blueprintId), state: use ? { useBlueprint: true } : undefined })}
+      blueprintHref={(blueprintId) => router.buildLocation(blueprintPage(blueprintId)).href}
     />
   )
 }

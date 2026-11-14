@@ -82,6 +82,7 @@ const AppFrame = () => {
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
   const skillPage = useMatch({ from: '/_app/skills/$skillId', shouldThrow: false })
+  const blueprintPage = useMatch({ from: '/_app/blueprints/$blueprintId', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
@@ -259,7 +260,7 @@ const AppFrame = () => {
         },
       }}
       library={{
-        current: libraryPage !== undefined || libraryItemPage !== undefined || skillPage !== undefined,
+        current: libraryPage !== undefined || libraryItemPage !== undefined || skillPage !== undefined || blueprintPage !== undefined,
         onOpen: () => {
           leaveSidebar()
           void navigate({ to: '/library' })

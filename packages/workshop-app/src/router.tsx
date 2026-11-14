@@ -40,5 +40,7 @@ declare module '@tanstack/react-router' {
      * with the skill, and what is typed is what it is given.
      */
     useSkill?: { id: string; name: string; description: string; source?: string }
+    /** A blueprint's page, opened with Use asked for, from its tile's menu: it opens at once. */
+    useBlueprint?: boolean
   }
 }

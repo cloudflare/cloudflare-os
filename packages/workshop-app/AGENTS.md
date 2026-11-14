@@ -39,6 +39,7 @@ src/
   connections/  The user's connected services, and connecting another
   skills/       The user's skills, in Context Library collections
   automations/  What runs by itself: hooks, joined with the scheduler's schedules
+  blueprints/   Blueprints: the Library's tab, a blueprint's page, and making a gadget from one
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -47,7 +48,7 @@ src/
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
 folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `sharing/`, `gadgets/`,
-`connections/`, `skills/`, `automations/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
+`connections/`, `skills/`, `automations/`, `blueprints/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
 and layouts take plain typed props and callbacks.
@@ -392,6 +393,28 @@ refuse each other, and none go while the agent works. From a gadget's Connection
 to the gadget (`GadgetSettings.bind`, with the name the gatekeeper suggests). A chat's settings
 have a Connections tab (`ChatConnectionList`, from `listChatConnections`): what is in the chat,
 what the workspace's gadgets hold, and what every chat has.
+
+## Blueprints
+
+`blueprints/` holds them. The Library's Blueprints tab (`BlueprintsTab`, `?tab=blueprints`) lists
+what the deployment features, then the user's own, published or saved, not already featured
+(`blueprintEntries` dedupes `listFeaturedBlueprints`, `listLibraryBlueprints` and
+`listOwnBlueprints`, the last read through `getBlueprint` for its picture), as `BlueprintTile`s,
+searched and ordered as the Library is; Upload in the header takes in a `.gadget` file
+(`importBlueprint`) and opens it. A blueprint's page is `/blueprints/<id>` (`BlueprintPane`): its
+picture, who published it, what it is for and what it needs (`needsOf` turns its bindings into
+connections, models and agents), with Save, Use, and More (Copy link, Download file through
+`files/saveFile`, and the workspace it was published from). Use (`UseBlueprint`, drawn by
+`UseBlueprintDialog`) meets each need: a connection in its service's own form (`ConnectResource`,
+which comes back to the dialog), a model from a menu that starts with the author's suggestion where
+the user has it (`initialAnswers`). It then makes the gadget in a new workspace
+(`newWorkspaceFromBlueprint`, then `Overseer.makeWorkspace` so it is named and listed as a
+workspace) or, for one that needs nothing, in a workspace the user builds in
+(`createGadgetFromBlueprint`), and opens the gadget. Home shows three featured blueprints under
+its composer (`FeaturedBlueprints`, in `ChatStart`'s `after`, which leaves the composer where it
+is). Publishing from a gadget's settings sends the gadget's picture (`GadgetClient.getThumbnail`,
+drawn as the dialog opens, by `usePublishPicture`) and then offers to open the blueprint's page.
+The dev server proxies `/blueprint-screenshot` to the backend, as the router does.
 
 ## A gadget's own pages
 

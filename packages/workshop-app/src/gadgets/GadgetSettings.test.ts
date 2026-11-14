@@ -14,7 +14,8 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
     listBindings: vi.fn<SettingsGadget['listBindings']>(async () => [{ name: 'GITHUB', target: 3, resourceTitle: 'cloudflare/gadgets', vendorId: 'github' }]),
     bindWithSuggestedName: vi.fn<SettingsGadget['bindWithSuggestedName']>(async () => 'FORECAST'),
     unbind: vi.fn<SettingsGadget['unbind']>(async () => {}),
-    createBlueprint: vi.fn<SettingsGadget['createBlueprint']>(),
+    createBlueprint: vi.fn<SettingsGadget['createBlueprint']>(async (title = '') => ({ id: 'bp', title, description: '', version: 1, codeVersionDate: new Date() })),
+    getThumbnail: vi.fn<SettingsGadget['getThumbnail']>(async () => null),
     [Symbol.dispose]: vi.fn<() => void>(),
   }
   const overseer: SettingsOverseer = {
@@ -121,6 +122,23 @@ describe('GadgetSettings', () => {
     await settings.setKind({ noun: 'Tracker', icon: 'listChecks' })
     await settings.setKind(null)
     expect(gadget.setOutput.mock.calls).toEqual([[{ noun: 'Tracker', icon: 'listChecks' }], [null]])
+  })
+
+  it('publishes with its picture, unless it is more than the server takes', async () => {
+    const { overseer, gadget, server } = fakeWorkspace()
+    const settings = new GadgetSettings(() => overseer, 7)
+    settings.start()
+    await vi.waitFor(() => expect(overseer.subscribeToWorkpieces).toHaveBeenCalled())
+    server().entry(summary('Todo'))
+    const picture = new Uint8Array([0xff, 0xd8])
+    expect((await settings.publish('Todo', 'Keep tasks', picture)).id).toBe('bp')
+    await settings.publish('Todo', '', new Uint8Array(1024 * 1024 + 1))
+    await settings.publish('Todo', '', null)
+    expect(gadget.createBlueprint.mock.calls).toEqual([
+      ['Todo', 'Keep tasks', { mimeType: 'image/jpeg', content: picture }],
+      ['Todo', '', undefined],
+      ['Todo', '', undefined],
+    ])
   })
 
   it('opens the workspace again once it restarted, and lets the old one go', async () => {

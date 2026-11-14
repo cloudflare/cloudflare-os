@@ -5,6 +5,7 @@ import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
 import { PublishBlueprintDialog } from '@/blocks/PublishBlueprintDialog'
+import { PREVIEW_TIP_JAR } from './previewPictures'
 import { Button } from '@/components/Button'
 import { useReport } from './previewState'
 import { Section } from './Section'
@@ -12,7 +13,7 @@ import { Section } from './Section'
 /** A gadget's settings page's blocks: its connections, publishing it, and a gadget the viewer has no access to. */
 export const GadgetSettingsPreview = () => {
   const { report, say, later } = useReport()
-  const [publishing, setPublishing] = useState<'works' | 'fails'>()
+  const [publishing, setPublishing] = useState<'works' | 'drawing' | 'fails'>()
   const [kind, setKind] = useState<'plain' | 'dashboard' | 'fails'>()
 
   return (
@@ -32,8 +33,9 @@ export const GadgetSettingsPreview = () => {
           </ListGroup>
         </div>
       </Section>
-      <Section title="PublishBlueprintDialog (publishes, then says so; one that fails stays open under why)">
+      <Section title="PublishBlueprintDialog (with the gadget’s picture, drawn or still drawing; publishes, then says so and opens it; one that fails stays open under why)">
         <Button onClick={() => setPublishing('works')}>Publish</Button>
+        <Button onClick={() => setPublishing('drawing')}>Publish, picture still drawing</Button>
         <Button onClick={() => setPublishing('fails')}>Publish, failing</Button>
       </Section>
       <PublishBlueprintDialog
@@ -41,6 +43,8 @@ export const GadgetSettingsPreview = () => {
         onOpenChange={(open) => { if (!open) setPublishing(undefined) }}
         initialTitle="Todo"
         initialDescription="Keep your tasks in check"
+        picture={publishing === 'drawing' ? { status: 'drawing' } : publishing === 'fails' ? null : { status: 'ready', url: PREVIEW_TIP_JAR }}
+        onOpen={() => say('opened the blueprint')}
         onPublish={async () => {
           await later()
           if (publishing === 'fails') throw new Error('The workspace is offline.')

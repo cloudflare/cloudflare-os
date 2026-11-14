@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
-import { createFileRoute, useLocation, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { WorkspacePicker } from '@/blocks/WorkspacePicker'
+import { FeaturedBlueprints } from '@/blueprints/FeaturedBlueprints'
 import { greeting } from '@/chat/greeting'
 import { NewChatPane } from '@/chat/NewChatPane'
 import { skillCommandOf } from '@/chat/slashCommands'
@@ -13,15 +14,20 @@ import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 /**
  * The start of a new conversation: on its own, in a workspace of its own that sending the first
  * message creates, or in one of the user's named workspaces, as the picker under the composer
- * says. A skill chosen to use elsewhere (`useSkill`) is what the draft starts with.
+ * says. A skill chosen to use elsewhere (`useSkill`) is what the draft starts with. Further down, a
+ * few of the blueprints the deployment features, to start a gadget from instead.
  */
 export const Route = createFileRoute('/_app/')({
   component: Home,
 })
 
+const blueprintPage = (blueprintId: string) => ({ to: '/blueprints/$blueprintId', params: { blueprintId } }) as const
+const allBlueprints = { to: '/library', search: { tab: 'blueprints' } } as const
+
 function Home() {
   const { api, user } = useApi()
   const navigate = useNavigate()
+  const router = useRouter()
   const location = useLocation()
   const skill = location.state.useSkill
   const workspaces = useWorkspaces()
@@ -44,6 +50,14 @@ function Home() {
       start={(text, files, modelId, command) => startConversation(() => (into ? api.openWorkspace(into) : api.newWorkspace()), text, files, modelId, command)}
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
       below={<WorkspacePicker workspaces={named} value={into} onChange={setWhere} onCreate={() => void navigate({ to: '/workspaces/new' })} />}
+      after={(
+        <FeaturedBlueprints
+          onOpen={(blueprintId) => navigate(blueprintPage(blueprintId))}
+          href={(blueprintId) => router.buildLocation(blueprintPage(blueprintId)).href}
+          onBrowse={() => navigate(allBlueprints)}
+          browseHref={router.buildLocation(allBlueprints).href}
+        />
+      )}
     />
   )
 }

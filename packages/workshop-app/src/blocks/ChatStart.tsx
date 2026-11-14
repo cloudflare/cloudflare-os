@@ -18,12 +18,18 @@ export type ChatStartProps = {
   autoFocus?: boolean
   /** Under the composer, such as where the chat will go (`WorkspacePicker`). */
   below?: ReactNode
+  /**
+   * Further down, apart from the composer, such as blueprints to start from: in the space under
+   * it, so that the greeting and the composer stay where they are when it comes in.
+   */
+  after?: ReactNode
 }
 
 /** Somewhere to start from nothing: the mascot and a greeting over the composer, in the middle of the page. */
-export const ChatStart = ({ greeting, onSend, initialDraft, commands, problem, addActions, autoFocus, below }: ChatStartProps) => (
-  <div className="flex min-h-0 flex-1 flex-col items-center justify-center p-3">
-    <div className="flex w-full max-w-md flex-col items-center">
+export const ChatStart = ({ greeting, onSend, initialDraft, commands, problem, addActions, autoFocus, below, after }: ChatStartProps) => (
+  // Centred between two rows that share what is left, so what comes in under it does not move it.
+  <div className="grid min-h-0 flex-1 grid-rows-[1fr_auto_1fr] justify-items-center p-3">
+    <div className="row-start-2 flex w-full max-w-md flex-col items-center">
       {/* Small on a page that is mostly empty, so it notices a pointer from well away. */}
       <Mascot emotion="idle" color="brand" interactive reach={4} className="w-12 -mt-12" />
       <h1 className="mt-5 text-center text-lg/6 font-medium text-kumo-default">{greeting}</h1>
@@ -32,5 +38,6 @@ export const ChatStart = ({ greeting, onSend, initialDraft, commands, problem, a
       </div>
       {below && <div className="mt-3 flex justify-center">{below}</div>}
     </div>
+    {after && <div className="row-start-3 flex w-full max-w-md flex-col pt-12">{after}</div>}
   </div>
 )

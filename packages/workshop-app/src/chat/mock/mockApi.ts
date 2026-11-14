@@ -25,6 +25,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     listModels: async () => [AGENT],
     getPreferredModel: async () => AGENT.id,
     setPreferredModel: async () => {},
+    // Home offers none, as a deployment that features none does.
+    listFeaturedBlueprints: async () => [],
     listWorkspaces: async () => [workspace],
     // The scenario's chat, as the account lists it, and nothing live about it.
     getChatThreads: async () => [{

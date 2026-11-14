@@ -33,10 +33,12 @@ export type NewChatPaneProps = {
   onStarted: (chat: StartedChat) => Promise<unknown>
   /** Under the greeting's composer, such as where the chat will go. */
   below?: ReactNode
+  /** Apart from the composer, further down (`ChatStart`'s `after`), such as blueprints to start from. */
+  after?: ReactNode
 }
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
-export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand, below }: NewChatPaneProps) => {
+export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand, below, after }: NewChatPaneProps) => {
   const { models, prefer } = useModels()
   // The model chosen here, which also becomes the one every new chat starts with.
   const [picked, setPicked] = useState<string>()
@@ -93,7 +95,7 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} addActions={addActions} below={below} autoFocus />
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} addActions={addActions} below={below} after={after} autoFocus />
       </StartLayout>
     )
   }

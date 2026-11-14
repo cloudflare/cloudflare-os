@@ -76,7 +76,8 @@ export default defineConfig(({ command, mode }) => {
       host: true,
       // The app talks to its own origin, as in production, where the router fronts the backend.
       // `ws` carries the RPC WebSocket.
-      proxy: { '/api': { target: `http://${backendHost}`, ws: true } },
+      // A published blueprint's picture is the backend's too (`blueprintScreenshotUrl`).
+      proxy: { '/api': { target: `http://${backendHost}`, ws: true }, '/blueprint-screenshot': { target: `http://${backendHost}` } },
     },
   }
 })

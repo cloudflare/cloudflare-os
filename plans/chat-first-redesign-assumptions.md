@@ -351,4 +351,8 @@ list it here, so it is known what workshop-app needs from the kernel.
   into. Now `Overseer.makeWorkspace(title)` names it and marks it, the owner's list records both at
   once (`UserDurableObject.makeWorkspace`), and whoever has its metadata open hears of the kind as
   of the title. A view-only member is refused it, as a rename is.
+- **Blueprints needed nothing new.** Browsing, saving, using and publishing go through the
+  existing blueprint API. A blueprint used from its page is named as a workspace with
+  `makeWorkspace` (above), and the picture it is published with is `getThumbnail()`, sent as
+  `createBlueprint()`'s `screenshot`.
 

@@ -25,6 +25,7 @@ import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import type { Listed } from './GadgetSettings'
 import { useBlueprintDescription, useGadgetSettings } from './useGadgetSettings'
+import { usePublishPicture } from './usePublishPicture'
 
 export const GADGET_SETTINGS_TABS = [
   { value: 'settings', label: 'Settings' },
@@ -50,6 +51,8 @@ export type GadgetSettingsPaneProps = {
   link: string
   /** Where an automation reports, for its row to open and link to. */
   automationLink: AutomationLink
+  /** Opens the page of a blueprint it was just published as. */
+  onOpenBlueprint?: (blueprintId: string) => void
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -66,7 +69,7 @@ const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
  * deleting it; what it is connected to; and the automations that run its code.
  */
 export const GadgetSettingsPane = ({
-  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenConnections, link, automationLink,
+  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenConnections, link, automationLink, onOpenBlueprint,
 }: GadgetSettingsPaneProps) => {
   const own = useMemo(() => ofGadget(workpieceId), [workpieceId])
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
@@ -84,6 +87,10 @@ export const GadgetSettingsPane = ({
   // Why the last new title was not kept.
   const [renameProblem, setRenameProblem] = useState<string>()
   const [publishing, setPublishing] = useState(false)
+  // Drawn as publishing opens, to go with it.
+  const publishPicture = usePublishPicture(settings, publishing)
+  // The blueprint it was last published as, for its page to be opened.
+  const [published, setPublished] = useState<string>()
   const [sharing, setSharing] = useState(false)
   const [choosingKind, setChoosingKind] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -264,11 +271,14 @@ export const GadgetSettingsPane = ({
           onOpenChange={setPublishing}
           initialTitle={gadget.title}
           initialDescription={description}
+          picture={publishPicture.picture}
           onPublish={async (nextTitle, nextDescription) => {
             if (connection?.blocked()) return false
-            await settings.publish(nextTitle, nextDescription)
+            const blueprint = await settings.publish(nextTitle, nextDescription, await publishPicture.bytes())
+            setPublished(blueprint.id)
             return true
           }}
+          onOpen={published && onOpenBlueprint ? () => onOpenBlueprint(published) : undefined}
         />
       )}
       <ConfirmDialog

@@ -30,7 +30,7 @@ export type GadgetSettingsSnapshot =
   }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'bindWithSuggestedName' | 'unbind' | 'createBlueprint'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'bindWithSuggestedName' | 'unbind' | 'createBlueprint' | 'getThumbnail'> & Disposable
 
 /** The part of a workspace's Overseer the settings use, and the lease that must be disposed. */
 export type SettingsOverseer = {
@@ -46,6 +46,8 @@ export type GadgetSettingsOptions = {
 }
 
 const LOADING: GadgetSettingsSnapshot = { status: 'loading' }
+// The most a blueprint's picture may be, as the server takes it.
+const MAX_PICTURE_BYTES = 1024 * 1024
 // After the workspace was lost, how long until it is opened again.
 const RETRY_DELAY = 1000
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -164,8 +166,21 @@ export class GadgetSettings {
   /** Deletes it, for everyone. */
   remove = () => this.#with((gadget) => gadget.remove())
 
-  /** Publishes its code as a blueprint, which anyone can start their own from. */
-  publish = (title: string, description: string) => this.#with((gadget) => gadget.createBlueprint(title, description))
+  /**
+   * A picture of it as its code draws it (`getThumbnail`, a JPEG), for the blueprint it is
+   * published as; null when it has none, or it cannot be drawn.
+   */
+  picture = () => this.#with((gadget) => gadget.getThumbnail())
+
+  /**
+   * Publishes its code as a blueprint, which anyone can start their own from, with its `picture`
+   * where it has one the server takes. Resolves to the blueprint.
+   */
+  publish = (title: string, description: string, picture?: Uint8Array | null) => this.#with((gadget) => gadget.createBlueprint(
+    title,
+    description,
+    picture && picture.byteLength <= MAX_PICTURE_BYTES ? { mimeType: 'image/jpeg', content: picture } : undefined,
+  ))
 
   /** Binds a connection of the workspace's into it, under the name its resource suggests; resolves to that name. */
   bind = async (gatekeeperId: number) => {

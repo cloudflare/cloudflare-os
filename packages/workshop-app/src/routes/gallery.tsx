@@ -22,6 +22,7 @@ import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
+import { BlueprintsPreview } from '@/gallery/BlueprintsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
@@ -356,6 +357,7 @@ function Gallery() {
       <GadgetSettingsPreview />
       <SkillsPreview />
       <AutomationsPreview />
+      <BlueprintsPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">

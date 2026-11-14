@@ -49,6 +49,7 @@ function GadgetSettings() {
       onOpenConnections={() => navigate({ to: '/connections' })}
       link={new URL(router.buildLocation(gadget).href, window.location.origin).href}
       automationLink={automationLink}
+      onOpenBlueprint={(blueprintId) => navigate({ to: '/blueprints/$blueprintId', params: { blueprintId } })}
     />
   )
 }
