@@ -174,7 +174,7 @@ Three of these give less than their names promise:
   proposed blueprint merge, or a worktree's pin that an agent step re-rooted),
   `listChangedPaths(mergedCommit, baseCommit)` is the rest of what accepting would change, and the
   listed paths can be empty while there is a change to accept. The one entry it lists with no base
-  is a gadget the chat created and has not had accepted (a worktree is pinned at its first
+  is a gadget the chat created that is not accepted yet (a worktree is pinned at its first
   modification, so it always has one).
 - **`listAutoApprovals()` lists opt-ins, which apply nothing alone.** They are the rules members
   turned on. An action is applied without a manual approval only when its author also marked it
@@ -243,7 +243,8 @@ Two kinds of connection have none:
 Every view method, the open included, runs through `#call()`:
 
 1. The view's checks: it has not expired (`viewExpired`), its admin is still an admin (`notAdmin`),
-   and the workspace still exists (`workspaceNotFound`). A call these stop is not recorded.
+   and the workspace still exists (`workspaceNotFound`). A call that one of these checks stops is
+   not recorded.
 2. The deployment's setting is read (`readAdminConfig`, the KV mirror).
 3. The checks again, since that read may have spanned the expiry, a demotion or the workspace's
    deletion.
@@ -263,8 +264,9 @@ Every view method, the open included, runs through `#call()`:
    range is not: `getCommitLog()`'s `depth` outside 1 to `MAX_ADMIN_COMMIT_LOG_DEPTH`, like
    `listActions()`'s invalid `beforeId`, is rejected before the call starts, and is not recorded.
 6. The checks again, with nothing awaited before the record is sent, since the read may have
-   awaited. A call that expiry, a demotion or the workspace's deletion overtakes while it reads
-   writes nothing, appends nothing for the workspace and returns nothing.
+   awaited. If the view expired, its admin was demoted or the workspace was deleted while the
+   call was reading, the call writes nothing, appends nothing for the workspace and returns
+   nothing.
 7. The record, in the deployment-wide log.
 8. The answer.
 
