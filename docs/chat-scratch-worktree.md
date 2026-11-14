@@ -7,7 +7,9 @@ preserves the original bytes, including images; it does not resize or transcode 
 This intentionally removes the old image-only path that accepted source images up to 25 MiB
 and resized them to fit: source images, like every other upload, must now fit the 4 MiB limit.
 The scratch worktree is created on the first upload and reused for later uploads, plans,
-and other agent working files.
+and other agent working files. Before any upload a chat has none, and its agent can make an
+empty worktree of its own with `createWorktree`, omitting `commitId`: an ordinary chat-private
+worktree, not this one, so a later upload still creates the scratch worktree beside it.
 
 `Overseer.uploadBlob(bytes)` durably stores a raw Git blob and returns its OID; the composer
 sends `{stream, byteLength}` instead, which the backend stores as it arrives and checks

@@ -476,9 +476,11 @@ export interface AgentHooks {
    * gatekeeper. Like createGadget, the creation becomes durable via the step's "changes" message
    * (`createdWorktrees`); a step that dies before its barrier leaves an unstamped record that
    * reconciliation reaps. The new worktree is unpinned: it reads as its base commit until the
-   * first modification pins it. Returns the base commit alongside the id.
+   * first modification pins it. Returns the base commit alongside the id. With no commit id the
+   * worktree is empty: its base is a commit with no files, authored by `initiator`.
    */
-  createWorktree(title: string, chatId: number, commitId: string)
+  createWorktree(title: string, chatId: number, commitId: string | undefined,
+                 initiator: AiChatAuthorInfo)
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}>;
 
   /**
@@ -1263,7 +1265,7 @@ async function formatBlueprintProposal(
 }
 
 let READ_FILE_TOOL_DESCRIPTION = `
-Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too. Use byte-aware binding operations for binary files.
+Read the content of a file owned by a workpiece (a gadget or worktree) in your \`env\`. If a file changes after you read it, you will either be informed of the change or the outdated result will be replaced with a note telling you to re-read the file; otherwise there is no need to read a file again after you have already read it once. Uploaded files are also available in the chat's scratch worktree when the system prompt lists one; use it for plans and other working files too, or when the chat has none, create an empty worktree with \`createWorktree\`. Use byte-aware binding operations for binary files.
 
 A file of any size can be read, by window: for a large file, pass \`startLine\` and \`lineCount\` to read a window of it; the result then ends with a line giving the range shown and the \`startLine\` to continue from. Use \`grep\` to find the lines you need first. A single line too long to show whole is cut, with a note giving its length. A window whose lines contain binary data (a NUL byte) is an error naming those lines; invalid UTF-8 is shown as U+FFFD.
 `.trim();
@@ -1279,7 +1281,7 @@ By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
 Create a worktree: a file tree rooted at a git commit, which you can then read and edit with the regular file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) by passing the \`bindingName\` you choose as their \`workpiece\` parameter. Unlike a gadget, a worktree has no runnable code of its own and is private to this conversation.
 
-\`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name.
+\`commitId\` is a full git commit id (40 hex digits; abbreviated ids are not accepted) already known to this workspace — typically one returned by a connection's API (e.g. a repository's branch or commit listing). Look the commit up through the connection first if you only know a branch or tag name. Omit \`commitId\` for an empty worktree: a place private to this conversation for working files and for data too large for your context, which you write with \`writeBytes()\` in \`executeCode\` and then read by window or grep.
 
 In \`executeCode\`, the worktree's env binding additionally offers a programmatic API — \`listFiles\`, \`grep\`, \`commit\` (write a git commit of the worktree's content), \`diff\`, and more; use \`describeBinding\` to see it.
 `.trim();
@@ -3928,11 +3930,12 @@ async function runAgentPass(
               "refer to it (their `workpiece` parameter). Must be a JavaScript identifier not " +
               "already in use; style: ALL_CAPS_WITH_UNDERSCORES.",
         }),
-        commitId: Type.String({
+        commitId: Type.Optional(Type.String({
           description:
               "The git commit to root the worktree at: its full 40-hex SHA-1, exactly as " +
-              "returned by the API that provided it. Abbreviated ids are not accepted.",
-        }),
+              "returned by the API that provided it. Abbreviated ids are not accepted. Omit " +
+              "it for an empty worktree.",
+        })),
       }),
       execute: async (toolCallId, {title, bindingName, commitId}) => {
         try {
@@ -3949,14 +3952,15 @@ async function runAgentPass(
           // leaves an unstamped orphan for reconciliation. The new worktree is unpinned:
           // reads resolve lazily against its base commit (its accepted commit) until the first
           // write or commit() pins it.
-          let created = await hooks.createWorktree(title, chatId, commitId);
+          let created = await hooks.createWorktree(title, chatId, commitId, initiator);
           pendingCreatedWorktrees.push(
               {worktreeId: created.id, title: created.title, bindingName});
           chatBindings.set(bindingName, {type: "workpiece", id: created.id});
 
           // Report the batch's change ID like the other creation/edit tools, and the resolved
-          // full commit id (the input may have been a prefix). Recorded as the tool's output for
-          // replay, which can't re-run a creation (see the replay path above).
+          // full commit id (the input may have been a prefix; with none, the empty commit written
+          // for the worktree). Recorded as the tool's output for replay, which can't re-run a
+          // creation (see the replay path above).
           let output = {worktreeId: created.id, changeId: nextChangeId,
                         baseCommit: created.baseCommit};
           return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);

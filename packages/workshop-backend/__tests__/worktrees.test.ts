@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { abortAllDurableObjects, runInDurableObject } from "cloudflare:test";
 import type { RpcStub } from "capnweb";
+import {
+  createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall, type TranscriptContext,
+} from "@earendil-works/pi-ai";
 import type {
   AiChatAuthorInfo, AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber,
   ChatCodeBase, ChatGadgetPin, Overseer, WorkpieceSummary,
@@ -10,6 +13,7 @@ import { diffFiles, type CodeChange, type CodeContent, type FileChange }
   from "@gadgets/workshop-shared/code-change";
 import { keyString } from "@gadgets/typed-storage";
 import type { OverseerDurableObject } from "../src/overseer.js";
+import { runAgent } from "../src/agent";
 import { buildCompactionState } from "../src/agent-compaction";
 import { OVERSEER_STORAGE_VERSION } from "../src/storage-schema/overseer-migrations";
 import { CodePreviewManager } from "../src/code-preview";
@@ -250,6 +254,93 @@ describe("createWorktree", () => {
     impl.storage.gitObjectMetadata.put(
         { oid, type: "commit", onRemote: [99], pullableFrom: [], pendingPush: [] });
     await expect(impl.createWorktree("W", 1, oid)).rejects.toThrow(/[Rr]econnect/);
+  }));
+
+  it("with no commit id, roots an empty worktree at a commit authored by the caller",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    addChat(impl, 2);
+
+    let created = await impl.createWorktree("Notes", 1, undefined, USER);
+    let base = created.baseCommit;
+    expect(impl.storage.gadgets.get(created.id)).toMatchObject({
+      type: "worktree", title: "Notes", chatId: 1,
+      baseCommit: base, headCommit: base, pinBase: base,
+      pending: { chatId: 1 },
+    });
+    expect(await impl.gitCache.listCommitTreePaths(base)).toEqual([]);
+    expect(impl.gitCache.readCommitObject(base)).toMatchObject({
+      parents: [], author: { name: "Alice", email: "alice@example.com" },
+    });
+    expect(() => impl.resolveWorkpieceRoot(created.id, true, 2)).toThrow(/No such gadget/);
+  }));
+
+  it("an agent creates an empty worktree and uses it with the file tools and writeBytes()",
+      () => withImpl(async impl => {
+    addChat(impl, 1);
+    impl.storage.chats.put({
+      chatId: 1, sequence: impl.nextChatSequence(1), timestamp: new Date(0), author: USER,
+      type: "message", message: "Go.",
+    });
+
+    // executeCode's worker, replaced by a script that pipes a stream into the worktree through
+    // its binding, as the loopback resolves it for the execution.
+    let getEnv = impl.getEnvForAgent.bind(impl);
+    let worktree: { type: "worktree", id: number, executionId: string };
+    impl.getEnvForAgent = (chatId: number, bindings: any, executionId: string) => {
+      worktree = { type: "worktree", id: bindings.NOTES.id, executionId };
+      return getEnv(chatId, bindings, executionId);
+    };
+    let loader = { load: () => ({ getEntrypoint: () => ({
+      verify: async () => {},
+      run: async () => {
+        try {
+          let notes = await impl.startGatekeeperSession(worktree, { from: "agent", chatId: 1 });
+          await notes.writeBytes("scan.md", new Blob(["piped\n"]).stream());
+        } finally {
+          await impl.deliverCodeModeTrace(worktree.executionId, { logs: [] });
+        }
+      },
+    }) }) };
+    impl.env = new Proxy(impl.env, {
+      get: (target, key) => key === "LOADER" ? loader : Reflect.get(target, key, target),
+    });
+
+    let faux = createFauxCore({ models: [{ id: "faux-model" }] });
+    let last: TranscriptContext["messages"] = [];
+    faux.setResponses([
+      [fauxToolCall("createWorktree", { title: "Notes", bindingName: "NOTES" })],
+      [fauxToolCall("writeFile",
+          { workpiece: "NOTES", filename: "plan.md", content: "first\nsecond\n" })],
+      [fauxToolCall("editFile", { workpiece: "NOTES", filename: "plan.md",
+                                  textToReplace: "second", replacement: "2nd" })],
+      [fauxToolCall("executeCode", { code: "" })],
+      [fauxToolCall("readFile", { workpiece: "NOTES", filename: "plan.md" }),
+       fauxToolCall("readFile", { workpiece: "NOTES", filename: "scan.md" }),
+       fauxToolCall("grep", { workpiece: "NOTES", pattern: "2nd|piped" })],
+    ].map(calls => fauxAssistantMessage(calls, { stopReason: "toolUse" }))
+        .concat(fauxAssistantMessage(fauxText("Done.")))
+        .map(response => (context: TranscriptContext) => {
+      last = structuredClone(context.messages);
+      return response;
+    }));
+    await runAgent(impl, { model: faux.getModel(), stream: faux.stream }, 1, AGENT,
+        new AbortController().signal, USER,
+        { provider: "cloudflare", model: "faux-model", apiToken: "" } as any);
+
+    let results = last.flatMap(message =>
+        message.role === "toolResult" && message.toolName !== "observeUserChanges"
+            ? [message] : []);
+    expect(results.map(result => result.isError)).toEqual(results.map(() => false));
+    expect(results.slice(-3).map(result =>
+        result.content.map(part => part.type === "text" ? part.text : "").join("")))
+        .toEqual(["first\n2nd\n", "piped\n", "plan.md:2:2nd\nscan.md:1:piped"]);
+
+    // The empty root is the turn initiator's commit, not the model's.
+    let [record] = [...impl.storage.gadgets.list()];
+    expect(impl.gitCache.readCommitObject(record.baseCommit).author)
+        .toMatchObject({ name: "Alice", email: "alice@example.com" });
+    expect(await impl.gitCache.listCommitTreePaths(record.baseCommit)).toEqual([]);
   }));
 });
 

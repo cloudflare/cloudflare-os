@@ -194,6 +194,33 @@ describe("spawned agent tools", () => {
     ]);
   }));
 
+  it("creates an empty worktree by naming no commit, and works in it",
+      () => withImpl(async impl => {
+    let chatId = await spawnChat(impl, { displayName: "Spawner", modelId: "m", env: {} });
+
+    await runScriptedTurn(impl, chatId, [
+      fauxAssistantMessage([
+        fauxToolCall("createWorktree", { title: "Notes", bindingName: "NOTES" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage([
+        fauxToolCall("writeFile", { workpiece: "NOTES", filename: "notes.md", content: "note\n" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage([
+        fauxToolCall("grep", { workpiece: "NOTES", pattern: "note" }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage(fauxText("Done.")),
+    ]);
+
+    let calls = toolCalls(impl, chatId);
+    for (let call of calls) {
+      expect(call.error, `${call.toolName} failed`).toBeUndefined();
+    }
+    expect(calls.at(-1)!.output).toBe("notes.md:1:note");
+    let [worktree] = [...impl.storage.gadgets.list()];
+    expect(worktree).toMatchObject({ type: "worktree", title: "Notes", chatId });
+    expect(await impl.gitCache.listCommitTreePaths(worktree.baseCommit)).toEqual([]);
+  }));
+
   it("tells an edit of a missing file apart from an edit of an unread one",
       () => withImpl(async impl => {
     let commit = await commitFiles(impl, { "README.md": "hello\n" });

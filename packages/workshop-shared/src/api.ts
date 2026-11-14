@@ -5246,9 +5246,9 @@ export type AiToolCall = {
      * workspace's local git store and its gatekeeper-provided metadata (never a remote lookup --
      * remote refs resolve through gatekeeper APIs first). Abbreviated ids are refused, since
      * knowing a commit's id is the capability to read it; logs written before that may carry an
-     * unambiguous prefix.
+     * unambiguous prefix. Absent for an empty worktree, rooted at a commit with no files.
      */
-    commitId: string;
+    commitId?: string;
   };
 
   /**
@@ -5263,7 +5263,8 @@ export type AiToolCall = {
    * because the input of an older log may be a prefix and the model is told the resolved oid. The creation pins
    * nothing: the worktree reads as its accepted commit until its first modification pins it
    * (see ChatGadgetPin), so replay serves untouched files from the pin when there is one and
-   * from the accepted commit otherwise, never from this field.
+   * from the accepted commit otherwise, never from this field. With no `input.commitId` it is
+   * the empty commit written for the worktree.
    */
   output?: {worktreeId: WorkpieceId, changeId?: number, baseCommit: string};
 } | {

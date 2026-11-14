@@ -679,6 +679,29 @@ describe("scratch worktree attachment ingress", () => {
     }
   }));
 
+  // An empty worktree the agent made is its own, never the chat's scratch worktree, whatever its name.
+  it("names a later upload's scratch worktree SCRATCH_2 when the agent took SCRATCH for an empty worktree", () => inKernel(crypto.randomUUID(), async impl => {
+    const user = env.TEST_USER.getByName(crypto.randomUUID());
+    const chatId = await impl.newChat(user, {profile: USER}, "Take notes");
+    const created = await scriptedTurn(impl, chatId,
+      [fauxToolCall("createWorktree", {title: "Notes", bindingName: "SCRATCH"})]);
+    expect(fileToolResults(created.at(-1)!)).toMatchObject([{toolName: "createWorktree", isError: false}]);
+    expect(impl.getChatAgentContext(chatId).scratch).toBeUndefined();
+    const blob = await impl.gitCache.writeBlob(new TextEncoder().encode("input"));
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined,
+      [{oid: blob.oid, mimeType: "text/plain", name: "notes.txt"}]);
+    expect(impl.getChatAgentContext(chatId).scratch!.bindingName).toBe("SCRATCH_2");
+    const requests = await scriptedTurn(impl, chatId, [
+      fauxToolCall("writeFile", {workpiece: "SCRATCH", filename: "plan.md", content: "plan\n"}),
+      fauxToolCall("grep", {workpiece: "SCRATCH_2", pattern: "input"}),
+    ]);
+    expect(JSON.stringify(requests[0])).toContain("workspace file env.SCRATCH_2/notes.txt");
+    expect(fileToolResults(requests.at(-1)!).slice(-2)).toMatchObject([
+      {toolName: "writeFile", isError: false},
+      {toolName: "grep", isError: false, content: [{type: "text", text: "notes.txt:1:input"}]},
+    ]);
+  }));
+
   it("accepts any local Git blob and checks attachment signatures and limits when sending", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const blob = await impl.gitCache.writeBlob(Uint8Array.of(1));
