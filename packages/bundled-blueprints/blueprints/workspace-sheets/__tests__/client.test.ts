@@ -1144,6 +1144,49 @@ describe("filter sort", () => {
   });
 });
 
+describe("a cut and its paste", () => {
+  const go = (ref: string) => {
+    const box = document.querySelector<HTMLInputElement>(".namebox")!;
+    box.value = ref;
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  };
+  const clipboard = new Map<string, string>();
+  const clipboardEvent = (type: string) => Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+    clipboardData: { setData: (kind: string, value: string) => { clipboard.set(kind, value); }, getData: (kind: string) => clipboard.get(kind) ?? "" },
+  });
+
+  it("is cancelled by a sort of its sheet, which gives its cells to other records", async () => {
+    const h = await loadClient(sheet("s1"), { A1: cell("b"), B1: cell("x"), A2: cell("a"), B2: cell("x") });
+    go("B2");
+    gridEl().dispatchEvent(clipboardEvent("cut"));
+    go("A1:B2");
+    document.querySelector<HTMLElement>('.tb[aria-label="More"]')!.click();
+    [...document.querySelectorAll<HTMLElement>(".mi")].find((row) => row.textContent?.includes("Sort range A → Z"))!.click();
+    await settle();
+    go("D1");
+    gridEl().dispatchEvent(clipboardEvent("paste"));
+    await settle();
+    expect([shown("B1"), shown("B2"), shown("D1") ?? ""]).toEqual(["x", "x", ""]);
+    expect(document.querySelector(".toast")?.textContent).toContain("sorted");
+    expect(h.sent.flatMap((op) => op.cellOps ?? [])).toEqual([]);
+  });
+
+  it("leaves a source cell someone else wrote since, even at the same value", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("x") });
+    go("A1");
+    gridEl().dispatchEvent(clipboardEvent("cut"));
+    // Another tab's sort puts a different record's "x" in A1.
+    h.callbacks.operation({ ...remoteEvent(meta, 2, { upserts: [{ sheetId: "s1", ref: "0:0", cell: cell("x", 2) }] }), structure: undefined });
+    await settle();
+    go("D1");
+    gridEl().dispatchEvent(clipboardEvent("paste"));
+    await settle();
+    expect([shown("A1"), shown("D1")]).toEqual(["x", "x"]);
+    expect(h.sent.flatMap((op) => op.cellOps ?? []).some((op) => op.ref === "0:0")).toBe(false);
+  });
+});
+
 describe("a save whose reply was lost", () => {
   it("goes again as it was, under its id, and an edit made meanwhile waits for the next save", async () => {
     const h = await loadClient(sheet("s1"));

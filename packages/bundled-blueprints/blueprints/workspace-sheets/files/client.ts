@@ -2636,6 +2636,8 @@ interface SortRow { rowCells: Record<number, Cell>; sourceRow: number }
 function writeSort(area: Area, rows: SortRow[]) {
   const sheetId = activeSheetId, order = orders.get(sheetId);
   if (!order) return;
+  // A cut waiting on this sheet names cells the sort is about to give other records.
+  if (copyFallback?.cut && copyFallback.sheetId === sheetId) copyFallback.cancelled = "The rows were sorted; cut again";
   const cells = curCells(), b = book();
   let sort = pendingSorts.get(sheetId);
   if (!sort) pendingSorts.set(sheetId, sort = { sheetId, rows: new Set(), cols: new Set(), cells: new Map(), histories: [] });
@@ -5798,7 +5800,7 @@ function deleteSelectionContents() {
  * `computed`: its result, as stored text). A cut finds its cell again by `sourceKey`, and tells
  * whether it still holds what was cut by `stored`, its value in stored form.
  */
-interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string; computed?: string; sourceKey: string | null; stored: string | null }
+interface ClipboardCell { value: string | null; fmt: CellFmt | null; sourceRef: string; computed?: string; sourceKey: string | null; stored: string | null; version: number }
 /** What this tab last copied or cut: the text it wrote, the cells behind it, and the private token. */
 interface ClipboardSnapshot {
   tsv: string;
@@ -5895,7 +5897,7 @@ function prepareClipboard(cut = false) {
   const cells = refs.map((row) => row.map((ref) => {
     if (!ref) return null;
     const cell = getCell(ref), sourceKey = keyOf(activeSheetId, ref);
-    return cell ? { value: cell.value, fmt: cell.fmt, sourceRef: ref, sourceKey, stored: storedValue(activeSheetId, ref, cell.value, b), computed: storedValueOf(engine.computeRef(activeSheetId, ref)) } : { value: null, fmt: null, sourceRef: ref, sourceKey, stored: null };
+    return cell ? { value: cell.value, fmt: cell.fmt, sourceRef: ref, sourceKey, stored: storedValue(activeSheetId, ref, cell.value, b), computed: storedValueOf(engine.computeRef(activeSheetId, ref)), version: cell.version || 0 } : { value: null, fmt: null, sourceRef: ref, sourceKey, stored: null, version: 0 };
   }));
   const tsv = refs.map((row) => row.map(clipboardCellText).join("\t")).join("\n");
   copyFallback = { tsv, cells, refs, trimmed, sheetId: activeSheetId, cut, cancelled: null, token: Math.random().toString(36).slice(2) };
@@ -6063,9 +6065,11 @@ function remapCutFormula(value: string, formulaSourceSheetId: string, formulaTar
   return result + value.slice(start);
 }
 // A cut source is removed only while it still holds what was cut; an edit made in between wins.
+// A cut cell is cleared by the paste only if nothing was written to it since: a write (a sort
+// putting another record there, say) at the same value is still another record's.
 function cutSourceUnchanged(sheetId: string, snapshot: ClipboardCell): boolean {
   const current = model.cells[sheetId]?.[snapshot.sourceRef];
-  return (current ? storedValue(sheetId, snapshot.sourceRef, current.value) : null) === snapshot.stored && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null);
+  return (current?.version || 0) === snapshot.version && (current ? storedValue(sheetId, snapshot.sourceRef, current.value) : null) === snapshot.stored && JSON.stringify(current?.fmt ?? null) === JSON.stringify(snapshot.fmt ?? null);
 }
 function clearStoredCell(sheetId: string, ref: string) {
   const cells = model.cells[sheetId] || (model.cells[sheetId] = {});
