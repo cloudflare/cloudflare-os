@@ -194,6 +194,22 @@ describe("sync", () => {
     expect(sent.cellOps).toEqual([{ sheetId: "s1", ref: "B3", value: "=C3*3", fmt: null, baseVersion: 0, layout: 2 }]);
   });
 
+  it("renames the sheet an unsaved formula reads when someone else renames it", async () => {
+    const data = { ...sheet("s1"), name: "Data" }, other = sheet("s2");
+    const both = (name: string) => ({ title: "Book", sheetOrder: ["s2", "s1"], sheets: { s1: { ...data, name }, s2: other } });
+    const h = await loadClient(other, {}, { ...both("Data"), cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Data!A1") } } });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    typeIntoActiveCell("=Data!A1*2");
+    // The agent renames Data before the edit is saved (and rewrites the stored A1 with it).
+    h.callbacks.operation({ ...remoteEvent(other, 2, { upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Renamed!A1", 2) }] }), structure: both("Renamed"), senderId: "agent" });
+    await settle();
+    expect((h.gadget.applyOperation.mock.calls[0][0] as Operation).cellOps).toEqual([expect.objectContaining({ ref: "A1", value: "=Renamed!A1*2" })]);
+    save.resolve({ status: "applied", revision: 3, conflicts: [], upserts: [{ sheetId: "s2", ref: "A1", cell: cell("=Renamed!A1*2", 3) }], deletes: [] });
+    await settle();
+    expect(shown("A1")).toBe("14");
+  });
+
   it("keeps a later move's layout when an older save of its sheet is acknowledged", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first") });

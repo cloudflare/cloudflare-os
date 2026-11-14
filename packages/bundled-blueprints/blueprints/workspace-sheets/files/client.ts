@@ -7207,6 +7207,12 @@ function applyRemoteOperation(event: OperationEvent) {
   // The grid re-renders on the next frame; the live touch is drawn right after.
   if (live) requestAnimationFrame(() => { try { showLiveEdit(live); } catch (e) { console.error(e); } });
 }
+// An unsaved edit whose text was rewritten is shown as rewritten (the moved sheet's own cells
+// come with its replacement).
+function showPendingValue(op: PendingCellOp) {
+  const shown = model.cells[op.sheetId]?.[op.ref];
+  if (shown && op.value != null) shown.value = op.value;
+}
 // A saved edit a later move carried: the server moved it too, so what the move made of it isn't
 // owed, unless it was edited again since. A write that came after the move shows instead.
 function retireFollowed(op: PendingCellOp, committed: number): { sheetId: string; ref: string } | null {
@@ -7268,7 +7274,7 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
       op = { ...op, value: rewrite(op.value, parseRef(op.ref)), ref, addressedIn: sheet.layout };
     } else {
       const value = rewrite(op.value, null);
-      if (value !== op.value) op = { ...op, value };
+      if (value !== op.value) { op = { ...op, value }; showPendingValue(op); }
     }
     if (op !== was) followedEdits.set(was, { next: op, revision });
     pendingCellOps.set(op.sheetId + "!" + op.ref, op);
@@ -7296,8 +7302,23 @@ function applyStructure(s: Structure, revision: number) {
   const localSource = pendingStructure || inFlightStructure;
   const local = localSource ? localStructureChanges(localSource, s) : null;
   if (s.title != null) model.title = s.title;
+  const namesBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.name]));
   model.sheetOrder = s.sheetOrder.slice();
   for (const id of model.sheetOrder) model.sheets[id] = { ...model.sheets[id], ...s.sheets[id] };
+  // Stored formulas follow a remote rename on the server; unsaved ones follow it here (unless this
+  // tab renamed the sheet too, which wins). Like a move, a rewrite is a new entry (see followedEdits).
+  for (const id of model.sheetOrder) {
+    const before = namesBefore.get(id);
+    if (before === undefined || before === model.sheets[id].name || local?.sheets[id]?.name != null) continue;
+    for (const [key, op] of pendingCellOps) {
+      const value = op.value?.startsWith("=") ? renameFormulaSheet(op.value, before, sheetRefPrefix(id)) : op.value;
+      if (value === op.value) continue;
+      const next = { ...op, value };
+      followedEdits.set(op, { next, revision });
+      pendingCellOps.set(key, next);
+      showPendingValue(next);
+    }
+  }
   const added = new Set(local?.added);
   for (const id of Object.keys(model.sheets)) if (!model.sheetOrder.includes(id) && !added.has(id)) { delete model.sheets[id]; delete model.cells[id]; }
   ackedStructure = { title: model.title, sheetOrder: model.sheetOrder.slice(), sheets: JSON.parse(JSON.stringify(Object.fromEntries(model.sheetOrder.map((id) => [id, model.sheets[id]])))) };
