@@ -39,6 +39,7 @@ function Workspace() {
       onOpenItem={(item) => navigate(pageOf(workspaceId, item))}
       itemHref={(item) => router.buildLocation(pageOf(workspaceId, item)).href}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId } })}
+      link={new URL(router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href, window.location.origin).href}
     />
   )
 }
