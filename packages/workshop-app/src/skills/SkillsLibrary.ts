@@ -64,7 +64,8 @@ export type SkillsApi = Pick<AuthenticatedApi, 'getGatekeeperApp' | 'listAddable
 export type SkillsUi = ContextApi & Partial<Disposable>
 
 const LOADING: SkillsSnapshot = { status: 'loading' }
-const MY_SKILLS = 'My skills'
+/** The name of the collection made for the user's first skill when they have none of their own. */
+export const MY_SKILLS = 'My skills'
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /** The skill an id names, as its parts. */

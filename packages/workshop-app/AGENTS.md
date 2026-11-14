@@ -351,7 +351,8 @@ is a plain class over the gatekeeper's management API (`getGatekeeperApp('contex
 `ContextApi`; the one cast is in `#open()`), provided once by `_app` (`SkillsProvider`) and read
 only once something shows skills (`useSkills` retains it). `skillManifest.ts` reads and writes the
 manifest, keeping frontmatter keys it does not know. The Library's Skills tab groups skills by
-collection ("Yours" while the user has one of their own, otherwise each by name, with who has it);
+collection ("Yours" for the one made for their first skill while it is their only one, otherwise each
+by name, with who has it), and New collection is under them from the start, before any skill;
 sharing is per collection (`ShareSkillsDialog`), the org's collections are for everyone and only
 admins change them. A skill's page is `/skills/<collection>/<path>` (URL-encoded), renamed in
 place, which moves it.

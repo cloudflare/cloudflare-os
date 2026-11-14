@@ -15,7 +15,7 @@ import { ShareSkillsDialog } from './ShareSkillsDialog'
 import { collectionDetail, skillGroups } from './skillGroups'
 import { skillNameFor, skillTitle } from './skillManifest'
 import { useSkills } from './SkillsContext'
-import type { Skill, SkillCollection } from './SkillsLibrary'
+import { MY_SKILLS, type Skill, type SkillCollection } from './SkillsLibrary'
 
 export type SkillsTabProps = {
   sort: 'recent' | 'name'
@@ -129,8 +129,8 @@ export const SkillsTab = ({ sort, query, creating, onCreatingChange, onOpenSkill
       : []),
   ]
 
-  // The viewer's only collection is theirs without a name to tell it from others.
-  const titleOf = (collection: SkillCollection) => (collection.kind === 'mine' && ownCount === 1 ? 'Yours' : collection.title)
+  // The collection made for the viewer's first skill, while it is their only one, is just theirs.
+  const titleOf = (collection: SkillCollection) => (collection.kind === 'mine' && ownCount === 1 && collection.title === MY_SKILLS ? 'Yours' : collection.title)
 
   return (
     <>
@@ -170,7 +170,8 @@ export const SkillsTab = ({ sort, query, creating, onCreatingChange, onOpenSkill
           ))}
         </SkillGroup>
       ))}
-      {ownCount > 0 && query.trim() === '' && (
+      {/* Before their first skill too, so they can keep skills in collections of their own from the start. */}
+      {query.trim() === '' && (
         <div className="flex justify-center">
           <Button variant="ghost" icon={FolderPlusIcon} onClick={() => setNaming(true)} className="text-kumo-subtle">New collection</Button>
         </div>
