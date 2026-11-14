@@ -12,7 +12,8 @@ import { allSkills } from '@/skills/skillGroups'
 import { useSkills } from '@/skills/SkillsContext'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 import { skillCommandOf } from './slashCommands'
-import { describeModelProblem, useDefaultModel } from './useDefaultModel'
+import { describeModelProblem, modelFor } from './models'
+import { useModels } from './useModels'
 
 /** Where a conversation that was started is. */
 export type StartedChat = { workspaceId: string; chatId: number }
@@ -34,7 +35,10 @@ export type NewChatPaneProps = {
 
 /** The start of a conversation: sending the first message creates it, and it is then opened. */
 export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand }: NewChatPaneProps) => {
-  const model = useDefaultModel()
+  const { models, prefer } = useModels()
+  // The model chosen here, which also becomes the one every new chat starts with.
+  const [picked, setPicked] = useState<string>()
+  const model = modelFor(models, { picked })
   const commands = useLibraryCommands()
   const refreshWorkspaces = useRefreshWorkspaces()
   const connection = useConnectionNotice()
@@ -56,7 +60,7 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
     setProblem(undefined)
     setPending({ text, files, command })
     try {
-      const started = await start(text, files, model.id, command)
+      const started = await start(text, files, model.model.id, command)
       refreshWorkspaces()
       await onStarted(started)
       return true
@@ -68,6 +72,18 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
     }
   }
 
+  const addActions = models.status === 'ready' && model.status === 'ready' && models.offered.length > 1 ? {
+    model: {
+      models: models.offered,
+      current: model.model.id,
+      onChoose: (id: string) => {
+        setPicked(id)
+        // It still answers this chat when it cannot be kept for the next.
+        prefer(id).catch((error: unknown) => setProblem(`Couldn’t make it your default model: ${error instanceof Error ? error.message : String(error)}`))
+      },
+    },
+  } : undefined
+
   const composerProblem = problem === undefined ? undefined : { message: problem, onDismiss: () => setProblem(undefined) }
 
   // Once something is said, it is shown as the conversation it becomes; if it could not be sent,
@@ -75,13 +91,13 @@ export const NewChatPane = ({ header, greeting, start, onStarted, initialCommand
   if (greeting !== undefined && !pending) {
     return (
       <StartLayout header={header}>
-        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} autoFocus />
+        <ChatStart greeting={greeting} onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} addActions={addActions} autoFocus />
       </StartLayout>
     )
   }
 
   return (
-    <ChatLayout header={header} composer={<Composer onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} />}>
+    <ChatLayout header={header} composer={<Composer onSend={send} initialDraft={unsent} commands={commands} problem={composerProblem} addActions={addActions} />}>
       {/* Spaced like the conversation this becomes. */}
       <div className="flex flex-col gap-2">
         {pending && (

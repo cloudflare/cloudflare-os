@@ -194,6 +194,14 @@ A draft is only let go of once its message has gone: `Composer`'s `onSend` resol
 did, and until then the draft, its files and what it replies to stay, dimmed and unsendable. One
 that did not go stays as it was, under why.
 
+Which model answers is a row of the composer's + menu, Model with the current one's name, which
+shows the models in the menu's place (`ComposerAddMenu`), and only when there is more than one.
+`chat/models.ts` decides it (`modelFor`): the one chosen for the next message, else the chat's own
+(the one at work, or the last that spoke: `ChatSnapshot.model`), else the user's preferred, else
+the first offered, each only while still offered. Choosing in a chat changes that chat only;
+choosing for a new chat also makes it the preferred one (`useModels().prefer`), which every new
+chat then starts with, in every browser. "No agent" is not offered.
+
 What can be done with a message (reply, copy, details) shows beside it while it is pointed at, or
 reached by keyboard. A touch screen has nothing to point with, so there a tap on the message shows
 it, until the message or anything else is tapped again; a tap that is for something in the

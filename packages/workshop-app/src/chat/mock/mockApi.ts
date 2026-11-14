@@ -23,6 +23,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
   const implemented: Record<string | symbol, unknown> = {
     openWorkspace: () => overseer.open(),
     listModels: async () => [AGENT],
+    getPreferredModel: async () => AGENT.id,
+    setPreferredModel: async () => {},
     listWorkspaces: async () => [workspace],
     // The scenario's chat, as the account lists it, and nothing live about it.
     getChatThreads: async () => [{

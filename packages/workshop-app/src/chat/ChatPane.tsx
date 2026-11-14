@@ -25,7 +25,8 @@ import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { nameGadgets, type GoBack } from './changePoints'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
-import { describeModelProblem, useDefaultModel } from './useDefaultModel'
+import { describeModelProblem, modelFor } from './models'
+import { useModels } from './useModels'
 import { missingCommand, slashRequestFor } from './slashCommands'
 import { useChatCommands } from './useChatCommands'
 import { useChatSession } from './useChatSession'
@@ -80,7 +81,12 @@ export const ChatPane = ({
 }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const { choices, commands } = useChatCommands(actions.listCommands, chat.status === 'ready')
-  const model = useDefaultModel()
+  const { models } = useModels()
+  // A model chosen for this chat's next message; until then, the chat's own.
+  const [picked, setPicked] = useState<{ chatId: number; id: string }>()
+  const pickedId = picked?.chatId === chatId ? picked.id : undefined
+  const chatModel = chat.status === 'ready' ? chat.model : undefined
+  const model = useMemo(() => modelFor(models, { picked: pickedId, chat: chatModel }), [models, pickedId, chatModel])
   const workspaces = useWorkspaces()
   const connection = useConnectionNotice()
   // Why the last message could not be sent, when it never reached the conversation.
@@ -151,7 +157,7 @@ export const ChatPane = ({
       // TODO: the connect flow, which ends in `Overseer.acceptConnectionRequest`.
       onSetUpConnection: onSetUpConnection ?? unavailable('Setting up connections'),
       onDenyConnection: actions.denyConnection,
-      onRetry: () => (model.status === 'ready' ? actions.retry(model.id) : setProblem(describeModelProblem(model))),
+      onRetry: () => (model.status === 'ready' ? actions.retry(model.model.id) : setProblem(describeModelProblem(model))),
       // TODO: the add-credits flow.
       onContinue: unavailable('Adding credits'),
       // Undoing what made a gadget deletes it, which is asked about first; anything else can be gone back on.
@@ -212,7 +218,7 @@ export const ChatPane = ({
     }
     const given = connections?.flatMap(({ key }) => added.current.get(key) ?? []) ?? []
     const { text: written, capsules } = withCapsules(words, given)
-    const sent = await actions.send(request ?? written, model.id, files, capsules.length ? capsules : undefined)
+    const sent = await actions.send(request ?? written, model.model.id, files, capsules.length ? capsules : undefined)
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
@@ -234,11 +240,16 @@ export const ChatPane = ({
           ref={composer}
           onSend={sendMessage}
           commands={commands}
-          addActions={builds ? {
-            onAddConnection: () => {
+          addActions={{
+            onAddConnection: builds ? () => {
               if (!connection?.blocked()) setAdding(true)
-            },
-          } : undefined}
+            } : undefined,
+            model: models.status === 'ready' && model.status === 'ready' && models.offered.length > 1 ? {
+              models: models.offered,
+              current: model.model.id,
+              onChoose: (id) => setPicked({ chatId, id }),
+            } : undefined,
+          }}
           stop={chat.status === 'ready' && chat.agentActive ? {
             waiting: chat.waiting,
             onStop: () => {

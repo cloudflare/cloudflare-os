@@ -250,6 +250,21 @@ describe('ChatSession', () => {
       expect(ready(session)).toMatchObject({ title: 'Opened chat', items: [{ kind: 'user', text: 'hello' }] })
     })
 
+    it('says which model answers: the one at work, else the last that spoke', async () => {
+      const other: AiChatAuthorInfo = { type: 'agent', id: 'b', name: 'Other' }
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(agentMessage(0, 'hi'), userMessage(1, 'and?')) })
+      const session = await started(fake)
+      expect(ready(session).model).toBe('a')
+
+      fake.server().message(message(2, 'later', other))
+      expect(ready(session).model).toBe('b')
+    })
+
+    it('says no model answers a chat none has', async () => {
+      const session = await started(fakeOverseer(Promise.resolve([chat(0, 'Chat', 1)]), { 0: page(userMessage(0, 'hello')) }))
+      expect(ready(session).model).toBeUndefined()
+    })
+
     it('reports a chat that is not in the workspace', async () => {
       const fake = fakeOverseer(Promise.resolve([chat(0, 'Other chat', 1)]))
       const session = await started(fake, 3)

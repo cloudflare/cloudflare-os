@@ -36,6 +36,8 @@ export type DropdownMenuProps = TriggerContent & {
   duration?: number
   /** The trigger cannot be pressed, such as while what it changes is being changed. */
   disabled?: boolean
+  /** Told once the menu has finished opening or closing, its morph included. */
+  onOpenChangeComplete?: (open: boolean) => void
 }
 
 /** The opening morph's duration that the timings in DropdownMenu.css are written for. */
@@ -61,6 +63,7 @@ const DropdownMenuRoot = ({
   keepTrigger = false,
   duration = 360,
   disabled,
+  onOpenChangeComplete,
 }: DropdownMenuProps) => {
   const { triggerRef, popupRef } = useMenuMorph()
   const time = { '--menu-time': duration / BASE_DURATION } as CSSProperties
@@ -77,7 +80,7 @@ const DropdownMenuRoot = ({
   )
 
   return (
-    <Menu.Root>
+    <Menu.Root onOpenChangeComplete={onOpenChangeComplete}>
       <Menu.Trigger
         ref={triggerRef}
         disabled={disabled}
@@ -157,10 +160,16 @@ type DropdownMenuItemProps = {
   label?: string
   /** It takes something away, such as someone's access, which its colour says. */
   danger?: boolean
+  /** Choosing it leaves the menu open, as one that shows more of the menu does. */
+  keepsOpen?: boolean
+  /** It is the one now chosen of a list of choices. */
+  current?: boolean
+  /** Names the row, for its menu to find it by (`data-row`). */
+  row?: string
 }
 
-const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger }: DropdownMenuItemProps) => (
-  <Menu.Item onClick={onSelect} disabled={disabled} label={label} className={cn(ITEM_CLASS, danger && 'text-kumo-danger data-highlighted:bg-kumo-danger-tint')}>
+const DropdownMenuItem = ({ children, icon: Icon, onSelect, disabled, label, danger, keepsOpen, current, row }: DropdownMenuItemProps) => (
+  <Menu.Item onClick={onSelect} disabled={disabled} label={label} closeOnClick={!keepsOpen} aria-current={current || undefined} data-row={row} className={cn(ITEM_CLASS, danger && 'text-kumo-danger data-highlighted:bg-kumo-danger-tint')}>
     {Icon && <Icon aria-hidden="true" className="size-4 shrink-0" />}
     {children}
   </Menu.Item>

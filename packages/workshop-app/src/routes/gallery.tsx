@@ -196,11 +196,26 @@ const DropdownMenuPlayground = () => {
   )
 }
 
+const PREVIEW_MODELS = [
+  { id: 'sonnet', name: 'Claude Sonnet 5.5' },
+  { id: 'opus', name: 'Claude Opus 5.5', description: 'Slower, for harder work' },
+  { id: 'auto', name: 'Auto', description: 'Best model for each request' },
+]
+
 function Gallery() {
   const [selectedWorkspace, setSelectedWorkspace] = useState('greeting')
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
+  const [previewModel, setPreviewModel] = useState(PREVIEW_MODELS[0].id)
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
+    model: {
+      models: PREVIEW_MODELS,
+      current: previewModel,
+      onChoose: (id: string) => {
+        setPreviewModel(id)
+        setMenuAction(`Preview: the next message goes to ${PREVIEW_MODELS.find((model) => model.id === id)?.name}.`)
+      },
+    },
   }
   const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
     setMenuAction(command
@@ -342,6 +357,7 @@ function Gallery() {
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
             Type / at the start of a word for skills: arrows move, Enter or Tab chooses, Escape puts it away. A chosen
             skill sits at the top as one line; Backspace at the start, Escape, or its × takes it off. Files can’t go with it.
+            Model, in the + menu, names the one the next message goes to and shows the others in the menu’s place.
           </p>
           <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>

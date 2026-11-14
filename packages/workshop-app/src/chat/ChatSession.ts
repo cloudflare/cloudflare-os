@@ -66,6 +66,11 @@ export type ChatSnapshot =
        * below everything else in the turn.
        */
       pinned: ChatFeed['pinned']
+      /**
+       * The model that answers the chat: the one at work, else the last that spoke among the
+       * messages loaded. Undefined in a chat no model has answered yet.
+       */
+      model: string | undefined
       /** What the AI has used in the chat so far, once there is something to say. */
       usage: { tokens: number; cost?: number } | undefined
       /** The chat's changes wait for the user to keep them. Undefined while the agent works. */
@@ -226,6 +231,9 @@ export class ChatSession {
   #title: string | undefined
   #usage: { tokens: number; cost?: number } | undefined
   #agentActive = false
+  #activeModel: string | undefined
+  // The newest agent message loaded, for the model that answers once none is at work.
+  #lastSpoke: { sequence: number; model: string } | undefined
   // Set once a live metadata update was applied, so the listed metadata cannot overwrite it.
   #liveMetadata = false
   #messages = new Map<number, AiChatMessage>()
@@ -607,7 +615,9 @@ export class ChatSession {
       if (run !== this.#run) return
       // Live updates (e.g. an approval resolved during the read) take precedence over the page.
       for (const message of page.messages) {
-        if (!this.#messages.has(message.sequence)) this.#messages.set(message.sequence, message)
+        if (this.#messages.has(message.sequence)) continue
+        this.#messages.set(message.sequence, message)
+        this.#noteSpoke(message)
       }
       this.#nextBeforeSequence = page.nextBeforeSequence
       this.#rebuildFeed()
@@ -689,6 +699,8 @@ export class ChatSession {
     this.#title = undefined
     this.#usage = undefined
     this.#agentActive = false
+    this.#activeModel = undefined
+    this.#lastSpoke = undefined
     this.#liveMetadata = false
     this.#messages = new Map()
     this.#feed = EMPTY_FEED
@@ -732,6 +744,7 @@ export class ChatSession {
       waiting: this.#steers.filter(({ unread }) => unread).map(({ text }) => text),
       pinned: this.#feed.pinned,
       keep: this.#agentActive ? undefined : this.#keep,
+      model: this.#activeModel ?? this.#lastSpoke?.model,
       usage: this.#usage,
       sendError: this.#sendError,
       actionError: this.#actionError,
@@ -787,6 +800,8 @@ export class ChatSession {
         this.#generation = generation
       }
       this.#messages = new Map([...earlier, ...history.messages].map((message) => [message.sequence, message]))
+      this.#lastSpoke = undefined
+      for (const message of this.#messages.values()) this.#noteSpoke(message)
       this.#nextBeforeSequence = nextBeforeSequence
       this.#rebuildFeed()
       this.#loaded = true
@@ -941,6 +956,7 @@ export class ChatSession {
     this.#title = chat.title
     this.#usage = chat.totalTokens ? { tokens: chat.totalTokens, cost: chat.totalCost || undefined } : undefined
     this.#agentActive = chat.activeAgent !== undefined
+    this.#activeModel = chat.activeAgent?.id
     this.#compactedTo = chat.compactedTo
     const { viewerId } = this.options
     const queue = (chat.queuedSteers ?? []).map(({ text, author }): PendingSteer => ({
@@ -959,10 +975,17 @@ export class ChatSession {
     this.#rebuildFeed()
   }
 
+  /** Keeps which model spoke last, should `message` be the newest of an agent's. */
+  #noteSpoke(message: AiChatMessage) {
+    if (message.type !== 'message' || message.author.type !== 'agent') return
+    if (message.sequence >= (this.#lastSpoke?.sequence ?? -1)) this.#lastSpoke = { sequence: message.sequence, model: message.author.id }
+  }
+
   #applyMessage(message: AiChatMessage) {
     if (message.chatId !== this.chatId) return
     // Replayed and live delivery can overlap, so a sequence number is stored once.
     this.#messages.set(message.sequence, message)
+    this.#noteSpoke(message)
     // A steer's message has arrived: it is no longer pending, whichever of the two came first.
     if (message.type === 'message' && message.author.type !== 'agent') {
       const arrived = this.#steers.findIndex(({ text }) => text === message.message)

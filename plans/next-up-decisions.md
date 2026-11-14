@@ -138,7 +138,16 @@ prototype had it: Model, with the current one's name, opening the list. A chat k
 the model it last used; a new chat starts with the user's default, and choosing one there makes it
 the default. The profile page has the default too.
 
-**Kernel.** None (`getPreferredModel`, `setPreferredModel`, `activeAgent`).
+As built, the row is Model, the current model's name and a caret, after Add a connection; it
+swaps the menu's rows for the models in place (the morph follows the new size), with a Back row
+named Model and a tick in the icons' column. The keyboard lands on the chosen model, and Back on
+Model. With one model there is nothing to choose and no row. "No agent" (a chat no model answers)
+is cut: the new app is a conversation with the assistant, and the classic Workshop keeps it.
+Choosing in an existing chat lasts until it answers, after which it is the chat's own model; a
+retry goes to the same model. A new chat whose choice cannot be saved as the default still starts
+with it, and says why under the composer. The profile's default (§9) uses the same `useModels`.
+
+**Kernel.** None (`getPreferredModel`, `setPreferredModel`, `activeAgent`). Built.
 
 ## 6. Gadget exports
 
