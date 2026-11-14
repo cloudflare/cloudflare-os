@@ -737,17 +737,20 @@ export class GoogleDocSessionImpl extends RpcTarget implements GoogleDocSession 
 
   /**
    * Runs `use`, which replays pending edits, over the snapshot `snapshot` resolves to, with the
-   * same writes landed as when the snapshot was asked for: a write that lands meanwhile leaves the
-   * queue without its edit while the snapshot predates it, so the snapshot is asked for again.
-   * Nothing is awaited between that check and `use`.
+   * same writes landed and the same edits queued as when the snapshot was asked for. A write that
+   * lands meanwhile leaves the queue without its edit while the snapshot predates it, and an edit
+   * another session queues meanwhile may have been checked against a newer revision: either way
+   * the snapshot is asked for again. Nothing is awaited between that check and `use`.
    */
   async #settled<T>(
     snapshot: () => Promise<GoogleDocSnapshot>, use: (snapshot: GoogleDocSnapshot) => T,
   ): Promise<T> {
+    let generation = () =>
+      `${this.#changes.cache.writes}:${this.#changes.pending().map(({ id }) => id).join()}`;
     for (;;) {
-      let writes = this.#changes.cache.writes;
+      let before = generation();
       let taken = await snapshot();
-      if (writes === this.#changes.cache.writes) return use(taken);
+      if (before === generation()) return use(taken);
     }
   }
 
@@ -1109,7 +1112,6 @@ function storedDocSource(
  */
 export type DocFreshness = {
   writes(): number;
-  newestPending(): number;
   /** The newest pending edit's number, or 0: any edit queued since changes it. */
   newestQueued(): number;
 };
@@ -1130,8 +1132,8 @@ export function driveDocSource(
 ): DocSource {
   let writes = () => freshness?.writes() ?? 0;
   let queued = () => freshness?.newestQueued() ?? 0;
-  /** The writes landed when each snapshot was fetched. */
-  let fetchedAfter = new WeakMap<GoogleDocSnapshot, number>();
+  /** The writes landed, and the newest edit queued, when each snapshot was fetched. */
+  let fetchedAfter = new WeakMap<GoogleDocSnapshot, { landed: number; newest: number }>();
   /** A fetch still in flight, so reads issued together observe one revision. */
   let inFlight: Promise<GoogleDocSnapshot> | undefined;
   /** The last revision a completed scope check approved, the only one a later read may reuse. */
@@ -1144,8 +1146,10 @@ export function driveDocSource(
       // than the one it answers, so the replay over it would fail that edit.
       let moved = () => landed !== writes() || newest !== queued();
       let cached = approved;
-      if (cached && fetchedAfter.get(cached) === landed &&
-          (freshness?.newestPending() ?? 0) <= cached.fetchedAt) {
+      // Reused only while no write landed and no edit was queued since it was fetched: an edit is
+      // stamped while it is prepared, before it waits to be queued, so its time proves nothing.
+      let seen = cached && fetchedAfter.get(cached);
+      if (cached && seen && seen.landed === landed && seen.newest === newest) {
         if (Date.now() - cached.fetchedAt < DOC_SNAPSHOT_TTL_MS) return cached;
         if (await googleDocRevisionUnchanged(docsApi, documentId, cached)) {
           if (moved()) continue;
@@ -1156,7 +1160,7 @@ export function driveDocSource(
       let snapshot = googleDocSnapshot(await docsApi.getDocument(documentId));
       // Fetched before a write landed, it would read the edit as neither made nor pending.
       if (moved()) continue;
-      fetchedAfter.set(snapshot, landed);
+      fetchedAfter.set(snapshot, { landed, newest });
       return snapshot;
     }
   };

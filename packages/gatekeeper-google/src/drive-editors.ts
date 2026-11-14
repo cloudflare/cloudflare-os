@@ -432,8 +432,6 @@ export class DriveFileEditors {
   docsFreshness(fileId: string): DocFreshness {
     return {
       writes: () => this.#docCache(fileId).writes,
-      newestPending: () => Math.max(0,
-        ...this.#docsPending(fileId).map(({ action }) => action.submittedAt)),
       newestQueued: () => Math.max(0, ...this.#docsPending(fileId).map(({ id }) => id)),
     };
   }

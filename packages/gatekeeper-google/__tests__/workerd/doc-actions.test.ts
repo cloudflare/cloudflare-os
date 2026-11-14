@@ -230,7 +230,7 @@ describe("a Drive binding's Doc snapshot", () => {
     } as unknown as GoogleDocsApi;
     let newest = 0;
     let source = driveDocSource(docsApi, {} as DriveApi, "doc-1", {
-      writes: () => 0, newestPending: () => 0, newestQueued: () => newest,
+      writes: () => 0, newestQueued: () => newest,
     });
 
     let fetched = source.snapshot();
@@ -239,6 +239,27 @@ describe("a Drive binding's Doc snapshot", () => {
     newest = 7;
     release!();
     expect((await fetched).revisionId).toBe("r2");
+    expect(calls).toBe(2);
+  });
+});
+
+describe("a Drive binding's Doc snapshot, reused", () => {
+  // An edit is stamped while it is prepared and may enter the queue only after a snapshot fetched
+  // later than that: its time cannot tell the snapshot holds what the edit was checked against.
+  it("is not reused once an edit has been queued since it was fetched", async () => {
+    let calls = 0;
+    let docsApi = {
+      getDocument: async () => { calls++; return { ...document("Draft"), revisionId: `r${calls}` }; },
+    } as unknown as GoogleDocsApi;
+    let newest = 0;
+    let source = driveDocSource(docsApi, {} as DriveApi, "doc-1", {
+      writes: () => 0, newestQueued: () => newest,
+    });
+    let first = await source.snapshot();
+    source.approved(first);
+    expect(await source.snapshot()).toBe(first);
+    newest = 4;
+    expect((await source.snapshot()).revisionId).toBe("r2");
     expect(calls).toBe(2);
   });
 });
@@ -286,6 +307,59 @@ describe("a Doc read a write lands during", () => {
           if (snapshots > 1) return googleDocSnapshot(structuredClone(after));
           // The append lands, and leaves the queue, once the source has answered.
           queueMicrotask(() => { cache.writes++; pending.splice(0, 1); });
+          return googleDocSnapshot(structuredClone(before));
+        },
+        approved: () => {},
+        metadata: async () => ({ title: "Plan", modifiedAt: 0 }),
+        metadataObservation: { title: "t", description: "d" },
+      },
+    });
+
+    expect(await docs.getContent()).toContain("Final");
+    expect(snapshots).toBe(2);
+    expect(invalidated).toEqual([]);
+  });
+
+  // Another session's edit can enter the queue there too, checked against a newer revision.
+  it("takes the snapshot again when another session queues an edit after the source answered", async () => {
+    let pending: { id: number; action: GoogleDocAction }[] = [];
+    let invalidated: number[] = [];
+    let before = document("Draft");
+    let after = {
+      ...before, revisionId: "r2",
+      tabs: [{ ...buildTab([{ runs: ["Draft\n"] }, { runs: ["External\n"] }]), title: "Main" }],
+    };
+    let snapshots = 0;
+    let docs = new GoogleDocSessionImpl({
+      docsApi: {} as GoogleDocsApi,
+      driveApi: {} as DriveApi,
+      documentId: "doc-1",
+      approvalQueue: {} as RpcStub<ApprovalQueue>,
+      read: async (fetch, observe) => {
+        let value = await fetch();
+        observe(value);
+        return value;
+      },
+      changes: {
+        pending: () => pending,
+        invalidate: ({ id }) => { invalidated.push(id); },
+        cache: { writes: 0 },
+        queue: () => Promise.reject(new Error("nothing is queued here")),
+        afterTurns: async () => {},
+        adoptedTabId: tabId => tabId,
+        authorizesPreparation: false,
+        simulates: true,
+      },
+      source: {
+        snapshot: async () => {
+          snapshots++;
+          if (snapshots > 1) return googleDocSnapshot(structuredClone(after));
+          queueMicrotask(() => {
+            pending.push({ id: 3, action: {
+              ...BASE, type: "replaceText", oldMarkdown: "External", newMarkdown: "Final",
+              display: { tab: "x" },
+            } });
+          });
           return googleDocSnapshot(structuredClone(before));
         },
         approved: () => {},
