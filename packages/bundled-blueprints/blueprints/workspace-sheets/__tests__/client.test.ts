@@ -282,6 +282,24 @@ describe("sync", () => {
     expect(shown("B1")).toBe("theirs");
   });
 
+  it("forgets undo history on a sheet whose rows moved while this tab was disconnected", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    typeIntoActiveCell("edited");
+    await settle(); // saved
+    const undo = document.querySelector<HTMLElement>('.tb[aria-label="Undo"]')!;
+    expect(undo.getAttribute("aria-disabled")).not.toBe("true");
+    // An agent's row insertion lands unheard; the reconnect's snapshot has it.
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => {
+      h.callbacks = callback;
+      return { revision: 3, lastModified: 0, ...structure({ ...meta, layout: 3 }), cells: { s1: { A2: cell("first"), A3: cell("edited", 2) } }, cursors: {} };
+    });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    await settle();
+    expect(undo.getAttribute("aria-disabled")).toBe("true");
+  });
+
   it("keeps a rename acknowledged while a reconnect's older snapshot loads", async () => {
     const one = sheet("s1"), other = { ...sheet("s2"), name: "Other" };
     const book = (name: string) => ({ title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: { ...one, name }, s2: other } });

@@ -5681,6 +5681,7 @@ interface ClipboardSnapshot {
   token: string;
 }
 let copyFallback: ClipboardSnapshot | null = null;
+const CUT_MOVED = "The cut cells moved; cut them again";
 // Whole-row and whole-column selections are trimmed to the populated extent (a whole-sheet
 // selection in both directions); `trimmed` records which axis, so a paste doesn't mistake the trimmed block for a pattern to repeat.
 function clipboardReferenceMatrix(): { refs: (string | null)[][]; trimmed: ClipboardSnapshot["trimmed"] } {
@@ -7281,7 +7282,7 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
   }
   // A cut's source cells are named by where they were; once they've moved, removing them could
   // take another record's cells.
-  if (copyFallback?.cut && copyFallback.sheetId === sheetId && !copyFallback.cancelled) copyFallback.cancelled = "The cut cells moved; cut them again";
+  if (copyFallback?.cut && copyFallback.sheetId === sheetId && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
   if (dropped) toast(dropped === 1 ? "An unsaved edit was on a row or column someone else just deleted" : `${dropped} unsaved edits were on rows or columns someone else just deleted`, "bad");
   for (const map of [overtakingWrites, recentCommits]) for (const key of map.keys()) if (key.startsWith(sheetId + "!")) map.delete(key);
   for (let i = reloadAcks.length - 1; i >= 0; i--) if (reloadAcks[i].sheetId === sheetId && reloadAcks[i].revision < revision) reloadAcks.splice(i, 1);
@@ -7409,6 +7410,7 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
   // A save of this tab's acknowledged while the snapshot was read is newer than it.
   const acked = reconcile ? layReloadAcks(doc.revision || 0, (id) => doc.sheets?.[id] ? ((doc.cells ||= {})[id] ||= {}) : undefined) : new Map<string, number>();
   snapshotGeneration++; reloadAcks.length = 0; overtakingWrites.clear();
+  const layoutsBefore = new Map(Object.entries(model.sheets).map(([id, sheet]) => [id, sheet.layout || 0]));
   model.revision = doc.revision || 0;
   model.cells = doc.cells || {};
   // So is a structure this tab saved meanwhile: the server's, as of its acknowledgment.
@@ -7435,6 +7437,12 @@ function applySnapshot(doc: OpenedDocument | SheetsDocument, reconcile = false):
       pendingCellOps.delete(key); unplaced++;
     }
     if (unplaced) toast(`${unplaced === 1 ? "An unsaved edit" : `${unplaced} unsaved edits`} couldn't be kept because rows or columns moved meanwhile`, "bad");
+    // Undo history and a cut name cells by where they were, which a move this tab missed changed.
+    for (const id of model.sheetOrder) {
+      if ((model.sheets[id]?.layout || 0) <= (layoutsBefore.get(id) ?? Infinity)) continue;
+      forgetHistoryOf(id);
+      if (copyFallback?.cut && copyFallback.sheetId === id && !copyFallback.cancelled) copyFallback.cancelled = CUT_MOVED;
+    }
     for (const [sheetId, cells] of Object.entries(model.cells)) layPendingCellOps(sheetId, cells);
     for (const [sheetId, cells] of pendingReplacements) if (model.sheets[sheetId]) model.cells[sheetId] = copyCellMap(cells);
   }

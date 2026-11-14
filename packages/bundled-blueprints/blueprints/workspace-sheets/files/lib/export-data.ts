@@ -63,12 +63,13 @@ export function disposeResult(result: unknown): void {
 export const MAX_EXPORT_CELLS = 400_000;
 /** The most characters of cell text one export reads, for workbooks of long texts that stay under the cell cap. */
 export const MAX_EXPORT_TEXT = 40_000_000;
-export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sheetIds = null }: { formats: boolean; sheetIds?: string[] | null }): Promise<ExportWorkbook> {
+export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats }: { formats: boolean }): Promise<ExportWorkbook> {
   for (let attempt = 0; ; ++attempt) {
     const strict = attempt < 2;
     const structure = await gadget.getStructure();
     disposeResult(structure);
-    const ids = [...new Set((sheetIds || structure.sheetOrder).map(String))].filter((id) => structure.sheets[id]);
+    // Every sheet: a pivot or formula on one may read any other.
+    const ids = [...new Set(structure.sheetOrder.map(String))].filter((id) => structure.sheets[id]);
     const cells = new Map<string, ExportCells>(), fmts: CellFmt[] = [], fmtIndex = new Map<string, number>();
     let consistent = true, total = 0, text = 0;
     for (const id of ids) {
