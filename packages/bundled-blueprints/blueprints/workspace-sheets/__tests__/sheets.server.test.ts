@@ -279,6 +279,38 @@ describe("applyOperation", () => {
     expect(events[0]).toMatchObject({ type: "operation", senderId: "me", replacedSheets: [sheetId], replacedCells: { [sheetId]: { A3: { value: "c" } } } });
   });
 
+  it("refuses a cell edit addressed before its sheet's cells moved, and tells peers how they moved", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const events: SubscriberEvent[] = [];
+    await gadget.subscribe({ operation: (event) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} }, { clientId: "peer", packed: true });
+    await gadget.setCells({ cells: { A1: "first", A2: "second" } });
+    const cell = (value: string): Cell => ({ value, fmt: null, version: 1 });
+    // One client inserts a row above A1; another's edit of A2 (the "second" record) was addressed before it.
+    const insert = await gadget.applyOperation({ senderId: "b", baseRevision: 1, sheetReplacements: [{ sheetId, cells: { A2: cell("first"), A3: cell("second") }, moves: [{ kind: "lines", rows: true, at: 0, count: 1 }] }] });
+    expect(insert).toMatchObject({ status: "applied", revision: 2 });
+    expect((await firstSheet(gadget)).layout).toBe(2);
+    await Promise.resolve();
+    expect(events.at(-1)).toMatchObject({ senderId: "b", moves: { [sheetId]: [{ kind: "lines", rows: true, at: 0, count: 1 }] } });
+
+    const stale = await gadget.applyOperation({ senderId: "a", cellOps: [{ sheetId, ref: "A2", value: "edited", fmt: null, baseVersion: 1, layout: 0 }] });
+    expect(stale).toEqual({ status: "unchanged", revision: 2, conflicts: [], misplaced: [{ sheetId, ref: "A2" }] });
+    expect(await gadget.applyOperation({ senderId: "a", cellOps: [{ sheetId, ref: "A3", value: "edited", fmt: null, baseVersion: 1, layout: 2 }] })).toMatchObject({ status: "applied" });
+    expect(await values(gadget, "A1:A3")).toEqual([[""], ["first"], ["edited"]]);
+
+    // A replacement that moves nothing (a pivot refresh) keeps the layout; the agent's inserts move it.
+    await gadget.applyOperation({ senderId: "b", sheetReplacements: [{ sheetId, cells: { A2: cell("first"), A3: cell("edited") }, moves: [] }] });
+    expect((await firstSheet(gadget)).layout).toBe(2);
+    const { revision } = await gadget.insertRows({ at: 1 });
+    expect((await firstSheet(gadget)).layout).toBe(revision);
+    await Promise.resolve();
+    expect(events.at(-1)).toMatchObject({ senderId: "agent", moves: { [sheetId]: [{ kind: "lines", rows: true, at: 0, count: 1 }] } });
+    // A client's structure snapshot can't set it.
+    const document = await gadget.getDocument();
+    await gadget.applyOperation({ structure: { ...document, sheets: { [sheetId]: { ...document.sheets[sheetId], layout: 0 } } } });
+    expect((await firstSheet(gadget)).layout).toBe(revision);
+  });
+
   it("keeps a sheet the agent added after the snapshot a structure update was built on", async () => {
     const gadget = newGadget();
     const document = await gadget.getDocument();
@@ -857,5 +889,143 @@ describe("export size", () => {
     // CSV writes an unknown formula as its text.
     expect(evaluator.display("s1", 1, 1, null)).toBe("=A1*10");
     expect(evaluator.display("s1", 1, 0, null)).toBe("2");
+  });
+});
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("review regressions", () => {
+  it("keeps text that would start a formula as text in CSV, and numbers as they show", async () => {
+    const gadget = newGadget();
+    await gadget.setRange({ values: [["'=1+1", "'+cmd", -5, '="=2+2"', "'-x", "@SUM(A1)", "'\tTab"]] });
+    await gadget.setCell({ ref: "A2", value: -50, fmt: { nf: "currency", d: 0 } });
+    const csv = await csvText(gadget, (await gadget.getStructure()).sheetOrder[0]);
+    expect(csv).toBe("﻿'=1+1,'+cmd,-5,'=2+2,'-x,'@SUM(A1),'\tTab\r\n-$50,,,,,,\r\n");
+  });
+
+  it("pages a block of long rows between rows, so no reload or export page outgrows a message", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const value = (ref: string) => ref.padEnd(8192, "x");
+    // 32 rows (one block) saved one at a time, each 20 cells of 8,192 characters: 5 MB in one block.
+    const columns = Array.from({ length: 20 }, (_, c) => String.fromCharCode(65 + c));
+    for (let row = 1; row <= 32; row++) {
+      await gadget.applyOperation({ cellOps: columns.map((column) => ({ sheetId, ref: column + row, value: value(column + row), fmt: null, baseVersion: 0 })) });
+    }
+    const size = (packed: { values: string[] }) => packed.values.reduce((sum, text) => sum + text.length, 0);
+    const opened = await gadget.openDocument({ packed: true });
+    const loaded = new Map<string, string>();
+    const take = (packed: { refs: string[]; values: string[] }) => {
+      expect(size(packed)).toBeLessThanOrEqual(2_000_000);
+      packed.refs.forEach((ref, i) => { expect(loaded.has(ref)).toBe(false); loaded.set(ref, packed.values[i]); });
+    };
+    take(opened.packed![sheetId]);
+    for (const slice of opened.slices!) {
+      for (let after = slice.after; ;) {
+        const page = await gadget.getCellsPage({ sheetId, after, from: slice.from, to: slice.to, packed: true });
+        take(page.packed!);
+        if (page.next == null) break;
+        after = page.next;
+      }
+    }
+    expect(loaded.size).toBe(640);
+    expect(loaded.get("T32")).toBe(value("T32"));
+
+    const pages: number[] = [];
+    const recording = { getStructure: () => gadget.getStructure(), exportPage: async (options: { sheetId: string; after?: string; formats?: boolean }) => { const page = await gadget.exportPage(options); pages.push(size(page)); return page; } };
+    const workbook = await loadExportWorkbook(recording, { formats: true });
+    expect(workbook.cells.get(sheetId)?.size).toBe(640);
+    expect(pages.length).toBeGreaterThan(1);
+    expect(Math.max(...pages)).toBeLessThanOrEqual(3_000_000);
+    const csv = (await csvText(gadget, sheetId)).split("\r\n");
+    expect(csv).toHaveLength(33);
+    expect(csv[31].split(",")[19]).toBe(value("T32"));
+  });
+
+  it("sends peers `null` for replaced sheets and agent edits past the inline text budget", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const events: SubscriberEvent[] = [];
+    await gadget.subscribe({ operation: (event) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} }, { clientId: "peer", packed: true });
+    const long = "y".repeat(8192), cells: Record<string, Cell> = {};
+    for (let r = 1; r <= 300; r++) cells["A" + r] = { value: long, fmt: null, version: 1 };
+    await gadget.applyOperation({ senderId: "me", sheetReplacements: [{ sheetId, cells }] });
+    await gadget.setRange({ start: "B1", values: Array.from({ length: 300 }, () => [long]) });
+    await settle();
+    expect(events).toMatchObject([{ replacedCells: { [sheetId]: null } }, { upserts: [], replacedCells: { [sheetId]: null } }]);
+  });
+
+  it("bounds what staged uploads hold, and releases those an operation refused as stale names", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const cell = (value: string): Cell => ({ value, fmt: null, version: 1 });
+    gadget.stageCells({ uploadId: "small", sheetId, part: 0, cells: { A1: cell("a") } });
+    await gadget.setCell({ ref: "Z1", value: "moved on" });
+    expect(await gadget.applyOperation({ baseRevision: 0, sheetReplacements: [{ sheetId, uploadId: "small", count: 1 }] })).toMatchObject({ staleRevision: true });
+    expect(gadget.uploads.size).toBe(0);
+
+    const long = "z".repeat(8192), huge: Record<string, Cell> = {};
+    for (let r = 1; r <= 5000; r++) huge["A" + r] = cell(long);
+    expect(() => gadget.stageCells({ uploadId: "huge", sheetId, part: 0, cells: huge })).toThrow("too large to save at once");
+    expect(gadget.uploads.size).toBe(0);
+  });
+
+  it("works out chart caches only as the archive reaches each chart", async () => {
+    const gadget = newGadget();
+    await gadget.setRange({ values: Array.from({ length: 1500 }, (_, r) => [r, r * 2]) });
+    for (let i = 0; i < 3; i++) await gadget.addChart({ range: "A1:B1500", type: "line", firstRowHeaders: false });
+    const workbook = await loadExportWorkbook(gadget, { formats: true });
+    const evaluator = new ExportEvaluator(workbook);
+    const stream = workbookToXlsx(workbook, evaluator);
+    const [sheetId] = workbook.sheetOrder;
+    expect(evaluator.results.has(sheetId + "!B1500")).toBe(false);
+    const chart = part(await unzip(stream), "xl/charts/chart3.xml");
+    expect(evaluator.results.has(sheetId + "!B1500")).toBe(true);
+    expect(chart).toContain('<c:pt idx="1499"><c:v>2998</c:v></c:pt>');
+  });
+
+  it("writes a filter that selects nothing as a rule matching no row", async () => {
+    const gadget = newGadget();
+    await gadget.setRange({ values: [["Name"], ["a"], ["b"]] });
+    const document = await gadget.getStructure();
+    const [id] = document.sheetOrder;
+    const filter = { row: 0, endRow: 2, columns: [0], criteria: { 0: ["x:__none__"] }, rowOrder: [], sort: null };
+    await gadget.applyOperation({ structure: { sheetOrder: document.sheetOrder, sheets: { [id]: { ...document.sheets[id], filter } } } });
+    const xml = part(await xlsx(gadget), "xl/worksheets/sheet1.xml");
+    expect(xml).toContain('<row r="2" hidden="1">');
+    expect(xml).toContain('<row r="3" hidden="1">');
+    expect(xml).toContain('<autoFilter ref="A1:A3"><filterColumn colId="0"><customFilters and="1"><customFilter operator="equal" val=""/><customFilter operator="notEqual" val=""/></customFilters></filterColumn></autoFilter>');
+  });
+
+  it("rebuilds every pivot from its source before exporting, pivots that read pivots too", async () => {
+    const gadget = newGadget();
+    const document = await gadget.getStructure();
+    const [source] = document.sheetOrder;
+    await gadget.setRange({ values: [["Region", "Sales"], ["North", 10]] });
+    const pivot = (sourceSheetId: string, valueField: string) => ({ sourceSheetId, sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField, aggregate: "sum" as const, showRowTotals: true, showColumnTotals: true, filterField: "", filterValues: [] });
+    const sheet = (id: string, name: string, settings: SheetMeta["pivot"]) => ({ ...document.sheets[source], id, name, pivot: settings, created: undefined });
+    // As grids saved them while the source read 10: the second pivot reads a sheet that reads the first.
+    const stale = (value: string) => ({ A1: { value: "Region", fmt: null, version: 1 }, B2: { value, fmt: null, version: 1 } });
+    await gadget.applyOperation({
+      structure: { sheetOrder: [source, "s_pivot2", "s_calc", "s_pivot1"], sheets: { [source]: document.sheets[source], s_pivot2: sheet("s_pivot2", "Pivot 2", pivot("s_calc", "Total")), s_calc: sheet("s_calc", "Calc", null), s_pivot1: sheet("s_pivot1", "Pivot 1", pivot(source, "Sales")) } },
+    });
+    await gadget.applyOperation({ baseRevision: 2, sheetReplacements: [{ sheetId: "s_pivot1", cells: stale("10") }, { sheetId: "s_pivot2", cells: stale("20") }] });
+    await gadget.setRange({ sheet: "Calc", values: [["Region", "Total"], ["North", "='Pivot 1'!B2*2"]] });
+    await gadget.setCell({ ref: "B2", value: 20 });
+    expect(await csvText(gadget, "s_pivot1")).toBe("﻿Region,Sales,Grand Total\r\nNorth,20,20\r\nGrand Total,20,20\r\n");
+    expect(await csvText(gadget, "s_pivot2")).toBe("﻿Region,Total,Grand Total\r\nNorth,40,40\r\nGrand Total,40,40\r\n");
+    const parts = await xlsx(gadget);
+    expect(cellXml(part(parts, "xl/worksheets/sheet2.xml"), "B2")).toContain("<v>40</v>");
+    expect(part(parts, "xl/worksheets/sheet4.xml")).toContain('<row r="1" ht="22.5" customHeight="1">');
+  });
+
+  it("forgets a subscriber whose first read failed", async () => {
+    const gadget = newGadget();
+    let disposed = 0;
+    gadget.openDocument = () => Promise.reject(new Error("storage unavailable"));
+    const subscriber = { operation: () => {}, presence: () => {}, dup() { return this; }, onRpcBroken: () => {}, [Symbol.dispose]: () => { disposed++; } };
+    await expect(gadget.subscribe(subscriber, { clientId: "c", packed: true })).rejects.toThrow("storage unavailable");
+    expect(gadget.subscribers.size).toBe(0);
+    expect(disposed).toBe(1);
   });
 });

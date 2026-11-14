@@ -113,6 +113,8 @@ export interface SheetMeta {
   pivot: PivotSettings | null;
   /** The revision that created the sheet (0 for sheets older than this field); the server assigns it, so a sheet a client adds has none yet. */
   created?: number;
+  /** The revision that last moved the sheet's cells (see `CellMove`), which the server assigns; a cell edit addressed before it is refused. */
+  layout?: number;
 }
 
 /** The workbook structure as the server repeats it after an operation. */
@@ -202,19 +204,40 @@ export interface StructureUpdate {
   revision?: number;
 }
 
-/** One cell edit: the new content and the version it was based on (0 for a new cell); `value` and `fmt` both `null` deletes the cell. */
+/**
+ * One cell edit: the new content and the version it was based on (0 for a new cell); `value` and
+ * `fmt` both `null` deletes the cell. `layout` is the sheet's `layout` the ref was addressed in: an
+ * edit addressed before the sheet's cells last moved is refused as `misplaced`, since a position
+ * no longer names the cell that was edited.
+ */
 export interface CellOp {
   sheetId: string;
   ref: string;
   value: string | null;
   fmt: CellFmt | null;
   baseVersion: number;
+  layout?: number;
 }
 
-/** A whole-sheet cell replacement (sort, insert/delete and other operations that move many cells at once), inline or staged with `stageCells`. */
+/**
+ * How a replacement moved a sheet's cells, so a peer's unsaved edits can follow them: `count`
+ * rows or columns inserted (`count` > 0) or deleted (`count` < 0) at `at`; a block of `count`
+ * lines moved from `from` to before line `to`; or a sort, after which row `r1 + i` of columns
+ * `c1`–`c2` holds what row `order[i]` held.
+ */
+export type CellMove =
+  | { kind: "lines"; rows: boolean; at: number; count: number }
+  | { kind: "move"; rows: boolean; from: number; count: number; to: number }
+  | { kind: "sort"; r1: number; c1: number; c2: number; order: number[] };
+
+/**
+ * A whole-sheet cell replacement (sort, insert/delete and other operations that move many cells
+ * at once), inline or staged with `stageCells`. `moves` says how its cells moved, in order
+ * (empty: none did); without it the server can't tell, and treats every cell as moved.
+ */
 export type SheetReplacement =
-  | { sheetId: string; cells: CellMap; uploadId?: undefined }
-  | { sheetId: string; uploadId: string; count: number; cells?: undefined };
+  | { sheetId: string; cells: CellMap; uploadId?: undefined; moves?: CellMove[] }
+  | { sheetId: string; uploadId: string; count: number; cells?: undefined; moves?: CellMove[] };
 
 /** What a client sends to `applyOperation`: any combination of a structure snapshot, sheet replacements and per-cell edits. */
 export interface Operation {
@@ -277,6 +300,8 @@ export interface OperationEvent {
   deletes: CellDeletion[];
   replacedSheets?: string[];
   replacedCells?: Record<string, CellMap | null>;
+  /** Each replaced sheet whose cells moved, with how they moved (null: unknown). */
+  moves?: Record<string, CellMove[] | null>;
   agentHint?: AgentHint;
   lastModified: number;
 }
@@ -292,6 +317,8 @@ export interface OperationResult extends Partial<Omit<OperationEvent, "replacedC
   status: OperationStatus;
   revision: number;
   conflicts: CellConflict[];
+  /** Cell edits refused because their sheet's cells moved after the edit was addressed (see `CellOp.layout`). */
+  misplaced?: CellDeletion[];
   /** Set when `baseRevision` was stale and nothing was applied. */
   staleRevision?: true;
 }

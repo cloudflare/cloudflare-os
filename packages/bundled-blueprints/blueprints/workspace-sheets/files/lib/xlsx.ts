@@ -93,9 +93,8 @@ interface ChartLayout {
 }
 /** What a chart shows, for its cached values. */
 interface ChartCache { categories: string[] | null; names: string[]; named: boolean[]; values: (number | null)[][] }
-type PreparedChart = ChartLayout & { cache: ChartCache };
 /** A sheet's drawing part and the charts on it, numbered across the workbook. */
-interface Drawing { index: number; relationshipId: string; charts: (PreparedChart & { index: number })[] }
+interface Drawing { index: number; relationshipId: string; charts: (ChartLayout & { index: number })[] }
 /** A sheet as the writer works on it: its source, then everything prepareWorkbook works out for it. */
 interface PreparedSheet {
   id: string;
@@ -462,7 +461,7 @@ function prepareFilter(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: C
   for (let column = first; column <= last; ++column) {
     const criterion = criteria.get(column);
     if (!columns.includes(column)) filterColumns.push({ offset: column - first, hiddenButton: true });
-    else if (criterion?.values.length || criterion?.blank) filterColumns.push({ offset: column - first, ...criterion });
+    else if (criterion?.values.length || criterion?.blank || criterion?.selectsNothing) filterColumns.push({ offset: column - first, ...criterion });
   }
   const hiddenRows: number[] = [];
   if (criteria.size) {
@@ -515,11 +514,14 @@ function usableSeriesColumns(sheet: PreparedSheet, range: CellRange, firstColumn
   return [...usable].sort((a, b) => a - b);
 }
 // What a chart shows, for its cached values: labels and series names as the grid displays them,
-// and each point's number (null where the grid leaves a gap).
-function chartCaches(sheet: PreparedSheet, chart: ChartLayout, evaluator: ExportEvaluator, fmtAt: Map<number, CellFmt>): ChartCache {
+// and each point's number (null where the grid leaves a gap). Worked out only as the archive
+// reaches the chart, so a workbook of many long charts never holds them all.
+function chartCaches(sheet: PreparedSheet, chart: ChartLayout, evaluator: ExportEvaluator, fmts: CellFmt[]): ChartCache {
   const text = (row: number, column: number) => {
     const value = evaluator.value(sheet.id, row - 1, column - 1);
-    return value === EXPORT_UNKNOWN ? "" : displayValue(value as Scalar, fmtAt.get((row - 1) * XL_MAX_COLUMNS + column - 1)).text;
+    if (value === EXPORT_UNKNOWN) return "";
+    const i = evaluator.index(sheet.id).get(columnName(column) + row), fmtId = i === undefined ? -1 : sheet.data.fmtIds[i];
+    return displayValue(value as Scalar, fmtId >= 0 ? fmts[fmtId] : null).text;
   };
   const rows: number[] = [];
   for (let row = chart.firstRow; row <= chart.lastRow; ++row) rows.push(row);
@@ -536,18 +538,9 @@ function chartCaches(sheet: PreparedSheet, chart: ChartLayout, evaluator: Export
 // Mirrors the grid's chartData(): with header and label options on, each remaining column is a
 // series named by its first cell, categorized by the first column. Charts without usable data
 // are skipped, as the grid draws only a placeholder for them.
-function prepareCharts(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: CellFmt[]): PreparedChart[] {
+function prepareCharts(sheet: PreparedSheet, evaluator: ExportEvaluator): ChartLayout[] {
   const source = Array.isArray(sheet.metadata.charts) ? sheet.metadata.charts : [];
-  const charts: PreparedChart[] = [];
-  // Each cell's format by position, built once for all the sheet's charts.
-  let fmtAt: Map<number, CellFmt> | null = null;
-  const formatsByPosition = () => {
-    if (fmtAt) return fmtAt;
-    fmtAt = new Map();
-    const data = sheet.data;
-    for (let i = 0; i < data.size; ++i) if (data.fmtIds[i] >= 0) fmtAt.set(data.rows[i] * XL_MAX_COLUMNS + data.cols[i], fmts[data.fmtIds[i]]);
-    return fmtAt;
-  };
+  const charts: ChartLayout[] = [];
   for (const chart of source) {
     if (!chart || typeof chart !== "object") continue;
     const range = parseRangeReference(chart.range);
@@ -574,7 +567,7 @@ function prepareCharts(sheet: PreparedSheet, evaluator: ExportEvaluator, fmts: C
       row: anchorPosition(Number(chart.y ?? 44) - COLUMN_HEADER_PIXELS, sheet.metadata.rowHeights, XL_DEFAULT_ROW_PIXELS, XL_MAX_ROWS),
       extent: { cx: width * EMU_PER_PIXEL, cy: height * EMU_PER_PIXEL },
     };
-    charts.push({ ...prepared, cache: chartCaches(sheet, prepared, evaluator, formatsByPosition()) });
+    charts.push(prepared);
   }
   return charts;
 }
@@ -671,7 +664,7 @@ function prepareWorkbook(workbook: ExportWorkbook, evaluator: ExportEvaluator) {
     }
     sheet.filter = prepareFilter(sheet, evaluator, fmts);
     sheet.hiddenRows = sheet.filter?.hiddenRows ?? [];
-    const charts = prepareCharts(sheet, evaluator, fmts);
+    const charts = prepareCharts(sheet, evaluator);
     if (charts.length) {
       sheet.drawing = {
         index: ++parts.drawings,
@@ -907,6 +900,9 @@ function autoFilterXml(filter: PreparedFilter): string {
   let xml = `<autoFilter ref="${filter.ref}">`;
   for (const column of filter.columns) {
     if (column.hiddenButton) { xml += `<filterColumn colId="${column.offset}" hiddenButton="1"/>`; continue; }
+    // Nothing chosen: a list of no values isn't a rule Excel keeps, so this one matches no cell
+    // (blank and not blank at once).
+    if (column.selectsNothing) { xml += `<filterColumn colId="${column.offset}"><customFilters and="1"><customFilter operator="equal" val=""/><customFilter operator="notEqual" val=""/></customFilters></filterColumn>`; continue; }
     xml += `<filterColumn colId="${column.offset}"><filters${column.blank ? ' blank="1"' : ""}>`;
     for (const value of column.values) xml += `<filter val="${spreadsheetXml(value, true)}"/>`;
     xml += "</filters></filterColumn>";
@@ -990,14 +986,14 @@ function solidFill(color: string, alpha?: number): string {
   const rgb = alpha ? `<a:srgbClr val="${color}"><a:alpha val="${alpha}"/></a:srgbClr>` : `<a:srgbClr val="${color}"/>`;
   return `<a:solidFill>${rgb}</a:solidFill>`;
 }
-function chartSeriesXml(chart: PreparedChart, sheetName: string, index: number): string {
+function chartSeriesXml(chart: ChartLayout, cache: ChartCache, sheetName: string, index: number): string {
   const column = chart.columns[index];
   const color = XL_CHART_COLORS[index % XL_CHART_COLORS.length];
   const reference = (firstRow: number, lastRow: number) => plainXml(absoluteReference(sheetName, column, firstRow, column, lastRow));
   let xml = `<c:ser><c:idx val="${index}"/><c:order val="${index}"/>`;
-  const name = chart.cache.names[index];
+  const name = cache.names[index];
   // A blank header cell would leave the series unnamed (or "Column B"); the grid names it by its column.
-  xml += chart.headerRow && chart.cache.named[index] ? `<c:tx><c:strRef><c:f>${reference(chart.headerRow, chart.headerRow)}</c:f>${strCacheXml([name])}</c:strRef></c:tx>` : `<c:tx><c:v>${plainXml(name)}</c:v></c:tx>`;
+  xml += chart.headerRow && cache.named[index] ? `<c:tx><c:strRef><c:f>${reference(chart.headerRow, chart.headerRow)}</c:f>${strCacheXml([name])}</c:strRef></c:tx>` : `<c:tx><c:v>${plainXml(name)}</c:v></c:tx>`;
   if (chart.type === "line") {
     xml += `<c:spPr><a:ln w="28575" cap="rnd">${solidFill(color)}<a:round/></a:ln></c:spPr>`;
     xml += `<c:marker><c:symbol val="circle"/><c:size val="5"/><c:spPr>${solidFill(color)}<a:ln>${solidFill(color)}</a:ln></c:spPr></c:marker>`;
@@ -1008,7 +1004,7 @@ function chartSeriesXml(chart: PreparedChart, sheetName: string, index: number):
   } else {
     // The grid draws only positive slices and colours them in order, so a blank or zero point
     // (which has no slice anyway) takes no colour. Negative points come after the positive ones.
-    const values = chart.cache.values[index];
+    const values = cache.values[index];
     const drawn = values.map((value, point) => ({ value, point })).filter(({ value }) => value != null && value !== 0)
       .sort((a, b) => Number((a.value as number) < 0) - Number((b.value as number) < 0)).slice(0, 64);
     drawn.forEach(({ point }, order) => {
@@ -1017,9 +1013,9 @@ function chartSeriesXml(chart: PreparedChart, sheetName: string, index: number):
   }
   if (chart.categoryColumn) {
     const categories = absoluteReference(sheetName, chart.categoryColumn, chart.firstRow, chart.categoryColumn, chart.lastRow);
-    xml += `<c:cat><c:strRef><c:f>${plainXml(categories)}</c:f>${strCacheXml(chart.cache.categories ?? [])}</c:strRef></c:cat>`;
+    xml += `<c:cat><c:strRef><c:f>${plainXml(categories)}</c:f>${strCacheXml(cache.categories ?? [])}</c:strRef></c:cat>`;
   }
-  xml += `<c:val><c:numRef><c:f>${reference(chart.firstRow, chart.lastRow)}</c:f>${numCacheXml(chart.cache.values[index])}</c:numRef></c:val>`;
+  xml += `<c:val><c:numRef><c:f>${reference(chart.firstRow, chart.lastRow)}</c:f>${numCacheXml(cache.values[index])}</c:numRef></c:val>`;
   if (chart.type === "line") xml += '<c:smooth val="0"/>';
   return xml + "</c:ser>";
 }
@@ -1043,12 +1039,12 @@ function chartAxisXml(kind: "catAx" | "valAx", id: number, crossId: number, posi
 }
 // Series point at the worksheet and carry the grid's values as their cache. Like the grid, a chart
 // plots rows a filter hides (plotVisOnly 0).
-function chartXml(chart: PreparedChart, sheetName: string): string {
+function chartXml(chart: ChartLayout, cache: ChartCache, sheetName: string): string {
   let xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><c:chartSpace xmlns:c="${XL_CHART_NS}" xmlns:a="${XL_DRAWING_NS}" xmlns:r="${XL_REL_NS}">`;
   xml += '<c:roundedCorners val="0"/><c:chart>';
   xml += chart.title ? chartTitleXml(chart.title) + '<c:autoTitleDeleted val="0"/>' : '<c:autoTitleDeleted val="1"/>';
   xml += "<c:plotArea><c:layout/>";
-  const series = chart.columns.map((_, index) => chartSeriesXml(chart, sheetName, index)).join("");
+  const series = chart.columns.map((_, index) => chartSeriesXml(chart, cache, sheetName, index)).join("");
   if (chart.type === "pie") {
     xml += `<c:pieChart><c:varyColors val="1"/>${series}<c:firstSliceAng val="0"/></c:pieChart>`;
   } else {
@@ -1068,7 +1064,7 @@ function chartXml(chart: PreparedChart, sheetName: string): string {
   xml += "</c:plotArea>";
   if (chart.legend) {
     // The grid's pie legend lists only the slices it draws; blank and zero points have none.
-    const hidden = chart.type === "pie" ? chart.cache.values[0].flatMap((value, point) => value == null || value === 0 ? [point] : []) : [];
+    const hidden = chart.type === "pie" ? cache.values[0].flatMap((value, point) => value == null || value === 0 ? [point] : []) : [];
     xml += '<c:legend><c:legendPos val="r"/>' + hidden.map((point) => `<c:legendEntry><c:idx val="${point}"/><c:delete val="1"/></c:legendEntry>`).join("") + '<c:overlay val="0"/></c:legend>';
   }
   // Blanks are gaps, as in the grid, except in an area chart: Excel for the web stops drawing an
@@ -1148,16 +1144,18 @@ function workbookRelationships(sheetCount: number): string {
   for (let i = 1; i <= sheetCount; ++i) xml += `<Relationship Id="rId${i}" Type="${XL_REL_NS}/worksheet" Target="worksheets/sheet${i}.xml"/>`;
   return xml + `<Relationship Id="rId${sheetCount + 1}" Type="${XL_REL_NS}/styles" Target="styles.xml"/></Relationships>`;
 }
-function sheetParts(sheet: PreparedSheet, index: number, formulaNames: Map<string, string>, evaluator: ExportEvaluator): ZipEntry[] {
+function sheetParts(sheet: PreparedSheet, index: number, formulaNames: Map<string, string>, evaluator: ExportEvaluator, fmts: CellFmt[]): ZipEntry[] {
   const entries: ZipEntry[] = [{ name: `xl/worksheets/sheet${index + 1}.xml`, data: textStream(worksheetXml(sheet, formulaNames, evaluator)) }];
   if (sheet.hyperlinks.length || sheet.drawing) entries.push({ name: `xl/worksheets/_rels/sheet${index + 1}.xml.rels`, data: worksheetRelationships(sheet) });
   if (sheet.drawing) {
     entries.push({ name: `xl/drawings/drawing${sheet.drawing.index}.xml`, data: drawingXml(sheet.drawing) });
     entries.push({ name: `xl/drawings/_rels/drawing${sheet.drawing.index}.xml.rels`, data: drawingRelationships(sheet.drawing) });
-    for (const chart of sheet.drawing.charts) entries.push({ name: `xl/charts/chart${chart.index}.xml`, data: chartXml(chart, sheet.name) });
+    for (const chart of sheet.drawing.charts) entries.push({ name: `xl/charts/chart${chart.index}.xml`, data: textStream(lazyText(() => chartXml(chart, chartCaches(sheet, chart, evaluator, fmts), sheet.name))) });
   }
   return entries;
 }
+// Text made only when the archive reaches its entry, so the entries before it are already sent.
+function* lazyText(make: () => string): Generator<string> { yield make(); }
 // Streams a workbook read by loadExportWorkbook as an XLSX file.
 export function workbookToXlsx(workbook: ExportWorkbook, evaluator: ExportEvaluator): ReadableStream<Uint8Array> {
   const { sheets, styles, formulaNames, parts } = prepareWorkbook(workbook, evaluator);
@@ -1167,7 +1165,7 @@ export function workbookToXlsx(workbook: ExportWorkbook, evaluator: ExportEvalua
     { name: "xl/workbook.xml", data: workbookXml(sheets) },
     { name: "xl/_rels/workbook.xml.rels", data: workbookRelationships(sheets.length) },
     { name: "xl/styles.xml", data: textStream(stylesXml(styles)) },
-    ...sheets.flatMap((sheet, i) => sheetParts(sheet, i, formulaNames, evaluator)),
+    ...sheets.flatMap((sheet, i) => sheetParts(sheet, i, formulaNames, evaluator, workbook.fmts)),
   ]);
 }
 

@@ -93,6 +93,17 @@ describe("SubscriberRegistry", () => {
     expect(bob.disposed).toBe(1);
   });
 
+  it("tells each delivery what its subscriber said about itself", async () => {
+    const registry = new SubscriberRegistry<Callbacks, Who>();
+    const ada = fakeStub();
+    const bob = fakeStub();
+    registry.add(ada, { clientId: "ada" });
+    registry.add(bob, { clientId: "bob" });
+    registry.broadcast((subscriber, who) => subscriber.operation({ revision: who.clientId === "ada" ? 1 : 2 }));
+    await settle();
+    expect([ada.received, bob.received]).toEqual([[{ revision: 1 }], [{ revision: 2 }]]);
+  });
+
   it("drops a subscriber whose connection broke, once, and announces it", async () => {
     const registry = new SubscriberRegistry<Callbacks, Who>(hooks);
     const ada = fakeStub();

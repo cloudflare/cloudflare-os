@@ -62,7 +62,7 @@ const BATTERY: [string, Scalar][] = [
   // An empty cell's value shows as 0, as in Excel.
   ["=Z1", 0], ["=A1:A3", 1], ["=SQRT(-1)", "#NUM!"], ["=LN(0)", "#NUM!"], ["=ABS(-3)", 3], ["=POWER(2,0.5)", Math.SQRT2],
   ["=MEDIAN(1,2,3,4)", 2.5], ["=STDEV(1,2,3,4)", 1.2909944487358056], ["=LARGE(A1:A3,1)", 3], ["=RANK(2,A1:A3)", 2],
-  ["=AND(A1,A2)", true], ["=OR(A5)", false], ["=NOT(A5)", true], ["=ISBLANK(A5)", true], ["=ISBLANK(C9)", true], ["=ISNUMBER(B3)", true],
+  ["=AND(A1,A2)", true], ["=OR(A5)", "#VALUE!"], ["=NOT(A5)", true], ["=ISBLANK(A5)", true], ["=ISBLANK(C9)", true], ["=ISNUMBER(B3)", true],
   ["=Sheet2!A1*2", 20], ["='My Sheet'!A1", "hi"], ["=SUM(Sheet2!A1:A2)", 30], ["=NoSheet!A1", "#REF!"],
   ["=HLOOKUP(2,A1:A3,1,FALSE)", "#N/A"], ["=VLOOKUP(2.5,A1:A3,1,TRUE)", 2], ["=VLOOKUP(0,A1:A3,1,TRUE)", "#N/A"],
   ['=CHOOSE(2,"a","b")', "b"], ["=LEN(A1)", 1], ['=PROPER("hello world")', "Hello World"], ['=TRIM("  a   b ")', "a b"],
@@ -316,9 +316,62 @@ describe("Excel for the web", () => {
   });
 });
 
+// Reported against Excel: each of these once gave a different result.
+const EXCEL_RULES: [string, Scalar][] = [
+  // Date and time parts drop the fraction a shown time would round up.
+  ["=YEAR(DATE(2024,12,31)+0.9999999)", 2024], ["=DAY(DATE(2024,12,31)+0.9999999)", 31], ["=WEEKDAY(DATE(2024,12,31)+0.9999999)", 3],
+  ["=HOUR(0.9999999)", 23], ["=MINUTE(0.9999999)", 59], ["=SECOND(0.9999999)", 59], ["=SECOND(59.75/86400)", 59],
+  ["=SECOND(TIME(12,30,15))", 15], ["=MINUTE(TIME(12,30,0))", 30], ['=TEXT(DATE(2024,12,31)+0.9999999,"yyyy")', "2025"],
+  // Approximate lookups skip blanks and items of another type.
+  ["=VLOOKUP(9,L1:M4,2)", "c"], ["=MATCH(9,L1:L4)", 3], ["=LOOKUP(9,L1:L4,M1:M4)", "c"], ["=HLOOKUP(9,L6:O7,2)", "c"], ["=MATCH(0,{5,3,1},-1)", 3],
+  ['=LOOKUP(9.99E+307,{1,"x",3,"y"})', 3], ['=LOOKUP("zz",{"a",1,"b",2})', "b"], ["=VLOOKUP(2,L1:M4,2)", "a"],
+  // SUMIF and AVERAGEIF read a sum range the criteria range's size; the IFS functions need equal sizes.
+  ['=SUMIF(L1:L2,">0",P1)', 30], ['=AVERAGEIF(L1:L3,">1",P1)', 25], ['=SUMIF(L1:L2,">0",{1,2,3})', "#VALUE!"],
+  ['=SUMIFS(P1,L1:L2,">0")', "#VALUE!"], ['=COUNTIFS(L1:L2,">0",L1:L3,">0")', "#VALUE!"], ['=SUMIFS(P1:P2,L1:L2,">0")', 30],
+  // AND and OR skip text in references; text given directly must be TRUE or FALSE.
+  ["=AND(Q1:Q2)", true], ["=AND(Q1,Q2)", true], ["=OR(Q1)", "#VALUE!"], ["=OR(L4)", "#VALUE!"], ['=AND("x")', "#VALUE!"], ['=AND("TRUE",1)', true],
+  ['=AND({1,"a"})', true], ["=AND(FALSE,1/0)", "#DIV/0!"], ["=OR(Q1:Q2,0)", true], ["=XOR(Q1:Q2,1)", false],
+  // Numbers become text at 15 significant digits.
+  ['=0.1+0.2&""', "0.3"], ['=1/3&""', "0.333333333333333"], ["=LEN(1/3)", 17], ['=2^60&""', "1.15292150460685E+18"], ['=1E-7&""', "1E-07"],
+  ['=123456789012345&""', "123456789012345"], ["=CONCAT(2/3)", "0.666666666666667"],
+];
+
+describe("Excel's rules", () => {
+  const cells: Record<string, unknown> = { L1: 1, L2: 3, L3: 5, M1: "a", M2: "b", M3: "c", L6: 1, M6: 3, N6: 5, L7: "a", M7: "b", N7: "c", P1: 10, P2: 20, P3: 30, Q1: "text", Q2: "TRUE" };
+  EXCEL_RULES.forEach(([formula], i) => { cells["Z" + (1 + i)] = formula; });
+  const engine = makeEngine(workbook(cells));
+  it.each(EXCEL_RULES.map(([formula, want], i) => [formula, want, i] as const))("%s", (_formula, want, i) => {
+    expect(plain(engine.computeRef("s1", "Z" + (1 + i)))).toBe(want);
+  });
+  it("recalculates SUMIF when a cell its sum range was extended to changes", () => {
+    const model = workbook({ A1: 1, A2: 2, B1: 10, B2: 20, C1: '=SUMIF(A1:A2,">0",B1)' });
+    const engine = makeEngine(model);
+    expect(engine.computeRef("s1", "C1")).toBe(30);
+    model.cells.s1.B2 = { value: "5" };
+    engine.invalidate([{ sheetId: "s1", ref: "B2" }]);
+    expect(engine.computeRef("s1", "C1")).toBe(15);
+  });
+});
+
 describe("pathological inputs", () => {
   const compute = (formula: string, cells: Record<string, unknown> = {}) => plain(makeEngine(workbook({ ...cells, Z1: formula })).computeRef("s1", "Z1"));
 
+  it("keeps no result for an empty cell, so a big, mostly empty range costs no memory", () => {
+    const model = workbook({ A1: "=SUM(B1:B100)", A2: "=COUNTA(B1:B100)", B7: 5 });
+    const lookups = new Map<string, number>(), cells = model.cells.s1;
+    model.cells.s1 = new Proxy(cells, { get: (target, ref: string) => { lookups.set(ref, (lookups.get(ref) ?? 0) + 1); return target[ref]; } });
+    const engine = makeEngine(model);
+    expect([engine.computeRef("s1", "A1"), engine.computeRef("s1", "A2")]).toEqual([5, 1]);
+    // An empty cell is looked up again by each formula; a stored one is computed once.
+    expect([lookups.get("B1"), lookups.get("B7")]).toEqual([2, 1]);
+  });
+
+  it("counts items worked out over arrays against the budget, as it does cell reads", () => {
+    const row = Array.from({ length: 1000 }, (_, i) => i + 1);
+    const formula = `=SUMPRODUCT({${row.join(",")}}*{${row.join(";")}})`;
+    expect(makeEngine(workbook({ A1: formula })).computeRef("s1", "A1")).toBe(500500 ** 2);
+    expect(() => makeEngine(workbook({ A1: formula }), { work: 0, budget: 100000 }).computeRef("s1", "A1")).toThrow(EvaluationBudget);
+  });
   it("matches wildcards in linear time, as the regular expressions did", () => {
     const text = "a".repeat(5000);
     const started = Date.now();

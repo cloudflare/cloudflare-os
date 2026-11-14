@@ -71,6 +71,8 @@ beforeEach(() => {
   });
   // A live edit's effects and a new tab's scroll use APIs jsdom leaves out.
   Element.prototype.scrollIntoView ||= () => {};
+  // Renaming finds its tab with CSS.escape, which jsdom lacks.
+  (globalThis as { CSS?: { escape(value: string): string } }).CSS ||= { escape: (value) => value };
   // Text is measured with a canvas, which jsdom lacks; the client then estimates.
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -113,6 +115,202 @@ describe("sync", () => {
     expect(shown("C1")).toBe("theirs");
     // The pages were read before the save landed; the saved cell stays.
     expect(shown("A1")).toBe("mine");
+  });
+
+  it("moves an unsaved edit with its row when someone else inserts a row above it", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    typeIntoActiveCell("edited");
+    // Before the edit is saved, a row is inserted above A1: "second" is now A3.
+    const moved = { ...meta, layout: 2 };
+    h.callbacks.operation(remoteEvent(moved, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("first"), A3: cell("second") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }));
+    await settle();
+    expect(shown("A2")).toBe("first");
+    expect(shown("A3")).toBe("edited");
+    const sent = h.gadget.applyOperation.mock.calls.at(-1)![0] as Operation;
+    expect(sent.cellOps).toEqual([{ sheetId: "s1", ref: "A3", value: "edited", fmt: null, baseVersion: 1, layout: 2 }]);
+  });
+
+  it("resends an edit refused as misplaced where its row went", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    typeIntoActiveCell("edited");
+    await settle(); // the save of A2 is out
+    expect((h.gadget.applyOperation.mock.calls[0][0] as Operation).cellOps).toEqual([{ sheetId: "s1", ref: "A2", value: "edited", fmt: null, baseVersion: 1, layout: 0 }]);
+    // A peer's insert commits first; the server refuses the edit, addressed before it.
+    h.callbacks.operation(remoteEvent({ ...meta, layout: 2 }, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("first"), A3: cell("second") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }] } }));
+    save.resolve({ status: "unchanged", revision: 2, conflicts: [], misplaced: [{ sheetId: "s1", ref: "A2" }] });
+    await settle();
+    expect(h.gadget.applyOperation).toHaveBeenCalledTimes(2);
+    expect((h.gadget.applyOperation.mock.calls[1][0] as Operation).cellOps).toEqual([{ sheetId: "s1", ref: "A3", value: "edited", fmt: null, baseVersion: 1, layout: 2 }]);
+    expect(shown("A2")).toBe("first");
+    expect(shown("A3")).toBe("edited");
+  });
+
+  it("drops an unsaved edit on a row someone else deleted, and moves a formula's references with the rows", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second"), A3: cell("third") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    typeIntoActiveCell("gone");
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    typeIntoActiveCell("=A3&\"!\"");
+    h.callbacks.operation(remoteEvent({ ...meta, layout: 2 }, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A1: cell("second"), A2: cell("third") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: -1 }] } }));
+    await settle();
+    const sent = h.gadget.applyOperation.mock.calls.at(-1)![0] as Operation;
+    expect(sent.cellOps).toEqual([{ sheetId: "s1", ref: "A2", value: '=A2&"!"', fmt: null, baseVersion: 1, layout: 2 }]);
+    expect(shown("A1")).toBe("second");
+  });
+
+  it("keeps a save acknowledged while a reconnect's older snapshot loads, and replays later edits over it", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("old") });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    typeIntoActiveCell("mine");
+    await settle(); // the save is out
+    // The subscription drops; the reconnect reads a snapshot from before the save landed.
+    const snapshot = deferred<OpenedDocument>();
+    h.gadget.subscribe.mockImplementationOnce(async (callback: SubscriberCallbacks) => { h.callbacks = callback; return snapshot.promise; });
+    (h.callbacks as unknown as Disposable)[Symbol.dispose]();
+    save.resolve({ status: "applied", revision: 2, conflicts: [], upserts: [{ sheetId: "s1", ref: "A1", cell: cell("mine", 2) }], deletes: [] });
+    await settle();
+    // Held while the snapshot loads: an older edit of A1 (ignored) and a newer one of B1.
+    h.callbacks.operation(remoteEvent(meta, 2, { senderId: h.gadget.subscribe.mock.calls[0][1].clientId, upserts: [{ sheetId: "s1", ref: "A1", cell: cell("mine", 2) }] }));
+    h.callbacks.operation(remoteEvent(meta, 3, { upserts: [{ sheetId: "s1", ref: "B1", cell: cell("theirs") }] }));
+    snapshot.resolve({ revision: 1, lastModified: 0, ...structure(meta), cells: { s1: { A1: cell("old") } }, cursors: {} });
+    await settle();
+    expect(shown("A1")).toBe("mine");
+    expect(shown("B1")).toBe("theirs");
+  });
+
+  it("keeps a rename that overtook this tab's own rename before its reply arrived", async () => {
+    const one = sheet("s1"), other = { ...sheet("s2"), name: "Other" };
+    const two = { title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: one, s2: other } };
+    const h = await loadClient(one, {}, { ...two, cells: { s1: { A1: cell("7") }, s2: { A1: cell("=Sheet1!A1") } } });
+    const save = deferred<OperationResult>();
+    h.gadget.applyOperation.mockImplementationOnce(() => save.promise);
+    document.querySelector(".tab[data-id='s1']")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    const input = document.querySelector<HTMLInputElement>(".tab-rename")!;
+    input.value = "Mine";
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle(); // the rename is out, and commits at revision 2
+    const renamed = (name: string, formula: string, revision: number): OperationEvent => ({
+      type: "operation", senderId: "agent", revision, lastModified: 0, deletes: [],
+      structure: { ...two, sheets: { s1: { ...one, name }, s2: other } },
+      upserts: [{ sheetId: "s2", ref: "A1", cell: cell(formula, revision) }],
+    });
+    // The agent renames it again at revision 3; that event arrives before this tab's reply.
+    h.callbacks.operation(renamed("Theirs", "=Theirs!A1", 3));
+    const { structure: _, ...ack } = renamed("Mine", "=Mine!A1", 2);
+    save.resolve({ ...ack, status: "applied", conflicts: [], structure: { ...two, sheets: { s1: { ...one, name: "Mine" }, s2: other } } });
+    await settle();
+    expect(document.querySelector(".tab[data-id='s1'] .tname")?.textContent).toBe("Theirs");
+    // Nothing puts "Mine" back.
+    for (const [operation] of h.gadget.applyOperation.mock.calls.slice(1)) expect((operation as Operation).structure?.sheets?.s1?.name).not.toBe("Mine");
+    document.querySelector<HTMLElement>(".tab[data-id='s2']")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await settle();
+    expect(shown("A1")).toBe("7");
+  });
+
+  it("moves the selection off a row a filter hides, so typing never edits a hidden record", async () => {
+    const filter = { row: 0, endRow: 2, columns: [0], criteria: {}, rowOrder: [], sort: null };
+    const meta = { ...sheet("s1"), filter };
+    const h = await loadClient(meta, { A1: cell("Name"), A2: cell("a"), A3: cell("b") });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    grid.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    // A3's value is filtered out; the next row shown is A4, below the table.
+    h.callbacks.operation(remoteEvent({ ...meta, filter: { ...filter, criteria: { 0: ["s:a"] } } }, 2, {}));
+    await settle();
+    typeIntoActiveCell("x");
+    await settle();
+    const sent = h.gadget.applyOperation.mock.calls.at(-1)![0] as Operation;
+    expect(sent.cellOps?.map((op) => op.ref)).toEqual(["A4"]);
+  });
+
+  it("doesn't take text in quotes for a reference when arrows move from a caret inside it", async () => {
+    const h = await loadClient(sheet("s1"), { A1: cell('="A1"') });
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "F2", bubbles: true }));
+    const editor = document.querySelector<HTMLTextAreaElement>(".cell-editor")!;
+    editor.setSelectionRange(4, 4); // just after the 1, inside the quotes
+    editor.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    editor.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+    editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await settle();
+    for (const [operation] of h.gadget.applyOperation.mock.calls) for (const op of (operation as Operation).cellOps || []) expect(op.value).toBe('="A1"');
+  });
+
+  it("moves a chart's range with its cells when the whole range is cut and pasted", async () => {
+    const chart = { id: "c1", type: "line" as const, range: "A1:B3", title: "", xAxisTitle: "", yAxisTitle: "", legend: true, firstRowHeaders: true, firstColLabels: true, smooth: false, x: 0, y: 0, width: 520, height: 320 };
+    const h = await loadClient({ ...sheet("s1"), charts: [chart] }, { A1: cell("x"), B1: cell("y"), A2: cell("a"), B2: cell("1"), A3: cell("b"), B3: cell("2") });
+    const go = (ref: string) => {
+      const box = document.querySelector<HTMLInputElement>(".namebox")!;
+      box.value = ref;
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    };
+    const clipboard = new Map<string, string>();
+    const clipboardEvent = (type: string) => Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+      clipboardData: { setData: (kind: string, value: string) => { clipboard.set(kind, value); }, getData: (kind: string) => clipboard.get(kind) ?? "" },
+    });
+    const grid = document.querySelector<HTMLElement>(".grid-scroll")!;
+    go("A1:B3");
+    grid.dispatchEvent(clipboardEvent("cut"));
+    go("D1");
+    grid.dispatchEvent(clipboardEvent("paste"));
+    await settle();
+    const sent = h.gadget.applyOperation.mock.calls.at(-1)![0] as Operation;
+    expect(sent.structure?.sheets?.s1?.charts?.[0].range).toBe("D1:E3");
+    expect(sent.cellOps?.find((op) => op.ref === "E3")?.value).toBe("2");
+  });
+
+  it("stacks a bar chart's negative values leftwards from zero", async () => {
+    const chart = { id: "c1", type: "stackedBar" as const, range: "A1:C2", title: "", xAxisTitle: "", yAxisTitle: "", legend: false, firstRowHeaders: true, firstColLabels: true, smooth: false, x: 300, y: 0, width: 520, height: 320 };
+    await loadClient({ ...sheet("s1"), charts: [chart] }, { A1: cell("k"), B1: cell("up"), C1: cell("down"), A2: cell("r"), B2: cell("10"), C2: cell("-5") });
+    const [up, down] = [...document.querySelectorAll<SVGRectElement>("svg[aria-label='Stacked bar chart'] rect")].map((rect) => ({ x: Number(rect.getAttribute("x")), width: Number(rect.getAttribute("width")) }));
+    expect(down.width).toBeGreaterThan(0);
+    expect(up.width / down.width).toBeCloseTo(2);
+    expect(down.x + down.width).toBeCloseTo(up.x); // both start at zero
+  });
+
+  describe("pivots", () => {
+    const pivotOf = (sourceSheetId: string) => ({ sourceSheetId, sourceRange: "A1:B2", rowField: "k", columnField: "", valueField: "v", aggregate: "sum" as const, showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [] });
+    const named = (id: string, name: string, pivot: SheetMeta["pivot"] = null): SheetMeta => ({ ...sheet(id), name, pivot });
+    const book = (...sheets: SheetMeta[]) => ({ title: "Book", sheetOrder: sheets.map((s) => s.id), sheets: Object.fromEntries(sheets.map((s) => [s.id, s])) });
+    const pivotWrites = (h: Harness, id: string) => h.gadget.applyOperation.mock.calls.filter(([op]) => (op as Operation).sheetReplacements?.some((r) => r.sheetId === id)).length;
+    const refreshed = () => sleep(900);
+
+    it("rebuild for this tab's and the agent's edits, never another tab's, so volatile sources can't ping-pong", async () => {
+      const data = named("s1", "Data"), pivot = named("s2", "Pivot", pivotOf("s1"));
+      const h = await loadClient(data, {}, { ...book(data, pivot), cells: { s1: { A1: cell("k"), B1: cell("v"), A2: cell("a"), B2: cell("=RAND()") }, s2: {} } });
+      await refreshed();
+      const opened = pivotWrites(h, "s2");
+      expect(opened).toBeGreaterThan(0);
+      h.callbacks.operation({ ...remoteEvent(data, 5, { upserts: [{ sheetId: "s1", ref: "C9", cell: cell("x") }] }), structure: undefined });
+      await refreshed();
+      expect(pivotWrites(h, "s2")).toBe(opened);
+      h.callbacks.operation({ ...remoteEvent(data, 6, { senderId: "agent", upserts: [{ sheetId: "s1", ref: "C9", cell: cell("y") }] }), structure: undefined });
+      await refreshed();
+      expect(pivotWrites(h, "s2")).toBe(opened + 1);
+    });
+
+    it("settle when one reads another later in the tabs", async () => {
+      const data = named("s1", "Data"), first = named("s2", "First", pivotOf("s3")), middle = named("s3", "Middle"), second = named("s4", "Second", pivotOf("s1"));
+      const h = await loadClient(data, {}, {
+        ...book(data, first, middle, second),
+        cells: { s1: { A1: cell("k"), B1: cell("v"), A2: cell("a"), B2: cell("10") }, s2: {}, s3: { A1: cell("k"), B1: cell("v"), A2: cell("a"), B2: cell("=Second!B2") }, s4: {} },
+      });
+      await refreshed();
+      document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+      typeIntoActiveCell("20");
+      await refreshed();
+      const replacements = h.gadget.applyOperation.mock.calls.flatMap(([op]) => (op as Operation).sheetReplacements || []).filter((r) => r.sheetId === "s2");
+      expect(replacements.at(-1)?.cells?.B2.value).toBe("20");
+    });
   });
 
   it("keeps a remote edit that lands after this tab's save, even when the save's reply comes later", async () => {
@@ -560,7 +758,7 @@ describe("pivot tables", () => {
     const book = { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } };
     const h = await loadClient(source);
     // Region North: one amount of 10, one blank.
-    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: book, lastModified: 0, deletes: [], upserts: [
+    h.callbacks.operation({ type: "operation", senderId: "agent", revision: 2, structure: book, lastModified: 0, deletes: [], upserts: [
       { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
       { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("10") }, { sheetId: "s1", ref: "A3", cell: cell("North") },
     ] });
@@ -577,7 +775,7 @@ describe("pivot tables", () => {
       showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
     } };
     const h = await loadClient(source);
-    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } }, lastModified: 0, deletes: [], upserts: [
+    h.callbacks.operation({ type: "operation", senderId: "agent", revision: 2, structure: { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } }, lastModified: 0, deletes: [], upserts: [
       { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
       { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("0.0000001") },
     ] });
@@ -608,7 +806,7 @@ describe("pivot tables", () => {
       showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [],
     } };
     const h = await loadClient(source);
-    h.callbacks.operation({ type: "operation", senderId: "someone-else", revision: 2, structure: { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } }, lastModified: 0, deletes: [], upserts: [
+    h.callbacks.operation({ type: "operation", senderId: "agent", revision: 2, structure: { title: "Book", sheetOrder: ["s1", "p1"], sheets: { s1: source, p1: pivot } }, lastModified: 0, deletes: [], upserts: [
       { sheetId: "s1", ref: "A1", cell: cell("Region") }, { sheetId: "s1", ref: "B1", cell: cell("Amount") },
       { sheetId: "s1", ref: "A2", cell: cell("North") }, { sheetId: "s1", ref: "B2", cell: cell("10") }, { sheetId: "s1", ref: "D1", cell: cell("=Pivot!B2") },
     ] });

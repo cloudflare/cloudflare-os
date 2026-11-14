@@ -1,7 +1,8 @@
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { MutationQueue, SubscriberRegistry } from "@gadgets/bundled-blueprints/libraries/sync/server";
 import { CHART_BOUNDS, MAX_CHARTS, PLACEMENT_ROWS, chartPlacement } from "./lib/charts.ts";
-import { formulaReferences } from "./lib/formula.ts";
-import { DEFAULT_COLS, DEFAULT_ROWS, EXPORT_PAGE_CHARS, ExportEvaluator, type ExportCells, disposeResult, loadExportWorkbook, parseCsvCellRef, textStream } from "./lib/export-data.ts";
+import { type Display, type Scalar, displayValue, formulaReferences } from "./lib/formula.ts";
+import { DEFAULT_COLS, DEFAULT_ROWS, EXPORT_PAGE_CHARS, EXPORT_UNKNOWN, type ExportCells, type ExportEvaluator, disposeResult, loadExportWorkbook, parseCsvCellRef, refreshExportPivots, textStream } from "./lib/export-data.ts";
 import { workbookToXlsx } from "./lib/xlsx.ts";
 import type {
   AgentHint,
@@ -11,6 +12,7 @@ import type {
   CellDeletion,
   CellFmt,
   CellMap,
+  CellMove,
   CellOp,
   CellUpsert,
   CellsPage,
@@ -96,13 +98,11 @@ interface Upload {
   cells: Map<string, Cell>;
   parts: Set<number>;
   at: number;
+  /** About how much the staged cells hold (see stageCells). */
+  chars: number;
 }
-/**
- * A subscriber as stored: its callbacks (kept past the call that delivered them), who it said it
- * was, and whether it is an editor from before paged loading (`legacy`, see subscribe).
- */
+/** Who a subscriber said it was, and whether it is an editor from before paged loading (`legacy`, see subscribe). */
 interface SubscriberInfo {
-  callback: SubscriberStub;
   clientId: string;
   name: string;
   color: string;
@@ -150,8 +150,8 @@ interface PresenceInput {
 }
 
 export class Gadget extends DurableObject<unknown, unknown> {
-  declare subscribers: Map<SubscriberStub, SubscriberInfo>;
-  declare mutationQueue: Promise<unknown>;
+  declare subscribers: SubscriberRegistry<SubscriberCallbacks, SubscriberInfo>;
+  declare queue: MutationQueue;
   declare uploads: Map<string, Upload>;
   declare migration: Promise<void> | null;
   declare pageSlots: number;
@@ -160,10 +160,13 @@ export class Gadget extends DurableObject<unknown, unknown> {
   constructor(ctx: DurableObjectState, env: unknown) {
     super(ctx, env);
     this.ctx = ctx;
-    this.subscribers = new Map();
+    this.subscribers = new SubscriberRegistry({
+      join: (subscriber, who) => subscriber.presence({ type: "join", clientId: who.clientId, name: who.name, color: who.color }),
+      leave: (subscriber, who) => subscriber.presence({ type: "leave", clientId: who.clientId }),
+    });
     // Overlapping RPC calls are serialized so each observes/commits one
     // authoritative state in strict order.
-    this.mutationQueue = Promise.resolve();
+    this.queue = new MutationQueue();
     // Sheet replacements too large for one message, arriving in parts (stageCells).
     this.uploads = new Map();
     this.migration = null;
@@ -178,12 +181,6 @@ export class Gadget extends DurableObject<unknown, unknown> {
     else await new Promise<void>((resolve) => this.pageWaiters.push(resolve));
     try { return await fn(); }
     finally { const next = this.pageWaiters.shift(); if (next) next(); else this.pageSlots++; }
-  }
-
-  enqueueMutation<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.mutationQueue.then(fn);
-    this.mutationQueue = result.catch(() => {});
-    return result;
   }
 
   newId(): string {
@@ -358,18 +355,38 @@ export class Gadget extends DurableObject<unknown, unknown> {
 
   // Cells for a client or an export, packed (see appendPart), up to about `budget` characters,
   // from the parts after `after` ("" = from block `from`, or the top) up to block `to`. `next`
-  // is the last part sent (where the following page continues), or null when the run is done.
-  // Stored parts are already packed, so a page is mostly concatenation.
+  // is where the following page continues, or null when the run is done: the last block sent,
+  // or "<block>@<row>" after a page that ends inside a block. Stored parts are already packed,
+  // so a page is mostly concatenation.
   async readPackedPage(sheetId: string, { after = "", from = "", to = "" }: BlockRun, budget: number, { versions = true, formats = true } = {}): Promise<{ packed: PageBuilder; chars: number; next: string | null }> {
     const page: PageBuilder = { refs: [], values: [] };
     if (versions) page.versions = [];
     if (formats) { page.styles = []; page.fmts = []; }
     const fmtIndex = new Map<string, number>();
-    let chars = 0;
-    for await (const { name, part, end } of this.blockParts(sheetId, { after, from, to })) {
-      chars += appendPart(page, fmtIndex, part, formats);
-      // Pages end between blocks, so a page never holds half a block.
-      if (end && chars >= budget) return { packed: page, chars, next: name };
+    const [resumeBlock, resumeRow] = after.split("@");
+    let chars = 0, next = after, parts: StoredPart[] = [];
+    for await (const { name, part, end } of this.blockParts(sheetId, resumeRow === undefined ? { after, from, to } : { from: resumeBlock, to })) {
+      parts.push(part);
+      if (!end) continue;
+      const skip = resumeRow !== undefined && name === resumeBlock ? Number(resumeRow) : 0;
+      if (!skip && chars + parts.reduce((sum, p) => sum + packedChars(p, p.refs.keys()), 0) <= budget) {
+        for (const p of parts) chars += appendPart(page, fmtIndex, p, formats);
+        next = name;
+      } else {
+        // A block that would take the page past its budget (32 rows of long texts can be tens of
+        // MB, over what one RPC message carries) is split between rows. Rows are read whole from
+        // one moment, as blocks are, so a page read mid-edit is settled the same way.
+        for (const [row, picks] of blockRows(parts, skip)) {
+          let rowChars = 0;
+          for (const [p, indices] of picks) rowChars += packedChars(p, indices);
+          if (chars && chars + rowChars > budget) return { packed: page, chars, next };
+          for (const [p, indices] of picks) chars += appendPart(page, fmtIndex, p, formats, indices);
+          next = name + "@" + row;
+        }
+        next = name;
+      }
+      parts = [];
+      if (chars >= budget) return { packed: page, chars, next };
     }
     return { packed: page, chars, next: null };
   }
@@ -488,38 +505,50 @@ export class Gadget extends DurableObject<unknown, unknown> {
   // A sheet replacement too large for one message arrives as numbered parts, held here until
   // the applyOperation naming its `uploadId` claims it. Re-sent parts are ignored. Uploads
   // live in memory: if the object restarts first, applyOperation answers "upload-missing"
-  // and the client sends them again.
+  // and the client sends them again. One untouched for 10 minutes is dropped.
   stageCells({ uploadId, sheetId, part, cells }: { uploadId?: unknown; sheetId?: unknown; part?: unknown; cells?: unknown } = {}): { received: number } {
     const id = String(uploadId || "");
     if (!id || id.length > 80) throw new Error("Bad upload id");
     const now = Date.now();
     for (const [key, upload] of this.uploads) if (now - upload.at > 10 * 60 * 1000) this.uploads.delete(key);
     let upload = this.uploads.get(id);
-    if (!upload) { upload = { sheetId: String(sheetId || ""), cells: new Map(), parts: new Set(), at: now }; this.uploads.set(id, upload); }
+    if (!upload) { upload = { sheetId: String(sheetId || ""), cells: new Map(), parts: new Set(), at: now, chars: 0 }; this.uploads.set(id, upload); }
     upload.at = now;
     const index = Math.max(0, Math.round(Number(part)) || 0);
     if (!upload.parts.has(index)) {
+      const entries = sanitizeCellEntries(cells), added = cellChars(entries.values());
+      // Everything staged is held in memory, so all uploads together are bounded.
+      let staged = added;
+      for (const other of this.uploads.values()) staged += other.chars;
+      if (staged > MAX_STAGED_CHARS) {
+        this.uploads.delete(id);
+        throw new Error(`This change is too large to save at once: more than ${MAX_STAGED_CHARS.toLocaleString("en-US")} characters of cells are being uploaded. Make it in smaller steps.`);
+      }
       upload.parts.add(index);
-      for (const [ref, cell] of sanitizeCellEntries(cells)) upload.cells.set(ref, cell);
+      upload.chars += added;
+      for (const [ref, cell] of entries) upload.cells.set(ref, cell);
     }
     return { received: upload.cells.size };
   }
 
   async applyOperation(operation: Operation | null): Promise<OperationResult> {
     if (!isLoose(operation)) throw new Error("applyOperation takes an operation object");
-    return this.enqueueMutation(() => this.applyOperationLocked(operation));
+    return this.queue.run(() => this.applyOperationLocked(operation));
   }
 
   async applyOperationLocked(operation: Operation): Promise<OperationResult> {
     const meta = await this.loadMeta();
+    const replacements = Array.isArray(operation.sheetReplacements) ? operation.sheetReplacements : [];
     // Structure and replacement payloads may have been built from an earlier snapshot. With a
     // baseRevision, reject the whole operation before touching storage so a stale sort or row
-    // insert can't erase another client's (or the agent's) edits.
+    // insert can't erase another client's (or the agent's) edits. The client stages a refused
+    // replacement anew, so the uploads it names are released.
     if (operation.baseRevision !== undefined && operation.baseRevision !== null && Number(operation.baseRevision) !== meta.revision) {
+      for (const rep of replacements) if (rep?.uploadId != null) this.uploads.delete(String(rep.uploadId));
       return { status: "conflict", revision: meta.revision, conflicts: [], staleRevision: true };
     }
     // A staged replacement must be complete before anything is applied.
-    for (const rep of Array.isArray(operation.sheetReplacements) ? operation.sheetReplacements : []) {
+    for (const rep of replacements) {
       if (rep?.uploadId == null) continue;
       const upload = this.uploads.get(String(rep.uploadId));
       if (!upload || upload.sheetId !== String(rep.sheetId || "") || upload.cells.size !== Number(rep.count)) {
@@ -564,6 +593,8 @@ export class Gadget extends DurableObject<unknown, unknown> {
           charts: Object.prototype.hasOwnProperty.call(incoming, "charts") ? incoming.charts : existing.charts,
           pivot: Object.prototype.hasOwnProperty.call(incoming, "pivot") ? incoming.pivot : existing.pivot,
           created: hasSheet(meta, id) ? existing.created : meta.revision + 1,
+          // The server's own record of when cells last moved; a client's copy may be stale.
+          layout: existing.layout,
         });
       }
       // A pivot's range lives on its source sheet, which may appear later in the order.
@@ -583,6 +614,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
     // Whole-sheet cell replacement (used by sort / clear / insert-delete). Only cells that
     // differ are written.
     const replaced = new Map<string, Map<string, Cell>>(); // sheetId -> Map(ref -> cell): the sheet's new cells
+    const moves: Record<string, CellMove[] | null> = {};
     const claimedUploads: string[] = [];
     if (Array.isArray(operation.sheetReplacements)) {
       for (const rep of operation.sheetReplacements) {
@@ -595,6 +627,9 @@ export class Gadget extends DurableObject<unknown, unknown> {
         else next = sanitizeCellEntries(rep.cells);
         writer.replace(id, next);
         replaced.set(id, next);
+        // Cell edits addressed before a move no longer name the cells they edited.
+        const sheetMoves = sanitizeMoves(rep.moves);
+        if (!sheetMoves || sheetMoves.length) { moves[id] = sheetMoves; meta.sheets[id].layout = meta.revision + 1; }
         changed = true;
       }
     }
@@ -603,6 +638,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
     const upserts: CellUpsert[] = [];
     const deletes: CellDeletion[] = [];
     const conflicts: CellConflict[] = [];
+    const misplaced: CellDeletion[] = [];
     const bySheet = new Map<string, CellOp[]>();
     for (const op of Array.isArray(operation.cellOps) ? operation.cellOps : []) {
       if (!isLoose(op)) continue;
@@ -615,9 +651,11 @@ export class Gadget extends DurableObject<unknown, unknown> {
       if (!hasSheet(meta, sheetId)) continue;
       // Only the cells the ops name are read (a replaced sheet's are already in hand).
       const cells = replaced.get(sheetId) || await writer.read(sheetId, ops.map((op) => String(op.ref || "")).filter(isGridRef));
+      const layout = meta.sheets[sheetId].layout || 0;
       for (const op of ops) {
         const ref = String(op.ref || "");
         if (!isGridRef(ref)) continue;
+        if (typeof op.layout === "number" && op.layout < layout) { misplaced.push({ sheetId, ref }); continue; }
         const cur = cells.get(ref);
         const base = Number(op.baseVersion || 0);
         const isDelete = op.value == null && op.fmt == null;
@@ -643,7 +681,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
     if (upserts.length || deletes.length) changed = true;
 
     if (!changed) {
-      return { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts };
+      return { status: conflicts.length ? "conflict" : "unchanged", revision: meta.revision, conflicts, ...(misplaced.length ? { misplaced } : {}) };
     }
 
     await writer.plan(batch);
@@ -667,14 +705,15 @@ export class Gadget extends DurableObject<unknown, unknown> {
       lastModified: meta.lastModified,
     };
     if (replaced.size) {
-      const replacedCells: Record<string, CellMap | null> = event.replacedCells = {};
-      for (const [id, cells] of replaced) replacedCells[id] = cells.size <= INLINE_REPLACEMENT_CELLS ? Object.fromEntries(cells) : null;
+      const replacedCells: Record<string, CellMap | null> = event.replacedCells = {}, fits = inlineAllowance();
+      for (const [id, cells] of replaced) replacedCells[id] = fits(cells.values(), cells.size, INLINE_REPLACEMENT_CELLS) ? Object.fromEntries(cells) : null;
+      if (Object.keys(moves).length) event.moves = moves;
     }
     // Don't hold the sender's save on slow or half-open clients.
     this.broadcast(event).catch(() => {});
 
     const { replacedCells: _, ...ack } = event;
-    return { status: conflicts.length ? "conflict" : "applied", ...ack, conflicts };
+    return { status: conflicts.length ? "conflict" : "applied", ...ack, conflicts, ...(misplaced.length ? { misplaced } : {}) };
   }
 
   // --- Cell API for agents & scripts --------------------------------------
@@ -690,20 +729,10 @@ export class Gadget extends DurableObject<unknown, unknown> {
     const meta = await this.loadMeta();
     const sheets: SheetSummary[] = [];
     for (const id of meta.sheetOrder) {
-      const s = meta.sheets[id];
-      let r2 = -1, c2 = -1, cellCount = 0;
-      for await (const { part } of this.blockParts(id)) {
-        const { refs, values, styles } = part;
-        cellCount += refs.length;
-        for (let i = 0; i < refs.length; i++) {
-          if (values[i] === "" && styles[i] < 0) continue;
-          const p = parseCellRef(refs[i]);
-          if (p) { if (p.r > r2) r2 = p.r; if (p.c > c2) c2 = p.c; }
-        }
-      }
+      const s = meta.sheets[id], { used, cellCount } = await this.sheetUsage(id);
       sheets.push({
         id, name: s.name, rows: s.rows, cols: s.cols,
-        usedRange: r2 < 0 ? null : areaRef({ r1: 0, c1: 0, r2, c2 }), cellCount,
+        usedRange: used && areaRef(used), cellCount,
         filter: s.filter ? { headerRow: s.filter.row + 1, columns: s.filter.columns.map((c) => colLetters(c)) } : null,
         charts: (s.charts || []).map((c) => ({ id: c.id, type: c.type, range: c.range, title: c.title })),
         pivot: !!s.pivot,
@@ -712,23 +741,32 @@ export class Gadget extends DurableObject<unknown, unknown> {
     return { revision: meta.revision, sheets };
   }
 
+  // From A1 to the last row and column holding a value or format (null for none), and how many
+  // cells are stored, read block by block.
+  async sheetUsage(id: string): Promise<{ used: Area | null; cellCount: number }> {
+    let r2 = -1, c2 = -1, cellCount = 0;
+    for await (const { part } of this.blockParts(id)) {
+      const { refs, values, styles } = part;
+      cellCount += refs.length;
+      for (let i = 0; i < refs.length; i++) {
+        if (values[i] === "" && styles[i] < 0) continue;
+        const p = parseCellRef(refs[i]);
+        if (p) { if (p.r > r2) r2 = p.r; if (p.c > c2) c2 = p.c; }
+      }
+    }
+    return { used: r2 < 0 ? null : { r1: 0, c1: 0, r2, c2 }, cellCount };
+  }
+
   // Raw stored values (formulas as their text; the server doesn't evaluate).
   async readRange({ sheet, range, formats = false }: { sheet?: string; range?: string; formats?: boolean } = {}): Promise<ReadRangeResult> {
     const meta = await this.loadMeta();
     const id = resolveSheetId(meta, sheet);
-    let area: Area, cells: Map<string, Cell>;
-    if (range) {
-      area = parseArea(range);
-      if ((area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1) > 50000) throw new Error("Range too large to read at once (max 50,000 cells); read it in parts");
-      const refs = new Set<string>();
-      for (let r = area.r1; r <= area.r2; r++) for (let c = area.c1; c <= area.c2; c++) refs.add(colLetters(c) + (r + 1));
-      cells = await this.readCells(id, refs);
-    } else {
-      const all = await this.loadCells(id);
-      area = parseArea(usedRange(all) || "A1");
-      if ((area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1) > 50000) throw new Error("Range too large to read at once (max 50,000 cells); read it in parts");
-      cells = new Map(Object.entries(all));
-    }
+    // No range is the used range, found without holding the sheet.
+    const area = range ? parseArea(range) : (await this.sheetUsage(id)).used || { r1: 0, c1: 0, r2: 0, c2: 0 };
+    if ((area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1) > 50000) throw new Error("Range too large to read at once (max 50,000 cells); read it in parts");
+    const refs = new Set<string>();
+    for (let r = area.r1; r <= area.r2; r++) for (let c = area.c1; c <= area.c2; c++) refs.add(colLetters(c) + (r + 1));
+    const cells = await this.readCells(id, refs);
     const values: string[][] = [], fmts: (CellFmt | null)[][] = [];
     for (let r = area.r1; r <= area.r2; r++) {
       const row: string[] = [], frow: (CellFmt | null)[] = [];
@@ -841,7 +879,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   deleteCols({ sheet, at, count = 1 }: { sheet?: string; at?: string | number; count?: number } = {}): Promise<AgentWriteResult> { return this.shiftAxis(sheet, "cols", toColIndex(at), -lineCount(count)); }
 
   addSheet({ name, rows, cols, index }: { name?: string; rows?: number; cols?: number; index?: number } = {}): Promise<AgentWriteResult & { sheetId: string; name: string }> {
-    return this.enqueueMutation(async () => {
+    return this.queue.run(async () => {
       const meta = await this.loadMeta();
       const id = this.newId();
       let clean = String(name || "").trim().slice(0, 60);
@@ -856,7 +894,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
 
   // Formulas anywhere that name the sheet are rewritten to the new name, as the grid does.
   renameSheet({ sheet, name }: { sheet?: string; name?: string } = {}): Promise<AgentWriteResult> {
-    return this.enqueueMutation(async () => {
+    return this.queue.run(async () => {
       const meta = await this.loadMeta();
       const id = resolveSheetId(meta, sheet);
       const clean = String(name || "").trim().slice(0, 60);
@@ -887,7 +925,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   }
 
   deleteSheet({ sheet }: { sheet?: string } = {}): Promise<AgentWriteResult> {
-    return this.enqueueMutation(async () => {
+    return this.queue.run(async () => {
       const meta = await this.loadMeta();
       const id = resolveSheetId(meta, sheet);
       if (meta.sheetOrder.length <= 1) throw new Error("A workbook needs at least one sheet");
@@ -936,7 +974,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   // `prepare(id)`, if given, runs first (inside the queue, so nothing changes in between) and its
   // result reaches `apply` as `prepared`.
   mutateCells<P = undefined>(sheetRef: string | undefined, apply: (editor: CellEditor<P>) => void, prepare: ((id: string) => Promise<P>) | null = null): Promise<AgentWriteResult> {
-    return this.enqueueMutation(async () => {
+    return this.queue.run(async () => {
       const meta = await this.loadMeta();
       const id = resolveSheetId(meta, sheetRef);
       const sheet = meta.sheets[id];
@@ -1001,7 +1039,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   }
 
   editMeta<E extends object = object>(sheetRef: string | undefined, fn: (sheet: SheetMeta, meta: DocumentMeta) => void, extra: E = {} as E): Promise<AgentWriteResult & E> {
-    return this.enqueueMutation(async () => {
+    return this.queue.run(async () => {
       const meta = await this.loadMeta();
       const id = resolveSheetId(meta, sheetRef);
       meta.sheets[id] = sheetMeta(meta.sheets[id]);
@@ -1015,7 +1053,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
 
   // Mirrors the client's insert/delete row/column logic.
   shiftAxis(sheetRef: string | undefined, axis: "rows" | "cols", at: number, delta: number): Promise<AgentWriteResult> {
-    return this.enqueueMutation(async () => {
+    return this.queue.run(async () => {
       const meta = await this.loadMeta();
       const id = resolveSheetId(meta, sheetRef);
       const s = meta.sheets[id] = sheetMeta(meta.sheets[id]);
@@ -1109,7 +1147,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
         // A structural change establishes a new natural row order (sheetMeta replaces an empty one).
         if (s.filter) { s.filter.sort = null; s.filter.rowOrder = []; }
       }
-      meta.sheets[id] = sheetMeta(s);
+      meta.sheets[id] = sheetMeta({ ...s, layout: meta.revision + 1 });
       writer.replace(id, new Map(Object.entries(next)));
       await writer.plan(batch);
       return this.commitAgent(meta, {
@@ -1127,11 +1165,12 @@ export class Gadget extends DurableObject<unknown, unknown> {
     batch.put("meta", meta);
     await batch.flush();
     // A big replaced sheet goes out as `null`: clients load it in pages.
+    const fits = inlineAllowance();
     if (replacedCells) {
-      for (const [sid, cells] of Object.entries(replacedCells)) if (cells && Object.keys(cells).length > INLINE_REPLACEMENT_CELLS) replacedCells[sid] = null;
+      for (const [sid, cells] of Object.entries(replacedCells)) if (cells && !fits(Object.values(cells), Object.keys(cells).length, INLINE_REPLACEMENT_CELLS)) replacedCells[sid] = null;
     }
     // So does a very large edit: listing every cell would make one huge message.
-    if (upserts.length + deletes.length > INLINE_EDIT_CELLS) {
+    if (!fits(upserts.map((upsert) => upsert.cell), upserts.length + deletes.length, INLINE_EDIT_CELLS)) {
       const nulls: Record<string, CellMap | null> = replacedCells = replacedCells || {};
       for (const x of [...upserts, ...deletes]) nulls[x.sheetId] = null;
       upserts = []; deletes = [];
@@ -1146,7 +1185,10 @@ export class Gadget extends DurableObject<unknown, unknown> {
       lastModified: meta.lastModified,
     };
     if (replacedCells) { event.replacedSheets = Object.keys(replacedCells); event.replacedCells = replacedCells; }
-    if (hint) event.agentHint = hint;
+    if (hint) {
+      event.agentHint = hint;
+      event.moves = { [hint.sheetId]: [{ kind: "lines", rows: hint.kind === "rows", at: hint.at, count: hint.op === "insert" ? hint.count : -hint.count }] };
+    }
     // Don't make the caller wait on slow or half-open clients.
     this.broadcast(event).catch(() => {});
     return { status: "applied" as const, revision: meta.revision };
@@ -1155,40 +1197,32 @@ export class Gadget extends DurableObject<unknown, unknown> {
   // --- Presence & subscription ------------------------------------------
   async subscribe(callback: SubscriberStub, options: SubscribeOptions | null = {}): Promise<OpenedDocument> {
     const client = options || {};
-    const dup = callback.dup();
-    const existing = Array.from(this.subscribers.values());
     const info: SubscriberInfo = {
-      callback: dup,
       clientId: presenceId(client.clientId),
       name: String(client.name || "Guest").slice(0, 40),
       color: presenceColor(client.color),
       legacy: !client.packed,
       delivery: Promise.resolve(),
     };
-    this.subscribers.set(dup, info);
-    dup.onRpcBroken(() => {
-      this.dropSubscriber(dup);
-      this.broadcastPresence({ type: "leave", clientId: info.clientId });
-    });
-    queueMicrotask(async () => {
-      for (const person of existing) {
-        try {
-          await dup.presence({ type: "join", clientId: person.clientId, name: person.name, color: person.color });
-        } catch (e) { break; }
-      }
-      await this.broadcastPresence({ type: "join", clientId: info.clientId, name: info.name, color: info.color });
-    });
-    // The first page of the workbook; the client loads the rest with getCellsPage. An editor
-    // from before paged loading (it doesn't ask for `packed`; one can still be open when the
-    // gadget updates) reads only `cells` and would take a first page for the whole workbook,
-    // so it gets every cell, as it always did.
-    if (info.legacy) return { ...await this.getDocument(), cursors: {} };
-    return this.openDocument({ packed: true });
+    // Registered before the read, so no edit committed meanwhile goes unheard; a failed read
+    // forgets it again (the client then subscribes anew with another callback).
+    const handle = this.subscribers.add(callback, info);
+    try {
+      // The first page of the workbook; the client loads the rest with getCellsPage. An editor
+      // from before paged loading (it doesn't ask for `packed`; one can still be open when the
+      // gadget updates) reads only `cells` and would take a first page for the whole workbook,
+      // so it gets every cell, as it always did.
+      if (info.legacy) return { ...await this.getDocument(), cursors: {} };
+      return await this.openDocument({ packed: true });
+    } catch (e) {
+      this.subscribers.remove(handle);
+      throw e;
+    }
   }
 
   async updatePresence(input: PresenceInput | null): Promise<void> {
     const presence = input || {};
-    await this.broadcastPresence({
+    this.broadcastPresence({
       type: "cursor",
       clientId: presenceId(presence.clientId),
       name: String(presence.name || "Guest").slice(0, 40),
@@ -1201,32 +1235,20 @@ export class Gadget extends DurableObject<unknown, unknown> {
   }
 
   async leavePresence(clientId: unknown): Promise<void> {
-    await this.broadcastPresence({ type: "leave", clientId: presenceId(clientId), at: Date.now() });
+    this.broadcastPresence({ type: "leave", clientId: presenceId(clientId), at: Date.now() });
   }
 
-  // Forgets a subscriber whose connection broke or whose callback failed. Releasing the handle
-  // lets the client know (its subscriber's dispose hook subscribes again).
-  dropSubscriber(stub: SubscriberStub): void {
-    if (!this.subscribers.delete(stub)) return;
-    try { stub[Symbol.dispose]?.(); } catch { /* already broken */ }
-  }
-
+  // Waits on no subscriber. The registry drops and releases one whose delivery fails, which lets
+  // its client know (its subscriber's dispose hook subscribes again).
   async broadcast(event: OperationEvent): Promise<void> {
-    const calls: Promise<unknown>[] = [];
     let legacyEvent: Promise<OperationEvent> | null = null;
-    for (const [stub, info] of this.subscribers) {
-      if (!info.legacy) {
-        calls.push(Promise.resolve(stub.operation(event)).catch(() => this.dropSubscriber(stub)));
-        continue;
-      }
+    this.subscribers.broadcast((stub, info) => {
+      if (!info.legacy) return stub.operation(event);
       // Reading a replaced sheet's cells takes a moment, so a later event could overtake this
       // one and then be undone by it: a legacy subscriber's events are delivered one at a time.
       const prepared = legacyEvent ??= this.legacyOperationEvent(event);
-      const delivered = info.delivery.then(() => prepared).then((e) => stub.operation(e)).catch(() => this.dropSubscriber(stub));
-      info.delivery = delivered;
-      calls.push(delivered);
-    }
-    await Promise.all(calls);
+      return info.delivery = info.delivery.then(() => prepared).then((e) => stub.operation(e));
+    });
   }
 
   // An event as an editor from before paged loading reads it: a replaced sheet always comes
@@ -1240,12 +1262,8 @@ export class Gadget extends DurableObject<unknown, unknown> {
     return { ...event, replacedCells };
   }
 
-  async broadcastPresence(event: SheetsPresenceEvent): Promise<void> {
-    const calls: Promise<unknown>[] = [];
-    for (const [stub] of this.subscribers) {
-      calls.push(Promise.resolve(stub.presence(event)).catch(() => this.dropSubscriber(stub)));
-    }
-    await Promise.all(calls);
+  broadcastPresence(event: SheetsPresenceEvent): void {
+    this.subscribers.broadcast((stub) => stub.presence(event));
   }
 }
 
@@ -1314,15 +1332,6 @@ function parseArea(range: unknown): Area {
 function areaRef(a: Area): string {
   const tl = colLetters(a.c1) + (a.r1 + 1), br = colLetters(a.c2) + (a.r2 + 1);
   return tl === br ? tl : tl + ":" + br;
-}
-function usedRange(cells: CellMap): string | null {
-  let r2 = -1, c2 = -1;
-  for (const [ref, cell] of Object.entries(cells || {})) {
-    if ((cell?.value ?? "") === "" && !cell?.fmt) continue;
-    const p = parseCellRef(ref);
-    if (p) { r2 = Math.max(r2, p.r); c2 = Math.max(c2, p.c); }
-  }
-  return r2 < 0 ? null : areaRef({ r1: 0, c1: 0, r2, c2 });
 }
 // How many rows or columns to insert or delete: a positive whole number (a negative one would do the opposite).
 function lineCount(count: unknown): number {
@@ -1521,6 +1530,7 @@ interface SheetMetaInput {
   charts?: unknown;
   pivot?: unknown;
   created?: unknown;
+  layout?: unknown;
 }
 function sheetMeta(s: SheetMetaInput): SheetMeta {
   const rows = clampInt(s.rows, 1, MAX_ROWS, DEFAULT_ROWS), cols = clampInt(s.cols, 1, MAX_COLS, DEFAULT_COLS);
@@ -1538,6 +1548,7 @@ function sheetMeta(s: SheetMetaInput): SheetMeta {
     pivot: sanitizePivot(s.pivot),
     // The revision that created the sheet (0 for sheets older than this field); see applyOperationLocked.
     created: clampInt(s.created, 0, Number.MAX_SAFE_INTEGER, 0),
+    ...(s.layout ? { layout: clampInt(s.layout, 0, Number.MAX_SAFE_INTEGER, 0) } : {}),
   };
 }
 
@@ -1660,6 +1671,24 @@ function sanitizeFmt(fmt: unknown): CellFmt | null {
   return Object.keys(out).length ? out as CellFmt : null;
 }
 
+// A replacement's cell moves, checked; null when absent or unreadable (the cells may have moved anyhow).
+function sanitizeMoves(moves: unknown): CellMove[] | null {
+  if (!Array.isArray(moves) || moves.length > 100) return null;
+  const line = (n: unknown, lo: number) => Number.isInteger(n) && (n as number) >= lo && (n as number) <= MAX_ROWS;
+  const out: CellMove[] = [];
+  for (const move of moves as Loose[]) {
+    if (!isLoose(move)) return null;
+    if (move.kind === "lines" && line(move.at, 0) && Number.isInteger(move.count) && move.count !== 0 && Math.abs(move.count as number) <= MAX_ROWS) {
+      out.push({ kind: "lines", rows: !!move.rows, at: move.at as number, count: move.count as number });
+    } else if (move.kind === "move" && line(move.from, 0) && line(move.count, 1) && line(move.to, 0)) {
+      out.push({ kind: "move", rows: !!move.rows, from: move.from as number, count: move.count as number, to: move.to as number });
+    } else if (move.kind === "sort" && line(move.r1, 0) && line(move.c1, 0) && line(move.c2, 0) && Array.isArray(move.order) && move.order.length <= MAX_ROWS && move.order.every((r) => line(r, 0))) {
+      out.push({ kind: "sort", r1: move.r1 as number, c1: move.c1 as number, c2: move.c2 as number, order: (move.order as number[]).slice() });
+    } else return null;
+  }
+  return out;
+}
+
 // A client's cell map ({ ref: cell }) as a Map of clean stored cells.
 function sanitizeCellEntries(map: unknown): Map<string, Cell> {
   const out = new Map<string, Cell>();
@@ -1685,6 +1714,27 @@ const STORAGE_PUT_CHARS = 4_000_000; // and at most about this much data per put
 const PAGE_BYTES = 2_000_000;       // about how much cell data one page to a client carries
 const INLINE_REPLACEMENT_CELLS = 5000; // larger replaced sheets are re-read by peers in pages
 const INLINE_EDIT_CELLS = 20000;        // agent edits touching more cells: peers re-read those sheets
+const INLINE_EVENT_CHARS = 2_000_000;  // and so are cells past about this much text in one event
+const MAX_STAGED_CHARS = 40_000_000;   // what all staged uploads (stageCells) may hold together
+// About how many characters cells take, in memory or a message: their values, plus their refs,
+// versions and formats.
+function cellChars(cells: Iterable<Cell>): number {
+  let chars = 0;
+  for (const cell of cells) chars += cell.value.length + 48;
+  return chars;
+}
+// The cells one event may carry inline, shared by its sheets: `fits(cells, count, maxCells)` takes
+// a sheet's (or an edit's) `count` cells from what is left, or says they go as `null` (read in pages).
+function inlineAllowance(): (cells: Iterable<Cell>, count: number, maxCells: number) => boolean {
+  let room = INLINE_EVENT_CHARS;
+  return (cells, count, maxCells) => {
+    if (count > maxCells) return false;
+    const chars = cellChars(cells);
+    if (chars > room) return false;
+    room -= chars;
+    return true;
+  };
+}
 function sameStoredCell(a: Cell, b: Cell): boolean { return a.value === b.value && a.version === b.version && sameFmt(a.fmt, b.fmt); }
 
 // Cells are stored in blocks of BLOCK_ROWS rows: "b:<sheetId>:<00012>" holds rows 385–416 (block
@@ -1698,10 +1748,27 @@ const blockPrefix = (sheetId: string) => "b:" + sheetId + ":";
 const blockName = (index: number) => String(index).padStart(5, "0");
 const blockKey = (sheetId: string, index: number, part = 0) => blockPrefix(sheetId) + blockName(index) + (part ? "~" + part : "");
 const blockIndexOfName = (name: string) => parseInt(name, 10);
-function blockOfRef(ref: string): number {
+function rowOfRef(ref: string): number {
   let i = 0;
   while (i < ref.length && ref.charCodeAt(i) > 57) i++;
-  return Math.floor((Number(ref.slice(i)) - 1) / BLOCK_ROWS);
+  return Number(ref.slice(i));
+}
+function blockOfRef(ref: string): number { return Math.floor((rowOfRef(ref) - 1) / BLOCK_ROWS); }
+// A block's cells by row (1-based) past row `skip`, in row order, as each part's cell indices.
+function blockRows(parts: StoredPart[], skip: number): [number, Map<StoredPart, number[]>][] {
+  const rows = new Map<number, Map<StoredPart, number[]>>();
+  for (const part of parts) {
+    for (let i = 0; i < part.refs.length; i++) {
+      const row = rowOfRef(part.refs[i]);
+      if (row <= skip) continue;
+      let picks = rows.get(row);
+      if (!picks) rows.set(row, picks = new Map());
+      let indices = picks.get(part);
+      if (!indices) picks.set(part, indices = []);
+      indices.push(i);
+    }
+  }
+  return [...rows].sort((a, b) => a[0] - b[0]);
 }
 // Packs [ref, cell] entries into one or more block parts. Returns { parts, sizes } (no parts
 // for no cells).
@@ -1743,9 +1810,16 @@ function sameCellMaps(a: Map<string, Cell>, b: Map<string, Cell>): boolean {
   for (const [ref, cell] of a) { const other = b.get(ref); if (!other || !sameStoredCell(cell, other)) return false; }
   return true;
 }
-// Appends a stored part to a page being assembled for a client or an export, re-indexing its
-// formats into the page's (`fmtIndex`: JSON -> index). Returns the characters added.
-function appendPart(page: PageBuilder, fmtIndex: Map<string, number>, part: StoredPart, withFormats = true): number {
+// What a part's cells (at `indices`) add to a page, as appendPart counts them, formats aside.
+function packedChars(part: StoredPart, indices: Iterable<number>): number {
+  let chars = 0;
+  for (const i of indices) chars += part.refs[i].length + part.values[i].length + 12;
+  return chars;
+}
+// Appends a stored part (or the cells of it at `indices`) to a page being assembled for a client
+// or an export, re-indexing its formats into the page's (`fmtIndex`: JSON -> index). Returns the
+// characters added.
+function appendPart(page: PageBuilder, fmtIndex: Map<string, number>, part: StoredPart, withFormats = true, indices: Iterable<number> = part.refs.keys()): number {
   let chars = 0;
   // A page that asks for formats has `styles` and `fmts` (readPackedPage).
   const pageFmts = page.fmts as CellFmt[], pageStyles = page.styles as number[];
@@ -1755,7 +1829,7 @@ function appendPart(page: PageBuilder, fmtIndex: Map<string, number>, part: Stor
     if (index === undefined) { index = pageFmts.length; fmtIndex.set(key, index); pageFmts.push(fmt); chars += key.length; }
     return index;
   }) : [];
-  for (let i = 0; i < part.refs.length; i++) {
+  for (const i of indices) {
     page.refs.push(part.refs[i]); page.values.push(part.values[i]);
     if (page.versions) page.versions.push(part.versions[i]);
     if (withFormats) pageStyles.push(part.styles[i] >= 0 ? remap[part.styles[i]] : -1);
@@ -1938,7 +2012,7 @@ export class ExportHandler extends WorkerEntrypoint {
   async export(gadget: ExportGadgetStub, id: string): Promise<ReadableStream<Uint8Array>> {
     if (id === XLSX_FORMAT.id) {
       const workbook = await loadExportWorkbook(gadget, { formats: true });
-      return workbookToXlsx(workbook, new ExportEvaluator(workbook));
+      return workbookToXlsx(workbook, refreshExportPivots(workbook));
     }
     if (!id.startsWith(CSV_FORMAT_PREFIX)) {
       throw new Error("Unsupported spreadsheet export format: " + id);
@@ -1951,16 +2025,18 @@ export class ExportHandler extends WorkerEntrypoint {
     }
     // Every sheet is read: a formula on this one may read the others.
     const workbook = await loadExportWorkbook(gadget, { formats: true });
-    const data = workbook.cells.get(sheetId);
+    const evaluator = refreshExportPivots(workbook), data = workbook.cells.get(sheetId);
     if (!data) throw new Error("The selected worksheet is unavailable for CSV export.");
-    return textStream(csvLines(data, sheetId, new ExportEvaluator(workbook), workbook.fmts));
+    return textStream(csvLines(data, sheetId, evaluator, workbook.fmts));
   }
 }
 
 // One CSV line per row through the last row with a value, as wide as the widest row; commas
 // for empty fields are written in runs rather than field by field. Each field is what the cell
-// shows in the grid: a formula's result, a number in its format ("$1,200", "01/15/2024").
-// The file starts with a byte order mark, which Excel needs to read UTF-8.
+// shows in the grid: a formula's result, a number in its format ("$1,200", "01/15/2024"). Text
+// that a spreadsheet would read as a formula (`'=1+1` shows as `=1+1`; `+`, `-`, `@`, tab and CR
+// start one too) gets a leading `'`, as such text is typed, so opening the file runs nothing; numbers such as
+// -5 are left alone. The file starts with a byte order mark, which Excel needs to read UTF-8.
 function* csvLines(data: ExportCells, sheetId: string, evaluator: ExportEvaluator, fmts: CellFmt[]): Generator<string> {
   let lastRow = -1, maxColumn = -1;
   for (let i = 0; i < data.size; ++i) {
@@ -1977,13 +2053,20 @@ function* csvLines(data: ExportCells, sheetId: string, evaluator: ExportEvaluato
     while (k < order.length && data.rows[order[k]] === row) {
       const i = order[k++];
       if (data.values[i] === "") continue;
-      const text = evaluator.display(sheetId, data.rows[i], data.cols[i], data.fmtIds[i] >= 0 ? fmts[data.fmtIds[i]] : null);
+      const text = csvText(evaluator, sheetId, data.rows[i], data.cols[i], data.fmtIds[i] >= 0 ? fmts[data.fmtIds[i]] : null);
       if (text === "") continue;
       line += ",".repeat(data.cols[i] - column) + escapeCsvField(text);
       column = data.cols[i];
     }
     yield line + ",".repeat(maxColumn - column) + "\r\n";
   }
+}
+
+function csvText(evaluator: ExportEvaluator, sheetId: string, row: number, column: number, fmt: CellFmt | null): string {
+  const value = evaluator.value(sheetId, row, column);
+  // A formula past the evaluation budget shows as its own text, marked as text like the rest.
+  const shown: Display = value === EXPORT_UNKNOWN ? { text: evaluator.display(sheetId, row, column, fmt) } : displayValue(value as Scalar, fmt);
+  return !shown.numeric && !shown.err && /^[=+\-@\t\r]/.test(shown.text) ? "'" + shown.text : shown.text;
 }
 
 function csvCellRef(row: number, column: number): string {

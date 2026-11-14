@@ -405,12 +405,14 @@ function excelDate(y: number, m: number, d: number): number | CellError {
   else serial = dateToSerial(new Date(Date.UTC(y, m, d)));
   return serial < 0 ? ERR.NUM() : serial;
 }
-/** A serial's calendar date and time of day, rounded to the second as Excel shows it; `weekday` 0 is Sunday. */
+/** A serial's calendar date and time of day to the second; `weekday` 0 is Sunday. */
 interface DateParts { y: number; mo: number; d: number; h: number; mi: number; s: number; weekday: number }
-function dateParts(serial: number): DateParts {
-  // Excel rounds to the second before splitting: 12:29:59.999 shows as 12:30:00, and a moment
-  // before midnight as the next day.
-  const seconds = Math.round(serial * 86400), day = Math.floor(seconds / 86400), time = seconds - day * 86400;
+function dateParts(serial: number, shown: boolean): DateParts {
+  // Excel rounds to the second only to show a time: 12:29:59.999 shows as 12:30:00, and a moment
+  // before midnight as the next day. YEAR to SECOND drop the fraction instead (HOUR(0.9999999) is
+  // 23), once it is rounded to the millisecond Excel keeps, so binary residue doesn't lose a second.
+  const seconds = shown ? Math.round(serial * 86400) : Math.floor(Math.round(serial * DAY_MS) / 1000);
+  const day = Math.floor(seconds / 86400), time = seconds - day * 86400;
   let y = 1900, mo = 1, d = 0;
   if (day === 60) { mo = 2; d = 29; }
   else if (day !== 0) { const date = serialToDate(day); y = date.getUTCFullYear(); mo = date.getUTCMonth() + 1; d = date.getUTCDate(); }
@@ -433,7 +435,14 @@ function toStr(v: Value): string {
   if (v instanceof HyperlinkValue) return v.label;
   if (v == null) return "";
   if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+  if (typeof v === "number") return numberText(v);
   return String(v);
+}
+// A number as text, as Excel converts it (=1/3&"" is 0.333333333333333): 15 significant digits,
+// in E notation from 1E+15 up and below 1E-6.
+function numberText(n: number): string {
+  const x = Number(n.toPrecision(15));
+  return (Math.abs(x) >= 1e15 ? x.toExponential() : String(x)).replace(/e([+-])(\d)$/, "e$10$2").toUpperCase();
 }
 function toBool(v: Value): boolean {
   if (isErr(v)) throw v;
@@ -463,11 +472,11 @@ export function fmtGeneral(n: number): string {
 }
 function pad2(x: number): string { return String(x).padStart(2, "0"); }
 function fmtDate(serial: number): string {
-  const d = dateParts(serial);
+  const d = dateParts(serial, true);
   return `${pad2(d.mo)}/${pad2(d.d)}/${d.y}`;
 }
 function fmtTime(serial: number): string {
-  const d = dateParts(serial);
+  const d = dateParts(serial, true);
   let h = d.h; const ap = h >= 12 ? "PM" : "AM"; h = h % 12 || 12;
   return `${h}:${pad2(d.mi)}:${pad2(d.s)} ${ap}`;
 }
@@ -572,12 +581,14 @@ export interface Helpers {
   compare(a: Scalar, b: Scalar, op: string): boolean | undefined;
   serialToDate: typeof serialToDate;
   dateToSerial: typeof dateToSerial;
-  flatVals(args: Ast[], ctx: EvalCtx): Scalar[];
+  flatVals(args: Ast[], ctx: EvalCtx): Iterable<Scalar>;
   flatNums(args: Ast[], ctx: EvalCtx): number[];
   scalar(node: Ast, ctx: EvalCtx): Scalar;
   matrixOf(node: Ast, ctx: EvalCtx): Matrix;
   /** `node` evaluated item by item over the ranges it reads (see SUMPRODUCT). */
   arrayOf(node: Ast, ctx: EvalCtx): Matrix;
+  /** `node`'s range resized to `rows` by `cols` from its top-left cell, as SUMIF reads its sum range; #VALUE! for an array of another size. */
+  resize(node: Ast, ctx: EvalCtx, rows: number, cols: number): Matrix;
 }
 /** Raw resolvers for builtins that look at references rather than values (ROW, COLUMN). */
 export interface Resolvers {
@@ -600,10 +611,11 @@ class DeepEvaluation {
   constructor(sheetId: string, r: number, c: number) { this.sheetId = sheetId; this.r = r; this.c = c; }
 }
 const DEEP_LIMIT = 200;
-// Thrown (never returned) once an engine has read more than `limits.budget` cells, for callers
-// that must stop somewhere (the server's exports); the grid sets no budget.
+// Thrown (never returned) once an engine has done more than `limits.budget` work (cell reads, and
+// items worked out over arrays), for callers that must stop somewhere (the server's exports); the
+// grid sets no budget.
 export class EvaluationBudget {}
-/** How many cells an engine has read (`work`), and how many it may read before throwing EvaluationBudget. */
+/** How much work an engine has done (`work`: cells read and array items worked out), and how much it may do before throwing EvaluationBudget. */
 export interface EvaluationLimits {
   work: number;
   budget: number;
@@ -620,6 +632,9 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
   // `pending` holds the cells waiting on a deeper one: meeting one again is a cycle.
   let depth = 0;
   const pending = new Set<string>();
+  // Counts `n` units of work against the budget: a cell read, or an item an operator works out
+  // over arrays (which reads no cell when its operands are array constants).
+  function spend(n: number) { if ((limits.work += n) > limits.budget) throw new EvaluationBudget(); }
   function computeCell(sheetId: string, r: number, c: number): Scalar {
     if (depth > 0) return evalCellRef(sheetId, r, c);
     const stack: SplitRef[] = [{ sheetId, r, c }];
@@ -728,12 +743,13 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
   }
 
   function evalCellRef(sheetId: string, r: number, c: number): Scalar {
-    if (++limits.work > limits.budget) throw new EvaluationBudget();
+    spend(1);
     const key = sheetId + "!" + rcToRef(r, c);
     if (cache.has(key)) return cache.get(key) as Scalar;
     if (inProgress.has(key) || pending.has(key)) return ERR.CYCLE();
     const raw = rawCellValue(sheetId, r, c);
-    if (raw == null) { cache.set(key, null); return null; }
+    // An empty cell isn't cached: SUM(B1:BI50000) would otherwise keep three million entries.
+    if (raw == null) return null;
     let result: Scalar;
     if (raw[0] === "=") {
       if (depth >= DEEP_LIMIT) throw new DeepEvaluation(sheetId, r, c);
@@ -800,7 +816,7 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
       case "str": return node.v;
       case "bool": return node.v;
       case "err": return new CellError(node.v);
-      case "array": return arrayMatrix(node.rows);
+      case "array": spend(node.rows.length * node.rows[0].length); return arrayMatrix(node.rows);
       // An empty argument; the function library gives it its meaning.
       case "missing": return null;
       case "pct": { const v = evalNode(node.a, ctx); return pctScalar(isMatrix(v) ? intersect(v, ctx) : v); }
@@ -877,7 +893,7 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
     }
     const at = (m: Matrix, i: number, j: number) => m.get(m.rows === 1 ? 0 : i, m.cols === 1 ? 0 : j);
     const [x, y] = operands;
-    return { matrix: true, rows, cols, get: (i, j) => node.k === "bin" ? binScalar(node.op, at(x, i, j), at(y, i, j)) : node.k === "un" ? unScalar(node.op, at(x, i, j)) : pctScalar(at(x, i, j)) };
+    return { matrix: true, rows, cols, get: (i, j) => { spend(1); return node.k === "bin" ? binScalar(node.op, at(x, i, j), at(y, i, j)) : node.k === "un" ? unScalar(node.op, at(x, i, j)) : pctScalar(at(x, i, j)); } };
   }
 
   // Excel's rules: a blank takes the other side's type (0, "" or FALSE), so a blank cell equals
@@ -907,11 +923,14 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
   // Helpers exposed to builtins.
   const H: Helpers = {
     evalNode, isErr, ERR, toNum, toStr, toBool, compare, serialToDate, dateToSerial,
-    // flat list of scalar values from arg nodes (ranges expanded)
-    flatVals(args, ctx) {
-      const out: Scalar[] = [];
-      for (const node of args) collectVals(evalNode(node, ctx), out);
-      return out;
+    // Scalar values from arg nodes, ranges expanded, read as they're needed: a big, mostly empty
+    // range is never held as an array.
+    *flatVals(args, ctx) {
+      for (const node of args) {
+        const v = evalNode(node, ctx);
+        if (isMatrix(v)) { for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) yield v.get(i, j); }
+        else yield v;
+      }
     },
     // flat list of numbers, ignoring blanks & non-numeric text (aggregation style)
     // As in Excel, a single reference counts like a range (only its numbers: SUM(A1) skips text
@@ -930,11 +949,17 @@ export function makeEngine(model: EngineModel, limits: EvaluationLimits = { work
     scalar(node, ctx) { const v = evalNode(node, ctx); return isMatrix(v) ? intersect(v, ctx) : v; },
     matrixOf(node, ctx) { const v = evalNode(node, ctx); return isMatrix(v) ? v : { matrix: true, rows: 1, cols: 1, get: () => v }; },
     arrayOf,
+    resize(node, ctx, rows, cols) {
+      // A single cell is read as a range from it, not as its value.
+      const one = unwrapParens(node), p = one.k === "ref" ? splitRef(one.ref, ctx.sheetId) : null;
+      const m = p ? null : H.matrixOf(node, ctx);
+      if (m && m.rows === rows && m.cols === cols) return m;
+      const at = p ?? (m?.sheetId != null && m.r1 != null && m.c1 != null ? { sheetId: m.sheetId, r: m.r1, c: m.c1 } : null);
+      if (!at) throw ERR.VALUE();
+      if (reader) noteRange(reader, at.sheetId, at.r, at.c, at.r + rows - 1, at.c + cols - 1);
+      return makeMatrix(at.sheetId, at.r, at.c, at.r + rows - 1, at.c + cols - 1);
+    },
   };
-  function collectVals(v: Value, out: Scalar[]) {
-    if (isMatrix(v)) { for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) out.push(v.get(i, j)); }
-    else out.push(v);
-  }
   function collectNums(v: Value, out: number[]) {
     if (isMatrix(v)) {
       for (let i = 0; i < v.rows; i++) for (let j = 0; j < v.cols; j++) {
@@ -976,11 +1001,19 @@ function digits15(x: number): number { return Number(x.toPrecision(15)); }
 // formulas from doubling a text until it exhausts memory.
 const MAX_TEXT = 32767;
 function cellText(text: string): string | CellError { return text.length > MAX_TEXT ? ERR.VALUE() : text; }
-// `parts` joined by `separator`, measured before it is built.
-function joinText(parts: string[], separator: string): string | CellError {
-  let length = separator.length * Math.max(0, parts.length - 1);
-  for (const part of parts) { length += part.length; if (length > MAX_TEXT) return ERR.VALUE(); }
-  return length > MAX_TEXT ? ERR.VALUE() : parts.join(separator);
+// `values` as text joined by `separator` (without empty ones when `skipEmpty`), and #VALUE! as
+// soon as the result would be too long. An empty part between empty separators is never kept, so
+// CONCAT over a big, mostly empty range holds only what it joins.
+function joinText(values: Iterable<Scalar>, separator: string, skipEmpty = false): string | CellError {
+  const parts: string[] = [];
+  let length = -separator.length;
+  for (const v of values) {
+    const part = toStr(v);
+    if (part === "" && (skipEmpty || !separator)) continue;
+    if ((length += separator.length + part.length) > MAX_TEXT) return ERR.VALUE();
+    parts.push(part);
+  }
+  return parts.join(separator);
 }
 // An array constant's rows as a matrix (no sheet: it is no reference).
 function arrayMatrix(rows: ArrayItem[][]): Matrix {
@@ -1050,8 +1083,8 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   };
   // Anything but an empty cell counts, "" included (a formula's "" or a direct ""), and so does
   // an empty argument.
-  F.COUNTA = (a, c, H) => a.filter((node) => node.k === "missing").length + H.flatVals(a.filter((node) => node.k !== "missing"), c).filter((v) => v != null).length;
-  F.COUNTBLANK = (a, c, H) => H.flatVals(a, c).filter((v) => v == null || v === "").length;
+  F.COUNTA = (a, c, H) => { let n = a.filter((node) => node.k === "missing").length; for (const v of H.flatVals(a.filter((node) => node.k !== "missing"), c)) if (v != null) n++; return n; };
+  F.COUNTBLANK = (a, c, H) => { let n = 0; for (const v of H.flatVals(a, c)) if (v == null || v === "") n++; return n; };
   // A loop, not Math.max(...n): spreading a big range's numbers as arguments overflows the stack.
   F.MAX = (a, c, H) => { const n = numArgs(a, c, H); return n.length ? n.reduce((x, y) => (y > x ? y : x)) : 0; };
   F.MIN = (a, c, H) => { const n = numArgs(a, c, H); return n.length ? n.reduce((x, y) => (y < x ? y : x)) : 0; };
@@ -1111,35 +1144,44 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
     const cmp = x < y ? -1 : x > y ? 1 : 0;
     return op === "<" ? cmp < 0 : op === ">" ? cmp > 0 : op === "<=" ? cmp <= 0 : cmp >= 0;
   }
-  function matVals(m: Matrix): Scalar[] { const o: Scalar[] = []; for (let i = 0; i < m.rows; i++) for (let j = 0; j < m.cols; j++) o.push(m.get(i, j)); return o; }
+  // A range's `k`th item in reading order. Ranges are read item by item, never copied into an
+  // array: a big, mostly empty range would cost memory for every empty cell.
+  const item = (m: Matrix, k: number) => m.get(Math.floor(k / m.cols), k % m.cols);
+  const numbersOf = (m: Matrix) => { const o: number[] = []; for (let k = 0; k < m.rows * m.cols; k++) { const v = item(m, k); if (typeof v === "number") o.push(v); } return o; };
 
+  // The sum or average range is the criteria range's size from its own top-left cell, as in
+  // Excel: SUMIF(A1:A2,">0",B1) sums B1:B2.
   F.SUMIF = (a, c, H) => {
-    const range = matVals(H.matrixOf(a[0], c));
+    const range = H.matrixOf(a[0], c);
     const crit = a.length > 1 ? H.scalar(a[1], c) : null;
-    const sumRange = a.length > 2 ? matVals(H.matrixOf(a[2], c)) : range;
-    let t = 0; for (let i = 0; i < range.length; i++) if (matchCriteria(range[i], crit)) { const v = sumRange[i]; if (typeof v === "number") t += v; }
+    const sumRange = a.length > 2 ? H.resize(a[2], c, range.rows, range.cols) : range;
+    let t = 0; for (let k = 0; k < range.rows * range.cols; k++) if (matchCriteria(item(range, k), crit)) { const v = item(sumRange, k); if (typeof v === "number") t += v; }
     return t;
   };
-  F.COUNTIF = (a, c, H) => { const range = matVals(H.matrixOf(a[0], c)); const crit = a.length > 1 ? H.scalar(a[1], c) : null; return range.filter((v) => matchCriteria(v, crit)).length; };
+  F.COUNTIF = (a, c, H) => { const range = H.matrixOf(a[0], c); const crit = a.length > 1 ? H.scalar(a[1], c) : null; let n = 0; for (let k = 0; k < range.rows * range.cols; k++) if (matchCriteria(item(range, k), crit)) n++; return n; };
   F.AVERAGEIF = (a, c, H) => {
-    const range = matVals(H.matrixOf(a[0], c));
+    const range = H.matrixOf(a[0], c);
     const crit = a.length > 1 ? H.scalar(a[1], c) : null;
-    const avgRange = a.length > 2 ? matVals(H.matrixOf(a[2], c)) : range;
-    let t = 0, n = 0; for (let i = 0; i < range.length; i++) if (matchCriteria(range[i], crit)) { const v = avgRange[i]; if (typeof v === "number") { t += v; n++; } }
+    const avgRange = a.length > 2 ? H.resize(a[2], c, range.rows, range.cols) : range;
+    let t = 0, n = 0; for (let k = 0; k < range.rows * range.cols; k++) if (matchCriteria(item(range, k), crit)) { const v = item(avgRange, k); if (typeof v === "number") { t += v; n++; } }
     return n ? t / n : ERR.DIV0();
   };
-  function ifsMatch(a: Ast[], c: EvalCtx, H: Helpers, startIdx: number): boolean[] {
-    // returns boolean array over first criteria range
-    const pairs: [Scalar[], Scalar][] = [];
-    for (let i = startIdx; i + 1 < a.length; i += 2) pairs.push([matVals(H.matrixOf(a[i], c)), H.scalar(a[i + 1], c)]);
-    const len = pairs.length ? pairs[0][0].length : 0;
-    const mask: boolean[] = [];
-    for (let i = 0; i < len; i++) mask.push(pairs.every(([rng, cr]) => matchCriteria(rng[i], cr)));
-    return mask;
+  // Visits the position of each item meeting every (range, criterion) pair from `startIdx`. Unlike
+  // SUMIF's, every range must be the size of the first (or of `target`, the sum range): #VALUE! otherwise.
+  function ifsEach(a: Ast[], c: EvalCtx, H: Helpers, startIdx: number, target: Matrix | null, visit: (k: number) => void) {
+    const pairs: [Matrix, Scalar][] = [];
+    for (let i = startIdx; i + 1 < a.length; i += 2) pairs.push([H.matrixOf(a[i], c), H.scalar(a[i + 1], c)]);
+    const shape = target ?? pairs[0]?.[0];
+    if (!shape) return;
+    if (pairs.some(([m]) => m.rows !== shape.rows || m.cols !== shape.cols)) throw ERR.VALUE();
+    outer: for (let k = 0; k < shape.rows * shape.cols; k++) {
+      for (const [m, crit] of pairs) if (!matchCriteria(item(m, k), crit)) continue outer;
+      visit(k);
+    }
   }
-  F.SUMIFS = (a, c, H) => { const sum = matVals(H.matrixOf(a[0], c)); const mask = ifsMatch(a, c, H, 1); let t = 0; for (let i = 0; i < mask.length; i++) { const v = sum[i]; if (mask[i] && typeof v === "number") t += v; } return t; };
-  F.COUNTIFS = (a, c, H) => ifsMatch(a, c, H, 0).filter(Boolean).length;
-  F.AVERAGEIFS = (a, c, H) => { const avg = matVals(H.matrixOf(a[0], c)); const mask = ifsMatch(a, c, H, 1); let t = 0, n = 0; for (let i = 0; i < mask.length; i++) { const v = avg[i]; if (mask[i] && typeof v === "number") { t += v; n++; } } return n ? t / n : ERR.DIV0(); };
+  F.SUMIFS = (a, c, H) => { const sum = H.matrixOf(a[0], c); let t = 0; ifsEach(a, c, H, 1, sum, (k) => { const v = item(sum, k); if (typeof v === "number") t += v; }); return t; };
+  F.COUNTIFS = (a, c, H) => { let n = 0; ifsEach(a, c, H, 0, null, () => n++); return n; };
+  F.AVERAGEIFS = (a, c, H) => { const avg = H.matrixOf(a[0], c); let t = 0, n = 0; ifsEach(a, c, H, 1, avg, (k) => { const v = item(avg, k); if (typeof v === "number") { t += v; n++; } }); return n ? t / n : ERR.DIV0(); };
   // Anything but a number counts as 0 (so a condition needs arithmetic: --(A1:A9>1) or (A1:A9>1)*B1:B9),
   // and an error in any item is the result, as in Excel.
   F.SUMPRODUCT = (a, c, H) => {
@@ -1167,10 +1209,10 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   F.STDEVP = (a, c, H) => stdVar(numArgs(a, c, H), true, false);
   F.VAR = (a, c, H) => stdVar(numArgs(a, c, H), false, true);
   F.VARP = (a, c, H) => stdVar(numArgs(a, c, H), true, true);
-  F.LARGE = (a, c, H) => { const n = matVals(H.matrixOf(a[0], c)).filter((v) => typeof v === "number").sort((x, y) => y - x); const k = H.toNum(s(a, c, H, 1)); return n[k - 1] ?? ERR.NUM(); };
-  F.SMALL = (a, c, H) => { const n = matVals(H.matrixOf(a[0], c)).filter((v) => typeof v === "number").sort((x, y) => x - y); const k = H.toNum(s(a, c, H, 1)); return n[k - 1] ?? ERR.NUM(); };
-  F.RANK = (a, c, H) => { const x = H.toNum(s(a, c, H, 0)); const arr = matVals(H.matrixOf(a[1], c)).filter((v) => typeof v === "number"); const asc = a.length > 2 && H.toBool(s(a, c, H, 2)); const sorted = arr.slice().sort((p, q) => asc ? p - q : q - p); const i = sorted.indexOf(x); return i < 0 ? ERR.NA() : i + 1; };
-  F.PERCENTILE = (a, c, H) => { const arr = matVals(H.matrixOf(a[0], c)).filter((v) => typeof v === "number").sort((x, y) => x - y); const p = H.toNum(s(a, c, H, 1)); if (!arr.length) return ERR.NUM(); const idx = p * (arr.length - 1); const lo = Math.floor(idx); return arr[lo] + (arr[Math.min(lo + 1, arr.length - 1)] - arr[lo]) * (idx - lo); };
+  F.LARGE = (a, c, H) => { const n = numbersOf(H.matrixOf(a[0], c)).sort((x, y) => y - x); const k = H.toNum(s(a, c, H, 1)); return n[k - 1] ?? ERR.NUM(); };
+  F.SMALL = (a, c, H) => { const n = numbersOf(H.matrixOf(a[0], c)).sort((x, y) => x - y); const k = H.toNum(s(a, c, H, 1)); return n[k - 1] ?? ERR.NUM(); };
+  F.RANK = (a, c, H) => { const x = H.toNum(s(a, c, H, 0)); const arr = numbersOf(H.matrixOf(a[1], c)); const asc = a.length > 2 && H.toBool(s(a, c, H, 2)); const sorted = arr.slice().sort((p, q) => asc ? p - q : q - p); const i = sorted.indexOf(x); return i < 0 ? ERR.NA() : i + 1; };
+  F.PERCENTILE = (a, c, H) => { const arr = numbersOf(H.matrixOf(a[0], c)).sort((x, y) => x - y); const p = H.toNum(s(a, c, H, 1)); if (!arr.length) return ERR.NUM(); const idx = p * (arr.length - 1); const lo = Math.floor(idx); return arr[lo] + (arr[Math.min(lo + 1, arr.length - 1)] - arr[lo]) * (idx - lo); };
 
   // ---- Logical ----
   // A chosen argument left empty gives 0, as in Excel: IF(1,) is 0, IFERROR(1/0,) too.
@@ -1179,19 +1221,38 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   F.IFS = (a, c, H) => { for (let i = 0; i + 1 < a.length; i += 2) if (H.toBool(H.scalar(a[i], c))) return pick(a[i + 1], c, H); return ERR.NA(); };
   F.IFERROR = (a, c, H) => { const v = H.scalar(a[0], c); return isErr(v) ? (a.length > 1 ? pick(a[1], c, H) : "") : v; };
   F.IFNA = (a, c, H) => { const v = H.scalar(a[0], c); return isErr(v) && v.value === "#N/A" ? pick(a[1], c, H) : v; };
-  // An empty argument is FALSE here: AND(TRUE,) is FALSE.
-  F.AND = (a, c, H) => { if (a.some((node) => node.k === "missing")) return false; for (const v of H.flatVals(a, c)) { if (isErr(v)) return v; if (v != null && v !== "" && !H.toBool(v)) return false; } return true; };
-  F.OR = (a, c, H) => { let any = false; for (const v of H.flatVals(a, c)) { if (isErr(v)) return v; if (v != null && v !== "" && H.toBool(v)) any = true; } return any; };
-  F.XOR = (a, c, H) => { let cnt = 0; for (const v of H.flatVals(a, c)) if (H.toBool(v)) cnt++; return cnt % 2 === 1; };
+  // AND, OR and XOR read numbers and booleans, as Excel does: text and blanks in references and
+  // arrays are skipped, a value given directly is coerced (text that isn't TRUE or FALSE is
+  // #VALUE!), and with nothing to read the result is #VALUE!. An empty argument is FALSE: AND(TRUE,) is FALSE.
+  function logicals(a: Ast[], c: EvalCtx, H: Helpers): { count: number; trues: number } {
+    let count = 0, trues = 0;
+    const add = (b: boolean) => { count++; if (b) trues++; };
+    for (const node of a) {
+      if (node.k === "missing") { add(false); continue; }
+      const v = H.evalNode(node, c);
+      if (!isMatrix(v) && !isReference(node)) { if (v != null) add(H.toBool(v)); continue; }
+      const m: Matrix = isMatrix(v) ? v : { matrix: true, rows: 1, cols: 1, get: () => v };
+      for (let k = 0; k < m.rows * m.cols; k++) {
+        const x = item(m, k);
+        if (isErr(x)) throw x;
+        if (typeof x === "number" || typeof x === "boolean") add(x !== 0 && x !== false);
+      }
+    }
+    if (!count) throw ERR.VALUE();
+    return { count, trues };
+  }
+  F.AND = (a, c, H) => { const { count, trues } = logicals(a, c, H); return trues === count; };
+  F.OR = (a, c, H) => logicals(a, c, H).trues > 0;
+  F.XOR = (a, c, H) => logicals(a, c, H).trues % 2 === 1;
   F.NOT = (a, c, H) => !H.toBool(H.scalar(a[0], c));
   F.TRUE = () => true;
   F.FALSE = () => false;
   F.SWITCH = (a, c, H) => { const target = H.scalar(a[0], c); let i = 1; for (; i + 1 < a.length; i += 2) { if (H.compare(target, H.scalar(a[i], c), "=")) return pick(a[i + 1], c, H); } return i < a.length ? pick(a[i], c, H) : ERR.NA(); };
 
   // ---- Text ----
-  F.CONCAT = (a, c, H) => joinText(H.flatVals(a, c).map((v) => v == null ? "" : H.toStr(v)), "");
+  F.CONCAT = (a, c, H) => joinText(H.flatVals(a, c), "");
   F.CONCATENATE = F.CONCAT;
-  F.TEXTJOIN = (a, c, H) => { const delim = H.toStr(H.scalar(a[0], c)); const skip = H.toBool(H.scalar(a[1], c)); const vals = H.flatVals(a.slice(2), c).map((v) => v == null ? "" : H.toStr(v)); return joinText(skip ? vals.filter((v) => v !== "") : vals, delim); };
+  F.TEXTJOIN = (a, c, H) => { const delim = H.toStr(H.scalar(a[0], c)); const skip = H.toBool(H.scalar(a[1], c)); return joinText(H.flatVals(a.slice(2), c), delim, skip); };
   F.LEFT = (a, c, H) => { const t = H.toStr(H.scalar(a[0], c)); const n = a.length > 1 ? H.toNum(H.scalar(a[1], c)) : 1; return t.slice(0, Math.max(0, n)); };
   F.RIGHT = (a, c, H) => { const t = H.toStr(H.scalar(a[0], c)); const n = a.length > 1 ? H.toNum(H.scalar(a[1], c)) : 1; return n <= 0 ? "" : t.slice(-n); };
   F.MID = (a, c, H) => { const t = H.toStr(H.scalar(a[0], c)); const start = H.toNum(H.scalar(a[1], c)); const len = H.toNum(H.scalar(a[2], c)); return t.slice(Math.max(0, start - 1), Math.max(0, start - 1) + Math.max(0, len)); };
@@ -1342,7 +1403,7 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   // Excel's date codes, token by token: y/m/d/h/s runs, AM/PM, and "quoted" or \escaped text.
   // `m`/`mm` mean minutes right after an hour or right before seconds, months otherwise.
   function formatDatePattern(serial: number, f: string): string {
-    const d = dateParts(serial);
+    const d = dateParts(serial, true);
     const M = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
     const D = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
     const tokens: ({ k: "ampm" | "text"; v: string } | { k: "y" | "m" | "d" | "h" | "s"; v: number })[] = [];
@@ -1379,25 +1440,36 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   F.COLUMN = (a, c, H, R) => { if (!a.length) return c.c + 1; const nd = unwrapParens(a[0]); if (nd.k === "ref") { const p = R.splitRef(nd.ref, c.sheetId); return p ? p.c + 1 : ERR.REF(); } if (nd.k === "range") { const p = R.splitRef(nd.a, c.sheetId); return p ? p.c + 1 : ERR.REF(); } return ERR.REF(); };
   F.ROWS = (a, c, H) => H.matrixOf(a[0], c).rows;
   F.COLUMNS = (a, c, H) => H.matrixOf(a[0], c).cols;
+  // An approximate match's position among `count` items, as Excel's binary search finds it in
+  // sorted data: the last item up to the target (from it, with `>=`, for MATCH's -1), skipping
+  // blanks, errors and items of another type than the target, so a trailing blank row is never
+  // the match and LOOKUP(9.99E+307,A1:A9) is the last number. -1 when there's none.
+  function approxMatch(count: number, at: (k: number) => Scalar, target: Scalar, H: Helpers, op = "<="): number {
+    const kind = (v: Scalar) => typeof (v instanceof HyperlinkValue ? v.label : v);
+    const want = kind(target ?? 0);
+    let found = -1;
+    for (let k = 0; k < count; k++) {
+      const v = at(k);
+      if (v == null || isErr(v) || kind(v) !== want) continue;
+      if (H.compare(v, target, op)) found = k; else break;
+    }
+    return found;
+  }
   F.MATCH = (a, c, H) => {
     const target = H.scalar(a[0], c);
     const m = H.matrixOf(a[1], c);
     const type = a.length > 2 ? H.toNum(H.scalar(a[2], c)) : 1;
-    const arr = matVals(m);
     if (type === 0) {
-      for (let i = 0; i < arr.length; i++) {
-        if (typeof target === "string" && /[*?]/.test(target)) { if (wildcardMatches(target, String(arr[i] ?? ""))) return i + 1; }
-        else if (H.compare(arr[i], target, "=")) return i + 1;
+      for (let k = 0; k < m.rows * m.cols; k++) {
+        const v = item(m, k);
+        if (typeof target === "string" && /[*?]/.test(target)) { if (wildcardMatches(target, String(v ?? ""))) return k + 1; }
+        else if (H.compare(v, target, "=")) return k + 1;
       }
       return ERR.NA();
     }
-    // 1: largest <= target (asc); -1: smallest >= target (desc)
-    let best = -1;
-    for (let i = 0; i < arr.length; i++) {
-      const cmp = type === 1 ? H.compare(arr[i], target, "<=") : H.compare(arr[i], target, ">=");
-      if (cmp) best = i;
-    }
-    return best < 0 ? ERR.NA() : best + 1;
+    // 1: largest <= target (ascending data); -1: smallest >= target (descending).
+    const found = approxMatch(m.rows * m.cols, (k) => item(m, k), target, H, type > 0 ? "<=" : ">=");
+    return found < 0 ? ERR.NA() : found + 1;
   };
   // Row or column 0 picks the whole column or row: a range (SUM(INDEX(B1:C5,0,2)) sums column C),
   // which a cell on its own shows by intersection (#VALUE! off it). With the column left out,
@@ -1424,10 +1496,10 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
     const approx = a.length > 3 ? H.toBool(H.scalar(a[3], c)) : true;
     if (colIdx < 1 || colIdx > m.cols) return ERR.REF();
     let found = -1;
-    for (let i = 0; i < m.rows; i++) {
+    if (approx) found = approxMatch(m.rows, (i) => m.get(i, 0), target, H);
+    else for (let i = 0; i < m.rows; i++) {
       const v = m.get(i, 0);
-      if (!approx) { if (typeof target === "string" && /[*?]/.test(target) ? wildcardMatches(target, String(v ?? "")) : H.compare(v, target, "=")) { found = i; break; } }
-      else { if (H.compare(v, target, "<=")) found = i; else break; }
+      if (typeof target === "string" && /[*?]/.test(target) ? wildcardMatches(target, String(v ?? "")) : H.compare(v, target, "=")) { found = i; break; }
     }
     return found < 0 ? ERR.NA() : m.get(found, colIdx - 1);
   };
@@ -1438,21 +1510,16 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
     const approx = a.length > 3 ? H.toBool(H.scalar(a[3], c)) : true;
     if (rowIdx < 1 || rowIdx > m.rows) return ERR.REF();
     let found = -1;
-    for (let j = 0; j < m.cols; j++) {
-      const v = m.get(0, j);
-      if (!approx) { if (H.compare(v, target, "=")) { found = j; break; } }
-      else { if (H.compare(v, target, "<=")) found = j; else break; }
-    }
+    if (approx) found = approxMatch(m.cols, (j) => m.get(0, j), target, H);
+    else for (let j = 0; j < m.cols; j++) if (H.compare(m.get(0, j), target, "=")) { found = j; break; }
     return found < 0 ? ERR.NA() : m.get(rowIdx - 1, found);
   };
   F.LOOKUP = (a, c, H) => {
     const target = H.scalar(a[0], c);
     const m = H.matrixOf(a[1], c);
-    const vec = matVals(m);
-    const result = a.length > 2 ? matVals(H.matrixOf(a[2], c)) : vec;
-    let found = -1;
-    for (let i = 0; i < vec.length; i++) { if (H.compare(vec[i], target, "<=")) found = i; else break; }
-    return found < 0 ? ERR.NA() : (result[found] ?? ERR.NA());
+    const result = a.length > 2 ? H.matrixOf(a[2], c) : m;
+    const found = approxMatch(m.rows * m.cols, (k) => item(m, k), target, H);
+    return found < 0 || found >= result.rows * result.cols ? ERR.NA() : item(result, found);
   };
 
   // ---- Date & time ----
@@ -1466,8 +1533,8 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
     if (h > 32767 || m > 32767 || sec > 32767 || total < 0) throw ERR.NUM();
     return (total % 86400) / 86400;
   };
-  // Date parts read the date as it shows (see dateParts); a negative serial is no date at all.
-  const partsOf = (a: Ast[], c: EvalCtx, H: Helpers) => { const serial = H.toNum(s(a, c, H, 0)); if (serial < 0) throw ERR.NUM(); return dateParts(serial); };
+  // A negative serial is no date at all.
+  const partsOf = (a: Ast[], c: EvalCtx, H: Helpers) => { const serial = H.toNum(s(a, c, H, 0)); if (serial < 0) throw ERR.NUM(); return dateParts(serial, false); };
   F.YEAR = (a, c, H) => partsOf(a, c, H).y;
   F.MONTH = (a, c, H) => partsOf(a, c, H).mo;
   F.DAY = (a, c, H) => partsOf(a, c, H).d;
@@ -1475,7 +1542,7 @@ export const FUNCTIONS: Record<string, FormulaFunction> = (() => {
   F.MINUTE = (a, c, H) => partsOf(a, c, H).mi;
   F.SECOND = (a, c, H) => partsOf(a, c, H).s;
   F.WEEKDAY = (a, c, H) => { const d = partsOf(a, c, H).weekday; const type = a.length > 1 ? H.toNum(s(a, c, H, 1)) : 1; if (type === 2) return d === 0 ? 7 : d; if (type === 3) return (d + 6) % 7; return d + 1; };
-  F.WEEKNUM = (a, c, H) => { const serial = Math.floor(H.toNum(s(a, c, H, 0))), d = partsOf(a, c, H); const start = excelDate(d.y, 1, 1) as number; return Math.floor((serial - start + dateParts(start).weekday) / 7) + 1; };
+  F.WEEKNUM = (a, c, H) => { const serial = Math.floor(H.toNum(s(a, c, H, 0))), d = partsOf(a, c, H); const start = excelDate(d.y, 1, 1) as number; return Math.floor((serial - start + dateParts(start, false).weekday) / 7) + 1; };
   F.DAYS = (a, c, H) => H.toNum(s(a, c, H, 0)) - H.toNum(s(a, c, H, 1));
   // Past the end of the target month, the date stops at its last day (Jan 31 + 1 month = Feb 29).
   F.EDATE = (a, c, H) => { const d = serialToDate(Math.floor(H.toNum(s(a, c, H, 0)))); const mo = Math.trunc(H.toNum(s(a, c, H, 1))); const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + mo + 1, 0)).getUTCDate(); return dateToSerial(new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + mo, Math.min(d.getUTCDate(), last)))); };

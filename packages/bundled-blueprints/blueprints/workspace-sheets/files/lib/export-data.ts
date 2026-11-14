@@ -1,5 +1,6 @@
 import { EvaluationBudget, type Engine, type EngineCell, HyperlinkValue, type Scalar, displayValue, isErr, makeEngine, rcToRef } from "./formula.ts";
-import type { CellFmt, ExportGadgetStub, SheetMeta } from "./protocol.ts";
+import { buildPivotOutput, pivotSheetLayout } from "./pivot.ts";
+import type { CellFmt, ExportGadgetStub, PivotSettings, SheetMeta } from "./protocol.ts";
 
 // A new sheet's size (the server's sheetMeta), and what an export assumes for a sheet without one.
 export const DEFAULT_ROWS = 100;
@@ -111,7 +112,8 @@ export async function loadExportWorkbook(gadget: ExportGadgetStub, { formats, sh
 // reads through a { ref: { value } } view per sheet (indexed the first time a sheet is read).
 // Results are worked out on demand and cached, so only what an export asks for is computed.
 // A workbook whose formulas would take too long to work out (thousands of lookups over
-// thousands of rows) stops after EXPORT_READ_BUDGET cell reads by the engine: that formula and
+// thousands of rows, or SUMPRODUCT over arrays broadcast to millions of items) stops after
+// EXPORT_READ_BUDGET units of engine work (cell reads and array items): that formula and
 // later ones get EXPORT_UNKNOWN, so Excel gets them without a cached result (it recalculates on
 // open) and CSV gets their text. Time can't be the measure: a Worker's clock stands still while
 // it computes.
@@ -189,6 +191,53 @@ export class ExportEvaluator {
     if (value === EXPORT_UNKNOWN) return this.cellsOf(sheetId).values[this.index(sheetId).get(rcToRef(row, column)) as number];
     return displayValue(value as Scalar, fmt).text;
   }
+}
+// A pivot sheet holds what the grid last built from its source, which may since have changed with
+// no grid open, so every pivot is built again from the exported cells (lib/pivot.ts). A pivot's
+// source may read another pivot: passes repeat until no pivot changes, one more than there are
+// pivots at most. Returns the evaluator for the workbook as rebuilt.
+export function refreshExportPivots(workbook: ExportWorkbook): ExportEvaluator {
+  const pivots = workbook.sheetOrder.filter((id) => workbook.sheets[id]?.pivot && workbook.cells.has(id));
+  let evaluator = new ExportEvaluator(workbook);
+  const fmtIds = new Map(workbook.fmts.map((fmt, index) => [JSON.stringify(fmt), index]));
+  const fmtId = (fmt: CellFmt | null) => {
+    if (!fmt) return -1;
+    const key = JSON.stringify(fmt);
+    let index = fmtIds.get(key);
+    if (index === undefined) { index = workbook.fmts.length; fmtIds.set(key, index); workbook.fmts.push(fmt); }
+    return index;
+  };
+  // A source value past the evaluation budget counts as blank.
+  const compute = (sheetId: string, row: number, column: number): Scalar => { const value = evaluator.value(sheetId, row, column); return value === EXPORT_UNKNOWN ? null : value as Scalar; };
+  for (let pass = 0; pass <= pivots.length && pivots.length; pass++) {
+    const rebuilt = new Map<string, ExportCells>();
+    for (const id of pivots) {
+      const sheet = workbook.sheets[id], pivot = sheet.pivot as PivotSettings;
+      const output = buildPivotOutput(pivot, workbook.sheets[pivot.sourceSheetId], compute);
+      workbook.sheets[id] = pivotSheetLayout(sheet, output);
+      const data = new ExportCells();
+      for (const [ref, cell] of Object.entries(output.cells)) {
+        const position = parseCsvCellRef(ref);
+        if (position) data.add(position.row, position.column, cell.value, fmtId(cell.fmt));
+      }
+      if (!sameExportCells(data, workbook.cells.get(id) as ExportCells)) { data.sort(); rebuilt.set(id, data); }
+    }
+    if (!rebuilt.size) break;
+    for (const [id, data] of rebuilt) workbook.cells.set(id, data);
+    evaluator = new ExportEvaluator(workbook);
+  }
+  return evaluator;
+}
+// Whether two sheets' cells are the same, in any order.
+function sameExportCells(a: ExportCells, b: ExportCells): boolean {
+  if (a.size !== b.size) return false;
+  const at = new Map<string, number>();
+  for (let i = 0; i < b.size; ++i) at.set(rcToRef(b.rows[i], b.cols[i]), i);
+  for (let i = 0; i < a.size; ++i) {
+    const j = at.get(rcToRef(a.rows[i], a.cols[i]));
+    if (j === undefined || a.values[i] !== b.values[j] || a.fmtIds[i] !== b.fmtIds[j]) return false;
+  }
+  return true;
 }
 // The grid's filter token for a computed value (client.js filterToken).
 export function computedFilterToken(value: Scalar): string {

@@ -57,7 +57,7 @@ Every write runs in the Durable Object's mutation queue, bumps versions only for
 | `addChart({ sheet?, range, type = "line", title?, xAxisTitle?, yAxisTitle?, legend?, firstRowHeaders?, firstColLabels?, x?, y?, width?, height? })` | Returns `{ chartId }`. `type` is `line`, `pie`, `area` or `stackedBar`. `legend`, `firstRowHeaders` and `firstColLabels` default to true. Size is clamped to 280–1200 × 200–900 px (default 520 × 320). Without `x`/`y` it's placed beside the data, past any filled columns next to it, or under it when there's no room. At most 50 charts per sheet. |
 | `setColumnWidths({ sheet?, widths: { A: 180, C: 120 } })` | In px, 24–2000; `null` resets a column to the default (92). |
 
-There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses). A pivot table's cells are recalculated by an open grid, so after a change to its source data, an export taken before anyone opens the workbook has the earlier totals.
+There is no agent API for filters, pivot tables, row heights or deleting charts; those are edited in the grid (or through the structure snapshot of the low-level `applyOperation`, which the client uses). A pivot table's cells are rebuilt from its source by an open grid, and by every export, so an export is never behind its source data.
 
 **Formats** (`fmt`):
 
@@ -69,7 +69,7 @@ There is no agent API for filters, pivot tables, row heights or deleting charts;
 
 ## Formulas
 
-The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic, text, lookup, date/time and information, and follows Excel's results, so an exported workbook almost always recalculates to the values the grid shows. What matters when writing formulas:
+The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic, text, lookup, date/time and information, and aims for Excel's results, so an exported workbook usually recalculates to the values the grid shows. Edge cases can still differ, notably approximate lookups over unsorted data, which Excel answers by binary search. What matters when writing formulas:
 
 - Cross-sheet references: `Sheet2!A1`, `'Sales Data'!B4`; a name with an apostrophe is `'Owner\'s Sheet'!A1` (or `'Owner''s Sheet'!A1`). `HYPERLINK(url, label)` and plain `http(s)` values are links.
 - Not supported (the formula is invalid): whole-column/row references (`A:A`, `1:1`), structured references (`[ ]`), `@`, and `;` outside an array constant.
@@ -82,16 +82,17 @@ The engine (`lib/formula.ts`) has 100+ functions across math, statistics, logic,
 
 - `meta`: revision, title, sheet order, and per-sheet metadata (`rows`, `cols`, `colWidths`, `rowHeights`, frozen panes, `filter`, `charts`, `pivot`). `title` isn't edited in the grid; the browser tab shows it when set, and otherwise the active sheet's name. Frozen panes exist in the model but have no UI.
 - Cells are `{ value, fmt, version }`, stored in blocks of 32 rows (`b:<sheetId>:<block>`), packed as parallel arrays.
-- Clients send per-cell edits with the version they rest on; conflicts are rebased and resent, so when two people commit the same cell, the later commit wins. Layout-changing edits (sort, row/column insert or delete) are sent as whole-sheet replacements guarded by `baseRevision`, refused if the document moved on.
+- Clients send per-cell edits with the version they rest on; conflicts are rebased and resent, so when two people commit the same cell, the later commit wins. Layout-changing edits (sort, row/column insert, delete or move) are sent as whole-sheet replacements guarded by `baseRevision`, refused if the document moved on.
+- A replacement says how it moved the sheet's cells (`moves`), and the server records the revision as the sheet's `layout`. Peers move their unsaved edits with the cells they were typed into (dropping one on a deleted line), and the server refuses an edit addressed before the sheet's last move (`misplaced`), so a position never stands in for a different record.
 - Presence events flow between clients, but no remote cursors are drawn.
 - Older storage layouts are converted to blocks the first time a workbook loads.
 
 ## Export formats
 
-Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million cell reads per export; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text). One export reads at most 400,000 cells (and 40 million characters of text) across the workbook (a CSV of one sheet reads every sheet too, since its formulas may read them); a larger workbook is refused with a message saying so.
+Excel and CSV are computed on the server with the grid's own formula engine, so they show what the grid shows (evaluation is capped at about 60 million steps per export, each cell read or array item one step; past it, Excel gets the remaining formulas without a cached result and recalculates them on open, and CSV gets their formula text, marked as text). One export reads at most 400,000 cells (and 40 million characters of text) across the workbook (a CSV of one sheet reads every sheet too, since its formulas may read them); a larger workbook is refused with a message saying so.
 
 - **Excel** (`.xlsx`): every sheet with values, formulas (rewritten for Excel) and cached results, number formats, fonts, colours, alignment, wrap, column widths, row heights, frozen panes, filters, hyperlinks and native Excel charts. Excel recalculates on open. Sheet names are made Excel-safe (31 characters, no `:\/?*[]`). Rows the grid grew to fit wrapped text are written at Excel's default height.
-- **CSV**: one format per sheet (up to 30): displayed values through the used range, UTF-8 with BOM, CRLF. Rows hidden by a filter are included. With several sheets each file is named after its sheet.
+- **CSV**: one format per sheet (up to 30): displayed values through the used range, UTF-8 with BOM, CRLF. Text that would start a formula in a spreadsheet (a leading `=`, `+`, `-`, `@`, tab or CR) is written with a leading `'`, as it is stored, so opening the file runs nothing; numbers such as `-5` are written as they show. Rows hidden by a filter are included. With several sheets each file is named after its sheet.
 - **PDF** (browser): the whole workbook in the print layout, light palette, wide sheets split into column groups, filtered rows left out, charts included. A sheet whose used range exceeds 100,000 cells gets a note instead of its table; use Excel or CSV for those.
 
 ## Limitations
@@ -106,6 +107,6 @@ Excel and CSV are computed on the server with the grid's own formula engine, so 
 
 The gadget is `client.js` (the grid) and `server.js` (the Durable Object and exports). Both are self-contained bundles: each inlined module starts with a `// lib/<name>.ts` comment.
 
-- `server.js` — the `Gadget` Durable Object: storage (`CellWriter`, 32-row blocks), the client RPC (`subscribe`, `openDocument`, `getCellsPage`, `getSheetSlices`, `applyOperation`, `stageCells`, presence), the cell API above, input sanitizers, and `ExportHandler`; inlined are `lib/formula.ts`, `lib/export-data.ts` (paged export reader, `ExportEvaluator`), `lib/xlsx.ts` (Excel writer), `lib/charts.ts` (chart placement, value axis) and a streaming ZIP writer.
-- `client.js` — the whole UI. Numbered sections indexed at the top of the file: helpers, styles, formula engine, model, chrome, menus, save queue and undo, rendering (pivots, charts, filters, the windowed grid, print), editing/keyboard/clipboard/find, live-edit animation, collaboration.
+- `server.js` — the `Gadget` Durable Object: storage (`CellWriter`, 32-row blocks), the client RPC (`subscribe`, `openDocument`, `getCellsPage`, `getSheetSlices`, `applyOperation`, `stageCells`, presence), the cell API above, input sanitizers, and `ExportHandler`; inlined are `lib/formula.ts`, `lib/export-data.ts` (paged export reader, `ExportEvaluator`, pivot rebuilds), `lib/pivot.ts` (pivot tables, as the grid builds them), `lib/xlsx.ts` (Excel writer), `lib/charts.ts` (chart placement, value axis), a streaming ZIP writer, and the `sync` library's mutation queue and subscriber registry.
+- `client.js` — the whole UI, with the element builder from the shared `ui` library and the save loop, presence reporter and subscriber from `sync` inlined. Numbered sections indexed at the top of the file: helpers, styles, formula engine, model, chrome, menus, save queue and undo, rendering (pivots, charts, filters, the windowed grid, print), editing/keyboard/clipboard/find, live-edit animation, collaboration.
 - The formula engine (`lib/formula.ts`: `makeEngine`, `FUNCTIONS`, `FUNCTION_HELP`, `displayValue`) is inlined into **both** files, so the grid and the exports compute alike; a change to it must be made in both.
