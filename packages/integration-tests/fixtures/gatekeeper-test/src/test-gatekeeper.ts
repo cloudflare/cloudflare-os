@@ -58,6 +58,8 @@ interface TestThing {
   readValue(): Promise<number>;
   writeValue(value: number): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /** Streams \`lines\` lines, "scan line 1" onwards; with \`failAtLine\`, errors on reaching it. */
+  readText(lines: number, failAtLine?: number): Promise<{ text: ReadableStream<Uint8Array> }>;
   /** Fetches a passed worktree's Git head, as a container's \`git clone\` would, and mounts it. */
   mountWorktree(worktree: unknown): Promise<string>;
   /** Runs a command in the kept worktree that leaves it holding just \`path\`, with \`text\`. */
@@ -760,6 +762,11 @@ export interface TestSession {
   /** `incomplete` omits the `descriptionIsComplete` claim, as a summary-only gatekeeper would. */
   writeValue(value: number, opts?: { autoApprovable?: boolean; incomplete?: boolean }): Promise<number>;
   writeValues(values: number[]): Promise<number[]>;
+  /**
+   * A text of `lines` lines, "scan line 1" onwards, as a stream that delivers 1000 lines at a
+   * time after a pause. With `failAtLine`, the stream errors on reaching that line.
+   */
+  readText(lines: number, failAtLine?: number): Promise<{ text: ReadableStream<Uint8Array> }>;
   /** Exercises worktree capability delegation through the real code-mode bridge. */
   mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string>;
   /** Runs a command in the worktree mountWorktree() kept, in a later execution. */
@@ -835,6 +842,23 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 
   async writeValues(values: number[]): Promise<number[]> {
     return Promise.all(values.map(value => this.writeValue(value)));
+  }
+
+  async readText(lines: number, failAtLine?: number): Promise<{ text: ReadableStream<Uint8Array> }> {
+    let line = 1;
+    return { text: new ReadableStream({
+      type: "bytes",
+      async pull(controller) {
+        await scheduler.wait(10);
+        if (line === failAtLine) return controller.error(new Error("The test text failed partway."));
+        if (line > lines) return controller.close();
+        let chunk = "";
+        for (const end = Math.min(line + 1000, lines + 1, failAtLine ?? Infinity); line < end; ++line) {
+          chunk += `scan line ${line}\n`;
+        }
+        controller.enqueue(new TextEncoder().encode(chunk));
+      },
+    }) };
   }
 
   async mountWorktree(worktree: RpcStub<ReplicableWorktree>): Promise<string> {
