@@ -192,8 +192,9 @@ export type GadgetRecord = {
    * The gadget's head commit (40-hex oid) in the workspace's git object store -- its committed
    * mainline code (see git-cache.ts and the `gitObjects` collection). This field is the gadget's
    * "ref": the store itself has no ref layer. It advances only in mergeChanges(), which requires
-   * the accepting chat to have already merged this commit (accepts are fast-forward only), and is
-   * surfaced to clients as WorkpieceSummary.commitId.
+   * the accepting chat to have already merged this commit (accepts are fast-forward only), and in
+   * restoreGadgetVersion(), which commits an earlier version on top of it. It is surfaced to
+   * clients as WorkpieceSummary.commitId.
    *
    * Invariant: **every permanent gadget has a head**; `commitId` is absent only while the gadget
    * is `pending` (its files exist only in the creating chat's proposed changes, and only that

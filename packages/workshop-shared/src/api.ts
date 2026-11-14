@@ -3428,7 +3428,8 @@ export interface Overseer extends RpcTarget {
   /**
    * Submit one code change on a chat's branch: how a client edits files.
    * This is the only way to edit code: committed code cannot be written directly -- gadget heads
-   * only advance when a chat's changes are accepted (see mergeChanges()).
+   * only advance when a chat's changes are accepted (see mergeChanges()), or when an earlier
+   * version is restored (see GadgetClient.restoreVersion()).
    *
    * `submission.change` is expressed against the chat's content as of
    * `(submission.generation, submission.revision)` -- that is, the submitter has applied every
@@ -6513,6 +6514,18 @@ export interface GadgetClient extends WorkpieceClient {
    */
   applyBlueprint(blueprintId: string, options: {modelId: string | null, allowUnrelated?: boolean})
       : Promise<ApplyBlueprintResult>;
+
+  /**
+   * Restore an earlier version of this gadget's code: commit `commitId`'s files on top of the
+   * current head, so the head moves forward and history keeps every version. A gadget whose head
+   * can't be read is recovered this way. Only code is restored: the gadget's stored data stays as
+   * later versions left it, and the restored code must be able to read it.
+   *
+   * Throws if `commitId` is not on the head's first-parent history, if a blueprint update was
+   * merged since it (restoring it would drop the update the gadget still records taking), or if
+   * its files can't be read. Restoring a version whose files the head already has does nothing.
+   */
+  restoreVersion(commitId: string): Promise<void>;
 }
 
 /**

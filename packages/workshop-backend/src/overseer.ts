@@ -4772,6 +4772,54 @@ class OverseerImpl implements AgentHooks {
     return touched;
   }
 
+  // The body of GadgetClient.restoreVersion(); `author` is the user restoring. Until the target's
+  // files, only commit objects are read, so this works on a head whose files can't be read,
+  // which is the head it exists to recover.
+  async restoreGadgetVersion(gadgetId: WorkpieceId, commitId: string, author: AiChatAuthorInfo)
+      : Promise<void> {
+    let head = this.getGadgetRecord(gadgetId).commitId;
+    if (head === undefined) {
+      throw new Error("This gadget is a provisional creation in a chat, so it has no " +
+          "versions to restore.");
+    }
+    let found = false;
+    for await (let {oid} of this.gitStore.firstParentChain(head)) {
+      if (oid === commitId) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) throw new Error("That commit is not an earlier version of this gadget.");
+    // The restored head's history still holds such a release, so the gadget would go on
+    // following it (see GadgetRecord.upstream) without its changes, and the next update would
+    // be merged as though they were kept.
+    if ((await this.releasesMergedSince(head, commitId, undefined)).length > 0) {
+      throw new Error("A blueprint update was merged into this gadget since that version, so " +
+          "restoring it would drop the update. Restore a version from after the update.");
+    }
+    // Never trade one head that can't be read for another.
+    await this.gitStore.readCommitFiles(commitId);
+    // A retried restore finds the head already holding these files: nothing to commit.
+    let tree = await this.gitStore.commitTree(commitId);
+    if (tree === await this.gitStore.commitTree(head)) return;
+    let restored = await this.gitStore.writeCommitForTree(tree, {
+      parents: [head],
+      author: commitIdentityForAuthor(author),
+      message: `Restore version ${commitId.slice(0, 7)}`,
+      timestamp: new Date(),
+    });
+
+    // The awaits above are interleaving points, and an accept in some chat may have moved the
+    // head since it was read. Refuse rather than drop that accept.
+    let record = this.storage.gadgets.get(gadgetId);
+    if (record?.type !== "gadget" || record.commitId !== head) {
+      throw new Error("The gadget changed while the version was being restored; please retry.");
+    }
+    record.commitId = restored;
+    this.storage.gadgets.put(record);
+    this.bumpVersion([gadgetId]);
+  }
+
   // The body of Overseer.revertChanges(), running under the chat's operation lock (callers
   // hold withChatLock).
   async revertChanges(chatId: number, revertFrom: number, author: AiChatAuthorInfo)
@@ -14314,6 +14362,11 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     return await this.impl.applyBlueprint(
         this.id, blueprintId, options, userMeta, this.clientUserId);
   }
+
+  async restoreVersion(commitId: string): Promise<void> {
+    let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
+    await this.impl.restoreGadgetVersion(this.id, validateOid(commitId), author);
+  }
 }
 
 // Restricted GadgetClient handed to "use"-role collaborators: it permits only what is needed to
@@ -14414,6 +14467,7 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
       : Promise<ApplyBlueprintResult> {
     this.#deny();
   }
+  async restoreVersion(_commitId: string): Promise<void> { this.#deny(); }
 }
 
 @validateRpc()
