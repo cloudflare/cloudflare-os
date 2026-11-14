@@ -1,5 +1,6 @@
 import { useEffect, useRef, type RefObject } from 'react'
 import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { ConnectedFileView } from '@/blocks/ConnectedFileView'
 import { FileView } from '@/blocks/FileView'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
 import { PaneNotice } from '@/blocks/PaneNotice'
@@ -8,6 +9,8 @@ import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { asideItemIcon } from './asideItemIcon'
 import type { AsideFile, AsideItem } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
+import { OPEN_IN, type ConnectedFileKind } from '@/files/connectedFile'
+import { useConnectedFilePreview, type ConnectedFileState } from './useConnectedFilePreview'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useGadgetConnection } from './useGadgetConnection'
 
@@ -57,7 +60,12 @@ export const AsidePane = (props: AsidePaneProps) => {
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
   const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
-  const title = snapshot.title ?? item.title
+  const connectedState = useConnectedFilePreview(item.kind === 'connected' ? item.connected : undefined)
+  // A connected file says what it is, and where it opens, once drawn if not before.
+  const drawn = connectedState.status === 'ready' ? connectedState.preview : undefined
+  const connectedKind = item.kind === 'connected' ? (item.connected.fileKind ?? (drawn && drawn.content.type)) : undefined
+  const editorUrl = item.kind === 'connected' ? (drawn?.url ?? item.connected.url) : undefined
+  const title = snapshot.title ?? (item.kind === 'connected' && drawn?.title ? drawn.title : item.title)
   // As the page, it names the tab; beside one, the page does.
   useDocumentTitle(props.placement === 'page' ? title : undefined)
 
@@ -73,6 +81,8 @@ export const AsidePane = (props: AsidePaneProps) => {
 
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
+  ) : item.kind === 'connected' ? (
+    <ConnectedContent key={item.key} title={title} kind={connectedKind} state={connectedState} />
   ) : item.output.type === 'worktree' ? (
     <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
   ) : (
@@ -84,6 +94,7 @@ export const AsidePane = (props: AsidePaneProps) => {
     link,
     onReload: connection?.reload,
     onDownload: fileState.status === 'ready' ? fileState.download : undefined,
+    openIn: connectedKind && editorUrl ? { label: OPEN_IN[connectedKind], href: editorUrl } : undefined,
     narrow,
   }
 
@@ -180,5 +191,19 @@ const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => 
       const shared = { name: file.name, details, onDownload: state.download }
       return <FileView {...shared} {...preview} />
     }
+  }
+}
+
+const ConnectedContent = ({ title, kind, state }: { title: string; kind?: ConnectedFileKind; state: ConnectedFileState }) => {
+  switch (state.status) {
+    case 'loading':
+      // A blank one of its kind stands in, where one is known, so nothing moves when it arrives.
+      return kind ? <ConnectedFileView kind={kind} /> : <PaneNotice title="Loading…" />
+    case 'none':
+      return <PaneNotice icon={FileDashedIcon} title={title} description="It can’t be shown here. Open it in its own editor to see it." />
+    case 'failed':
+      return <PaneNotice icon={WarningCircleIcon} title={`Couldn’t show ${title}`} description={state.message} action={{ label: 'Try again', onClick: state.retry }} />
+    case 'ready':
+      return <ConnectedFileView preview={state.preview} kind={state.preview.content.type} />
   }
 }

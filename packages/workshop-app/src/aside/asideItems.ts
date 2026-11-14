@@ -1,6 +1,7 @@
 import type { OutputSummary } from '@gadgets/workshop-shared/api'
 import type { ChatSnapshot } from '@/chat/ChatSession'
 import type { ChatAttachment, OutputFormat } from '@/chat/chatItems'
+import type { ConnectedFileKind } from '@/files/connectedFile'
 
 /** An output, as what is needed to show it: where it is, and what it is. */
 export type AsideOutput = {
@@ -22,7 +23,23 @@ export type AsideItem = {
    * output, when the last message before its latest card was. Unknown for one named by a link alone.
    */
   at?: Date
-} & ({ kind: 'file'; file: AsideFile } | { kind: 'output'; output: AsideOutput })
+} & ({ kind: 'file'; file: AsideFile } | { kind: 'output'; output: AsideOutput } | { kind: 'connected'; connected: AsideConnectedFile })
+
+/**
+ * A file that lives with a connected service, such as a Google Doc the agent wrote: drawn as it is
+ * through the connection the workspace reaches it by, never with a copy of its own.
+ */
+export type AsideConnectedFile = {
+  workspaceId: string
+  /** The connection it is reached through, which draws it. */
+  gatekeeperId: number
+  /** The service's id for it (`ResourceSubject.id`). */
+  subjectId: string
+  /** What it is, when that is known before it is drawn. */
+  fileKind?: ConnectedFileKind
+  /** Where it opens in its own editor, once known. */
+  url?: string
+}
 
 /** A file, as what is needed to show it: what it is, and where its bytes are. */
 export type AsideFile = ChatAttachment & {
@@ -33,20 +50,33 @@ export type AsideFile = ChatAttachment & {
 
 /**
  * Something within a workspace that can be shown, as the URL names it: `12` for what was made
- * there (an app, a document), `file-<id>` for a file sent there. Beside a chat that is all of it
- * (`?open=`); on its own page the workspace goes in front (see `itemPageId`).
+ * there (an app, a document), `file-<id>` for a file sent there, and `connected-<connection>-<id>`
+ * for a file of a connected service that it worked on. Beside a chat that is all of it (`?open=`);
+ * on its own page the workspace goes in front (see `itemPageId`).
  */
-export type AsideRef = { kind: 'output'; workpieceId: number } | { kind: 'file'; fileId: string }
+export type AsideRef =
+  | { kind: 'output'; workpieceId: number }
+  | { kind: 'file'; fileId: string }
+  | { kind: 'connected'; gatekeeperId: number; subjectId: string }
 
 const FILE = 'file-'
+const CONNECTED = /^connected-(\d+)-(.+)$/
 
-export const formatAsideRef = (ref: AsideRef): string => (ref.kind === 'output' ? String(ref.workpieceId) : `${FILE}${ref.fileId}`)
+export const formatAsideRef = (ref: AsideRef): string =>
+  ref.kind === 'output' ? String(ref.workpieceId)
+    : ref.kind === 'file' ? `${FILE}${ref.fileId}`
+      : `connected-${ref.gatekeeperId}-${ref.subjectId}`
 
 /** The ref `value` writes out, or nothing when it is not one. A number is one read from the URL. */
 export const parseAsideRef = (value: unknown): AsideRef | undefined => {
   const written = typeof value === 'number' ? String(value) : value
   if (typeof written !== 'string') return undefined
   if (written.startsWith(FILE) && written.length > FILE.length) return { kind: 'file', fileId: written.slice(FILE.length) }
+  const connected = CONNECTED.exec(written)
+  if (connected) {
+    const gatekeeperId = Number(connected[1])
+    return Number.isSafeInteger(gatekeeperId) ? { kind: 'connected', gatekeeperId, subjectId: connected[2] } : undefined
+  }
   if (!/^\d+$/.test(written)) return undefined
   const workpieceId = Number(written)
   return Number.isSafeInteger(workpieceId) ? { kind: 'output', workpieceId } : undefined
@@ -68,7 +98,7 @@ export const itemPageId = (workspaceId: string, ref: AsideRef) => `${workspaceId
 /** The item a page's id names, or nothing when it names none. */
 export const parseItemPageId = (id: string): { workspaceId: string; ref: AsideRef } | undefined => {
   // A workspace's id has no dash in it, but the ref after it can.
-  const found = /^(.+?)-(\d+|file-.+)$/.exec(id)
+  const found = /^(.+?)-(\d+|file-.+|connected-\d+-.+)$/.exec(id)
   const ref = found && parseAsideRef(found[2])
   return found && ref ? { workspaceId: found[1], ref } : undefined
 }
@@ -98,9 +128,9 @@ export const asideItemFor = (workspaceId: string, ref: AsideRef, chatId: number 
   const key = formatAsideRef(ref)
   const found = known.find((item) => item.key === key)
   if (found) return found
-  return ref.kind === 'output'
-    ? { key, title: 'Untitled', kind: 'output', output: { workspaceId, workpieceId: ref.workpieceId, type: 'gadget', chatId } }
-    : { key, title: 'File', kind: 'file', file: { id: ref.fileId, name: 'File', mimeType: '', size: 0, workspaceId, chatId } }
+  if (ref.kind === 'output') return { key, title: 'Untitled', kind: 'output', output: { workspaceId, workpieceId: ref.workpieceId, type: 'gadget', chatId } }
+  if (ref.kind === 'file') return { key, title: 'File', kind: 'file', file: { id: ref.fileId, name: 'File', mimeType: '', size: 0, workspaceId, chatId } }
+  return { key, title: 'File', kind: 'connected', connected: { workspaceId, gatekeeperId: ref.gatekeeperId, subjectId: ref.subjectId } }
 }
 
 /**

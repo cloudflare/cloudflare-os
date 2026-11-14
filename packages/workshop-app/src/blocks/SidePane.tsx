@@ -1,7 +1,7 @@
 import { useEffectEvent, useLayoutEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion, useTransform } from 'motion/react'
 import {
-  ArrowClockwiseIcon, ArrowLeftIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
+  ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, ArrowLineRightIcon, ArrowsInSimpleIcon, ArrowsOutSimpleIcon, CaretDownIcon, CheckIcon,
   CornersInIcon, CornersOutIcon, DotsThreeIcon, DownloadSimpleIcon,
 } from '@phosphor-icons/react'
 import { AvatarStack, type AvatarStackProps } from '@/components/AvatarStack'
@@ -54,6 +54,8 @@ export type SidePaneProps = Placement & {
   onReload?: () => void
   /** Saves the one shown to this device. */
   onDownload?: () => void
+  /** Where the one shown opens in its own editor, such as a Google Doc's: "Open in Docs". */
+  openIn?: { label: string; href: string }
   /**
    * Filling a narrow screen, such as a phone's, where it is as big as it gets already: there is no
    * step up, and the step down is a back button at the start of the header.
@@ -86,7 +88,7 @@ const COMMITS_AT = 0.2
  * pulls it back down. Filling the window, the corners square off as the header goes.
  */
 export const SidePane = (props: SidePaneProps) => {
-  const { active, people = [], link, onReload, onDownload, narrow = false, children } = props
+  const { active, people = [], link, onReload, onDownload, openIn, narrow = false, children } = props
   const fullScreen = props.placement === 'page' && props.fullScreen
   const reduceMotion = useReducedMotion() ?? false
 
@@ -167,10 +169,11 @@ export const SidePane = (props: SidePaneProps) => {
                 <AvatarStack people={people} aria-label="Also here" />
               </HeaderBubble>
             )}
-            {(beside || (active && (onReload || onDownload))) && (
+            {(beside || (active && (onReload || onDownload || openIn))) && (
               <HeaderBubble>
                 <DropdownMenu icon={DotsThreeIcon} aria-label={active ? `More for ${active.title}` : 'More'} align="end">
                   {onReload && <DropdownMenu.Item icon={ArrowClockwiseIcon} onSelect={onReload}>Reload</DropdownMenu.Item>}
+                  {openIn && <DropdownMenu.Item icon={ArrowSquareOutIcon} onSelect={() => window.open(openIn.href, '_blank', 'noopener')}>{openIn.label}</DropdownMenu.Item>}
                   {onDownload && <DropdownMenu.Item icon={DownloadSimpleIcon} onSelect={onDownload}>Download</DropdownMenu.Item>}
                   {beside && <DropdownMenu.Item icon={ArrowLineRightIcon} onSelect={beside.onHide}>Hide pane</DropdownMenu.Item>}
                 </DropdownMenu>

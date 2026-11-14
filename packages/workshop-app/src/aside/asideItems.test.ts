@@ -19,6 +19,10 @@ describe('aside refs', () => {
   it('reads back what it writes', () => {
     expect(parseAsideRef(formatAsideRef({ kind: 'output', workpieceId: 0 }))).toEqual({ kind: 'output', workpieceId: 0 })
     expect(parseAsideRef(formatAsideRef({ kind: 'file', fileId: 'a-b:c' }))).toEqual({ kind: 'file', fileId: 'a-b:c' })
+    // A Google file's id can have dashes in it.
+    const connected = { kind: 'connected', gatekeeperId: 7, subjectId: '1AbC-d_9' } as const
+    expect(formatAsideRef(connected)).toBe('connected-7-1AbC-d_9')
+    expect(parseAsideRef(formatAsideRef(connected))).toEqual(connected)
   })
 
   it('takes what made it into the URL as a number', () => {
@@ -26,14 +30,14 @@ describe('aside refs', () => {
   })
 
   it('names nothing for what is not a ref', () => {
-    for (const value of [undefined, 1.5, -1, '', 'output', 'output:12', '-1', '1.5', 'abc', 'file-', 'chat-1']) {
+    for (const value of [undefined, 1.5, -1, '', 'output', 'output:12', '-1', '1.5', 'abc', 'file-', 'chat-1', 'connected-', 'connected-7', 'connected-7-', 'connected-x-1']) {
       expect(validateAsideParam(value)).toBeUndefined()
     }
   })
 
   it('puts the workspace in front on an item’s own page, and reads it back', () => {
     const workspaceId = '3f9a0c2e'
-    for (const ref of [{ kind: 'output', workpieceId: 12 }, { kind: 'file', fileId: 'a-b-1' }] as const) {
+    for (const ref of [{ kind: 'output', workpieceId: 12 }, { kind: 'file', fileId: 'a-b-1' }, { kind: 'connected', gatekeeperId: 4, subjectId: 'x-y' }] as const) {
       expect(itemPageId(workspaceId, ref)).toBe(`${workspaceId}-${formatAsideRef(ref)}`)
       expect(parseItemPageId(itemPageId(workspaceId, ref))).toEqual({ workspaceId, ref })
     }
