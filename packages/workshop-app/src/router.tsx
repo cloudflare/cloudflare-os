@@ -35,5 +35,10 @@ declare module '@tanstack/react-router' {
     fromItem?: boolean
     /** The title of the gadget whose settings are being opened, when the page that opened them knew it. */
     gadgetTitle?: string
+    /**
+     * The skill to start a new chat with, chosen on its page or in the Library: its draft starts
+     * with the skill, and what is typed is what it is given.
+     */
+    useSkill?: { id: string; name: string; description: string; source?: string }
   }
 }

@@ -151,7 +151,7 @@ describe('toChatFeed', () => {
     })
 
     it('shows the built-in /compact, which has no skill name', () => {
-      expect(only(feed(compactCommand()), 'user')).toMatchObject([{ parts: [{ type: 'command', name: 'compact' }] }])
+      expect(only(feed(compactCommand()), 'user')).toMatchObject([{ parts: [{ type: 'command', name: 'compact', builtin: true }] }])
     })
 
     it('says who wrote a reply and when, and keeps what it thought first behind it rather than in the conversation', () => {
@@ -165,6 +165,7 @@ describe('toChatFeed', () => {
         sender: 'Mock Model',
         sentAt: messages[0].timestamp,
         trace: [{ type: 'thinking', key: 'thinking:0', text: 'Thinking it through' }],
+        skills: [],
       }])
       expect(result.work).toEqual([])
     })
@@ -253,6 +254,17 @@ describe('toChatFeed', () => {
       expect(result.work.map(({ type, label }) => [type, label])).toEqual([
         ['call', 'Ran code'], ['observation', 'Read PLAT-1'], ['observation', 'Read PLAT-2'], ['call', 'Ran code'],
       ])
+    })
+
+    it('names a skill the agent read as one it used, and the reply as having used it, once', () => {
+      const brief = observation({ title: 'Context read: meeting-brief', skill: 'meeting-brief' })
+      const result = feed(user('prep me'), brief, observation({ title: 'PLAT-1' }), { ...brief }, agent({ text: 'Here it is' }))
+      const [reply] = only(result, 'assistant')
+      expect(reply.trace.map((step) => step.type === 'observation' && [step.label, step.skill])).toEqual([
+        ['Used Meeting brief', 'Meeting brief'], ['Read PLAT-1', undefined], ['Used Meeting brief', 'Meeting brief'],
+      ])
+      expect(reply.skills).toEqual(['Meeting brief'])
+      expect(only(feed(user('go'), agent({ text: 'Done' })), 'assistant')[0].skills).toEqual([])
     })
 
     it('keeps the thinking behind a silent step with the first thing it did', () => {

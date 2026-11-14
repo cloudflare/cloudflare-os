@@ -20,6 +20,7 @@ import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
 import { Route as AppLibraryIndexRouteImport } from './routes/_app/library.index'
 import { Route as AppLibraryItemIdRouteImport } from './routes/_app/library.$itemId'
+import { Route as AppSkillsSkillIdRouteImport } from './routes/_app/skills.$skillId'
 import { Route as AppWorkspacesNewRouteImport } from './routes/_app/workspaces_.new'
 import { Route as AppAppItemIdSettingsRouteImport } from './routes/_app/app.$itemId_.settings'
 import { Route as AppWorkspaceWorkspaceIdIndexRouteImport } from './routes/_app/workspace.$workspaceId.index'
@@ -81,6 +82,11 @@ const AppLibraryItemIdRoute = AppLibraryItemIdRouteImport.update({
   path: '/library/$itemId',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSkillsSkillIdRoute = AppSkillsSkillIdRouteImport.update({
+  id: '/skills/$skillId',
+  path: '/skills/$skillId',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppWorkspacesNewRoute = AppWorkspacesNewRouteImport.update({
   id: '/workspaces_/new',
   path: '/workspaces/new',
@@ -126,6 +132,7 @@ export interface FileRoutesByFullPath {
   '/mock/': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
+  '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/workspaces/new': typeof AppWorkspacesNewRoute
   '/library/': typeof AppLibraryIndexRoute
   '/app/$itemId/settings': typeof AppAppItemIdSettingsRoute
@@ -144,6 +151,7 @@ export interface FileRoutesByTo {
   '/mock': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
+  '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/workspaces/new': typeof AppWorkspacesNewRoute
   '/library': typeof AppLibraryIndexRoute
   '/app/$itemId/settings': typeof AppAppItemIdSettingsRoute
@@ -164,6 +172,7 @@ export interface FileRoutesById {
   '/mock/': typeof MockIndexRoute
   '/_app/app/$itemId': typeof AppAppItemIdRoute
   '/_app/library/$itemId': typeof AppLibraryItemIdRoute
+  '/_app/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/_app/workspaces_/new': typeof AppWorkspacesNewRoute
   '/_app/library/': typeof AppLibraryIndexRoute
   '/_app/app/$itemId_/settings': typeof AppAppItemIdSettingsRoute
@@ -184,6 +193,7 @@ export interface FileRouteTypes {
     | '/mock/'
     | '/app/$itemId'
     | '/library/$itemId'
+    | '/skills/$skillId'
     | '/workspaces/new'
     | '/library/'
     | '/app/$itemId/settings'
@@ -202,6 +212,7 @@ export interface FileRouteTypes {
     | '/mock'
     | '/app/$itemId'
     | '/library/$itemId'
+    | '/skills/$skillId'
     | '/workspaces/new'
     | '/library'
     | '/app/$itemId/settings'
@@ -221,6 +232,7 @@ export interface FileRouteTypes {
     | '/mock/'
     | '/_app/app/$itemId'
     | '/_app/library/$itemId'
+    | '/_app/skills/$skillId'
     | '/_app/workspaces_/new'
     | '/_app/library/'
     | '/_app/app/$itemId_/settings'
@@ -317,6 +329,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppLibraryItemIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/skills/$skillId': {
+      id: '/_app/skills/$skillId'
+      path: '/skills/$skillId'
+      fullPath: '/skills/$skillId'
+      preLoaderRoute: typeof AppSkillsSkillIdRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/workspaces_/new': {
       id: '/_app/workspaces_/new'
       path: '/workspaces/new'
@@ -368,6 +387,7 @@ interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppAppItemIdRoute: typeof AppAppItemIdRoute
   AppLibraryItemIdRoute: typeof AppLibraryItemIdRoute
+  AppSkillsSkillIdRoute: typeof AppSkillsSkillIdRoute
   AppWorkspacesNewRoute: typeof AppWorkspacesNewRoute
   AppLibraryIndexRoute: typeof AppLibraryIndexRoute
   AppAppItemIdSettingsRoute: typeof AppAppItemIdSettingsRoute
@@ -383,6 +403,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppAppItemIdRoute: AppAppItemIdRoute,
   AppLibraryItemIdRoute: AppLibraryItemIdRoute,
+  AppSkillsSkillIdRoute: AppSkillsSkillIdRoute,
   AppWorkspacesNewRoute: AppWorkspacesNewRoute,
   AppLibraryIndexRoute: AppLibraryIndexRoute,
   AppAppItemIdSettingsRoute: AppAppItemIdSettingsRoute,

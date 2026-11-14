@@ -26,9 +26,11 @@
     "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.3.3",
     "use-stick-to-bottom": "^1.1.6",
-    "vite-tsconfig-paths": "^6.1.1"
+    "vite-tsconfig-paths": "^6.1.1",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@gadgets/gatekeeper-context": "workspace:*",
     "@gadgets/scripts": "workspace:*",
     "@tanstack/router-plugin": "^1.168.40",
     "@types/react": "^19.2.18",

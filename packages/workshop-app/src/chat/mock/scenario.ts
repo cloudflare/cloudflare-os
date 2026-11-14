@@ -117,9 +117,9 @@ export const action = ({
 }
 
 export const observation = (
-  { title, description = '', fields, resource = {} }: { title: string; description?: string; fields?: ActionField[]; resource?: { title?: string; url?: string } },
+  { title, description = '', fields, resource = {}, skill }: { title: string; description?: string; fields?: ActionField[]; resource?: { title?: string; url?: string }; skill?: string },
 ): Authored<'action'> =>
-  actionMessage({ ...logBase(resource, 'approved'), type: 'observation', description: { title, description, fields } })
+  actionMessage({ ...logBase(resource, 'approved'), type: 'observation', description: { title, description, fields, ...(skill ? { skill } : {}) } })
 
 let hookCount = 0
 

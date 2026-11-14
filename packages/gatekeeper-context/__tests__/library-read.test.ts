@@ -39,8 +39,9 @@ const DOCUMENT = {
 };
 
 // The owner's library: one public collection and one private collection.
-function makeSession({ publicDiscoveryFails = false, publicAccessFails = false, refusal }: {
+function makeSession({ publicDiscoveryFails = false, publicAccessFails = false, refusal, document = DOCUMENT }: {
   publicDiscoveryFails?: boolean; publicAccessFails?: boolean; refusal?: Error;
+  document?: typeof DOCUMENT & { skillName?: string };
 } = {}) {
   let kv = makeKv();
   let strategy = contextObserverStrategy(kv, DOMAIN);
@@ -66,7 +67,7 @@ function makeSession({ publicDiscoveryFails = false, publicAccessFails = false, 
         return { title: `${id} title`, description: `${id} description`, documentCount: 1 };
       },
       async listContextDocuments() { return [DOCUMENT]; },
-      async getContextDocument() { return DOCUMENT; },
+      async getContextDocument() { return document; },
       async search() {
         return [{ path: DOCUMENT.path, name: DOCUMENT.name, description: DOCUMENT.description, score: 1 }];
       },
@@ -125,6 +126,17 @@ describe("LibraryReadSession observations", () => {
       // The binding refuses nobody for it: the Workshop checks the collection where it was read.
       await strategy.addObserver("later", verifier(["public"]));
     }
+  });
+
+  it("names the skill it read, and nothing for a document that is not one", async () => {
+    let skill = { ...DOCUMENT, path: "meeting-brief/SKILL.md", name: "SKILL.md", skillName: "meeting-brief" };
+    let skillRead = makeSession({ document: skill });
+    await skillRead.session.read("private/meeting-brief/SKILL.md");
+    expect(skillRead.authorized).toEqual([expect.objectContaining({ skill: "meeting-brief" })]);
+
+    let plainRead = makeSession();
+    await plainRead.session.read("private/plan.md");
+    expect(plainRead.authorized[0]).not.toHaveProperty("skill");
   });
 
   it("reports only the collections a search returned results from", async () => {

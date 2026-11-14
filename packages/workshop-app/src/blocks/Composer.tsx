@@ -1,11 +1,14 @@
-import { useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react'
+import { useId, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from 'react'
 import { InputArea } from '@cloudflare/kumo'
 import { ArrowUpIcon, StopIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { ComposerAddMenu, type ComposerAddActions } from './ComposerAddMenu'
 import { ComposerAttachmentTray } from './ComposerAttachmentTray'
+import { ComposerCommandLine } from './ComposerCommandLine'
+import { ComposerCommandPicker, type ComposerCommand } from './ComposerCommandPicker'
 import { ComposerProblem } from './ComposerProblem'
 import { ComposerReply } from './ComposerReply'
+import { leadingCommand, matchCommands, slashTokenAt, type SlashToken } from './slashCommands'
 import { useComposerAttachments } from './useComposerAttachments'
 import { useComposerAttachmentDrop } from './useComposerAttachmentDrop'
 import './Composer.css'
@@ -21,9 +24,18 @@ export type ComposerProps = {
    * whether the message went: the draft is cleared only once it has, and is kept, unsendable,
    * while it is going.
    */
-  onSend: (text: string, files: File[]) => boolean | Promise<boolean>
-  /** What the draft starts with, such as a message that did not go from a composer that has since gone. */
-  initialDraft?: { text: string; files: readonly File[] }
+  onSend: (text: string, files: File[], command?: ComposerCommand) => boolean | Promise<boolean>
+  /**
+   * What the draft starts with, such as a message that did not go from a composer that has since
+   * gone, or a skill chosen elsewhere to use.
+   */
+  initialDraft?: { text: string; files: readonly File[]; command?: ComposerCommand }
+  /**
+   * The skills and commands the draft can be sent with: offered when a slash starts a word, and in
+   * the add menu. Whatever the draft says then is what the command is given; files cannot go with
+   * it.
+   */
+  commands?: readonly ComposerCommand[]
   /**
    * The draft is a reply: a line of the message it answers, shown above the draft, the way to
    * that message, and the way to make the draft an ordinary message again. Whoever sends the
@@ -51,8 +63,18 @@ export type ComposerProps = {
 const MAX_ROWS = 6
 
 /** Starts inline, then lifts the growing message above the actions when it wraps. */
-export const Composer = ({ onSend, initialDraft, reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
+export const Composer = ({ onSend, initialDraft, commands = [], reply, problem, stop, addActions, addMenuInPlace, autoFocus, ref }: ComposerProps) => {
   const [text, setText] = useState(initialDraft?.text ?? '')
+  // The skill or command the draft goes with, once chosen.
+  const [command, setCommand] = useState(initialDraft?.command)
+  // The slash being typed, where the cursor is, and which of what fits it Enter would choose.
+  const [slash, setSlash] = useState<SlashToken>()
+  const [highlighted, setHighlighted] = useState(0)
+  // Escape put the picker away for the slash where it was.
+  const [dismissedAt, setDismissedAt] = useState<number>()
+  const pickerId = useId()
+  // Where the cursor goes once the draft a command was chosen from has been written.
+  const caretRef = useRef<number>(undefined)
   // The draft has been sent and it is not known yet whether it went: it stays as it is meanwhile.
   const [sending, setSending] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -71,17 +93,67 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
   const measureRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const trimmed = text.trim()
-  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0
-  const canSend = !sending && (stop ? canSteer : !!trimmed || attachments.length > 0)
+  // A command goes on its own, with words alone, once the agent has finished.
+  const filesRefused = !!command && attachments.length > 0
+  const canSteer = !!stop && !stopping && !!trimmed && attachments.length === 0 && !command
+  const canSend = !sending && !filesRefused && (stop ? canSteer : !!command || !!trimmed || attachments.length > 0)
   const showSend = !stop || canSteer
+  const matches = slash && !command && !sending && dismissedAt !== slash.start ? matchCommands(commands, slash.query) : []
+  const picking = matches.length > 0
+  const active = Math.min(highlighted, matches.length - 1)
+
+  // Reads the slash at the cursor again, as the draft or the cursor moves.
+  const readSlash = (field: HTMLTextAreaElement) => {
+    const next = field.selectionStart === field.selectionEnd ? slashTokenAt(field.value, field.selectionStart) : undefined
+    setSlash((was) => (was?.start === next?.start && was?.query === next?.query ? was : next))
+    if (next?.query !== slash?.query) setHighlighted(0)
+    if (next?.start !== dismissedAt) setDismissedAt(undefined)
+  }
+
+  // Everything there is to choose from, as a slash at the start of the draft would offer it.
+  const browseCommands = () => {
+    const field = inputRef.current
+    if (!field) return
+    setCommand(undefined)
+    const at = text && !/\s$/.test(text) ? `${text} /` : `${text}/`
+    setText(at)
+    setSlash({ start: at.length - 1, query: '' })
+    setHighlighted(0)
+    setDismissedAt(undefined)
+    caretRef.current = at.length
+    field.focus()
+  }
+
+  // The command takes the place of the slash typed for it, and the draft goes on around it.
+  const choose = (chosen: ComposerCommand) => {
+    const field = inputRef.current
+    if (slash && field) {
+      const end = field.selectionStart
+      const rest = text.slice(0, slash.start) + text.slice(end).replace(/^ /, '')
+      setText(rest.trim() ? rest : '')
+      // Put back where the slash was once the draft is, before anything else is typed.
+      caretRef.current = rest.trim() ? slash.start : 0
+    }
+    setSlash(undefined)
+    setCommand(chosen)
+    field?.focus()
+  }
   useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }), [])
 
   // The message went, so its draft is done with: unless stopping the agent has put what was
   // waiting for it in the draft meanwhile.
-  const clearSent = (sentText: string) => {
+  const clearSent = (sentText: string, sentCommand: ComposerCommand | undefined) => {
     setText((current) => (current === sentText ? '' : current))
+    setCommand((current) => (current === sentCommand ? undefined : current))
     clearAttachments()
   }
+
+  useLayoutEffect(() => {
+    const at = caretRef.current
+    if (at === undefined) return
+    caretRef.current = undefined
+    inputRef.current?.setSelectionRange(at, at)
+  }, [text, command])
 
   useLayoutEffect(() => {
     const editor = editorRef.current!
@@ -115,6 +187,10 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
           inputRef.current?.focus()
         }}
       />
+      <div className="relative">
+      {picking && (
+        <ComposerCommandPicker id={pickerId} commands={matches} highlighted={active} onHighlight={setHighlighted} onChoose={choose} />
+      )}
       <form
         ref={formRef}
         data-file-drag={isFileDragActive || undefined}
@@ -125,16 +201,19 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
           event.preventDefault()
           if (!canSend) return
           inputRef.current?.focus()
-          const sent = onSend(trimmed, attachments.map(({ file }) => file))
+          // A command typed out in full, which was not chosen from the picker, goes as a command too.
+          const typed = command || stop || attachments.length ? undefined : leadingCommand(commands, trimmed)
+          const sentCommand = command ?? typed?.command
+          const sent = onSend(typed ? typed.args : trimmed, attachments.map(({ file }) => file), sentCommand)
           if (typeof sent === 'boolean') {
-            if (sent) clearSent(text)
+            if (sent) clearSent(text, command)
             return
           }
           setSending(true)
           void sent.then(
             (went) => {
               setSending(false)
-              if (went) clearSent(text)
+              if (went) clearSent(text, command)
             },
             () => setSending(false),
           )
@@ -154,6 +233,16 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
         />
         {/* What is being sent goes as it is: its reply and files cannot be taken off meanwhile. */}
         <div inert={sending}>
+          <ComposerCommandLine
+            command={command}
+            refusal={filesRefused
+              ? `Files can’t go with ${command.kind === 'skill' ? 'a skill' : 'it'}. Remove them, or ${command.kind === 'skill' ? 'the skill' : 'it'}.`
+              : command && stop ? 'It can be used once the agent has finished.' : undefined}
+            onCancel={() => {
+              setCommand(undefined)
+              inputRef.current?.focus()
+            }}
+          />
           <ComposerReply
             quote={reply?.quote}
             onShow={reply?.onShow}
@@ -190,16 +279,48 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
               data-sending={sending || undefined}
               readOnly={sending}
               className="composer-input block min-w-0 resize-none rounded-none border-0 bg-transparent p-0 text-base/5 wrap-anywhere shadow-none ring-0 focus:ring-0 data-expanded:[scrollbar-gutter:stable] data-sending:text-kumo-subtle"
-              placeholder="Ask anything…"
+              placeholder={command ? (command.kind === 'skill' ? 'Add anything it should know…' : 'Send it, or add a note…') : 'Ask anything…'}
               aria-label="Message"
+              role={commands.length ? 'combobox' : undefined}
+              aria-autocomplete={commands.length ? 'list' : undefined}
+              aria-expanded={commands.length ? picking : undefined}
+              aria-controls={picking ? pickerId : undefined}
+              aria-activedescendant={picking ? `${pickerId}-${active}` : undefined}
               value={text}
               onValueChange={setText}
+              onChange={(event) => readSlash(event.currentTarget)}
+              onSelect={(event) => readSlash(event.currentTarget)}
+              onBlur={() => setSlash(undefined)}
               onPaste={(event) => {
                 if (!event.clipboardData.files.length) return
                 event.preventDefault()
                 addDraftFiles(event.clipboardData.files)
               }}
               onKeyDown={(event) => {
+                if (picking && !event.nativeEvent.isComposing) {
+                  const move = { ArrowDown: 1, ArrowUp: -1 }[event.key]
+                  if (move) {
+                    event.preventDefault()
+                    return setHighlighted((active + move + matches.length) % matches.length)
+                  }
+                  if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+                    event.preventDefault()
+                    return choose(matches[active])
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault()
+                    return setDismissedAt(slash?.start)
+                  }
+                }
+                // Backspace at the very start takes the command off, as it would a character before it.
+                if (event.key === 'Backspace' && command && !sending) {
+                  const field = event.currentTarget
+                  if (field.selectionStart === 0 && field.selectionEnd === 0) {
+                    event.preventDefault()
+                    return setCommand(undefined)
+                  }
+                }
+                if (event.key === 'Escape' && command && !reply && !sending) return setCommand(undefined)
                 if (event.key === 'Escape' && reply && !sending) return reply.onCancel()
                 if (
                   event.key !== 'Enter' ||
@@ -237,6 +358,7 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
               inPlace={addMenuInPlace}
               {...addActions}
               onUpload={() => fileInputRef.current?.click()}
+              commands={sending ? undefined : { items: commands, onChoose: choose, onBrowse: browseCommands }}
             />
           </div>
           <div className="absolute right-1.5 bottom-1.5 flex gap-1">
@@ -273,6 +395,7 @@ export const Composer = ({ onSend, initialDraft, reply, problem, stop, addAction
           </div>
         </div>
       </form>
+      </div>
     </div>
   )
 }

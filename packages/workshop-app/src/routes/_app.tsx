@@ -23,6 +23,7 @@ import { sharedConnection } from '@/rpc/sharedConnection'
 import { clearToken } from '@/rpc/token'
 import { AppSearch } from './-AppSearch'
 import { ShareLinkGate } from '@/sharing/ShareLinkGate'
+import { SkillsProvider } from '@/skills/SkillsProvider'
 import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { chatEntryKey, sidebarEntries, workspaceEntryKey } from '@/workspaces/sidebarEntries'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
@@ -37,7 +38,9 @@ export const Route = createFileRoute('/_app')({
         <WorkspacesProvider>
           <ConnectedAccountsProvider>
             <ChatSessionsProvider>
-              <AppFrame />
+              <SkillsProvider>
+                <AppFrame />
+              </SkillsProvider>
             </ChatSessionsProvider>
           </ConnectedAccountsProvider>
         </WorkspacesProvider>
@@ -78,6 +81,7 @@ const AppFrame = () => {
   const appPage = useMatch({ from: '/_app/app/$itemId', shouldThrow: false })
   const libraryItemPage = useMatch({ from: '/_app/library/$itemId', shouldThrow: false })
   const libraryPage = useMatch({ from: '/_app/library/', shouldThrow: false })
+  const skillPage = useMatch({ from: '/_app/skills/$skillId', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
   const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
@@ -252,7 +256,7 @@ const AppFrame = () => {
         },
       }}
       library={{
-        current: libraryPage !== undefined || libraryItemPage !== undefined,
+        current: libraryPage !== undefined || libraryItemPage !== undefined || skillPage !== undefined,
         onOpen: () => {
           leaveSidebar()
           void navigate({ to: '/library' })

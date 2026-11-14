@@ -3,7 +3,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { Checkbox, Input, Switch, Tabs } from '@cloudflare/kumo'
 import { CaretLeftIcon, CirclesFourIcon, FileTextIcon, MagnifyingGlassIcon, PlusIcon, PresentationIcon, TableIcon } from '@phosphor-icons/react'
 import { Composer } from '@/blocks/Composer'
-import type { ComposerSkill } from '@/blocks/ComposerAddMenu'
+import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { ComposerAttachmentTray } from '@/blocks/ComposerAttachmentTray'
 import { ChatListItem } from '@/blocks/ChatListItem'
 import { ChatStart } from '@/blocks/ChatStart'
@@ -32,6 +32,7 @@ import { Section } from '@/gallery/Section'
 import { ShellPreview } from '@/gallery/ShellPreview'
 import { SettingsPreview } from '@/gallery/SettingsPreview'
 import { SharingPreview } from '@/gallery/SharingPreview'
+import { SkillsPreview } from '@/gallery/SkillsPreview'
 import { SystemBlocksPreview } from '@/gallery/SystemBlocksPreview'
 import { ToolBlocksPreview } from '@/gallery/ToolBlocksPreview'
 
@@ -43,10 +44,13 @@ export const Route = createFileRoute('/gallery')({
   ),
 })
 
-const previewSkills: ComposerSkill[] = [
-  { id: 'review', name: 'Review writing', description: 'Polish a draft and make it clearer.', source: 'Writing tools' },
-  { id: 'summarize', name: 'Summarize', description: 'Turn a long document into the key takeaways.', source: 'Documents' },
-  { id: 'compact', name: 'Compact chat', description: 'Make room while keeping the important context.', source: 'Gadgets' },
+const previewCommands: ComposerCommand[] = [
+  { key: 'meeting-brief', name: 'meeting-brief', title: 'Meeting brief', description: 'Before a meeting, gather who is coming and what was last said.', kind: 'skill', source: 'My skills' },
+  { key: 'review-writing', name: 'review-writing', title: 'Review writing', description: 'Polish a draft and make it clearer.', kind: 'skill', source: 'Writing tools' },
+  { key: 'summarize', name: 'summarize', title: 'Summarize', description: 'Turn a long document into the key takeaways.', kind: 'skill', source: 'Documents' },
+  { key: 'weekly-update', name: 'weekly-update', title: 'Weekly update', description: 'Write the week up for a manager, from what changed.', kind: 'skill', source: 'For everyone at Acme' },
+  { key: 'release-notes', name: 'release-notes', title: 'Release notes', description: 'Draft release notes from the merged changes.', kind: 'skill', source: 'Engineering' },
+  { key: 'compact', name: 'compact', title: 'Compact', description: 'Sum up the chat so far, to make room for more', kind: 'builtin' },
 ]
 
 const previewWorkspaces: SidebarWorkspace[] = [
@@ -196,10 +200,11 @@ function Gallery() {
   const [menuAction, setMenuAction] = useState('Open + to preview files, connections, and skills.')
   const addActions = {
     onAddConnection: () => setMenuAction('Preview: add a new connection selected.'),
-    skills: { items: previewSkills, onSelect: (skill: ComposerSkill) => setMenuAction(`Preview: ${skill.name} selected.`) },
   }
-  const previewSend = (text: string, files: File[]) => {
-    setMenuAction(`Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
+  const previewSend = (text: string, files: File[], command?: ComposerCommand) => {
+    setMenuAction(command
+      ? `Preview: used ${command.title}${text ? ` with “${text}”` : ''}.`
+      : `Preview: sent ${files.length} ${files.length === 1 ? 'attachment' : 'attachments'}${text ? ` with “${text}”` : ''}.`)
     return true
   }
   const [replying, setReplying] = useState(true)
@@ -326,14 +331,17 @@ function Gallery() {
       <SharingPreview />
       <ConnectionsPreview />
       <GadgetSettingsPreview />
+      <SkillsPreview />
       <Section title="Composer">
         <div className="flex w-full flex-col gap-3">
           <p className="text-sm text-kumo-subtle">
             Starts inline, lifts above the action buttons when text wraps, and scrolls once it reaches its maximum height.
             Enter sends; Shift+Enter adds a line. The + menu morphs from its button; Escape closes it.
             Pick, paste, or drop files to preview local attachments. Dragging over the composer uses its focus highlight.
+            Type / at the start of a word for skills: arrows move, Enter or Tab chooses, Escape puts it away. A chosen
+            skill sits at the top as one line; Backspace at the start, Escape, or its × takes it off. Files can’t go with it.
           </p>
-          <Composer onSend={previewSend} addActions={addActions} />
+          <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} />
           <p role="status" className="text-sm text-kumo-subtle">{menuAction}</p>
           <div className="w-80 max-w-full">
             <Composer onSend={previewSend} />
@@ -405,7 +413,7 @@ function Gallery() {
           <p className="text-sm text-kumo-subtle">
             The + expands in place, keeping its anchored corner at the button while following the same curved path.
           </p>
-          <Composer onSend={previewSend} addActions={addActions} addMenuInPlace />
+          <Composer onSend={previewSend} addActions={addActions} commands={previewCommands} addMenuInPlace />
         </div>
       </Section>
       <Section title="ChatLayout + MessageList + LiveRows (virtual pages, streaming, slow history, expandable cards; send a message or add a card to see a row arrive, remove the card to see it leave; go to the oldest loaded message from near it to scroll there, or from pages away to fade over to it)">

@@ -1,6 +1,6 @@
 import {
   BookOpenIcon, BrainIcon, ChatTextIcon, CodeIcon, FileIcon, GitBranchIcon, GlobeIcon, LinkSimpleIcon, ListBulletsIcon,
-  MagnifyingGlassIcon, PencilSimpleIcon, PlugIcon, PlusIcon, StopIcon, type Icon,
+  MagnifyingGlassIcon, PencilSimpleIcon, PlugIcon, PlusIcon, ScrollIcon, StopIcon, type Icon,
 } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Badge } from '@cloudflare/kumo'
@@ -49,6 +49,8 @@ export type ToolStepEntry =
       resource?: ResourceLinkProps
       description: string
       fields: ActionField[]
+      /** The skill it read, in plain words, when it read one. */
+      skill?: string
     }
   /** What was thought before something was said, or has been so far while it is `running`. */
   | { type: 'thinking'; key: string; text: string; running?: boolean }
@@ -86,7 +88,7 @@ const summaryOf = (entry: ToolStepEntry): { icon: Icon; label: string } => {
     case 'writing':
       return { icon: ChatTextIcon, label: 'Writing…' }
     case 'observation':
-      return { icon: BookOpenIcon, label: entry.label }
+      return { icon: entry.skill ? ScrollIcon : BookOpenIcon, label: entry.label }
     case 'call':
       return { icon: ICONS[entry.icon] ?? CodeIcon, label: entry.label }
   }

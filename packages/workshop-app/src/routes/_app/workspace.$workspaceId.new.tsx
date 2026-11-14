@@ -43,7 +43,7 @@ function NewChat() {
           title="New chat"
         />
       )}
-      start={(text, files, modelId) => startConversation(() => api.openWorkspace(workspaceId), text, files, modelId)}
+      start={(text, files, modelId, command) => startConversation(() => api.openWorkspace(workspaceId), text, files, modelId, command)}
       // In its place, so that going back goes to the workspace rather than to an empty chat.
       onStarted={({ chatId }) => {
         if (open) rememberShown(workspaceId, chatId, open)

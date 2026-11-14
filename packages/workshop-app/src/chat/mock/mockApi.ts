@@ -35,6 +35,9 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     // Nothing starred or taken out of it.
     listFavorites: async () => [],
     listLibraryRemovals: async () => [],
+    // No Skills app to manage them with; the workspace still offers its skills (`listSlashCommands`).
+    getGatekeeperApp: async () => null,
+    listAddableGatekeepers: async () => [],
   }
   const api = new Proxy(implemented, {
     get: (target, name) => {

@@ -3,6 +3,7 @@ import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
 import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
+import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { LiveRows } from '@/blocks/LiveRows'
 import { MessageBubble } from '@/blocks/MessageBubble'
@@ -22,6 +23,8 @@ import { nameGadgets, type GoBack } from './changePoints'
 import { keepChangeLines, keepReason } from './keepChanges'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, useDefaultModel } from './useDefaultModel'
+import { missingCommand, slashRequestFor } from './slashCommands'
+import { useChatCommands } from './useChatCommands'
 import { useChatSession } from './useChatSession'
 
 export type ChatPaneProps = {
@@ -73,6 +76,7 @@ export const ChatPane = ({
   workspaceLink,
 }: ChatPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
+  const { choices, commands } = useChatCommands(actions.listCommands, chat.status === 'ready')
   const model = useDefaultModel()
   const workspaces = useWorkspaces()
   const connection = useConnectionNotice()
@@ -172,7 +176,7 @@ export const ChatPane = ({
   }, [items, disclosure, handlers, restricted])
 
   // Resolves to whether the message went; until it has, the draft and what it replies to stay.
-  const sendMessage = async (text: string, files: File[]) => {
+  const sendMessage = async (text: string, files: File[], command?: ComposerCommand) => {
     // Whoever says something is taken to where it will appear, and to what answers it, wherever
     // in the conversation they were reading. Only what others say waits for a reader who is not
     // at the end.
@@ -188,7 +192,13 @@ export const ChatPane = ({
     setProblem(undefined)
     setNotice(undefined)
     const replied = reply
-    const sent = await actions.send(replied ? withQuote(replied.quote, text) : text, model.id, files)
+    const words = replied ? withQuote(replied.quote, text) : text
+    const request = command && slashRequestFor(choices, command, words)
+    if (command && !request) {
+      setProblem(missingCommand(command))
+      return false
+    }
+    const sent = await actions.send(request ?? words, model.id, files)
     // Unless another message has been chosen to reply to meanwhile.
     if (sent) setReply((current) => (current === replied ? undefined : current))
     return sent
@@ -208,6 +218,7 @@ export const ChatPane = ({
         <Composer
           ref={composer}
           onSend={sendMessage}
+          commands={commands}
           stop={chat.status === 'ready' && chat.agentActive ? {
             waiting: chat.waiting,
             onStop: () => {

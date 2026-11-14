@@ -1577,6 +1577,13 @@ export type ObservationDescription = {
   /** The item this observation read, when it concerns one (see `ResourceSubject`). */
   subject?: ResourceSubject;
 
+  /**
+   * The name of the Agent Skill this observation read (its manifest's `name`, e.g.
+   * `meeting-brief`), when it read one, so a client can say which skill the agent used rather than
+   * which document it opened.
+   */
+  skill?: string;
+
   // ----------------------------------------------------------------------------
   // Policy hints
   //

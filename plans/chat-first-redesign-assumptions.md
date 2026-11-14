@@ -329,4 +329,9 @@ list it here, so it is known what workshop-app needs from the kernel.
   `GadgetClient.setOutput`, `GadgetFormat` and `gadgetOutputOf` in workshop-shared). It is metadata,
   set at once like a title rather than proposed with the chat's changes, and it goes with a
   blueprint published from the gadget. Spawned agents are not offered the tool.
+- **Which skill the agent used.** An agent reading a skill on its own recorded an observation
+  titled "Context read: meeting-brief", which a client could only parse. Now the observation says
+  which skill it read (kernel: `ObservationDescription.skill`, set by gatekeeper-context's
+  `read()` from the document's manifest name), so the step says "Used Meeting brief" and the reply
+  names it.
 

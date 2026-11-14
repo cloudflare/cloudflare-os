@@ -9,6 +9,8 @@ export type LibraryView = 'list' | 'grid'
 export type LibraryOrder = 'recent' | 'name'
 
 export type LibraryToolbarProps = {
+  /** Offers the list or the grid; off for what is only ever a list. */
+  views?: boolean
   view: LibraryView
   onViewChange: (view: LibraryView) => void
   sort: LibraryOrder
@@ -27,7 +29,7 @@ const SORTS: Array<{ value: LibraryOrder; label: string }> = [
  * search is a button until pressed, then grows to the left into a field where it was, and shrinks
  * back to a button when emptied and left, or on Escape.
  */
-export const LibraryToolbar = ({ view, onViewChange, sort, onSortChange, query, onQueryChange }: LibraryToolbarProps) => {
+export const LibraryToolbar = ({ views = true, view, onViewChange, sort, onSortChange, query, onQueryChange }: LibraryToolbarProps) => {
   const inputRef = useRef<HTMLInputElement>(null)
   const [searching, setSearching] = useState(query !== '')
   const open = searching || query !== ''
@@ -41,17 +43,20 @@ export const LibraryToolbar = ({ view, onViewChange, sort, onSortChange, query, 
       {/* On a phone the search takes their room while it is open, as they shrink away. */}
       <span
         className={cn(
-          'flex items-center gap-2 transition-[width,opacity,margin] duration-200 ease-out motion-reduce:transition-none max-sm:w-[5.25rem]',
+          'flex items-center gap-2 transition-[width,opacity,margin] duration-200 ease-out motion-reduce:transition-none',
+          views ? 'max-sm:w-[5.25rem]' : 'max-sm:w-9',
           open && 'max-sm:pointer-events-none max-sm:-me-2 max-sm:w-0 max-sm:overflow-hidden max-sm:opacity-0',
         )}
       >
-        <Tooltip content={view === 'list' ? 'Show as a grid' : 'Show as a list'}>
-          <Button
-            icon={view === 'list' ? SquaresFourIcon : ListIcon}
-            aria-label={view === 'list' ? 'Show as a grid' : 'Show as a list'}
-            onClick={() => onViewChange(view === 'list' ? 'grid' : 'list')}
-          />
-        </Tooltip>
+        {views && (
+          <Tooltip content={view === 'list' ? 'Show as a grid' : 'Show as a list'}>
+            <Button
+              icon={view === 'list' ? SquaresFourIcon : ListIcon}
+              aria-label={view === 'list' ? 'Show as a grid' : 'Show as a list'}
+              onClick={() => onViewChange(view === 'list' ? 'grid' : 'list')}
+            />
+          </Tooltip>
+        )}
         <DropdownMenu icon={SortAscendingIcon} aria-label="Order" align="end">
           {SORTS.map(({ value, label }) => (
             <DropdownMenu.Item key={value} icon={sort === value ? CheckIcon : undefined} onSelect={() => onSortChange(value)} label={label}>

@@ -17,6 +17,7 @@ import { SplitLayout } from '@/layouts/SplitLayout'
 import { ApiContext } from '@/rpc/ApiContext'
 import { ConnectionNotice } from '@/rpc/ConnectionNotice'
 import { ConnectionNoticeContext } from '@/rpc/ConnectionNoticeContext'
+import { SkillsProvider } from '@/skills/SkillsProvider'
 import { WorkspacesProvider } from '@/workspaces/WorkspacesProvider'
 
 /** One scripted chat: the real `ChatPane` over a fake backend, so it needs no server. */
@@ -91,6 +92,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
       <ApiContext value={session}>
         <WorkspacesProvider>
           <ChatSessionsProvider>
+            <SkillsProvider>
             <MockLayout
               onOpenScenarios={onOpenScenarios}
               onSetUpConnection={onSetUpConnection}
@@ -104,6 +106,7 @@ const MockChat = ({ scenario, onSelectScenario, onOpenScenarios, onRestart }: {
                 onRestart={onRestart}
               />
             </MockLayout>
+            </SkillsProvider>
           </ChatSessionsProvider>
         </WorkspacesProvider>
       </ApiContext>

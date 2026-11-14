@@ -1470,7 +1470,13 @@ importers:
       vite-tsconfig-paths:
         specifier: ^6.1.1
         version: 6.1.1(supports-color@10.2.2)(typescript@7.0.2)(vite@7.3.6(@types/node@26.1.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(yaml@2.9.1))
+      yaml:
+        specifier: ^2.9.1
+        version: 2.9.1
     devDependencies:
+      '@gadgets/gatekeeper-context':
+        specifier: workspace:*
+        version: link:../gatekeeper-context
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts

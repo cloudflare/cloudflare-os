@@ -297,7 +297,7 @@ dialogs say what came of an invite under the field, not in a toast.
 ## The Library
 
 The Library (`/library`) is everything the user's workspaces made, were sent and worked on, and
-what others shared with them, in three tabs: Favorites, Gadgets and Files (`?tab=`).
+what others shared with them, in tabs: Favorites, Gadgets, Files and Skills (`?tab=`).
 `library/libraryEntries.ts` makes one list from all of these, starred first and what was taken out
 left out; a Google file that was taken out comes back once it is worked on again. Rows are grouped
 by when, or by name, and searched by name. The list or grid and the order are this device's
@@ -305,6 +305,28 @@ by when, or by name, and searched by name. The list or grid and the order are th
 workspace's Library tab and a chat's settings show the same rows. A star or a removal shows at once
 and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
 whoever builds where it was made.
+
+## Skills
+
+A skill is a `SKILL.md` in a Context Library collection (gatekeeper-context). `skills/SkillsLibrary`
+is a plain class over the gatekeeper's management API (`getGatekeeperApp('context').ui`, a
+`ContextApi`; the one cast is in `#open()`), provided once by `_app` (`SkillsProvider`) and read
+only once something shows skills (`useSkills` retains it). `skillManifest.ts` reads and writes the
+manifest, keeping frontmatter keys it does not know. The Library's Skills tab groups skills by
+collection ("Yours" while the user has one of their own, otherwise each by name, with who has it);
+sharing is per collection (`ShareSkillsDialog`), the org's collections are for everyone and only
+admins change them. A skill's page is `/skills/<collection>/<path>` (URL-encoded), renamed in
+place, which moves it.
+
+The composer takes `commands` (`ComposerCommand`): `/` at the start of a word opens
+`ComposerCommandPicker` above it, which the field drives (`slashCommands.ts` finds the slash and
+ranks what fits); a chosen command is `ComposerCommandLine` at the top, and `onSend` gets it.
+A chat lists its workspace's commands (`useChatCommands`, again whenever the skills change) and
+sends a `SlashCommandRequest` (`chat/slashCommands.ts` maps both ways, keyed by the command id,
+which for a skill is its document id). A new chat offers the Library's skills and resolves them in
+the workspace it makes (`startConversation`). "Use in a chat" goes home with `useSkill` in the
+history state. A skill the agent read itself is its step and a line on the reply
+(`ObservationDescription.skill`, `AssistantItem.skills`).
 
 ## Connections
 

@@ -1,0 +1,149 @@
+# Next up: what the new app does about what the design has not drawn yet
+
+`next-up.md` lists what the product has that Balint's `workshop-app` and his Figma do not yet
+answer. For each, this says how he would most likely fold it in, judged from his code and its rules
+(`packages/workshop-app/AGENTS.md`), what the kernel needed, and what was cut. The Figma API was
+rate limited for this work, so the Figma-derived prototype (`backup/b-figma-balint-pre-rebase`) and
+`plans/chat-first-redesign-assumptions.md` stood in for it.
+
+His idiom, as it bears on all of them:
+
+- The conversation is what was said. How the agent got there is never a row: it is the status
+  while it works, and the message's details after.
+- Few places, each with one job: the sidebar (recents, Workspaces, Library, Search), a page per
+  thing, settings as rows in rounded groups, dialogs that grow in. New places are tabs of the pages
+  that already exist before they are new pages.
+- Plain words about the user's things ("Updated Tip Jar"), never the machinery ("Wrote client.js").
+- Everything that can fail says why where it happened, and nothing is tried over a lost connection.
+- Protocol in plain, tested classes; blocks take plain props; every block in the gallery.
+
+Each feature is one commit. Kernel changes are kept small and listed under each.
+
+## 1. Skills
+
+**What exists.** Skills are `SKILL.md` documents in Context Library collections (gatekeeper-context).
+A collection is private (its creator's, shareable as viewer, editor or owner) or public (made by a
+deployment admin, read by everyone: the org's). The management API (`ContextApi`) is reached as the
+`ui` of `getGatekeeperApp("context")`. A user invokes a skill as a slash command
+(`listSlashCommands`, a `SlashCommandRequest` in `sendChatMessage`), and the agent reads one by
+itself through code (`env.CONTEXT.read`), which records an observation titled `Context read: name`
+and nothing a person would recognise.
+
+**Decision.**
+
+- Skills are a tab of the Library, beside what the user's chats made: they are the user's own
+  things too, and a fifth sidebar button would be the first one not about where work happens.
+  Collections are the tab's groups, named as people think of them: "Yours", one group per
+  collection shared with you, and the org's under "For everyone". A user with one collection never
+  sees the word: their first skill makes "My skills".
+- A skill has its own page (`/skills/<id>`), laid out as a gadget's settings are: its name in plain
+  words (`meeting-brief` reads "Meeting brief"), renamed in place; when the agent should use it;
+  and what it says, rendered as Markdown and edited in place. Use in a chat starts one with it.
+- New skill is a dialog: name, when to use it, what it says, and which collection when there is
+  more than one to put it in. Sharing is per collection, from its group's More, in the sharing
+  dialogs' idiom.
+- In the composer, `/` at the start of a word opens the skills (and Compact, in a chat) above the
+  composer, filtered as typed; arrows, Enter or Tab, Escape. The + menu names the first few and
+  offers "All skills", which types the slash. A chosen skill sits above the draft as a line of its
+  own, as a reply does, and what is typed under it is what the skill is given; Backspace at the
+  start, Escape or its × takes it off. Files cannot go with a command, and a command cannot steer a
+  running agent: the line says so in its place. A command typed out in full (`/meeting-brief for
+  Tuesday`) goes as one too. A new chat offers the Library's skills before it has a workspace,
+  and the workspace the first message makes resolves the same id (`collection/path`).
+- The agent's use of a skill, asked for or not, is said. A skill asked for is the `/meeting-brief`
+  chip in the user's message. One the agent picks up itself is its step, "Used Meeting brief" with
+  the skill's scroll, and a quiet "Used Meeting brief" line at the top of the reply it shaped;
+  the steps stay in the reply's details.
+
+**Kernel.** `ObservationDescription.skill` (the skill's name, from the context gatekeeper's read),
+so the client can say a skill was used without parsing titles.
+
+**Cut.** Supporting files beyond `SKILL.md` are not shown or edited. Git-backed collections and git
+tokens stay in the gatekeeper's own app. A slash invocation's own read records no observation (the
+server reads it before the turn), so its reply has no "Used" line; the chip above it says the same.
+A live "Reading the … skill" status was dropped: the read is instant, and the step appears at once.
+
+## 2. Library previews
+
+**What exists.** Library rows and tiles show a picture only for image files; everything else is a
+glyph. The chat already draws real thumbnails for PDFs, Office files and text (`file-preview`), and
+the kernel can render a gadget in a browser (exports). Nothing makes a picture of a gadget.
+
+**Decision.** Everything shows what it is. Files use the chat's thumbnails. Gadgets show a picture
+of their UI, rendered by the server and kept until their code changes; one with no UI, or a
+deployment without browser rendering, shows its format's glyph on its tile as now. Google files
+show the blank page of their kind that stands in while they load beside a chat.
+
+**Kernel.** `GadgetClient.getThumbnail()`: a PNG of the gadget's UI, rendered by Browser Run at a
+fixed size and kept per gadget for the code version it was taken of.
+
+## 3. Automations
+
+**What exists.** Hooks are listed per workspace (`listHooks`), scheduled tasks across the account
+by the scheduler's read-only management API, with no way to join the two. The new app shows hooks
+only on a gadget's Connections tab, toggle only.
+
+**Decision.** "Automations" for both, as the prototype names them. A Library tab lists every
+automation across the user's workspaces; a workspace's page, a chat's settings and a gadget's
+settings each have an Automations tab with theirs. A card says what it does, when it runs next in
+words ("Every weekday at 9:00 · next tomorrow"), where it reports, and has its switch and Delete.
+The chat's header shows a clock while it has one.
+
+**Kernel.** `HookTargetMetadata.hookId`, which the scheduler keeps and its management list returns,
+so a schedule is matched to its hook exactly.
+
+## 4. Adding connections to a chat or a gadget
+
+**Decision.** The + menu's Add a connection opens the connect dialog the agent's requests use, and
+the chosen resource sits above the draft as a line, sent with the message as a capsule: the chat
+then has it. A chat's settings gain a Connections tab listing what it can use. A gadget's
+Connections tab gains Add, binding straight to the gadget.
+
+**Kernel.** None.
+
+## 5. Model selection
+
+**Decision.** The design's composer has no room for a picker, so it is a row of the + menu, as the
+prototype had it: Model, with the current one's name, opening the list. A chat keeps answering with
+the model it last used; a new chat starts with the user's default, and choosing one there makes it
+the default. The profile page has the default too.
+
+**Kernel.** None (`getPreferredModel`, `setPreferredModel`, `activeAgent`).
+
+## 6. Gadget exports
+
+**Decision.** Export is in the gadget's More beside the page and in full screen, and on its
+settings. Formats are read when the menu opens; the download says it is under way in the pane's
+header and says why if it fails.
+
+**Kernel.** None.
+
+## 7. A chat in a workspace, and a chat on its own
+
+**Decision.** A chat started from Home is a chat on its own; its workspace is never shown, as in
+the prototype. A workspace is made on purpose and named. Home's composer says where the chat goes
+("No workspace" or a workspace), the way the prototype's picker did. A chat on its own is drawn
+in the sidebar with a chat glyph and no workspace name, its crumb is the chat alone, and its
+settings can make it a workspace once it outgrows being one chat.
+
+**Kernel.** `Overseer.makeWorkspace(title)`: names an unnamed workspace and marks it as one.
+
+## 8. Blueprints
+
+**Decision.** One Blueprints page: featured ones, then yours (published and saved), searched by
+name, each a tile with its picture. A blueprint has its own page: its picture, what it is, what it
+needs, and Use, which sets up what it needs and makes it in a new workspace or adds it to one.
+Home offers a few featured ones under the composer. Publishing takes the gadget's picture.
+
+**Kernel.** None beyond the gadget picture.
+
+## 9. The user's profile
+
+**Decision.** The account menu's first row opens the profile: picture, name, commit email, default
+model, usage, and password, as settings rows.
+
+**Kernel.** None.
+
+## 10. Not in the design yet
+
+See the end of this file, which lists what the product has and the new app leaves out.

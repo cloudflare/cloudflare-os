@@ -543,6 +543,25 @@ const connectionLost: Scenario = {
   ],
 }
 
+const skills: Scenario = {
+  id: 'skills',
+  title: 'Meeting prep',
+  description:
+    'The agent picks up a skill on its own, which its reply names and its steps show. Type / in the composer to ' +
+    'use one yourself: Meeting brief and Weekly update are offered, and Compact.',
+  history: history([
+    user('Can you get me ready for the 2pm with Dana?'),
+    observation({ title: 'Context read: meeting-brief', description: 'Read the Agent Skill meeting-brief.', resource: { title: 'My skills' }, skill: 'meeting-brief' }),
+    agent({ text: '**2pm with Dana**\n\n- Last time: the Q3 forecast, which she wanted split by region.\n- Still open: who owns the EMEA numbers.\n- Worth asking: whether the launch date holds.' }),
+  ]),
+  script: [
+    ...when('onSend', turn(
+      { message: observation({ title: 'Context read: weekly-update', description: 'Read the Agent Skill weekly-update.', resource: { title: 'My skills' }, skill: 'weekly-update' }), delay: 500 },
+      say(agent({ text: 'Here is the week, in five lines.' })),
+    )),
+  ],
+}
+
 const steerSlash: Scenario = {
   id: 'steer-slash',
   title: 'Release notes',
@@ -551,6 +570,7 @@ const steerSlash: Scenario = {
     'compaction. Send a message while it streams to queue one yourself.',
   history: history([
     slashCommand({ name: 'release-notes', args: 'for the dashboard, since Monday', commandPosition: 0, expandsTo: 'Draft release notes from the merged changes since Monday.' }),
+    observation({ title: 'Context read: release-notes', description: 'Read the Agent Skill release-notes.', resource: { title: 'Engineering' }, skill: 'release-notes' }),
     agent({ author: FAST_AGENT, text: 'Three changes merged since Monday. Do you want them grouped by area?' }),
     user('Yes, and write them for customers.'),
   ]),
@@ -684,6 +704,7 @@ export const SCENARIOS: Scenario[] = [
   approval,
   restrictedApproval,
   observationHook,
+  skills,
   connection,
   output,
   keepChanges,

@@ -8,6 +8,7 @@ import type {
   ChatAttachmentHandle,
   ChatAttachmentRef,
   PresenceSubscriber,
+  SlashCommandChoice,
   SlashCommandRequest,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
@@ -40,6 +41,12 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
  * Updates leave the way the real server sends them: a decided action or a toggled hook through
  * the actions subscription, a resolved connection request as its chat message again.
  */
+const MOCK_COMMANDS: SlashCommandChoice[] = [
+  { selection: { gatekeeperId: 90, commandId: 'mock/meeting-brief/SKILL.md' }, name: 'meeting-brief', description: 'Before a meeting, gather who is coming and what was last said.', providerLabel: 'My skills' },
+  { selection: { gatekeeperId: 90, commandId: 'mock/weekly-update/SKILL.md' }, name: 'weekly-update', description: 'Write the week up for a manager, from what changed.', providerLabel: 'My skills' },
+  { selection: { builtin: true, commandId: 'compact' }, name: 'compact', description: 'Compact the conversation context.', providerLabel: 'Workshop' },
+]
+
 export class MockOverseer {
   readonly player: ScriptPlayer
   #messages: AiChatMessage[]
@@ -145,6 +152,11 @@ export class MockOverseer {
     return lease(() => {})
   }
 
+  /** A skill of the user's and the built-in Compact, as a workspace with Skills offers them. */
+  async listSlashCommands(): Promise<SlashCommandChoice[]> {
+    return MOCK_COMMANDS
+  }
+
   async listChats(): Promise<AiChatMetadata[]> {
     return [this.#chat()]
   }
@@ -233,7 +245,9 @@ export class MockOverseer {
       return { id, oid: handle.oid, mimeType: handle.mimeType, name: handle.name, size: content.byteLength, content: image ? content : undefined }
     })
     if (typeof message !== 'string') {
-      this.#append({ type: 'slashCommand', request: message, author: VIEWER })
+      if (this.#metadata.activeAgent) throw new Error('The agent is still running.')
+      const skillName = message.id.builtin ? undefined : MOCK_COMMANDS.find(({ selection }) => !selection.builtin && selection.commandId === message.id.commandId)?.name
+      this.#append({ type: 'slashCommand', request: message, author: VIEWER, ...(skillName ? { skillName } : {}) })
     } else if (attachments?.length) {
       if (this.#metadata.activeAgent) throw new Error('The agent is still running.')
       this.#append({ type: 'message', message, author: VIEWER, attachments })

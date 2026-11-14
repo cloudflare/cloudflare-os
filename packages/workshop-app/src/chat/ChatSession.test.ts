@@ -102,6 +102,7 @@ const fakeOverseer = (chats: Promise<AiChatMetadata[]>, histories: Record<number
     deleteChat: vi.fn<Overseer['deleteChat']>(async () => {}),
     markChatRead: vi.fn<Overseer['markChatRead']>(async () => {}),
     getChatAttachmentContent: vi.fn<Overseer['getChatAttachmentContent']>(async (_chatId, id) => new TextEncoder().encode(id)),
+    listSlashCommands: vi.fn<Overseer['listSlashCommands']>(async () => []),
   }
 
   const broken = new Set<(error: unknown) => void>()
@@ -1151,6 +1152,29 @@ describe('ChatSession', () => {
 
       expect(fake.uploadBlob).not.toHaveBeenCalled()
       expect(fake.sendChatMessage).not.toHaveBeenCalled()
+    })
+
+    it('sends a skill with the words it is given, and lists what the workspace offers', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(4, 'Chat', 1)]))
+      const choice = { selection: { gatekeeperId: 2, commandId: 'c/brief/SKILL.md' }, name: 'brief', description: 'Brief me', providerLabel: 'Context Library' }
+      fake.listSlashCommands.mockResolvedValueOnce([choice])
+      const session = await started(fake, 4)
+
+      expect(await session.listCommands()).toEqual([choice])
+      const request = { id: choice.selection, args: 'for Tuesday', commandPosition: 0 }
+      expect(await session.send(request, 'model-1')).toBe(true)
+
+      expect(fake.sendChatMessage).toHaveBeenCalledExactlyOnceWith(4, request, 'model-1', undefined, undefined)
+    })
+
+    it('holds a skill back while the agent works, as the server would refuse it', async () => {
+      const fake = fakeOverseer(Promise.resolve([chat(0, 'Chat', 1, agentAuthor)]))
+      const session = await started(fake)
+
+      expect(await session.send({ id: { builtin: true, commandId: 'compact' }, args: '' }, 'model-1')).toBe(false)
+
+      expect(fake.sendChatMessage).not.toHaveBeenCalled()
+      expect(ready(session).sendError).toBe('Skills can be used once the agent has finished.')
     })
 
     it('holds files back while the agent works, which only plain text can steer', async () => {

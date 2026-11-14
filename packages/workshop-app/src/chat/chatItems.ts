@@ -4,6 +4,7 @@ import { webUrl } from '@/components/webUrl'
 import { changePoints, type GoBack } from './changePoints'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type StepGadget, type ToolIcon, type ToolSection } from './toolCalls'
+import { skillTitle } from '@/skills/skillManifest'
 
 type Message<T extends AiChatMessage['type']> = Extract<AiChatMessage, { type: T }>
 
@@ -39,7 +40,16 @@ export type ToolEntry =
       /** Still being written or run. */
       running?: boolean
     }
-  | { type: 'observation'; key: string; label: string; resource?: ResourceLink; description: string; fields: ActionField[] }
+  | {
+      type: 'observation'
+      key: string
+      label: string
+      resource?: ResourceLink
+      description: string
+      fields: ActionField[]
+      /** The skill it read, in plain words, when it read one: what the agent followed. */
+      skill?: string
+    }
 
 /**
  * One thing in the making of a reply: a step taken, what was thought before something was said
@@ -87,6 +97,8 @@ export type AssistantItem = Row & {
    * before it was said. Not part of the conversation; there for whoever asks about the message.
    */
   trace: TraceEntry[]
+  /** The skills it followed, in plain words, from its trace: said with it, as they shaped it. */
+  skills: string[]
   /** The changes its turn kept can be undone, or gone back to, from here. */
   goBack?: GoBack
 }
@@ -356,7 +368,7 @@ const commandItem = (
     id: command.sequence,
     text: name ? `${before}${gapBefore}/${name}${gapAfter}${after}` : text,
     parts: withMentions(text, [
-      ...(name ? [{ position: at + gapBefore.length, length: 0, part: { type: 'command', name } } as const] : []),
+      ...(name ? [{ position: at + gapBefore.length, length: 0, part: { type: 'command', name, ...(id.builtin ? { builtin: true } : {}) } } as const] : []),
       ...formatMentions(generated?.formats, at, gapBefore.length + gapAfter.length),
     ]),
     attachments: [],
@@ -409,13 +421,22 @@ const callEntry = (call: AiToolCall, reasoning: string | undefined, gadget: Step
   sections: toolSections(call, gadget !== undefined),
 })
 
-const observationEntry = (log: ActionLogEntry & { type: 'observation' }): Omit<ObservationEntry, 'key'> => ({
-  type: 'observation',
-  label: `Read ${log.description.title || log.resourceTitle || 'a resource'}`,
-  resource: resourceOf(log),
-  description: log.description.description,
-  fields: log.description.fields ?? [],
-})
+const observationEntry = (log: ActionLogEntry & { type: 'observation' }): Omit<ObservationEntry, 'key'> => {
+  // A skill is something the agent follows, so it is named as one, not as the document it is.
+  const skill = log.description.skill === undefined ? undefined : skillTitle(log.description.skill)
+  return {
+    type: 'observation',
+    label: skill ? `Used ${skill}` : `Read ${log.description.title || log.resourceTitle || 'a resource'}`,
+    resource: resourceOf(log),
+    description: log.description.description,
+    fields: log.description.fields ?? [],
+    ...(skill ? { skill } : {}),
+  }
+}
+
+/** The skills a reply followed, in plain words, each once, in the order they were picked up. */
+const skillsOf = (trace: readonly TraceEntry[]) =>
+  [...new Set(trace.flatMap((entry) => (entry.type === 'observation' && entry.skill ? [entry.skill] : [])))]
 
 type CreationState = 'pending' | 'merged' | 'reverted'
 
@@ -658,6 +679,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             sender: message.author.name,
             sentAt: message.timestamp,
             trace,
+            skills: skillsOf(trace),
             goBack,
           })))
           work = []

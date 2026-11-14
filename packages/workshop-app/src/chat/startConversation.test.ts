@@ -1,17 +1,39 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { Overseer } from '@gadgets/workshop-shared/api'
+import { skillCommandOf } from './slashCommands'
 import { startConversation, type NewConversationOverseer } from './startConversation'
 
 const fakeOverseer = (workspaceId = 'ws-1', chatId = 0) => {
   const newChat = vi.fn<Overseer['newChat']>(async () => chatId)
   const getMetadata = vi.fn<Overseer['getMetadata']>(async () => ({ id: workspaceId, title: 'Untitled Workspace' }))
   const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.byteLength}`)
+  const listSlashCommands = vi.fn<Overseer['listSlashCommands']>(async () => [
+    { selection: { gatekeeperId: 4, commandId: 'c1/brief/SKILL.md' }, name: 'brief', description: 'Brief me', providerLabel: 'Context Library' },
+  ])
   const dispose = vi.fn<() => void>()
-  const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, [Symbol.dispose]: dispose }
+  const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, listSlashCommands, [Symbol.dispose]: dispose }
   return { overseer, newChat, getMetadata, uploadBlob, dispose }
 }
 
 describe('startConversation', () => {
+  it('starts the chat with a Library skill, as the new workspace offers it, given the words', async () => {
+    const fake = fakeOverseer()
+    const command = skillCommandOf({ id: 'c1/brief/SKILL.md', name: 'brief', description: 'Brief me' })
+
+    await startConversation(() => fake.overseer, 'for Tuesday', [], 'model-1', command)
+
+    expect(fake.newChat).toHaveBeenCalledExactlyOnceWith({ id: { gatekeeperId: 4, commandId: 'c1/brief/SKILL.md' }, args: 'for Tuesday', commandPosition: 0 }, 'model-1')
+  })
+
+  it('says so, and starts nothing, for a skill the workspace does not offer', async () => {
+    const fake = fakeOverseer()
+    const command = skillCommandOf({ id: 'c1/gone/SKILL.md', name: 'gone', description: '' })
+
+    await expect(startConversation(() => fake.overseer, '', [], 'model-1', command)).rejects.toThrow('Gone isn’t available here')
+    expect(fake.newChat).not.toHaveBeenCalled()
+    expect(fake.dispose).toHaveBeenCalledOnce()
+  })
+
   it('starts the chat with the message and model, and returns the workspace and chat ids', async () => {
     const fake = fakeOverseer('abc123', 7)
 

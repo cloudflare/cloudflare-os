@@ -184,6 +184,7 @@ export class LibraryReadSession extends RpcTarget implements ContextLibrary {
     await this.#authorize([collectionId], {
       title: `Context read: ${doc.name}`,
       description: `Read Context Library document \`${docId}\`.`,
+      ...(doc.skillName ? { skill: doc.skillName } : {}),
     });
 
     let content = isTextContentType(doc.contentType)

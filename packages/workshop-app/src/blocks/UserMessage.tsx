@@ -2,6 +2,7 @@ import { LinkSimpleIcon } from '@phosphor-icons/react'
 import { cn } from '@cloudflare/kumo/utils'
 import { Chip } from '@/components/Chip'
 import { FormatIcon, type FormatIconName } from '@/components/FormatIcon'
+import { CommandIcon } from './ComposerCommandPicker'
 import { MessageAttachment } from './MessageAttachment'
 import { MessageBubble, type MessageDetails, type MessageJoins } from './MessageBubble'
 
@@ -10,7 +11,8 @@ export type UserMessagePart =
   | { type: 'text'; text: string }
   | { type: 'capsule'; title: string; url?: string }
   | { type: 'format'; noun: string; icon: FormatIconName }
-  | { type: 'command'; name: string }
+  /** A skill, or with `builtin` a command of the app's own, as it was typed. */
+  | { type: 'command'; name: string; builtin?: boolean }
 
 export type UserMessageAttachment = { id: string; name: string; mimeType: string; content?: Uint8Array }
 
@@ -45,7 +47,8 @@ const Part = ({ part }: { part: UserMessagePart }) => {
     case 'format':
       return <Chip icon={<FormatIcon name={part.icon} />}>{part.noun}</Chip>
     case 'command':
-      return <Chip>/{part.name}</Chip>
+      // As typed, with its mark before it, so it reads as the skill and not as words.
+      return <Chip icon={<CommandIcon command={{ kind: part.builtin ? 'builtin' : 'skill', name: part.name }} />}>/{part.name}</Chip>
   }
 }
 

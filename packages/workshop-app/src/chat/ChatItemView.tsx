@@ -109,6 +109,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       return (
         <AssistantMessage
           text={item.text}
+          skills={item.skills}
           joins={joins}
           onReply={() => handlers.onReply(item)}
           goBack={goBackOf(item.goBack, handlers)}
