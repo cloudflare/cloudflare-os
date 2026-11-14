@@ -581,8 +581,6 @@ async function computeSessionAffinity(gadgetId: string, chatId: number): Promise
   return new Uint8Array(hash).toHex();
 }
 
-const callerChatId = (caller: GatekeeperCaller) => "chatId" in caller ? caller.chatId : undefined;
-
 function actionRecordToLog(record: ActionRecord): ActionLogEntry {
   // TODO: ActionRecord and ActionLogEntry are almost identical. The main difference is that
   // ActionRecord includes `action`, which should NOT be provided to the client. We could make
@@ -608,7 +606,6 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         state: record.state,
         type: "observation",
         description,
-        chatId: callerChatId(record.caller),
       };
     }
     case "action":
@@ -628,7 +625,6 @@ function actionRecordToLog(record: ActionRecord): ActionLogEntry {
         resolvedBy: record.resolvedBy,
         autoApproved: record.autoApproved,
         creation: record.action === "create" || undefined,
-        chatId: callerChatId(record.caller),
         gadgetId: record.caller.from === "gadget" || record.caller.from === "hook"
             ? record.caller.gadgetId : undefined,
       };
@@ -13026,7 +13022,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // @ts-expect-error An RpcTarget implementing the interface works in place of a stub, but the
     //     type system doesn't know this.
     return new GadgetClientImpl(this.impl, record.id, this.clientUserId,
-        this.#mintedCapabilityKind());
+        this.#mintedCapabilityHolder());
   }
 
   // A "build" session was verified for everything when the workspace opened, so there is nothing
