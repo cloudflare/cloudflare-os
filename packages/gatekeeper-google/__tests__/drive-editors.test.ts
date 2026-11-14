@@ -7,7 +7,9 @@ import {
   editorOfTag, EDIT_IN_TRASH, EDIT_NOT_ALLOWED, EDIT_OUT_OF_ORDER, EDIT_OUT_OF_SCOPE, onDriveFile,
   type DriveEdit, type DriveEditorsHost,
 } from "../src/drive-editors";
-import { GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
+import { GOOGLE_DOC_MIME_TYPE, GOOGLE_SLIDES_MIME_TYPE } from "../src/drive-session";
+import { MARKDOWN_RENDERING_VERSION } from "../src/markdown-converter";
+import { buildTab } from "./doc-fixture";
 import { DEPLOYMENT_READ_ONLY, WRITES_GRANT_MISSING } from "../src/drive-writes";
 import { SLIDES_DEFINITIONS, type SlidesHost } from "../src/slides-actions";
 import type { SlidesActions } from "../src/slides-simulation";
@@ -314,5 +316,66 @@ describe("a Drive binding's edits, proved again where they apply", () => {
     await expect(fileEditors.prove("slides", TARGET, 1)).rejects.toBeInstanceOf(ActionApplyError);
     node = { id: "deck-1", mimeType: GOOGLE_SLIDES_MIME_TYPE, trashed: false, canEdit: true };
     await expect(fileEditors.prove("slides", TARGET, 1)).resolves.toBeUndefined();
+  });
+});
+
+describe("a Doc edited through Drive, read again after an approval", () => {
+  // Another session can queue an edit checked against a newer revision while that read is out:
+  // replayed over the older answer, the valid edit would fail for good.
+  it("reads again when an edit is queued while the read is out", async () => {
+    let revisions: { revisionId: string; text: string }[] = [];
+    let release: (() => void) | undefined;
+    let reads = 0;
+    let docs = {
+      getDocument: async () => {
+        reads++;
+        let { revisionId, text } = revisions[0];
+        if (reads === 1) await new Promise<void>(resolve => { release = resolve; });
+        return {
+          documentId: "doc-1", title: "Plan", revisionId,
+          tabs: [{ ...buildTab([{ runs: [`${text}\n`] }]), title: "Main" }],
+        };
+      },
+    } as unknown as GoogleDocsApi;
+    let journal = new ActionJournal<DriveAction>(new FakeKv(), { namespace: "drive" });
+    let fileEditors = new DriveFileEditors({
+      kv: new FakeKv(),
+      sheets: {} as GoogleSheetsApi,
+      docs,
+      drive: { getFile: () => Promise.reject(new Error("No file is read here.")) },
+      journal,
+      submit: async () => { throw new Error("Nothing is submitted here."); },
+      apply: async id => { journal.retire(id); },
+      reject: async id => { journal.remove(id); },
+      writeRefusal: async () => undefined,
+      locate: async target => ({
+        id: target.fileId, mimeType: GOOGLE_DOC_MIME_TYPE, trashed: false, canEdit: true,
+      }),
+    });
+    let base = {
+      tabId: "tab-1", submittedAt: 0, markdownVersion: MARKDOWN_RENDERING_VERSION, display: { tab: "x" },
+    };
+    let queue = (change: object) => {
+      let id = journal.allocate({ kind: (change as { type: string }).type,
+        payload: { target: { fileId: "doc-1" }, change } } as DriveAction);
+      journal.markSubmitted(id);
+      return id;
+    };
+    let first = queue({ ...base, type: "appendText", markdown: "One", writeId: "w1" });
+    queue({ ...base, type: "appendText", markdown: "Two", writeId: "w2" });
+
+    revisions.push({ revisionId: "r2", text: "Draft\n\nOne" });
+    let applying = fileEditors.apply(first);
+    await vi.waitFor(() => expect(release).toBeDefined());
+    // A collaborator adds text, and another session queues an edit of it against that revision.
+    revisions[0] = { revisionId: "r3", text: "Draft\n\nOne\n\nExternal" };
+    let replacement = queue({
+      ...base, type: "replaceText", oldMarkdown: "External", newMarkdown: "Final", writeId: "w3",
+    });
+    release!();
+    await applying;
+
+    expect(reads).toBe(2);
+    expect(journal.get(replacement)).toMatchObject({ state: "pending" });
   });
 });

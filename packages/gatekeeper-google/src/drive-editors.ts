@@ -266,6 +266,9 @@ export const SHEETS_STATE_PREFIX = "driveSheets:file:";
  */
 export const DOC_RECEIPT_PREFIX = "driveDocs:receipt:";
 
+/** How often a Doc is read again after an approval while its queue keeps moving. */
+const MAX_REFRESHES = 3;
+
 /** How many applied changes a spreadsheet's state remembers, twice the journal's capacity. */
 const MAX_APPLIED = 100;
 
@@ -486,10 +489,20 @@ export class DriveFileEditors {
     this.#docCache(fileId).current = undefined;
     if (this.#docsPending(fileId).length === 0) return;
     try {
-      let snapshot = googleDocSnapshot(await this.#options.docs.getDocument(fileId));
-      invalidateUnreplayableGoogleDocActions(
-        this.#docsInvalidator(), snapshot, this.#docsPending(fileId),
-        `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
+      // An edit queued, or a write landed, while the request is out may have been checked against a
+      // newer revision than the one it answers, so the document is read again. A queue that keeps
+      // moving is left to the next read, which replays it too.
+      let freshness = this.docsFreshness(fileId);
+      for (let attempt = 0; attempt < MAX_REFRESHES; attempt++) {
+        let writes = freshness.writes();
+        let queued = freshness.newestQueued();
+        let snapshot = googleDocSnapshot(await this.#options.docs.getDocument(fileId));
+        if (writes !== freshness.writes() || queued !== freshness.newestQueued()) continue;
+        invalidateUnreplayableGoogleDocActions(
+          this.#docsInvalidator(), snapshot, this.#docsPending(fileId),
+          `Pending Google Doc edits could not be replayed after edit ${actionId} was applied`);
+        return;
+      }
     } catch (error) {
       logger.warn("failed to refresh Google Doc simulation after applying action", {
         event: "google.doc.simulation.refresh.failed", error,
