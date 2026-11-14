@@ -1,0 +1,32 @@
+/* Grows out of where it was clicked (the corner Base UI sets as --transform-origin) on the
+   dropdown menu's spring, which overshoots a touch and settles, while its items fade in on a
+   shorter clock; and leaves quicker than it came. */
+.context-menu {
+  transform-origin: var(--transform-origin);
+  transition:
+    scale 420ms linear(0, 0.18 8%, 0.53 18%, 0.79 30%, 0.94 43%, 1.018 60%, 1.012 74%, 1),
+    opacity 160ms ease-out;
+}
+
+.context-menu[data-starting-style] {
+  scale: 0.6;
+  opacity: 0;
+}
+
+.context-menu[data-ending-style] {
+  scale: 0.9;
+  opacity: 0;
+  transition-duration: 160ms, 140ms;
+  transition-timing-function: ease-in;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .context-menu {
+    transition: opacity 120ms ease-out;
+  }
+
+  .context-menu[data-starting-style],
+  .context-menu[data-ending-style] {
+    scale: none;
+  }
+}

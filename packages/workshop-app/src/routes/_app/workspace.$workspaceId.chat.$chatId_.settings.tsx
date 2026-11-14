@@ -1,10 +1,11 @@
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
-import type { AsideItem } from '@/aside/asideItems'
+import { pageOf } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
 import { asideFor } from '@/aside/useAsideNavigation'
 import { CHAT_SETTINGS_TABS, ChatSettingsPane, type ChatSettingsTab } from '@/chat/ChatSettingsPane'
-import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
+import type { LibraryEntry } from '@/library/libraryEntries'
 import { writeLayoutPrefs } from '@/prefs/layoutPrefs'
+import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
 
 const validateTab = (value: unknown): ChatSettingsTab | undefined =>
   CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'library')?.value
@@ -33,6 +34,11 @@ function ChatSettings() {
   // The chat, with `open` shown beside it.
   const chat = (open: string | undefined) =>
     ({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open } }) as const
+  // Beside the chat, unless it is a file sent in another, whose bytes are reached through that one:
+  // that opens as its own page, shown from there.
+  const elsewhere = (entry: LibraryEntry) => entry.item.kind === 'file' && entry.chatId !== chatId
+  const target = (entry: LibraryEntry) =>
+    elsewhere(entry) ? { ...pageOf(workspaceId, entry.item), search: { chat: entry.chatId } } : chat(entry.item.key)
 
   return (
     <ChatSettingsPane
@@ -60,12 +66,13 @@ function ChatSettings() {
         void navigate(chat(asideFor({ workspaceId, chatId })))
       }}
       onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
-      onOpenItem={(item: AsideItem) => {
-        rememberShown(workspaceId, chatId, item.key)
+      onOpen={(entry) => {
+        if (elsewhere(entry)) return void navigate(target(entry))
+        rememberShown(workspaceId, chatId, entry.item.key)
         writeLayoutPrefs({ asideOpen: true })
-        void navigate(chat(item.key))
+        void navigate(chat(entry.item.key))
       }}
-      itemHref={(item) => router.buildLocation(chat(item.key)).href}
+      href={(entry) => router.buildLocation(target(entry)).href}
     />
   )
 }

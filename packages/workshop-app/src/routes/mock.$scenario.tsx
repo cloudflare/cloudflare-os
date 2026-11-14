@@ -193,7 +193,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, onAlwaysApprove, statu
           onDeleted={() => setSettings(false)}
           onBack={() => setSettings(false)}
           onOpenWorkspace={onOpenScenarios}
-          onOpenItem={(item) => {
+          onOpen={({ item }) => {
             setOpen(item.key)
             setSettings(false)
           }}

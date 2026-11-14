@@ -1,7 +1,11 @@
 import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { pageOf } from '@/aside/asideItems'
 import { asideFor } from '@/aside/useAsideNavigation'
+import type { LibraryEntry } from '@/library/libraryEntries'
 import { WORKSPACE_TABS, WorkspacePane, type WorkspaceTab } from '@/workspaces/WorkspacePane'
+
+// A file is shown from the chat it was sent in, which has its bytes.
+const page = (entry: LibraryEntry) => ({ ...pageOf(entry.workspaceId, entry.item), search: { chat: entry.chatId } })
 
 const validateTab = (value: unknown): WorkspaceTab | undefined =>
   WORKSPACE_TABS.find((tab) => tab.value === value && value !== 'chats')?.value
@@ -36,8 +40,8 @@ function Workspace() {
         })
       }
       chatHref={(id) => router.buildLocation({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId: id } }).href}
-      onOpenItem={(item) => navigate(pageOf(workspaceId, item))}
-      itemHref={(item) => router.buildLocation(pageOf(workspaceId, item)).href}
+      onOpenEntry={(entry) => navigate(page(entry))}
+      entryHref={(entry) => router.buildLocation(page(entry)).href}
       onNewChat={() => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId } })}
       onDeleted={() => navigate({ to: '/', replace: true })}
     />

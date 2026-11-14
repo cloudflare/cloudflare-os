@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { Switch } from '@cloudflare/kumo'
 import { NotePencilIcon, TrashIcon } from '@phosphor-icons/react'
-import type { AsideItem } from '@/aside/asideItems'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { formatCost } from '@/chat/usage'
@@ -14,6 +13,7 @@ import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { useNarrowScreen } from '@/hooks/useNarrowScreen'
 import { PageLayout } from '@/layouts/PageLayout'
+import type { LibraryEntry } from '@/library/libraryEntries'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { WorkspaceChatList } from './WorkspaceChatList'
 import { WorkspaceLibraryList } from './WorkspaceLibraryList'
@@ -40,10 +40,10 @@ export type WorkspacePaneProps = {
   onOpenChat: (chat: { id: number; title: string }) => void
   /** A chat's address, for its row to link to so that it can be opened in another tab. */
   chatHref?: (chatId: number) => string
-  /** Shows something the workspace has made. */
-  onOpenItem: (item: AsideItem) => void
-  /** Where an item opens, for its row to link to so that it can be opened in another tab. */
-  itemHref?: (item: AsideItem) => string
+  /** Shows something the workspace has made, or a file it was sent or worked on. */
+  onOpenEntry: (entry: LibraryEntry) => void
+  /** Where an entry opens, for its row to link to so that it can be opened in another tab. */
+  entryHref?: (entry: LibraryEntry) => string
   onNewChat: () => void
   /** The workspace is gone: go somewhere that is still there. */
   onDeleted: () => void
@@ -54,7 +54,7 @@ export type WorkspacePaneProps = {
  * its chats, what it has made, who has access to it and its settings. Each tab loads what it lists
  * once chosen.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenItem, itemHref, onNewChat, onDeleted }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, onNewChat, onDeleted }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -119,7 +119,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
             <WorkspaceChatList workspaceId={workspaceId} onOpenChat={onOpenChat} chatHref={chatHref} />
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
-            <WorkspaceLibraryList workspaceId={workspaceId} onOpenItem={onOpenItem} itemHref={itemHref} />
+            <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpenEntry} href={entryHref} />
           </Tabs.Panel>
           <Tabs.Panel value="members" className="flex flex-col gap-8">
             <WorkspaceMemberList workspaceId={workspaceId} />
