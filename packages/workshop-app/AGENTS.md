@@ -1,7 +1,8 @@
 # Workshop App
 
 The reworked Workshop frontend, built beside `workshop-frontend` (which stays the shipped app until
-cutover). Scope is deliberately small: chat, chat settings, and the Library and Workspaces pages.
+cutover). Scope is deliberately small: chat, chat settings, the Library and Workspaces pages, sharing, and
+a gadget's own pages.
 Follow `../../AGENTS.md` and the `frontend-conventions` skill in addition to this file.
 
 Dev server: `pnpm --filter @gadgets/workshop-app dev` (port 3001; the old frontend uses 3000).
@@ -123,6 +124,26 @@ grant, and a blueprint's update or the latest accepted changes brought into the 
 for to be looked at first. Those stay proposed. The viewer's own accepts are not marked in the
 conversation, as they are what is expected; someone else's are.
 
+What cannot be kept on its own is asked about once the turn has ended (`ChatSnapshot.keep`,
+`KeepChangesCard`), under the turn's artefacts: what the changes do, a line each
+(`chat/keepChanges.ts`), and why they wait. The question waits 1.5s past the turn's end, so the
+accept that the server makes itself as a turn ends (merge messages marked `automatic`) never
+flashes it. Discarding asks again first. Keeping brings in what was accepted elsewhere when that
+has moved on, and stops at conflicts.
+
+Kept changes can be gone back on (`chat/changePoints.ts`, `Overseer.restoreChanges`): the newest
+undone, an undo redone, an older point returned to. Each restore is a new version on top, so it can
+itself be gone back on. The viewer's own accepts are not marked, so the way back is offered on the
+answer that ended their turn, as a message action; someone else's, and every restore, on its
+divider, as a word after it. Undoing what made a gadget deletes it, which is asked about first.
+
+An action whose gatekeeper allows it can be approved for good (`ActionItem.rule`), once the user
+has been told that it reaches every chat in the workspace, whichever gadget asks.
+
+What another agent reported into the chat (`agentReport`) is said as that agent, with the way to
+the run it came from, and starts no turn. A run of code is named by what the agent said it does
+(`toolCallSummary`) while it runs.
+
 A message sent while the agent works ends the conversation, dimmed, until the agent reads it. It
 is the same row before and after, so being read only brings it to full strength. Its key is its
 place among its turn's steers rather than its sequence, which it has only once read, and
@@ -219,10 +240,59 @@ padding meets share one rounded run, so groups never notch where they meet.
 A workspace's page (`/workspace/<id>`) is laid out as a chat's settings page is: its icon and its
 title, renamed where it is (`EditableTitle`) by whoever may build in it, then tabs (`?tab=`, kept
 in place in the history): its chats, what it has made (the library's, as beside a chat, opening
-as their own pages), and its members, the owner first. Each tab loads what it lists once chosen.
+as their own pages), its members, the owner first, and its settings: its notifications, what it has
+cost, and, for its owner alone, deleting it. Each tab loads what it lists once chosen.
+
+A workspace is made by starting a chat, or on purpose from the Workspaces page
+(`/workspaces/new`, `NewWorkspacePane`): its title is typed where it will be shown, on a folder
+that takes its initials as they are typed. A named workspace is listed at once.
 
 Pages other than a chat (`PageLayout`) float their header over the content, unfilled, with the
 content fading under it as a conversation's does (`.chat-fade`).
+
+## Settings and questions
+
+A settings page is rows in rounded groups (`SettingsGroup`, `SettingsRow`), a control at the end of
+each; one that cannot be undone is in red and asks first (`ConfirmDialog`), holding its buttons
+while it works and staying open under why if it fails. A dialog (`Dialog`) grows in as a card
+arrives in the conversation and dims and makes inert the window beneath. A chat's settings page
+(`?tab=settings`) has its workspace's notifications, which cannot be muted one chat at a time and
+say so, what it has used (`chat/usage.ts`), and deleting it.
+
+## Search and the account
+
+Search (`SearchDialog`, from the sidebar or ⌘K/Ctrl+K anywhere, `routes/-AppSearch.tsx`) finds the
+app's pages and every workspace from the list the sidebar already has, so opening it reads
+nothing. What fits is ranked by `blocks/searchMatches.ts`: a title that starts with what was typed,
+then a word in it that does, then anywhere; a single letter only at a word's start. The arrow keys
+move through it and Enter goes. The sidebar's avatar opens the account menu, which signs out of
+this browser.
+
+## Sharing
+
+Who a workspace or one of its gadgets is shared with is read by a `SharingSession` (`sharing/`),
+one per dialog or page, made with `useSharing` and keyed by what it shares. It opens the workspace
+when started and lets it go when stopped, and over a lost connection it starts again on the new
+one, keeping what is shown. Every change goes through the session, which reads the people again
+afterwards, because one change can narrow what others have and the server says only whose.
+Nothing is taken away without asking the server what it would do first (`previewRemoval`), so
+`RemovalDialog` can name who has access only through that person; they are kept unless ticked.
+What would change nothing is said without asking, by the rules in `sharingRules.ts`, which are
+plain and tested. A link's key travels only in a fragment (`#share=`), which `ShareLinkGate`
+redeems before anything beneath it opens the workspace, and then removes from the address. The
+dialogs say what came of an invite under the field, not in a toast.
+
+## The Library
+
+The Library (`/library`) is everything the user's workspaces made, were sent and worked on, and
+what others shared with them, in three tabs: Favorites, Gadgets and Files (`?tab=`).
+`library/libraryEntries.ts` makes one list from all of these, starred first and what was taken out
+left out; a Google file that was taken out comes back once it is worked on again. Rows are grouped
+by when, or by name, and searched by name. The list or grid and the order are this device's
+(`prefs/`). Everything opens as its own page, a file shown from the chat it was sent in. A
+workspace's Library tab and a chat's settings show the same rows. A star or a removal shows at once
+and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
+whoever builds where it was made.
 
 ## Beside the page
 
@@ -323,6 +393,12 @@ rail down the side of what is scrolled. And they are kept out of sight while the
 while the pointer is in a gap between them (`useScrollbarsAway`): as a pane is resized or slides
 away, what is in it scrolls to keep its place, and the system would show the scrollbar for that,
 as it does for a pointer that is only beside one.
+
+A Google Doc, Sheet or Slides deck is shown as it is (`Overseer.previewResource`), with the changes
+waiting on someone drawn in, and is read only: it is edited in its own editor, through "Open in
+Docs", "Open in Sheets" or "Open in Slides" in the pane's More menu. While it loads, a blank page of
+its kind stands where it will be. Its ref is `connected-<gatekeeper>-<subject>`. Pictures inside it
+are never fetched from elsewhere.
 
 ## On a narrow screen
 
