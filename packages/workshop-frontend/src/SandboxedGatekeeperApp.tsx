@@ -96,6 +96,7 @@ function iframeStyleForOverlay(overlay: OverlayState): CSSProperties {
 // rate-limits. `setPresenting` stays in Workshop and only grows/restores the iframe's layout.
 class GatekeeperAppHostImpl extends RpcTarget {
   readonly #ui: RpcStub<RpcTarget>
+  readonly #downloadPrefix: string
   readonly #disposeRateLimiter: () => void
   readonly #present: PresentController
   readonly #openTarget: OpenTarget
@@ -120,6 +121,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
     resolveWorkspaceTitles: ResolveWorkspaceTitles,
     openUserPicker: OpenUserPicker,
     cancelUserPicker: CancelUserPicker,
+    gatekeeperVendorId: string,
   ) {
     super()
     this.#theme = theme
@@ -131,6 +133,7 @@ class GatekeeperAppHostImpl extends RpcTarget {
       label: 'Gatekeeper app',
     })
     this.#ui = ui
+    this.#downloadPrefix = `/gatekeeper/${encodeURIComponent(gatekeeperVendorId)}/`
     this.#disposeRateLimiter = dispose
     this.#present = present
     this.#openTarget = openTarget
@@ -142,6 +145,33 @@ class GatekeeperAppHostImpl extends RpcTarget {
 
   get ui(): RpcStub<RpcTarget> {
     return this.#ui
+  }
+
+  // The opaque-origin frame cannot perform authenticated attachment navigation. Keep the download
+  // in the trusted host, scoped to this vendor's route; never pass attachment contents to the frame.
+  downloadFile(url: string): void {
+    let target: URL
+    try {
+      if (typeof url !== 'string') throw new TypeError()
+      target = new URL(url)
+    } catch {
+      throw new TypeError('Invalid gatekeeper download URL.')
+    }
+    if (target.origin !== window.location.origin
+      || !target.pathname.startsWith(this.#downloadPrefix)
+      || target.username || target.password || target.search || target.hash) {
+      throw new TypeError('Invalid gatekeeper download URL.')
+    }
+    const anchor = document.createElement('a')
+    anchor.href = target.href
+    anchor.download = ''
+    anchor.referrerPolicy = 'no-referrer'
+    document.body.append(anchor)
+    try {
+      anchor.click()
+    } finally {
+      anchor.remove()
+    }
   }
 
   // Navigate to a workspace the app knows about. The IDs are validated here because the app is
@@ -410,6 +440,7 @@ export default function SandboxedGatekeeperApp({ frame, gatekeeperVendorId }: {
         resolveWorkspaceTitles,
         openUserPicker,
         cancelUserPicker,
+        gatekeeperVendorId,
       )
       hostRef.current = host
       sessionRef.current = newMessagePortRpcSession(port, host)
