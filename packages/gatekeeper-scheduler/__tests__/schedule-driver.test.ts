@@ -287,6 +287,7 @@ describe("ScheduleDriver", () => {
       title: "Initial title",
       description: "Test capability replacement.",
       gadgetId,
+      hookId: 12,
     };
     await enableSchedule(driver, activation, activationTime);
     await enableSchedule(driver, { ...activation, gadgetId: 7 }, activationTime + 1);
@@ -312,6 +313,7 @@ describe("ScheduleDriver", () => {
           scheduleId: "schedule-a",
           workspaceId: "workspace-a",
           gadgetId: 7,
+          hookId: 12,
         }),
       ],
     });

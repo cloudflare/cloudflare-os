@@ -168,6 +168,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       const { hookId } = item
       return (
         <HookCard
+          schedule={item.schedule}
           title={item.title}
           description={item.description}
           resource={item.resource}

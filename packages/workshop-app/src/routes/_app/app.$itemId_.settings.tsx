@@ -1,11 +1,12 @@
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { parseItemPageId } from '@/aside/asideItems'
 import { GADGET_SETTINGS_TABS, GadgetSettingsPane, type GadgetSettingsTab } from '@/gadgets/GadgetSettingsPane'
+import { useAutomationLink } from '../-automationLink'
 
 const validateTab = (value: unknown): GadgetSettingsTab | undefined =>
   GADGET_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'settings')?.value
 
-/** A gadget's own settings, from its More or full screen: with `?tab=`, what it is connected to. */
+/** A gadget's own settings, from its More or full screen: with `?tab=`, what it is connected to, or its automations. */
 export const Route = createFileRoute('/_app/app/$itemId_/settings')({
   params: {
     parse: ({ itemId }) => {
@@ -25,6 +26,7 @@ function GadgetSettings() {
   const initialTitle = useLocation({ select: (location) => location.state.gadgetTitle })
   const navigate = useNavigate()
   const router = useRouter()
+  const automationLink = useAutomationLink()
   const { workspaceId, ref } = parseItemPageId(itemId)!
   const workpieceId = ref.kind === 'output' ? ref.workpieceId : -1
   const gadget = { to: '/app/$itemId', params: { itemId } } as const
@@ -46,6 +48,7 @@ function GadgetSettings() {
       onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library' }, replace: true })}
       onOpenConnections={() => navigate({ to: '/connections' })}
       link={new URL(router.buildLocation(gadget).href, window.location.origin).href}
+      automationLink={automationLink}
     />
   )
 }

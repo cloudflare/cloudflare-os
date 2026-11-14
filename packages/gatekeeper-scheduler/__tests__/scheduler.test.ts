@@ -264,12 +264,13 @@ describe("schedule hook controller", () => {
       { enable },
       {
         workspaceId: "workspace-a",
+        hookId: 9,
         gadgetId: 3,
       },
     );
 
     const { accountId: _accountId, ...activation } = props;
-    expect(enable).toHaveBeenCalledWith({ ...activation, gadgetId: 3 }, initiator);
+    expect(enable).toHaveBeenCalledWith({ ...activation, hookId: 9, gadgetId: 3 }, initiator);
   });
 
   it("omits the gadget ID when the hook is not pinned to one", async () => {
@@ -287,7 +288,7 @@ describe("schedule hook controller", () => {
       },
       initiator,
       { enable },
-      { workspaceId: "workspace-a" },
+      { workspaceId: "workspace-a", hookId: 9 },
     );
 
     expect(enable.mock.calls[0]![0]).not.toHaveProperty("gadgetId");

@@ -37,6 +37,8 @@ src/
   sharing/      Who a workspace or a gadget is shared with, and the dialogs that change it
   gadgets/      One gadget's own pages: its settings, what it is connected to
   connections/  The user's connected services, and connecting another
+  skills/       The user's skills, in Context Library collections
+  automations/  What runs by itself: hooks, joined with the scheduler's schedules
 
   files/        What a file is, from its name and type; plain functions any layer may use
   prefs/        What is kept on this device between visits (layout); plain, any layer may use
@@ -45,7 +47,7 @@ src/
 
 UI imports point down only: components and hooks, then blocks, then layouts, then routes. The data
 folders (`rpc/`, `workspaces/`, `chat/`, `aside/`, `library/`, `sharing/`, `gadgets/`,
-`connections/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
+`connections/`, `skills/`, `automations/`) are the only code that talks to the backend: UI layers cannot import them, and they cannot import routes. `files/` and `prefs/` are
 beneath everything and import neither UI nor data, and nothing that ships imports `gallery/`. Lint
 enforces all of it (`vite.config.ts` at the repo root), by alias and by relative path alike. Blocks
 and layouts take plain typed props and callbacks.
@@ -297,7 +299,7 @@ dialogs say what came of an invite under the field, not in a toast.
 ## The Library
 
 The Library (`/library`) is everything the user's workspaces made, were sent and worked on, and
-what others shared with them, in tabs: Favorites, Gadgets, Files and Skills (`?tab=`).
+what others shared with them, in tabs: Favorites, Gadgets, Files, Automations and Skills (`?tab=`).
 `library/libraryEntries.ts` makes one list from all of these, starred first and what was taken out
 left out; a Google file that was taken out comes back once it is worked on again. Rows are grouped
 by when, or by name, and searched by name. The list or grid and the order are this device's
@@ -336,6 +338,21 @@ which for a skill is its document id). A new chat offers the Library's skills an
 the workspace it makes (`startConversation`). "Use in a chat" goes home with `useSkill` in the
 history state. A skill the agent read itself is its step and a line on the reply
 (`ObservationDescription.skill`, `AssistantItem.skills`).
+
+## Automations
+
+An automation is a hook (`listHooks`), which a scheduled task is too. `automations/AutomationsList`
+reads the hooks of some workspaces, four at a time, and joins each schedule to its hook from the
+scheduler's management app (`getGatekeeperApp('scheduler').ui`, pipelined so the frame's HTML never
+comes; its one cast is there): by `hookId`, or by title for one enabled before that was kept. A
+paused schedule has no schedule (the scheduler forgets it while off) and is known by
+`BoundHookInfo.vendorId`. `cadence.ts` says when it runs and when next, on the schedule's clock
+when its cadence names another time zone. `AutomationsTab` lists them, grouped Scheduled and When
+something happens, on the Library (every workspace the user builds in), a workspace's page, a
+chat's settings (what runs in it, and what its cards set up) and a gadget's settings (what runs its
+code). A switch shows at once and is undone with why if refused; Delete asks first. Routes give the
+tab `useAutomationLink` (`routes/-automationLink.ts`), so a row opens where it reports. The chat's
+header has a clock while its cards show an automation, which opens the chat's tab.
 
 ## Connections
 

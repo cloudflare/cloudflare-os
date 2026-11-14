@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Switch } from '@cloudflare/kumo'
 import { NotePencilIcon, TrashIcon, UserPlusIcon } from '@phosphor-icons/react'
+import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { formatCost } from '@/chat/usage'
@@ -28,11 +29,12 @@ import { workspaceLabel } from './workspaceLabel'
 import { workspaceMembers } from './workspaceMembers'
 
 /** What a workspace's page shows beneath its title. */
-export type WorkspaceTab = 'chats' | 'library' | 'members' | 'settings'
+export type WorkspaceTab = 'chats' | 'library' | 'automations' | 'members' | 'settings'
 
 export const WORKSPACE_TABS: { value: WorkspaceTab; label: string }[] = [
   { value: 'chats', label: 'Chats' },
   { value: 'library', label: 'Library' },
+  { value: 'automations', label: 'Automations' },
   { value: 'members', label: 'Members' },
   { value: 'settings', label: 'Settings' },
 ]
@@ -50,6 +52,8 @@ export type WorkspacePaneProps = {
   onOpenEntry: (entry: LibraryEntry) => void
   /** Where an entry opens, for its row to link to so that it can be opened in another tab. */
   entryHref?: (entry: LibraryEntry) => string
+  /** Where an automation reports, for its row to open and link to. */
+  automationLink: AutomationLink
   onNewChat: () => void
   /** The workspace is gone: go somewhere that is still there. */
   onDeleted: () => void
@@ -61,11 +65,12 @@ const WHOLE_WORKSPACE = {}
 
 /**
  * One workspace: its title, which can be renamed, the way to start a chat in it, who it is shared
- * with and the way to invite more, and, a tab each, its chats, what it has made, who has access to
- * it and its settings. Each of the chats and library tabs loads what it lists once chosen; who has
+ * with and the way to invite more, and, a tab each, its chats, what it has made, what runs by
+ * itself, who has access to it and its settings. Each of the chats, library and automations tabs
+ * loads what it lists once chosen; who has
  * access is read with the page, for its header.
  */
-export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, onNewChat, onDeleted, link }: WorkspacePaneProps) => {
+export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenEntry, entryHref, automationLink, onNewChat, onDeleted, link }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const title = workspace?.title
@@ -159,6 +164,16 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
           </Tabs.Panel>
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpenEntry} href={entryHref} />
+          </Tabs.Panel>
+          <Tabs.Panel value="automations" className="flex flex-col gap-8">
+            {tab === 'automations' && (
+              <AutomationsTab
+                workspaceIds={[workspaceId]}
+                canChange={() => workspace !== undefined && workspace.role !== 'use'}
+                link={automationLink}
+                empty="Nothing runs by itself here yet. Ask in a chat for something to happen on a schedule, or when something arrives."
+              />
+            )}
           </Tabs.Panel>
           <Tabs.Panel value="members" className="flex flex-col gap-8">
             <WorkspaceMemberList {...sharing} />

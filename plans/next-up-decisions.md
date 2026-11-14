@@ -96,8 +96,20 @@ settings each have an Automations tab with theirs. A card says what it does, whe
 words ("Every weekday at 9:00 · next tomorrow"), where it reports, and has its switch and Delete.
 The chat's header shows a clock while it has one.
 
+As built, an automation is a settings row rather than a card (`AutomationRow`, in a `ListGroup`
+under "Scheduled" or "When something happens"), since a tab of them is a list to scan: a clock or a
+bolt, the name, "Every weekday at 9:00 AM · next tomorrow at 9:00 AM" (on the schedule's own clock
+when it is kept in another time zone, which the cadence names), what it does, and where it reports
+as a link. A retry and a stop are said in the warning colour; a paused one dims and says Paused.
+The Library's tab reads every workspace the user builds in (one only looked at keeps its hooks to
+itself), four at a time, and is searched and ordered with the Library's toolbar. A chat's tab has
+what runs in it and what its cards set up for a gadget; a gadget's, what runs its code, moved off
+its Connections tab. The chat's own card now says a schedule with a clock and drops "Hook:".
+There is no "New automation" button: one is set up by asking a chat, which already knows how.
+
 **Kernel.** `HookTargetMetadata.hookId`, which the scheduler keeps and its management list returns,
-so a schedule is matched to its hook exactly.
+so a schedule is matched to its hook exactly; and `BoundHookInfo.vendorId`, so a paused schedule,
+which the scheduler forgets while it is off, is still known as one. Built.
 
 ## 4. Adding connections to a chat or a gadget
 

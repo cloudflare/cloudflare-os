@@ -6,11 +6,12 @@ import { CHAT_SETTINGS_TABS, ChatSettingsPane, type ChatSettingsTab } from '@/ch
 import type { LibraryEntry } from '@/library/libraryEntries'
 import { writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useRefreshWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useAutomationLink } from '../-automationLink'
 
 const validateTab = (value: unknown): ChatSettingsTab | undefined =>
   CHAT_SETTINGS_TABS.find((tab) => tab.value === value && value !== 'library')?.value
 
-/** A chat's settings, opened from its title: what was made beside it, or with `?tab=`, its settings. */
+/** A chat's settings, opened from its title: what was made beside it, or with `?tab=`, its automations or its settings. */
 export const Route = createFileRoute('/_app/workspace/$workspaceId/chat/$chatId_/settings')({
   params: {
     parse: ({ workspaceId, chatId }) => {
@@ -31,6 +32,7 @@ function ChatSettings() {
   const initialTitle = useLocation({ select: (location) => location.state.chatTitle })
   const navigate = useNavigate()
   const router = useRouter()
+  const automationLink = useAutomationLink()
   // The chat, with `open` shown beside it.
   const chat = (open: string | undefined) =>
     ({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId }, search: { open } }) as const
@@ -47,6 +49,7 @@ function ChatSettings() {
       chatId={chatId}
       initialTitle={initialTitle}
       tab={tab}
+      automationLink={automationLink}
       // In place, so that going back leaves the settings rather than going through their tabs.
       onTabChange={(next) =>
         navigate({

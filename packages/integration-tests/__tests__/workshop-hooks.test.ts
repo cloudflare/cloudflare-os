@@ -137,9 +137,11 @@ it("an enabled hook fires into a restarted workspace; disabled and deleted hooks
 
   expect(await hookState(keys.live)).toEqual({
     enabled: true,
-    target: { workspaceId, gadgetId: hooks.live.gadgetId },
+    target: { workspaceId, hookId: hooks.live.id, gadgetId: hooks.live.gadgetId },
     disableCount: 0,
   });
+  // Listed with the service that delivers it, so the Workshop can show each hook with it.
+  expect(hooks.live.vendorId).toBe(TEST_VENDOR_ID);
 
   await ws.disableHook(hooks.paused.id);
   await ws.deleteHook(hooks.removed.id);

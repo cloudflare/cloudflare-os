@@ -59,6 +59,8 @@ export type ScheduleActivation = ScheduleRegistration & {
   description: string;
   /** The gadget the hook delivers into, when the hook is pinned to one. */
   gadgetId?: number;
+  /** The Workshop hook this schedule is (`HookTargetMetadata.hookId`). */
+  hookId?: number;
 };
 
 export type StoredSchedule = {
@@ -67,6 +69,8 @@ export type StoredSchedule = {
   title: string;
   description: string;
   gadgetId?: number;
+  /** Absent for a schedule enabled before the Workshop said which hook it is. */
+  hookId?: number;
 };
 
 type PreparedRun = {
@@ -117,6 +121,7 @@ export class ScheduleDriver extends DurableObject {
             title: activation.title,
             description: activation.description,
             gadgetId: activation.gadgetId,
+            hookId: activation.hookId,
           });
         } else {
           this.#assertScheduleQuota(activation.workspaceId);
@@ -127,6 +132,7 @@ export class ScheduleDriver extends DurableObject {
             title: activation.title,
             description: activation.description,
             ...(activation.gadgetId !== undefined ? { gadgetId: activation.gadgetId } : {}),
+            ...(activation.hookId !== undefined ? { hookId: activation.hookId } : {}),
           });
         }
         // A schedule already terminal here — a lapsed bound, or a repeated enable of a finished
@@ -204,6 +210,7 @@ export class ScheduleDriver extends DurableObject {
           ...toScheduleSummary(schedule),
           workspaceId: schedule.state.workspaceId,
           ...(schedule.gadgetId !== undefined ? { gadgetId: schedule.gadgetId } : {}),
+          ...(schedule.hookId !== undefined ? { hookId: schedule.hookId } : {}),
         },
       })),
       options,

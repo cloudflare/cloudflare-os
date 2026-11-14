@@ -339,4 +339,11 @@ list it here, so it is known what workshop-app needs from the kernel.
   (`renderGadgetInBrowser` takes a viewport) and keeps the JPEG per commit in the overseer's
   `thumbnails` table, failures included, so the Library's tiles show the gadget itself. It is null
   where there is no browser binding, and a view-only client is refused it as it is `export()`.
+- **Which schedule a hook is, and whose.** A schedule could only be matched to its hook by its
+  title, and a hook did not say which service delivers it, so a paused schedule (which the
+  scheduler forgets while it is off) looked like any other hook. Now `HookTargetMetadata.hookId`
+  is passed to `HookController.enable()` (optional, so a gatekeeper deployed ahead of the Workshop
+  still accepts it), the scheduler keeps it and its management list returns it, and
+  `BoundHookInfo.vendorId` names the hook's service from the vendor the hook record already kept.
+  The Automations tabs join the two exactly, falling back to the title for schedules enabled before.
 

@@ -5,6 +5,7 @@ import type {
   AiChatMessage,
   AiChatMetadata,
   AiChatSubscriber,
+  BoundHookInfo,
   ChatAttachmentHandle,
   ChatAttachmentRef,
   PresenceSubscriber,
@@ -300,6 +301,33 @@ export class MockOverseer {
     const pending = this.#messages.filter((message) => this.#autoApproves(message))
     for (const { actionId } of pending) this.#resolve(actionId, { state: 'approved', resolvedBy: VIEWER, autoApproved: true })
     if (pending.length) this.player.fire('onApprove')
+  }
+
+  /**
+   * The hooks the script's cards bound, each run in the scripted chat; one bound to "Scheduled
+   * Tasks" is the scheduler's.
+   */
+  async listHooks(): Promise<BoundHookInfo[]> {
+    return this.#messages.flatMap((message) => {
+      const log = message.type === 'action' ? message.actionLog : undefined
+      if (log?.type !== 'bindHook' || log.hookId === undefined) return []
+      return [{
+        id: log.hookId,
+        gatekeeperId: log.gatekeeperId ?? 0,
+        vendorId: log.resourceTitle === 'Scheduled Tasks' ? 'scheduler' : undefined,
+        gadgetId: 1,
+        chatId: CHAT_ID,
+        resourceTitle: log.resourceTitle,
+        resourceUrl: log.resourceUrl,
+        description: log.description,
+        enabled: log.enabled,
+      }]
+    })
+  }
+
+  async deleteHook(id: number) {
+    const { message, log } = this.#action((candidate) => candidate.type === 'bindHook' && candidate.hookId === id)
+    if (log.type === 'bindHook') this.#updateAction(message, { ...log, hookId: undefined, enabled: false })
   }
 
   async enableHook(id: number) {

@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { CaretLeftIcon, ExportIcon, ShapesIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
+import { ofGadget } from '@/automations/automations'
+import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BindingRow } from '@/blocks/BindingRow'
 import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
-import { HookCard } from '@/blocks/HookCard'
 import { ListGroup } from '@/blocks/ListGroup'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { PublishBlueprintDialog } from '@/blocks/PublishBlueprintDialog'
@@ -26,6 +27,7 @@ import { useBlueprintDescription, useGadgetSettings } from './useGadgetSettings'
 export const GADGET_SETTINGS_TABS = [
   { value: 'settings', label: 'Settings' },
   { value: 'connections', label: 'Connections' },
+  { value: 'automations', label: 'Automations' },
 ] as const
 
 export type GadgetSettingsTab = (typeof GADGET_SETTINGS_TABS)[number]['value']
@@ -44,6 +46,8 @@ export type GadgetSettingsPaneProps = {
   onOpenConnections: () => void
   /** Its own address: what its share link lets people in to, and what whoever has no access asks for. */
   link: string
+  /** Where an automation reports, for its row to open and link to. */
+  automationLink: AutomationLink
 }
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
@@ -57,11 +61,12 @@ const ListState = ({ list, what }: { list: Listed<unknown>; what: string }) =>
  * A gadget's own settings (from its More, or full screen), laid out as a chat's are: back to it,
  * what kind it is, its title, renamed in place by whoever may build in its workspace, and what its
  * blueprint says it is for. Then tabs (`?tab=`): who has it, publishing it as a blueprint and
- * deleting it; and what it is connected to, with the automations that run it.
+ * deleting it; what it is connected to; and the automations that run its code.
  */
 export const GadgetSettingsPane = ({
-  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenConnections, link,
+  workspaceId, workpieceId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenConnections, link, automationLink,
 }: GadgetSettingsPaneProps) => {
+  const own = useMemo(() => ofGadget(workpieceId), [workpieceId])
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -198,25 +203,17 @@ export const GadgetSettingsPane = ({
                   </ListGroup>
                 ))}
               </section>
-              <section className="flex flex-col gap-2">
-                <h2 className="px-4 text-sm font-medium text-kumo-subtle">Automations</h2>
-                <ListState list={snapshot.hooks} what="its automations" />
-                {snapshot.hooks.status === 'ready' && (snapshot.hooks.items.length === 0 ? (
-                  <p className="px-4 text-base text-kumo-subtle">None yet. What the agent sets up to run it when something happens shows here.</p>
-                ) : snapshot.hooks.items.map((hook) => (
-                  <HookCard
-                    key={hook.id}
-                    title={hook.description.title}
-                    description={hook.description.description}
-                    resource={hook.resourceTitle ? { title: hook.resourceTitle, url: hook.resourceUrl } : undefined}
-                    enabled={hook.enabled}
-                    onEnabledChange={builds ? async (enabled) => {
-                      if (connection?.blocked()) return
-                      await settings.setHookEnabled(hook.id, enabled)
-                    } : undefined}
-                  />
-                )))}
-              </section>
+            </Tabs.Panel>
+            <Tabs.Panel value="automations" className="flex flex-col gap-8">
+              {tab === 'automations' && (
+                <AutomationsTab
+                  workspaceIds={[workspaceId]}
+                  filter={own}
+                  canChange={() => builds}
+                  link={automationLink}
+                  empty="Nothing runs this gadget by itself yet. Ask in a chat for it to run on a schedule, or when something arrives."
+                />
+              )}
             </Tabs.Panel>
           </Tabs>
         )}

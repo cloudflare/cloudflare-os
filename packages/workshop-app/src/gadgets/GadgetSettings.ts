@@ -2,11 +2,9 @@ import { RpcTarget } from 'capnweb'
 import {
   getOpenWorkspaceErrorCode,
   OPEN_WORKSPACE_ERROR_CODES,
-  type BoundHookInfo,
   type GadgetBindingInfo,
   type GadgetClient,
   type GadgetFormat,
-  type Overseer,
   type WorkpieceSummary,
   type WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
@@ -29,15 +27,13 @@ export type GadgetSettingsSnapshot =
     gadget: GadgetSummary
     /** What it is bound to, by the name its code knows each by (`env.NAME`). */
     bindings: Listed<GadgetBindingInfo>
-    /** What the agent set up to run it when an event arrives. */
-    hooks: Listed<BoundHookInfo>
   }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
 export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'unbind' | 'createBlueprint'> & Disposable
 
 /** The part of a workspace's Overseer the settings use, and the lease that must be disposed. */
-export type SettingsOverseer = Pick<Overseer, 'listHooks' | 'deleteHook' | 'enableHook' | 'disableHook'> & {
+export type SettingsOverseer = {
   getGadget(id: number): SettingsGadget
   subscribeToWorkpieces(subscriber: WorkpiecesSubscriber & RpcTarget): Promise<Disposable>
   /** Calls `callback` once the workspace can no longer be reached through this, such as when it restarted. */
@@ -76,7 +72,8 @@ class SummaryListener extends RpcTarget implements WorkpiecesSubscriber {
 
 /**
  * One gadget's settings, live: what it is (`subscribeToWorkpieces()`, so a new title shows as it is
- * given, wherever), what it is bound to, and the hooks that run it, with what can be done to each.
+ * given, wherever) and what it is bound to, with what can be done to each. Its automations are an
+ * `AutomationsList`'s.
  * Observable through `subscribe`/`getSnapshot`. Nothing happens until `start()`; `stop()` lets the
  * workspace go, and `restart()` starts over on a new connection, keeping what is shown meanwhile.
  *
@@ -125,7 +122,7 @@ export class GadgetSettings {
         const first = !this.#seen
         this.#seen = true
         const current = this.#snapshot
-        this.#publish(current.status === 'ready' ? { ...current, gadget: summary } : { status: 'ready', gadget: summary, bindings: { status: 'loading' }, hooks: { status: 'loading' } })
+        this.#publish(current.status === 'ready' ? { ...current, gadget: summary } : { status: 'ready', gadget: summary, bindings: { status: 'loading' } })
         if (first) this.#readLists(run)
       } else if (!ready || !this.#seen) {
         this.#publish({ status: 'gone' })
@@ -176,41 +173,21 @@ export class GadgetSettings {
     this.#readLists(this.#run)
   }
 
-  deleteHook = async (id: number) => {
-    await this.#withOverseer((overseer) => overseer.deleteHook(id))
-    this.#readLists(this.#run)
-  }
-
-  setHookEnabled = async (id: number, enabled: boolean) => {
-    await this.#withOverseer((overseer) => (enabled ? overseer.enableHook(id) : overseer.disableHook(id)))
-    this.#readLists(this.#run)
-  }
-
   #with<T>(call: (gadget: SettingsGadget) => Promise<T>) {
     if (!this.#gadget) return Promise.reject(new Error('The gadget is still loading.'))
     return call(this.#gadget)
   }
 
-  #withOverseer<T>(call: (overseer: SettingsOverseer) => Promise<T>) {
-    if (!this.#overseer) return Promise.reject(new Error('The gadget is still loading.'))
-    return call(this.#overseer)
-  }
-
   #readLists(run: number) {
     const gadget = this.#gadget
-    const overseer = this.#overseer
-    if (!gadget || !overseer) return
+    if (!gadget) return
     gadget.listBindings().then(
       (items) => this.#update(run, { bindings: { status: 'ready', items } }),
       (error: unknown) => this.#update(run, { bindings: failed(error) }),
     )
-    overseer.listHooks().then(
-      (hooks) => this.#update(run, { hooks: { status: 'ready', items: hooks.filter(({ gadgetId }) => gadgetId === this.workpieceId) } }),
-      (error: unknown) => this.#update(run, { hooks: failed(error) }),
-    )
   }
 
-  #update(run: number, lists: { bindings?: Listed<GadgetBindingInfo>; hooks?: Listed<BoundHookInfo> }) {
+  #update(run: number, lists: { bindings?: Listed<GadgetBindingInfo> }) {
     const current = this.#snapshot
     if (run !== this.#run || current.status !== 'ready') return
     // Over a lost connection, what was read stays up until it is read again.

@@ -115,8 +115,9 @@ choose UTC.
 
 Registration only binds a Workshop hook; it writes no schedule row. The Workshop enables the hook at
 once when the user's own turn bound it, and otherwise leaves it for the user. Enabling records the
-target workspace ID and optional gadget ID, then creates the account-driver row and arms its alarm.
-Disabling removes the row and its stored capabilities. Re-enabling creates fresh active state,
+target workspace ID, the Workshop's hook ID (which the management list returns, so the Workshop can
+show each schedule with its hook's switch) and optional gadget ID, then creates the account-driver
+row and arms its alarm. Disabling removes the row and its stored capabilities. Re-enabling creates fresh active state,
 preserves the original recurrence phase, and does not replay missed work. A repeated enable while
 the row still exists instead preserves its current schedule state and refreshes its activation details.
 

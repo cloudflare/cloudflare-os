@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@gadgets/gatekeeper-context": "workspace:*",
+    "@gadgets/gatekeeper-scheduler": "workspace:*",
     "@gadgets/scripts": "workspace:*",
     "@tanstack/router-plugin": "^1.168.40",
     "@types/react": "^19.2.18",

@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Switch } from '@cloudflare/kumo'
 import { CaretLeftIcon, TrashIcon } from '@phosphor-icons/react'
+import { inChat } from '@/automations/automations'
+import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
 import { Button } from '@/components/Button'
@@ -20,10 +22,11 @@ import { formatUsage } from './usage'
 import { useChatSession } from './useChatSession'
 
 /** What a chat's settings page shows beneath its title. */
-export type ChatSettingsTab = 'library' | 'settings'
+export type ChatSettingsTab = 'library' | 'automations' | 'settings'
 
 export const CHAT_SETTINGS_TABS: { value: ChatSettingsTab; label: string }[] = [
   { value: 'library', label: 'Library' },
+  { value: 'automations', label: 'Automations' },
   { value: 'settings', label: 'Settings' },
 ]
 
@@ -45,14 +48,17 @@ export type ChatSettingsPaneProps = {
   onOpen: (entry: LibraryEntry) => void
   /** Where an entry opens, for its row to link to so that it can be opened in another tab. */
   href?: (entry: LibraryEntry) => string
+  /** Where an automation reports, for its row to open and link to. */
+  automationLink: AutomationLink
 }
 
 /**
  * What a chat has, apart from the conversation, a tab each: what its workspace has made, was sent
- * and worked on, on the Library's rows (`WorkspaceLibraryList`); and its settings, which are what it
- * is told about (its workspace's notifications), what it has used, and deleting it.
+ * and worked on, on the Library's rows (`WorkspaceLibraryList`); what runs by itself in it, or was
+ * set up from it for a gadget; and its settings, which are what it is told about (its workspace's
+ * notifications), what it has used, and deleting it.
  */
-export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onOpen, href }: ChatSettingsPaneProps) => {
+export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTabChange, onBack, onDeleted, onOpenWorkspace, onOpen, href, automationLink }: ChatSettingsPaneProps) => {
   const { chat, actions } = useChatSession(workspaceId, chatId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -82,7 +88,12 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
   }
   const [deleting, setDeleting] = useState(false)
   const canBuild = workspace !== undefined && workspace.role !== 'use'
-
+  // The hooks this chat's cards show, so a gadget's it set up are among its automations.
+  const pinned = chat.status === 'ready' ? chat.pinned : undefined
+  const ownAutomations = useMemo(
+    () => inChat(chatId, new Set(pinned?.flatMap((item) => (item.kind === 'hook' && item.hookId !== undefined ? [item.hookId] : [])))),
+    [chatId, pinned],
+  )
 
   return (
     <PageLayout
@@ -115,6 +126,17 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
         <Tabs value={tab} onValueChange={onTabChange} tabs={CHAT_SETTINGS_TABS} aria-label="Chat" className="gap-6">
           <Tabs.Panel value="library" className="flex flex-col gap-8">
             <WorkspaceLibraryList workspaceId={workspaceId} onOpen={onOpen} href={href} />
+          </Tabs.Panel>
+          <Tabs.Panel value="automations" className="flex flex-col gap-8">
+            {tab === 'automations' && (
+              <AutomationsTab
+                workspaceIds={[workspaceId]}
+                filter={ownAutomations}
+                canChange={() => canBuild}
+                link={automationLink}
+                empty="Nothing runs by itself from this chat yet. Ask here for something to happen on a schedule, or when something arrives, and it reports back here."
+              />
+            )}
           </Tabs.Panel>
           <Tabs.Panel value="settings" className="flex flex-col gap-2">
             <SettingsGroup label="Chat">

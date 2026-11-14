@@ -130,6 +130,8 @@ export type HookItem = Row & {
   kind: 'hook'
   /** Absent once the hook was deleted. */
   hookId?: number
+  /** A scheduled task, rather than something an event sets off. */
+  schedule: boolean
   title: string
   description: string
   resource?: ResourceLink
@@ -260,6 +262,9 @@ export const EMPTY_FEED: ChatFeed = { items: [], work: [], pinned: [] }
 // The error the workspace ends a stopped turn with (`cancelAgent` in overseer.ts). It only says
 // what someone did on purpose, so it is not shown.
 const STOPPED_ERROR = 'User requested to stop agent.'
+
+// The address of the Scheduled Tasks gatekeeper's one resource: a hook it delivers is a schedule.
+const SCHEDULED_TASKS = 'scheduler:'
 
 // What each item or step was built from. One is reused, object and all, while these are
 // unchanged, so what did not change is not rendered again.
@@ -719,6 +724,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             kind: 'hook',
             id,
             hookId: log.hookId,
+            schedule: log.resourceUrl?.startsWith(SCHEDULED_TASKS) ?? false,
             title: log.description.title,
             description: log.description.description,
             resource: resourceOf(log),

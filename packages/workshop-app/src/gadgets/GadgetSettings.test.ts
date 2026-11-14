@@ -1,9 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type BoundHookInfo, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
+import { createOpenWorkspaceError, OPEN_WORKSPACE_ERROR_CODES, type WorkpiecesSubscriber } from '@gadgets/workshop-shared/api'
 import { GadgetSettings, type GadgetSummary, type SettingsGadget, type SettingsOverseer } from './GadgetSettings'
 
 const summary = (title: string, id = 7): GadgetSummary => ({ id, type: 'gadget', title } as GadgetSummary)
-const hook = (id: number, gadgetId: number) => ({ id, gadgetId, gatekeeperId: 3, description: { title: `Hook ${id}` }, enabled: true }) as unknown as BoundHookInfo
 
 const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } = {}) => {
   let subscriber: WorkpiecesSubscriber | undefined
@@ -23,10 +22,6 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
       subscriber = given
       return { [Symbol.dispose]: () => {} }
     })),
-    listHooks: vi.fn<SettingsOverseer['listHooks']>(async () => [hook(1, 7), hook(2, 8)]),
-    deleteHook: vi.fn<SettingsOverseer['deleteHook']>(async () => {}),
-    enableHook: vi.fn<SettingsOverseer['enableHook']>(async () => {}),
-    disableHook: vi.fn<SettingsOverseer['disableHook']>(async () => {}),
     onRpcBroken: (callback) => void broken.push(callback),
     [Symbol.dispose]: vi.fn<() => void>(),
   }
@@ -34,7 +29,7 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
 }
 
 describe('GadgetSettings', () => {
-  it('shows the gadget as the workspace says, then what it is bound to and its own hooks', async () => {
+  it('shows the gadget as the workspace says, then what it is bound to', async () => {
     const { overseer, server } = fakeWorkspace()
     const settings = new GadgetSettings(() => overseer, 7)
     settings.start()
@@ -45,10 +40,9 @@ describe('GadgetSettings', () => {
     server().ready()
     await vi.waitFor(() => {
       const snapshot = settings.getSnapshot()
-      if (snapshot.status !== 'ready' || snapshot.hooks.status !== 'ready' || snapshot.bindings.status !== 'ready') throw new Error('not yet')
+      if (snapshot.status !== 'ready' || snapshot.bindings.status !== 'ready') throw new Error('not yet')
       expect(snapshot.gadget.title).toBe('Todo')
       expect(snapshot.bindings.items.map(({ name }) => name)).toEqual(['GITHUB'])
-      expect(snapshot.hooks.items.map(({ id }) => id)).toEqual([1])
     })
 
     // A new title, from anywhere, keeps the lists.
@@ -95,7 +89,7 @@ describe('GadgetSettings', () => {
     expect(settings.getSnapshot().status).toBe('loading')
   })
 
-  it('reads its lists again after unbinding or deleting a hook', async () => {
+  it('reads what it is bound to again after unbinding', async () => {
     const { overseer, gadget, server } = fakeWorkspace()
     const settings = new GadgetSettings(() => overseer, 7)
     settings.start()
@@ -104,9 +98,6 @@ describe('GadgetSettings', () => {
     await settings.unbind('GITHUB')
     expect(gadget.unbind).toHaveBeenCalledWith('GITHUB')
     expect(gadget.listBindings).toHaveBeenCalledTimes(2)
-    await settings.deleteHook(1)
-    expect(overseer.deleteHook).toHaveBeenCalledWith(1)
-    expect(overseer.listHooks).toHaveBeenCalledTimes(3)
   })
 
   it('says what the gadget is through its client, and that it is a plain app with null', async () => {

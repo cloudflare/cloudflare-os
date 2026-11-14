@@ -2386,6 +2386,7 @@ class OverseerImpl implements AgentHooks {
             Fetcher<HookInitiator<RpcTarget>>,
         {
           workspaceId: this.ctx.id.toString(),
+          hookId: id,
           ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
         });
 
@@ -13436,6 +13437,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       result.push({
         id: record.id,
         gatekeeperId: record.gatekeeperId,
+        ...(record.vendorId !== undefined ? {vendorId: record.vendorId} : {}),
         // Hooks recorded before multi-gadget support carry no gadgetId; they belong to the
         // default gadget, which necessarily exists in any workspace old enough to have them.
         gadgetId: (record.gadgetId ?? defaultGadgetId)!,

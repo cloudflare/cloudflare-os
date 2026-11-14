@@ -6,6 +6,11 @@ export type ManagementSchedule = ScheduleSummary & {
   workspaceId: string;
   /** The gadget within that workspace, when the schedule is pinned to one. */
   gadgetId?: number;
+  /**
+   * The Workshop hook this schedule is, in that workspace (`BoundHookInfo.id`), so the Workshop can
+   * show each schedule with its hook's switch. Absent for one enabled before this was recorded.
+   */
+  hookId?: number;
 };
 
 /** Read-only filters accepted by the Scheduler management capability. */

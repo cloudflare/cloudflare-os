@@ -3398,6 +3398,12 @@ export type BoundHookInfo = {
   /** The gatekeeper that delivers this hook. */
   gatekeeperId: WorkpieceId;
 
+  /**
+   * Which service that gatekeeper is (`VendorDescription.id`, e.g. "scheduler" for a scheduled
+   * task), for showing the hook with its service. Absent for a hook bound before this was kept.
+   */
+  vendorId?: string;
+
   /** The gadget whose code this hook wakes. */
   gadgetId: WorkpieceId;
 

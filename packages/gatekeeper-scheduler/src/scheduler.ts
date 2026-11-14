@@ -184,7 +184,7 @@ export class ScheduleSessionImpl extends RpcTarget implements ScheduleSession {
   }
 }
 
-/** Enables a controller's immutable activation, recording where the hook delivers. */
+/** Enables a controller's immutable activation, recording where the hook delivers and which hook it is. */
 export async function enableScheduleController(
   props: ScheduleControllerProps,
   initiator: ScheduleInitiator,
@@ -193,7 +193,11 @@ export async function enableScheduleController(
 ): Promise<void> {
   const { accountId: _accountId, ...activation } = props;
   await driver.enable(
-    { ...activation, ...(target.gadgetId !== undefined ? { gadgetId: target.gadgetId } : {}) },
+    {
+      ...activation,
+      ...(target.hookId !== undefined ? { hookId: target.hookId } : {}),
+      ...(target.gadgetId !== undefined ? { gadgetId: target.gadgetId } : {}),
+    },
     initiator,
   );
 }

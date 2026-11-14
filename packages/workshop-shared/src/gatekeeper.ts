@@ -2413,13 +2413,20 @@ export type HookDescription = {
  * Identifies where a hook delivers its events, for display and navigation by a gatekeeper that
  * surfaces its hooks in a UI. Passed to `HookController.enable()`.
  *
- * Both fields are fixed when the hook is bound, so a gatekeeper may persist them alongside the
+ * Every field is fixed when the hook is bound, so a gatekeeper may persist them alongside the
  * initiator and never needs to refresh them. They are opaque display/routing identifiers: they
  * must not be used for authorization, identity, or storage scoping.
  */
 export type HookTargetMetadata = {
   /** The workspace the hook delivers into. */
   workspaceId: string;
+
+  /**
+   * The hook's ID in that workspace (`BoundHookInfo.id`), so a gatekeeper that lists what it
+   * delivers can say which hook each entry is, and the Workshop can join the two exactly. Optional
+   * only so a gatekeeper deployed ahead of the Workshop still accepts its calls.
+   */
+  hookId?: number;
 
   /**
    * The specific gadget within that workspace, when the hook is pinned to one. Absent means the

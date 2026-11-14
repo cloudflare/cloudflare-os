@@ -34,8 +34,8 @@ export type ChatPaneProps = {
   initialTitle?: string
   /** Goes to the page of the workspace the chat is in. */
   onOpenWorkspace: () => void
-  /** Opens the chat's settings, from its title. */
-  onOpenSettings?: () => void
+  /** Opens the chat's settings, from its title, or at its automations, from the header's clock. */
+  onOpenSettings?: (tab?: 'automations') => void
   /**
    * What the chat leaves to whoever can do it: opening a file or an output, which is for whoever
    * lays out the page it opens beside, and what this app cannot do itself yet. Left out, the chat
@@ -97,6 +97,10 @@ export const ChatPane = ({
   const openWork = useOpenKeys(disclosure, [LIVE_WORK, ...work.map(({ key }) => key)])
   const title = (chat.status === 'ready' ? chat.title : undefined) ?? initialTitle
   const items = chat.status === 'ready' ? chat.items : undefined
+  // The automations its cards show that were not deleted, for the header's clock. A card is
+  // pinned beneath the conversation, so it is looked for there.
+  const pinned = chat.status === 'ready' ? chat.pinned : undefined
+  const automations = useMemo(() => pinned?.filter((item) => item.kind === 'hook' && item.hookId !== undefined).length ?? 0, [pinned])
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
   const restricted = workspace?.containsRestrictedData === true
   const [sharing, setSharing] = useState(false)
@@ -210,7 +214,8 @@ export const ChatPane = ({
         <ChatHeader
           workspace={workspace && { id: workspaceId, title: workspace.title, label: workspaceLabel(workspace.title), onOpen: onOpenWorkspace }}
           title={title}
-          onOpenSettings={onOpenSettings}
+          onOpenSettings={onOpenSettings && (() => onOpenSettings())}
+          automations={automations > 0 && onOpenSettings ? { count: automations, onOpen: () => onOpenSettings('automations') } : undefined}
           onShare={shareable ? () => setSharing(true) : undefined}
         />
       )}

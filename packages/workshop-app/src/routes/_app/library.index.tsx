@@ -2,13 +2,14 @@ import { createFileRoute, useNavigate, useRouter } from '@tanstack/react-router'
 import { pageOf } from '@/aside/asideItems'
 import type { LibraryEntry } from '@/library/libraryEntries'
 import { LIBRARY_TABS, LibraryPane, type LibraryPageTab } from '@/library/LibraryPane'
+import { useAutomationLink } from '../-automationLink'
 
 const validateTab = (value: unknown): LibraryPageTab | undefined =>
   LIBRARY_TABS.find((tab) => tab.value === value && value !== 'favorites')?.value
 
 /**
  * Everything the user can open, from all their workspaces: what is starred, or with `?tab=`, the
- * gadgets, the files or their skills. Each opens as its own page, a file shown from the chat it was
+ * gadgets, the files, what runs by itself, or their skills. Each opens as its own page, a file shown from the chat it was
  * sent in; a skill can also start a chat of its own.
  */
 export const Route = createFileRoute('/_app/library/')({
@@ -23,6 +24,7 @@ function Library() {
   const { tab = 'favorites' } = Route.useSearch()
   const navigate = useNavigate()
   const router = useRouter()
+  const automationLink = useAutomationLink()
   return (
     <LibraryPane
       tab={tab}
@@ -32,6 +34,7 @@ function Library() {
       href={(entry) => router.buildLocation(page(entry)).href}
       onOpenSkill={(skillId) => navigate(skillPage(skillId))}
       skillHref={(skillId) => router.buildLocation(skillPage(skillId)).href}
+      automationLink={automationLink}
       onUseSkill={({ id, name, description }) => navigate({ to: '/', state: { useSkill: { id, name, description } } })}
     />
   )

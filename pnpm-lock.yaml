@@ -1477,6 +1477,9 @@ importers:
       '@gadgets/gatekeeper-context':
         specifier: workspace:*
         version: link:../gatekeeper-context
+      '@gadgets/gatekeeper-scheduler':
+        specifier: workspace:*
+        version: link:../gatekeeper-scheduler
       '@gadgets/scripts':
         specifier: workspace:*
         version: link:../../scripts

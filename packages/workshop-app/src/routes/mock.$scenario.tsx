@@ -196,12 +196,17 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, status, children }: {
             setOpen(item.key)
             setSettings(false)
           }}
+          // A scripted chat has nowhere else to go: an automation's chat is this one.
+          automationLink={() => ({ onOpen: () => setSettings(false) })}
         />
       ) : (
         <ChatPane
           {...CHAT}
           onOpenWorkspace={onOpenScenarios}
-          onOpenSettings={() => setSettings(true)}
+          onOpenSettings={(tab) => {
+            setSettingsTab(tab ?? 'library')
+            setSettings(true)
+          }}
           onOpenAttachment={handlers.onOpenAttachment}
           onOpenOutput={handlers.onOpenOutput}
           onSetUpConnection={onSetUpConnection}
