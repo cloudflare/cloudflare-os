@@ -12,7 +12,7 @@ import { SystemRow, type SystemRowProps } from '@/blocks/SystemRow'
 import { UserMessage } from '@/blocks/UserMessage'
 import type { ActionResult } from '@/blocks/usePending'
 import type { GoBack } from './changePoints'
-import type { ActionItem, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, ReportItem, UserItem } from './chatItems'
+import type { ActionItem, MadeFile, AssistantItem, ChatAttachment, ChatItem, ConnectionItem, NoticeItem, OutputItem, ReportItem, UserItem } from './chatItems'
 import { useOpenKeys, type DisclosureStore } from './DisclosureStore'
 
 /** What the rows of a chat can ask for. One object for the whole chat, so rows are not rendered again for it. */
@@ -25,6 +25,10 @@ export type ChatItemHandlers = {
   /** Fetches a file sent in the chat, for a glimpse of it on its tile. */
   loadAttachment?: (id: string) => Promise<Uint8Array>
   onOpenOutput: (output: OutputItem) => void
+  /** Opens a Google file an approved creation made, as an output is opened. */
+  onOpenMade: (file: MadeFile) => void
+  /** Its own page, likewise. */
+  madeHref?: (file: MadeFile) => string
   /** An output's own page, for its card to link to so that it can be opened in another tab. */
   outputHref?: (output: OutputItem) => string
   /** Approves it; one that creates something (`ActionItem.creation`) asks first where. */
@@ -149,6 +153,10 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
       )
     case 'action': {
       const request = { title: item.title, description: item.description, resource: item.resource, fields: item.fields, open: isOpen, onToggle: toggle }
+      if (item.made) {
+        const { made } = item
+        return <OutputCard title={made.title} kind="gadget" file={made.fileKind} href={handlers.madeHref?.(made)} onOpen={() => handlers.onOpenMade(made)} />
+      }
       if (item.state !== 'pending') {
         return <ActionCard {...request} state={item.state} resolution={item.resolution ?? ''} />
       }

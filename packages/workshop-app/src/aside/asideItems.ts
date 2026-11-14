@@ -162,6 +162,18 @@ export const chatAsideItems = (workspaceId: string, chatId: number, chat: ChatSn
         kind: 'output',
         output: { workspaceId, workpieceId: row.workpieceId, type: row.type, format: row.format, chatId },
       })
+    } else if (row.kind === 'action' && row.made) {
+      const { made } = row
+      const key = formatAsideRef({ kind: 'connected', gatekeeperId: made.gatekeeperId, subjectId: made.subjectId })
+      if (!found.has(key)) {
+        found.set(key, {
+          key,
+          title: made.title,
+          at,
+          kind: 'connected',
+          connected: { workspaceId, gatekeeperId: made.gatekeeperId, subjectId: made.subjectId, fileKind: made.fileKind, url: made.url },
+        })
+      }
     } else if (row.kind === 'user') {
       for (const file of row.attachments.toReversed()) {
         const key = formatAsideRef({ kind: 'file', fileId: file.id })
@@ -202,8 +214,9 @@ const byRecency = (a: AsideItem, b: AsideItem) => (b.at?.getTime() ?? 0) - (a.at
 
 /**
  * Everything that can be switched to beside a chat, most recent first: what the workspace made
- * (`workspaceAsideItems`) and every file sent in what has been loaded of the chat, so that the
- * file shown is always among them and the count says how many there are.
+ * (`workspaceAsideItems`), and every file sent in what has been loaded of the chat or that it
+ * created with a connected service, such as a Google Doc, so that the file shown is always among
+ * them and the count says how many there are.
  */
 export const besideChatItems = (workspace: AsideItem[], chat: AsideItem[]): AsideItem[] =>
-  [...workspace, ...chat.filter(({ kind }) => kind === 'file')].toSorted(byRecency)
+  [...workspace, ...chat.filter(({ kind }) => kind === 'file' || kind === 'connected')].toSorted(byRecency)

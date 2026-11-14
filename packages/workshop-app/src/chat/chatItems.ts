@@ -1,6 +1,7 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { webUrl } from '@/components/webUrl'
+import { connectedFileIdOfUrl, connectedKindOfUrl, type ConnectedFileKind } from '@/files/connectedFile'
 import { changePoints, type GoBack } from './changePoints'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type StepGadget, type ToolIcon, type ToolSection } from './toolCalls'
@@ -130,6 +131,22 @@ export type ActionItem = Row & {
    * approving it asks which of, by way of the gatekeeper that stands in for it until then.
    */
   creation?: { gatekeeperId: number }
+  /**
+   * The Google file it created, once approved: drawn as the file, to be opened beside the chat as
+   * anything the agent made is, rather than as the approval it was.
+   */
+  made?: MadeFile
+}
+
+/** A file an approved creation made, as a chat opens it (`AsideConnectedFile`). */
+export type MadeFile = { gatekeeperId: number; subjectId: string; title: string; fileKind: ConnectedFileKind; url: string }
+
+const madeFile = (log: ActionLog): MadeFile | undefined => {
+  const { gatekeeperId, resourceUrl } = log
+  if (log.state !== 'approved' || !log.creation || gatekeeperId === undefined || !resourceUrl) return undefined
+  const fileKind = connectedKindOfUrl(resourceUrl)
+  const subjectId = connectedFileIdOfUrl(resourceUrl)
+  return fileKind && subjectId ? { gatekeeperId, subjectId, title: log.resourceTitle || 'Untitled', fileKind, url: resourceUrl } : undefined
 }
 export type HookItem = Row & {
   kind: 'hook'
@@ -416,6 +433,7 @@ const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
         ? { gatekeeperId, actionKind }
         : undefined,
     creation: state === 'pending' && log.creation && gatekeeperId !== undefined ? { gatekeeperId } : undefined,
+    made: madeFile(log),
   }
 }
 

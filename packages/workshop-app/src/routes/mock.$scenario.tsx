@@ -149,6 +149,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, status, children }: {
   const [handlers] = useState(() => ({
     onOpenAttachment: (file: { id: string }) => setOpen(formatAsideRef({ kind: 'file', fileId: file.id })),
     onOpenOutput: (output: { workpieceId: number }) => setOpen(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId })),
+    onOpenMade: (file: { gatekeeperId: number; subjectId: string }) => setOpen(formatAsideRef({ kind: 'connected', ...file })),
     onFullScreenChange: () => {},
   }))
 
@@ -210,6 +211,7 @@ const MockLayout = ({ onOpenScenarios, onSetUpConnection, status, children }: {
           }}
           onOpenAttachment={handlers.onOpenAttachment}
           onOpenOutput={handlers.onOpenOutput}
+          onOpenMade={handlers.onOpenMade}
           onSetUpConnection={onSetUpConnection}
         />
       )}

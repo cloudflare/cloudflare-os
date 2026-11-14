@@ -336,13 +336,19 @@ and is undone, with why, if it does not hold; deleting a gadget asks first and i
 whoever builds where it was made.
 
 A tile shows what it is: an image file fills it; otherwise, once the tile nears the screen,
-`library/useLibraryPicture.ts` fetches a glimpse that sits under the name on a frosted foot. A
+`library/useLibraryPicture.ts` fetches a glimpse that sits above the name on a solid foot. A
 gadget's is the server's picture of it (`GadgetClient.getThumbnail()`, asked again only when the
-gadget was worked on, two at a time); a file's is the chat's thumbnail (`useFileThumbnail`); a
+gadget was worked on, two at a time; one the server could not draw yet is asked for twice more
+while shown, and is not kept); a file's is the chat's thumbnail (`useFileThumbnail`); a
 Google file's is the top of its real page, read with `previewResource` and drawn by
 `blocks/resource-preview/ConnectedFileThumbnail`. What was fetched is kept for 80 entries, so
 switching tabs or views does not fetch again. Nothing arrives means the glyph stays. Rows keep
-their glyphs.
+their glyphs. A Google Doc, Sheet or Slides deck's glyph is Drive's own (`GoogleFileIcon`),
+wherever it is listed or open.
+
+A Google file a chat's agent created is drawn in the chat as the file (`ActionItem.made`, an
+`OutputCard` in Drive's icon) once its creation is approved, rather than as the approval, and opens
+beside the chat as `connected-<connection>-<id>`, among what the chat can switch to.
 
 ## Skills
 

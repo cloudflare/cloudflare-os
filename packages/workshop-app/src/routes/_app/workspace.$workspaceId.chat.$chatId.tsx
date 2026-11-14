@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react'
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
 import { formatAsideRef, isApp, itemPage, validateAsideParam } from '@/aside/asideItems'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
-import type { ChatAttachment, OutputItem } from '@/chat/chatItems'
+import type { ChatAttachment, MadeFile, OutputItem } from '@/chat/chatItems'
 import { ChatPane } from '@/chat/ChatPane'
 import { SetUpConnection, type ConnectionRequest } from '@/connections/SetUpConnection'
 
@@ -38,6 +38,15 @@ function WorkspaceChat() {
     (output: OutputItem) => aside.show(formatAsideRef({ kind: 'output', workpieceId: output.workpieceId }), { workspaceId, chatId }),
     [aside, workspaceId, chatId],
   )
+  const openMade = useCallback(
+    (file: MadeFile) => aside.show(formatAsideRef({ kind: 'connected', gatekeeperId: file.gatekeeperId, subjectId: file.subjectId }), { workspaceId, chatId }),
+    [aside, workspaceId, chatId],
+  )
+  const madeHref = useCallback(
+    (file: MadeFile) =>
+      router.buildLocation({ ...itemPage(workspaceId, { kind: 'connected', gatekeeperId: file.gatekeeperId, subjectId: file.subjectId }, false), search: { chat: chatId } }).href,
+    [router, workspaceId, chatId],
+  )
   const outputHref = useCallback(
     (output: OutputItem) =>
       router.buildLocation({ ...itemPage(workspaceId, { kind: 'output', workpieceId: output.workpieceId }, isApp(output)), search: { chat: chatId } }).href,
@@ -67,6 +76,8 @@ function WorkspaceChat() {
         onOpenSettings={(tab) => navigate({ to: '/workspace/$workspaceId/chat/$chatId/settings', params: { workspaceId, chatId }, search: { tab }, state: { fromChat: true } })}
         onOpenAttachment={openAttachment}
         onOpenOutput={openOutput}
+        onOpenMade={openMade}
+        madeHref={madeHref}
         outputHref={outputHref}
         onSetUpConnection={setUpConnection}
         onOpenChat={openChat}

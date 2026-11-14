@@ -133,7 +133,8 @@ export const AsidePane = (props: AsidePaneProps) => {
   }
 
   const shared = {
-    active: paneItem(item, title),
+    // Named by what it is once drawn, when nothing said before.
+    active: paneItem(item.kind === 'connected' && connectedKind ? { ...item, connected: { ...item.connected, fileKind: connectedKind } } : item, title),
     people: snapshot.people,
     link,
     onReload: connection?.reload,

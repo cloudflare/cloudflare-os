@@ -452,6 +452,21 @@ describe('toChatFeed', () => {
       expect(creations).toEqual({ 'Create Google Doc: Notes': { gatekeeperId: 7 }, 'Create Google Doc: Old': undefined, Post: undefined })
     })
 
+    it('draws an approved creation of a Google file as the file, to be opened', () => {
+      const doc = 'https://docs.google.com/document/d/abc123/edit'
+      const result = feed(
+        action({ title: 'Create Google Doc: Notes', creation: true, state: 'approved', resource: { title: 'Notes', url: doc } }),
+        action({ title: 'Create Google Doc: Later', creation: true, resource: { title: 'Later', url: doc } }),
+        action({ title: 'Post', state: 'approved', resource: { title: 'Notes', url: doc } }),
+      )
+      const made = Object.fromEntries(only(result, 'action').map(({ title, made }) => [title, made]))
+      expect(made).toEqual({
+        'Create Google Doc: Notes': { gatekeeperId: 7, subjectId: 'abc123', title: 'Notes', fileKind: 'document', url: doc },
+        'Create Google Doc: Later': undefined,
+        Post: undefined,
+      })
+    })
+
     it('warns when a pending action’s description leaves out part of what it sends', () => {
       const result = feed(action({ title: 'Post', incomplete: true }), action({ title: 'Create issue' }))
       expect(only(result, 'action').map(({ incomplete }) => incomplete)).toEqual([true, false])

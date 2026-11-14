@@ -49,6 +49,8 @@ export type ChatPaneProps = {
    */
   onOpenAttachment?: ChatItemHandlers['onOpenAttachment']
   onOpenOutput?: ChatItemHandlers['onOpenOutput']
+  onOpenMade?: ChatItemHandlers['onOpenMade']
+  madeHref?: ChatItemHandlers['madeHref']
   outputHref?: ChatItemHandlers['outputHref']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
   onOpenChat?: ChatItemHandlers['onOpenChat']
@@ -75,6 +77,8 @@ export const ChatPane = ({
   onOpenSettings,
   onOpenAttachment,
   onOpenOutput,
+  onOpenMade,
+  madeHref,
   outputHref,
   onSetUpConnection,
   onOpenChat,
@@ -151,6 +155,8 @@ export const ChatPane = ({
       onOpenAttachment: onOpenAttachment ?? unavailable('Previewing attachments'),
       loadAttachment: actions.attachmentContent,
       onOpenOutput: onOpenOutput ?? unavailable('Opening outputs'),
+      onOpenMade: onOpenMade ?? unavailable('Opening files'),
+      madeHref,
       outputHref,
       onApprove: (action) => {
         const { creation } = action
@@ -173,7 +179,7 @@ export const ChatPane = ({
       onOpenChat,
       chatHref,
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, outputHref, onSetUpConnection, onOpenChat, chatHref, approveCreation])
+  }, [actions, model, onOpenAttachment, onOpenOutput, onOpenMade, madeHref, outputHref, onSetUpConnection, onOpenChat, chatHref, approveCreation])
   const keep = chat.status === 'ready' ? chat.keep : undefined
 
 

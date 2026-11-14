@@ -109,12 +109,15 @@ export const CardBlocksPreview = () => {
 
   return (
     <>
-      <Section title="OutputCard (draft document, accepted document that links to its page so it opens in another tab with a modifier, app with no format, worktree)">
+      <Section title="OutputCard (draft document, accepted document that links to its page so it opens in another tab with a modifier, app with no format, worktree; and a Google Doc, Sheet and Slides deck the agent created, in Drive’s icons)">
         <Column>
           <OutputCard title="Q3 platform review" kind="gadget" draft format={{ noun: 'Document', icon: 'fileText' }} onOpen={() => say('open the draft document')} />
           <OutputCard title="Q3 platform review" kind="gadget" format={{ noun: 'Document', icon: 'fileText' }} href="#q3-platform-review" onOpen={() => say('open the document')} />
           <OutputCard title="Jira dashboard with a title long enough that it has to be cut off" kind="gadget" draft onOpen={() => say('open the app')} />
           <OutputCard title="Fix export timeout" kind="worktree" onOpen={() => say('open the worktree')} />
+          <OutputCard title="Weekly notes" kind="gadget" file="document" onOpen={() => say('open the Google Doc')} />
+          <OutputCard title="Q3 budget" kind="gadget" file="spreadsheet" onOpen={() => say('open the Google Sheet')} />
+          <OutputCard title="All-hands deck" kind="gadget" file="presentation" onOpen={() => say('open the Google Slides')} />
         </Column>
       </Section>
       <Section title="GroupedList, WorkspaceRow (the Workspaces page: the starred group, dragged or moved with Alt and an arrow key to reorder, then stretches of time; star or unstar one to see it shrink out of its group and grow into the other, and the groups fold again around it, splitting and merging; the star and more slide out when pointed at, and a starred one keeps its star)">
