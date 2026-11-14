@@ -200,9 +200,7 @@ it("a hook kept in the kit's HookRegistry is delivered through its restored stub
   const { label, ws, keys: { queued: name }, hooks } = armed;
   const delivered = async () => (await actionState(label)).pending.map(action => action.value);
 
-  expect(await queue(name, "m0", 300)).toEqual({ hooks: 0 });
-
-  await ws.enableHook(hooks.queued.id);
+  // Bound in a turn someone asked for, it is on from the start (see armHooks).
   expect(await queue(name, "m1", 301)).toEqual({ hooks: 1 });
   // The second delivery reads the stubs out of storage again, after the first disposed its own.
   expect(await queue(name, "m2", 302)).toEqual({ hooks: 1 });
