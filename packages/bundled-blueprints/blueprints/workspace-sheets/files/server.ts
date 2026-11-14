@@ -1222,11 +1222,12 @@ export class Gadget extends DurableObject<unknown, unknown> {
       let clean = String(name || "").trim().slice(0, 60);
       if (!clean) { let n = meta.sheetOrder.length + 1; while (findSheetByName(meta, "Sheet" + n)) n++; clean = "Sheet" + n; }
       if (findSheetByName(meta, clean)) throw new Error(`A sheet named "${clean}" already exists`);
-      // A new sheet is in identity order, which needs nothing stored.
-      meta.sheets[id] = sheetMeta({ id, name: clean, rows, cols, created: meta.revision + 1 });
+      const sheet = meta.sheets[id] = sheetMeta({ id, name: clean, rows, cols, created: meta.revision + 1 });
       const at = Number.isInteger(index) ? Math.max(0, Math.min(meta.sheetOrder.length, index as number)) : meta.sheetOrder.length;
       meta.sheetOrder.splice(at, 0, id);
-      return { ...(await this.commitAgent(meta, {})), sheetId: id, name: clean };
+      // Its lines go out with it, so an open grid can place its cells and save edits to them.
+      const order = SheetOrder.from(null, sheet.rows, sheet.cols);
+      return { ...(await this.commitAgent(meta, { orders: new Map([[id, order]]) })), sheetId: id, name: clean };
     });
   }
 

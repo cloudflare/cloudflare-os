@@ -290,6 +290,15 @@ describe("applyOperation", () => {
     expect(await gadget.applyOperation({ cellOps: [{ sheetId, ref: "A1", value: null, fmt: null, baseVersion: 1 }] })).toMatchObject({ status: "unchanged" });
   });
 
+  it("sends an added sheet's lines with it, so an open grid can place and save its cells", async () => {
+    const gadget = newGadget();
+    const events: SubscriberEvent[] = [];
+    await gadget.subscribe(watcher(events), { clientId: "peer", lines: true });
+    const { sheetId } = await gadget.addSheet({ name: "Added", rows: 5, cols: 3 });
+    await settle();
+    expect(events.at(-1)).toMatchObject({ orders: { [sheetId]: { rows: [[0, 5]], cols: [[0, 3]] } }, structure: { sheets: { [sheetId]: { name: "Added" } } } });
+  });
+
   it("applies line operations by id, so an edit made before them still lands on its cell", async () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();

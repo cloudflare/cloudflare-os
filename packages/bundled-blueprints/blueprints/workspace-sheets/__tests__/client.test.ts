@@ -1207,6 +1207,26 @@ describe("a cut and its paste", () => {
   });
 });
 
+describe("a sheet someone else added", () => {
+  it("takes edits once its lines arrive with it", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta);
+    const added = { ...sheet("s2", 5, 3), name: "Added" };
+    h.callbacks.operation(remoteEvent(meta, 2, {
+      structure: { title: "Book", sheetOrder: ["s1", "s2"], sheets: { s1: meta, s2: added } },
+      orders: { s2: SheetOrder.from(null, 5, 3).toStored() },
+      upserts: [{ sheetId: "s2", ref: "A2", cell: cell("agent value") }],
+    }));
+    await settle();
+    document.querySelector<HTMLElement>(".tab[data-id='s2']")!.click();
+    await settle();
+    expect(shown("A2")).toBe("agent value");
+    typeIntoActiveCell("my edit");
+    await sleep(600);
+    expect(h.sent.at(-1)!.cellOps).toEqual([expect.objectContaining({ sheetId: "s2", ref: "0:0", value: "my edit" })]);
+  });
+});
+
 describe("a save whose reply was lost", () => {
   it("goes again as it was, under its id, and an edit made meanwhile waits for the next save", async () => {
     const h = await loadClient(sheet("s1"));
