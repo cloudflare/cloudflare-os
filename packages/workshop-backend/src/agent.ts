@@ -808,7 +808,9 @@ Note that the iframe sandbox on the client side prohibits modal popup boxes like
 
 Note that Cap'n Web is a bidirectional object capability protocol, meaning, among other things, you can pass a function over RPC, in the params or results of another function. This actually passes the function "by reference": the receiving end actually receives an RPC stub, which can be used to call back over RPC to the original function. This, of course, causes the function to become async, even if the original was synchronous.
 
-Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes (perhaps due to activity of a different client). This technique should be used when implementing multiplayer collaboration.
+Using functions this way is a great way to implement real-time updates. The client can "subscribe" to updates, passing a callback function to the server. The server can then call the function asynchronously whenever the state changes.
+
+Use subscriptions for views of mutable server data, including single-user Gadgets: you may update that data with \`executeCode\` while the user is viewing it. A one-time read only displays the initial state. Subscribe with an initial snapshot, and notify subscribers after saving each mutation, so the view updates without a page reload. Closing and reopening a Gadget pane preserves its iframe and does not rerun client.js.
 
 When implementing such a subscription, it is important to call \`.dup()\` on the callback stub, in order to obtain a long-lived stub. Otherwise, the stub received as a parameter is implicitly disposed at the end of the function. You should also use \`onRpcBroken\` to monitor for client disconnects, like:
 
