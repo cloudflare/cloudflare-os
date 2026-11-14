@@ -13,8 +13,7 @@ function Workspaces() {
     <WorkspacesPane
       onOpenWorkspace={(workspaceId) => navigate({ to: '/workspace/$workspaceId', params: { workspaceId } })}
       workspaceHref={(workspaceId) => router.buildLocation({ to: '/workspace/$workspaceId', params: { workspaceId } }).href}
-      // A workspace is made by the first message of a chat started on the home page.
-      onNewWorkspace={() => navigate({ to: '/' })}
+      onNewWorkspace={() => navigate({ to: '/workspaces/new' })}
     />
   )
 }

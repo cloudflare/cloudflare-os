@@ -51,7 +51,8 @@ export type WorkspacePaneProps = {
 
 /**
  * One workspace: its title, which can be renamed, the way to start a chat in it, and, a tab each,
- * its chats, what it has made and who has access to it. Each tab loads what it lists once chosen.
+ * its chats, what it has made, who has access to it and its settings. Each tab loads what it lists
+ * once chosen.
  */
 export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatHref, onOpenItem, itemHref, onNewChat, onDeleted }: WorkspacePaneProps) => {
   const workspaces = useWorkspaces()
@@ -68,7 +69,7 @@ export const WorkspacePane = ({ workspaceId, tab, onTabChange, onOpenChat, chatH
     setRenameProblem(undefined)
     if (connection?.blocked()) return
     renameWorkspace(workspaceId, next).catch((error: unknown) => {
-      setRenameProblem(`Couldn’t rename the workspace: ${error instanceof Error ? error.message : String(error)}`)
+      setRenameProblem(`Couldn’t rename the workspace: ${messageOf(error)}`)
     })
   }
 

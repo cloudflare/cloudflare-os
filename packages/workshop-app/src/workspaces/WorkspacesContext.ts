@@ -18,6 +18,8 @@ export type WorkspacesContextValue = {
   setNotificationMute: (id: string, mute: NotificationMute | null) => Promise<void>
   /** Deletes a workspace and all it holds, taking it off the list once it has gone. */
   remove: (id: string) => Promise<void>
+  /** Makes a named workspace, listed at once, and resolves to its id. */
+  create: (title: string) => Promise<string>
 }
 
 export const WorkspacesContext = createContext<WorkspacesContextValue | null>(null)
@@ -45,6 +47,9 @@ export const useSetNotificationMute = (): WorkspacesContextValue['setNotificatio
 
 /** Deletes a workspace (`deleteSelf`, to the server). Rejects with why, leaving it listed. */
 export const useDeleteWorkspace = (): WorkspacesContextValue['remove'] => useWorkspacesContext().remove
+
+/** Makes a named workspace (`newWorkspace`, to the server). Rejects with why, making none. */
+export const useCreateWorkspace = (): WorkspacesContextValue['create'] => useWorkspacesContext().create
 
 /** Whether a workspace's notifications are muted now: for good, or until a time not yet reached. */
 export const isMuted = (mute: NotificationMute | undefined, now = Date.now()) =>

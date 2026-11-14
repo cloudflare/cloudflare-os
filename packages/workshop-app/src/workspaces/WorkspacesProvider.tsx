@@ -86,5 +86,17 @@ export const WorkspacesProvider = ({ children }: { children: ReactNode }) => {
     )
   }
 
-  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setNotificationMute, remove }}>{children}</WorkspacesContext>
+  const create = async (title: string) => {
+    // Named, so it is listed at once rather than waiting for a first message.
+    const overseer = api.newWorkspace({ kind: 'workspace', title })
+    try {
+      const { id } = await overseer.getMetadata()
+      refresh()
+      return id
+    } finally {
+      overseer[Symbol.dispose]()
+    }
+  }
+
+  return <WorkspacesContext value={{ state, refresh, setPinned, rename, setNotificationMute, remove, create }}>{children}</WorkspacesContext>
 }
