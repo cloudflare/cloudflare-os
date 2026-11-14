@@ -108,7 +108,7 @@ export const action = ({
       descriptionIsComplete: incomplete ? undefined : true,
       awaitDecision,
       actionKind: kind,
-      autoApprovable: kind ? true : undefined,
+      autoApprovable: kind !== undefined,
     },
     resolvedBy: resolver,
     autoApproved: autoApprovedBy ? true : undefined,

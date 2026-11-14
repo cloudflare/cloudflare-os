@@ -5,7 +5,7 @@ import { startConversation, type NewConversationOverseer } from './startConversa
 const fakeOverseer = (workspaceId = 'ws-1', chatId = 0) => {
   const newChat = vi.fn<Overseer['newChat']>(async () => chatId)
   const getMetadata = vi.fn<Overseer['getMetadata']>(async () => ({ id: workspaceId, title: 'Untitled Workspace' }))
-  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.length}`)
+  const uploadBlob = vi.fn<Overseer['uploadBlob']>(async (content) => `oid-${content.byteLength}`)
   const dispose = vi.fn<() => void>()
   const overseer: NewConversationOverseer = { newChat, getMetadata, uploadBlob, [Symbol.dispose]: dispose }
   return { overseer, newChat, getMetadata, uploadBlob, dispose }
