@@ -151,6 +151,18 @@ describe("sync", () => {
     expect(shown("A3")).toBe("edited");
   });
 
+  it("shifts an unsaved formula by each move in turn, a sort by only its own displacement", async () => {
+    const meta = sheet("s1");
+    const h = await loadClient(meta, { A1: cell("first"), A2: cell("second") });
+    document.querySelector<HTMLElement>(".grid-scroll")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }));
+    typeIntoActiveCell("=C1*3");
+    // A row is inserted above, then rows 2–3 are sorted so the first record ends up third.
+    h.callbacks.operation(remoteEvent({ ...meta, layout: 2 }, 2, { replacedSheets: ["s1"], replacedCells: { s1: { A2: cell("second"), A3: cell("first") } }, moves: { s1: [{ kind: "lines", rows: true, at: 0, count: 1 }, { kind: "sort", r1: 1, c1: 0, c2: 1, order: [2, 1] }] } }));
+    await settle();
+    const sent = h.gadget.applyOperation.mock.calls.at(-1)![0] as Operation;
+    expect(sent.cellOps).toEqual([{ sheetId: "s1", ref: "B3", value: "=C3*3", fmt: null, baseVersion: 0, layout: 2 }]);
+  });
+
   it("keeps a later move's layout when an older save of its sheet is acknowledged", async () => {
     const meta = sheet("s1");
     const h = await loadClient(meta, { A1: cell("first") });

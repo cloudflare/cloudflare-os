@@ -242,7 +242,7 @@ export class Gadget extends DurableObject<unknown, unknown> {
   // A sheet's stored block parts in order, as { name, part, end } (`end`: the block's last
   // part). `after` (a block name), `from` and `to` (block names; `to` excluded) limit the run.
   // Reads of other work can interleave with an edit between storage calls, so a block stored
-  // in several parts is read again whole, in one call (readWholeBlock): its parts always come
+  // in several parts is read again whole, in reads issued together (readWholeBlock): its parts come
   // from one moment, and no cell can slip between them while it's repacked.
   async *blockParts(sheetId: string, { after = "", from = "", to = "" }: BlockRun = {}): AsyncGenerator<BlockStep> {
     const prefix = blockPrefix(sheetId), range: DurableObjectListOptions & { limit: number } = { prefix, limit: 64 };
@@ -267,12 +267,15 @@ export class Gadget extends DurableObject<unknown, unknown> {
     }
   }
 
-  // Every part of a block from one storage read ([] if the block is gone).
+  // Every part of a block ([] if the block is gone), in gets of at most STORAGE_BATCH keys issued
+  // together, so no write lands between them.
   async readWholeBlock(sheetId: string, index: number): Promise<StoredPart[]> {
     let count = 2;
     for (;;) {
       const keys = Array.from({ length: count }, (_, p) => blockKey(sheetId, index, p));
-      const map = await this.ctx.storage.get<StoredPart | undefined>(keys);
+      const reads: Promise<Map<string, StoredPart | undefined>>[] = [];
+      for (let i = 0; i < keys.length; i += STORAGE_BATCH) reads.push(this.ctx.storage.get<StoredPart | undefined>(keys.slice(i, i + STORAGE_BATCH)));
+      const map = new Map((await Promise.all(reads)).flatMap((batch) => [...batch]));
       const first = map.get(keys[0]);
       if (!first?.refs) return [];
       const want = first.parts || 1;

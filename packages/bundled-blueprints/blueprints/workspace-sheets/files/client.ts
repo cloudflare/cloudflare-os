@@ -7203,27 +7203,30 @@ function applyRemoteOperation(event: OperationEvent) {
 function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: number) {
   const sheet = model.sheets[sheetId]; if (!sheet) return;
   sheet.layout = Math.max(sheet.layout || 0, revision);
+  const lineMap = (move: Exclude<CellMove, { kind: "sort" }>) => move.kind === "move" ? lineMoveMap(move.from, move.count, move.to) : axisLineMap(move.at, move.count);
+  // Where one move takes a cell (null: its line was deleted).
+  const step = (rc: RC, move: CellMove): RC | null => {
+    if (move.kind === "sort") {
+      const index = rc.c >= move.c1 && rc.c <= move.c2 ? move.order.indexOf(rc.r) : -1;
+      return index >= 0 ? { r: move.r1 + index, c: rc.c } : rc;
+    }
+    const line = lineMap(move)(move.rows ? rc.r : rc.c);
+    return line == null ? null : move.rows ? { r: line, c: rc.c } : { r: rc.r, c: line };
+  };
   const place = (ref: string): string | null => {
     let rc: RC | null = parseRef(ref);
-    for (const move of moves || []) {
-      if (!rc) break;
-      if (move.kind === "sort") {
-        const index = rc.c >= move.c1 && rc.c <= move.c2 ? move.order.indexOf(rc.r) : -1;
-        if (index >= 0) rc = { r: move.r1 + index, c: rc.c };
-        continue;
-      }
-      const map = move.kind === "move" ? lineMoveMap(move.from, move.count, move.to) : axisLineMap(move.at, move.count);
-      const line = map(move.rows ? rc.r : rc.c);
-      rc = line == null ? null : move.rows ? { r: line, c: rc.c } : { r: rc.r, c: line };
-    }
+    for (const move of moves || []) if (rc) rc = step(rc, move);
     return rc && rcToRef(rc.r, rc.c);
   };
-  const rewrite = (value: string | null, own: boolean, from: string, to: string): string | null => {
+  // `at`: the cell a formula on this sheet is in. A sort carries it like a copy, by how far that
+  // sort alone moved it.
+  const rewrite = (value: string | null, at: RC | null): string | null => {
     if (!value?.startsWith("=")) return value;
     for (const move of moves || []) {
-      if (move.kind === "sort") { if (own) value = shiftedCopyFormula(value, from, to, false); continue; }
-      const map = move.kind === "move" ? lineMoveMap(move.from, move.count, move.to) : axisLineMap(move.at, move.count);
-      value = remapFormulaLines(value, { rows: move.rows, map, sheetName: sheet.name, ownSheet: own });
+      const next = at && step(at, move);
+      if (move.kind !== "sort") value = remapFormulaLines(value, { rows: move.rows, map: lineMap(move), sheetName: sheet.name, ownSheet: !!at });
+      else if (at && next) value = shiftFormulaReferences(value, next.r - at.r, next.c - at.c);
+      at = next;
     }
     return value;
   };
@@ -7235,9 +7238,9 @@ function followCellMoves(sheetId: string, moves: CellMove[] | null, revision: nu
     if (op.sheetId === sheetId) {
       const ref = moves ? place(op.ref) : op.ref;
       if (!ref) { dropped++; continue; }
-      op = { ...op, value: rewrite(op.value, true, op.ref, ref), ref, addressedIn: sheet.layout };
+      op = { ...op, value: rewrite(op.value, parseRef(op.ref)), ref, addressedIn: sheet.layout };
     } else {
-      const value = rewrite(op.value, false, op.ref, op.ref);
+      const value = rewrite(op.value, null);
       if (value !== op.value) op = { ...op, value };
     }
     pendingCellOps.set(op.sheetId + "!" + op.ref, op);

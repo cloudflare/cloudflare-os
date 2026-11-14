@@ -9,15 +9,20 @@ import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/p
 // as the real storage serializes them.
 class MemoryStorage {
   map = new Map<string, unknown>();
+  // The runtime's get, put and delete take at most 128 keys.
+  static check(keys: unknown[]) { if (keys.length > 128) throw new Error("Too many keys in one storage call"); }
   async get(key: string | string[]): Promise<unknown> {
     if (!Array.isArray(key)) return structuredClone(this.map.get(key));
+    MemoryStorage.check(key);
     return new Map(key.filter((k) => this.map.has(k)).map((k) => [k, structuredClone(this.map.get(k))]));
   }
   async put(key: string | Record<string, unknown>, value?: unknown): Promise<void> {
     const entries = typeof key === "string" ? [[key, value] as const] : Object.entries(key);
+    MemoryStorage.check(entries);
     for (const [k, v] of entries) this.map.set(k, structuredClone(v));
   }
   async delete(key: string | string[]): Promise<number> {
+    if (Array.isArray(key)) MemoryStorage.check(key);
     return (Array.isArray(key) ? key : [key]).filter((k) => this.map.delete(k)).length;
   }
   async list({ prefix = "", start, startAfter, end, limit }: { prefix?: string; start?: string; startAfter?: string; end?: string; limit?: number } = {}): Promise<Map<string, unknown>> {
@@ -50,6 +55,24 @@ function failure(call: () => Promise<unknown>): Promise<unknown> {
 async function values(gadget: Gadget, range: string, sheet?: string): Promise<string[][]> {
   return (await gadget.readRange({ sheet, range })).values;
 }
+
+describe("cell storage", () => {
+  it("reads and rewrites a block stored in more parts than one storage call takes", async () => {
+    const storage = new MemoryStorage(), gadget = new Gadget({ storage } as never, {});
+    await gadget.setCells({ cells: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`A${i + 1}`, String(i + 1)])) });
+    // Repack the block one cell per part, as 130 parts (the rest left empty), as huge cells would be.
+    const [key, whole] = [...storage.map].find(([k]) => k.startsWith("b:"))! as [string, { refs: string[]; values: string[]; versions: number[]; styles: number[]; fmts: unknown[] }];
+    storage.map.delete(key);
+    for (let p = 0; p < 130; p++) {
+      const i = p < whole.refs.length ? [p] : [];
+      const part = { refs: i.map((j) => whole.refs[j]), values: i.map((j) => whole.values[j]), versions: i.map((j) => whole.versions[j]), styles: i.map((j) => whole.styles[j]), fmts: whole.fmts };
+      storage.map.set(p ? `${key}~${p}` : key, p ? part : { ...part, parts: 130 });
+    }
+    expect((await values(gadget, "A1:A30")).flat()).toEqual(Array.from({ length: 30 }, (_, i) => String(i + 1)));
+    await gadget.setCell({ ref: "A5", value: "five" });
+    expect((await values(gadget, "A4:A6")).flat()).toEqual(["4", "five", "6"]);
+  });
+});
 
 describe("agent cell API", () => {
   it("takes a { value, fmt } spec as setCell's value, as setCells does", async () => {
