@@ -1,0 +1,283 @@
+{
+ "meta": {
+  "revision": 9,
+  "title": "Regional sales",
+  "sheetOrder": [
+   "s_cf8dc9fa",
+   "s_bbf7a626",
+   "s_pivot"
+  ],
+  "sheets": {
+   "s_cf8dc9fa": {
+    "id": "s_cf8dc9fa",
+    "name": "Data",
+    "rows": 100,
+    "cols": 26,
+    "colWidths": {
+     "0": 160,
+     "2": 60
+    },
+    "rowHeights": {
+     "0": 36
+    },
+    "frozenRows": 1,
+    "frozenCols": 0,
+    "filter": {
+     "row": 0,
+     "endRow": 4,
+     "columns": [
+      0,
+      1,
+      2
+     ],
+     "criteria": {
+      "0": [
+       "s:North",
+       "s:South"
+      ]
+     },
+     "rowOrder": [
+      1,
+      2,
+      3,
+      4
+     ],
+     "sort": null
+    },
+    "charts": [
+     {
+      "id": "chart_rxv0ouf",
+      "type": "pie",
+      "range": "A1:B5",
+      "title": "Sales",
+      "xAxisTitle": "",
+      "yAxisTitle": "",
+      "legend": true,
+      "firstRowHeaders": true,
+      "firstColLabels": true,
+      "smooth": false,
+      "x": 436,
+      "y": 28,
+      "width": 520,
+      "height": 320
+     }
+    ],
+    "pivot": null,
+    "created": 0
+   },
+   "s_bbf7a626": {
+    "id": "s_bbf7a626",
+    "name": "Q1 Summary",
+    "rows": 100,
+    "cols": 26,
+    "colWidths": {},
+    "rowHeights": {},
+    "frozenRows": 0,
+    "frozenCols": 0,
+    "filter": null,
+    "charts": [],
+    "pivot": null,
+    "created": 2
+   },
+   "s_pivot": {
+    "id": "s_pivot",
+    "name": "Pivot",
+    "rows": 20,
+    "cols": 6,
+    "colWidths": {},
+    "rowHeights": {},
+    "frozenRows": 0,
+    "frozenCols": 0,
+    "filter": null,
+    "charts": [],
+    "pivot": {
+     "sourceSheetId": "s_cf8dc9fa",
+     "sourceRange": "A1:C5",
+     "rowField": "Region",
+     "columnField": "",
+     "valueField": "Sales",
+     "aggregate": "sum",
+     "showRowTotals": true,
+     "showColumnTotals": true,
+     "filterField": "",
+     "filterValues": []
+    },
+    "created": 8
+   }
+  },
+  "lastModified": 1794627477370,
+  "cellStorage": 3
+ },
+ "b:s_cf8dc9fa:00000": {
+  "refs": [
+   "A1",
+   "B1",
+   "C1",
+   "A2",
+   "B2",
+   "C2",
+   "A3",
+   "B3",
+   "C3",
+   "A4",
+   "B4",
+   "C4",
+   "A5",
+   "B5",
+   "C5",
+   "D1",
+   "D2",
+   "D3"
+  ],
+  "values": [
+   "Region",
+   "Sales",
+   "Units",
+   "North",
+   "10",
+   "2",
+   "South",
+   "20",
+   "3",
+   "East",
+   "5",
+   "1",
+   "West",
+   "15",
+   "4",
+   "Share",
+   "=B2/SUM($B$2:$B$5)",
+   "=B3/SUM($B$2:$B$5)"
+  ],
+  "versions": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "styles": [
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   0,
+   -1,
+   -1
+  ],
+  "fmts": [
+   {
+    "b": true
+   }
+  ]
+ },
+ "b:s_cf8dc9fa:00001": {
+  "refs": [
+   "A40",
+   "B40"
+  ],
+  "values": [
+   "far down",
+   "=SUM(B2:B5)"
+  ],
+  "versions": [
+   1,
+   1
+  ],
+  "styles": [
+   -1,
+   -1
+  ],
+  "fmts": []
+ },
+ "b:s_bbf7a626:00000": {
+  "refs": [
+   "A1",
+   "B1",
+   "A2",
+   "B2",
+   "A3",
+   "B3"
+  ],
+  "values": [
+   "Total",
+   "=SUM(Data!B2:B5)",
+   "Top",
+   "=MAX('Data'!B2:B5)",
+   "Text",
+   "=\"Data!B2\""
+  ],
+  "versions": [
+   1,
+   1,
+   1,
+   1,
+   1,
+   1
+  ],
+  "styles": [
+   -1,
+   -1,
+   -1,
+   -1,
+   -1,
+   -1
+  ],
+  "fmts": []
+ },
+ "b:s_pivot:00000": {
+  "refs": [
+   "A1",
+   "B1",
+   "A2",
+   "B2"
+  ],
+  "values": [
+   "Region",
+   "Sales",
+   "North",
+   "10"
+  ],
+  "versions": [
+   1,
+   1,
+   1,
+   1
+  ],
+  "styles": [
+   0,
+   0,
+   -1,
+   -1
+  ],
+  "fmts": [
+   {
+    "b": true
+   }
+  ]
+ }
+}

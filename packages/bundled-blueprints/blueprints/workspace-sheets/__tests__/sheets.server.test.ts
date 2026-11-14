@@ -4,6 +4,7 @@ import { ExportHandler, Gadget } from "../files/server.ts";
 import { workbookToXlsx } from "../files/lib/xlsx.ts";
 import { addAggregate, aggregateState, finishAggregate } from "../files/lib/pivot.ts";
 import { EXPORT_UNKNOWN, ExportEvaluator, MAX_EXPORT_CELLS, MAX_EXPORT_TEXT, loadExportWorkbook } from "../files/lib/export-data.ts";
+import type { LineOp } from "../files/lib/lines.ts";
 import type { Cell, Operation, SheetMeta, SubscriberEvent } from "../files/lib/protocol.ts";
 
 // Durable Object storage in memory: just the calls the gadget makes, with values copied in and out
@@ -57,6 +58,13 @@ async function values(gadget: Gadget, range: string, sheet?: string): Promise<st
   return (await gadget.readRange({ sheet, range })).values;
 }
 
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+// A subscriber as the RPC layer hands it to the server, recording what it hears.
+function watcher(events: SubscriberEvent[]) {
+  return { operation: (event: SubscriberEvent) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} };
+}
+
 describe("pivot aggregation", () => {
   it("sums numbers and numeric text, but counts booleans and spaces only toward Count, as Excel does", () => {
     const state = aggregateState();
@@ -73,7 +81,7 @@ describe("cell storage", () => {
     const storage = new MemoryStorage(), gadget = new Gadget({ storage } as never, {});
     await gadget.setCells({ cells: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`A${i + 1}`, String(i + 1)])) });
     // Repack the block one cell per part, as 130 parts (the rest left empty), as huge cells would be.
-    const [key, whole] = [...storage.map].find(([k]) => k.startsWith("b:"))! as [string, { refs: string[]; values: string[]; versions: number[]; styles: number[]; fmts: unknown[] }];
+    const [key, whole] = [...storage.map].find(([k]) => k.startsWith("c:"))! as [string, { refs: string[]; values: string[]; versions: number[]; styles: number[]; fmts: unknown[] }];
     storage.map.delete(key);
     for (let p = 0; p < 130; p++) {
       const i = p < whole.refs.length ? [p] : [];
@@ -206,7 +214,7 @@ describe("agent cell API", () => {
     expect(await values(gadget, "D1")).toEqual([["=#REF!"]]);
   });
 
-  it("adds, renames and deletes sheets, rewriting formulas that name a renamed sheet", async () => {
+  it("adds, renames and deletes sheets; formulas name sheets by id, so they read a new name", async () => {
     const gadget = newGadget();
     expect(await gadget.addSheet({ name: "Data", index: 0 })).toMatchObject({ status: "applied", name: "Data" });
     await expect(gadget.addSheet({ name: "data" })).rejects.toThrow('A sheet named "data" already exists');
@@ -224,7 +232,8 @@ describe("agent cell API", () => {
     await gadget.deleteSheet({ sheet: "Owner's Data" });
     const sheets = (await gadget.listSheets()).sheets;
     expect(sheets.map((s) => s.name)).toEqual(["Sheet1", "Sheet3"]);
-    expect(await gadget.loadCells(sheets[0].id)).toMatchObject({ A1: { value: "='Owner''s Data'!A1+1" } });
+    // A reference to a deleted sheet reads #REF!, as in Excel.
+    expect(await values(gadget, "A1:A2", "Sheet1")).toEqual([["=#REF!+1"], ["=SUM(#REF!)"]]);
   });
 
   it("adds charts and sets column widths", async () => {
@@ -281,69 +290,118 @@ describe("applyOperation", () => {
     expect(await gadget.applyOperation({ cellOps: [{ sheetId, ref: "A1", value: null, fmt: null, baseVersion: 1 }] })).toMatchObject({ status: "unchanged" });
   });
 
-  it("refuses a structure or replacement built on a stale revision", async () => {
+  it("applies line operations by id, so an edit made before them still lands on its cell", async () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();
-    await gadget.setCell({ ref: "A1", value: "agent" });
-    const result = await gadget.applyOperation({ baseRevision: 0, sheetReplacements: [{ sheetId, cells: {} }] });
-    expect(result).toEqual({ status: "conflict", revision: 1, conflicts: [], staleRevision: true });
-    expect(await values(gadget, "A1")).toEqual([["agent"]]);
+    const events: SubscriberEvent[] = [];
+    await gadget.subscribe(watcher(events), { clientId: "peer", lines: true });
+    await gadget.setCells({ cells: { A1: "first", A2: "second", B1: "=SUM(A1:A2)" } });
+    // One client inserts a row above A1.
+    const insert: LineOp = { kind: "insert", sheetId, axis: "rows", ids: [2 ** 32], before: 0 };
+    expect(await gadget.applyOperation({ senderId: "b", lineIds: true, lineOps: [insert] })).toMatchObject({
+      status: "applied", revision: 2, lineOps: [insert], orders: { [sheetId]: { rows: [[2 ** 32, 1], [0, 100]], cols: [[0, 26]] } }, upserts: [],
+    });
+    await settle();
+    expect(events[1]).toMatchObject({ senderId: "b", lineOps: [insert], structure: { sheets: { [sheetId]: { rows: 101 } } } });
+    // Another's edit of the "second" record, made before it heard of the insert, still names that record.
+    expect(await gadget.applyOperation({ senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "1:0", value: "edited", fmt: null, baseVersion: 1 }] })).toMatchObject({ status: "applied", upserts: [{ sheetId, ref: "1:0" }] });
+    expect(await values(gadget, "A1:B3")).toEqual([["", ""], ["first", "=SUM(A2:A3)"], ["edited", ""]]);
+
+    // Once its row is deleted, an edit of it is refused as gone, and its cells go with the row.
+    await gadget.applyOperation({ senderId: "b", lineIds: true, lineOps: [{ kind: "delete", sheetId, axis: "rows", ids: [1] }] });
+    expect(await gadget.applyOperation({ senderId: "a", lineIds: true, cellOps: [{ sheetId, ref: "1:0", value: "late", fmt: null, baseVersion: 2 }] })).toEqual({ status: "unchanged", revision: 4, conflicts: [], gone: [{ sheetId, ref: "1:0" }] });
+    expect(await values(gadget, "A1:B2")).toEqual([["", ""], ["first", "=SUM(A2:A2)"]]);
+    expect(Object.keys(await gadget.loadCells(sheetId)).toSorted()).toEqual(["0:0", "0:1"]);
+
+    // A moved row takes its cells along, and a range follows the line it ends on.
+    await gadget.setCells({ cells: { A3: "third" } });
+    const [, firstRow, thirdRow] = (await gadget.openDocument()).orders![sheetId].rows.flatMap(([start, count, gone]) => gone ? [] : Array.from({ length: count }, (_, i) => start + i));
+    await gadget.applyOperation({ senderId: "b", lineIds: true, lineOps: [{ kind: "move", sheetId, axis: "rows", ids: [thirdRow], before: firstRow }] });
+    expect(await values(gadget, "A1:B3")).toEqual([["", ""], ["third", ""], ["first", "=SUM(A3:A3)"]]);
+  });
+
+  it("refuses line operations that can't apply, and applies the rest", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    const taken: LineOp = { kind: "insert", sheetId, axis: "rows", ids: [5], before: null };
+    const everything: LineOp = { kind: "delete", sheetId, axis: "cols", ids: Array.from({ length: 26 }, (_, i) => i) };
+    const fine: LineOp = { kind: "insert", sheetId, axis: "cols", ids: [2 ** 32 + 64], before: 0 };
+    const result = await gadget.applyOperation({ lineIds: true, lineOps: [taken, everything, { kind: "move", sheetId, axis: "rows", ids: [3], before: 3 }, fine] });
+    expect(result).toMatchObject({ status: "applied", lineOps: [fine], refusedLines: [taken, everything, { kind: "move" }] });
+    expect((await firstSheet(gadget)).cols).toBe(27);
+    // Malformed ones are skipped outright.
+    expect(await gadget.applyOperation({ lineIds: true, lineOps: [{ kind: "insert", sheetId, axis: "rows", ids: [-1], before: null }, { kind: "spin" } as never, null as never] })).toMatchObject({ status: "unchanged" });
+  });
+
+  it("applies a sort's cells all together, and refuses someone's older edit of a sorted cell", async () => {
+    const gadget = newGadget();
+    const { sheetOrder: [sheetId] } = await gadget.getStructure();
+    await gadget.setCells({ cells: { A1: "b", A2: "a" } });
+    const write = (ref: string, value: string, baseVersion: number) => ({ sheetId, ref, value, fmt: null, baseVersion });
+    const sort = { sheetId, rows: [0, 1], cols: [0], cellOps: [write("0:0", "a", 1), write("1:0", "b", 1)] };
+    // Built on a cell that has changed since, a sort would misplace a record: refused whole.
+    expect(await gadget.applyOperation({ senderId: "s", lineIds: true, sorts: [{ ...sort, cellOps: [write("0:0", "a", 0), write("1:0", "b", 1)] }], cellOps: [write("5:5", "with it", 0)] })).toMatchObject({ status: "conflict", revision: 1, refusedSorts: [sheetId] });
+    expect(await values(gadget, "A1:A2")).toEqual([["b"], ["a"]]);
+    expect(await values(gadget, "F6")).toEqual([[""]]);
+    expect(await gadget.applyOperation({ senderId: "s", lineIds: true, sorts: [sort] })).toMatchObject({ status: "applied", revision: 2, upserts: [{ ref: "0:0" }, { ref: "1:0" }] });
+    // An edit of "b" in A1 made before the sort (on revision 1) would land on "a" now.
+    expect(await gadget.applyOperation({ senderId: "e", lineIds: true, cellOps: [{ ...write("0:0", "b!", 1), basis: 1 }] })).toMatchObject({ status: "unchanged", sorted: [{ sheetId, ref: "0:0" }] });
+    // One made after it is an ordinary edit, and so is the sorter's own, which knew of its sort.
+    expect(await gadget.applyOperation({ senderId: "e", lineIds: true, cellOps: [{ ...write("0:0", "a!", 2), basis: 2 }] })).toMatchObject({ status: "applied" });
+    expect(await gadget.applyOperation({ senderId: "s", lineIds: true, cellOps: [{ ...write("1:0", "b!", 2), basis: 1 }] })).toMatchObject({ status: "applied" });
+    expect(await values(gadget, "A1:A2")).toEqual([["a!"], ["b!"]]);
   });
 
   it("applies a staged replacement only once every part has arrived, and tells peers", async () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();
     const events: SubscriberEvent[] = [];
-    await gadget.subscribe({ operation: (event) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} }, { clientId: "peer", packed: true });
+    await gadget.subscribe(watcher(events), { clientId: "peer", lines: true });
 
     const cell = (value: string): Cell => ({ value, fmt: null, version: 1 });
-    expect(gadget.stageCells({ uploadId: "u1", sheetId, part: 0, cells: { A1: cell("a"), A2: cell("b") } })).toEqual({ received: 2 });
-    const replacement: Operation = { senderId: "me", baseRevision: 0, sheetReplacements: [{ sheetId, uploadId: "u1", count: 3 }] };
+    expect(gadget.stageCells({ uploadId: "u1", sheetId, part: 0, cells: { "0:0": cell("a"), "1:0": cell("b") } })).toEqual({ received: 2 });
+    const replacement: Operation = { senderId: "me", lineIds: true, sheetReplacements: [{ sheetId, size: { rows: 3, cols: 2 }, uploadId: "u1", count: 3 }] };
     expect(await gadget.applyOperation(replacement)).toEqual({ status: "upload-missing", revision: 0, conflicts: [] });
     // A repeated part is not counted twice.
-    expect(gadget.stageCells({ uploadId: "u1", sheetId, part: 0, cells: { A9: cell("dup") } })).toEqual({ received: 2 });
-    expect(gadget.stageCells({ uploadId: "u1", sheetId, part: 1, cells: { A3: cell("c") } })).toEqual({ received: 3 });
-    expect(await gadget.applyOperation(replacement)).toMatchObject({ status: "applied", revision: 1, replacedSheets: [sheetId] });
+    expect(gadget.stageCells({ uploadId: "u1", sheetId, part: 0, cells: { "8:0": cell("dup") } })).toEqual({ received: 2 });
+    expect(gadget.stageCells({ uploadId: "u1", sheetId, part: 1, cells: { "2:0": cell("c") } })).toEqual({ received: 3 });
+    expect(await gadget.applyOperation(replacement)).toMatchObject({ status: "applied", revision: 1, replacedSheets: [sheetId], orders: { [sheetId]: { rows: [[0, 3]], cols: [[0, 2]] } } });
     expect(await values(gadget, "A1:A3")).toEqual([["a"], ["b"], ["c"]]);
+    expect(await firstSheet(gadget)).toMatchObject({ rows: 3, cols: 2 });
     // The upload is used up.
-    expect((await gadget.applyOperation({ ...replacement, baseRevision: 1 })).status).toBe("upload-missing");
+    expect((await gadget.applyOperation(replacement)).status).toBe("upload-missing");
     expect(() => gadget.stageCells({ uploadId: "", sheetId, part: 0, cells: {} })).toThrow("Bad upload id");
 
-    await Promise.resolve();
+    await settle();
     expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ type: "operation", senderId: "me", replacedSheets: [sheetId], replacedCells: { [sheetId]: { A3: { value: "c" } } } });
+    expect(events[0]).toMatchObject({ type: "operation", senderId: "me", replacedSheets: [sheetId], replacedCells: { [sheetId]: { "2:0": { value: "c" } } } });
   });
 
-  it("refuses a cell edit addressed before its sheet's cells moved, and tells peers how they moved", async () => {
+  it("serves an editor from before line ids by position, beside one that speaks ids", async () => {
     const gadget = newGadget();
-    const { sheetOrder: [sheetId] } = await gadget.getStructure();
-    const events: SubscriberEvent[] = [];
-    await gadget.subscribe({ operation: (event) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} }, { clientId: "peer", packed: true });
-    await gadget.setCells({ cells: { A1: "first", A2: "second" } });
-    const cell = (value: string): Cell => ({ value, fmt: null, version: 1 });
-    // One client inserts a row above A1; another's edit of A2 (the "second" record) was addressed before it.
-    const insert = await gadget.applyOperation({ senderId: "b", baseRevision: 1, sheetReplacements: [{ sheetId, cells: { A2: cell("first"), A3: cell("second") }, moves: [{ kind: "lines", rows: true, at: 0, count: 1 }] }] });
-    expect(insert).toMatchObject({ status: "applied", revision: 2 });
-    expect((await firstSheet(gadget)).layout).toBe(2);
-    await Promise.resolve();
-    expect(events.at(-1)).toMatchObject({ senderId: "b", moves: { [sheetId]: [{ kind: "lines", rows: true, at: 0, count: 1 }] } });
+    const oldEvents: SubscriberEvent[] = [], newEvents: SubscriberEvent[] = [];
+    const opened = await gadget.subscribe(watcher(oldEvents), { clientId: "old" });
+    const [sheetId] = opened.sheetOrder;
+    expect(opened.cells?.[sheetId]).toEqual({});
+    await gadget.subscribe(watcher(newEvents), { clientId: "new", lines: true });
+    await gadget.applyOperation({ senderId: "new", lineIds: true, cellOps: [{ sheetId, ref: "0:0", value: "x", fmt: null, baseVersion: 0 }] });
+    await settle();
+    expect(oldEvents[0]).toMatchObject({ type: "operation", upserts: [{ sheetId, ref: "A1", cell: { value: "x" } }] });
 
-    const stale = await gadget.applyOperation({ senderId: "a", cellOps: [{ sheetId, ref: "A2", value: "edited", fmt: null, baseVersion: 1, layout: 0 }] });
-    expect(stale).toEqual({ status: "unchanged", revision: 2, conflicts: [], misplaced: [{ sheetId, ref: "A2" }] });
-    expect(await gadget.applyOperation({ senderId: "a", cellOps: [{ sheetId, ref: "A3", value: "edited", fmt: null, baseVersion: 1, layout: 2 }] })).toMatchObject({ status: "applied" });
-    expect(await values(gadget, "A1:A3")).toEqual([[""], ["first"], ["edited"]]);
+    // Rows inserted above reach it as the whole workbook by position.
+    await gadget.applyOperation({ senderId: "new", lineIds: true, lineOps: [{ kind: "insert", sheetId, axis: "rows", ids: [2 ** 32, 2 ** 32 + 1], before: 0 }] });
+    await settle();
+    expect(oldEvents[1]).toMatchObject({ type: "snapshot", document: { sheets: { [sheetId]: { rows: 102 } }, cells: { [sheetId]: { A3: { value: "x" } } } } });
 
-    // A replacement that moves nothing (a pivot refresh) keeps the layout; the agent's inserts move it.
-    await gadget.applyOperation({ senderId: "b", sheetReplacements: [{ sheetId, cells: { A2: cell("first"), A3: cell("edited") }, moves: [] }] });
-    expect((await firstSheet(gadget)).layout).toBe(2);
-    const { revision } = await gadget.insertRows({ at: 1 });
-    expect((await firstSheet(gadget)).layout).toBe(revision);
-    await Promise.resolve();
-    expect(events.at(-1)).toMatchObject({ senderId: "agent", moves: { [sheetId]: [{ kind: "lines", rows: true, at: 0, count: 1 }] } });
-    // A client's structure snapshot can't set it.
-    const document = await gadget.getDocument();
-    await gadget.applyOperation({ structure: { ...document, sheets: { [sheetId]: { ...document.sheets[sheetId], layout: 0 } } } });
-    expect((await firstSheet(gadget)).layout).toBe(revision);
+    // Its edits and formulas by position name the cells there now, and its reply is by position.
+    const reply = await gadget.applyOperation({ senderId: "old", cellOps: [{ sheetId, ref: "B3", value: "=A3&\"!\"", fmt: null, baseVersion: 0 }, { sheetId, ref: "A3", value: "stale", fmt: null, baseVersion: 0 }] });
+    expect(reply).toMatchObject({ status: "conflict", upserts: [{ sheetId, ref: "B3", cell: { value: "=A3&\"!\"" } }], conflicts: [{ sheetId, ref: "A3", cell: { value: "x" } }] });
+    await settle();
+    const upsert = newEvents.at(-1)?.type === "operation" ? (newEvents.at(-1) as { upserts: { ref: string; cell: Cell }[] }).upserts[0] : null;
+    expect(upsert?.ref).toBe("0:1");
+    // Stored by id: inserting another row above keeps the formula on its cell.
+    await gadget.insertRows({ at: 1 });
+    expect(await values(gadget, "A4:B4")).toEqual([["x", "=A4&\"!\""]]);
   });
 
   it("keeps a sheet the agent added after the snapshot a structure update was built on", async () => {
@@ -426,10 +484,15 @@ describe("untrusted input", () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();
     const op = (ref: string) => ({ sheetId, ref, value: "x", fmt: null, baseVersion: 0 });
-    const result = await gadget.applyOperation({ cellOps: [op("ZZZ999999"), op("AAA1"), op("A50001"), op("ZZ50000")] });
-    expect(result.upserts?.map((upsert) => upsert.ref)).toEqual(["ZZ50000"]);
-    await gadget.applyOperation({ baseRevision: 1, sheetReplacements: [{ sheetId, cells: { A1: { value: "a", fmt: null, version: 1 }, ZZZ1: { value: "b", fmt: null, version: 1 } } }] });
-    expect(Object.keys(await gadget.loadCells(sheetId))).toEqual(["A1"]);
+    // By position (an editor from before line ids), a cell past the edge reaches nothing.
+    const result = await gadget.applyOperation({ cellOps: [op("ZZZ999999"), op("AAA1"), op("A50001"), op("Z100")] });
+    expect(result.upserts?.map((upsert) => upsert.ref)).toEqual(["Z100"]);
+    await gadget.applyOperation({ sheetReplacements: [{ sheetId, cells: { A1: { value: "a", fmt: null, version: 1 }, ZZZ1: { value: "b", fmt: null, version: 1 } } } as never] });
+    expect(Object.keys(await gadget.loadCells(sheetId))).toEqual(["0:0"]);
+    // By id, only a live cell; a regenerated sheet only within its size.
+    expect(await gadget.applyOperation({ lineIds: true, cellOps: [op("100:0"), op("0:26"), op("A1"), op("0:1")] })).toMatchObject({ gone: [{ ref: "100:0" }, { ref: "0:26" }], upserts: [{ ref: "0:1" }] });
+    await gadget.applyOperation({ lineIds: true, sheetReplacements: [{ sheetId, size: { rows: 2, cols: 2 }, cells: { "1:1": { value: "in", fmt: null, version: 1 }, "2:0": { value: "out", fmt: null, version: 1 } } }] });
+    expect(Object.keys(await gadget.loadCells(sheetId))).toEqual(["1:1"]);
   });
 
   it("ignores cells and pages for sheet ids Object.prototype answers to", async () => {
@@ -447,8 +510,8 @@ describe("untrusted input", () => {
     let disposed = 0;
     const watcher = { operation: () => {}, presence: (event: unknown) => { seen.push(event); }, dup() { return this; }, onRpcBroken: () => {} };
     const broken = { operation: () => Promise.reject(new Error("gone")), presence: () => {}, dup() { return this; }, onRpcBroken: () => {}, [Symbol.dispose]: () => { disposed++; } };
-    await gadget.subscribe(watcher, { clientId: "w", packed: true });
-    await gadget.subscribe(broken, { clientId: "b", packed: true });
+    await gadget.subscribe(watcher, { clientId: "w", lines: true });
+    await gadget.subscribe(broken, { clientId: "b", lines: true });
     await gadget.updatePresence({ clientId: "x".repeat(500), name: "Eve", color: "red;position:fixed;inset:0", sheetId: null, r1: 0, c1: 0, r2: 0, c2: 0 });
     await gadget.updatePresence({ clientId: "y", name: "Ann", color: "hsl(120 62% 48%)", sheetId: null, r1: 0, c1: 0, r2: 0, c2: 0 });
     expect(seen.filter((event) => (event as { type: string }).type === "cursor")).toMatchObject([
@@ -944,8 +1007,6 @@ describe("export size", () => {
   });
 });
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-
 describe("review regressions", () => {
   it("keeps text that would start a formula as text in CSV, and numbers as they show", async () => {
     const gadget = newGadget();
@@ -965,7 +1026,7 @@ describe("review regressions", () => {
       await gadget.applyOperation({ cellOps: columns.map((column) => ({ sheetId, ref: column + row, value: value(column + row), fmt: null, baseVersion: 0 })) });
     }
     const size = (packed: { values: string[] }) => packed.values.reduce((sum, text) => sum + text.length, 0);
-    const opened = await gadget.openDocument({ packed: true });
+    const opened = await gadget.openDocument();
     const loaded = new Map<string, string>();
     const take = (packed: { refs: string[]; values: string[] }) => {
       expect(size(packed)).toBeLessThanOrEqual(2_000_000);
@@ -974,14 +1035,14 @@ describe("review regressions", () => {
     take(opened.packed![sheetId]);
     for (const slice of opened.slices!) {
       for (let after = slice.after; ;) {
-        const page = await gadget.getCellsPage({ sheetId, after, from: slice.from, to: slice.to, packed: true });
+        const page = await gadget.getCellsPage({ sheetId, after, from: slice.from, to: slice.to });
         take(page.packed!);
         if (page.next == null) break;
         after = page.next;
       }
     }
     expect(loaded.size).toBe(640);
-    expect(loaded.get("T32")).toBe(value("T32"));
+    expect(loaded.get("31:19")).toBe(value("T32"));
 
     const pages: number[] = [];
     const recording = { getStructure: () => gadget.getStructure(), exportPage: async (options: { sheetId: string; after?: string; formats?: boolean }) => { const page = await gadget.exportPage(options); pages.push(size(page)); return page; } };
@@ -998,26 +1059,27 @@ describe("review regressions", () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();
     const events: SubscriberEvent[] = [];
-    await gadget.subscribe({ operation: (event) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} }, { clientId: "peer", packed: true });
+    await gadget.subscribe({ operation: (event) => { events.push(event); }, presence: () => {}, dup() { return this; }, onRpcBroken: () => {} }, { clientId: "peer", lines: true });
     const long = "y".repeat(8192), cells: Record<string, Cell> = {};
-    for (let r = 1; r <= 300; r++) cells["A" + r] = { value: long, fmt: null, version: 1 };
-    await gadget.applyOperation({ senderId: "me", sheetReplacements: [{ sheetId, cells }] });
+    for (let r = 0; r < 300; r++) cells[r + ":0"] = { value: long, fmt: null, version: 1 };
+    await gadget.applyOperation({ senderId: "me", lineIds: true, sheetReplacements: [{ sheetId, size: { rows: 300, cols: 26 }, cells }] });
     await gadget.setRange({ start: "B1", values: Array.from({ length: 300 }, () => [long]) });
     await settle();
     expect(events).toMatchObject([{ replacedCells: { [sheetId]: null } }, { upserts: [], replacedCells: { [sheetId]: null } }]);
   });
 
-  it("bounds what staged uploads hold, and releases those an operation refused as stale names", async () => {
+  it("bounds what staged uploads hold, and releases those named by an operation it refused", async () => {
     const gadget = newGadget();
     const { sheetOrder: [sheetId] } = await gadget.getStructure();
-    const cell = (value: string): Cell => ({ value, fmt: null, version: 1 });
-    gadget.stageCells({ uploadId: "small", sheetId, part: 0, cells: { A1: cell("a") } });
-    await gadget.setCell({ ref: "Z1", value: "moved on" });
-    expect(await gadget.applyOperation({ baseRevision: 0, sheetReplacements: [{ sheetId, uploadId: "small", count: 1 }] })).toMatchObject({ staleRevision: true });
+    const cell = (value: string, version = 1): Cell => ({ value, fmt: null, version });
+    // A staged sort's cells carry their base versions; this one was built before A1 was written.
+    gadget.stageCells({ uploadId: "small", sheetId, part: 0, cells: { "0:0": cell("a", 0) } });
+    await gadget.setCell({ ref: "A1", value: "moved on" });
+    expect(await gadget.applyOperation({ lineIds: true, sorts: [{ sheetId, rows: [0], cols: [0], uploadId: "small", count: 1 }] })).toMatchObject({ refusedSorts: [sheetId] });
     expect(gadget.uploads.size).toBe(0);
 
     const long = "z".repeat(8192), huge: Record<string, Cell> = {};
-    for (let r = 1; r <= 5000; r++) huge["A" + r] = cell(long);
+    for (let r = 0; r < 5000; r++) huge[r + ":0"] = cell(long);
     expect(() => gadget.stageCells({ uploadId: "huge", sheetId, part: 0, cells: huge })).toThrow("too large to save at once");
     expect(gadget.uploads.size).toBe(0);
   });
@@ -1061,7 +1123,8 @@ describe("review regressions", () => {
     await gadget.applyOperation({
       structure: { sheetOrder: [source, "s_pivot2", "s_calc", "s_pivot1"], sheets: { [source]: document.sheets[source], s_pivot2: sheet("s_pivot2", "Pivot 2", pivot("s_calc", "Total")), s_calc: sheet("s_calc", "Calc", null), s_pivot1: sheet("s_pivot1", "Pivot 1", pivot(source, "Sales")) } },
     });
-    await gadget.applyOperation({ baseRevision: 2, sheetReplacements: [{ sheetId: "s_pivot1", cells: stale("10") }, { sheetId: "s_pivot2", cells: stale("20") }] });
+    // As an editor from before line ids saved them, by position.
+    await gadget.applyOperation({ sheetReplacements: [{ sheetId: "s_pivot1", cells: stale("10") }, { sheetId: "s_pivot2", cells: stale("20") }] as never });
     await gadget.setRange({ sheet: "Calc", values: [["Region", "Total"], ["North", "='Pivot 1'!B2*2"]] });
     await gadget.setCell({ ref: "B2", value: 20 });
     expect(await csvText(gadget, "s_pivot1")).toBe("﻿Region,Sales,Grand Total\r\nNorth,20,20\r\nGrand Total,20,20\r\n");
@@ -1078,7 +1141,7 @@ describe("review regressions", () => {
     await gadget.setRange({ values: [["Region", "Sales"], ["North", "=5*4"]] });
     const settings = { sourceSheetId: source, sourceRange: "A1:B2", rowField: "Region", columnField: "", valueField: "Sales", aggregate: "sum" as const, showRowTotals: false, showColumnTotals: false, filterField: "", filterValues: [] };
     await gadget.applyOperation({ structure: { sheetOrder: [source, "s_pivot"], sheets: { [source]: document.sheets[source], s_pivot: { ...document.sheets[source], id: "s_pivot", name: "Pivot", pivot: settings, created: undefined } } } });
-    expect((await gadget.applyOperation({ baseRevision: 2, sheetReplacements: [{ sheetId: "s_pivot", cells: { A1: { value: "Region", fmt: null, version: 1 }, B1: { value: "Sales", fmt: null, version: 1 }, A2: { value: "North", fmt: null, version: 1 }, B2: { value: "10", fmt: null, version: 1 } } }] })).status).toBe("applied");
+    expect((await gadget.applyOperation({ lineIds: true, sheetReplacements: [{ sheetId: "s_pivot", size: { rows: 2, cols: 2 }, cells: { "0:0": { value: "Region", fmt: null, version: 1 }, "0:1": { value: "Sales", fmt: null, version: 1 }, "1:0": { value: "North", fmt: null, version: 1 }, "1:1": { value: "10", fmt: null, version: 1 } } }] })).status).toBe("applied");
     // The source's formula is past the budget: unknown, rather than worked out.
     const value = ExportEvaluator.prototype.value;
     const spy = vi.spyOn(ExportEvaluator.prototype, "value").mockImplementation(function (this: ExportEvaluator, sheetId, row, column) {
@@ -1093,7 +1156,7 @@ describe("review regressions", () => {
     let disposed = 0;
     gadget.openDocument = () => Promise.reject(new Error("storage unavailable"));
     const subscriber = { operation: () => {}, presence: () => {}, dup() { return this; }, onRpcBroken: () => {}, [Symbol.dispose]: () => { disposed++; } };
-    await expect(gadget.subscribe(subscriber, { clientId: "c", packed: true })).rejects.toThrow("storage unavailable");
+    await expect(gadget.subscribe(subscriber, { clientId: "c", lines: true })).rejects.toThrow("storage unavailable");
     expect(gadget.subscribers.size).toBe(0);
     expect(disposed).toBe(1);
   });

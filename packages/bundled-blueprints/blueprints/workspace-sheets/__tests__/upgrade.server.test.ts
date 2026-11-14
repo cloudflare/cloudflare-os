@@ -1,9 +1,11 @@
 // @vitest-environment node
 // A gadget made from the previous Sheets blueprint takes this one as a code update: its storage
 // stays as the old server wrote it, and an editor tab running the old client may still be open.
-// `fixtures/old-workbook.json` is storage written by that build (through its UI and its
+// `fixtures/old-workbook.json` is storage written by an early build (through its UI and its
 // applyOperation API): a `meta` record with no `cellStorage`, and each sheet's cells in one
-// `cells:<sheetId>` value.
+// `cells:<sheetId>` value. `fixtures/v3-workbook.json` was written by the build before line ids
+// (cellStorage 3): cells in blocks by position, with formulas, a chart, a filter, frozen panes
+// and a pivot sheet.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -34,7 +36,9 @@ class MemoryStorage {
 }
 
 type OldStorage = { meta: DocumentMeta } & Record<`cells:${string}`, CellMap>;
-const OLD: OldStorage = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures/old-workbook.json"), "utf8"));
+const fixture = (name: string) => JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "fixtures", name), "utf8"));
+const OLD: OldStorage = fixture("old-workbook.json");
+const V3: { meta: DocumentMeta } & Record<string, unknown> = fixture("v3-workbook.json");
 const [SUMMARY, SALES, NOTES] = OLD.meta.sheetOrder;
 
 function storageWith(entries: Record<string, unknown>): MemoryStorage {
@@ -65,7 +69,8 @@ async function withBigSheet(rows: number): Promise<{ gadget: Gadget; sheetId: st
   const gadget = gadgetOn(new MemoryStorage());
   const meta = await gadget.getStructure();
   const sheetId = meta.sheetOrder[0];
-  await gadget.applyOperation({ senderId: "seed", structure: { sheetOrder: [sheetId], sheets: { [sheetId]: { ...meta.sheets[sheetId], rows: rows + 10 } } }, sheetReplacements: [{ sheetId, cells: bigSheet(rows) }] });
+  // As an editor from before line ids saves a big paste: the grid grown, the cells by position.
+  await gadget.applyOperation({ senderId: "seed", structure: { sheetOrder: [sheetId], sheets: { [sheetId]: { ...meta.sheets[sheetId], rows: rows + 10 } } }, sheetReplacements: [{ sheetId, cells: bigSheet(rows) } as never] });
   return { gadget, sheetId };
 }
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -77,7 +82,7 @@ describe("a workbook from the previous Sheets blueprint", () => {
     const document = await gadgetOn(storage).getDocument();
     expect(document.cells[NOTES]).toEqual(OLD[`cells:${NOTES}`]);
   });
-  it("keeps every sheet, size and cell, converting `cells:<id>` to blocks once", async () => {
+  it("keeps every sheet, size and cell, converting `cells:<id>` to blocks by line id once", async () => {
     const storage = storageWith(OLD);
     const document = await gadgetOn(storage).getDocument();
     expect(document.title).toBe("Quarterly plan");
@@ -93,8 +98,9 @@ describe("a workbook from the previous Sheets blueprint", () => {
     expect(document.cells[NOTES].B3).toEqual({ value: "", fmt: { bg: "#fbdedb" }, version: 1 });
 
     const keys = [...storage.map.keys()].toSorted();
-    expect(keys).toEqual(["b:" + NOTES + ":00000", "b:" + SALES + ":00000", "b:" + SUMMARY + ":00000", "meta"].toSorted());
-    expect((storage.map.get("meta") as DocumentMeta).cellStorage).toBe(3);
+    const block = (id: string) => "c:" + id + ":" + "0".repeat(15);
+    expect(keys).toEqual([block(NOTES), block(SALES), block(SUMMARY), "meta"].toSorted());
+    expect((storage.map.get("meta") as DocumentMeta).cellStorage).toBe(4);
     expect((storage.map.get("meta") as DocumentMeta).revision).toBe(OLD.meta.revision);
 
     // Loading again (a restart) reads the blocks and writes nothing.
@@ -115,29 +121,62 @@ describe("a workbook from the previous Sheets blueprint", () => {
   });
 });
 
+describe("a workbook stored in blocks by position (cellStorage 3)", () => {
+  const [DATA, Q1, PIVOT] = V3.meta.sheetOrder;
+  it("keeps its cells, formulas and settings, and replaces the old blocks", async () => {
+    const storage = storageWith(V3), gadget = gadgetOn(storage);
+    const before = { ...V3.meta.sheets };
+    const document = await gadget.getDocument();
+    expect(document.title).toBe("Regional sales");
+    for (const id of V3.meta.sheetOrder) {
+      const { layout: _, ...sheet } = before[id] as typeof before[string] & { layout?: number };
+      expect(document.sheets[id]).toEqual(sheet);
+    }
+    expect(document.cells[DATA]).toMatchObject({ A1: { value: "Region" }, D2: { value: "=B2/SUM($B$2:$B$5)" }, A40: { value: "far down" }, B40: { value: "=SUM(B2:B5)" } });
+    expect(document.cells[Q1]).toMatchObject({ B1: { value: "=SUM(Data!B2:B5)" }, B2: { value: "=MAX(Data!B2:B5)" }, B3: { value: '="Data!B2"' } });
+    expect(document.cells[PIVOT]).toMatchObject({ A2: { value: "North" }, B2: { value: "10" } });
+    expect([...storage.map.keys()].some((key) => key.startsWith("b:"))).toBe(false);
+    expect((storage.map.get("meta") as DocumentMeta).cellStorage).toBe(4);
+  });
+
+  it("then keeps formulas, the chart, filter, pivot and sizes with their lines when a row is inserted", async () => {
+    const gadget = gadgetOn(storageWith(V3));
+    await gadget.insertRows({ sheet: "Data", at: 1 });
+    const { sheets } = await gadget.getStructure();
+    expect(sheets[DATA]).toMatchObject({ rows: (V3.meta.sheets[DATA] as { rows: number }).rows + 1, rowHeights: { 1: 36 }, colWidths: { 0: 160, 2: 60 }, filter: { row: 1, endRow: 5, columns: [0, 1, 2] }, charts: [{ range: "A2:B6" }] });
+    expect(sheets[PIVOT].pivot).toMatchObject({ sourceSheetId: DATA, sourceRange: "A2:C6" });
+    expect((await gadget.readRange({ sheet: "Q1 Summary", range: "B1:B2" })).values).toEqual([["=SUM(Data!B3:B6)"], ["=MAX(Data!B3:B6)"]]);
+    expect((await gadget.readRange({ sheet: "Data", range: "D3" })).values).toEqual([["=B3/SUM($B$3:$B$6)"]]);
+  });
+});
+
 describe("an editor tab still running the previous client", () => {
   it("is subscribed with the whole workbook, which it can't load in pages", async () => {
     const { gadget, sheetId } = await withBigSheet(9000);
-    const paged = await gadget.subscribe(subscriber([]), { clientId: "new", packed: true });
+    const paged = await gadget.subscribe(subscriber([]), { clientId: "new", lines: true });
     expect(paged.cursors[sheetId]).toBeDefined();
     const old: OpenedDocument = await gadget.subscribe(subscriber([]), { clientId: "old" });
     expect(Object.keys(old.cells?.[sheetId] ?? {})).toHaveLength(18000);
     expect(old.cursors).toEqual({});
   });
 
-  it("is sent a big replaced sheet's cells rather than `null`, in revision order", async () => {
+  it("is sent the whole workbook for a change it can't follow by position, in revision order", async () => {
     const { gadget, sheetId } = await withBigSheet(6000);
     const oldEvents: SubscriberEvent[] = [], newEvents: SubscriberEvent[] = [];
     await gadget.subscribe(subscriber(oldEvents), { clientId: "old" });
-    await gadget.subscribe(subscriber(newEvents), { clientId: "new", packed: true });
+    await gadget.subscribe(subscriber(newEvents), { clientId: "new", lines: true });
     await gadget.insertRows({ at: 1, count: 1 });
-    await gadget.setCells({ cells: { A1: "after" } });
+    await gadget.setCells({ cells: { A1: "after", B1: "=A2" } });
     await settle();
-    expect(newEvents[0]).toMatchObject({ replacedCells: { [sheetId]: null } });
-    expect(oldEvents.map((e) => e.type === "operation" && e.revision)).toEqual([2, 3]);
-    const replaced = oldEvents[0].type === "operation" ? oldEvents[0].replacedCells?.[sheetId] : null;
-    expect(Object.keys(replaced ?? {})).toHaveLength(12000);
-    expect(replaced?.A2).toEqual({ value: "1", fmt: null, version: expect.any(Number) as number } satisfies Partial<Cell>);
+    // The current client hears one line operation; nothing about the cells moves.
+    expect(newEvents[0]).toMatchObject({ type: "operation", lineOps: [{ kind: "insert", axis: "rows", sheetId }] });
+    expect(newEvents[0].type === "operation" && newEvents[0].upserts).toEqual([]);
+    expect(oldEvents.map((e) => e.type)).toEqual(["snapshot", "operation"]);
+    const snapshot = oldEvents[0].type === "snapshot" ? oldEvents[0].document.cells[sheetId] : null;
+    expect(Object.keys(snapshot ?? {})).toHaveLength(12000);
+    expect(snapshot?.A2).toEqual({ value: "1", fmt: null, version: 1 } satisfies Cell);
+    // Cell edits reach it by position, formulas as A1 text.
+    expect(oldEvents[1]).toMatchObject({ revision: 3, upserts: [{ ref: "A1", cell: { value: "after" } }, { ref: "B1", cell: { value: "=A2" } }] });
   });
 
   it("keeps a sheet's charts and filter when it saves the structure it knows", async () => {
