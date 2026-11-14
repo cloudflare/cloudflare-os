@@ -2,8 +2,6 @@
 
 Cloudflare OS is an "operating system" for AI productivity originally developed for use inside Cloudflare. A large portion of Cloudflare's workforce -- from engineering to sales and everything in between -- uses Cloudflare OS every day to help them do their jobs.
 
-![A Q3 planning workspace in Cloudflare OS, with an AI-generated slide deck](docs/images/q3-planning-workspace.png)
-
 This is not a traditional computer operating system. We use the term "operating system" in two senses:
 
 * An operating system for *the company* to be productive with AI, in a way that is safe, so that the security team can sleep at night.
