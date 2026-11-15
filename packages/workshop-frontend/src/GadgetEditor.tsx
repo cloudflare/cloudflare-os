@@ -77,7 +77,6 @@ import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
 import { observerOpenFailureMessage, useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
-import { useUiFeatureFlag } from './FeatureFlagsContext'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
@@ -483,7 +482,6 @@ export default function GadgetEditor() {
   const id = params.id
   const navigate = useNavigate()
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
-  const { enabled: branchApproval } = useUiFeatureFlag('branch-approval')
   const publicApi = useRpcStub()
 
   const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
@@ -681,7 +679,7 @@ export default function GadgetEditor() {
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
-  // Under the branch approval model, for the Activity page's review tab.
+  // For the Activity page's review tab.
   const [chatsWithChanges, setChatsWithChanges] = useState<readonly ChatWithChanges[]>([])
   // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
   // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
@@ -958,8 +956,8 @@ export default function GadgetEditor() {
   // Show the selected chat's draft only when it proposes changes to the *selected* gadget: a
   // chat that touched some other gadget would otherwise run this one as a needlessly separate
   // chat-scoped instance with identical code (the backend applies the same per-gadget rule in
-  // getGadgetFacetFetcher). Under the branch approval model the list is of the gadgets that run
-  // on the chat's branch (AiChatMetadata.branchGadgets), by the same rule as the backend's.
+  // getGadgetFacetFetcher). The list is of the gadgets that run on the chat's branch
+  // (AiChatMetadata.branchGadgets), by the same rule as the backend's.
   const previewChatId =
     effectiveSelectedChatId !== null && selectedGadgetId !== null &&
         selectedChatProposedWorkpieces.includes(selectedGadgetId)
@@ -1265,8 +1263,8 @@ export default function GadgetEditor() {
     [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode]
   )
 
-  // Under the branch approval model, an agentless chat with holding on (see
-  // Overseer.setChatHolding()), with the gadget opened in it.
+  // An agentless chat with holding on (see Overseer.setChatHolding()), with the gadget opened in
+  // it.
   const holdChanges = async (gadget: { title: string }) => {
     if (!overseerStub) return
     try {
@@ -1798,7 +1796,6 @@ export default function GadgetEditor() {
             overseer={overseer.stub}
             onViewActivity={openActivity}
             restricted={metadata?.containsRestrictedData === true}
-            branchApproval={branchApproval}
           />
 
           {showReconnecting && <ReconnectingChip />}
@@ -2085,7 +2082,6 @@ export default function GadgetEditor() {
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
                   autoApproval={autoApproval}
-                  branchApproval={branchApproval}
                   onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onChatsWithChangesChange={setChatsWithChanges}
@@ -2196,9 +2192,9 @@ export default function GadgetEditor() {
                 />
               )}
 
-              {/* Under the branch approval model, holding the gadget's changes runs it in a chat of
-                  its own with holding on, so its requests wait there for review. */}
-              {!paneShowsActivity && branchApproval && selectedGadgetSummary &&
+              {/* Holding the gadget's changes runs it in a chat of its own with holding on, so its
+                  requests wait there for review. */}
+              {!paneShowsActivity && selectedGadgetSummary &&
                 previewChatId === undefined && (
                 <WorkshopIconButton
                   aria-label="Hold changes"
@@ -2268,14 +2264,12 @@ export default function GadgetEditor() {
                   view={activityView}
                   onViewChange={setActivityView}
                   autoApproval={autoApproval}
-                  branch={branchApproval ? {
-                    chats: chatsWithChanges,
-                    onOpenChat: chatId => {
-                      navigateToChat(chatId)
-                      // The chat is where its changes are accepted; on a phone the pane hides it.
-                      if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
-                    },
-                  } : undefined}
+                  chats={chatsWithChanges}
+                  onOpenChat={chatId => {
+                    navigateToChat(chatId)
+                    // The chat is where its changes are accepted; on a phone the pane hides it.
+                    if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+                  }}
                 />
               </div>
             )}

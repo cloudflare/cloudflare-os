@@ -31,7 +31,7 @@ import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
   migrateToBranchIndex, migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget,
-  migrateToSpawnerBindings, migrateToWorkpieceTypes,
+  migrateToRejectedOrphans, migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -818,14 +818,6 @@ class OverseerImpl implements AgentHooks {
   // Each connection's look for Gatekeeper.applyActions() in flight before a submission (see
   // beforeSubmission), settling to its failure, if it failed.
   #adoptionLooks = new Map<WorkpieceId, Promise<{error: unknown} | undefined>>();
-
-  // Whether the branch approval model of plans/forking-reality.md is on (see BRANCH_APPROVAL in
-  // env.d.ts): accepting a chat applies its pending actions, discarding it rejects them, and
-  // auto-approval acts at the end of a turn. TODO: Remove, with the code it gates off, once the
-  // model is proven.
-  get branchApproval(): boolean {
-    return this.env.BRANCH_APPROVAL === "true";
-  }
 
   #preparingChatMessages = new Map<number, Promise<void>>();
 
@@ -1661,14 +1653,11 @@ class OverseerImpl implements AgentHooks {
     migrateToMultiGadget(this);
     this.defaultGadgetId = this.storage.defaultGadgetId.get();
 
-    // Under the branch approval model the drain applies staged actions at once instead (see
-    // #stagedRun), and a chat's actions wait for its branch to be accepted.
+    // The drain applies staged actions at once (see #stagedRun); a chat's actions wait for its
+    // branch to be accepted.
     this.#autoApprovalDrainer = new AutoApprovalDrainer(
-        this.storage, (gatekeeperId, select) => this.branchApproval
-            ? this.#applyStaged(gatekeeperId, select)
-            : this.applyActionList(gatekeeperId, true, select),
-        id => this.#deciding.has(id),
-        gatekeeperId => this.branchApproval ? this.#stagedRun(gatekeeperId) : undefined);
+        (gatekeeperId, select) => this.#applyStaged(gatekeeperId, select),
+        gatekeeperId => this.#stagedRun(gatekeeperId));
     this.cacheWarmer = new ChatCacheWarmer(ctx.id.toString(), (chatId, resent) =>
         this.#addRequestCost(
             chatId, resent.usage, resent.aiGatewayLogId, resent.aiGatewayLogRoute, false));
@@ -1680,15 +1669,12 @@ class OverseerImpl implements AgentHooks {
     this.storage.gadgets.subscribe({
       add: () => {
         this.markOutputsDirty();
-        // Under the branch approval model a new gadget runs on every branch that takes them all
-        // (see branchGadgetIds), which those chats' metadata must say. Subscribers run before
-        // the write, so after it.
-        if (this.branchApproval) {
-          this.ctx.waitUntil(Promise.resolve().then(() => this.#rebroadcastChatMeta(
-              [...this.storage.chatMeta.list()].flatMap(meta =>
-                  meta.holding || this.#pendingOnBranch(`chat:${meta.id}`).length > 0
-                      ? [meta.id] : []))));
-        }
+        // A new gadget runs on every branch that takes them all (see branchGadgetIds), which
+        // those chats' metadata must say. Subscribers run before the write, so after it.
+        this.ctx.waitUntil(Promise.resolve().then(() => this.#rebroadcastChatMeta(
+            [...this.storage.chatMeta.list()].flatMap(meta =>
+                meta.holding || this.#pendingOnBranch(`chat:${meta.id}`).length > 0
+                    ? [meta.id] : []))));
       },
       update: () => this.markOutputsDirty(),
       remove: () => this.markOutputsDirty(),
@@ -1702,6 +1688,7 @@ class OverseerImpl implements AgentHooks {
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
       migrateToBranchIndex(this);
+      migrateToRejectedOrphans(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -2908,17 +2895,14 @@ class OverseerImpl implements AgentHooks {
     if (!stored.activeAgent && this.#decisionWait(stored.id)?.pending) {
       meta.awaitingDecision = true;
     }
-    if (this.branchApproval) {
-      let pending = this.#pendingOnBranch(`chat:${stored.id}`).length;
-      if (pending > 0) meta.pendingActions = pending;
-      let gadgets = this.branchGadgetIds(stored.id, stored);
-      if (gadgets.length > 0) meta.branchGadgets = gadgets;
-    }
+    let pending = this.#pendingOnBranch(`chat:${stored.id}`).length;
+    if (pending > 0) meta.pendingActions = pending;
+    let gadgets = this.branchGadgetIds(stored.id, stored);
+    if (gadgets.length > 0) meta.branchGadgets = gadgets;
     return meta;
   }
 
-  // Under the branch approval model, the gadgets a request in chat `chatId`'s context runs on the
-  // chat's branch (see #resolveGadgetChatId and AiChatMetadata.branchGadgets): those the chat
+  // The gadgets a request in chat `chatId`'s context runs on the chat's branch (see #resolveGadgetChatId and AiChatMetadata.branchGadgets): those the chat
   // proposes changes to, those an agent turn in it has invoked until the turn ends, and, while the
   // chat has pending actions or holding is on, every one.
   branchGadgetIds(chatId: number, meta: AiChatMetadata): WorkpieceId[] {
@@ -2935,10 +2919,9 @@ class OverseerImpl implements AgentHooks {
   // The gadgets each chat's running agent turn has invoked (see branchGadgetIds), by chat ID.
   #invokedGadgets = new Map<number, Set<WorkpieceId>>();
 
-  // Under the branch approval model, how many actions staging holds (see
-  // WorkspaceMetadata.stagedActions): undefined when none, or with the model off.
+  // How many actions staging holds (see WorkspaceMetadata.stagedActions): undefined when none.
   stagedActionCount(): number | undefined {
-    return this.branchApproval ? this.#pendingOnBranch(null).length || undefined : undefined;
+    return this.#pendingOnBranch(null).length || undefined;
   }
 
   // The pending actions on `branch`, or on staging for null, in ID order.
@@ -2947,11 +2930,11 @@ class OverseerImpl implements AgentHooks {
         (record): record is ActionRecord & {type: "action"} => record.type === "action");
   }
 
-  // Under the branch approval model, sends the metadata of the chat whose branch `record` is on
-  // again, once the record has become or stopped being pending: the metadata shows the chat's
-  // pending actions, which also decide where its gadgets run (see chatMetaForClient).
+  // Sends the metadata of the chat whose branch `record` is on again, once the record has become
+  // or stopped being pending: the metadata shows the chat's pending actions, which also decide
+  // where its gadgets run (see chatMetaForClient).
   #branchChanged(record: ActionRecord): void {
-    if (!this.branchApproval || record.type !== "action") return;
+    if (record.type !== "action") return;
     let chatId = record.caller.from !== "hook" ? record.caller.chatId : undefined;
     if (chatId !== undefined) this.#rebroadcastChatMeta([chatId]);
   }
@@ -4360,15 +4343,14 @@ class OverseerImpl implements AgentHooks {
 
 
   // The body of Overseer.mergeChanges(), running under the chat's operation lock (callers
-  // hold withChatLock). `clientUserId` feeds analytics only. Under the branch approval model the
-  // chat's pending actions apply first, once the code is known to merge (see acceptBranch).
+  // hold withChatLock). `clientUserId` feeds analytics only. The chat's pending actions apply
+  // first, once the code is known to merge (see acceptBranch).
   async mergeChanges(chatId: number, userMeta: UserChatContext, clientUserId: string,
                      creations?: Map<number, CreationChoice>): Promise<MergeChangesResult> {
     let meta = this.assertChatNotActive(chatId);
     // What is pending now is what the user accepts, whatever is submitted during the awaits below.
-    let taken = this.branchApproval ? this.branchSnapshot(chatId) : undefined;
-    let applyActions = async () =>
-        !taken || await this.acceptBranch(chatId, taken, userMeta.profile, creations);
+    let taken = this.branchSnapshot(chatId);
+    let applyActions = () => this.acceptBranch(chatId, taken, userMeta.profile, creations);
 
     // Always merge *everything* the chat proposes: sweep live change rows into a "changes" message
     // first, then accept all proposed changes. Partial accepts are incoherent under the epoch
@@ -5190,14 +5172,12 @@ class OverseerImpl implements AgentHooks {
   // chatId sealed into a persistent stub, see OverseerRestoreParams.chatId) likewise resolves to
   // main.
   //
-  // Under the branch approval model the chat context also selects the chat's branch, which the
-  // instance's reads see and its actions join, so the rule is wider (see branchGadgetIds).
+  // The chat context also selects the chat's branch, which the instance's reads see and its
+  // actions join, so the rule is wider (see branchGadgetIds).
   #resolveGadgetChatId(gadgetId: WorkpieceId, chatId: number | undefined): number | undefined {
     if (chatId === undefined) return undefined;
     let meta = this.storage.chatMeta.get(chatId);
-    if (!meta || !(this.branchApproval ? this.branchGadgetIds(chatId, meta)
-                                       : this.proposedChangeWorkpieceIds(chatId, meta))
-        .includes(gadgetId)) {
+    if (!meta || !this.branchGadgetIds(chatId, meta).includes(gadgetId)) {
       return undefined;
     }
     return chatId;
@@ -5658,7 +5638,7 @@ class OverseerImpl implements AgentHooks {
     return taken;
   }
 
-  // Accepts chat `chatId`'s branch, under the branch approval model, as `taken` (branchSnapshot)
+  // Accepts chat `chatId`'s branch as `taken` (branchSnapshot)
   // says it stood when the accept began: an action submitted since, by a turn that started
   // meanwhile or by staging, is not one anybody accepted, and its ID puts it past the bounds of
   // every list (see Gatekeeper.applyActions()). On each connection the chat has a pending action
@@ -5769,17 +5749,30 @@ class OverseerImpl implements AgentHooks {
 
   // Applies `record` and the actions approving it applies (#approvalList) automatically, if every
   // one of them satisfies a rule (see #autoItems). A failure leaves them pending, with the error on
-  // the one that failed.
-  async #autoApply(record: ActionRecord & {type: "action"}): Promise<void> {
-    try {
-      await this.applyActionList(record.gatekeeperId, true,
-          adopted => this.#autoItems(this.#approvalList(record, adopted)) ?? []);
-    } catch (error) {
-      this.logger.error("auto-approval failed", {
-        event: "auto.approval.failed", actionId: record.id, error,
-      });
-    }
+  // the one that failed. One connection's run one at a time (#autoApplying), so that a second
+  // awaited action submitted while the first applies does not find the first claimed and stay
+  // pending, with no turn waiting on it.
+  #autoApply(record: ActionRecord & {type: "action"}): Promise<void> {
+    let gatekeeperId = record.gatekeeperId;
+    let run = (this.#autoApplying.get(gatekeeperId) ?? Promise.resolve()).then(async () => {
+      try {
+        await this.applyActionList(gatekeeperId, true,
+            adopted => this.#autoItems(this.#approvalList(record, adopted)) ?? []);
+      } catch (error) {
+        this.logger.error("auto-approval failed", {
+          event: "auto.approval.failed", actionId: record.id, error,
+        });
+      }
+    });
+    this.#autoApplying.set(gatekeeperId, run);
+    void run.then(() => {
+      if (this.#autoApplying.get(gatekeeperId) === run) this.#autoApplying.delete(gatekeeperId);
+    });
+    return run;
   }
+
+  // Each connection's last automatic apply of an awaited action (see #autoApply), while one runs.
+  #autoApplying = new Map<number, Promise<void>>();
 
   // `records` as an automatic approval applies them: each as the user who enabled the rule it
   // satisfies (autoApprovalRule), which is asked again before each call to the gatekeeper (see
@@ -5801,8 +5794,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Rejects chat `chatId`'s pending actions whose `action` message is at or after `revertFrom`,
-  // newest first, as discarding its changes from there does under the branch approval model; with
-  // `revertFrom` 0, all of them, including any with no message yet.
+  // newest first, as discarding its changes from there does; with `revertFrom` 0, all of them,
+  // including any with no message yet.
   //
   // With `chatId` null, rejects all that staging holds the same way (see discardStagedActions),
   // each once no staged action applies at once on its connection, which would refuse the claim.
@@ -5852,10 +5845,9 @@ class OverseerImpl implements AgentHooks {
     using _decision = this.claimDecision(action.id);
     let result = await gatekeeper.rejectAction(action.action);
     this.recordRejection(action.id, resolvedBy);
-    // Under the branch approval model, `restart` says simulated work was built on the action, in
-    // the gadgets whose view included it: those on its branch, or, for a staged action, which every
-    // view includes, every one.
-    if (this.branchApproval && result?.restart === true) {
+    // `restart` says simulated work was built on the action, in the gadgets whose view included
+    // it: those on its branch, or, for a staged action, which every view includes, every one.
+    if (result?.restart === true) {
       let branch = branchOf(action.caller);
       for (let [gadgetId, chatId] of this.#runningChatIds) {
         if (branch === null || (chatId !== null && branch === `chat:${chatId}`)) {
@@ -5881,13 +5873,10 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The pending actions approving `record` applies, in order: the record's branch up to it (see
-  // #branchList), as a gatekeeper that has adopted branches simulated the record on top of the
-  // others. A gatekeeper that has not is handed the record alone, as before branches, unless the
-  // branch approval model is on. The record goes in as read, so the claim refuses it if it was
-  // decided since.
+  // #branchList), as the gatekeeper simulated the record on top of the others. The record goes in
+  // as read, so the claim refuses it if it was decided since.
   #approvalList(record: ActionRecord & {type: "action"}, adopted: boolean)
       : (ActionRecord & {type: "action"})[] {
-    if (!adopted && !this.branchApproval) return [record];
     let list = this.#branchList(record.gatekeeperId, branchOf(record.caller), adopted, record.id);
     return list.some(other => other.id === record.id) ? list : [...list, record];
   }
@@ -5913,11 +5902,12 @@ class OverseerImpl implements AgentHooks {
   }
 
   // The one routine that applies pending actions: on one connection, those `select` picks, in
-  // order, each as approved by its `resolvedBy`. Shared by manual approval (applyPendingAction)
-  // and the auto-approval drain (drainAutoApprovals). `select` learns whether the gatekeeper has
-  // adopted branches (see adoptsBranches) and runs just before its actions are claimed (see
-  // claimDecision), so it picks from them as they are then. Stops at the first action that fails,
-  // recording the error on it (ActionRecord.applyError), and throws.
+  // order, each as approved by its `resolvedBy`. Shared by manual approval (applyPendingAction),
+  // accepting a branch (acceptBranch) and staged actions applying at once (drainAutoApprovals).
+  // `select` learns whether the gatekeeper has adopted branches (see adoptsBranches) and runs just
+  // before its actions are claimed (see claimDecision), so it picks from them as they are then.
+  // Stops at the first action that fails, recording the error on it (ActionRecord.applyError),
+  // and throws.
   //
   // A gatekeeper that has adopted branches is handed the actions as lists (#applyRun). Any other
   // is handed them one at a time (Gatekeeper.applyAction()).
@@ -5933,8 +5923,8 @@ class OverseerImpl implements AgentHooks {
     let adopted = await this.adoptsBranches(gatekeeperId, facet);
     let gatekeeper = facet as unknown as ApplyingGatekeeperFacet;
     let items = select(adopted);
-    // Under the branch approval model, a staged action submitted while this applies a chat's
-    // waits for it (see #stagedRun), and applies once its claims are released.
+    // A staged action submitted while this applies a chat's waits for it (see #stagedRun), and
+    // applies once its claims are released.
     using _then = this.#thenApplyStaged(gatekeeperId, items.map(item => item.record));
     using _decision = this.claimDecision(...items.map(item => item.record.id));
     if (items.length === 0) return;
@@ -5944,12 +5934,8 @@ class OverseerImpl implements AgentHooks {
       throw new Error("This resource doesn't exist yet. Approve its creation first.");
     }
     if (adopted) {
-      for (let run of this.#viewRuns(gatekeeperId, items)) {
-        if (!await this.#applyRun(gatekeeper, gatekeeperId, run.branch, run.items, autoApproved)) {
-          return;
-        }
-      }
-      return;
+      return await this.#applyRun(gatekeeper, gatekeeperId, this.#viewOf(gatekeeperId, items),
+                                  items, autoApproved);
     }
     for (let {record, resolvedBy, eligible} of items) {
       if (eligible?.() === false) return;
@@ -5969,14 +5955,12 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Shim 3 of plans/forking-reality.md: `message`, why `record` failed to apply, naming the chat
-  // that holds an earlier pending action on the connection, when one does under the branch
-  // approval model. A gatekeeper that has not adopted branches simulated `record` on top of every
+  // that holds an earlier pending action on the connection, when one does. A gatekeeper that has not adopted branches simulated `record` on top of every
   // earlier action, as it does a leftover, and one that enforces order refuses to apply it past
   // another chat's; only that chat's accept or a denial gets it out of the way.
   // TODO: Remove with the last gatekeeper that does not implement applyActions(), once no leftover
   // is pending.
   #withEarlierBranchHint(record: ActionRecord & {type: "action"}, message: string): string {
-    if (!this.branchApproval) return message;
     let through = this.storage.gatekeepers.get(record.gatekeeperId)?.leftoversThrough;
     let branch = branchOf(record.caller);
     let earlier = [...this.storage.actions.pendingByGatekeeper.get(record.gatekeeperId)].find(
@@ -5990,23 +5974,14 @@ class OverseerImpl implements AgentHooks {
         "Accept that chat's changes or deny the action, then try again.)";
   }
 
-  // Cuts a list for a gatekeeper that has adopted branches into the calls that apply it, each
-  // read through one view. Staged actions and leftovers, which every view sees, may lead a call;
-  // one branch's actions follow. (A leftover is applied by name, whatever the view.)
-  #viewRuns(gatekeeperId: number, items: ApplyItem[])
-      : {branch: BranchId | null, items: ApplyItem[]}[] {
+  // The view a list for a gatekeeper that has adopted branches is read through. Staged actions
+  // and leftovers, which every view sees, lead a list, and at most one branch's actions follow
+  // (see #branchList): that branch's view, or staging's when none do. (A leftover is applied by
+  // name, whatever the view.)
+  #viewOf(gatekeeperId: number, items: ApplyItem[]): BranchId | null {
     let through = this.storage.gatekeepers.get(gatekeeperId)?.leftoversThrough ?? 0;
-    let runs: {branch: BranchId | null, items: ApplyItem[]}[] = [];
-    for (let item of items) {
-      let branch = item.record.id <= through ? null : branchOf(item.record.caller);
-      let run = runs.at(-1);
-      if (run === undefined || (run.branch !== null && run.branch !== branch)) {
-        runs.push(run = {branch, items: []});
-      }
-      run.branch ??= branch;
-      run.items.push(item);
-    }
-    return runs;
+    let last = items.findLast(item => item.record.id > through);
+    return last ? branchOf(last.record.caller) : null;
   }
 
   // Applies one view's list through Gatekeeper.applyActions(), calling again with what is left
@@ -6020,19 +5995,14 @@ class OverseerImpl implements AgentHooks {
   //
   // Each call names what is still pending, up to the first action no longer eligible (see
   // ApplyItem): the gatekeeper may have reported one rejected meanwhile (see rejectAction()).
-  // Returns whether nothing was left for want of eligibility.
   async #applyRun(gatekeeper: ApplyingGatekeeperFacet, gatekeeperId: number,
                   branch: BranchId | null, items: ApplyItem[], autoApproved: boolean)
-      : Promise<boolean> {
-    let complete = true;
+      : Promise<void> {
     for (;;) {
       items = items.filter(({record: {id}}) => this.storage.actions.get(id)?.state === "pending");
       let stop = items.findIndex(item => item.eligible?.() === false);
-      if (stop >= 0) {
-        items = items.slice(0, stop);
-        complete = false;
-      }
-      if (items.length === 0) return complete;
+      if (stop >= 0) items = items.slice(0, stop);
+      if (items.length === 0) return;
       let resumed = new Set<number>();
       this.storage.transaction(() => {
         for (let {record: {id}} of items) {
@@ -6081,7 +6051,7 @@ class OverseerImpl implements AgentHooks {
         }
       }
       if (failed) throw new Error(String(failed.message));
-      if (appliedAt.size === 0) return complete;
+      if (appliedAt.size === 0) return;
       items = rest;
     }
   }
@@ -6163,18 +6133,14 @@ class OverseerImpl implements AgentHooks {
         gatekeeperVendorId(this.storage.gatekeepers.get(record.gatekeeperId)), state);
   }
 
-  // Apply all currently-eligible pending actions of the given gatekeeper, in ascending id order.
-  // Stops at the first pending action that is NOT auto-eligible (i.e. a manual gate) or that throws
-  // while applying -- it is never skipped ahead of. This preserves in-order application and the
-  // invariant that nothing is silently applied past a human gate.
+  // Applies the connection's staged actions (see #stagedRun), in order, as the workspace owner,
+  // whose profile is fetched first. Stops at the first that fails to apply -- it is never skipped
+  // ahead of (see #applyStaged).
   //
   // Delegates to the single-flight drainer, which guards against concurrent drains for the same
   // gatekeeper double-applying an action (the DO's input gate is open across the apply await).
-  //
-  // Under the branch approval model it applies the connection's staged actions instead (see
-  // #stagedRun), as the workspace owner, whose profile is fetched first.
   async drainAutoApprovals(gatekeeperId: number): Promise<void> {
-    if (this.branchApproval && !this.#owner) {
+    if (!this.#owner) {
       try {
         this.#owner = await retryOnDoReset(() => this.ownerUserDo().whoami(), this.logger);
       } catch (error) {
@@ -6188,14 +6154,13 @@ class OverseerImpl implements AgentHooks {
   // The workspace owner's profile, which staged actions apply as (see drainAutoApprovals).
   #owner?: AiChatAuthorInfo;
 
-  // Under the branch approval model, what a drain applies on the connection (see
-  // drainAutoApprovals): every staged action pending there, in order, up to one a user is
-  // deciding, as the workspace owner. Staged actions apply as soon as they are submitted,
-  // whoever's code submitted them and whatever their autoApprovable verdict, because the user
-  // chose to run that code outside any chat. Staging holds them only while the workspace has read
-  // restricted data, where every action needs a user's review, until a user accepts them
-  // (acceptStagedActions), and behind one that failed to apply, which the next apply on the
-  // connection retries (see #applyStaged).
+  // What a drain applies on the connection (see drainAutoApprovals): every staged action pending
+  // there, in order, up to one a user is deciding, as the workspace owner. Staged actions apply as
+  // soon as they are submitted, whoever's code submitted them and whatever their autoApprovable
+  // verdict, because the user chose to run that code outside any chat. Staging holds them only
+  // while the workspace has read restricted data, where every action needs a user's review, until
+  // a user accepts them (acceptStagedActions), and behind one that failed to apply, which the next
+  // apply on the connection retries (see #applyStaged).
   //
   // Nothing applies while a decision on a chat's action there is in flight: staging goes first
   // when a list is taken, but an apply already under way is not overtaken (see
@@ -6215,10 +6180,10 @@ class OverseerImpl implements AgentHooks {
     return items;
   }
 
-  // Under the branch approval model, once disposed, applies what staging holds on the connection
-  // (see #stagedRun) when `records` include a chat's action, whose decision held it up.
+  // Once disposed, applies what staging holds on the connection (see #stagedRun) when `records`
+  // include a chat's action, whose decision held it up.
   #thenApplyStaged(gatekeeperId: number, records: ActionRecord[]): Disposable {
-    let held = this.branchApproval && records.some(record => branchOf(record.caller) !== null);
+    let held = records.some(record => branchOf(record.caller) !== null);
     return {[Symbol.dispose]: () => {
       if (held) this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
     }};
@@ -6389,19 +6354,13 @@ class OverseerImpl implements AgentHooks {
       affectedChats.add(chatId);
     }
 
-    // Pushes still queued against this gatekeeper can never apply once it is gone; clean up
-    // their pending-push marks like a rejection would. (The action records themselves remain,
-    // as the audit log; onRemote/pullableFrom metadata also remains -- a wrong entry only makes
-    // a future pull fail with its "reconnect" error.)
+    // A pending action left on a removed connection, which nothing could decide, would hold up
+    // its chat's accept for good. So it is rejected, which also clears the pending-push marks of
+    // a push still queued against this gatekeeper: it can never apply once it is gone. (The
+    // action records themselves remain, as the audit log; onRemote/pullableFrom metadata also
+    // remains -- a wrong entry only makes a future pull fail with its "reconnect" error.)
     for (let action of Array.from(this.storage.actions.pendingByGatekeeper.get(id))) {
-      if (action.type === "action" && action.description.pushedCommits?.length) {
-        this.gitCache.clearPushMarks(action.id);
-      }
-      // Under the branch approval model, a pending action left on a removed connection, which
-      // nothing could decide, would hold up its chat's accept for good. So it is rejected.
-      if (action.type === "action" && this.branchApproval) {
-        this.recordRejection(action.id, undefined);
-      }
+      if (action.type === "action") this.recordRejection(action.id, undefined);
     }
 
     // Hooks bound through this connection die with it, synchronously: deleting the record is the
@@ -6437,10 +6396,10 @@ class OverseerImpl implements AgentHooks {
       case "gadget": {
         if (caller.from === "agent") {
           this.#getOrCreateCapturedActions(caller.chatId).accessedGadget = true;
-          // Under the branch approval model, an agent turn's call runs the gadget on its chat's
-          // branch, and the gadget stays there until the turn ends (see branchGadgetIds).
+          // An agent turn's call runs the gadget on its chat's branch, and the gadget stays there
+          // until the turn ends (see branchGadgetIds).
           let invoked = this.#invokedGadgets.get(caller.chatId);
-          if (this.branchApproval && !invoked?.has(target.id)) {
+          if (!invoked?.has(target.id)) {
             this.#invokedGadgets.set(caller.chatId, (invoked ?? new Set()).add(target.id));
             this.#rebroadcastChatMeta([caller.chatId]);
           }
@@ -7223,10 +7182,10 @@ class OverseerImpl implements AgentHooks {
           "This action was blocked because the connection it was submitted through has been " +
           "removed from this workspace.");
     }
-    // Under the branch approval model, nor could one join the branch of a deleted chat, which
-    // nothing would accept or discard again (see deleteChat).
+    // Nor could one join the branch of a deleted chat, which nothing would accept or discard
+    // again (see deleteChat).
     let chatId = caller.from !== "hook" ? caller.chatId : undefined;
-    if (this.branchApproval && chatId !== undefined && !this.storage.chatMeta.get(chatId)) {
+    if (chatId !== undefined && !this.storage.chatMeta.get(chatId)) {
       throw new Error("This action was blocked because its chat has been deleted.");
     }
 
@@ -7291,45 +7250,28 @@ class OverseerImpl implements AgentHooks {
       this.#lastSubmitted.set(gatekeeperId, Math.max(action, last));
     }
 
-    // Same auto-approval gate the drainer uses, named because awaitDecision uses it too. The drain
-    // is deferred because applying calls back into the gatekeeper facet still awaiting submitAction.
-    let willAutoApprove = autoApprovalRule(this.storage, gatekeeperId, description) !== undefined;
-    if (!willAutoApprove) this.traceAgentActionApproval(record, "requested");
+    if (autoApprovalRule(this.storage, gatekeeperId, description) === undefined) {
+      this.traceAgentActionApproval(record, "requested");
+    }
 
-    // Under the branch approval model a chat's action waits for its chat to be accepted (see
-    // acceptBranch), but an agent's turn cannot wait inside the branch for the real result of an
-    // awaited one. Rules apply that at once, with the actions approving it applies before it,
-    // when every one of them satisfies a rule; otherwise the turn waits for a user.
+    // A chat's action waits for its chat to be accepted (see acceptBranch), but an agent's turn
+    // cannot wait inside the branch for the real result of an awaited one. Rules apply that at
+    // once, with the actions approving it applies before it, when every one of them satisfies a
+    // rule; otherwise the turn waits for a user.
     //
-    // A staged action, though, applies at once, unless staging holds (see #stagedRun). The drain
-    // is deferred, as below.
-    if (this.branchApproval) {
-      if (branchOf(caller) === null) {
-        this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
-      } else if (caller.from === "agent" && description.awaitDecision) {
-        // As far as the kernel has seen; the apply asks again (see adoptsBranches).
-        let adopted = gatekeeper.leftoversThrough !== undefined;
-        if (this.#autoItems(this.#branchList(gatekeeperId, branchOf(caller), adopted, actionId))) {
-          this.ctx.waitUntil(this.#autoApply(record));
-        } else {
-          this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
-        }
-      }
-      return;
-    }
-
-    // Only agent turns suspend on awaitDecision, and only when a manual decision is pending: on this
-    // action, or on an earlier one the in-order drain stops at. Auto-approved actions keep the
-    // seamless behavior the user opted into.
-    if (caller.from === "agent" && description.awaitDecision && (!willAutoApprove ||
-        [...this.storage.actions.pendingByGatekeeper.get(gatekeeperId)].some(queued =>
-            queued.type === "action" &&
-            autoApprovalRule(this.storage, gatekeeperId, queued.description) === undefined))) {
-      this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
-    }
-
-    if (willAutoApprove) {
+    // A staged action, though, applies at once, unless staging holds (see #stagedRun). Both
+    // applies are deferred because applying calls back into the gatekeeper facet still awaiting
+    // submitAction.
+    if (branchOf(caller) === null) {
       this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
+    } else if (caller.from === "agent" && description.awaitDecision) {
+      // As far as the kernel has seen; the apply asks again (see adoptsBranches).
+      let adopted = gatekeeper.leftoversThrough !== undefined;
+      if (this.#autoItems(this.#branchList(gatekeeperId, branchOf(caller), adopted, actionId))) {
+        this.ctx.waitUntil(this.#autoApply(record));
+      } else {
+        this.#getOrCreateCapturedActions(caller.chatId).awaitDecision = true;
+      }
     }
   }
 
@@ -9006,11 +8948,10 @@ class OverseerImpl implements AgentHooks {
         // step's message is by construction lost, so nothing in the log backs it. Never throws,
         // so it can't mask an error propagating out of the turn.
         await this.reconcilePendingGadgets(chatId);
-        // Under the branch approval model, a turn that finished normally ends by accepting its
-        // chat's branch when rules cover all of it, before the chat goes idle, so that no turn or
-        // message can start meanwhile and waitForAgent() returns only once it is done.
-        if (owns() && finished && !failure && !liveChat.cancelController.signal.aborted &&
-            this.branchApproval) {
+        // A turn that finished normally ends by accepting its chat's branch when rules cover all
+        // of it, before the chat goes idle, so that no turn or message can start meanwhile and
+        // waitForAgent() returns only once it is done.
+        if (owns() && finished && !failure && !liveChat.cancelController.signal.aborted) {
           await this.autoAcceptBranch(chatId);
         }
         if (owns()) {
@@ -10761,11 +10702,9 @@ class OverseerImpl implements AgentHooks {
   // person waits on completion; callbacks and spawned agents notify only when permission is needed.
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
     if (!this.storage.chatMeta.get(chatId)) return;
-    // Under the branch approval model a turn that leaves its chat's actions pending also needs a
-    // decision: accepting the chat.
+    // A turn that leaves its chat's actions pending also needs a decision: accepting the chat.
     let awaitingDecision = (this.#decisionWait(chatId)?.pending ?? false) ||
-        (this.branchApproval && [...this.storage.actions.pendingByBranch.get(`chat:${chatId}`)]
-            .some(record => record.type === "action"));
+        this.#pendingOnBranch(`chat:${chatId}`).length > 0;
     if (!awaitingDecision && initiator.type !== "user") return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
     let sequence = this.nextChatSequencePeek(chatId) - 1;
@@ -13076,7 +13015,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
     };
     // Told of each change to an action before it is written, so counting from the change.
-    let staged = (record: ActionRecord) => this.impl.branchApproval && record.type === "action" &&
+    let staged = (record: ActionRecord) => record.type === "action" &&
         record.state === "pending" && branchOf(record.caller) === null ? 1 : 0;
     let stagedActionsChanged = (by: number) => {
       if (by === 0) return;
@@ -13449,37 +13388,28 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.impl.applyPendingAction(action, profile, false,
         creator ? {creator, configuration: creation?.configuration ?? null} : undefined);
 
-    // Clearing this manual gate may unblock later auto-eligible pending actions on the same
-    // gatekeeper, so cascade a drain (in-order) once this one is applied.
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(action.gatekeeperId));
+    // Clearing this gate may unblock staged actions held behind it on the same gatekeeper, so
+    // cascade a drain (in-order) once this one is applied.
+    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAsClient(action.gatekeeperId));
   }
 
-  // A drain can decide an agent turn's last awaited action, which must resume that turn just as a
-  // manual approval does.
-  async #drainAutoApprovalsAndResume(gatekeeperId: WorkpieceId): Promise<void> {
-    // Snapshot every awaited action, even auto-eligible ones that didn't suspend their turn: a turn
-    // suspended on a manual action can also be waiting on them. Accepted cost: one applied here
-    // (e.g. a retried auto-apply failure) can resume a turn that never suspended.
-    let awaited = new Map<number, number>();  // action id -> chat id
+  // Applies what staging holds on the connection (drainAutoApprovals), first recording the calling
+  // user as the initiator of each stopped turn waiting on an awaited action there
+  // (rememberDecisionInitiator): an apply that follows may decide one, a rule's included, and must
+  // resume that turn just as a manual approval does.
+  async #drainAutoApprovalsAsClient(gatekeeperId: WorkpieceId): Promise<void> {
     let profile: AiChatAuthorInfo | undefined;
     // Legacy adoption scans chat history, so close the single KV cursor before adopting or awaiting.
     let pending = [...this.impl.storage.actions.pendingByGatekeeper.get(gatekeeperId)];
     for (let record of pending) {
       if (record.type === "action" && record.caller.from === "agent" &&
-          record.description.awaitDecision) {
-        awaited.set(record.id, record.caller.chatId);
-        if (!this.impl.storage.activeAgents.get(record.caller.chatId)) {
-          profile ??= await this.#getClientProfile();
-          this.impl.rememberDecisionInitiator(record.caller.chatId, this.#clientUser.id.toString(), profile);
-        }
+          record.description.awaitDecision &&
+          !this.impl.storage.activeAgents.get(record.caller.chatId)) {
+        profile ??= await this.#getClientProfile();
+        this.impl.rememberDecisionInitiator(record.caller.chatId, this.#clientUser.id.toString(), profile);
       }
     }
     await this.impl.drainAutoApprovals(gatekeeperId);
-    // The shared apply path claims new turns; this also covers legacy rows adopted above.
-    for (let [id, chatId] of awaited) {
-      if (this.impl.storage.actions.get(id)?.state !== "approved") continue;
-      this.impl.resumeAgentAfterDecision(chatId, id);
-    }
   }
 
   async listHooks(): Promise<BoundHookInfo[]> {
@@ -13575,32 +13505,27 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let builtOn = await this.impl.rejectPendingAction(action, profile);
     if (action.action === "create") return;
 
-    // Under the branch approval model, when simulated work was built on the action, its chat's
-    // agent is told of the denial in its next turn, which replays the log.
+    // When simulated work was built on the action, its chat's agent is told of the denial in its
+    // next turn, which replays the log.
     let chatId = action.caller.from !== "hook" ? action.caller.chatId : undefined;
-    if (this.impl.branchApproval && builtOn && chatId !== undefined) {
+    if (builtOn && chatId !== undefined) {
       this.impl.addChatMessages(chatId, profile, [
         {type: "actionDenied", actionId: action.id, title: action.description.title},
       ]);
     }
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
-    // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
-    // may unblock later auto-eligible pending actions, whose turns do resume. (Under the branch
-    // approval model a denial applies nothing: the user may be midway through denying several.)
-    if (this.impl.branchApproval) return;
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(action.gatekeeperId));
+    // sibling approval from resuming this turn. A denial applies nothing: the user may be midway
+    // through denying several.
   }
 
   async acceptStagedActions(): Promise<{outcome: "applied" | "failed"}> {
-    if (!this.impl.branchApproval) throw new Error("Staged actions are approved one at a time.");
     let profile = await this.#getClientProfile();
     let taken = this.impl.branchSnapshot(null);
     return {outcome: await this.impl.acceptBranch(null, taken, profile) ? "applied" : "failed"};
   }
 
   async discardStagedActions(): Promise<void> {
-    if (!this.impl.branchApproval) throw new Error("Staged actions are rejected one at a time.");
     await this.impl.discardBranch(null, 0, await this.#getClientProfile());
   }
 
@@ -13621,11 +13546,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       actionKind,
       enabledBy: profile,
     });
-    // Apply the currently-visible pending action(s) with this tag right away. Under the branch
-    // approval model that is accepting each idle chat that acted on the connection, if rules now
-    // cover all of it.
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(gatekeeperId).then(() =>
-        this.impl.branchApproval ? this.impl.autoAcceptChatsOn(gatekeeperId) : undefined));
+    // Apply the currently-visible pending action(s) with this tag right away: accept each idle
+    // chat that acted on the connection, if rules now cover all of it.
+    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAsClient(gatekeeperId).then(() =>
+        this.impl.autoAcceptChatsOn(gatekeeperId)));
   }
 
   // Remove the auto-approval rule for `tag` on the given gatekeeper, so future matching actions
@@ -14076,7 +14000,6 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async setChatHolding(chatId: number, holding: boolean): Promise<void> {
-    if (!this.impl.branchApproval) throw new Error("Holding needs the branch approval model.");
     let meta = this.impl.getChatMetaOrThrow(chatId);
     if (holding) {
       meta.holding = true;
@@ -14113,24 +14036,23 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let author = await this.#getClientProfile();
     await this.impl.withChatLock(chatId, async () => {
       await this.impl.revertChanges(chatId, revertFrom, author);
-      if (this.impl.branchApproval) await this.impl.discardBranch(chatId, revertFrom, author);
+      await this.impl.discardBranch(chatId, revertFrom, author);
     });
   }
 
   async deleteChat(chatId: number): Promise<void> {
     let startedAt = Date.now();
-    // Under the branch approval model the chat's branch is discarded (below): nothing could
-    // accept a deleted chat's pending actions, or show them. Its agent stops first, so that its
-    // turn is over before the chat goes.
-    let discarding = this.impl.branchApproval ? await this.#getClientProfile() : undefined;
-    if (discarding) {
-      this.impl.cancelAgent(chatId);
-      await this.impl.waitForAgentIdle(chatId);
-    }
+    // The chat's branch is discarded (below): nothing could accept a deleted chat's pending
+    // actions, or show them. Its agent stops first, so that its turn is over before the chat goes.
+    // A reply still owed is answered before that, so that it says the chat was deleted rather
+    // than that the agent was stopped.
+    let discarding = await this.#getClientProfile();
     let response = this.impl.storage.gadgetResponseDeliveries.undeliveredByChatId.get(chatId);
     if (response?.status === "waiting") {
       this.impl.deliverExternalMessageResponse(response, "The chat was deleted before the agent responded.");
     }
+    this.impl.cancelAgent(chatId);
+    await this.impl.waitForAgentIdle(chatId);
 
     // Delete the chat's workpiece registry footprint: provisional gadgets, all of its worktrees,
     // and provisional binding edges.
@@ -14203,7 +14125,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Last, once no turn can start in the chat (see deliverAgentCallback), so that none submits
     // an action the discard would miss. A gatekeeper refusing a rejection fails the deletion,
     // which can be retried.
-    if (discarding) await this.impl.discardBranch(chatId, 0, discarding);
+    await this.impl.discardBranch(chatId, 0, discarding);
 
     this.impl.logger.info("deleted chat", {
       event: "chat.delete.completed", chatId, durationMs: Date.now() - startedAt,

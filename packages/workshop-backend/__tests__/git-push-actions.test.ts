@@ -193,8 +193,12 @@ describe("push authorization through the Overseer chokepoints", () => {
     });
   });
   // A queued push for each of three callers on a gatekeeper that has adopted branches: one on
-  // chat 1's branch, one on chat 2's, one staged. Returns their heads.
+  // chat 1's branch, one on chat 2's, one staged. (The workspace has no owner, whom a staged
+  // action would apply at once as, so it stays pending.) Returns their heads.
   async function queueBranchPushes(impl: any): Promise<string[]> {
+    for (let id of [1, 2]) {
+      impl.storage.chatMeta.put({ id, title: `Chat ${id}`, started: new Date(0), lastActive: new Date(id) });
+    }
     let { base } = await seedPushableHistory(impl);
     let tree = await impl.gitCache.putFromGatekeeper(GATEKEEPER, "tree", new Uint8Array(0));
     let heads = await Promise.all(["chat 1", "chat 2", "staged"].map(message =>

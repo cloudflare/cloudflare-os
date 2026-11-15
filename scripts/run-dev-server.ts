@@ -600,8 +600,6 @@ for (const gk of gatekeepers) {
     "CF_AI_GATEWAY_API_TOKEN", "CF_AI_GATEWAY_USE_BINDING",
     // The admin audit log's minimum retention (see docs/admin-access.md).
     "ADMIN_AUDIT_RETENTION_MIN_DAYS",
-    // The branch approval model (see packages/workshop-backend/src/env.d.ts).
-    "BRANCH_APPROVAL",
   ];
   // OAuth app credentials (GOOGLE_/GITHUB_/CLOUDFLARE_OAUTH_*) are NOT passed to the backend anymore;
   // they are injected into the gatekeeper Workers (see SHARED_GATEKEEPER_CREDS below).

@@ -133,8 +133,8 @@ export function pendingChangeGroups(
 }
 
 /**
- * The pending requests a tray shows under the branch approval model, where accepting a chat
- * applies its own requests and, ahead of them, those no chat made on the same connections.
+ * The pending requests a tray shows, where accepting a chat applies its own requests and, ahead
+ * of them, those no chat made on the same connections.
  *
  * In a chat (`chatId`), its own requests and the unchatted ones on a connection it has a request
  * on, since accepting it applies those too. Outside any chat, only the unchatted ones, which no
@@ -153,9 +153,9 @@ export function chatBranchPending(
 }
 
 /**
- * Whether, under the branch approval model, the UI offers to approve `log` on its own: one the
- * agent waits on (`awaitDecision`) cannot wait for its chat's accept, and one no chat made is
- * covered by no chat's accept. A chat's other requests apply only when its changes are accepted.
+ * Whether the UI offers to approve `log` on its own: one the agent waits on (`awaitDecision`)
+ * cannot wait for its chat's accept, and one no chat made is covered by no chat's accept. A chat's
+ * other requests apply only when its changes are accepted.
  */
 export function canApproveAlone(log: ActionLogEntry): boolean {
   return (log.type === 'action' && log.description.awaitDecision === true) ||

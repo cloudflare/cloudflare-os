@@ -157,20 +157,24 @@ it("an enabled hook fires into a restarted workspace; disabled and deleted hooks
   expect(await fire(keys.live, 101)).toEqual({ fired: true });
   expect(await fire(keys.paused, 102)).toEqual(DEAD_HOOK);
   expect(await fire(keys.removed, 103)).toEqual(DEAD_HOOK);
-  expect((await actionState(label)).pending.map(action => action.value)).toEqual([101]);
   const { entries: observations } = await reopened.listActions({ filter: "observation" });
   expect(observations.map(({ description }) => description.title))
       .toEqual([`Hook ${keys.live} requested 101`]);
 
-  const { entries } = await reopened.listActions({ filter: "pending" });
-  expect(entries).toEqual([
-    expect.objectContaining({
-      type: "action", description: expect.objectContaining({ title: "Set the test value to 101" }),
-    }),
-  ]);
-  await reopened.approveAction(entries[0].id);
+  // A firing's write belongs to no chat, so it applies at once.
+  await waitFor("the live hook's write to apply", async () =>
+    (await actionState(label)).applyCount === 1 || null);
   expect(await actionState(label)).toEqual({ pending: [], value: 101, applyCount: 1 });
+  expect(await writtenValues(reopened)).toEqual([101]);
 });
+
+// The values of the writes hook firings made, applied or not: each applies at once, as it belongs
+// to no chat.
+async function writtenValues(ws: RpcStub<Overseer>): Promise<number[]> {
+  const { entries } = await ws.listActions({ filter: "action" });
+  return entries.toSorted((a, b) => a.id - b.id)
+      .map(({ description }) => Number(/(\d+)$/.exec(description.title)?.[1]));
+}
 
 it("an administratively disabled gatekeeper's hook refuses to fire", async () => {
   using armed = await armHooks("hookadmin", ["admin"]);
@@ -190,13 +194,13 @@ it("an administratively disabled gatekeeper's hook refuses to fire", async () =>
   }
 
   expect(await fire(key, 202)).toEqual({ fired: true });
-  expect((await actionState(label)).pending.map(action => action.value)).toEqual([202]);
+  expect(await writtenValues(ws)).toEqual([202]);
 });
 
 it("a hook kept in the kit's HookRegistry is delivered through its restored stub while enabled", async () => {
   using armed = await armHooks("hookqueue", ["queued"], "subscribe");
-  const { label, ws, keys: { queued: name }, hooks } = armed;
-  const delivered = async () => (await actionState(label)).pending.map(action => action.value);
+  const { ws, keys: { queued: name }, hooks } = armed;
+  const delivered = () => writtenValues(ws);
 
   expect(await queue(name, "m0", 300)).toEqual({ hooks: 0 });
 

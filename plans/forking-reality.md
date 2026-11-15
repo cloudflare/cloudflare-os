@@ -1219,8 +1219,9 @@ the rest. Each step leaves the system working, and none touches a gatekeeper.
    consumers are untouched.
 4. **Kernel and UI: the new approval model.** Accept and discard cover actions, end-of-turn
    auto-approval, awaited actions, creations at accept, the two cleanups, shim 3, and the banner
-   and tray changes. This is the user-visible switch and should sit behind a UI feature flag
-   (`UI_FEATURE_FLAGS`) with a matching kernel setting until it is proven.
+   and tray changes. This is the user-visible switch. It ships unflagged: a global setting
+   could not be turned off again once actions were pending under it, so the model is tested on a
+   staging/preview instance before merge instead.
 5. **Kernel and UI: gadgets.** The widened variant rule, honoring `restart`, staged actions
    applying at once, staging holding when it must, and holding in a chat by choice.
 

@@ -11,7 +11,7 @@ import {
   STAGING_KEY, makeOverseerStorage, type ActionRecord, type GatekeeperCaller,
 } from "../src/storage-schema/overseer-storage.js";
 import {
-  migrateToBranchIndex, type OverseerMigrationHost,
+  migrateToBranchIndex, migrateToRejectedOrphans, type OverseerMigrationHost,
 } from "../src/storage-schema/overseer-migrations.js";
 import { createWorkshopLogger } from "../src/observability.js";
 import { makeMockStorage } from "./mock-storage.js";
@@ -86,5 +86,26 @@ describe("pendingByBranch", () => {
     expect(storage.version.get()).toBe(8);
     expect(idsOn(storage, "chat:3")).toEqual([1, 2]);
     expect(idsOn(storage, STAGING_KEY)).toEqual([3, 4, 6]);
+  });
+});
+
+describe("the orphan rejection migration", () => {
+  it("rejects the pending actions of removed connections, and only those", () => {
+    let raw = makeMockStorage();
+    let storage = makeOverseerStorage(raw);
+    storage.gatekeepers.put({id: 7, class: {} as never});
+    storage.actions.put(pendingAction(1, {from: "user", chatId: 3}));
+    storage.actions.put({...pendingAction(2, {from: "user"}), gatekeeperId: 8} as ActionRecord);
+    storage.actions.put({...pendingAction(3, {from: "user", chatId: 3}), gatekeeperId: 8} as ActionRecord);
+    storage.version.put(8);
+
+    migrateToRejectedOrphans({
+      storage, ctx: {storage: raw}, logger: createWorkshopLogger("test.orphan-rejection-migration"),
+    } as OverseerMigrationHost);
+
+    expect(storage.version.get()).toBe(9);
+    expect([1, 2, 3].map(id => storage.actions.get(id)?.state))
+        .toEqual(["pending", "rejected", "rejected"]);
+    expect(idsOn(storage, "chat:3")).toEqual([1]);
   });
 });

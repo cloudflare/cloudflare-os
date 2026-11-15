@@ -1,4 +1,4 @@
-// The branch approval model (plans/forking-reality.md, behind the BRANCH_APPROVAL setting):
+// The branch approval model (plans/forking-reality.md):
 // accepting a chat applies what staging holds on its connections and then the chat's actions,
 // discarding or deleting it rejects them, auto-approval accepts a chat whose actions rules cover
 // all of, and an awaited action keeps a decision of its own; staged actions apply at once unless
@@ -38,17 +38,14 @@ const EDITS = {tag: "edit", label: "Edits"};
 afterEach(() => { vi.restoreAllMocks(); });
 
 // A workspace owned by a real user, with chats 1 ("Mine") and 2 ("Theirs") and connection GK,
-// whose facet is `facet`, running the branch approval model unless `on` is false.
-async function workspace(facet: object, on = true) {
+// whose facet is `facet`.
+async function workspace(facet: object) {
   const stub = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const user = env.TEST_USER.getByName(crypto.randomUUID());
   await runInDurableObject(user, instance => { instance["storage"].profile.put(USER); });
   await user.newWorkspace(stub.id.toString(), "Branches");
   const visit = <T>(fn: (impl: Impl) => T | Promise<T>) =>
-    runInDurableObject(env.TEST_OVERSEER.get(stub.id), ({impl}) => {
-      vi.spyOn(impl, "branchApproval", "get").mockReturnValue(on);
-      return fn(impl);
-    });
+    runInDurableObject(env.TEST_OVERSEER.get(stub.id), ({impl}) => fn(impl));
   await visit(impl => {
     impl.storage.version.put(OVERSEER_STORAGE_VERSION);
     impl.storage.ownerId.put(user.id.toString());
@@ -259,18 +256,6 @@ describe("accepting a chat", () => {
       expect(gatekeeper.applied).toEqual([]);
     });
   });
-
-  it("leaves actions alone with the model off", async () => {
-    const gatekeeper = legacyGatekeeper();
-    const {visit, client} = await workspace(gatekeeper.facet, false);
-    await visit(impl => impl.submitAction(GK, 1, description(), CHAT_A));
-    using overseer = await client();
-    expect(await overseer.mergeChanges(1)).toEqual({outcome: "merged"});
-    await visit(impl => {
-      expect(gatekeeper.applied).toEqual([]);
-      expect(states(impl, 1)).toEqual(["pending"]);
-    });
-  });
 });
 
 describe("approving one action", () => {
@@ -443,13 +428,12 @@ describe("discarding a chat", () => {
 });
 
 describe("removing a connection", () => {
-  it.each([[true, "rejected"], [false, "pending"]] as const)(
-      "with the model %s leaves its pending actions %s", async (on, state) => {
-    const {visit} = await workspace(legacyGatekeeper().facet, on);
+  it("rejects its pending actions", async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet);
     await visit(async impl => {
       await impl.submitAction(GK, 1, description(), CHAT_A);
       impl.removeGatekeeper(GK);
-      expect(states(impl, 1)).toEqual([state]);
+      expect(states(impl, 1)).toEqual(["rejected"]);
     });
   });
 });
@@ -548,7 +532,7 @@ describe("staging", () => {
     });
   });
 
-  it("is discarded newest first, leaving the chats' actions, and only with the model on",
+  it("is discarded newest first, leaving the chats' actions",
       async () => {
     const gatekeeper = legacyGatekeeper();
     const {visit, client} = await workspace(gatekeeper.facet);
@@ -566,11 +550,6 @@ describe("staging", () => {
       expect(states(impl, 1, 2, 3)).toEqual(["rejected", "pending", "rejected"]);
       expect(record(impl, 1).resolvedBy).toEqual(USER);
     });
-
-    const off = await workspace(legacyGatekeeper().facet, false);
-    using offOverseer = await off.client();
-    const refused = await offOverseer.discardStagedActions().catch((error: unknown) => error);
-    expect(String(refused)).toContain("one at a time");
   });
 
   it("is waited for by a chat's accept, which applies what staging still holds", async () => {
@@ -706,11 +685,11 @@ describe("gadgets", () => {
 
   it("tell a chat's agent of a denial its simulated work was built on", async () => {
     const restart = {value: true};
-    const run = async (on: boolean, caller: GatekeeperCaller) => {
+    const run = async (caller: GatekeeperCaller) => {
       const {visit, client} = await workspace({
         async applyAction() {},
         async rejectAction() { return {restart: restart.value}; },
-      }, on);
+      });
       const id = await visit(async impl => {
         await impl.submitAction(GK, 1, description(), caller);
         return record(impl, 1).id;
@@ -721,12 +700,11 @@ describe("gadgets", () => {
           .filter(msg => msg.type === "actionDenied")
           .map(msg => msg.type === "actionDenied" && {actionId: msg.actionId, title: msg.title}));
     };
-    expect(await run(true, AGENT_A))
+    expect(await run(AGENT_A))
         .toEqual([{actionId: expect.any(Number), title: "Set the value"}]);
-    expect(await run(true, CHAT_A)).toHaveLength(1);
-    expect(await run(false, AGENT_A)).toEqual([]);
+    expect(await run(CHAT_A)).toHaveLength(1);
     restart.value = false;
-    expect(await run(true, AGENT_A)).toEqual([]);
+    expect(await run(AGENT_A)).toEqual([]);
   });
 
   it("include a gadget created later, in the metadata of a chat that takes them all", async () => {
@@ -744,30 +722,15 @@ describe("gadgets", () => {
       await vi.waitFor(() => expect(sent.at(-1)).toEqual([10, 11]));
     });
   });
-
-  it("follow only proposed changes with the model off", async () => {
-    const {visit} = await workspace(legacyGatekeeper().facet, false);
-    await visit(async impl => {
-      addGadget(impl, 10);
-      await impl.submitAction(GK, 1, description(), CHAT_A);
-      expect(impl.chatMetaForClient(impl.storage.chatMeta.get(1)!)).not.toHaveProperty(
-          "branchGadgets");
-    });
-  });
 });
 
 describe("holding", () => {
-  it("is turned on and off in a chat, and only with the model on", async () => {
+  it("is turned on and off in a chat", async () => {
     const {client} = await workspace(legacyGatekeeper().facet);
     using overseer = await client();
     await overseer.setChatHolding(1, true);
     expect((await overseer.listChats()).find(chat => chat.id === 1)?.holding).toBe(true);
     await overseer.setChatHolding(1, false);
     expect((await overseer.listChats()).find(chat => chat.id === 1)?.holding).toBeUndefined();
-
-    const off = await workspace(legacyGatekeeper().facet, false);
-    using offOverseer = await off.client();
-    const refused = await offOverseer.setChatHolding(1, true).catch((error: unknown) => error);
-    expect(String(refused)).toContain("branch approval");
   });
 });

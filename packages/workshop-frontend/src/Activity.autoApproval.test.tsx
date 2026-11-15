@@ -67,6 +67,8 @@ async function mount() {
         view="auto"
         onViewChange={() => {}}
         autoApproval={channel}
+        chats={[]}
+        onOpenChat={() => {}}
       />
     )
   }

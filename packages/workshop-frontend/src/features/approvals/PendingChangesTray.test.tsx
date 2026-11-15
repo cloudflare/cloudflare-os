@@ -8,7 +8,6 @@ import type { PendingChangeActions } from './PendingChangeGroupRow'
 import type {
   PendingChange, PendingChangeGroup, RequestOrigin,
 } from './pendingChangeGroups'
-import type { BulkResolve } from './useBulkResolve'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -58,19 +57,10 @@ function group(entries: PendingChange[], over: Partial<PendingChangeGroup> = {})
   }
 }
 
-const noBulk: BulkResolve = {
-  run: async () => {},
-  progress: null,
-  failure: null,
-  dismissFailure: () => {},
-}
-
 async function render(options: {
   groups: PendingChangeGroup[]
   enabledTags?: string[]
   restricted?: boolean
-  ready?: boolean
-  bulk?: BulkResolve | null
   actions?: Partial<PendingChangeActions>
 }) {
   const calls: string[] = []
@@ -80,6 +70,8 @@ async function render(options: {
     onReject: entry => calls.push(`reject:${entry.id}`),
     onAlwaysApprove: entry => calls.push(`always:${entry.id}`),
     onManageRules: () => calls.push('manage'),
+    canApprove: () => true,
+    onRetry: entry => calls.push(`retry:${entry.id}`),
     ...options.actions,
   }
   const container = document.createElement('div')
@@ -92,11 +84,9 @@ async function render(options: {
         isEnabled: (_gatekeeperId, tag) => (options.enabledTags ?? []).includes(tag),
         restricted: options.restricted === true,
       }}
-      ready={options.ready ?? true}
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}
       actions={actions}
-      bulk={options.bulk === null ? undefined : options.bulk ?? noBulk}
     />,
   ))
   return { calls, container }
@@ -111,35 +101,17 @@ const click = async (target: HTMLButtonElement | undefined) => {
 const openGroup = () => click(buttons().find(b => b.hasAttribute('aria-expanded')))
 
 describe('PendingChangesTray', () => {
-  it('counts the requests waiting and offers to resolve them together', async () => {
+  it('counts the requests waiting', async () => {
     await render({ groups: [group([request(1), request(2)])] })
 
     expect(document.body.textContent).toContain('2 requests waiting')
     expect(document.body.textContent).toContain('nothing applied yet')
-    expect(button('Apply all 2')).toBeDefined()
-    expect(button('Discard all')).toBeDefined()
   })
 
-  it('offers no bulk resolve while the workspace is restricted', async () => {
+  it('says so while the workspace is restricted', async () => {
     await render({ groups: [group([request(1), request(2)])], restricted: true })
 
-    // RESTRICTED_APPROVAL_COPY asks the approver to read every request in full, and the latch
-    // already refuses every auto-approval rule; bulk apply would be the first path around both.
-    expect(button('Apply all 2')).toBeUndefined()
-    expect(button('Discard all')).toBeUndefined()
     expect(document.body.textContent).toContain('every request is reviewed on its own')
-  })
-
-  it('leaves a connection with a pending creation out of bulk resolve', async () => {
-    const creating = group([request(1, { creation: true }), request(2)])
-    const ordinary = group([request(3, { gatekeeperId: 2 }), request(4, { gatekeeperId: 2 })],
-      { gatekeeperId: 2, title: 'Team calendar' })
-    await render({ groups: [creating, ordinary] })
-
-    // Nothing queued behind a creation can apply until an account is chosen for it, so only the
-    // other connection's requests are counted.
-    expect(document.body.textContent).toContain('4 requests waiting')
-    expect(button('Apply all 2')).toBeDefined()
   })
 
   it('explains a creation inside its group rather than silently refusing', async () => {
@@ -166,16 +138,15 @@ describe('PendingChangesTray', () => {
     })
     await openGroup()
 
-    // Still pending does not mean no rule: the drain stops at the first manual gate and leaves
-    // covered requests queued behind it.
+    // Still pending does not mean no rule: a chat is accepted automatically only when rules cover
+    // all of it, which leaves covered requests queued behind one they do not.
     expect(button('Always approve')).toBeUndefined()
     expect(document.body.textContent).toContain('Standing rule enabled')
   })
 
-  it('keeps a covered request decidable, since the drain can give up on it', async () => {
-    // A drain whose apply fails stops there for good and leaves the request pending. Alone in
-    // the tray it has no bulk footer, and the transcript defers to the tray, so a row with no
-    // controls would leave it decidable nowhere in the chat.
+  it('keeps a covered request decidable, since an automatic apply can give up on it', async () => {
+    // An automatic apply that fails stops there for good and leaves the request pending, so a
+    // row with no controls would leave it decidable nowhere in the chat.
     const { calls } = await render({
       groups: [group([request(1, { autoApprovable: true })])],
       enabledTags: ['append'],
@@ -206,45 +177,6 @@ describe('PendingChangesTray', () => {
     expect(calls).toEqual(['manage'])
   })
 
-  it('reports a bulk run that stopped part-way', async () => {
-    await render({
-      groups: [group([request(1), request(2), request(3)])],
-      bulk: {
-        ...noBulk,
-        failure: {
-          decision: 'approve', applied: 1, total: 3, title: 'Write 2', reason: 'The provider failed.',
-        },
-      },
-    })
-
-    const alert = document.querySelector('[role="alert"]')
-    expect(alert?.textContent).toContain('Applied 1 of 3')
-    expect(alert?.textContent).toContain('The provider failed.')
-  })
-
-  it('keeps a stopped run\'s message once nothing is left waiting, until it is dismissed', async () => {
-    let dismissed = 0
-    await render({
-      groups: [],
-      bulk: {
-        ...noBulk,
-        failure: {
-          decision: 'deny', applied: 1, total: 2,
-          reason: '"Write 1" was applied before it could be discarded, so the rest were left alone.',
-        },
-        dismissFailure: () => { dismissed++ },
-      },
-    })
-
-    expect(document.querySelector('[role="alert"]')?.textContent)
-      .toContain('"Write 1" was applied before it could be discarded')
-    // Only the message: no count, no bulk controls, nothing to open.
-    expect(document.body.textContent).not.toContain('waiting')
-    expect(buttons().map(b => (b.textContent ?? '').trim())).toEqual(['Dismiss'])
-    await click(button('Dismiss'))
-    expect(dismissed).toBe(1)
-  })
-
   it('marks the requests this conversation did not ask for', async () => {
     // A hook, a scheduled task or another chat queued it; nothing on screen explains it.
     await render({ groups: [group([request(1), request(2, { origin: 'elsewhere' })])] })
@@ -272,29 +204,6 @@ describe('PendingChangesTray', () => {
       .toHaveLength(0)
   })
 
-  it('offers no bulk resolve until the pending set has finished loading', async () => {
-    // It pages in, so a group can still be missing its oldest requests: applying the batch now
-    // would apply a later request over ones nobody has seen yet.
-    await render({ groups: [group([request(1), request(2)])], ready: false })
-
-    expect(button('Apply all 2')).toBeUndefined()
-    await openGroup()
-    expect(button('Apply all 2')).toBeUndefined()
-  })
-
-  it('disables a single request\'s decisions while a bulk run is in flight', async () => {
-    await render({
-      groups: [group([request(1), request(2)])],
-      bulk: { ...noBulk, progress: { decision: 'approve', done: 0, total: 2 } },
-    })
-    await openGroup()
-
-    // A decision taken mid-run would interleave with it, which is the out-of-order apply the
-    // run is sequential to avoid.
-    expect(buttons().filter(b => b.textContent === 'Approve').every(b => b.disabled)).toBe(true)
-    expect(buttons().filter(b => b.textContent === 'Deny').every(b => b.disabled)).toBe(true)
-  })
-
   it('warns when one connection is close to filling its queue', async () => {
     const many = Array.from({ length: 40 }, (_, i) => request(i + 1))
     await render({ groups: [group(many)] })
@@ -303,21 +212,16 @@ describe('PendingChangesTray', () => {
   })
 })
 
-// The tray's branch approval model hooks: only request 2 is approved on its own.
+// Only request 2 is approved on its own.
 const branch = (calls: string[]) => ({
   canApprove: (entry: PendingChange) => entry.id === 2,
   onRetry: (entry: PendingChange) => calls.push(`retry:${entry.id}`),
 })
 
-describe('PendingChangesTray under the branch approval model', () => {
-
-  it('offers no bulk resolve, and Approve only where the model allows one', async () => {
+describe('PendingChangesTray approval', () => {
+  it('offers Approve only on a request approved on its own', async () => {
     const calls: string[] = []
-    await render({
-      groups: [group([request(1), request(2)])], bulk: null, actions: { branch: branch(calls) },
-    })
-    expect(button('Apply all 2')).toBeUndefined()
-    expect(button('Discard all')).toBeUndefined()
+    await render({ groups: [group([request(1), request(2)])], actions: branch(calls) })
     await openGroup()
     expect(buttons().filter(b => b.textContent?.trim() === 'Deny')).toHaveLength(2)
     expect(buttons().filter(b => b.textContent?.trim() === 'Approve')).toHaveLength(1)
@@ -327,8 +231,8 @@ describe('PendingChangesTray under the branch approval model', () => {
     const calls: string[] = []
     const failed = { ...request(1), applyError: { message: 'Quota exceeded.', retryable: true } }
     await render({
-      groups: [group([failed, request(2, { title: 'Write two' })])], bulk: null,
-      actions: { branch: branch(calls) },
+      groups: [group([failed, request(2, { title: 'Write two' })])],
+      actions: branch(calls),
     })
     await openGroup()
     expect(document.querySelector('[role="alert"]')?.textContent)
@@ -340,7 +244,7 @@ describe('PendingChangesTray under the branch approval model', () => {
 
   it('offers no Retry for a failure that cannot be retried', async () => {
     const failed = { ...request(1), applyError: { message: 'Gone.', retryable: false } }
-    await render({ groups: [group([failed])], bulk: null, actions: { branch: branch([]) } })
+    await render({ groups: [group([failed])], actions: branch([]) })
     await openGroup()
     expect(document.body.textContent).toContain('Could not apply: Gone.')
     expect(button('Retry')).toBeUndefined()

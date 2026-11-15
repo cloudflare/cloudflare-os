@@ -307,14 +307,11 @@ export function settleRestart(): Promise<void> {
 }
 
 /** Boot the Workshop with only the bundled fixture gatekeeper bound. */
-export function startTestGatekeeperHarness(options: {
-  enableGadgetExecution?: boolean;
-  patchWorkshop?: (config: WorkerConfig) => void;
-} = {}): Promise<Harness> {
+export function startTestGatekeeperHarness(options: { enableGadgetExecution?: boolean } = {})
+    : Promise<Harness> {
   return startHarness({
     gatekeepers: [{ binding: TEST_GATEKEEPER_BINDING, dir: TEST_GATEKEEPER_DIR }],
     enableGadgetExecution: options.enableGadgetExecution,
-    patchWorkshop: options.patchWorkshop,
   });
 }
 

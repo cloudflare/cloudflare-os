@@ -51,7 +51,11 @@ type Workspace = {
   overseer: RpcStub<Overseer>;
   gatekeeperId: number;
   label: string;
-  /** A user's session on the connection: outside any chat, so its actions are staged. */
+  /**
+   * A user's session on the connection: outside any chat, so its actions are staged. They apply at
+   * once unless staging holds them, which it does once the session reads restricted data
+   * (`holdStaging`).
+   */
   openSession(): Promise<RpcStub<TestSession>>;
   [Symbol.dispose](): void;
 };
@@ -80,6 +84,9 @@ async function newWorkspace(name: string): Promise<Workspace> {
   };
 }
 
+// Makes staging hold what the session submits, for an approval to apply as a list.
+const holdStaging = (session: RpcStub<TestSession>) => session.readValue(true);
+
 async function writes(ws: Pick<Workspace, "overseer">, gatekeeperId: number) {
   const { entries } = await ws.overseer.listActions({ filter: "action" });
   return entries.filter((entry): entry is ActionLogEntry & { type: "action" } =>
@@ -91,6 +98,7 @@ it.concurrent("reads applyActions off the facet stub, absent, undefined or imple
     using ws = await newWorkspace(name);
     using session = await ws.openSession();
     await session.setApplyMode(mode);
+    await holdStaging(session);
     await session.writeValue(1);
     const [write] = await writes(ws, ws.gatekeeperId);
     await ws.overseer.approveAction(write.id);
@@ -114,6 +122,7 @@ it.concurrent("hands a list, again with what is left, and stops at a failure unt
   using ws = await newWorkspace("branches");
   using session = await ws.openSession();
   await session.setApplyMode("branches");
+  await holdStaging(session);
   for (const value of [1, 2, 3, 4]) await session.writeValue(value);
   const ids = (await writes(ws, ws.gatekeeperId)).map(write => write.id);
 
@@ -140,6 +149,7 @@ it.concurrent("rejects what a denial reports rejected with it, so the retry carr
   using ws = await newWorkspace("branches");
   using session = await ws.openSession();
   await session.setApplyMode("branches");
+  await holdStaging(session);
   for (const value of [1, 2, 3]) await session.writeValue(value);
   const ids = (await writes(ws, ws.gatekeeperId)).map(write => write.id);
 
@@ -159,6 +169,7 @@ it.concurrent("settles a lost submitAction() reply and a lost apply result", asy
   using ws = await newWorkspace("branches");
   using session = await ws.openSession();
   await session.setApplyMode("branches");
+  await holdStaging(session);
   const forgotten = await session.writeValue(1, { forget: true });
   await session.writeValue(2);
   // The Workshop holds the action the gatekeeper forgot, until an apply shows it was not kept.
@@ -190,6 +201,7 @@ it.concurrent("settles a lost submitAction() reply and a lost apply result", asy
 it.concurrent("applies leftovers by name, first, once the gatekeeper adopts branches", async () => {
   using ws = await newWorkspace("branches");
   using before = await ws.openSession();
+  await holdStaging(before);
   await before.writeValue(1);
   await before.writeValue(2);
   await before.setApplyMode("branches");
@@ -229,6 +241,7 @@ it.concurrent("approving a chat's action applies staging first, in one list read
     using connection = await overseer.getGatekeeperById(gatekeeperId);
     using staging = await connection.openSession() as RpcStub<TestSession>;
     await staging.setApplyMode("branches");
+    await holdStaging(staging);
 
     await agent.runTurn("Set the test value to 7.");
     await staging.writeValue(8);  // staged after the chat's write

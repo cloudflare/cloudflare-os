@@ -221,15 +221,12 @@ describe("sensitive observations", () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "restricted-mode");
 
-      // Before the flag is set, actions submit fine -- held for the owner's approval rather than
-      // refused, and applied once approved -- and metadata is clean.
-      const write = ws.session.writeValue(7);
-      const [held] = await waitFor("the write to be held for approval", async () => {
-        const { entries } = await ws.overseer.listActions({ filter: "pending" });
-        return entries.length > 0 ? entries : null;
+      // Before the flag is set, a write outside any chat applies at once, and metadata is clean.
+      await expect(ws.session.writeValue(7)).resolves.toEqual(expect.any(Number));
+      await waitFor("the write to apply", async () => {
+        const { entries } = await ws.overseer.listActions({ filter: "action" });
+        return entries[0]?.state === "approved" || null;
       });
-      await ws.overseer.approveAction(held.id);
-      await expect(write).resolves.toEqual(expect.any(Number));
       expect((await ws.overseer.getMetadata()).containsRestrictedData).toBeFalsy();
 
       await expect(ws.session.readValue(true)).resolves.toBe(42);

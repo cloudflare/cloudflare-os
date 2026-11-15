@@ -45,7 +45,7 @@ export function ReviewRequest({
   showResource?: boolean
   onToggle: () => void
   decide: {
-    /** Absent where the request is not approved on its own, as under the branch approval model. */
+    /** Absent where the request is not approved on its own, but with its chat's changes. */
     onApprove?: () => void
     onReject: () => void
     onAlwaysApprove?: () => void

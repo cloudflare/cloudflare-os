@@ -8,10 +8,10 @@ import { WorkshopButton } from '../../components/WorkshopControls'
 const requestCount = (count: number) => count === 1 ? '1 request' : `${count} requests`
 
 /**
- * Under the branch approval model, accepts or discards what staging holds: the requests no chat
- * made, which wait only while the workspace has read restricted data or behind one that failed
- * (see Overseer.acceptStagedActions()). It is to staging what a chat's pending-changes bar is to
- * the chat, so the composer tray and the Activity page show the same one.
+ * Accepts or discards what staging holds: the requests no chat made, which wait only while the
+ * workspace has read restricted data or behind one that failed (see
+ * Overseer.acceptStagedActions()). It is to staging what a chat's pending-changes bar is to the
+ * chat, so the composer tray and the Activity page show the same one.
  */
 export const StagedChangesBar = ({ overseer, count }: {
   overseer: RpcStub<Overseer>

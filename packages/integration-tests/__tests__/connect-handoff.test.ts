@@ -155,6 +155,9 @@ it.concurrent("reconnecting an expired account keeps its binding, enabled hook a
     return await binding.openSession() as RpcStub<TestSession>;
   };
   using session = await openSession();
+  // Writes outside any chat apply at once unless staging holds them, as it does once the
+  // workspace has read restricted data.
+  await session.readValue(true);
   const fixtureId = await session.writeValue(701);
   const [held] = await waitFor("the pending pre-reconnect write", async () => {
     const { entries } = await ws.listActions({ filter: "pending" });

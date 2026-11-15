@@ -1543,6 +1543,8 @@ describe("pending creation", () => {
       let { impl } = world;
       impl.env = { ...impl.env, BLUEPRINTS: { get: async () => null } };
       impl.ownerId = "owner";
+      // The chat the creation is submitted from.
+      impl.storage.chatMeta.put({ id: 1, title: "Chat", started: new Date(0), lastActive: new Date(0) });
       impl.traceAgentActionApproval = () => {};
       impl.wrapUserDo = (user: unknown) => user;
       let sharing = await impl.getSharingManager();

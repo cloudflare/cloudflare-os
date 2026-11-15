@@ -514,13 +514,11 @@ it.concurrent("a blueprint archive keeps DATA's annotation, and installs bind th
   });
 
   using session = await binding.openSession() as RpcStub<TestSession>;
-  const write = session.writeValue(17);
-  const [pending] = await waitFor("the installed connection's action", async () => {
-    const { entries } = await installedWorkspace.listActions({ filter: "pending" });
-    return entries.length === 1 ? entries : null;
-  });
-  await installedWorkspace.approveAction(pending.id);
-  await write;
+  // Outside any chat, the write applies at once, through the installer's account.
+  await session.writeValue(17);
+  await waitFor("the installed connection's action to apply", async () =>
+    (await testActionState(requireHarness(), accountLabel(installerAccount))).applyCount === 1
+        || null);
   expect(await testActionState(requireHarness(), accountLabel(installerAccount)))
       .toEqual({ pending: [], value: 17, applyCount: 1 });
   expect(await testActionState(requireHarness(), accountLabel(publisherAccount)))

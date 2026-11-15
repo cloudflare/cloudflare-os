@@ -84,7 +84,7 @@ async function subscribedWorkspace(api: RpcStub<AuthenticatedApi>, accountId: nu
 const pendingTitles = async (ws: RpcStub<Overseer>) =>
   (await ws.listActions({ filter: "pending" })).entries.map(entry => entry.description.title);
 
-it("runs a hook from enabling, through a delivery and its approved write, to its removal", async () => {
+it("runs a hook from enabling, through a delivery and its write, to its removal", async () => {
   using stack = new DisposableStack();
   const [username] = nextUsernames("githubhooks");
   const api = stack.use(await signUp(stack.use(connect(harness.url)), username!));
@@ -105,18 +105,15 @@ it("runs a hook from enabling, through a delivery and its approved write, to its
   expect(webhook!.url).toMatch(/^https:\/\/workshop\.test\/gatekeeper\/github\/webhook\/[0-9a-f]{64}$/);
 
   // A delivery signed with another secret is refused; GitHub's own runs the gadget, whose
-  // comment waits for approval.
+  // comment, made outside any chat, applies at once.
   expect(await github.deliver(harness, "issues", github.issueEvent("opened", repo.name, 42),
     { to: [{ ...webhook!, secret: "not-the-secret" }] })).toEqual([401]);
   expect(await github.deliver(harness, "issues", github.issueEvent("opened", repo.name, 42))).toEqual([204]);
-  await waitFor("the hook's comment to wait for approval", async () =>
-    (await pendingTitles(ws)).includes("Comment on #42") || null);
+  await waitFor("the hook's comment to apply", async () =>
+    github.comments.length > 0 || null);
   const { entries: observations } = await ws.listActions({ filter: "observation" });
   expect(observations.map(entry => entry.description.title))
     .toContain(`GitHub issue #42 opened: Crash on start`);
-  expect(github.comments).toEqual([]);
-  const [comment] = (await ws.listActions({ filter: "pending" })).entries;
-  await ws.approveAction(comment!.id);
   expect(github.comments).toEqual([`${repo.name}#42: Thanks, on it.`]);
 
   // Disabled, the hook's webhook goes, and a late delivery to it is refused.

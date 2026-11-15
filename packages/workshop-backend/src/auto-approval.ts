@@ -1,10 +1,10 @@
-// Auto-approval drain core: picks the gatekeeper's eligible pending actions (read off the sparse
-// pendingByGatekeeper index) in id order and hands them to the routine that applies a list, with a
-// per-gatekeeper single-flight guard so that work submitted during a drain (the DO's input gate is
-// open across the apply await) is drained too. The apply is injected, keeping this constructible
-// over a mock storage in tests.
+// Auto-approval: the rule that decides whether an action may be applied without a human, and the
+// drain core, which hands the pending actions a selector picks on a gatekeeper to the routine that
+// applies a list, with a per-gatekeeper single-flight guard so that work submitted during a drain
+// (the DO's input gate is open across the apply await) is drained too. Both the selector and the
+// apply are injected, keeping this constructible in tests.
 
-import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
+import type { Collection, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
 import type {
@@ -14,8 +14,6 @@ import type {
 const logger = createWorkshopLogger("workshop.auto.approval");
 
 export interface AutoApprovalStorage {
-  actions: Collection<ActionRecord, number>
-      & { pendingByGatekeeper: NonUniqueIndex<ActionRecord, number> };
   autoApproveTags: Collection<AutoApproveTagRecord>;
 
   /** The restricted-data latch (see makeOverseerStorage). While set, nothing auto-approves. */
@@ -41,7 +39,7 @@ export function autoApprovalRule(
 /**
  * A pending action to apply, and the user it is applied as. `eligible`, when present, says whether
  * it may still be applied so, and is asked again before each call to the gatekeeper: the apply
- * stops before the first action that may not, as the auto-approval drain stops at a manual gate.
+ * stops before the first action that may not.
  */
 export type ApplyItem = {
   record: ActionRecord & {type: "action"},
@@ -65,17 +63,10 @@ export class AutoApprovalDrainer {
   #rerun = new Set<number>();
 
   constructor(
-      private storage: AutoApprovalStorage,
       private applyActionList: ApplyActionListFn,
-      // Whether an action has a decision in flight (see OverseerImpl.claimDecision). The apply
-      // would refuse one anyway, and the catch below would stop there just the same; asking
-      // first keeps that ordinary race out of the failure log.
-      private isDeciding: (id: number) => boolean,
-      // What a drain applies on the gatekeeper instead of the leading run of auto-eligible
-      // actions, when it returns a list: under the branch approval model, the staged actions,
-      // which apply at once (see OverseerImpl.branchApproval). TODO: Remove with the model's
-      // setting.
-      private select: (gatekeeperId: number) => ApplyItem[] | undefined = () => undefined) {}
+      // What a drain applies on the gatekeeper, as it stands just before the apply claims it: the
+      // staged actions, which apply at once (see OverseerImpl.drainAutoApprovals).
+      private select: (gatekeeperId: number) => ApplyItem[]) {}
 
   /** Settles once no drain runs on the gatekeeper: at once, if none does. Never rejects. */
   async settled(gatekeeperId: number): Promise<void> {
@@ -104,17 +95,12 @@ export class AutoApprovalDrainer {
     }
   }
 
-  // Apply all currently-eligible pending actions of the gatekeeper, in ascending id order, as one
-  // list. It ends before the first pending action that is NOT auto-eligible (a manual gate), and
-  // the apply stops at the first that fails -- neither is ever skipped ahead of. This preserves
-  // in-order application and the invariant that nothing is silently applied past a human gate.
-  //
-  // Eligibility is `autoApprovalRule()`: the author's `autoApprovable` verdict, a user-enabled
-  // rule for the action's kind, and no restricted-data latch.
+  // Applies what `select` picks on the gatekeeper as one list, which stops at the first action
+  // that fails: nothing is ever skipped ahead of.
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Actions created after the list is picked trigger their own drain(), which drain()'s rerun
-    // flag folds into this run if it's still in flight. Nothing eligible: no apply to start.
-    let select = () => this.select(gatekeeperId) ?? this.#eligible(gatekeeperId);
+    // flag folds into this run if it's still in flight. Nothing to apply: no apply to start.
+    let select = () => this.select(gatekeeperId);
     if (select().length === 0) return;
     try {
       await this.applyActionList(gatekeeperId, select);
@@ -124,27 +110,5 @@ export class AutoApprovalDrainer {
         event: "auto.approval.failed", gatekeeperId, error: err,
       });
     }
-  }
-
-  // The leading run of the gatekeeper's pending actions that may apply automatically, each
-  // attributed to the user who enabled its rule -- it runs under their authority.
-  #eligible(gatekeeperId: number): ApplyItem[] {
-    let eligible: ApplyItem[] = [];
-    for (let record of this.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
-      if (record.type !== "action") continue;
-      let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
-      // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
-      if (rule === undefined) break;
-      // Someone is already deciding this one by hand. Stop rather than skip ahead, as at a manual
-      // gate. A decision that lands drains again; one that fails does not, and leaves the action
-      // for a person, as a failed apply here does -- draining after a failed rejection would
-      // apply what someone just tried to reject.
-      if (this.isDeciding(record.id)) break;
-      // A rule withdrawn, or the restricted-data latch set, while earlier actions apply stops the
-      // rest.
-      eligible.push({record, resolvedBy: rule.enabledBy, eligible: () =>
-          autoApprovalRule(this.storage, gatekeeperId, record.description) !== undefined});
-    }
-    return eligible;
   }
 }

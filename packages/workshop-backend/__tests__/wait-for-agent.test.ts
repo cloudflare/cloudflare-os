@@ -190,7 +190,9 @@ describe("waitForAgent", () => {
         { type: "webFetchRequest", requestId: `${chatId}:1`, url: "https://example.com/" });
   }));
 
-  it("fails for a chat that does not exist, or is deleted while waited on", () =>
+  // Deleting a chat stops its agent before the chat goes (its pending actions are discarded once
+  // no turn can start), so a wait on it returns as the turn ends.
+  it("fails for a chat that does not exist, and returns once one waited on is deleted", () =>
       withWorkspace(async ({ client }) => {
     await expect(client.waitForAgent(42)).rejects.toThrow("No such chatId: 42");
 
@@ -198,6 +200,7 @@ describe("waitForAgent", () => {
     let waiting = client.waitForAgent(chatId);
     expect(await isPending(waiting)).toBe(true);
     await client.deleteChat(chatId);
-    await expect(waiting).rejects.toThrow(`No such chatId: ${chatId}`);
+    await expect(waiting).resolves.toBeNull();
+    await expect(client.waitForAgent(chatId)).rejects.toThrow(`No such chatId: ${chatId}`);
   }));
 });

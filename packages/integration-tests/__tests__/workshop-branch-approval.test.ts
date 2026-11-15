@@ -1,11 +1,10 @@
-// The branch approval model (plans/forking-reality.md), turned on with BRANCH_APPROVAL, against
-// a real gatekeeper Worker and real agent turns. The fixture's writes are awaited actions
-// (ActionDescription.awaitDecision), so the agent's turn waits on each: approving one applies its
-// chat's earlier actions on the connection and the older staged ones, in ID order, through
-// applyAction() for a gatekeeper that applies one action at a time; rules apply it at once; and
-// discarding the chat rejects it. A write outside any chat is staged, and applies at once. The
-// kernel's unit tests (branch-approval.test.ts) cover accepts of actions nothing waits on, and
-// staging while it holds.
+// The branch approval model (plans/forking-reality.md) against a real gatekeeper Worker and real
+// agent turns. The fixture's writes are awaited actions (ActionDescription.awaitDecision), so the
+// agent's turn waits on each: approving one applies its chat's earlier actions on the connection
+// and the older staged ones, in ID order, through applyAction() for a gatekeeper that applies one
+// action at a time; rules apply it at once; and discarding the chat rejects it. A write outside any
+// chat is staged, and applies at once. The kernel's unit tests (branch-approval.test.ts) cover
+// accepts of actions nothing waits on, and staging while it holds.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -27,10 +26,7 @@ const network = new NetworkInterceptor({ handlers: [models.handler] });
 
 beforeAll(async () => {
   network.install();
-  harness = await startTestGatekeeperHarness({
-    enableGadgetExecution: true,
-    patchWorkshop: config => { config.vars = { ...config.vars, BRANCH_APPROVAL: "true" }; },
-  });
+  harness = await startTestGatekeeperHarness({ enableGadgetExecution: true });
 });
 
 afterAll(async () => {

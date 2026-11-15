@@ -24,9 +24,6 @@ interface ActivityNotificationsProps {
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData):
   // the approver is the leak check, so each request is shown in full with a notice saying so.
   restricted?: boolean
-  // The branch approval model (the `branch-approval` UI feature flag), where a chat's requests
-  // apply only when its changes are accepted, so only some are offered for approval on their own.
-  branchApproval?: boolean
 }
 
 const PREVIEW_LIMIT = 3
@@ -35,7 +32,6 @@ export default function ActivityNotifications({
   overseer,
   onViewActivity,
   restricted,
-  branchApproval,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
@@ -145,7 +141,9 @@ export default function ActivityNotifications({
                         onClick={() => void resolveAction(action, 'deny')}
                         describedBy={describedBy}
                       />
-                      {(!branchApproval || canApproveAlone(action)) && (
+                      {/* A chat's requests apply only when its changes are accepted, so only
+                          some are offered for approval on their own. */}
+                      {canApproveAlone(action) && (
                         <ResolveButton
                           tone="approve"
                           disabled={isProcessing}

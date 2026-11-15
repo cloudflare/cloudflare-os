@@ -3,7 +3,6 @@ import { Switch, useKumoToastManager } from '@cloudflare/kumo'
 import { CaretRight, Check, Eye, Lightning, ShieldCheck } from '@phosphor-icons/react'
 import { RpcStub } from 'capnweb'
 import { ActionLogEntry, Overseer, actionChangeTime } from '@gadgets/workshop-shared/api'
-import { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { GatekeeperIcon } from './components/GatekeeperIcon'
 import { HookToggle, hookToggleFailureToast } from './components/HookToggle'
 import { WorkshopButton } from './components/WorkshopControls'
@@ -12,14 +11,12 @@ import { useActionHistory } from './useActionHistory'
 import type { HistoryViewFilter } from './useActionHistory'
 import { useAutoApproval, autoApprovalKey, type AutoApprovalEntry } from './useAutoApproval'
 import type { AutoApprovalChannel } from './features/approvals/autoApprovalChannel'
-import { useAlwaysApproveTag } from './useAlwaysApproveTag'
 import { useAuthenticatedApi } from './AuthContext'
 import { useAvatar } from './useAvatar'
 import { useVendorBranding } from './useVendorBranding'
 import { useResolveAction } from './useResolveAction'
 import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
-import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
 import { ActionFields, entryFields } from './components/ActionFields'
 import { StagedChangesBar } from './features/approvals/StagedChangesBar'
 import { chatBranchPending } from './features/approvals/pendingChangeGroups'
@@ -39,13 +36,10 @@ interface ActivityProps {
   onViewChange: (view: ActivityView) => void
   // Shared with the chat: a rule changed here has to reach the tray's own list.
   autoApproval?: AutoApprovalChannel
-  // Present under the branch approval model (the `branch-approval` UI feature flag), where a
-  // chat's requests are accepted with its changes: the review tab lists each chat with changes
-  // waiting, which opens in the chat panel, and what staging holds, instead of every request.
-  branch?: {
-    chats: readonly ChatWithChanges[]
-    onOpenChat: (chatId: number) => void
-  }
+  // A chat's requests are accepted with its changes, so the review tab lists each chat with
+  // changes waiting, which opens in the chat panel, and what staging holds.
+  chats: readonly ChatWithChanges[]
+  onOpenChat: (chatId: number) => void
 }
 
 /** Pending-status copy while the pending set is still being gathered (also in the popover). */
@@ -161,20 +155,14 @@ export default function Activity({
   view,
   onViewChange,
   autoApproval,
-  branch,
+  chats,
+  onOpenChat,
 }: ActivityProps) {
   const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<HistoryViewFilter>('all')
   const [processingActions, setProcessingActions] = useState<Set<number>>(new Set())
   const [togglingHooks, setTogglingHooks] = useState<Set<number>>(new Set())
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
-  const [confirmAutoApprove, setConfirmAutoApprove] = useState<{
-    actionId: number
-    gatekeeperId: number
-    resourceTitle: string
-    actionKind: ActionKind
-    actionLabel: string
-  } | null>(null)
 
   const toasts = useKumoToastManager()
 
@@ -212,77 +200,8 @@ export default function Activity({
     }
   }
 
-  const { alwaysApproveTag, isTagAutoApproved } =
-    useAlwaysApproveTag(overseer, setProcessingActions, autoApproval?.changed)
-
   const toggleExpanded = (id: number) => {
     setExpandedActionId(previous => (previous === id ? null : id))
-  }
-
-  function renderReviewContent(): ReactNode {
-    if (branch) return renderBranchReview(branch)
-    if (pendingActions.length > 0) {
-      return (
-        <>
-          <div className={`${PANE_BAR} gap-2 px-5`}>
-            <span className="text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
-              {pendingActions.length} {pendingActions.length === 1 ? 'request' : 'requests'} waiting
-            </span>
-            <span className="ml-auto text-[11.5px] leading-[17px] text-kumo-inactive">Oldest first</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {pendingActions.map(record => {
-              const autoApproveTarget =
-                // Never auto-approved while restricted, so no rule is offered.
-                !restricted &&
-                record.type === 'action' && record.gatekeeperId !== undefined &&
-                record.description.actionKind !== undefined &&
-                record.description.autoApprovable === true
-                  ? {
-                      actionId: record.id,
-                      gatekeeperId: record.gatekeeperId,
-                      resourceTitle: record.resourceTitle,
-                      actionKind: record.description.actionKind,
-                      actionLabel: record.description.title,
-                    }
-                  : undefined
-              return (
-                <ReviewRequest
-                  key={record.id}
-                  record={record}
-                  restricted={restricted}
-                  expanded={expandedActionId === record.id}
-                  processing={processingActions.has(record.id)}
-                  onToggle={() => toggleExpanded(record.id)}
-                  decide={{
-                    onApprove: () => void resolveAction(record, 'approve'),
-                    onReject: () => void resolveAction(record, 'deny'),
-                    onAlwaysApprove:
-                      autoApproveTarget &&
-                      !isTagAutoApproved(autoApproveTarget.gatekeeperId, autoApproveTarget.actionKind.tag)
-                        ? () => setConfirmAutoApprove(autoApproveTarget)
-                        : undefined,
-                  }}
-                />
-              )
-            })}
-            {pendingStatus === 'checking' && (
-              <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
-                Still checking older activity…
-              </p>
-            )}
-            {pendingStatus === 'error' && (
-              <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
-                Could not finish checking for requests — reload the page to try again.
-              </p>
-            )}
-          </div>
-        </>
-      )
-    }
-
-    return renderNothingToReview(
-      'Requests that need your approval show up here and in the workspace header.')
   }
 
   function renderNothingToReview(description: string): ReactNode {
@@ -316,10 +235,10 @@ export default function Activity({
     )
   }
 
-  // Under the branch approval model a chat's requests are accepted with its code, in the chat, so
-  // the review tab lists the chats rather than their requests. What staging holds belongs to no
-  // chat, so it is reviewed here: accepted or discarded as a whole, or denied one at a time.
-  function renderBranchReview({ chats, onOpenChat }: NonNullable<ActivityProps['branch']>): ReactNode {
+  // A chat's requests are accepted with its code, in the chat, so the review tab lists the chats
+  // rather than their requests. What staging holds belongs to no chat, so it is reviewed here:
+  // accepted or discarded as a whole, or denied one at a time.
+  function renderReviewContent(): ReactNode {
     const staged = chatBranchPending(pendingActions, null)
     const count = chats.length + (staged.length > 0 ? 1 : 0)
     if (count === 0) {
@@ -521,22 +440,6 @@ export default function Activity({
     <div className="flex h-full flex-col bg-kumo-base">
       {renderActivityContent()}
 
-      {/* The workspace latched: the affordance is gone and confirming could only error. */}
-      {!restricted && confirmAutoApprove && (
-        <AutoApproveConfirmDialog
-          open
-          actionLabel={confirmAutoApprove.actionLabel}
-          resourceTitle={confirmAutoApprove.resourceTitle}
-          isProcessing={processingActions.has(confirmAutoApprove.actionId)}
-          onOpenChange={open => { if (!open) setConfirmAutoApprove(null) }}
-          onConfirm={async () => {
-            const { actionId, gatekeeperId, actionKind } = confirmAutoApprove
-            if (await alwaysApproveTag(actionId, gatekeeperId, actionKind)) {
-              setConfirmAutoApprove(null)
-            }
-          }}
-        />
-      )}
       {creationAccountModal}
     </div>
   )

@@ -59,6 +59,12 @@ it.concurrent("applies a list through the kit, and a denial rejects what it repo
   if (!gatekeeper) throw new Error("Failed to create the test connection");
   const gatekeeperId = await gatekeeper.getId();
   using session = await gatekeeper.openSession() as RpcStub<TestSession>;
+  // Staged writes apply at once unless staging holds them, as it does once the workspace has read
+  // restricted data, which a plain test thing's session can report.
+  using latch = await overseer.newGatekeeper(
+      account.id, `https://gadgets-test.example/things/latch-${crypto.randomUUID()}`);
+  using latchSession = await latch!.openSession() as RpcStub<TestSession>;
+  await latchSession.readValue(true);
 
   for (const value of [1, 2, 3]) await session.writeValue(value);
   expect(await session.readValue()).toBe(3);

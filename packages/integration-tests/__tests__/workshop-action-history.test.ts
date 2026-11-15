@@ -115,6 +115,9 @@ it("pages, filters, streams and replays a workspace's action history", async () 
     if (!gatekeeper) throw new Error("Failed to create the test connection");
     gatekeeperId = await gatekeeper.getId();
     using session = await gatekeeper.openSession() as RpcStub<TestSession>;
+    // Staged writes apply at once unless staging holds them, as it does once the workspace has
+    // read restricted data: this read is record 0.
+    await session.readValue(true);
     await writeValues(session, 1000, 1055);
 
     const live = new ActionRecorder();
@@ -124,7 +127,7 @@ it("pages, filters, streams and replays a workspace's action history", async () 
     expect(live.entries).toEqual([]);
     await session.readValue();
     await waitFor("the live observation", async () => live.entries[0] ?? null);
-    expect(live.entries).toMatchObject([{ id: 55, type: "observation" }]);
+    expect(live.entries).toMatchObject([{ id: 56, type: "observation" }]);
 
     const firstPending = await ws.listActions({ filter: "pending" });
     expect(firstPending.nextBeforeId).toBeDefined();
@@ -132,15 +135,18 @@ it("pages, filters, streams and replays a workspace's action history", async () 
     const approved = await waitFor("the live approval", async () =>
       live.entries.find(e => e.id === approvedId && e.state === "approved") ?? null);
     const restPending = await listAll(ws, "pending", firstPending.nextBeforeId);
-    expect(ids([...firstPending.entries, ...restPending.entries])).toEqual(idsDown(54, 1));
+    expect(ids([...firstPending.entries, ...restPending.entries])).toEqual(idsDown(55, 2));
 
     const [all, actions, observations, pending] = await Promise.all(
         (["all", "action", "observation", "pending"] as const).map(filter => listAll(ws, filter)));
-    expect(ids(all.entries)).toEqual(idsDown(55, 0));
+    expect(ids(all.entries)).toEqual(idsDown(56, 0));
     expect(all.pages).toBeGreaterThan(1);
-    expect(ids([...observations.entries, ...actions.entries])).toEqual(ids(all.entries));
-    expect(observations.entries).toMatchObject(
-        [{ state: "approved", description: { title: "Read the test value" } }]);
+    expect(ids([...observations.entries, ...actions.entries]).toSorted((a, b) => b - a))
+        .toEqual(ids(all.entries));
+    expect(observations.entries).toMatchObject([
+      { state: "approved", description: { title: "Read the test value" } },
+      { id: 0, state: "approved", description: { title: "Read the test value" } },
+    ]);
     expect(actions.entries.map(e => e.state)).toEqual([...Array(54).fill("pending"), "approved"]);
     expect(pending.entries).toEqual(actions.entries.filter(e => e.state === "pending"));
 
@@ -167,14 +173,14 @@ it("pages, filters, streams and replays a workspace's action history", async () 
   expect(replayed).toEqual(new Map(entries
       .filter(e => actionChangeTime(e) >= watermark)
       .map(e => [e.id, e])));
-  expect([...replayed.keys()]).toEqual(expect.arrayContaining([0, 1, 56, 57, 58]));
+  expect([...replayed.keys()]).toEqual(expect.arrayContaining([1, 2, 57, 58, 59]));
   // Unchanged since long before the watermark; also fails if approval stops stamping appliedAt.
-  expect(replayed.has(2)).toBe(false);
+  expect(replayed.has(3)).toBe(false);
   const times = replay.entries.map(e => actionChangeTime(e).getTime());
   expect(times).toEqual(times.toSorted((a, b) => a - b));
 });
 
-it("approvals route to the account whose connection staged the write", async () => {
+it("applies route to the account whose connection staged the write", async () => {
   const [alice, bob] = nextUsernames("routingalice", "routingbob");
   // Released before reopening; `using` covers early failures.
   using setup = new DisposableStack();
@@ -213,28 +219,13 @@ it("approvals route to the account whose connection staged the write", async () 
   expect(await Promise.all([aliceSession.writeValue(21), bobSession.writeValue(22)]))
       .toEqual([1, 1]);
 
-  const { entries } = await listAll(aliceSide.overseer, "pending");
-  expect(entries).toHaveLength(2);
-  const pendingFor = (gatekeeperId: number) => {
-    const entry = entries.find(e => e.type === "action" && e.gatekeeperId === gatekeeperId);
-    if (!entry) throw new Error(`No pending write for gatekeeper ${gatekeeperId}`);
-    return entry;
-  };
-  const aliceEntry = pendingFor(aliceGatekeeperId);
-  const bobEntry = pendingFor(bobGatekeeperId);
+  // Staged writes apply at once, each through the connection, and so the account, that staged it.
   const aliceLabel = accountLabel(aliceAccount);
   const bobLabel = accountLabel(bobAccount);
-  await expect(actionState(aliceLabel)).resolves.toEqual(
-      { pending: [{ id: 1, value: 21 }], applyCount: 0 });
-  await expect(actionState(bobLabel)).resolves.toEqual(
-      { pending: [{ id: 1, value: 22 }], applyCount: 0 });
-
-  await aliceSide.overseer.approveAction(bobEntry.id);
-  await expect(actionState(bobLabel)).resolves.toEqual({ pending: [], value: 22, applyCount: 1 });
-  await expect(actionState(aliceLabel)).resolves.toEqual(
-      { pending: [{ id: 1, value: 21 }], applyCount: 0 });
-
-  await aliceSide.overseer.approveAction(aliceEntry.id);
+  await waitFor("both writes to apply", async () =>
+    (await actionState(aliceLabel)).applyCount === 1 &&
+        (await actionState(bobLabel)).applyCount === 1 || null);
   await expect(actionState(aliceLabel)).resolves.toEqual({ pending: [], value: 21, applyCount: 1 });
-  expect((await actionState(bobLabel)).applyCount).toBe(1);
+  await expect(actionState(bobLabel)).resolves.toEqual({ pending: [], value: 22, applyCount: 1 });
+  expect((await listAll(aliceSide.overseer, "pending")).entries).toEqual([]);
 });

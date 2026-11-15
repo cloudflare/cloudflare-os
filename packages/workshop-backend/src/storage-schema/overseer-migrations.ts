@@ -29,7 +29,7 @@ import type { UserDurableObject } from "../user";
  * new workspace is born at (so it has nothing to migrate). The migrations themselves name
  * their versions literally, since each one's source and target are fixed for good.
  */
-export const OVERSEER_STORAGE_VERSION = 8;
+export const OVERSEER_STORAGE_VERSION = 9;
 
 /**
  * The most chat messages that migrateToBlueprintUpstreams() reads, over all of a workspace's
@@ -441,5 +441,26 @@ export function migrateToBranchIndex(host: OverseerMigrationHost): void {
   });
   host.logger.info("backfilled the pending-actions-by-branch index", {
     event: "storage.migration.branch-index.completed",
+  });
+}
+
+/**
+ * Version 8 -> 9: marks rejected the pending actions left on connections removed before removing
+ * one did so itself (see OverseerImpl.removeGatekeeper). Nothing can apply or reject them, since
+ * their facet is gone, and accepting the chat or staging they are on would stop at them. Their
+ * pending-push marks went with the removal.
+ */
+export function migrateToRejectedOrphans(host: OverseerMigrationHost): void {
+  if (host.storage.version.get() !== 8) return;
+  host.ctx.storage.transactionSync(() => {
+    // Materialized first: rejecting one changes the index.
+    for (let record of Array.from(host.storage.actions.byHistoryFilter.get("pending"))) {
+      if (record.type !== "action" || host.storage.gatekeepers.get(record.gatekeeperId)) continue;
+      host.storage.actions.put({...record, state: "rejected", appliedAt: new Date()});
+    }
+    host.storage.version.put(9);
+  });
+  host.logger.info("rejected the pending actions of removed connections", {
+    event: "storage.migration.orphan-rejection.completed",
   });
 }

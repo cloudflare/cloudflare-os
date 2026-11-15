@@ -98,14 +98,6 @@ declare global {
       // on to avoid locking everyone out).
       DISABLE_PASSWORD_AUTH?: string;
 
-      // Set to "true" for the branch approval model of plans/forking-reality.md, which the
-      // `branch-approval` UI feature flag shows: accepting a chat's changes applies its pending
-      // gatekeeper actions, discarding them rejects those actions, and auto-approval acts at the
-      // end of an agent's turn. Off, actions are approved one at a time as before. The UI flag
-      // resolves off while this is unset (see getUiFeatureFlags in server.ts). Temporary, until
-      // the model is proven.
-      BRANCH_APPROVAL?: string;
-
       // Enables the Cloudflare free-tier limits + top-up flow when set to "true".
       ENABLE_CLOUDFLARE_LIMITS?: string;
 
