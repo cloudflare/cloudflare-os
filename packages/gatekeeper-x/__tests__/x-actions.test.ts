@@ -6,7 +6,8 @@ import type { ActionDescription, ActionField } from "@gadgets/workshop-shared/ga
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import type { XPostDraft, XPostInfo, XUserInfo } from "../src/types";
 import {
-  actions, dependedRefs, imageHandles, providedRefs, validateDraft, validateReplyParent, type StoredDraft, type XAction,
+  RESOURCES_WITH_ACTION_KINDS, actions, dependedRefs, imageHandles, providedRefs, validateDraft, validateReplyParent,
+  type StoredDraft, type XAction,
   type XActionHost,
   type XActions,
 } from "../src/x-actions";
@@ -339,5 +340,19 @@ describe("validateDraft", () => {
     // A different link makes a different post.
     expect(() => validateDraft(valid({ text: "Hello world https://b.co" }), me, new Set(["Hello world https://a.co"])))
       .not.toThrow();
+  });
+});
+
+describe("RESOURCES_WITH_ACTION_KINDS", () => {
+  it("advertises the kinds each resource's bindings submit, and auto-approval only where X allows it", () => {
+    const byTitle = new Map(RESOURCES_WITH_ACTION_KINDS.map(resource => [resource.title, resource.actionKinds]));
+    const tags = (title: string) => byTitle.get(title)?.map(({ kind }) => kind.tag);
+    expect(tags("X Account")).toEqual(actions.kinds().map(({ kind }) => kind.tag));
+    expect(tags("X Post")).toEqual(
+      ["x.post.reply", "x.post.delete", "x.post.like", "x.post.repost", "x.post.bookmark", "x.post.hide"]);
+    expect(tags("X List")).toEqual(["x.list.manage", "x.list.members"]);
+    expect(byTitle.get("X Profile")).toBeUndefined();
+    const automatic = byTitle.get("X Account")!.filter(entry => entry.autoApprovable).map(({ kind }) => kind.tag);
+    expect(automatic).toEqual(["x.post.bookmark", "x.post.hide", "x.user.mute"]);
   });
 });

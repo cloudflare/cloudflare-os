@@ -751,6 +751,15 @@ export const AUTO_APPROVABLE_KINDS: ActionKind[] = [...new Set(
 )];
 
 /**
+ * Every kind once, and whether its actions may be auto-approved, for the vendor to advertise before
+ * anything is connected (SupportedResource.actionKinds). Every binding can submit all of them.
+ */
+export const ACTION_KIND_CATALOG: Array<{ kind: ActionKind; autoApprovable: boolean }> = [...new Map(
+  (Object.keys(ACTION_KINDS) as NotionAction["type"][]).map(type =>
+    [ACTION_KINDS[type].tag, { kind: ACTION_KINDS[type], autoApprovable: type !== NEVER_AUTO_APPROVABLE }]),
+).values()];
+
+/**
  * The approver's text, built so every value the agent supplied (page bodies, comments, titles,
  * property values, icons) is shown in full in a field, and the completeness claim is
  * the builder's; plus the action's kind and auto-approval verdict.

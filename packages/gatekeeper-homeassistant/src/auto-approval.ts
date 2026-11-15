@@ -37,6 +37,27 @@ export function autoApprovableKinds(resourceKind: HomeAssistantResourceKind, res
 }
 
 /**
+ * What a binding of `resourceKind` can change, for the vendor to advertise before anything is
+ * connected (SupportedResource.actionKinds). Every binding calls services, and only the
+ * whole-instance session fires events or edits dashboards. An entity type offers device control
+ * though a binding to, say, a lock never auto-approves it (see `autoApprovableKinds`).
+ */
+export function actionKindCatalog(
+  resourceKind: HomeAssistantResourceKind,
+): Array<{ kind: ActionKind; autoApprovable: boolean }> {
+  const services = [
+    { kind: CONTROL_DEVICES_KIND, autoApprovable: true },
+    { kind: CALL_SERVICE_KIND, autoApprovable: false },
+  ];
+  if (resourceKind !== "instance") return services;
+  return [
+    ...services,
+    { kind: FIRE_EVENT_KIND, autoApprovable: false },
+    { kind: EDIT_DASHBOARDS_KIND, autoApprovable: true },
+  ];
+}
+
+/**
  * The kind and verdict of a dashboard save. False when the configuration could make a browser
  * showing the dashboard contact a host the agent picked, since such an address can carry Home
  * Assistant data in it the moment anyone opens the dashboard; or when a tap on it could do more

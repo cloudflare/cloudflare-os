@@ -3,9 +3,11 @@
 // so that no such line runs. Also: which actions a user may let apply without a person.
 
 import { describe, expect, it } from "vitest";
+import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import {
   autoApprovableKinds, autoApprovalOf, escapeQuickActions, protectedBranchMatches, type GitLabAction,
 } from "../src/gitlab-action-types";
+import { supportedResources } from "../src/gitlab-env";
 
 describe("escapeQuickActions", () => {
   it("escapes every line GitLab would run, on any line of the text", () => {
@@ -118,6 +120,16 @@ describe("auto-approval", () => {
     expect(tags("mergeRequest")).toEqual(mergeRequest);
     expect(tags("project")).toEqual(
       ["gitlab.createIssue", "gitlab.createMergeRequest", ...mergeRequest, "gitlab.push", "gitlab.forcePush"]);
+  });
+
+  it("advertises each resource's kinds before connecting, with merging always waiting for a person", () => {
+    const resources = supportedResources({} as never);
+    const catalog = (resource: SupportedResource) =>
+      resource.actionKinds?.map(({ kind, autoApprovable }) => `${kind.tag}:${autoApprovable}`);
+    const automatic = (kind: "project" | "issue" | "mergeRequest") => tags(kind).map(tag => `${tag}:true`);
+    expect(catalog(resources.issue)).toEqual(automatic("issue"));
+    expect(catalog(resources.mergeRequest)).toEqual([...automatic("mergeRequest"), "gitlab.mergeMergeRequest:false"]);
+    expect(catalog(resources.project)).toEqual([...automatic("project"), "gitlab.mergeMergeRequest:false"]);
   });
 });
 

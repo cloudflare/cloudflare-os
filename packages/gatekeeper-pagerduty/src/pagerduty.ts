@@ -46,6 +46,7 @@ import {
   OAuthClient, createPkce, mergeOAuthTokens, oauthRefresh, type OAuthTokens,
 } from "@gadgets/gatekeeper-kit/oauth-client";
 import { PreviewOAuth, PreviewOAuthConfigurationError } from "@gadgets/gatekeeper-kit/preview-oauth";
+import { RESOURCES_WITH_ACTION_KINDS } from "./pagerduty-actions";
 import { PagerDutyApi, isAuthError, isDenial } from "./pagerduty-api";
 import {
   RECONNECT_MESSAGE,
@@ -295,7 +296,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return ALL_RESOURCES;
+    return RESOURCES_WITH_ACTION_KINDS;
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -589,7 +590,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return ALL_RESOURCES;
+    return RESOURCES_WITH_ACTION_KINDS;
   }
 
   async getGatekeeperClassFor(url: string): Promise<{

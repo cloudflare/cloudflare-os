@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { describeAction } from "../src/approvals";
 import {
+  actionKindCatalog,
   autoApprovableKinds,
   CALL_SERVICE_KIND,
   CONTROL_DEVICES_KIND,
@@ -125,6 +126,20 @@ describe("action kinds", () => {
       expect(autoApprovableKinds("entity", entityId)).toEqual([]);
     },
   );
+
+  it("advertises every kind a binding can submit, with service calls and events always asking", () => {
+    const catalog = (resourceKind: "instance" | "area" | "label" | "device" | "entity") =>
+      actionKindCatalog(resourceKind).map(({ kind, autoApprovable }) => ({ tag: kind.tag, autoApprovable }));
+    expect(catalog("instance")).toEqual([
+      deviceControl,
+      callService,
+      { tag: "fire-event", autoApprovable: false },
+      { tag: "edit-dashboards", autoApprovable: true },
+    ]);
+    for (const resourceKind of ["area", "label", "device", "entity"] as const) {
+      expect(catalog(resourceKind)).toEqual([deviceControl, callService]);
+    }
+  });
 
   it("gives every kind its own tag and label", () => {
     const kinds = [CONTROL_DEVICES_KIND, CALL_SERVICE_KIND, FIRE_EVENT_KIND, EDIT_DASHBOARDS_KIND];

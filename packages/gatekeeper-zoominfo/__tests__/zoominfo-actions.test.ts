@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { AUTO_APPROVABLE_KINDS, ENRICH_ACTION, enrichmentActionDescription } from "../src/zoominfo-actions";
+import {
+  ACTION_KIND_CATALOG, AUTO_APPROVABLE_KINDS, ENRICH_ACTION, enrichmentActionDescription,
+} from "../src/zoominfo-actions";
 
 describe("enrichmentActionDescription", () => {
   it.each([1, 25])("never auto-approves an enrichment costing up to %i credits", credits => {
@@ -28,5 +30,11 @@ describe("enrichmentActionDescription", () => {
 describe("AUTO_APPROVABLE_KINDS", () => {
   it("offers no kind, since enrichment spends credits", () => {
     expect(AUTO_APPROVABLE_KINDS).toEqual([]);
+  });
+});
+
+describe("ACTION_KIND_CATALOG", () => {
+  it("advertises enrichment as the one kind, always waiting for a person", () => {
+    expect(ACTION_KIND_CATALOG).toEqual([{ kind: ENRICH_ACTION, autoApprovable: false }]);
   });
 });

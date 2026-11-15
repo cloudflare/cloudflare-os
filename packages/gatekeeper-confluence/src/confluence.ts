@@ -66,6 +66,7 @@ import {
 } from "./confluence-api";
 import {
   ConfluenceStore,
+  actionKindCatalog,
   applyStoredAction,
   autoApprovableKinds,
   observation,
@@ -191,7 +192,9 @@ const PAGE_RESOURCE: SupportedResource = {
   description: "Read and edit a specific Confluence page or blog post (and its child pages).",
   groupedWith: SITE_RESOURCE.urlPattern,
 };
-const SUPPORTED_RESOURCES = [SITE_RESOURCE, SPACE_RESOURCE, PAGE_RESOURCE];
+// Each type advertises every kind of change, as each of its bindings can make them all.
+const SUPPORTED_RESOURCES: SupportedResource[] = [SITE_RESOURCE, SPACE_RESOURCE, PAGE_RESOURCE]
+  .map(resource => ({ ...resource, actionKinds: actionKindCatalog() }));
 
 const page = (title: string, color: string, message: string): string => `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>${title}</title></head>

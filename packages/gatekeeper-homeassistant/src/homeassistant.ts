@@ -52,7 +52,7 @@ import {
   fetchDashboardConfig,
   resolveTargets,
 } from "./approvals";
-import { autoApprovableKinds, dashboardVerdict, serviceCallVerdict } from "./auto-approval";
+import { actionKindCatalog, autoApprovableKinds, dashboardVerdict, serviceCallVerdict } from "./auto-approval";
 import {
   indexPendingByEntity,
   overlayDashboardConfig,
@@ -157,6 +157,7 @@ const INSTANCE_RESOURCE: SupportedResource = {
   title: "Home Assistant",
   description: "Access to a Home Assistant instance: every area, device, entity, and dashboard.",
   icon: HOMEASSISTANT_ICON,
+  actionKinds: actionKindCatalog("instance"),
 };
 
 // Each finer-grained granularity is selected via its own configurator UI. The URL patterns use
@@ -167,6 +168,7 @@ const AREA_RESOURCE: SupportedResource = {
   title: "Home Assistant Area",
   description: "Access to a single Home Assistant area (room): its devices and entities only.",
   icon: HOMEASSISTANT_ICON,
+  actionKinds: actionKindCatalog("area"),
 };
 
 const LABEL_RESOURCE: SupportedResource = {
@@ -174,6 +176,7 @@ const LABEL_RESOURCE: SupportedResource = {
   title: "Home Assistant Label",
   description: "Access to all Home Assistant entities carrying a particular label.",
   icon: HOMEASSISTANT_ICON,
+  actionKinds: actionKindCatalog("label"),
 };
 
 const DEVICE_RESOURCE: SupportedResource = {
@@ -181,6 +184,7 @@ const DEVICE_RESOURCE: SupportedResource = {
   title: "Home Assistant Device",
   description: "Access to a single physical device and the entities it provides.",
   icon: HOMEASSISTANT_ICON,
+  actionKinds: actionKindCatalog("device"),
 };
 
 const ENTITY_RESOURCE: SupportedResource = {
@@ -188,6 +192,7 @@ const ENTITY_RESOURCE: SupportedResource = {
   title: "Home Assistant Entity",
   description: "Access to a single Home Assistant entity (light, sensor, switch, etc).",
   icon: HOMEASSISTANT_ICON,
+  actionKinds: actionKindCatalog("entity"),
 };
 
 const SUPPORTED_RESOURCES: SupportedResource[] = [

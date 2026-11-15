@@ -59,7 +59,7 @@ import type {
   SpotifyUserRef,
   SpotifyPlaylistDetailsUpdate,
 } from "./types";
-import { autoApprovableKinds, autoApprovalOf } from "./action-kinds";
+import { actionKindCatalog, autoApprovableKinds, autoApprovalOf } from "./action-kinds";
 import TYPES_CODE from "./types.txt";
 import SPOTIFY_LOGO_SVG from "./spotify-logo.svg";
 import SPOTIFY_ACCOUNT_CONFIGURATOR_HTML from "./generated/account-configurator-ui.txt";
@@ -160,7 +160,11 @@ const PLAYLIST_RESOURCE: SupportedResource = {
   icon: { url: SPOTIFY_LOGO_URL },
 };
 
-const SUPPORTED_RESOURCES: SupportedResource[] = [ACCOUNT_RESOURCE, PLAYLIST_RESOURCE];
+// Each type advertises the kinds of change its bindings can make.
+const SUPPORTED_RESOURCES: SupportedResource[] = [
+  { ...ACCOUNT_RESOURCE, actionKinds: actionKindCatalog("account") },
+  { ...PLAYLIST_RESOURCE, actionKinds: actionKindCatalog("playlist") },
+];
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">

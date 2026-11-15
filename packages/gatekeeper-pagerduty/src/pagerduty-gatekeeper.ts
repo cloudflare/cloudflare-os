@@ -16,7 +16,7 @@ import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
 import {
-  DELETE_OVERRIDES, OVERRIDES, actions, dependedRefs, isProvisional, providedRefs, refusalsFail, type PagerDutyAction,
+  BINDING_ACTIONS, actions, dependedRefs, isProvisional, providedRefs, refusalsFail, type PagerDutyAction,
   type PagerDutyActionHost,
 } from "./pagerduty-actions";
 import { PagerDutyApi } from "./pagerduty-api";
@@ -55,21 +55,6 @@ const BINDINGS: Record<ResourceKind, { bindingName: string; tsType: string; hook
   service: { bindingName: "PAGERDUTY_SERVICE", tsType: "PagerDutyService", hookTsType: "PagerDutyEventHook" },
   incident: { bindingName: "PAGERDUTY_INCIDENT", tsType: "PagerDutyIncident", hookTsType: "PagerDutyEventHook" },
   schedule: { bindingName: "PAGERDUTY_SCHEDULE", tsType: "PagerDutySchedule" },
-};
-
-const SCHEDULE_TAGS = [OVERRIDES.tag, DELETE_OVERRIDES.tag];
-const notSchedule = (tag: string) => !SCHEDULE_TAGS.includes(tag);
-
-/**
- * Which action tags each kind of binding can submit, for the auto-approval catalog. Opening an
- * incident, which an incident binding can't, is never auto-approvable, so it needn't be excluded.
- */
-const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
-  account: () => true,
-  team: () => true,
-  service: notSchedule,
-  incident: notSchedule,
-  schedule: tag => SCHEDULE_TAGS.includes(tag),
 };
 
 type PagerDutySession = PagerDutyAccount | PagerDutyTeam | PagerDutyService | PagerDutyIncident | PagerDutySchedule;

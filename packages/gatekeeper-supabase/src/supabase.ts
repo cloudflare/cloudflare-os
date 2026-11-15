@@ -31,7 +31,7 @@ import {
   type ProjectResponse,
   type SupabaseOAuthGrant,
 } from "./supabase-api";
-import { AUTO_APPROVABLE_KINDS, executeActionDescription } from "./supabase-actions";
+import { ACTION_KIND_CATALOG, AUTO_APPROVABLE_KINDS, executeActionDescription } from "./supabase-actions";
 import { describeTable, listSchemas, listTables } from "./supabase-introspection";
 import {
   SupabaseOrganizationConfiguratorUI,
@@ -178,7 +178,8 @@ const ORGANIZATION_RESOURCE: SupportedResource = {
   icon: { url: SUPABASE_LOGO_URL },
 };
 
-const SUPPORTED_RESOURCES: SupportedResource[] = [PROJECT_RESOURCE, ORGANIZATION_RESOURCE];
+const SUPPORTED_RESOURCES: SupportedResource[] = [PROJECT_RESOURCE, ORGANIZATION_RESOURCE]
+  .map(resource => ({ ...resource, actionKinds: ACTION_KIND_CATALOG }));
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">

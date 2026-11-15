@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ConfluenceStore,
+  actionKindCatalog,
   applyStoredAction,
   autoApprovableKinds,
   rejectStoredAction,
@@ -308,6 +309,19 @@ describe("auto-approval", () => {
       "confluence.restore",
       "confluence.setTitle",
       "confluence.uploadAttachment",
+    ]);
+  });
+
+  it("advertises every kind once, with trash always waiting for a person", () => {
+    expect(actionKindCatalog().map(({ kind, autoApprovable }) => [kind.tag, autoApprovable])).toEqual([
+      ["confluence.createContent", true],
+      ["confluence.editContent", true],
+      ["confluence.setTitle", true],
+      ["confluence.addComment", true],
+      ["confluence.label", true],
+      ["confluence.uploadAttachment", true],
+      ["confluence.trash", false],
+      ["confluence.restore", true],
     ]);
   });
 });

@@ -11,6 +11,14 @@ export const RUN_SQL_ACTION: ActionKind = { tag: "supabase.runSql", label: "Run 
 /** The kinds an action can be auto-approved under: none, because `execute()` is never. */
 export const AUTO_APPROVABLE_KINDS: ActionKind[] = [];
 
+/**
+ * What a binding can change, for the vendor to advertise before anything is connected
+ * (SupportedResource.actionKinds): only SQL, which a person always approves. An organization
+ * binding reaches every project's database, so both resource types offer it.
+ */
+export const ACTION_KIND_CATALOG: Array<{ kind: ActionKind; autoApprovable: boolean }> =
+  [{ kind: RUN_SQL_ACTION, autoApprovable: false }];
+
 /** The description submitted for an `execute()` statement against project `ref`. */
 export function executeActionDescription(ref: string, sql: string, params?: SupabaseValue[]): ActionDescription {
   return {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACTION_KINDS, autoApprovableKinds, autoApprovalOf } from "../src/action-kinds";
+import { ACTION_KINDS, actionKindCatalog, autoApprovableKinds, autoApprovalOf } from "../src/action-kinds";
 import type { SpotifyAction } from "../src/spotify";
 
 type DistributiveOmit<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
@@ -137,6 +137,21 @@ describe("autoApprovableKinds", () => {
   it("lists only follow, track edits and details edits for a playlist binding", () => {
     expect(autoApprovableKinds("playlist")).toEqual([
       ACTION_KINDS.saveToLibrary, ACTION_KINDS.addAndReorderTracks, ACTION_KINDS.editPlaylistDetails,
+    ]);
+  });
+
+  it("advertises every kind each binding can submit, those always waiting for a person as such", () => {
+    const account = actionKindCatalog("account");
+    expect(new Set(account.map(entry => entry.kind))).toEqual(new Set(Object.values(ACTION_KINDS)));
+    for (const { kind, autoApprovable } of account) {
+      expect(autoApprovable).toBe(autoApprovableKinds("account").includes(kind));
+    }
+    expect(actionKindCatalog("playlist").map(({ kind, autoApprovable }) => [kind.tag, autoApprovable])).toEqual([
+      ["spotify.saveToLibrary", true],
+      ["spotify.addAndReorderTracks", true],
+      ["spotify.editPlaylistDetails", true],
+      ["spotify.unfollowPlaylist", false],
+      ["spotify.removeOrReplaceTracks", false],
     ]);
   });
 

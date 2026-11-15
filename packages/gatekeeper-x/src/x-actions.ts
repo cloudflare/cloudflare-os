@@ -22,13 +22,14 @@ import {
 } from "@gadgets/gatekeeper-kit/action-description";
 import type { ActionFileReference } from "@gadgets/gatekeeper-kit/action-files";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
+import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { XListInfo, XPostDraft, XPostInfo, XReplySettings, XUserInfo, XUserSummary } from "./types";
 import {
   XApi, XApiError, XCreditsError, XRateLimitError, isOutcomeUnknown, requireCreated, requireData, requireResult,
   xTime, LIST_FIELDS, type XEnvelope,
 } from "./x-api";
 import type { StoredIdentity } from "./x-credentials";
-import { VENDOR_ID } from "./x-env";
+import { ALL_RESOURCES, VENDOR_ID, kindOfPattern, type ResourceKind } from "./x-env";
 import { mentionsProtectedAuthor, sentContent, type SentContent, type WireList, type WirePost, type WireUser } from "./x-normalize";
 import {
   TEXT_LIMIT, TEXT_LIMIT_PREMIUM, comparableText, comparableUrl, duplicateKey, extractCashtags, extractMentions, extractUrls,
@@ -1102,6 +1103,27 @@ export const actions = defineActions<XActionHost, XActions>({
   isResolvedReference: (host, ref) => host.refs.isResolved(ref),
   afterResolve: host => host.invalidate(),
   vendorId: VENDOR_ID,
+});
+
+/**
+ * Which action tags each kind of binding can submit. Only the account publishes new posts, and a
+ * profile changes nothing.
+ */
+export const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
+  account: () => true,
+  post: tag => tag.startsWith("x.post.") && tag !== "x.post.create",
+  list: tag => tag.startsWith("x.list."),
+  profile: () => false,
+};
+
+/**
+ * The resources in picker order, each with the kinds of change its bindings submit, for the vendor
+ * to advertise before anything is connected (SupportedResource.actionKinds).
+ */
+export const RESOURCES_WITH_ACTION_KINDS: SupportedResource[] = ALL_RESOURCES.map(resource => {
+  const submits = BINDING_ACTIONS[kindOfPattern(resource.urlPattern)!];
+  const actionKinds = actions.kinds().filter(({ kind }) => submits(kind.tag));
+  return actionKinds.length > 0 ? { ...resource, actionKinds } : resource;
 });
 
 /** The outcome `revertAction` reports. */

@@ -12,6 +12,13 @@ export const ENRICH_ACTION: ActionKind = { tag: "zoominfo.enrich", label: "Enric
 export const AUTO_APPROVABLE_KINDS: ActionKind[] = [];
 
 /**
+ * What the account can change, for the vendor to advertise before anything is connected
+ * (SupportedResource.actionKinds): only enrichment, which a person always approves.
+ */
+export const ACTION_KIND_CATALOG: Array<{ kind: ActionKind; autoApprovable: boolean }> =
+  [{ kind: ENRICH_ACTION, autoApprovable: false }];
+
+/**
  * The description submitted for an enrichment. `summary` opens the prose, so the caller passes
  * every agent value in it through `codeSpan` (`fieldList` for lists); the request itself is shown
  * exactly in the fields.

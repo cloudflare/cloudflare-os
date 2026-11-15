@@ -87,7 +87,7 @@ import type {
   UsageLimit,
   ZoomInfoSession,
 } from "./types";
-import { AUTO_APPROVABLE_KINDS, enrichmentActionDescription } from "./zoominfo-actions";
+import { ACTION_KIND_CATALOG, AUTO_APPROVABLE_KINDS, enrichmentActionDescription } from "./zoominfo-actions";
 import TYPES_CODE from "./types.txt";
 import ZOOMINFO_LOGO_SVG from "./zoominfo-logo.svg";
 import ZOOMINFO_ACCOUNT_CONFIGURATOR_HTML from "./generated/account-configurator-ui.txt";
@@ -186,7 +186,7 @@ const ACCOUNT_RESOURCE: SupportedResource = {
   icon: { url: ZOOMINFO_LOGO_URL },
 };
 
-const SUPPORTED_RESOURCES: SupportedResource[] = [ACCOUNT_RESOURCE];
+const SUPPORTED_RESOURCES: SupportedResource[] = [{ ...ACCOUNT_RESOURCE, actionKinds: ACTION_KIND_CATALOG }];
 
 // Canonical URL for the connected account. ZoomInfo has no per-user public profile URL, so we use
 // the app home; the binding is whole-account regardless.

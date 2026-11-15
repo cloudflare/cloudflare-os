@@ -39,6 +39,20 @@ export function autoApprovableKindsOf(resourceKind: "workspace" | "team" | "issu
 }
 
 /**
+ * What a binding of `resourceKind` can change, for the vendor to advertise before anything is
+ * connected (SupportedResource.actionKinds): the kinds above, then archiving, which every binding
+ * reaches through an issue and a person always approves.
+ */
+export function actionKindCatalogOf(
+  resourceKind: "workspace" | "team" | "issue",
+): Array<{ kind: ActionKind; autoApprovable: boolean }> {
+  return [
+    ...autoApprovableKindsOf(resourceKind).map(kind => ({ kind, autoApprovable: true })),
+    { kind: LINEAR_ACTION_KINDS.archiveIssue, autoApprovable: false },
+  ];
+}
+
+/**
  * Whether handing an issue to `assignee` keeps the action auto-approvable. Linear app users
  * include third-party coding agents, which start a run that executes code and may spend billed
  * credits when assigned, so only a member Linear reports as a person qualifies.

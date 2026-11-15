@@ -55,6 +55,7 @@ import {
   type NotionOAuthGrant,
 } from "./notion-api";
 import {
+  ACTION_KIND_CATALOG,
   AUTO_APPROVABLE_KINDS,
   NotionStore,
   applyStoredAction,
@@ -188,7 +189,9 @@ const ITEM_RESOURCE: SupportedResource = {
   description: "Read and edit a specific Notion page or database (and its rows).",
 };
 
-const SUPPORTED_RESOURCES: SupportedResource[] = [WORKSPACE_RESOURCE, ITEM_RESOURCE];
+// Each type advertises every kind of change, as each of its bindings can make them all.
+const SUPPORTED_RESOURCES: SupportedResource[] = [WORKSPACE_RESOURCE, ITEM_RESOURCE]
+  .map(resource => ({ ...resource, actionKinds: ACTION_KIND_CATALOG }));
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>
 <html lang="en">

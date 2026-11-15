@@ -38,6 +38,24 @@ export function autoApprovableKinds(resourceKind: ResourceKind): ActionKind[] {
   return BINDING_KINDS[resourceKind].map(kind => ACTION_KINDS[kind]);
 }
 
+// The kinds each binding's session can submit whose actions always wait for a person. A playlist
+// binding can unfollow its playlist and remove or replace its tracks, but not touch the library.
+const GATED_BINDING_KINDS: Record<ResourceKind, SpotifyActionKind[]> = {
+  account: ["removeFromLibrary", "unfollowPlaylist", "removeOrReplaceTracks"],
+  playlist: ["unfollowPlaylist", "removeOrReplaceTracks"],
+};
+
+/**
+ * What a binding of `resourceKind` can change, for the vendor to advertise before anything is
+ * connected (SupportedResource.actionKinds): the kinds above, then those always approved by a person.
+ */
+export function actionKindCatalog(resourceKind: ResourceKind): Array<{ kind: ActionKind; autoApprovable: boolean }> {
+  return [
+    ...autoApprovableKinds(resourceKind).map(kind => ({ kind, autoApprovable: true })),
+    ...GATED_BINDING_KINDS[resourceKind].map(kind => ({ kind: ACTION_KINDS[kind], autoApprovable: false })),
+  ];
+}
+
 /**
  * The action's kind, and whether it may be applied without a person once the user has enabled
  * that kind. Removals, deletions and replacing a playlist's contents always wait for a person, as

@@ -10,9 +10,10 @@ import {
 } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, sanitizeTitle, type ActionDescriptionBuilder } from "@gadgets/gatekeeper-kit/action-description";
 import type { ProvisionalIds } from "@gadgets/gatekeeper-kit/simulation";
+import type { SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import { PagerDutyApiError, isRefusal, type PagerDutyApi } from "./pagerduty-api";
 import type { Identity } from "./pagerduty-credentials";
-import { VENDOR_ID, type Tenant } from "./pagerduty-env";
+import { RESOURCES, VENDOR_ID, type ResourceKind, type Tenant } from "./pagerduty-env";
 import type { WireIncident, WireOverride } from "./pagerduty-normalize";
 import type { ScopedObject, Within } from "./pagerduty-session-shared";
 import { resourceUrl } from "./pagerduty-urls";
@@ -501,3 +502,28 @@ export const actions = defineActions<PagerDutyActionHost, PagerDutyActions>({
   isResolvedReference: (host, ref) => host.refs.isResolved(ref),
   vendorId: VENDOR_ID,
 });
+
+const SCHEDULE_TAGS = [OVERRIDES.tag, DELETE_OVERRIDES.tag];
+const notSchedule = (tag: string) => !SCHEDULE_TAGS.includes(tag);
+
+/**
+ * Which action tags each kind of binding can submit: a service or incident reaches no schedule, and
+ * only a service, or a team or account through one, opens incidents.
+ */
+export const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
+  account: () => true,
+  team: () => true,
+  service: notSchedule,
+  incident: tag => notSchedule(tag) && tag !== CREATE.tag,
+  schedule: tag => SCHEDULE_TAGS.includes(tag),
+};
+
+/**
+ * The resources, each with the kinds of change its bindings submit, for the vendor to advertise
+ * before anything is connected (SupportedResource.actionKinds).
+ */
+export const RESOURCES_WITH_ACTION_KINDS: SupportedResource[] =
+  (Object.entries(RESOURCES) as [ResourceKind, SupportedResource][]).map(([kind, resource]) => ({
+    ...resource,
+    actionKinds: actions.kinds().filter(({ kind: { tag } }) => BINDING_ACTIONS[kind](tag)),
+  }));

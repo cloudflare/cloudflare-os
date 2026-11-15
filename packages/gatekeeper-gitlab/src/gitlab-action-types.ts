@@ -277,6 +277,18 @@ export function autoApprovableKinds(resourceKind: ResourceKind): ActionKind[] {
 }
 
 /**
+ * What a binding of `resourceKind` can change, for the vendor to advertise before anything is
+ * connected (SupportedResource.actionKinds): the kinds above, then merging, which a person always
+ * approves and an issue cannot reach.
+ */
+export function actionKindCatalog(resourceKind: ResourceKind): Array<{ kind: ActionKind; autoApprovable: boolean }> {
+  return [
+    ...autoApprovableKinds(resourceKind).map(kind => ({ kind, autoApprovable: true })),
+    ...(resourceKind === "issue" ? [] : [{ kind: ACTION_KINDS.mergeMergeRequest, autoApprovable: false }]),
+  ];
+}
+
+/**
  * The action's kind, and whether it may be applied without a person once the user has enabled
  * that kind. Every action may be except those that pass a gate, which always wait for a person: a
  * merge, an approving review, and a push or force push to the default or a protected branch; and

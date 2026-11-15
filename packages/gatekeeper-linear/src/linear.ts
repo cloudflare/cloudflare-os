@@ -76,7 +76,7 @@ import {
   type IssueCreateInput,
   type IssueUpdateInput,
 } from "./linear-api";
-import { autoApprovableKindsOf, autoApprovalOf } from "./linear-auto-approval";
+import { actionKindCatalogOf, autoApprovableKindsOf, autoApprovalOf } from "./linear-auto-approval";
 import {
   LinearWorkspaceConfiguratorUI,
   LinearTeamConfiguratorUI,
@@ -145,7 +145,12 @@ const ISSUE_RESOURCE: SupportedResource = {
   description: "Read and manage a single Linear issue and its comments.",
 };
 
-const SUPPORTED_RESOURCES: SupportedResource[] = [WORKSPACE_RESOURCE, TEAM_RESOURCE, ISSUE_RESOURCE];
+// Each type advertises the kinds of change its bindings can make.
+const SUPPORTED_RESOURCES: SupportedResource[] = [
+  { ...WORKSPACE_RESOURCE, actionKinds: actionKindCatalogOf("workspace") },
+  { ...TEAM_RESOURCE, actionKinds: actionKindCatalogOf("team") },
+  { ...ISSUE_RESOURCE, actionKinds: actionKindCatalogOf("issue") },
+];
 
 const LINEAR_LOGO_URL = `data:image/svg+xml,${encodeURIComponent(LINEAR_LOGO_SVG)}`;
 

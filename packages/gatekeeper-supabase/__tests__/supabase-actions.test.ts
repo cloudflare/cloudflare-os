@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { AUTO_APPROVABLE_KINDS, RUN_SQL_ACTION, executeActionDescription } from "../src/supabase-actions";
+import {
+  ACTION_KIND_CATALOG, AUTO_APPROVABLE_KINDS, RUN_SQL_ACTION, executeActionDescription,
+} from "../src/supabase-actions";
 
 describe("executeActionDescription", () => {
   it.each([
@@ -30,5 +32,11 @@ describe("executeActionDescription", () => {
 describe("AUTO_APPROVABLE_KINDS", () => {
   it("offers no kind, since SQL is never auto-approved", () => {
     expect(AUTO_APPROVABLE_KINDS).toEqual([]);
+  });
+});
+
+describe("ACTION_KIND_CATALOG", () => {
+  it("advertises SQL as the one kind, always waiting for a person", () => {
+    expect(ACTION_KIND_CATALOG).toEqual([{ kind: RUN_SQL_ACTION, autoApprovable: false }]);
   });
 });

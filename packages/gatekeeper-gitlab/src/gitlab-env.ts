@@ -5,6 +5,7 @@
 import { stripTrailingSlashes, type SupportedResource } from "@gadgets/workshop-shared/gatekeeper";
 import type { PreviewOAuthEnv } from "@gadgets/gatekeeper-kit/preview-oauth";
 import { isCredentialsExpired, type RejectionVerdict } from "@gadgets/gatekeeper-kit/credentials";
+import { actionKindCatalog } from "./gitlab-action-types";
 import { DEFAULT_INSTANCE_URL, GitLabApi, GitLabApiError, type GitLabInstance, type PinnedProject } from "./gitlab-api";
 
 /**
@@ -252,16 +253,19 @@ export function supportedResources(env: Env): {
     urlPattern: `${origin}/:project+/-/merge_requests/:iid{/*}?`,
     title: "GitLab Merge Request",
     description: "Read and manage a specific GitLab merge request and its review threads.",
+    actionKinds: actionKindCatalog("mergeRequest"),
   };
   const issue: SupportedResource = {
     urlPattern: `${origin}/:project+/-/issues/:iid{/*}?`,
     title: "GitLab Issue",
     description: "Read and manage a specific GitLab issue.",
+    actionKinds: actionKindCatalog("issue"),
   };
   const project: SupportedResource = {
     urlPattern: `${origin}/:project+`,
     title: "GitLab Project",
     description: "Read and manage issues, merge requests, reviews, and code in a GitLab project.",
+    actionKinds: actionKindCatalog("project"),
   };
   return { mergeRequest, issue, project, all: [mergeRequest, issue, project] };
 }

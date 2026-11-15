@@ -427,15 +427,21 @@ export function autoApprovalOf(
 }
 
 /**
- * The auto-approvable kinds, once each. Every binding lists them all: a site or space session
- * reaches every content session, and a content session can create child pages.
+ * Every kind once, and whether its actions may be auto-approved, for the vendor to advertise before
+ * anything is connected (SupportedResource.actionKinds). Every binding submits them all: a site or
+ * space session reaches every content session, and a content session can create child pages.
  */
-export function autoApprovableKinds(): ActionKind[] {
-  const kinds = new Map<string, ActionKind>();
+export function actionKindCatalog(): Array<{ kind: ActionKind; autoApprovable: boolean }> {
+  const kinds = new Map<string, { kind: ActionKind; autoApprovable: boolean }>();
   for (const { tag, label, autoApprovable } of Object.values(ACTION_KINDS)) {
-    if (autoApprovable) kinds.set(tag, { tag, label });
+    kinds.set(tag, { kind: { tag, label }, autoApprovable });
   }
   return [...kinds.values()];
+}
+
+/** The auto-approvable kinds, once each, which every binding lists (see `actionKindCatalog`). */
+export function autoApprovableKinds(): ActionKind[] {
+  return actionKindCatalog().filter(entry => entry.autoApprovable).map(entry => entry.kind);
 }
 
 // Starts a description naming, by ID, the existing content an action writes to or under.

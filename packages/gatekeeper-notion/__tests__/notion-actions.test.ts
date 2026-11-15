@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACTION_KIND_CATALOG,
   AUTO_APPROVABLE_KINDS,
   applyStoredAction,
   describeAction,
@@ -168,6 +169,17 @@ describe("auto-approval", () => {
     expect(AUTO_APPROVABLE_KINDS.map(kind => kind.tag).toSorted()).toEqual([...byTag.keys()].toSorted());
     for (const kind of AUTO_APPROVABLE_KINDS) expect(kind.label).toBe(byTag.get(kind.tag));
     for (const kind of approvable) expect(kind?.label).toBe(byTag.get(kind?.tag));
+  });
+
+  it("advertises every kind once before connecting, with trashing always waiting for a person", () => {
+    expect(ACTION_KIND_CATALOG.map(({ kind, autoApprovable }) => [kind.tag, autoApprovable])).toEqual([
+      ["append-content", true],
+      ["edit-pages", true],
+      ["create-pages", true],
+      ["trash-pages", false],
+      ["restore-pages", true],
+      ["post-comments", true],
+    ]);
   });
 });
 

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { RawIssue, RawUser } from "../src/linear-api";
 import type { StoredActionDraft } from "../src/linear";
-import { LINEAR_ACTION_KINDS, autoApprovableKindsOf, autoApprovalOf } from "../src/linear-auto-approval";
+import {
+  LINEAR_ACTION_KINDS, actionKindCatalogOf, autoApprovableKindsOf, autoApprovalOf,
+} from "../src/linear-auto-approval";
 
 const person: RawUser = { id: "user-1", name: "Ada", app: false };
 const appUser: RawUser = { id: "app-1", name: "Coding Agent", app: true };
@@ -129,6 +131,15 @@ describe("autoApprovableKindsOf", () => {
   it("leaves team labels out of an issue binding, which cannot create them", () => {
     expect(tags("issue")).toEqual(["create-issues", "edit-issues", "edit-labels", "plan-issues",
       "post-comments", "restore-issues"]);
+  });
+
+  it("advertises each binding's kinds before connecting, with archiving always waiting for a person", () => {
+    for (const resourceKind of ["workspace", "team", "issue"] as const) {
+      expect(actionKindCatalogOf(resourceKind)).toEqual([
+        ...autoApprovableKindsOf(resourceKind).map(kind => ({ kind, autoApprovable: true })),
+        { kind: LINEAR_ACTION_KINDS.archiveIssue, autoApprovable: false },
+      ]);
+    }
   });
 
   it("gives every kind a distinct tag", () => {

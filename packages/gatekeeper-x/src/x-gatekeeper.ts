@@ -25,6 +25,7 @@ import type { XAccountSession, XList, XPost, XProfile } from "./types";
 import TYPES_CODE from "./types.txt";
 import { obsContext } from "./observability";
 import {
+  BINDING_ACTIONS,
   MAX_IMAGE_BYTES,
   actions,
   dependedRefs,
@@ -42,7 +43,7 @@ import { XApi, XApiError, XCreditsError, XRateLimitError, type XEnvelope } from 
 import {
   accountSource, parseXUserSubresource, withinReadLimit, xUserSubresourceId, type StoredIdentity, type XVerifierApi,
 } from "./x-credentials";
-import { ACCOUNT_URL, VENDOR_ID, type Env, type ResourceKind, type XGatekeeperImplProps } from "./x-env";
+import { ACCOUNT_URL, VENDOR_ID, type Env, type XGatekeeperImplProps } from "./x-env";
 import { toUserInfo, type WireUser } from "./x-normalize";
 import {
   SessionContext,
@@ -82,14 +83,6 @@ const PREVIOUS_PREFIX = "previous:";
 
 /** The collection reads private to the account named before they reported subresources. */
 const OWNER_COLLECTION = "owner";
-
-/** Which action tags each kind of binding can submit, for the auto-approval catalog. */
-const BINDING_ACTIONS: Record<ResourceKind, (tag: string) => boolean> = {
-  account: () => true,
-  post: tag => tag.startsWith("x.post."),
-  list: tag => tag.startsWith("x.list."),
-  profile: () => false,
-};
 
 type XSession = XAccountSession | XPost | XList | XProfile;
 
