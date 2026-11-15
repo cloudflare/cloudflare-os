@@ -8,7 +8,7 @@ import {
   MAX_ADMIN_GRANTS_LISTED,
   createAdminAccessError, createAdminGrantError, createAdminWriteError,
   type AdminAccessExposure, type AdminAccessGrant, type AdminAccessRecord,
-  type AdminAutoApproval, type AdminChatAttachment, type AdminChatState,
+  type AdminAutoApproval, type AdminChatAttachment, type AdminChatState, type AdminFileContent,
   type AdminGatekeeperInfo, type AdminObserver, type AdminPendingChange,
   type AdminWorkspaceAccess, type AdminWorkspaceDescription, type AdminWorkspaceDiagnostics,
   type AdminWorkspaceMethod, type AdminWorkspaceView, type AdminWriteAction, type AdminWriteArgs,
@@ -17,7 +17,7 @@ import {
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, MAX_BUFFERED_BLOB_SIZE, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -72,9 +72,10 @@ import EXPORTS_BINDING_TYPES from "./exports-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
 import {
   ADMIN_METHOD_ANSWERS, actionHoldsContent, adminAccessPolicy, adminCommitLogDepth,
-  adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId, blueprintHoldsContent,
-  chatHoldsContent, chatStateHoldsContent, commitHoldsContent, creationHoldsContent,
-  cutAdminAuditText, hookHoldsContent, namedUser, redactAdminAuditArgs,
+  adminContentRefusal, adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId,
+  blueprintHoldsContent, chatHoldsContent, chatPageHoldsContent, chatStateHoldsContent,
+  commitHoldsContent, creationHoldsContent, cutAdminAuditText, fileHoldsContent,
+  hookHoldsContent, namedUser, redactAdminAuditArgs,
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent,
   withholdChatContent, withholdChatStateContent, withholdCommitContent, withholdCreationContent,
   withholdHookContent, workpieceHoldsContent,
@@ -6245,13 +6246,42 @@ class OverseerImpl implements AgentHooks {
       {type: "blob", referencedBy: entry.referencedBy})).payload;
   }
 
+  // A stream of the bytes getChatAttachmentData() returns, read only from what the workspace
+  // stores and never whole: the record's own bytes, else its stored blob, else, for a record
+  // that holds only a commit and a path, the file there. It never pulls through a connection: an
+  // object the workspace does not store throws (see AdminWorkspaceView.readChatAttachment()).
+  openChatAttachment(chatId: number, id: string): ReadableStream<Uint8Array> {
+    let content = this.storage.chatAttachmentContent.get(validateChatAttachmentId(id));
+    if (!content || content.state.type !== "committed" || content.state.chatId !== chatId) {
+      throw new Error("Chat attachment not found.");
+    }
+    if (content.data !== undefined) return new Blob([content.data]).stream();
+    if (content.state.oid !== undefined) {
+      return blobByteStream(this.gitCache.openBlobRef(content.state.oid, undefined));
+    }
+    if (content.state.workspaceCommitId === undefined ||
+        content.state.workspacePath === undefined) {
+      throw new Error("Chat attachment has no stored content.");
+    }
+    let entry = this.gitCache.localPathEntryAtCommit(
+        content.state.workspaceCommitId, content.state.workspacePath);
+    if (!entry || entry.kind === "dir" || entry.kind === "submodule" ||
+        !this.gitCache.hasLocalObject(entry.oid)) {
+      throw new Error("Chat attachment content is missing from Git.");
+    }
+    return blobByteStream(this.gitCache.openBlobRef(entry.oid, undefined));
+  }
+
   // Prepare a stored chat message for delivery to a client: strip private unread positions,
   // inline image attachment bytes
   // (non-image attachments are fetched on demand via getChatAttachmentContent()), strip the
   // retired Yjs payload from pre-conversion "changes" messages -- it is kept on disk as
   // rollback insurance (see overseer-git-migration.ts) but nothing can apply it, so it must not
   // ship as dead weight on the wire (it is not part of the message's API type).
-  hydrateChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
+  //
+  // Without `inlineImages` every attachment comes as its reference alone: neither an image's
+  // blob nor its stored bytes are read, and bytes a stored reference holds are left out.
+  hydrateChatMessageForClient(msg: StoredChatMessage, inlineImages = true): AiChatMessage {
     let {visibleThroughSequence: _, ...publicMessage} = msg;
     msg = publicMessage;
     if (msg.type === "changes" && "update" in msg) {
@@ -6260,6 +6290,10 @@ class OverseerImpl implements AgentHooks {
     }
     if (msg.type !== "message" || !msg.attachments?.length) return msg;
     let attachments = msg.attachments.map((a) => {
+      if (!inlineImages) {
+        let {content: _content, ...ref} = a;
+        return ref;
+      }
       if (!isAllowedChatAttachmentImageMimeType(a.mimeType)) {
         return a;
       }
@@ -12953,6 +12987,42 @@ function joinSessionPresence(
   };
 }
 
+// A stored chat message as clients see it, an action message carrying its action's current log
+// entry (see OverseerImpl.hydrateChatMessageForClient() for `inlineImages`).
+function chatMessageForClient(impl: OverseerImpl, msg: StoredChatMessage, inlineImages = true)
+    : AiChatMessage {
+  if (msg.type === "action") {
+    let record = impl.storage.actions.get(msg.actionId);
+    if (record) {
+      msg.actionLog = actionRecordToLog(record);
+    }
+  }
+  return impl.hydrateChatMessageForClient(msg, inlineImages);
+}
+
+// One page of a chat's history (see Overseer.getChatHistory()). Compaction boundaries delimit the
+// pages: the newest page is the tail replay still scans, and each earlier page is the span one
+// checkpoint summarized. A thread that was never compacted has a single page.
+function chatHistoryPage(impl: OverseerImpl, chatId: number, beforeSequence?: number,
+    inlineImages = true): AiChatHistoryPage {
+  let checkpoint = beforeSequence === undefined
+      ? impl.getActiveChatCompaction(chatId)
+      : impl.getChatCompactionBelow(chatId, beforeSequence);
+  let result = [...impl.storage.chats.list({
+    prefix: chatKeyPrefix(chatId),
+    start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
+    end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
+  })];
+  return {
+    messages: result.map((msg) => chatMessageForClient(impl, msg, inlineImages)),
+    compacted: checkpoint && {
+      to: checkpoint.compactedTo,
+      summary: checkpoint.summary,
+      proposedChange: checkpoint.proposedChange,
+    },
+  };
+}
+
 // Every hook the workspace's connections deliver (see Overseer.listHooks()).
 function boundHookInfos(impl: OverseerImpl): BoundHookInfo[] {
   let defaultGadgetId = impl.defaultGadgetId;
@@ -14014,41 +14084,13 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return await this.impl.getChatAttachmentData(chatId, id);
   }
 
-  // Compaction boundaries delimit the pages: the newest page is the tail replay still scans, and each
-  // earlier page is the span one checkpoint summarized. A thread that was never compacted has a
-  // single page.
   async getChatHistory(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage> {
-    let checkpoint = beforeSequence === undefined
-        ? this.impl.getActiveChatCompaction(chatId)
-        : this.impl.getChatCompactionBelow(chatId, beforeSequence);
-    let result = [...this.impl.storage.chats.list({
-      prefix: chatKeyPrefix(chatId),
-      start: checkpoint && chatKey(chatId, checkpoint.compactedTo),
-      end: beforeSequence === undefined ? undefined : chatKey(chatId, beforeSequence),
-    })];
-    return {
-      messages: result.map((msg) => this.#getChatMessageForClient(msg)),
-      compacted: checkpoint && {
-        to: checkpoint.compactedTo,
-        summary: checkpoint.summary,
-        proposedChange: checkpoint.proposedChange,
-      },
-    };
+    return chatHistoryPage(this.impl, chatId, beforeSequence);
   }
 
   async getChatMessage(chatId: number, sequence: number): Promise<AiChatMessage | undefined> {
     let msg = this.impl.storage.chats.get(chatKey(chatId, sequence));
-    return msg && this.#getChatMessageForClient(msg);
-  }
-
-  #getChatMessageForClient(msg: StoredChatMessage): AiChatMessage {
-    if (msg.type === "action") {
-      let record = this.impl.storage.actions.get(msg.actionId);
-      if (record) {
-        msg.actionLog = actionRecordToLog(record);
-      }
-    }
-    return this.impl.hydrateChatMessageForClient(msg);
+    return msg && chatMessageForClient(this.impl, msg);
   }
 
   async subscribeToChat(subscriber: RpcStub<AiChatSubscriber>, startAfter?: Date)
@@ -14081,7 +14123,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     let self = this;
     function deliverMessage(record: AiChatMessage) {
-      subscriber.message(self.#getChatMessageForClient(record)).catch(unsubscribe);
+      subscriber.message(chatMessageForClient(self.impl, record)).catch(unsubscribe);
     }
 
     let msgSubscriber = {
@@ -14343,7 +14385,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       // or web fetch it stopped to wait on. Not the other records logged under it: the `changes` a
       // step that replied and edited records after its reply, nor an agentNudge (as Stop logs one).
       if (msg.author.type === "agent" && WAIT_FOR_AGENT_RESULT_TYPES.has(msg.type)) {
-        return this.#getChatMessageForClient(msg);
+        return chatMessageForClient(this.impl, msg);
       }
     }
     return null;
@@ -14876,13 +14918,13 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
 
 // A deployment admin's read-only view of the workspace (see AdminWorkspaceView in api.ts and
 // OverseerDurableObject.openForAdmin()). Deliberately not an Overseer: it holds no session, joins
-// no presence or fan-out, and never reads through a connection: its reads of trees, history and
-// a chat's pending paths never pull, and what a connection could tell it, it reads from the
-// workspace's own records instead. Beyond the workspace's storage it asks only the owner's
-// account: for their profile (describe() and listShareLinks()), and, when a call that would
-// return content finds no live grant stored here, for their account-wide grant
-// (OverseerImpl.contentGrant()). Every method runs through #call, which reads the call's answer
-// and records the call in the deployment-wide log before returning anything.
+// no presence or fan-out, and never reads through a connection: its reads of trees, files,
+// history, attachments and a chat's pending content never pull, and what a connection could
+// tell it, it reads from the workspace's own records instead. Beyond the workspace's storage it
+// asks only the owner's account: for their profile (describe() and listShareLinks()), and, when
+// a call that would return content finds no live grant stored here, for their account-wide
+// grant (OverseerImpl.contentGrant()). Every method runs through #call, which reads the call's
+// answer and records the call in the deployment-wide log before returning anything.
 @validateRpc()
 class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   #impl: OverseerImpl;
@@ -14925,12 +14967,13 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 
   // Runs one call through adminViewCall(): checks the view, reads the deployment's setting and
   // checks again. While the setting is "off" the call is recorded and refused, having read
-  // nothing. Any other call reads its answer with `read` (never through a connection), is checked
-  // once more, and is recorded. Only then is it answered, so nothing it read leaves the server
-  // unrecorded, and a call whose record cannot be written fails and returns nothing. A read that
-  // fails is recorded as an attempt, and the call fails with the read's error. The host is built
-  // at each call, so its audit log and logger are the Overseer's at that call, and the environment
-  // is read at each use within it.
+  // nothing, and so is a call of a method that answers with content alone when it may return
+  // none (see below). Any other call reads its answer with `read` (never through a connection),
+  // is checked once more, and is recorded. Only then is it answered, so nothing it read leaves
+  // the server unrecorded, and a call whose record cannot be written fails and returns nothing. A
+  // read that fails is recorded as an attempt, and the call fails with the read's error. The host
+  // is built at each call, so its audit log and logger are the Overseer's at that call, and the
+  // environment is read at each use within it.
   //
   // `read` is told whether the call may return content: only under a grant (see below), and
   // otherwise it withholds what the "metadata" level withholds. `holdsContent` says whether the
@@ -14943,25 +14986,38 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     // stays "off" for a call refused for that, which is recorded without its read having run.
     let access: AdminWorkspaceAccess = "off";
     let exposed: AdminAccessExposure = "metadata";
+    let refused: AdminAccessRecord["refused"];
     let grant: AdminAccessGrant | undefined;
     return adminViewCall({
       env: () => impl.env,
       audits: impl.adminAudits,
       logger: impl.logger,
       assertLive: () => this.#assertLive(),
-      recordOf: refused => this.#recordOf(method, args, access, exposed, grant?.id, refused),
+      recordOf: off => this.#recordOf(method, args, access, exposed, grant?.id, off ?? refused),
     }, async level => {
       access = level;
       // A grant is looked for only by a call that could return content under one: a method whose
       // answer can hold content, on a view opened for content, while the level in force is
       // "content". So a metadata view, a method that answers with metadata alone and the open
       // itself never ask the owner's account for a grant. The lookup never throws: when that
-      // account cannot answer, the call is answered and recorded as one with no grant.
-      if (ADMIN_METHOD_ANSWERS[method] === "mixed" && this.#terms.access === "content" &&
-          level === "content") {
-        grant = await impl.contentGrant();
-        // Checked again: the lookup may have awaited the owner's account.
-        this.#assertLive();
+      // account cannot answer, the call is one with no grant.
+      let kind = ADMIN_METHOD_ANSWERS[method];
+      if (kind !== "metadata") {
+        let refusal = adminContentRefusal(this.#terms, {access: level});
+        if (refusal === undefined) {
+          grant = await impl.contentGrant();
+          // Checked again: the lookup may have awaited the owner's account.
+          this.#assertLive();
+          if (grant === undefined) refusal = ADMIN_ACCESS_ERROR_CODES.grantRequired;
+        }
+        // A method that answers with content alone has nothing to answer without a grant, so its
+        // call is recorded and refused, having read nothing: the refusal is thrown as the read's
+        // failure, which adminViewCall() records before the call fails with it. A mixed one goes
+        // on to answer as the "metadata" level does.
+        if (refusal !== undefined && kind === "content") {
+          refused = refusal;
+          throw createAdminAccessError(refusal);
+        }
       }
       let answer = await read(grant !== undefined);
       if (grant !== undefined && holdsContent(answer)) exposed = "content";
@@ -15068,6 +15124,15 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         chats => chats.some(chatHoldsContent));
   }
 
+  // A member's page without its inlined images: an image's bytes are content this call would
+  // otherwise hold whole, and readChatAttachment() streams them.
+  async getChat(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage> {
+    return this.#call("getChat", {chatId, beforeSequence}, () => {
+      this.#impl.getChatMetaOrThrow(chatId);
+      return chatHistoryPage(this.#impl, chatId, beforeSequence, false);
+    }, chatPageHoldsContent);
+  }
+
   // Each part of the answer names the fields its type declares, since the stored records hold
   // more: a turn's and a queued call's hold their initiator's user id, and a queued call's its
   // raw arguments. Each storage listing is read to its end before the next starts.
@@ -15119,6 +15184,11 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
     });
   }
 
+  async readChatAttachment(chatId: number, id: string): Promise<ReadableStream<Uint8Array>> {
+    return this.#call("readChatAttachment", {chatId, id},
+        () => this.#impl.openChatAttachment(chatId, id), () => true);
+  }
+
   async listActions(options?: {beforeId?: number, filter?: ActionHistoryFilter})
       : Promise<ActionHistoryPage> {
     validateBeforeId(options?.beforeId);
@@ -15135,6 +15205,12 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         () => this.#impl.gitCache.readLocalCommitTree(this.#committedHead(gadgetId)));
   }
 
+  async readFile(gadgetId: WorkpieceId, path: string): Promise<AdminFileContent> {
+    return this.#call("readFile", {gadgetId, path},
+        () => this.#impl.gitCache.readLocalFileAtCommit(this.#committedHead(gadgetId), path),
+        fileHoldsContent);
+  }
+
   // `limit`, the depth the validator answers with, bounds the walk: readCommitLog() stops only at
   // a depth it is handed. The record keeps `depth` as the caller gave it.
   async getCommitLog(fromCommit: string, depth?: number): Promise<CommitInfo[]> {
@@ -15149,6 +15225,12 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
   async listFilesAtCommit(commitId: string): Promise<TreeNode[]> {
     return this.#call("listFilesAtCommit", {commitId},
         () => this.#impl.gitCache.readLocalCommitTree(this.#storedCommit(commitId)));
+  }
+
+  async readFileAtCommit(commitId: string, path: string): Promise<AdminFileContent> {
+    return this.#call("readFileAtCommit", {commitId, path},
+        () => this.#impl.gitCache.readLocalFileAtCommit(this.#storedCommit(commitId), path),
+        fileHoldsContent);
   }
 
   async listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]> {
@@ -15229,6 +15311,33 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
             };
           });
     });
+  }
+
+  async readPendingFile(chatId: number, gadgetId: WorkpieceId, path: string)
+      : Promise<AdminFileContent> {
+    return this.#call("readPendingFile", {chatId, gadgetId, path},
+        async (): Promise<AdminFileContent> => {
+          let impl = this.#impl;
+          let files = (await this.#pendingContent(chatId)).get(gadgetId);
+          if (files === undefined || impl.storage.gadgets.get(gadgetId) === undefined) {
+            throw new Error(`Chat ${chatId} holds no changes to workpiece ${gadgetId}.`);
+          }
+          let file = files.get(path);
+          if (file === undefined) return {kind: "absent"};
+          if (typeof file !== "string") {
+            // Bytes are streamed from the stored blob, never read whole.
+            return {
+              kind: "stream", byteLength: file.byteLength,
+              content: blobByteStream(impl.gitCache.openBlobRef(file.oid, file.byteLength)),
+            };
+          }
+          // The text's UTF-8 encoding, made once: its size decides how the file arrives, and a
+          // stream reads from it.
+          let encoded = new Blob([file]);
+          return encoded.size > MAX_BUFFERED_BLOB_SIZE
+              ? {kind: "stream", byteLength: encoded.size, content: encoded.stream()}
+              : {kind: "text", text: file};
+        }, fileHoldsContent);
   }
 
   async listGatekeepers(): Promise<AdminGatekeeperInfo[]> {

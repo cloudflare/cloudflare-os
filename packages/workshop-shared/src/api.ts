@@ -648,6 +648,8 @@ export const ADMIN_ACCESS_ERROR_CODES = {
   viewExpired: "ADMIN_VIEW_EXPIRED",
   notAdmin: "ADMIN_NOT_ADMIN",
   contentOff: "ADMIN_WORKSPACE_CONTENT_OFF",
+  contentNotRequested: "ADMIN_CONTENT_NOT_REQUESTED",
+  grantRequired: "ADMIN_GRANT_REQUIRED",
 } as const;
 
 /** An expected refusal code from ADMIN_ACCESS_ERROR_CODES. */
@@ -664,6 +666,12 @@ const adminAccessErrors = codedErrorFamily<AdminAccessErrorCode>({
       "Only a deployment admin can inspect a workspace or a user, or change a workspace.",
   [ADMIN_ACCESS_ERROR_CODES.contentOff]:
       "Admin access to workspace content is turned off on this deployment.",
+  [ADMIN_ACCESS_ERROR_CODES.contentNotRequested]:
+      "This admin view was not opened for content. Inspect the workspace again, asking for " +
+          "content.",
+  [ADMIN_ACCESS_ERROR_CODES.grantRequired]:
+      "No grant lets admins read this workspace's content. Its owner can give one, or a second " +
+          "admin can approve a request for one.",
 });
 
 /** Creates an expected admin-access refusal with a machine-readable code. */
@@ -1975,9 +1983,10 @@ export type AdminWorkspaceInspectOptions = {
 /** The workspace calls the audit log records: the open (AdminApi.inspectWorkspace()) and each
  * AdminWorkspaceView method. */
 export const ADMIN_WORKSPACE_METHODS = [
-  "inspectWorkspace", "describe", "listChats", "getChatState", "listChatAttachments",
-  "listActions", "listFiles", "getCommitLog", "listFilesAtCommit", "listChangedPaths",
-  "listPendingChanges", "listGatekeepers", "listObservers", "listObserverRequirements",
+  "inspectWorkspace", "describe", "listChats", "getChat", "getChatState", "listChatAttachments",
+  "readChatAttachment", "listActions", "listFiles", "readFile", "getCommitLog",
+  "listFilesAtCommit", "readFileAtCommit", "listChangedPaths", "listPendingChanges",
+  "readPendingFile", "listGatekeepers", "listObservers", "listObserverRequirements",
   "listShareLinks", "listAutoApprovals", "listBlueprints", "getDiagnostics",
 ] as const satisfies readonly ("inspectWorkspace" | keyof AdminWorkspaceView)[];
 
@@ -2043,9 +2052,10 @@ export const MAX_ADMIN_AUDIT_VALUE_LENGTH = 10_000;
  * itself stops is not recorded. That covers a call made after the view expired, after its admin
  * stopped being an admin or after the workspace was deleted, and a call that any of these
  * overtakes while it reads. A call the access level refuses is recorded, with `refused` set, and
- * so is a call whose read fails, and so is an open refused before it reaches the workspace:
- * because the deployment's access level is "off", or because it asked for content while that
- * level is below "content".
+ * so is a content read refused on a view not opened for content or without a live grant, and so
+ * is a call whose read fails, and so is an open refused before it reaches the workspace: because
+ * the deployment's access level is "off", or because it asked for content while that level is
+ * below "content".
  */
 export type AdminAccessRecord = {
   /** Distinguishes this from an AdminUserAccessRecord and an AdminSettingRecord. */
@@ -2077,8 +2087,8 @@ export type AdminAccessRecord = {
   method: AdminWorkspaceMethod;
   /** The call's arguments by name: only those it declares, an absent optional one left out, each
    * string cut to MAX_ADMIN_AUDIT_ARG_LENGTH. The open records `expiresAt` (ISO 8601), and
-   * listObserverRequirements() its grant as `grant: "workspace"` or the gadget's `gadgetId`. No
-   * view method takes content, so none is recorded. */
+   * listObserverRequirements() its grant as `grant: "workspace"` or the gadget's `gadgetId`. A
+   * content read's arguments are ids and paths, never content: no view method takes any. */
   args: Record<string, string | number>;
   /** The reason the admin gave when opening the view. */
   reason: string;
@@ -2099,7 +2109,8 @@ export type AdminAccessRecord = {
    * owner's grant this id is all the audit log says of it. */
   grantId?: string;
   /** Present when the call was refused, having read nothing: the code it was refused with. */
-  refused?: typeof ADMIN_ACCESS_ERROR_CODES["accessOff" | "contentOff"];
+  refused?: typeof ADMIN_ACCESS_ERROR_CODES[
+      "accessOff" | "contentOff" | "contentNotRequested" | "grantRequired"];
 };
 
 /**
@@ -3343,10 +3354,21 @@ export type AdminChatAttachment =
 };
 
 /**
+ * One file as an AdminWorkspaceView content read returns it: `text` for a text file of at most
+ * MAX_BUFFERED_BLOB_SIZE bytes; `stream` for a larger file or one that is not text, read from the
+ * workspace's store as the caller pulls, never held whole on the server; `absent` for a path
+ * naming nothing or a directory; `unreadable` for a symlink or a submodule, with a message that
+ * can quote the link's target.
+ */
+export type AdminFileContent =
+  | Exclude<FileAtCommit, { kind: "blob" }>
+  | { kind: "stream"; byteLength: number; content: ReadableStream<Uint8Array> };
+
+/**
  * One gadget or worktree a chat holds changes to that are not accepted yet, as
  * AdminWorkspaceView.listPendingChanges() lists it, with the paths the chat's current content
- * changes against the commit those changes apply on top of. Paths are names: the view returns no
- * file's content.
+ * changes against the commit those changes apply on top of. Paths are names: readPendingFile()
+ * reads a changed file, and readFileAtCommit() its base.
  */
 export type AdminPendingChange = {
   /** The gadget or worktree. */
@@ -3420,8 +3442,9 @@ export type AdminAutoApproval = {
  * Nothing it does changes the workspace or is seen by its members: it joins no presence and no
  * session count, and starts no agent or connection. It returns what the "metadata" access level
  * shows (see ADMIN_WORKSPACE_ACCESS_LEVELS) and, under a grant alone, what that level withholds
- * from the answers of its methods. No method returns a chat's messages, an attachment's bytes
- * or a file's content.
+ * from the answers of its methods, and what five methods read that is content alone: a chat's
+ * messages (getChat()), an attachment's bytes (readChatAttachment()) and a file's content
+ * (readFile(), readFileAtCommit(), readPendingFile()).
  *
  * Each call first passes three checks, refused unrecorded with a code from
  * ADMIN_ACCESS_ERROR_CODES: the view has not expired (`viewExpired`), its admin is still a
@@ -3432,11 +3455,13 @@ export type AdminAutoApproval = {
  * then needs three things, checked in this order on every call: the view was opened for
  * content, the level in force is "content", and a grant is live for the workspace (in its own
  * storage, or, as its owner's account said within the last ADMIN_GRANT_ACCOUNT_CACHE_SECONDS,
- * account-wide). A call lacking one answers as the "metadata" level does, and its record says
- * it exposed no content. A grant that ends while a view is open ends content on the view's next
- * call. When the workspace holds no live grant of its own it asks its owner's account for the
- * account-wide one; if that question fails, the call is answered as with no grant, never failed
- * unrecorded.
+ * account-wide). A content method lacking one is recorded and refused (`contentNotRequested`,
+ * `contentOff`, `grantRequired`), having read nothing. Any other method answers as the
+ * "metadata" level does, and its record says it exposed no content. A grant that ends while a
+ * view is open ends content on the view's next call; a stream already returned runs to its end.
+ * When the workspace holds no live grant of its own it asks its owner's account for the
+ * account-wide one; if that question fails, the call is answered as with no grant (a content
+ * method is recorded and refused `grantRequired`), never failed unrecorded.
  *
  * A call reads its answer never through a connection: what a connection supplied is read only
  * as the workspace stores it (the commits of a worktree checked out through one are that
@@ -3462,6 +3487,12 @@ export interface AdminWorkspaceView extends RpcTarget {
    * `queuedSteers`, which hold message text, unless the call runs under a grant. */
   listChats(): Promise<AiChatMetadata[]>;
 
+  /** One page of a chat's messages, as Overseer.getChatHistory() pages it, with the compaction
+   * summary when the page starts at one. An image attachment comes as its reference alone, as
+   * any other attachment does (ChatAttachmentRef.content is absent): its bytes are read with
+   * readChatAttachment(). Content. Throws for an id that names no chat. */
+  getChat(chatId: number, beforeSequence?: number): Promise<AiChatHistoryPage>;
+
   /** What is recorded of a chat's agent turn, its newest entry, the calls queued for its agent
    * and its pending actions (see AdminChatState). Under a grant each queued call carries its
    * `argsSummary`. Throws for an id that names no chat. */
@@ -3471,6 +3502,11 @@ export interface AdminWorkspaceView extends RpcTarget {
    * names, types, sizes and content hashes (`oid`) are metadata, as titles are. Empty for an id
    * that names no chat. */
   listChatAttachments(chatId: number): Promise<AdminChatAttachment[]>;
+
+  /** The bytes of one attachment listChatAttachments() lists, streamed from what the workspace
+   * stores: never pulled through a connection, and never held whole on the server. Content.
+   * Throws for an id that names no attachment of that chat, and when its bytes are not stored. */
+  readChatAttachment(chatId: number, id: string): Promise<ReadableStream<Uint8Array>>;
 
   /**
    * One page of the workspace's action log, as Overseer.listActions() pages it. Admin access is
@@ -3489,6 +3525,10 @@ export interface AdminWorkspaceView extends RpcTarget {
    */
   listFiles(gadgetId: WorkpieceId): Promise<TreeNode[]>;
 
+  /** One file at a permanent gadget's committed head (see AdminFileContent), read only from the
+   * objects the workspace stores. Content. Throws as listFiles() does. */
+  readFile(gadgetId: WorkpieceId, path: string): Promise<AdminFileContent>;
+
   /**
    * The history of a stored commit, as Overseer.getCommitLog() walks it: `fromCommit` first, then
    * its ancestry, at most `depth` commits (a whole number from 1 to MAX_ADMIN_COMMIT_LOG_DEPTH,
@@ -3505,8 +3545,13 @@ export interface AdminWorkspaceView extends RpcTarget {
    * pin's base. Throws for an id that names no stored commit, and when an object is missing. */
   listFilesAtCommit(commitId: string): Promise<TreeNode[]>;
 
+  /** One file at any stored commit, read as readFile() reads. Content. Throws as
+   * listFilesAtCommit() does. */
+  readFileAtCommit(commitId: string, path: string): Promise<AdminFileContent>;
+
   /** The paths that differ between two stored commits, as Overseer.listChangedPaths() lists
-   * them, read only from stored objects. Paths are names: the view returns no file's content. */
+   * them, read only from stored objects. Paths are names: the difference itself is two
+   * readFileAtCommit() calls. */
   listChangedPaths(fromCommit: string, toCommit: string): Promise<string[]>;
 
   /**
@@ -3519,6 +3564,17 @@ export interface AdminWorkspaceView extends RpcTarget {
    * workspace stores. Throws for an id that names no chat.
    */
   listPendingChanges(chatId: number): Promise<AdminPendingChange[]>;
+
+  /**
+   * One file of a chat's current content for a workpiece it holds changes to
+   * (listPendingChanges() names the paths), shaped as readFile()'s answer. Text arrives as
+   * `text`, or, over MAX_BUFFERED_BLOB_SIZE, as a `stream` of its UTF-8 bytes; a file the chat
+   * holds as bytes arrives as a `stream` whatever its size. `absent` when the chat's content has
+   * no file at the path: one the chat removed, or in a worktree one it has not touched, which
+   * readFileAtCommit() reads at the change's `baseCommit`. Content. Throws for an id that names
+   * no chat, and for a workpiece the chat holds no changes to.
+   */
+  readPendingFile(chatId: number, gadgetId: WorkpieceId, path: string): Promise<AdminFileContent>;
 
   /** The workspace's connections, oldest first, with their creators, bindings and hooks. Under
    * a grant each carries the `configuration` of its `creationSpec` and its hooks' descriptions

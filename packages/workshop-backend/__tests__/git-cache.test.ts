@@ -2254,6 +2254,139 @@ describe("local-only reads", () => {
     expect(t.pulls).toStrictEqual([]);
   });
 
+  it("read one file for an admin: text, a stream, absent or unreadable, without pulling",
+      async () => {
+    let t = await fixtureStoredLocally();
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "README.md")).toStrictEqual(
+        { kind: "text", text: await t.cache.readFileAtCommitIfExists(COMMIT_1, "README.md") });
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "run.sh")).toStrictEqual(
+        { kind: "text", text: await t.cache.readFileAtCommitIfExists(COMMIT_1, "run.sh") });
+    // A path naming nothing, one that runs through a file, and a directory.
+    for (let path of ["nope.txt", "no/such/file.txt", "README.md/child", "src"]) {
+      expect(t.cache.readLocalFileAtCommit(COMMIT_1, path), path)
+          .toStrictEqual({ kind: "absent" });
+    }
+    // What the pulling read reports of a symlink and of a submodule, the link's target quoted.
+    let pulled = new Map(await t.cache.readFilesAtCommit(COMMIT_1, ["link.md", "vendored"]));
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "link.md")).toStrictEqual(
+        { kind: "unreadable", message: "link.md is a symlink to README.md" });
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "link.md")).toStrictEqual(pulled.get("link.md"));
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "vendored")).toStrictEqual({
+      kind: "unreadable",
+      message: `vendored is a submodule (gitlink) pointing at commit ${GITLINK_TARGET}`,
+    });
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "vendored"))
+        .toStrictEqual(pulled.get("vendored"));
+    for (let path of ["../escape", "src//util.js", "", "./README.md"]) {
+      expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, path), path)
+          .toThrow(/invalid file path/);
+    }
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("stream for an admin a file over MAX_BUFFERED_BLOB_SIZE or one that is not text, " +
+      "reading whole only a file at most that size", async () => {
+    let t = makeCache();
+    let exact = new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x62);
+    // Text, but over the size a file is read whole at: never decoded, so never held whole.
+    let over = new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x63);
+    let binary = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05]);
+    let invalid = new Uint8Array([0xff, 0xfe, 0x41]);
+    let blob = (payload: Uint8Array) => storeLocal(t.storage, { type: "blob", payload });
+    let tree = await storeLocal(t.storage, {
+      type: "tree",
+      payload: treePayload([
+        { mode: "100644", name: "exact.txt", oid: await blob(exact) },
+        { mode: "100644", name: "image.png", oid: await blob(binary) },
+        { mode: "100644", name: "latin.txt", oid: await blob(invalid) },
+        { mode: "100644", name: "over.txt", oid: await blob(over) },
+        { mode: "100644", name: "small.txt", oid: await blob(new TextEncoder().encode("ten bytes\n")) },
+      ]),
+    });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "sizes") });
+
+    let read = vi.spyOn(BlobReader.prototype, "read");
+    try {
+      expect(t.cache.readLocalFileAtCommit(commit, "small.txt"))
+          .toStrictEqual({ kind: "text", text: "ten bytes\n" });
+      expect(t.cache.readLocalFileAtCommit(commit, "exact.txt"))
+          .toStrictEqual({ kind: "text", text: "b".repeat(MAX_BUFFERED_BLOB_SIZE) });
+      for (let [path, bytes] of [["over.txt", over], ["image.png", binary], ["latin.txt", invalid]] as const) {
+        let file = t.cache.readLocalFileAtCommit(commit, path);
+        if (file.kind !== "stream") throw new Error(`expected a stream for ${path}`);
+        expect(file.byteLength, path).toBe(bytes.length);
+        expect(sameBytes(await contentBytes(file.content), bytes), path).toBe(true);
+      }
+      // No single read took more than a file read whole may hold.
+      expect(read.mock.calls.map(([, length]) => length).filter(
+          length => length > MAX_BUFFERED_BLOB_SIZE)).toStrictEqual([]);
+    } finally {
+      read.mockRestore();
+    }
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("name for an admin a symlink whose blob is over MAX_BUFFERED_BLOB_SIZE without its target, " +
+      "never reading it whole", async () => {
+    let t = makeCache();
+    // A tree can name any blob as a link, whatever its size.
+    let exact = t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE).fill(0x62));
+    let over = t.cache.writeBlob(new Uint8Array(MAX_BUFFERED_BLOB_SIZE + 1).fill(0x63));
+    expect(chunksOf(t, over.oid).length).toBeGreaterThan(1);
+    let tree = await storeLocal(t.storage, {
+      type: "tree",
+      payload: treePayload([
+        { mode: "120000", name: "exact.lnk", oid: exact.oid },
+        { mode: "120000", name: "over.lnk", oid: over.oid },
+      ]),
+    });
+    let commit = await storeLocal(t.storage,
+        { type: "commit", payload: commitPayload(tree, [], "links") });
+
+    let read = vi.spyOn(BlobReader.prototype, "read");
+    try {
+      let quoted = t.cache.readLocalFileAtCommit(commit, "exact.lnk");
+      // Compared outside expect(), which would print the megabyte on a mismatch.
+      expect(quoted.kind === "unreadable" && quoted.message ===
+          `exact.lnk is a symlink to ${"b".repeat(MAX_BUFFERED_BLOB_SIZE)}`).toBe(true);
+      expect(t.cache.readLocalFileAtCommit(commit, "over.lnk"))
+          .toStrictEqual({ kind: "unreadable", message: "over.lnk is a symlink" });
+      // The link over the limit was not read at all, and no read took more than the limit.
+      expect(read.mock.calls.map(([, length]) => length))
+          .toStrictEqual([MAX_BUFFERED_BLOB_SIZE]);
+    } finally {
+      read.mockRestore();
+    }
+    expect(t.pulls).toStrictEqual([]);
+  });
+
+  it("throw for an admin's read of a file naming the object it lacks, rather than pulling it",
+      async () => {
+    // Only the commit is stored, its tree pullable from G1.
+    let t = makeCache();
+    t.sources.set(G1, fixtureSource(t, G1));
+    await t.cache.putFromGatekeeper(G1, "commit", fixture(COMMIT_1).payload);
+    expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, "README.md")).toThrow(notStored(TREE_1));
+
+    // The trees stored, every blob still pullable from G1.
+    for (let object of FIXTURE_OBJECTS.filter(o => o.type === "tree")) {
+      if (PACKED_OIDS.includes(object.oid)) {
+        await t.cache.putFromGatekeeper(G1, object.type, b64Bytes(object.payload));
+      }
+    }
+    let readmeBlob = "ca69e6d08b5b8bb4f11a74f9695e329c203cbfd8";
+    let linkBlob = "42061c01a1c70097d1e4579f29a5adf40abdec95";  // link.md -> "README.md"
+    expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, "README.md"))
+        .toThrow(notStored(readmeBlob));
+    // A symlink's message quotes its target, which is its blob.
+    expect(() => t.cache.readLocalFileAtCommit(COMMIT_1, "link.md")).toThrow(notStored(linkBlob));
+    // A submodule and a directory are told from the tree alone.
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "vendored").kind).toBe("unreadable");
+    expect(t.cache.readLocalFileAtCommit(COMMIT_1, "src")).toStrictEqual({ kind: "absent" });
+    expect(t.pulls).toStrictEqual([]);
+  });
+
   it("name a symlink without its target, which the pulling read names", async () => {
     let t = await fixtureStoredLocally();
     expect(await thrownBy(() => t.cache.readFileAtCommitIfExists(COMMIT_1, "link.md")))
