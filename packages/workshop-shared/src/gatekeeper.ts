@@ -1024,6 +1024,48 @@ export type GitShallowInfo = {
 };
 
 /**
+ * Names a branch: one chat's stream of submitted, not-yet-applied actions, kept for the chat's
+ * whole life. The Workshop mints it. Opaque: compare by equality.
+ */
+export type BranchId = string;
+
+/**
+ * Which pending actions a session sees simulated, and where the actions it submits go. Handed to
+ * `Gatekeeper.startSession()` and returned by `HookInitiator.startHook()` beside the session's
+ * queue, and fixed for the session's life.
+ *
+ * An action submitted with `branch: null` is **staged**: it is on no branch. Staged actions are
+ * special in three ways:
+ *
+ * 1. Every view sees them. Staging is not listed in a view; it is always there.
+ * 2. They come first. A view's order is the staged actions, then the actions of its branch and
+ *    its ancestors, each group in ID order. Simulation replays pending actions in that order.
+ * 3. A staged action builds on nothing but other staged actions: it never sees a branch's.
+ *
+ * A pending action submitted on branch `b` with ID `n` is therefore visible in a view when `b` is
+ * null, or `b` is the view's `branch`, or some ancestor has `branch === b` and `through >= n`.
+ * Order and fork boundaries rely on a connection's action IDs being unique and increasing in the
+ * order `ApprovalQueue.submitAction()` is called.
+ *
+ * A gatekeeper that ignores the view simulates every pending action to every session, as all did
+ * before views existed.
+ */
+export type BranchView = {
+  /**
+   * The branch actions submitted through this session join, or null when they join no branch:
+   * they are staged.
+   */
+  branch: BranchId | null;
+
+  /**
+   * Branches this one was forked from, nearest first. The session also sees each one's actions
+   * whose ID is at most `through`, an action ID of this connection. Absent for a branch that was
+   * never forked.
+   */
+  ancestors?: {branch: BranchId, through: number}[];
+};
+
+/**
  * Interface exposed by a Gatekeeper instance implementing a specific resource binding on a
  * specific Gadget.
  *
@@ -1077,8 +1119,14 @@ export interface Gatekeeper<Session> extends DurableObject {
    * dependent actions. That said, there is no strict requirement that a gatekeeper does such
    * simulation -- it is really up to the gatekeeper author to decide what is appropriate for the
    * particular API.
+   *
+   * `branch` is the view the session reads through and submits to, fixed for its life; the same
+   * one `approvalQueue.getBranch()` returns (see `BranchView`). The Workshop always passes it. It
+   * is optional only because a validator sharpened by this interface refuses a missing required
+   * argument, and callers written before views existed, such as gatekeepers' tests, omit it. A
+   * call without it is a session outside any chat: `{branch: null}`.
    */
-  startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<Session>;
+  startSession(approvalQueue: RpcStub<ApprovalQueue>, branch?: BranchView): Promise<Session>;
 
   /**
    * Bounded, user-specific metadata the agent uses to discover entries reachable through this
@@ -1365,6 +1413,14 @@ export interface ObservationAuthorizer extends RpcTarget {
    * proof of anything.
    */
   getExecutionId(): Promise<string | undefined>;
+
+  /**
+   * The view this authorizer's holder reads through (see `BranchView`): for a session's queue,
+   * the one handed over with it to `Gatekeeper.startSession()` or from
+   * `HookInitiator.startHook()`. For code that holds only the authorizer, such as a slash
+   * command's `invoke()` or a helper that was passed a queue alone.
+   */
+  getBranch(): Promise<BranchView>;
 }
 
 /**
@@ -1914,8 +1970,12 @@ export interface HookInitiator<Hook extends RpcTarget> extends WorkerEntrypoint 
    * actions resulting from this hook invocation. Most (but not necessarily all) hooks involve an
    * observation. Some hooks may even pass callbacks or interpret the return value in a way that
    * causes side effects, which should be registered as actions.
+   *
+   * `branch` is the view the firing reads through and submits to (see `BranchView`).
    */
-  startHook(): Promise<{callback: RpcStub<Hook>, approvalQueue: RpcStub<ApprovalQueue>}>;
+  startHook(): Promise<{
+    callback: RpcStub<Hook>, approvalQueue: RpcStub<ApprovalQueue>, branch: BranchView,
+  }>;
 }
 
 /**

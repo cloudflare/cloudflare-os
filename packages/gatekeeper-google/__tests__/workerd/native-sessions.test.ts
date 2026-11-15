@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ApprovalQueue, GitCache, HookController, HookDescription,
+  ActionDescription, ApprovalQueue, BranchView, GitCache, HookController, HookDescription,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -149,6 +149,10 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
+  }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
   }
 }
 

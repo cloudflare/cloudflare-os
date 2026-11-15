@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, type BranchView, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -13,7 +13,7 @@ import {
 import { keyString } from "@gadgets/typed-storage";
 import type { ListOptions } from "@gadgets/typed-storage";
 import {
-  actionLastChangedKey, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
+  actionLastChangedKey, branchOf, chatChangeClientKey, chatKey, chatKeyPrefix, connectionVendorId,
   makeOverseerStorage,
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
@@ -30,8 +30,8 @@ import { GitCacheImpl, WorkspaceGitCache, assertNoNul, commitIdentityForAuthor }
 import { blobByteStream, type BlobReader } from "./git-chunked-blob";
 import {
   OVERSEER_STORAGE_VERSION, migrateToActionIndexes, migrateToBlueprintUpstreams,
-  migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget, migrateToSpawnerBindings,
-  migrateToWorkpieceTypes,
+  migrateToBranchIndex, migrateToFrozenGadgetGrants, migrateToGitStorage, migrateToMultiGadget,
+  migrateToSpawnerBindings, migrateToWorkpieceTypes,
 } from "./storage-schema/overseer-migrations";
 import type { Usage } from "@earendil-works/pi-ai";
 import {
@@ -1660,6 +1660,7 @@ class OverseerImpl implements AgentHooks {
       migrateToBlueprintUpstreams(this);
       migrateToSpawnerBindings(this);
       migrateToFrozenGadgetGrants(this);
+      migrateToBranchIndex(this);
       // Do not replace an existing alarm during constructor recovery: setAlarm would reset the
       // platform's retry budget. Cache its time before registering any recovered executions.
       this.#scheduledAlarm = await this.ctx.storage.getAlarm();
@@ -6963,6 +6964,8 @@ class OverseerImpl implements AgentHooks {
   // authorizes through that queue, so it outlives every such child the client may retain after
   // disposing the session and its parent capability. A gatekeeper that keeps the queue longer
   // only keeps the collaborator counted, which checks more reads, never fewer.
+  //
+  // The session's view is handed over with its queue, which answers getBranch() with the same.
   openGatekeeperSession<Session extends RpcCompatible<Session>>(
       id: number, facet: Fetcher<Gatekeeper<Session>>, caller: GatekeeperCaller,
       executionId?: string, holder?: SessionHolder): Promise<RpcStub<Session>> {
@@ -6972,7 +6975,7 @@ class OverseerImpl implements AgentHooks {
         ? new AgentSpawnerQueueImpl(this, id, caller, undefined, executionId, leave)
         : new ApprovalQueueImpl(this, id, caller, undefined, executionId, leave);
     // @ts-expect-error TODO: Remove annotation when Cap'n Web fixes cyclic type issues
-    return facet.startSession(queue);
+    return facet.startSession(queue, {branch: branchOf(caller)});
   }
 
   // WorktreeSessionHost: ReplicableWorktree.getReplicator(). The stub is persistent, so a
@@ -11765,7 +11768,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   async startHook(hookId: number): Promise<{
-    callback: NativeRpcStub<RpcTarget>, approvalQueue: ApprovalQueue
+    callback: NativeRpcStub<RpcTarget>, approvalQueue: ApprovalQueue, branch: BranchView
   }> {
     let record = requireLiveHook(this.impl, hookId);
 
@@ -11790,10 +11793,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // Gatekeeper.bindHook (workshop-shared/gatekeeper.ts). The firing's observations are
     // attributed to the gadget the hook wakes.
     let gadgetId = record.gadgetId ?? this.impl.defaultGadgetId;
+    let caller: GatekeeperCaller = {from: "hook", ...(gadgetId !== undefined ? {gadgetId} : {})};
     return {
       callback: makeHookFiringCallback(this.impl, hookId),
-      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId,
-          {from: "hook", ...(gadgetId !== undefined ? {gadgetId} : {})}, hookId),
+      approvalQueue: new ApprovalQueueImpl(this.impl, record.gatekeeperId, caller, hookId),
+      branch: {branch: branchOf(caller)},
     };
   }
 
@@ -11913,8 +11917,9 @@ type GatekeeperHookLoopbackProps = {
 export class GatekeeperHookLoopback
     extends WorkerEntrypoint<Cloudflare.Env, GatekeeperHookLoopbackProps>
     implements HookInitiator<RpcTarget> {
-  startHook(): Promise<
-      {callback: NativeRpcStub<RpcTarget>, approvalQueue: NativeRpcStub<ApprovalQueue>}> {
+  startHook(): Promise<{
+      callback: NativeRpcStub<RpcTarget>, approvalQueue: NativeRpcStub<ApprovalQueue>,
+      branch: BranchView}> {
     let ns = this.ctx.exports.OverseerDurableObject;
     let overseer: DurableObjectStub<OverseerDurableObject> =
         ns.get(ns.idFromString(this.ctx.props.overseerId));
@@ -14523,6 +14528,10 @@ class SlashCommandAuthorizerImpl extends NativeRpcTarget implements ObservationA
     return undefined;
   }
 
+  async getBranch(): Promise<BranchView> {
+    return {branch: branchOf(this.caller)};
+  }
+
   [Symbol.dispose](): void {
     this.impl.sessionWatchers.end(this.#end);
   }
@@ -14651,6 +14660,11 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
 
   async getExecutionId(): Promise<string | undefined> {
     return this.executionId;
+  }
+
+  // The view startSession() or startHook() handed over with this queue.
+  async getBranch(): Promise<BranchView> {
+    return {branch: branchOf(this.caller)};
   }
 
   // The gatekeeper released its last stub of this queue.

@@ -255,7 +255,8 @@ describe("AutoApprovalDrainer.drain", () => {
   });
 
   it("drains pendings written before the index existed once a rebuild backfills it", async () => {
-    // Mirrors the version-3 migration: the records predate the action-index declarations.
+    // Mirrors the version-3 and version-8 migrations: the records predate the action-index
+    // declarations.
     let mock = makeMockStorage();
     let legacy = makePreIndexActionStorage(mock);
     putAction(legacy, 1);
@@ -266,6 +267,7 @@ describe("AutoApprovalDrainer.drain", () => {
     storage.actions.pendingByGatekeeper.rebuild();
     storage.actions.byHistoryFilter.rebuild();
     storage.actions.byLastChanged.rebuild();
+    storage.actions.pendingByBranch.rebuild();
     enableRule(storage);
 
     // The apply persists a resolved state, which must not throw on the backfilled index.

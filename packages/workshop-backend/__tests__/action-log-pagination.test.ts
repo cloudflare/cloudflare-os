@@ -287,8 +287,8 @@ describe("listActions with the pending filter", () => {
   });
 
   it("sees records written before the indexes existed once a rebuild backfills them", async () => {
-    // Mirrors the version-3 migration: records predate the index declarations, so each index
-    // starts empty until the migration's rebuild() runs.
+    // Mirrors the version-3 and version-8 migrations: records predate the index declarations, so
+    // each index starts empty until a migration's rebuild() runs.
     let mock = makeMockStorage();
     let legacy = makePreIndexActionStorage(mock);
     putAction(legacy, 0);
@@ -300,6 +300,7 @@ describe("listActions with the pending filter", () => {
     storage.actions.pendingByGatekeeper.rebuild();
     storage.actions.byHistoryFilter.rebuild();
     storage.actions.byLastChanged.rebuild();
+    storage.actions.pendingByBranch.rebuild();
     let client = await openFakeOverseer(storage);
 
     // Every filter serves the legacy records.
