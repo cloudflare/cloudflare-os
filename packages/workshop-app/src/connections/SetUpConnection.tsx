@@ -3,9 +3,9 @@ import type { RpcPromise } from 'capnweb'
 import { AGENT_SPAWNER_CONNECTION_ID, type GatekeeperClient } from '@gadgets/workshop-shared/api'
 import type { ResourceConfiguratorFrame as Frame } from '@gadgets/workshop-shared/gatekeeper'
 import { isGranted } from '@/blocks/resourceGrants'
+import { SetUpAgentDialog } from '@/blocks/SetUpAgentDialog'
 import { SetUpConnectionDialog } from '@/blocks/SetUpConnectionDialog'
-import { Button } from '@/components/Button'
-import { Dialog } from '@/components/Dialog'
+import { useModels } from '@/chat/useModels'
 import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
@@ -29,6 +29,8 @@ export type ConnectionRequest = {
 
 export type SetUpConnectionProps = {
   workspaceId: string
+  /** The chat that asked, which an agent set up here reports back to. */
+  chatId?: number
   request: ConnectionRequest
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -49,19 +51,36 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 export const SetUpConnection = (props: SetUpConnectionProps) =>
   props.request.vendorId === AGENT_SPAWNER_CONNECTION_ID ? <SetUpAgent {...props} /> : <SetUpService {...props} />
 
-// An agent spawner has a form of its own, which is not here yet.
-const SetUpAgent = ({ request, open, onOpenChange }: SetUpConnectionProps) => (
-  <Dialog
-    open={open}
-    onOpenChange={onOpenChange}
-    size="sm"
-    title="Set up an agent"
-    description={request.reason}
-    footer={<Button variant="primary" onClick={() => onOpenChange(false)}>OK</Button>}
-  >
-    <p className="text-base/5 text-kumo-subtle">An agent the chat can start can’t be set up here yet. Open this chat in the classic Workshop to set it up, or deny the request.</p>
-  </Dialog>
-)
+// An agent the chat can call on (an agent spawner) is named and given a model, then handed to the
+// chat, reporting each run back to it unless told not to.
+const SetUpAgent = ({ workspaceId, chatId, request, open, onOpenChange }: SetUpConnectionProps) => {
+  const { api } = useApi()
+  const { models } = useModels()
+  return (
+    <SetUpAgentDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      reason={request.reason}
+      models={models.status === 'ready' ? models.offered.map(({ id, name }) => ({ id, name })) : models.status === 'failed' ? [] : undefined}
+      initialModel={models.status === 'ready' ? models.preferred : undefined}
+      onSetUp={async ({ name, modelId, reportHere }) => {
+        const overseer = api.openWorkspace(workspaceId)
+        const agent = overseer.newAgentSpawnerGatekeeper({
+          displayName: name,
+          modelId,
+          env: {},
+          ...(reportHere && chatId !== undefined ? { reportsToChatId: chatId } : {}),
+        })
+        try {
+          await overseer.acceptConnectionRequest(request.requestId, { gatekeeperId: await agent.getId() })
+        } finally {
+          agent[Symbol.dispose]()
+          overseer[Symbol.dispose]()
+        }
+      }}
+    />
+  )
+}
 
 const SetUpService = ({ workspaceId, request, open, onOpenChange }: SetUpConnectionProps) => {
   const { api } = useApi()

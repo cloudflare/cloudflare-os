@@ -441,6 +441,16 @@ code). A switch shows at once and is undone with why if refused; Delete asks fir
 tab `useAutomationLink` (`routes/-automationLink.ts`), so a row opens where it reports. The chat's
 header has a clock while its cards show an automation, which opens the chat's tab.
 
+An agent (an agent spawner, never called that in the UI) is listed under Agents in the same tab
+(`useAgents`, `agents.ts`): `listAgentSpawners`, with each one's runs from `listChats` by
+`spawnerId` (or name, for runs recorded before that), its model named from `listModels`. A gadget's
+tab shows those it calls on, a chat's those its agent started. A row opens the agent's page
+(`/workspace/$workspaceId/agent/$agentId`, `AgentPane`, drawn by `AgentView`): renamed and its model
+changed through `updateAgentSpawner`, what calls on it, what it can use, and its conversations by
+when, those waiting on a person marked. It is not a connection, so it is not on the Gatekeepers
+page; a chat that asks for one sets it up from its card (`SetUpAgentDialog`), reporting each run back
+to that chat unless told not to.
+
 ## Connections
 
 `connections/` holds the user's connected accounts (`ConnectedAccounts`, a plain class provided

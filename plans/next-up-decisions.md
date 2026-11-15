@@ -477,3 +477,16 @@ The scratch space is not a place to show. It is where a chat's uploads are put f
 what was sent is already under Files, in the message and the Library. Files the agent makes there
 should come to the chat as files of their own, as a Google Doc it made does; that is still to do.
 
+## 18. Agents a chat sets up
+
+An agent spawner is not a connection to a service, so it is not set up or listed as one. To the
+person it is an agent: something that works on its own each time a gadget, a schedule or a chat
+calls on it, each run a conversation of its own. Setting one up from the chat's card asks only what
+a business user can answer: a name, the model it thinks with, and whether to report back in this
+chat, which it does by default. It starts with access to nothing, which the dialog says.
+
+It lives with what runs by itself, under Agents in Automations, where its row says what it thinks
+with, what calls on it, how many runs it has had and how many wait on the person. Its page is where
+its conversations are grouped by when, for whoever wants to look in; most of the time it does its
+work in a gadget or elsewhere and nobody needs to. Making agents that are simply always on, without
+setting one up by hand or adding it to a gadget, is planned in `plans/always-on-agents.md`.

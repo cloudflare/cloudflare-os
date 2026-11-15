@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CaretLeftIcon, ExportIcon, PlusIcon, ShapesIcon, TrashIcon, UserCircleGearIcon, WarningCircleIcon } from '@phosphor-icons/react'
 import { ofGadget } from '@/automations/automations'
+import { calledByGadget } from '@/automations/agents'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { BindingRow } from '@/blocks/BindingRow'
 import { CodeBrowser } from '@/blocks/CodeBrowser'
@@ -78,6 +79,7 @@ export const GadgetSettingsPane = ({
   workspaceId, workpieceId, initialTitle, tab, onTabChange, file, onShowFile, onBack, onDeleted, onOpenConnections, link, automationLink, onOpenBlueprint,
 }: GadgetSettingsPaneProps) => {
   const own = useMemo(() => ofGadget(workpieceId), [workpieceId])
+  const ownAgents = useMemo(() => calledByGadget(workpieceId), [workpieceId])
   const { settings, snapshot } = useGadgetSettings(workspaceId, workpieceId)
   const workspaces = useWorkspaces()
   const workspace = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId) : undefined
@@ -248,6 +250,7 @@ export const GadgetSettingsPane = ({
                 <AutomationsTab
                   workspaceIds={[workspaceId]}
                   filter={own}
+                  agentFilter={ownAgents}
                   canChange={() => builds}
                   link={automationLink}
                   empty="Nothing runs this gadget by itself yet. Ask in a chat for it to run on a schedule, or when something arrives."

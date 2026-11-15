@@ -21,6 +21,7 @@ import { ConnectButton } from '@/components/ConnectButton'
 import { DropdownMenu, type DropdownMenuProps } from '@/components/DropdownMenu'
 import { WorkspaceIcon } from '@/components/WorkspaceIcon'
 import { AssistantPresencePreview } from '@/gallery/AssistantPresencePreview'
+import { AgentsPreview } from '@/gallery/AgentsPreview'
 import { AutomationsPreview } from '@/gallery/AutomationsPreview'
 import { BlueprintsPreview } from '@/gallery/BlueprintsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
@@ -362,6 +363,7 @@ function Gallery() {
       <CodePreview />
       <SkillsPreview />
       <AutomationsPreview />
+      <AgentsPreview />
       <BlueprintsPreview />
       <ProfilePreview />
       <Section title="Composer">

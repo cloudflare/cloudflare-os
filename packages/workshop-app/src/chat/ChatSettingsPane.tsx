@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { Switch } from '@cloudflare/kumo'
 import { CaretLeftIcon, FolderPlusIcon, TrashIcon } from '@phosphor-icons/react'
 import { inChat } from '@/automations/automations'
+import { startedInChat } from '@/automations/agents'
 import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTab'
 import { SettingsGroup, SettingsRow } from '@/blocks/SettingsGroup'
 import { WorkspaceCrumb } from '@/blocks/WorkspaceCrumb'
@@ -101,6 +102,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
   const [naming, setNaming] = useState(false)
   // The hooks this chat's cards show, so a gadget's it set up are among its automations.
   const pinned = chat.status === 'ready' ? chat.pinned : undefined
+  const ownAgents = useMemo(() => startedInChat(chatId), [chatId])
   const ownAutomations = useMemo(
     () => inChat(chatId, new Set(pinned?.flatMap((item) => (item.kind === 'hook' && item.hookId !== undefined ? [item.hookId] : [])))),
     [chatId, pinned],
@@ -146,6 +148,7 @@ export const ChatSettingsPane = ({ workspaceId, chatId, initialTitle, tab, onTab
               <AutomationsTab
                 workspaceIds={[workspaceId]}
                 filter={ownAutomations}
+                agentFilter={ownAgents}
                 canChange={() => canBuild}
                 link={automationLink}
                 empty="Nothing runs by itself from this chat yet. Ask here for something to happen on a schedule, or when something arrives, and it reports back here."

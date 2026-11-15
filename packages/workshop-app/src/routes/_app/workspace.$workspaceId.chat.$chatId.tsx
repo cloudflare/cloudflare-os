@@ -95,6 +95,7 @@ function WorkspaceChat() {
         <SetUpConnection
           key={setUp.request.requestId}
           workspaceId={workspaceId}
+          chatId={chatId}
           request={setUp.request}
           open={setUp.open}
           onOpenChange={(open) => setSetUp((current) => current && { ...current, open })}
