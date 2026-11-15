@@ -2,6 +2,7 @@
 // with source mapping to allow Markdown-level edits to be translated back
 // to Google Docs batchUpdate operations.
 
+import type { DocumentPage } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   GoogleDocsTab, Paragraph, ParagraphElement, StructuralElement, Table, TableCell, TextStyle,
 } from "./docs-api";
@@ -33,6 +34,8 @@ export type DocTabSnapshot = {
   sourceMap: SourceMap;
   /** The endIndex of the last structural element in this tab's body. */
   bodyEndIndex: number;
+  /** Its paper and margins, for drawing it in pages. */
+  page?: DocumentPage;
 }
 
 export type SourceMap = {
@@ -237,6 +240,7 @@ export function docTabToMarkdown(tab: GoogleDocsTab): DocTabSnapshot {
     markdown: writer.text,
     sourceMap: { blocks, protectedRanges },
     bodyEndIndex,
+    ...tab.page ? { page: tab.page } : {},
   };
 }
 

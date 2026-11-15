@@ -1957,7 +1957,23 @@ export type DocumentPreview = {
 
     /** What each drawn action changed in this tab, in the order they apply. */
     edits: DocumentEdit[];
+
+    /** How the tab is laid out on paper; absent when the provider did not say. */
+    page?: DocumentPage;
   }[];
+};
+
+/**
+ * A document tab's page setup, in points, so a surface can break it into pages where its editor
+ * would. `pageless` is a tab the editor draws as one continuous page, whose size then says nothing.
+ */
+export type DocumentPage = {
+  /** The paper's width and height. */
+  width: number;
+  height: number;
+  /** The space between the paper's edges and the text. */
+  margins: { top: number; right: number; bottom: number; left: number };
+  pageless?: boolean;
 };
 
 /**

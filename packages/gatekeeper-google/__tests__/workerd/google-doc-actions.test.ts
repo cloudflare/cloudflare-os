@@ -141,6 +141,8 @@ class DocsModel {
   editable = true;
   /** Full `documents.get` calls, excluding the lightweight revision probe. */
   documentFetches = 0;
+  /** Each tab's `documentStyle`, its paper and margins, when set. */
+  documentStyle: unknown;
   revisionProbes = 0;
   /** Every provider request, of any kind. */
   fetches = 0;
@@ -936,7 +938,7 @@ class DocsModel {
     body ??= buildTab([{ runs: [text] }]).body;
     return {
       tabProperties: { tabId: tab.id, title: tab.title },
-      documentTab: { body, lists, namedRanges },
+      documentTab: { body, lists, namedRanges, ...this.documentStyle ? { documentStyle: this.documentStyle } : {} },
       childTabs: this.tabs.filter(child => child.parentId === tab.id)
         .map(child => this.#documentTab(child)),
     };
@@ -3933,6 +3935,22 @@ describe("previewing a Google Doc's pending edits", () => {
           id: MAIN_TAB, title: "Main", markdown: await hooks().readContent("preview-empty"), edits: [],
         }],
       },
+    });
+  });
+
+  it("says how each tab is laid out on paper, for drawing it in pages", async () => {
+    let docs = new DocsModel();
+    docs.setText(MAIN_TAB, "On A4");
+    let pt = (magnitude: number) => ({ magnitude, unit: "PT" });
+    docs.documentStyle = {
+      pageSize: { width: pt(595.3), height: pt(841.9) },
+      marginTop: pt(72), marginRight: pt(72), marginBottom: pt(72), marginLeft: pt(72),
+    };
+    docs.install();
+
+    let preview = await hooks().previewResource("preview-page");
+    expect(preview?.content).toMatchObject({
+      tabs: [{ page: { width: 595.3, height: 841.9, margins: { top: 72, right: 72, bottom: 72, left: 72 } } }],
     });
   });
 

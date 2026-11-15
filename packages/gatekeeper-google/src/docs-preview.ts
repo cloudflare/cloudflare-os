@@ -253,6 +253,7 @@ export function googleDocPreview(
           markdown: trimDocumentPreviewMarkdown(markdown, keep),
           edits: edits.map(({ change, before, after, context }) =>
             ({ change, before, after, ...context ? { context } : {} })),
+          ...tab.page ? { page: tab.page } : {},
         };
       }),
     },

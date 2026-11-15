@@ -3,6 +3,7 @@
 // This file wraps the Google Docs API (v1) for use by the Google Docs gatekeeper.
 // It follows the same pattern as google-api.ts (which wraps the Gmail API).
 
+import type { DocumentPage } from "@gadgets/workshop-shared/gatekeeper";
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
 import { GoogleApiError, readGoogleJson } from "./google-response";
 
@@ -43,6 +44,8 @@ export type GoogleDocsTab = {
   lists: Record<string, DocList>;
   /** Named ranges anchored in this tab. */
   namedRanges: NamedRanges;
+  /** Its paper and margins, from `documentStyle`; absent when Google sent none. */
+  page?: DocumentPage;
 }
 
 /** Named ranges grouped by name, as `documents.get` returns them. */
@@ -199,6 +202,39 @@ function tabCollection<T>(value: unknown): T {
  * from `tabProperties`, and tab IDs must be unique document-wide, because everything downstream
  * addresses a tab by ID alone.
  */
+const points = (dimension: unknown): number | undefined => {
+  if (!dimension || typeof dimension !== "object") return undefined;
+  let { magnitude, unit } = dimension as Record<string, unknown>;
+  // Google omits a zero magnitude, as for a zero margin.
+  let value = magnitude === undefined ? 0 : magnitude;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && (unit === undefined || unit === "PT")
+    ? value : undefined;
+};
+
+/**
+ * A tab's paper and margins, from its `documentStyle`, when Google sent a size it can be laid out
+ * on; nothing otherwise, and a surface then assumes Letter with one-inch margins.
+ */
+function pageOf(style: unknown): { page?: DocumentPage } {
+  if (!style || typeof style !== "object") return {};
+  let { pageSize, marginTop, marginRight, marginBottom, marginLeft, documentFormat } = style as Record<string, unknown>;
+  let { width, height } = (pageSize && typeof pageSize === "object" ? pageSize : {}) as Record<string, unknown>;
+  let size = { width: points(width), height: points(height) };
+  let margins = { top: points(marginTop), right: points(marginRight), bottom: points(marginBottom), left: points(marginLeft) };
+  if (!size.width || !size.height) return {};
+  let mode = documentFormat && typeof documentFormat === "object"
+    ? (documentFormat as Record<string, unknown>).documentMode : undefined;
+  return {
+    page: {
+      width: size.width,
+      height: size.height,
+      // Docs' own default where one is missing: an inch.
+      margins: { top: margins.top ?? 72, right: margins.right ?? 72, bottom: margins.bottom ?? 72, left: margins.left ?? 72 },
+      ...mode === "PAGELESS" ? { pageless: true } : {},
+    },
+  };
+}
+
 function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
   if (!Array.isArray(tabs) || tabs.length === 0) {
     throw new Error("Google Docs returned no document tab");
@@ -220,7 +256,7 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
       seen.add(tabId);
 
       if (!documentTab || typeof documentTab !== "object") throw new Error(INVALID_TAB);
-      let { body, lists, namedRanges } = documentTab as Record<string, unknown>;
+      let { body, lists, namedRanges, documentStyle } = documentTab as Record<string, unknown>;
       // A real body always holds at least a section break, and `bodyEndIndex` arithmetic assumes
       // it: an empty one would place an append at index -1.
       if (!body || typeof body !== "object" || !("content" in body) ||
@@ -239,6 +275,7 @@ function normalizeDocumentTabs(tabs: unknown): GoogleDocsTab[] {
         body: { content },
         lists: tabCollection<GoogleDocsTab["lists"]>(lists),
         namedRanges: tabCollection<NamedRanges>(namedRanges),
+        ...pageOf(documentStyle),
       });
 
       if (childTabs === undefined) continue;

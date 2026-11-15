@@ -168,6 +168,29 @@ describe("native Google content API safety", () => {
     expect(tabs[1]).toMatchObject({ body: EMPTY_BODY, lists: {}, namedRanges: {} });
   });
 
+  it("reads each tab's paper, margins and pageless mode, for drawing it in pages", async () => {
+    const pt = (magnitude?: number) => ({ ...magnitude === undefined ? {} : { magnitude }, unit: "PT" });
+    const style = (documentStyle: unknown) => ({ documentTab: { body: EMPTY_BODY, documentStyle } });
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(docResponse([
+      { ...rawTab("letter", "Letter"), ...style({
+        pageSize: { width: pt(612), height: pt(792) },
+        marginTop: pt(72), marginBottom: pt(72), marginLeft: pt(54), marginRight: pt()
+      }) },
+      { ...rawTab("pageless", "Pageless"), ...style({
+        pageSize: { width: pt(595.3), height: pt(841.9) }, documentFormat: { documentMode: "PAGELESS" },
+      }) },
+      { ...rawTab("sizeless", "Sizeless"), ...style({ marginTop: pt(10) }) },
+    ]))));
+
+    const { tabs } = await new GoogleDocsApi(token).getDocument("doc-1");
+
+    expect(tabs[0].page).toEqual({ width: 612, height: 792, margins: { top: 72, right: 0, bottom: 72, left: 54 } });
+    expect(tabs[1].page).toEqual({
+      width: 595.3, height: 841.9, margins: { top: 72, right: 72, bottom: 72, left: 72 }, pageless: true,
+    });
+    expect(tabs[2].page).toBeUndefined();
+  });
+
   it("defaults absent tab collections to empty", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json(docResponse([{
       tabProperties: { tabId: "solo", title: "Solo" },
