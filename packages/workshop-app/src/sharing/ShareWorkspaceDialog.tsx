@@ -8,6 +8,7 @@ import { ShareNote } from '@/blocks/ShareNote'
 import { SharePersonRow } from '@/blocks/SharePersonRow'
 import { Button } from '@/components/Button'
 import { Dialog } from '@/components/Dialog'
+import { useServices } from '@/connections/useServices'
 import { useApi } from '@/rpc/ApiContext'
 import { useServerConfig } from '@/rpc/serverConfig'
 import { RequirementsNote, SharingPending } from './SharingParts'
@@ -43,6 +44,7 @@ const NO_OPTIONS = {}
 
 const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenChange, chat = false }: ShareWorkspaceDialogProps) => {
   const place = chat ? 'chat' : 'workspace'
+  const { services } = useServices()
   const { user } = useApi()
   const { snapshot, session } = useSharing(workspaceId, NO_OPTIONS, open)
   const config = useServerConfig()
@@ -117,7 +119,7 @@ const WorkspaceSharing = ({ workspaceId, title: knownTitle, link, open, onOpenCh
               This {place} has read restricted data
             </ShareNote>
           )}
-          <RequirementsNote requirements={ready.requirements} what="it" />
+          <RequirementsNote requirements={ready.requirements} vendors={services.status === 'ready' ? services.vendors : undefined} place={place} />
           <ShareList label="Who has access">
             {standing && (
               <ShareList.Row key={standing.owner.id}>
