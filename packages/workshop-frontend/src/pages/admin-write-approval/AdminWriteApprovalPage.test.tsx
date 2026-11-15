@@ -56,6 +56,7 @@ vi.mock('../../features/admin-writes/passkeyCeremony', async (importOriginal) =>
 }))
 
 import { PasskeyCeremonyError } from '../../features/admin-writes/passkeyCeremony'
+import { WRITE_CONSEQUENCES } from '../../features/admin-writes/writeLabels'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
 import AdminWriteApprovalPage from './AdminWriteApprovalPage'
 
@@ -217,6 +218,7 @@ const alertText = () => document.querySelector('[role="alert"]')?.textContent ??
 
 const INSPECT_ADVICE = 'inspect the workspace to see what an id names before you approve'
 const AUDIT_LINK = 'This workspace in the audit log'
+const UNDONE = 'This cannot be undone.'
 
 beforeEach(() => {
   mocks.currentUser = { type: 'user', id: 'alice', name: 'Alice' }
@@ -346,6 +348,12 @@ describe('what the approval page shows of a request', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
 
     expect(row('Expires')).toContain('any moment now')
+  })
+
+  it('states no consequence for a write that has none to state', async () => {
+    await renderRequest()
+
+    for (const consequence of Object.values(WRITE_CONSEQUENCES)) expect(text()).not.toContain(consequence)
   })
 })
 
@@ -558,6 +566,106 @@ describe('approving a request', () => {
     expect(outcome()?.textContent).toBe('Applied')
     expect(findButton('Approve with passkey')).toBeUndefined()
     expect(alertText()).toBeUndefined()
+  })
+})
+
+const NOTICE = 'Another admin must approve this request'
+// What stands in the Approve button's place for an admin who cannot approve.
+const notice = () => [...document.querySelectorAll<HTMLElement>('[tabindex="-1"]')]
+  .find((element) => element.textContent?.startsWith(NOTICE))
+
+const renderContentRequest = (overrides: Partial<AdminWriteRequest> = {}) => renderRequest({
+  action: 'grantContentAccess',
+  args: {},
+  reason: 'The owner is away and their agent is leaking a token.',
+  ...overrides,
+})
+
+describe('a request to read a workspace’s content', () => {
+  it('says plainly what is approved, who asked and why, and that the owner is not told', async () => {
+    await renderContentRequest()
+
+    expect(row('Action'))
+      .toBe("Let admins read this workspace's content for 72 hours, without its owner's grant")
+    expect(row('Requested by')).toBe('bob through the CLI')
+    expect(row('Reason')).toContain('The owner is away and their agent is leaking a token.')
+    expect(row('Reason')).toContain("the workspace's owner is not told of the request")
+    expect(text()).toContain(WRITE_CONSEQUENCES.grantContentAccess)
+    expect(text()).toContain("The workspace's owner is not told, and nothing in the workspace shows it.")
+    expect(text()).not.toContain("workspace's activity")
+    expect(text()).not.toContain(UNDONE)
+    // The request names no chat or connection, so the page says nothing of ids.
+    expect(text()).not.toContain('shown by the ids the request names')
+  })
+
+  it('lets an admin who did not ask approve it', async () => {
+    const admin = await renderContentRequest()
+
+    expect(text()).toContain('You are approving as alice.')
+    expect(notice()).toBeUndefined()
+    await click(button('Approve with passkey'))
+
+    expect(admin.approveWorkspaceWrite).toHaveBeenCalledExactlyOnceWith(REQUEST_ID, ASSERTION)
+    expect(outcome()?.textContent).toBe('Applied')
+  })
+
+  it.each(['alice', 'ALICE'])(
+    'shows the admin who asked, signed in as alice when %s asked, that another admin must approve, in place of the Approve button',
+    async (requestedBy) => {
+      const admin = await renderContentRequest({ requestedBy })
+
+      expect(findButton('Approve with passkey')).toBeUndefined()
+      expect(notice()?.textContent).toContain('approved by an admin other than the one who made it')
+      expect(document.activeElement).toBe(notice())
+      expect(text()).not.toContain('You are approving as')
+      expect(admin.beginWorkspaceWriteApproval).not.toHaveBeenCalled()
+    })
+
+  it('still lets the admin who asked deny it', async () => {
+    const admin = await renderContentRequest({ requestedBy: 'alice' })
+
+    await click(button('Deny'))
+
+    expect(admin.denyWorkspaceWrite).toHaveBeenCalledExactlyOnceWith(REQUEST_ID)
+    expect(outcome()?.textContent).toBe('Denied by alice')
+    expect(notice()).toBeUndefined()
+  })
+
+  it('lets the requester of any other write approve it themselves', async () => {
+    await renderRequest({ requestedBy: 'alice' })
+
+    expect(button('Approve with passkey').disabled).toBe(false)
+    expect(notice()).toBeUndefined()
+  })
+
+  it('says the same once the server refuses an approval as the requester’s own, before any passkey prompt', async () => {
+    const admin = await renderContentRequest()
+    admin.beginWorkspaceWriteApproval
+      .mockRejectedValue(createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired))
+
+    await click(button('Approve with passkey'))
+
+    expect(findButton('Approve with passkey')).toBeUndefined()
+    expect(notice()?.textContent).toContain(NOTICE)
+    expect(alertText()).toBeUndefined()
+    expect(mocks.assertPasskey).not.toHaveBeenCalled()
+    expect(button('Deny').disabled).toBe(false)
+    expect(text()).not.toContain('You are approving as')
+  })
+
+  it('gives the notice the focus the Approve button had when a refusal puts it in the button’s place', async () => {
+    const admin = await renderContentRequest()
+    let refuse!: (err: unknown) => void
+    admin.beginWorkspaceWriteApproval.mockReturnValue(new Promise((_resolve, reject) => { refuse = reject }))
+    const approve = button('Approve with passkey')
+    await act(async () => { approve.focus() })
+    await click(approve)
+    await dropFocus()
+    expect(document.activeElement).toBe(document.body)
+
+    await act(async () => { refuse(createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired)) })
+
+    expect(document.activeElement).toBe(notice())
   })
 })
 

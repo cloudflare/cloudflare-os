@@ -12,7 +12,9 @@ import {
 } from '@gadgets/workshop-shared/api'
 import { useAuthenticatedApi } from '../../AuthContext'
 import { assertPasskey, PasskeyCeremonyError } from '../../features/admin-writes/passkeyCeremony'
+import { useFocusAfterOperation } from '../../features/admin-writes/useFocusAfterOperation'
 import {
+  awaitsAnotherAdmin,
   DESTRUCTIVE_WRITES,
   idsNote,
   namesWorkspaceIds,
@@ -106,11 +108,32 @@ const Row = ({ label, children }: { label: string; children: ReactNode }) => (
   </div>
 )
 
+// What stands where the Approve button would for an admin who cannot approve the request. It takes
+// the focus the button would have had: on a page that opens with it, and when a refused approval
+// puts it in the button's place.
+const SecondAdminNotice = () => {
+  const notice = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (document.activeElement === document.body) notice.current?.focus()
+  }, [])
+  return (
+    <div ref={notice} tabIndex={-1} className="space-y-1 focus:outline-none">
+      <p className="text-base font-medium text-kumo-strong">Another admin must approve this request</p>
+      <p className="text-sm text-kumo-default">
+        A request to read a workspace’s content is approved by an admin other than the one who made
+        it. You can still deny it.
+      </p>
+    </div>
+  )
+}
+
 /**
  * Where an admin approves a write request with a passkey, or denies it. It shows what the request
  * would do, to which workspace and why, as the request states it, and what became of a request
  * that is no longer pending. It is the Workshop's one page that runs an approval's passkey
- * ceremony; the server takes an approval from any admin session that presents a valid assertion.
+ * ceremony; the server takes an approval from any admin session that presents a valid assertion,
+ * except the requester's own for a request to read a workspace's content, which the page offers
+ * that admin no way to approve.
  */
 const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   const { authenticatedApi, currentUser } = useAuthenticatedApi()
@@ -121,6 +144,8 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   const [now, setNow] = useState(() => Date.now())
   const [running, setRunning] = useState<Operation | null>(null)
   const [problem, setProblem] = useState<Problem | null>(null)
+  // Whether the server refused this admin's approval as the requester's own.
+  const [refusedAsRequester, setRefusedAsRequester] = useState(false)
   const statusRegion = useRef<HTMLDivElement>(null)
 
   const admin = load.status === 'loaded' ? load.admin : null
@@ -213,15 +238,7 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
     }
   }, [state])
 
-  // An operation disables the button that started it, and a browser takes focus from a control
-  // that becomes disabled without giving it back. So when the request is still pending afterwards,
-  // the control that had focus gets it again, unless focus has gone elsewhere since.
-  const focusBeforeOperation = useRef<HTMLElement | null>(null)
-  useEffect(() => {
-    if (running !== null) return
-    if (document.activeElement === document.body) focusBeforeOperation.current?.focus()
-    focusBeforeOperation.current = null
-  }, [running])
+  const rememberFocus = useFocusAfterOperation(running !== null)
 
   // Reads a request that is known to be resolved, to show what became of it. The buttons stay
   // while that reading fails, so the page says they no longer apply.
@@ -237,7 +254,7 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   // Runs an approval or a denial, one at a time, and shows what stopped it.
   const run = async (operation: Operation, work: (api: RpcStub<AdminApi>) => Promise<void>) => {
     if (admin === null || running !== null) return
-    focusBeforeOperation.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    rememberFocus()
     setRunning(operation)
     setProblem(null)
     try {
@@ -248,6 +265,11 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
       // Someone else resolved the request first, or it expired.
       if (getAdminWriteErrorCode(err) === ADMIN_WRITE_ERROR_CODES.requestNotPending) {
         await readResolved(admin)
+        return
+      }
+      // The server takes this admin for the requester where the page did not.
+      if (getAdminWriteErrorCode(err) === ADMIN_WRITE_ERROR_CODES.secondAdminRequired) {
+        setRefusedAsRequester(true)
         return
       }
       const refusal = refusalOf(err)
@@ -319,10 +341,12 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
   const destructive = DESTRUCTIVE_WRITES.has(request.action)
   const consequence = WRITE_CONSEQUENCES[request.action]
   const outcome = outcomeOf(request)
+  const anotherAdminNeeded = refusedAsRequester
+    || (currentUser !== null && awaitsAnotherAdmin(request, currentUser.id))
 
   return (
     <Frame>
-      {pending && currentUser !== null && (
+      {pending && !anotherAdminNeeded && currentUser !== null && (
         <p className="text-sm text-kumo-subtle">You are approving as {currentUser.id}.</p>
       )}
 
@@ -368,16 +392,20 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
       )}
       {pending && consequence !== undefined && <Banner variant="alert" description={consequence} />}
 
+      {pending && anotherAdminNeeded && <SecondAdminNotice />}
+
       {pending && (
         <div className="flex flex-wrap gap-3">
-          <Button
-            variant={destructive ? 'destructive' : 'primary'}
-            loading={running === 'approve'}
-            disabled={running !== null}
-            onClick={() => { void approve() }}
-          >
-            Approve with passkey
-          </Button>
+          {!anotherAdminNeeded && (
+            <Button
+              variant={destructive ? 'destructive' : 'primary'}
+              loading={running === 'approve'}
+              disabled={running !== null}
+              onClick={() => { void approve() }}
+            >
+              Approve with passkey
+            </Button>
+          )}
           <Button
             variant="secondary"
             loading={running === 'deny'}

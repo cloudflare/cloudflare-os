@@ -8,8 +8,7 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
-  Outlet,
-  RouterProvider,
+  RouterContextProvider,
 } from '@tanstack/react-router'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RpcStub } from 'capnweb'
@@ -237,28 +236,50 @@ const changesIn = (details: HTMLElement) => [...details.querySelectorAll('li')].
 const detail = (details: HTMLElement, term: string) =>
   [...details.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling?.textContent ?? null
 
+// The links a record's details hold: to the approval page of its request, when it has one to
+// offer, and to the admin's page for its workspace.
+const approvalLink = (details: HTMLElement) => details.querySelector('a[href^="/admin/approve/"]')
+const workspaceLink = (details: HTMLElement) => details.querySelector('a[href^="/admin/workspace/"]')
+
 // What listAdminAudit() is asked for when the panel loads a page.
 const pageQuery = (query: Parameters<AdminApi['listAdminAudit']>[0] = {}) =>
   ({ admin: undefined, method: undefined, cursor: undefined, limit: 50, ...query })
+
+// A router that knows the pages a record's details link: the approval page of a write request
+// and the admin's page for a workspace.
+const linkRouter = async () => {
+  const rootRoute = createRootRoute()
+  const router = createRouter({
+    routeTree: rootRoute.addChildren(['/', '/admin/approve/$requestId', '/admin/workspace/$workspaceId']
+      .map((path) => createRoute({ getParentRoute: () => rootRoute, path }))),
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  await router.load()
+  return router
+}
 
 describe('AdminAuditPanel', () => {
   let container: HTMLDivElement
   let root: Root
 
   // Renders the panel as the admin page does: a filter change is kept, as the URL keeps it, and
-  // shown again.
+  // shown again. The panel is given a router's context and is not a page of it, so that it can be
+  // drawn again with other props.
   const render = async (settings: AuditSettings = settingsWith(), admin = fakeAdmin(), initialFilter: AuditFilter = {}) => {
     const onSettingsChanged = vi.fn<() => Promise<void>>(async () => {})
+    const router = await linkRouter()
     let filter = initialFilter
     let reported = settings
     const draw = () => root.render(
-      <AdminAuditPanel
-        admin={admin as unknown as RpcStub<AdminApi>}
-        settings={reported}
-        onSettingsChanged={onSettingsChanged}
-        filter={filter}
-        onFilterChange={onFilterChange}
-      />)
+      <RouterContextProvider router={router}>
+        <AdminAuditPanel
+          admin={admin as unknown as RpcStub<AdminApi>}
+          settings={reported}
+          onSettingsChanged={onSettingsChanged}
+          filter={filter}
+          onFilterChange={onFilterChange}
+        />
+      </RouterContextProvider>)
     const onFilterChange = vi.fn<(next: AuditFilter) => void>((next) => {
       filter = next
       draw()
@@ -270,38 +291,6 @@ describe('AdminAuditPanel', () => {
     })
     await show(settings)
     return { ...admin, onSettingsChanged, onFilterChange, show }
-  }
-
-  // Renders the panel as a router's page, beside a stub of the approval page: the link in a
-  // "requested" write record's details needs a router. Its settings and filter stay as given.
-  const renderRouted = async (admin = fakeAdmin()) => {
-    // The router restores the scroll position once it has loaded, which jsdom does not implement.
-    vi.spyOn(window, 'scrollTo').mockImplementation(() => {})
-    const rootRoute = createRootRoute({ component: () => <Outlet /> })
-    const panelRoute = createRoute({
-      getParentRoute: () => rootRoute,
-      path: '/',
-      component: () => (
-        <AdminAuditPanel
-          admin={admin as unknown as RpcStub<AdminApi>}
-          settings={settingsWith()}
-          onSettingsChanged={async () => {}}
-          filter={{}}
-          onFilterChange={() => {}}
-        />
-      ),
-    })
-    const approvalRoute = createRoute({
-      getParentRoute: () => rootRoute, path: '/admin/approve/$requestId', component: () => null,
-    })
-    const router = createRouter({
-      routeTree: rootRoute.addChildren([panelRoute, approvalRoute]),
-      history: createMemoryHistory({ initialEntries: ['/'] }),
-    })
-    await act(async () => {
-      await router.load()
-      root.render(<RouterProvider router={router} />)
-    })
   }
 
   const hasButton = (name: string) =>
@@ -860,7 +849,7 @@ describe('AdminAuditPanel', () => {
       expect(details.textContent).toContain('chatId: 3')
     })
 
-    it('shows a call that was not refused with its kind alone, and names an untitled workspace in its details', async () => {
+    it('shows a call that was not refused with its kind alone, and in its details names an untitled workspace and links its admin page', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([
         accessRecord({ access: 'metadata', refused: undefined, workspaceId: 'ws-untitled', workspaceTitle: '' }),
@@ -873,6 +862,8 @@ describe('AdminAuditPanel', () => {
       expect(detail(details, 'Access')).toBe('Metadata')
       expect(details.textContent).toContain('Untitled')
       expect(details.textContent).toContain('ws-untitled')
+      expect(workspaceLink(details)?.textContent).toBe('Open workspace admin view')
+      expect(workspaceLink(details)?.getAttribute('href')).toBe('/admin/workspace/ws-untitled')
     })
 
     it('shows a call into a user’s account: its kind and its user, and in its details the account, reason, access and arguments, with no workspace', async () => {
@@ -909,21 +900,22 @@ describe('AdminAuditPanel', () => {
       expect(detail(await expand(1), 'Access')).toBe('Off · refused: Access off')
     })
 
-    it('shows a write request: its kind and step, its workspace’s owner, and in its details the workspace, reason, arguments, request and a link to its approval page', async () => {
+    it('shows a write request: its kind and step, its workspace’s owner, and in its details the workspace with a link to its admin page, the reason, arguments, request and a link to its approval page', async () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([writeRecord({ event: 'requested', admin: 'admin' })]))
-      await renderRouted(admin)
+      await render(settingsWith(), admin)
 
       const cells = [...logRows()[0].querySelectorAll('td')].map((cell) => cell.textContent)
       expect(cells.slice(1)).toEqual([
         formatFullTimestamp(WRITE_AT), 'admin', 'stopAgent', 'Workspace writeRequested', 'owner@example.test',
       ])
       const details = await expand()
-      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titled')
+      expect(detail(details, 'Workspace')).toBe('Quarterly reportws-titledOpen workspace admin view')
+      expect(workspaceLink(details)?.getAttribute('href')).toBe('/admin/workspace/ws-titled')
       expect(detail(details, 'Reason')).toBe('Ticket 42: agent stuck')
       expect(detail(details, 'Arguments')).toBe('chatId: 3')
       expect(detail(details, 'Request')).toBe('request-1Open approval page')
-      expect(details.querySelector('a')?.getAttribute('href')).toBe('/admin/approve/request-1')
+      expect(approvalLink(details)?.getAttribute('href')).toBe('/admin/approve/request-1')
       // The requester is the record's own admin, so is not named twice.
       expect(detail(details, 'Requested by')).toBeNull()
       expect(detail(details, 'Via')).toBe('API')
@@ -945,7 +937,7 @@ describe('AdminAuditPanel', () => {
       expect(detail(unnamed, 'Refusal')).toBe('Not a passkey this admin enrolled')
       expect(detail(unnamed, 'Requested by')).toBe('admin')
       expect(detail(unnamed, 'Passkey')).toBeNull()
-      expect(unnamed.querySelector('a')).toBeNull()
+      expect(approvalLink(unnamed)).toBeNull()
       const named = await expand(1)
       expect(detail(named, 'Refusal')).toBe('The signature did not verify')
       expect(detail(named, 'Passkey')).toBe('credential-1')
@@ -986,7 +978,7 @@ describe('AdminAuditPanel', () => {
       expect(detail(byAnother, 'Passkey')).toBe('credential-1')
       expect(detail(byAnother, 'Requested by')).toBe('admin')
       expect(detail(byAnother, 'Refusal')).toBeNull()
-      expect(byAnother.querySelector('a')).toBeNull()
+      expect(approvalLink(byAnother)).toBeNull()
       const byRequester = await expand(1)
       expect(detail(byRequester, 'Passkey')).toBe('credential-2')
       expect(detail(byRequester, 'Requested by')).toBeNull()
@@ -1020,7 +1012,7 @@ describe('AdminAuditPanel', () => {
       const denied = await expand(5)
       expect(detail(denied, 'Arguments')).toBeNull()
       expect(detail(denied, 'Passkey')).toBeNull()
-      expect(denied.querySelector('a')).toBeNull()
+      expect(approvalLink(denied)).toBeNull()
     })
 
     it('filters by kind, which the log asks the server for as it is', async () => {

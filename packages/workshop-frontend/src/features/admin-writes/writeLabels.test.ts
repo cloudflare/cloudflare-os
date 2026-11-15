@@ -1,11 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { ADMIN_WRITE_ACTIONS, type AdminWriteArgs } from '@gadgets/workshop-shared/api'
 import {
+  ADMIN_ACCESS_ERROR_CODES,
+  ADMIN_GRANT_ERROR_CODES,
+  ADMIN_GRANT_LIFETIME_SECONDS,
+  ADMIN_WRITE_ACTIONS,
+  ADMIN_WRITE_ERROR_CODES,
+  createAdminAccessError,
+  createAdminGrantError,
+  createAdminWriteError,
+  type AdminWriteArgs,
+} from '@gadgets/workshop-shared/api'
+import {
+  adminRefusalMessage,
+  awaitsAnotherAdmin,
   idsNote,
   namesWorkspaceIds,
   reasonShownNote,
   WRITE_ACTION_LABELS,
   WRITE_ARG_LABELS,
+  WRITE_CONSEQUENCES,
   writeArgRows,
 } from './writeLabels'
 
@@ -19,6 +32,12 @@ describe('write labels', () => {
   it('names every action', () => {
     for (const action of ADMIN_WRITE_ACTIONS) expect(WRITE_ACTION_LABELS[action]).toBeTruthy()
     expect(Object.keys(WRITE_ACTION_LABELS).toSorted()).toEqual([...ADMIN_WRITE_ACTIONS].toSorted())
+  })
+
+  it('says plainly what a request to read content lets admins do, for as long as a grant lasts', () => {
+    expect(ADMIN_GRANT_LIFETIME_SECONDS).toBe(72 * 60 * 60)
+    expect(WRITE_ACTION_LABELS.grantContentAccess)
+      .toBe("Let admins read this workspace's content for 72 hours, without its owner's grant")
   })
 
   it('names every argument', () => {
@@ -93,5 +112,62 @@ describe('idsNote', () => {
     expect(idsNote('off')).toContain('what an id names cannot be checked here')
     expect(idsNote('off')).toContain('off on this deployment')
     expect(idsNote('off')).not.toContain('inspect the workspace')
+  })
+})
+
+describe('what an approver is warned of', () => {
+  it('states a consequence for exactly the writes whose request does not say it', () => {
+    expect(Object.keys(WRITE_CONSEQUENCES)).toEqual(['grantContentAccess'])
+  })
+
+  it('says of a request to read content that the owner is not told and that every read is recorded', () => {
+    const consequence = WRITE_CONSEQUENCES.grantContentAccess
+
+    expect(consequence).toContain('for 72 hours')
+    expect(consequence).toContain("The workspace's owner is not told")
+    expect(consequence).toContain('recorded in the audit log')
+    expect(consequence).not.toContain('activity')
+  })
+})
+
+describe('awaitsAnotherAdmin', () => {
+  const request = { action: 'grantContentAccess', requestedBy: 'alice@example.com' } as const
+
+  it('is true for the admin who asked to read content', () => {
+    expect(awaitsAnotherAdmin(request, 'alice@example.com')).toBe(true)
+  })
+
+  it('takes names that differ only by the case of ASCII letters for one admin, as the server does', () => {
+    expect(awaitsAnotherAdmin(request, 'Alice@Example.COM')).toBe(true)
+    // The Kelvin sign lowers to "k" under toLowerCase(), and is another name all the same.
+    expect(awaitsAnotherAdmin({ ...request, requestedBy: 'kim' }, '\u212Aim')).toBe(false)
+  })
+
+  it('is false for any other admin', () => {
+    expect(awaitsAnotherAdmin(request, 'bob@example.com')).toBe(false)
+  })
+
+  it('is false for the requester of every other write, which they may approve themselves', () => {
+    for (const action of ADMIN_WRITE_ACTIONS.filter((each) => each !== 'grantContentAccess')) {
+      expect(awaitsAnotherAdmin({ action, requestedBy: 'alice@example.com' }, 'alice@example.com')).toBe(false)
+    }
+  })
+})
+
+describe('adminRefusalMessage', () => {
+  it('is the server’s message for a refusal of each family it names by code', () => {
+    const refusals = [
+      createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.viewExpired),
+      createAdminWriteError(ADMIN_WRITE_ERROR_CODES.writesOff),
+      createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound),
+    ]
+
+    for (const refusal of refusals) expect(adminRefusalMessage(refusal)).toBe(refusal.message)
+  })
+
+  it('is undefined for a failure that carries no such code', () => {
+    expect(adminRefusalMessage(new Error('The connection was lost'))).toBeUndefined()
+    expect(adminRefusalMessage(Object.assign(new Error('Other'), { code: 'SOMETHING_ELSE' }))).toBeUndefined()
+    expect(adminRefusalMessage('ADMIN_VIEW_EXPIRED')).toBeUndefined()
   })
 })

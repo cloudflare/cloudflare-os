@@ -93,7 +93,7 @@ const clientDataOf = (base64Url: string): { type: string; challenge: string; ori
     Uint8Array.from(atob(base64Url.replaceAll('-', '+').replaceAll('_', '/')), (char) => char.charCodeAt(0))))
 
 // An AdminApi with one pending request, which an approval by the passkey `credentialId` applies.
-const fakeAdmin = (credentialId: string) => {
+const fakeAdmin = (credentialId: string, overrides: Partial<AdminWriteRequest>) => {
   let request: AdminWriteRequest = {
     id: REQUEST_ID,
     workspaceId: 'ws-1',
@@ -108,6 +108,7 @@ const fakeAdmin = (credentialId: string) => {
     expiresAt: new Date(Date.now() + 600_000),
     approvalUrl: `${location.origin}/admin/approve/${REQUEST_ID}`,
     state: 'pending',
+    ...overrides,
   }
   return {
     getWorkspaceWrite: async () => request,
@@ -124,11 +125,12 @@ const fakeAdmin = (credentialId: string) => {
   }
 }
 
-// Enrols a passkey on the virtual authenticator and shows the page of a request it can approve.
-const renderPage = async () => {
+// Enrols a passkey on the virtual authenticator and shows the page of a request it can approve,
+// the one above as `overrides` change it.
+const renderPage = async (overrides: Partial<AdminWriteRequest> = {}) => {
   const registration = await createPasskey(
     challengeFor(ENROLMENT_CHALLENGE, []), { id: 'alice@example.com', name: 'Alice' }, 'Example OS')
-  const admin = fakeAdmin(registration.credentialId)
+  const admin = fakeAdmin(registration.credentialId, overrides)
   mocks.authenticatedApi.getAdminApi.mockResolvedValue(admin)
   const rootRoute = createRootRoute({ component: () => <Outlet /> })
   const pageRoute = createRoute({
@@ -147,7 +149,7 @@ const renderPage = async () => {
     await router.load()
     root!.render(<RouterProvider router={router} />)
   })
-  await expect.element(approveButton()).toBeVisible()
+  await expect.element(denyButton()).toBeVisible()
   return { admin, credentialId: registration.credentialId }
 }
 
@@ -194,4 +196,21 @@ it('reaches Approve and then Deny by Tab, and approves on Enter', async () => {
   await expect.element(outcome()).toHaveTextContent('Applied')
   await expect.element(outcome()).toHaveFocus()
   await expect.element(approveButton()).not.toBeInTheDocument()
+})
+
+it('shows the admin who asked to read content no Approve button, and gives the explanation focus', async () => {
+  const { admin } = await renderPage({
+    action: 'grantContentAccess', args: {}, requestedBy: 'alice@example.com',
+  })
+  const explanation = page.getByText('Another admin must approve this request')
+
+  await expect.element(explanation).toBeVisible()
+  await expect.element(approveButton()).not.toBeInTheDocument()
+  expect(document.activeElement?.contains(explanation.element())).toBe(true)
+  expect(document.activeElement).not.toBe(document.body)
+
+  // Deny is the one control left to the requester, a Tab on from the explanation.
+  await input(() => userEvent.tab())
+  await expect.element(denyButton()).toHaveFocus()
+  expect(admin.beginWorkspaceWriteApproval).not.toHaveBeenCalled()
 })

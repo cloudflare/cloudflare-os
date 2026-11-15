@@ -97,7 +97,8 @@ const Detail = ({ term, children }: { term: string; children: ReactNode }) => (
   </div>
 )
 
-// The workspace a record names: its title, which filters the log by that workspace, and its id.
+// The workspace a record names: its title, which filters the log by that workspace, its id, and
+// the way to the admin's page for it.
 const WorkspaceDetail = ({ record, onFilterBy }: {
   record: AdminAccessRecord | AdminWriteRecord
   onFilterBy: (filter: AuditFilter) => void
@@ -113,6 +114,13 @@ const WorkspaceDetail = ({ record, onFilterBy }: {
       <span className="truncate">{record.workspaceTitle || 'Untitled'}</span>
     </Button>
     <span className="block font-mono text-xs text-kumo-subtle break-all">{record.workspaceId}</span>
+    <Link
+      to="/admin/workspace/$workspaceId"
+      params={{ workspaceId: record.workspaceId }}
+      className="text-kumo-brand hover:underline"
+    >
+      Open workspace admin view
+    </Link>
   </Detail>
 )
 
@@ -205,7 +213,8 @@ const WriteDetails = ({ record, onFilterBy }: {
  * access record's by its refusal; a write record's by its step. An access or a write record's
  * target user is the user the call or the write reached: its workspace's owner, or the user whose
  * account a call was made into. The admin's name and the target user, and in a workspace or a
- * write record's details its workspace, filter the log by `onFilterBy`. Names are never cut: an
+ * write record's details its workspace, filter the log by `onFilterBy`; those details also link
+ * the admin's page for the workspace. Names are never cut: an
  * action too long for the space left is, whole in its tooltip. `shaded` stripes the summary row as
  * Kumo stripes a table's even rows: Kumo counts the details row below each one, hidden or not, so
  * every summary row is an odd row to it and would never be striped.

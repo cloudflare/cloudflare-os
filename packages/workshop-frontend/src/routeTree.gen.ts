@@ -27,6 +27,7 @@ import { Route as GadgetIdRouteImport } from './routes/gadget.$id'
 import { Route as GatekeepersAppIdRouteImport } from './routes/gatekeepers_.$appId'
 import { Route as WorkspaceIdRouteImport } from './routes/workspace.$id'
 import { Route as AdminApproveRequestIdRouteImport } from './routes/admin_.approve.$requestId'
+import { Route as AdminWorkspaceWorkspaceIdRouteImport } from './routes/admin_.workspace.$workspaceId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -118,6 +119,12 @@ const AdminApproveRequestIdRoute = AdminApproveRequestIdRouteImport.update({
   path: '/admin/approve/$requestId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminWorkspaceWorkspaceIdRoute =
+  AdminWorkspaceWorkspaceIdRouteImport.update({
+    id: '/admin_/workspace/$workspaceId',
+    path: '/admin/workspace/$workspaceId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -138,6 +145,7 @@ export interface FileRoutesByFullPath {
   '/gatekeepers/$appId': typeof GatekeepersAppIdRoute
   '/workspace/$id': typeof WorkspaceIdRoute
   '/admin/approve/$requestId': typeof AdminApproveRequestIdRoute
+  '/admin/workspace/$workspaceId': typeof AdminWorkspaceWorkspaceIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -158,6 +166,7 @@ export interface FileRoutesByTo {
   '/gatekeepers/$appId': typeof GatekeepersAppIdRoute
   '/workspace/$id': typeof WorkspaceIdRoute
   '/admin/approve/$requestId': typeof AdminApproveRequestIdRoute
+  '/admin/workspace/$workspaceId': typeof AdminWorkspaceWorkspaceIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -179,6 +188,7 @@ export interface FileRoutesById {
   '/gatekeepers_/$appId': typeof GatekeepersAppIdRoute
   '/workspace/$id': typeof WorkspaceIdRoute
   '/admin_/approve/$requestId': typeof AdminApproveRequestIdRoute
+  '/admin_/workspace/$workspaceId': typeof AdminWorkspaceWorkspaceIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -201,6 +211,7 @@ export interface FileRouteTypes {
     | '/gatekeepers/$appId'
     | '/workspace/$id'
     | '/admin/approve/$requestId'
+    | '/admin/workspace/$workspaceId'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -221,6 +232,7 @@ export interface FileRouteTypes {
     | '/gatekeepers/$appId'
     | '/workspace/$id'
     | '/admin/approve/$requestId'
+    | '/admin/workspace/$workspaceId'
   id:
     | '__root__'
     | '/'
@@ -241,6 +253,7 @@ export interface FileRouteTypes {
     | '/gatekeepers_/$appId'
     | '/workspace/$id'
     | '/admin_/approve/$requestId'
+    | '/admin_/workspace/$workspaceId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -262,6 +275,7 @@ export interface RootRouteChildren {
   GatekeepersAppIdRoute: typeof GatekeepersAppIdRoute
   WorkspaceIdRoute: typeof WorkspaceIdRoute
   AdminApproveRequestIdRoute: typeof AdminApproveRequestIdRoute
+  AdminWorkspaceWorkspaceIdRoute: typeof AdminWorkspaceWorkspaceIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -392,6 +406,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminApproveRequestIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin_/workspace/$workspaceId': {
+      id: '/admin_/workspace/$workspaceId'
+      path: '/admin/workspace/$workspaceId'
+      fullPath: '/admin/workspace/$workspaceId'
+      preLoaderRoute: typeof AdminWorkspaceWorkspaceIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -414,6 +435,7 @@ const rootRouteChildren: RootRouteChildren = {
   GatekeepersAppIdRoute: GatekeepersAppIdRoute,
   WorkspaceIdRoute: WorkspaceIdRoute,
   AdminApproveRequestIdRoute: AdminApproveRequestIdRoute,
+  AdminWorkspaceWorkspaceIdRoute: AdminWorkspaceWorkspaceIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

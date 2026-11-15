@@ -1,12 +1,23 @@
-import type {
-  AdminWorkspaceAccess, AdminWriteAction, AdminWriteArgs,
+import {
+  ADMIN_GRANT_LIFETIME_SECONDS,
+  getAdminAccessErrorCode,
+  getAdminGrantErrorCode,
+  getAdminWriteErrorCode,
+  type AdminWorkspaceAccess,
+  type AdminWriteAction,
+  type AdminWriteArgs,
+  type AdminWriteRequest,
 } from '@gadgets/workshop-shared/api'
+
+/** How long a grant lasts, in hours, as the admin pages say it. */
+export const GRANT_HOURS = ADMIN_GRANT_LIFETIME_SECONDS / 3600
 
 /** What each write does, as the approval page names it. */
 export const WRITE_ACTION_LABELS: Record<AdminWriteAction, string> = {
   stopAgent: 'Stop the agent',
   restartWorkspace: 'Restart the workspace',
-  grantContentAccess: "Read the workspace's content",
+  grantContentAccess:
+    `Let admins read this workspace's content for ${GRANT_HOURS} hours, without its owner's grant`,
 }
 
 /** What each argument of a write is called, in the order the approval page lists them. */
@@ -76,6 +87,36 @@ export const idsNote = (access: AdminWorkspaceAccess): string =>
 /** The writes nothing can take back: none of the writes there are yet. */
 export const DESTRUCTIVE_WRITES: ReadonlySet<AdminWriteAction> = new Set()
 
-/** What an approver must know before confirming that the request itself does not say: nothing,
- * for the writes there are yet. */
-export const WRITE_CONSEQUENCES: Partial<Record<AdminWriteAction, string>> = {}
+/** What an approver must know before confirming that the request itself does not say. */
+export const WRITE_CONSEQUENCES: Partial<Record<AdminWriteAction, string>> = {
+  grantContentAccess:
+    `Once approved, every admin can read this workspace's content for ${GRANT_HOURS} hours, through `
+    + "a view opened for content. The workspace's owner is not told, and nothing in the workspace "
+    + 'shows it. Every read is recorded in the audit log with the grant it ran under, and an admin '
+    + 'can end the grant sooner.',
+}
+
+// Only ASCII letters are folded, as the server folds them: toLowerCase() also folds some other
+// characters onto ASCII ones, which would let a look-alike name read as the requester's.
+const asciiLowerCase = (text: string) => text.replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+
+/**
+ * Whether `request` waits for an admin other than `userId`: it asks to read a workspace's content,
+ * which the admin who asked cannot approve, and `userId` is that admin. Names that differ only by
+ * the case of ASCII letters are one admin, as the deployment's list of admins matches them. The
+ * server decides: this only spares the requester an approval that would be refused.
+ */
+export const awaitsAnotherAdmin = (
+  request: Pick<AdminWriteRequest, 'action' | 'requestedBy'>, userId: string,
+): boolean =>
+  request.action === 'grantContentAccess'
+  && asciiLowerCase(request.requestedBy) === asciiLowerCase(userId)
+
+/**
+ * The server's own message for a refusal it names by code (an admin access, write or grant
+ * refusal), which says what the admin can do about it. Undefined for any other failure.
+ */
+export const adminRefusalMessage = (err: unknown): string | undefined => {
+  const code = getAdminAccessErrorCode(err) ?? getAdminWriteErrorCode(err) ?? getAdminGrantErrorCode(err)
+  return code !== undefined && err instanceof Error ? err.message : undefined
+}
