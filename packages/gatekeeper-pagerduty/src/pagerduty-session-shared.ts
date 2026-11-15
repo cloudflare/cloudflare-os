@@ -11,6 +11,7 @@ import type { ApprovalQueue } from "@gadgets/workshop-shared/gatekeeper";
 import type { ActionSubmitter } from "@gadgets/gatekeeper-kit/actions";
 import { TokenCursor, type CursorInjection } from "@gadgets/gatekeeper-kit/cursors";
 import type { ObservationInput } from "@gadgets/gatekeeper-kit/observers";
+import { simulatedList } from "@gadgets/gatekeeper-kit/simulation-store";
 import {
   MAX_LIMIT, chainedPage, isDenial, listing, scheduleListings, schedulePath, type OffsetSource, type PagerDutyApi, type Query,
 } from "./pagerduty-api";
@@ -22,8 +23,8 @@ import {
   type Schedule, type WireIncident, type WirePriority, type WireRef, type WireSchedule, type WireService, type WireUser,
 } from "./pagerduty-normalize";
 import {
-  changedIncidents, matchesQuery, newestFirst, overlayIncident, overlayOnCalls, overridingUsers, pendingIncidents,
-  type IncidentQuery, type Pending,
+  changedIncidents, incidentStore, incidentView, matchesQuery, newestFirst, openedIncidents, overlayOnCalls, overridingUsers,
+  pendingSummary, type IncidentQuery, type Pending,
 } from "./pagerduty-simulation";
 import { OBJECT_ID, objectId } from "./pagerduty-urls";
 import type { PagerDutyEventHookTarget } from "./pagerduty-hooks";
@@ -482,13 +483,19 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
   // Whether a row, as pending actions leave it, is still on one of those services and in the filter.
   const keeps = (row: PagerDutyIncidentSummary) =>
     (!live || live.includes(row.service.id)) && matchesQuery(row, query, you);
-  const simulate = (row: PagerDutyIncidentSummary): PagerDutyIncidentSummary[] => {
-    const simulated = overlayIncident(row, pending, resolve, you);
-    return keeps(simulated) ? [simulated] : [];
-  };
-  const openedNow = () => pendingIncidents(pending, resolve, you).filter(keeps);
-  let opened = openedNow();
-  const injected = [...opened, ...[...changed.values()].flatMap(simulate)].toSorted(newestFirst);
+  // The rows as pending actions leave them, and a stand-in for each incident they open. The store
+  // is this walk's, since its reducer assigns an acknowledged incident to whoever is asking.
+  const list = simulatedList({
+    store: incidentStore(you, pendingSummary),
+    // Indexed as each row is served, over the actions of the last refresh, since temporary IDs are
+    // resolved then: an action staged on an incident still to be opened reaches PagerDuty's row on
+    // the page that first lists it.
+    view: () => incidentView(pending, resolve),
+    id: row => row.id,
+    compare: newestFirst,
+    keeps,
+    created: () => openedIncidents(pending, resolve),
+  });
   const named = (filter?.serviceIds ? query.serviceIds! : []).map(service);
   return offsetCursor<PagerDutyIncidentSummary>(ctx, {
     pageSize,
@@ -496,21 +503,21 @@ export async function listIncidents(ctx: SessionContext, filter: PagerDutyIncide
     refresh: async () => {
       live = await servicesWithin(ctx);
       pending = host.pending();
-      opened = openedNow();
+      list.refresh();
     },
     describe: listed("Listed PagerDuty incidents", "incident"),
     filter: named,
     // One check per service rather than per incident: an incident is as visible as its service.
     result: rows => rows.map(row => service(row.service.id)),
-    overlay: simulate,
+    overlay: list.overlay,
     inject: {
-      items: injected,
+      items: [...list.inject.items, ...[...changed.values()].flatMap(list.overlay)].toSorted(newestFirst),
       // They show what staging or this call read of their services, so each is authorized as served.
       authorize: true,
       compare: newestFirst,
       revalidate: row => {
         const read = changed.get(row.id);
-        return (read ? simulate(read)[0] : opened.find(({ id }) => id === row.id)) ?? null;
+        return read ? list.overlay(read)[0] ?? null : list.inject.revalidate(row);
       },
       identity: row => resolve(row.id),
     },

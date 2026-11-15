@@ -15,6 +15,8 @@
 // over the journal's pending entries.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
+import { createSimulationView, type SimulationView } from "@gadgets/gatekeeper-kit/simulation";
+import { createSimulationStore, type SimulationStore } from "@gadgets/gatekeeper-kit/simulation-store";
 import { isProvisional, type IncidentAction, type NewIncident, type PagerDutyAction } from "./pagerduty-actions";
 import type { WireService, WireSupportHours } from "./pagerduty-normalize";
 import type {
@@ -61,45 +63,85 @@ function moved<T extends PagerDutyIncidentSummary>(incident: T, status: T["statu
   return { ...result, ...details };
 }
 
+/**
+ * The pending actions by the incident each acts on: a change to an incident under the ID `resolve`
+ * gives it when the index is made, and the action that opens one under its temporary ID until
+ * PagerDuty's takes its place, after which it acts on nothing, so it is never replayed over the
+ * incident PagerDuty made of it.
+ */
+export function incidentView(pending: Pending, resolve: Resolve): SimulationView<Pending[number], string> {
+  return createSimulationView(pending, action => "incident" in action.payload ? [resolve(action.payload.incident.id)]
+    : action.kind === "createIncident" && resolve(action.payload.ref) === action.payload.ref ? [action.payload.ref] : []);
+}
+
+/** The step of an action that leaves an incident as it was. */
+const UNCHANGED = { kind: "known-no-effect" } as const;
+
+/**
+ * A store that folds the pending actions on an incident over it, as reads show it to `me`: what
+ * each kind of action does to an incident, PagerDuty's side effects included. An incident a
+ * pending action opens starts as `opened` gives it, for a listing's stand-ins; without `opened`
+ * the store folds only the incidents it is handed. It remembers a fold by the incident object,
+ * so a listing keeps one for its walk, where a row is folded again at each retry.
+ */
+export function incidentStore<T extends PagerDutyIncidentSummary>(
+  me: PagerDutyUserRef, opened?: (payload: NewIncident, me: PagerDutyUserRef) => T,
+): SimulationStore<string, T, T, Pending[number]> {
+  return createSimulationStore<string, T, T, Pending[number]>({
+    initial: incident => incident,
+    reduce: (incident, { action }) => {
+      // The action that opens an incident makes it only where there is none: a read that holds the
+      // incident's stand-in is given that action too, first among those on its temporary ID.
+      if (action.kind === "createIncident") {
+        return incident === undefined && opened ? { kind: "applied", value: opened(action.payload, me) } : UNCHANGED;
+      }
+      if (incident === undefined || !("incident" in action.payload)) return UNCHANGED;
+      let result = incident;
+      const { stagedAt } = action.payload;
+      switch (action.kind) {
+        case "acknowledge":
+          // PagerDuty leaves a resolved incident as it is, and reassigns one to whoever acknowledges it.
+          if (result.status === "resolved") break;
+          if (!result.assignees.some(({ id }) => id === me.id)) result = { ...result, assignees: [me] };
+          if (result.status === "triggered") result = moved(result, "acknowledged", stagedAt, me);
+          break;
+        case "resolve":
+          if (result.status !== "resolved") result = { ...moved(result, "resolved", stagedAt), assignees: [] };
+          break;
+        case "setPriority":
+          result = { ...result, priority: action.payload.priority?.name ?? null };
+          break;
+        case "setTitle":
+          result = { ...result, title: action.payload.title };
+          break;
+        case "lowerUrgency":
+          result = { ...result, urgency: "low" };
+          break;
+        case "raiseUrgency":
+          // Raising a low-urgency incident someone acknowledged un-acknowledges it, and escalation resumes.
+          if (result.urgency === "low" && result.status === "acknowledged") result = moved(result, "triggered", stagedAt);
+          result = { ...result, urgency: "high" };
+          break;
+        case "reassign":
+          if ("users" in action.payload.to) {
+            result = { ...result, assignees: action.payload.to.users.map(({ id, name }) => ({ id, name })) };
+          }
+          break;
+      }
+      // A case that left the incident alone still holds the object it was given, which the store
+      // takes for an incident changed in place.
+      return result === incident ? UNCHANGED : { kind: "applied", value: result };
+    },
+  });
+}
+
 /** `incident` with its pending changes applied; `overlayAlert` applies them to its alerts. */
 export function overlayIncident<T extends PagerDutyIncidentSummary>(
   incident: T, pending: Pending, resolve: Resolve, me: PagerDutyUserRef,
 ): T {
-  let result = incident;
-  for (const action of actionsOn(incident.id, pending, resolve)) {
-    const { stagedAt } = action.payload;
-    switch (action.kind) {
-      case "acknowledge":
-        // PagerDuty leaves a resolved incident as it is, and reassigns one to whoever acknowledges it.
-        if (result.status === "resolved") break;
-        if (!result.assignees.some(({ id }) => id === me.id)) result = { ...result, assignees: [me] };
-        if (result.status === "triggered") result = moved(result, "acknowledged", stagedAt, me);
-        break;
-      case "resolve":
-        if (result.status !== "resolved") result = { ...moved(result, "resolved", stagedAt), assignees: [] };
-        break;
-      case "setPriority":
-        result = { ...result, priority: action.payload.priority?.name ?? null };
-        break;
-      case "setTitle":
-        result = { ...result, title: action.payload.title };
-        break;
-      case "lowerUrgency":
-        result = { ...result, urgency: "low" };
-        break;
-      case "raiseUrgency":
-        // Raising a low-urgency incident someone acknowledged un-acknowledges it, and escalation resumes.
-        if (result.urgency === "low" && result.status === "acknowledged") result = moved(result, "triggered", stagedAt);
-        result = { ...result, urgency: "high" };
-        break;
-      case "reassign":
-        if ("users" in action.payload.to) {
-          result = { ...result, assignees: action.payload.to.users.map(({ id, name }) => ({ id, name })) };
-        }
-        break;
-    }
-  }
-  return result;
+  const { entity } = incidentStore<T>(me).fold(incident.id, incident, incidentView(pending, resolve).forTarget(incident.id));
+  // No pending action removes an incident, so the fold always holds one.
+  return entity ?? incident;
 }
 
 /** An alert of the incident `incidentId` as pending actions leave it: resolved with its incident. */
@@ -108,7 +150,7 @@ export function overlayAlert(alert: PagerDutyAlert, incidentId: string, pending:
 }
 
 /** An incident a pending action opens, as listings show it until PagerDuty has it. */
-function pendingSummary(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIncidentSummary {
+export function pendingSummary(payload: NewIncident, me: PagerDutyUserRef): PagerDutyIncidentSummary {
   // PagerDuty opens an incident its creator assigns to themselves already acknowledged, by them.
   const own = payload.assignTo?.length === 1 && payload.assignTo[0].id === me.id;
   return {
@@ -178,10 +220,10 @@ function withinSupportHours(hours: WireSupportHours, at: Date): boolean | undefi
     && hours.start_time <= time && time < hours.end_time;
 }
 
-/** The incidents pending actions open that PagerDuty doesn't have yet, with later changes applied. */
-export function pendingIncidents(pending: Pending, resolve: Resolve, me: PagerDutyUserRef): PagerDutyIncidentSummary[] {
+/** The temporary IDs of the incidents pending actions open that PagerDuty doesn't have yet, oldest first. */
+export function openedIncidents(pending: Pending, resolve: Resolve): string[] {
   return pending.flatMap(({ action }) => action.kind === "createIncident" && resolve(action.payload.ref) === action.payload.ref
-    ? [overlayIncident(pendingSummary(action.payload, me), pending, resolve, me)] : []);
+    ? [action.payload.ref] : []);
 }
 
 /** The filter a listing applies, with its defaults filled in. */
