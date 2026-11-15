@@ -143,7 +143,8 @@ export default {
 console error the agent can see.
 
 `GadgetUI` gains one prop, `focus?: { anchor: string | undefined; onFocusChange(focus);
-onFocusReset() }`:
+onFocusReset?() }`. `onFocusReset` is optional because only the composer's state needs it:
+`GadgetUseView` never passes it, and `GadgetEditor` passes it from commit 6.
 
 - `reportFocus()` calls `onFocusChange`, and records the anchor as the last one this frame
   reported.
@@ -153,11 +154,14 @@ onFocusReset() }`:
   returning.
 - When `anchor` changes to something other than what this frame last reported, `GadgetUI` calls
   `navigate`. That covers a pasted link and, later, a clicked comment, without echoing the
-  gadget's own reports back to it.
+  gadget's own reports back to it. Because the URL lags the reports, an anchor the frame reported
+  since `anchor` last changed is not a navigation either: after reports A then B, the URL can
+  still catch up through A, and sending the frame back to A would undo B.
 - A `navigate` that returns false, or fails, reports a null focus, which clears the stale anchor.
   It does so only if nothing has superseded it: a `navigate` can still be pending when the user
   moves on, so each call is numbered, and its failure is ignored if the frame has reported a focus
-  or been sent a newer `navigate` since, or if the frame has been replaced. A replaced frame's
+  or been sent a newer `navigate` since, if `anchor` has changed since (even back to the spot the
+  frame reported, which sends no `navigate`), or if the frame has been replaced. A replaced frame's
   session ending rejects its pending call, and that must not clear the anchor its successor is
   about to be sent to.
 - A new frame starts with no "last reported" anchor and no callback, so it gets `navigate(anchor)`
@@ -172,14 +176,17 @@ onFocusReset() }`:
 - The anchor lives in the URL as a new search param `at`, beside `w`. A report writes `w` and
   `at` together, with `replace`. Without `w`, the editor picks a gadget from browser-local state
   or the workspace default, so a link carrying `at` alone could open on a different gadget in
-  another browser.
+  another browser. A null report with no `at` to clear writes nothing, so a gadget that reports
+  only null doesn't pin `w`. Writing `w` this way is not arriving with it, so it doesn't reopen a
+  workspace pane the user closed (a hidden pane's frame still runs and reports).
 - `at` means something only for the gadget `w` names. It is ignored and dropped when the URL has
   no `w`, or when that workpiece cannot be selected.
 - Selecting another workpiece drops `at`.
 - URL writes are debounced, so a drag-selection doesn't rewrite the URL per event (browsers
   rate-limit `replaceState`). A pending write is cancelled when the selected workpiece or the
   workspace changes, and when `at` is set from elsewhere (a transcript chip, a followed link), so
-  an old report never overwrites a newer target.
+  an old report never overwrites a newer target. A change to `at` counts as our own only if it is
+  the one our last write made and hasn't yet come back through the URL.
 - The reported `GadgetFocus` is kept in React state for the composer. `onFocusReset` clears it
   and leaves the URL alone, so the chip never shows a label from old code while the new frame is
   still starting.
@@ -327,7 +334,9 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
    kernel, and every caller. No behavior change.
 3. **Host API.** `GadgetFocus`, the limits, the two `GadgetHost` methods, and `ExportGadgetHost`'s
    no-ops. `WorkshopGadgetHost` gets no-ops here too, so the build stays green.
-4. **Workshop host.** Reports, the `at` param, restore and navigation. Frontend only.
+4. **Workshop host.** Reports, the `at` param, restore and navigation. Frontend only. The
+   reported `GadgetFocus` in `GadgetEditor`'s state, and the `onFocusReset` that clears it, wait
+   for commit 6, which is the first to read them.
 5. **Focus on messages.** `MessageFocus`, the option and the record, steering, the tagged block
    and the paragraph that explains it to the agent. Shared and kernel.
 6. **Chips.** The composer's and the transcript's. Frontend only.
@@ -343,7 +352,8 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   reload from a failed reconnect; the gadget's own report is not echoed back; a false result
   clears the anchor, but not after a newer report, and not when it arrives from a frame that has
   since been replaced; malformed and oversized reports are dropped.
-- **URL** (frontend unit tests): `at` parses and round-trips; a report writes `w` with it; `at`
+- **URL** (frontend unit tests, on the route and on `useFocusUrl`, the hook `GadgetEditor` keeps
+  the URL with): `at` parses and round-trips; a report writes `w` with it; `at`
   without a selectable `w` is dropped; switching workpiece drops it, and a write still pending
   from the previous gadget never lands.
 - **Export** (`browser-export.test.ts`): a UI that calls both methods still exports.

@@ -10,7 +10,7 @@ import {
   WorkpieceId,
   GadgetSummary,
 } from '@gadgets/workshop-shared/api'
-import GadgetUI from './GadgetUI'
+import GadgetUI, { type GadgetUIFocus } from './GadgetUI'
 import { WorkshopButton } from './components/WorkshopControls'
 import UserMenu from './components/UserMenu'
 import { GadgetPresence } from './components/GadgetPresence'
@@ -35,6 +35,8 @@ type Props = {
   // Null while the selected gadget is being admitted, or while the workspace has no gadgets.
   gadget: RpcStub<GadgetClient> | null
   selectedGadgetId: WorkpieceId | null
+  // The selected gadget's focus, kept in the URL by the parent.
+  gadgetFocus: GadgetUIFocus | undefined
   // Why the selected gadget couldn't be opened, such as declining to choose connected accounts;
   // the collaborator can retry it or pick another gadget.
   gadgetOpenFailure: string | null
@@ -54,6 +56,7 @@ export default function GadgetUseView({
   overseer,
   gadget,
   selectedGadgetId,
+  gadgetFocus,
   gadgets,
   gadgetOpenFailure,
   onRetryGadget,
@@ -168,6 +171,7 @@ export default function GadgetUseView({
             gadget={gadget}
             height="100%"
             isVisible={true}
+            focus={gadgetFocus}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">

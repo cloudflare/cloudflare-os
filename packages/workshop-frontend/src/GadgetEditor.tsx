@@ -78,6 +78,7 @@ import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
+import { useFocusUrl, withWorkpiece } from './features/gadget-focus/useFocusUrl'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -482,8 +483,8 @@ export default function GadgetEditor() {
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
-  const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
-    useSearch({ strict: false }) as { chat?: number; w?: number; showChat?: true }
+  const { chat: chatParam, w: workpieceParam, at: atParam, showChat: showChatParam } =
+    useSearch({ strict: false }) as { chat?: number; w?: number; at?: string; showChat?: true }
   const urlChatId = chatParam !== undefined ? chatParam : null
   const urlWorkpieceId = workpieceParam !== undefined ? workpieceParam : null
 
@@ -529,7 +530,7 @@ export default function GadgetEditor() {
       if (id) navigate({
         to: '/workspace/$id',
         params: { id },
-        search: urlWorkpieceId === null ? {} : { w: urlWorkpieceId },
+        search: urlWorkpieceId === null ? {} : { w: urlWorkpieceId, at: atParam },
         replace: true,
       })
     },
@@ -1036,6 +1037,29 @@ export default function GadgetEditor() {
     setWorkspaceVisibility('open', urlWorkpieceId)
   }, [workpiecesReady, urlWorkpieceId, visibleWorkpieces, setWorkspaceVisibility])
 
+  // ── focus ─────────────────────────────────────────────────────────────────────
+  const gadgetFocus = useFocusUrl({
+    workspaceId: id,
+    urlWorkpieceId,
+    at: atParam,
+    selectedGadgetId,
+    // A use-only view has no chats, and no pending gadgets to wait for.
+    selectionSettled: workpiecesReady && metadata !== null && (isUseOnly || chatListReady),
+    replaceSearch: changes => {
+      // Writing the selected gadget's `w` is not arriving with it, so it mustn't reopen a pane the
+      // user closed.
+      if (changes.w !== undefined) openedWorkpieceParamRef.current = changes.w
+      navigate({
+        to: '/workspace/$id',
+        params: { id: id! },
+        search: (prev: Record<string, unknown>) => ({ ...prev, ...changes }),
+        // Keeps #fullscreen.
+        hash: true,
+        replace: true,
+      })
+    },
+  })
+
   const openActivity = useCallback((initialView: ActivityView) => {
     setWorkspaceTransitionEnabled(true)
     setActivityClosing(false)
@@ -1080,7 +1104,7 @@ export default function GadgetEditor() {
     navigate({
       to: '/workspace/$id',
       params: { id: id! },
-      search: (prev: Record<string, unknown>) => ({ ...prev, w: target.id }),
+      search: (prev: Record<string, unknown>) => withWorkpiece(prev, target.id),
       replace: true,
     })
   }, [workpiecesReady, allGadgets, effectiveSelectedChatId, setWorkspaceVisibility, navigate, id])
@@ -1245,11 +1269,10 @@ export default function GadgetEditor() {
         params: { id: id! },
         // Keep committed selections, but clear draft selections outside their branch.
         search: (prev: Record<string, unknown>) => ({
-          ...prev,
-          chat: chatId !== null ? chatId : undefined,
-          w: leavingPendingApp
+          ...withWorkpiece(prev, leavingPendingApp
             ? undefined
-            : typeof prev.w === 'number' ? prev.w : undefined,
+            : typeof prev.w === 'number' ? prev.w : undefined),
+          chat: chatId !== null ? chatId : undefined,
         }),
         replace: options?.replace,
       })
@@ -1435,7 +1458,7 @@ export default function GadgetEditor() {
     navigate({
       to: '/workspace/$id',
       params: { id: id! },
-      search: (prev: Record<string, unknown>) => ({ ...prev, w: target.workpieceId }),
+      search: (prev: Record<string, unknown>) => withWorkpiece(prev, target.workpieceId),
       replace: true,
     })
   }, [streamingActiveFile, selectedWorkpieceId, visibleWorkpieces, showFullEditor, showingActivity,
@@ -1455,9 +1478,8 @@ export default function GadgetEditor() {
       params: { id: id! },
       // Selecting a draft also returns to its creating conversation.
       search: (prev: Record<string, unknown>) => ({
-        ...prev,
+        ...withWorkpiece(prev, workpieceId),
         chat: pendingChatId ?? (typeof prev.chat === 'number' ? prev.chat : undefined),
-        w: workpieceId,
       }),
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
@@ -1652,6 +1674,7 @@ export default function GadgetEditor() {
           overseer={overseer.stub}
           gadget={selectedGadgetStub}
           selectedGadgetId={selectedGadgetId}
+          gadgetFocus={gadgetFocus}
           gadgets={visibleGadgets}
           onSelectGadget={handleSelectWorkpiece}
           // A lost connection breaks the stub too; reconnecting reopens the gadget.
@@ -2256,6 +2279,7 @@ export default function GadgetEditor() {
                   reloadTrigger={uiReloadTrigger}
                   isVisible={activeTab === 'app' && !previewMode}
                   chatId={previewChatId}
+                  focus={gadgetFocus}
                   onConsoleLog={handleClientConsoleLog}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                   onNoUiChange={handleNoUiChange}
@@ -2354,6 +2378,7 @@ export default function GadgetEditor() {
               reloadTrigger={uiReloadTrigger}
               isVisible={true}
               chatId={previewChatId}
+              focus={gadgetFocus}
               onConsoleLog={handleClientConsoleLog}
             />
           )}
