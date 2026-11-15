@@ -62,11 +62,23 @@ export type RestCellFormat = {
   borders?: { top?: RestBorder; bottom?: RestBorder; left?: RestBorder; right?: RestBorder };
 };
 
-/** Sheets' `GridData`: the cells of one range, from its first row and column. */
+/** Sheets' `GridData`: the cells of one range, and the sizes of its lines, from its first row and column. */
 export type RestGridData = {
   startRow?: number;
   startColumn?: number;
   rowData?: { values?: { userEnteredFormat?: RestCellFormat }[] }[];
+  /** Google leaves out a size of 0. */
+  rowMetadata?: { pixelSize?: number }[];
+  columnMetadata?: { pixelSize?: number }[];
+};
+
+/** Sheets' `GridRange`. Google omits each index that is 0. */
+export type RestGridRange = {
+  sheetId?: number;
+  startRowIndex?: number;
+  endRowIndex?: number;
+  startColumnIndex?: number;
+  endColumnIndex?: number;
 };
 
 /** One sheet of a `spreadsheets.get` or `spreadsheets:getByDataFilter` answer with grid data. */
@@ -78,6 +90,8 @@ export type RestFormatSheet = {
     hidden?: boolean;
     gridProperties?: { rowCount?: number; columnCount?: number };
   };
+  /** With a range read, the sheet's merges that overlap it. */
+  merges?: RestGridRange[];
   data?: RestGridData[];
 };
 
@@ -93,11 +107,17 @@ export const CELL_FORMAT_FIELDS =
 
 /**
  * The field mask of a format read: each sheet's ID, title and size, to name and clip the range
- * read, and each range's position and cells' formats.
+ * read, its merges, and each range's position, line sizes and cells' formats.
  */
 export const FORMAT_READ_FIELDS =
-  "sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount))," +
-  `data(startRow,startColumn,rowData(values(${CELL_FORMAT_FIELDS}))))`;
+  "sheets(properties(sheetId,title,index,hidden,gridProperties(rowCount,columnCount)),merges," +
+  "data(startRow,startColumn,rowMetadata(pixelSize),columnMetadata(pixelSize)," +
+  `rowData(values(${CELL_FORMAT_FIELDS}))))`;
+
+/** The size in pixels of a row Google Sheets has not resized. */
+export const DEFAULT_ROW_HEIGHT = 21;
+/** The size in pixels of a column Google Sheets has not resized. */
+export const DEFAULT_COLUMN_WIDTH = 100;
 
 /** Whether `color` is `#rrggbb` or a theme colour's name. */
 export function isSheetColor(color: unknown): color is SheetColor {
@@ -198,6 +218,30 @@ export function baseFormats(sheets: readonly RestFormatSheet[]): BaseFormats {
   return (sheetId, row, column) => cells.get(`${sheetId}:${row}:${column}`) ?? null;
 }
 
+/** Rows or columns: the lines of a sheet a size or a merge runs along. */
+export type Axis = "rows" | "columns";
+
+/**
+ * Sizes of lines of the sheets Google holds, in pixels, by sheet ID, axis and zero-based index;
+ * null for one a read did not return.
+ */
+export type BaseSizes = (sheetId: number, axis: Axis, index: number) => number | null;
+
+/** The size of every line `sheets`' grid data holds; any other line's is null. */
+export function baseSizes(sheets: readonly RestFormatSheet[]): BaseSizes {
+  let sizes = new Map<string, number>();
+  for (let sheet of sheets) {
+    let sheetId = sheet.properties?.sheetId ?? 0;
+    for (let data of sheet.data ?? []) {
+      data.rowMetadata?.forEach((row, r) =>
+        sizes.set(`${sheetId}:rows:${(data.startRow ?? 0) + r}`, row.pixelSize ?? 0));
+      data.columnMetadata?.forEach((column, c) =>
+        sizes.set(`${sheetId}:columns:${(data.startColumn ?? 0) + c}`, column.pixelSize ?? 0));
+    }
+  }
+  return (sheetId, axis, index) => sizes.get(`${sheetId}:${axis}:${index}`) ?? null;
+}
+
 /** Sheets' `wrapStrategy` for wrapping as an agent names it. */
 export function wrapStrategy(wrap: NonNullable<SheetCellFormat["wrap"]>): string {
   return wrap === "OVERFLOW" ? "OVERFLOW_CELL" : wrap;
@@ -213,6 +257,11 @@ export type BorderSide = "top" | "bottom" | "left" | "right";
 export type FormatEntry = {
   set: Omit<SheetFormatChange, "borders">;
   borders: Partial<Record<BorderSide, SheetBorder | null>>;
+  /**
+   * Set on a cell a queued merge covers, which Google gives its merged cell's formatting: what that
+   * is, only Google can say.
+   */
+  unknown?: true;
 };
 
 /** `base`, a cell's formatting, with what `entry` sets on it; null when that leaves none set. */

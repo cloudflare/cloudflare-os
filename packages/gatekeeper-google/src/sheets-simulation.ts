@@ -26,15 +26,19 @@ import {
   replaySimulation, type SimulationResult, type SimulationStep,
 } from "@gadgets/gatekeeper-kit/simulation";
 import type { SheetArea } from "./sheets-api";
-import { mergeFormat, type BaseFormats, type FormatEntry } from "./sheets-format";
+import {
+  DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, mergeFormat, type Axis, type BaseFormats, type BaseSizes,
+  type FormatEntry,
+} from "./sheets-format";
 import {
   rewriteFormula, structureSensitive, tokenize, type RewriteStep, type RewrittenFormula,
 } from "./sheets-formula";
-import type { LineOp } from "./sheets-input";
+import type { LineOp, MergeType, ResizeOp } from "./sheets-input";
 import {
-  a1Of, cellName, enteredOf, findSheet, isFormula, shownValue, type EnteredValue, type Rect,
+  a1Of, byPosition, cellName, enteredOf, findSheet, intersection, isFormula, rectName, shownValue, type EnteredValue,
+  type Rect,
 } from "./sheets-model";
-import { cellKey, planSheet } from "./sheets-plan";
+import { cellKey, lineKey, planSheet } from "./sheets-plan";
 import type {
   SpreadsheetCellValue, SpreadsheetFormats, SpreadsheetRange, SpreadsheetValueMode,
 } from "./sheets-read-types";
@@ -54,6 +58,8 @@ export type SheetMeta = {
   frozenRowCount?: number;
   /** How many leading columns are frozen, when any are. */
   frozenColumnCount?: number;
+  /** Its merged cells, when it has any. */
+  merges?: readonly Rect[];
 };
 
 /**
@@ -79,13 +85,15 @@ export type StructuralStep =
 /**
  * What a read fetched, with queued changes applied: the sheets, sorted by index; what queued
  * changes entered in cells, and set on their formatting, keyed by `cellKey` from `sheets-plan.ts`
- * with the identities of the cell's row and column, so an entry moves with its lines; and every
- * change to rows, columns or sheets replayed, in order.
+ * with the identities of the cell's row and column, so an entry moves with its lines; the sizes in
+ * pixels they gave lines, keyed by `lineKey` from there; and every change to rows, columns or
+ * sheets replayed, in order.
  */
 export type Grid = {
   sheets: readonly SimSheet[];
   cells: ReadonlyMap<string, Entry>;
   formats: ReadonlyMap<string, FormatEntry>;
+  sizes: ReadonlyMap<string, number>;
   log: readonly StructuralStep[];
 };
 
@@ -98,12 +106,16 @@ export type PlannedChange =
   | { op: "writeCells"; sheetId: number; rect: Rect; values: SheetCellInput[][] }
   | { op: "clearRange"; sheetId: number; rect: Rect }
   | { op: "formatCells"; sheetId: number; rect: Rect; format: SheetFormatChange }
+  | { op: "mergeCells"; sheetId: number; rect: Rect; merge: MergeType }
+  | { op: "unmergeCells"; sheetId: number; rect: Rect }
   | { op: "addSheet"; sheetId: number; title: string; index: number; rowCount: number; columnCount: number }
   | { op: "renameSheet"; sheetId: number; title: string }
   | { op: "duplicateSheet"; sheetId: number; newSheetId: number; title: string; index: number }
   | { op: "deleteSheet"; sheetId: number; rowCount: number; columnCount: number }
   | { op: Extract<LineOp, `insert${string}`>; sheetId: number; start: number; count: number; appends?: true }
-  | { op: Extract<LineOp, `delete${string}`>; sheetId: number; start: number; count: number };
+  | { op: Extract<LineOp, `delete${string}`>; sheetId: number; start: number; count: number }
+  | { op: ResizeOp; sheetId: number; start: number; count: number; size: number }
+  | { op: "freeze"; sheetId: number; rows?: number; columns?: number };
 
 /**
  * An `updateSpreadsheet()` batch. `sheets` gives the title of each sheet a change acts on or
@@ -125,14 +137,16 @@ export type SheetBatch = {
 /**
  * The payload of each kind of queued change. A batch is queued as `editSheetValues` when it only
  * enters literal values and clears cells, `formatSheets` when it only formats cells,
- * `editSpreadsheet` when it otherwise deletes no sheet, row or column and its formulas call only
- * functions that compute from the spreadsheet alone, and `updateSpreadsheet` otherwise; they differ
- * in nothing but which kinds a user may let apply without asking.
+ * `updateSpreadsheet` when a formula calls a function that does not compute from the spreadsheet
+ * alone or a change is not one this module classifies, `deleteSpreadsheetContent` when it
+ * otherwise deletes a sheet, rows or columns, and `editSpreadsheet` otherwise; they differ in
+ * nothing but which kinds a user may let apply without asking.
  */
 export type SheetsActions = {
   editSheetValues: SheetBatch;
   formatSheets: SheetBatch;
   editSpreadsheet: SheetBatch;
+  deleteSpreadsheetContent: SheetBatch;
   updateSpreadsheet: SheetBatch;
 };
 
@@ -152,6 +166,7 @@ export function gridOf(metadata: { sheets: readonly SheetMeta[] }): Grid {
       .toSorted((a, b) => a.index - b.index),
     cells: new Map(),
     formats: new Map(),
+    sizes: new Map(),
     log: [],
   };
 }
@@ -451,9 +466,19 @@ export function formulaAt(grid: Grid, sheetId: number, formula: string, from: nu
 type Shown = { value: SpreadsheetCellValue; pending: boolean };
 
 /**
+ * Whether Google decides the formatting of the cell keyed `key`: a cell of a row or column a queued
+ * change inserts, which takes the formatting of the line beside it, or one whose formatting a
+ * queued merge left unknown.
+ */
+function formatUnknown(grid: Grid, key: string): boolean {
+  return grid.formats.get(key)?.unknown === true ||
+    key.split(":").slice(1).some(identity => insertedLine(grid, identity));
+}
+
+/**
  * `shown`, the cell keyed `key` as `mode` reads it, made pending when a formatted read would show
  * it in a number format only Google can display: one a queued change sets or resets, or, for a
- * value queued on an inserted row or column, the one it takes from the line before it. That holds
+ * value queued into a cell whose formatting Google decides, the one it takes there. That holds
  * for a cell that reads blank too, since a format such as `;;;` hides what a cell holds; only a
  * cell a queued change empties is known to read blank.
  */
@@ -461,7 +486,7 @@ function displayed(shown: Shown, grid: Grid, key: string, mode: SpreadsheetValue
   if (mode !== "formatted") return shown;
   let input = grid.cells.get(key)?.input;
   let unknown = grid.formats.get(key)?.set.numberFormat !== undefined ||
-    (input !== undefined && key.split(":").slice(1).some(identity => insertedLine(grid, identity)));
+    input !== undefined && formatUnknown(grid, key);
   return !unknown || input === null ? shown : { value: null, pending: true };
 }
 
@@ -626,13 +651,45 @@ export function basePiecesOf(grid: Grid, areas: readonly { sheetId: number; rect
  */
 export function rangesToFetch(grid: Grid, areas: readonly { sheetId: number; rect: Rect }[]): SheetArea[] {
   let pieces = basePiecesOf(grid, areas);
+  checkReadSize(pieces);
+  return pieces;
+}
+
+/** Refuse a read of more pieces, or more cells, than one read of the queued state may make. */
+function checkReadSize(pieces: readonly SheetArea[]): void {
   let cells = pieces.reduce((total, { rect }) =>
     total + (rect.endRow - rect.startRow) * (rect.endColumn - rect.startColumn), 0);
   if (pieces.length > MAX_READ_PIECES || cells > MAX_READ_CELLS) {
     throw new Error("These ranges cannot be read with the queued changes applied. Read fewer cells, " +
       "or approve or reject the queued changes first.");
   }
-  return pieces;
+}
+
+/**
+ * The pieces a format read of `area` fetches: those `rangesToFetch` gives, and, where every column
+ * of the area or every row is one a queued change inserts, so that none of them holds a cell Google
+ * has, one line of the other kind beside its lines, whose sizes are read with it.
+ */
+export function formatPiecesToFetch(grid: Grid, area: SimulatedArea): SheetArea[] {
+  let pieces = rangesToFetch(grid, [area]);
+  let sheet = sheetOf(grid, area.sheetId);
+  let source = sheet.source;
+  if (pieces.length > 0 || source === undefined) return pieces;
+  let { rect } = area;
+  // The runs of lines Google holds among the area's, each read beside the sheet's first line of
+  // the other kind: the lines between them that queued changes delete are not read.
+  let rows = basePieces(sheet.rows, rect.startRow, rect.endRow);
+  let columns = basePieces(sheet.columns, rect.startColumn, rect.endColumn);
+  let rowRuns = (run: { start: number; length: number }) => ({
+    sheetId: source, rect: { startRow: run.start, endRow: run.start + run.length, startColumn: 0, endColumn: 1 },
+  });
+  let columnRuns = (run: { start: number; length: number }) => ({
+    sheetId: source, rect: { startRow: 0, endRow: 1, startColumn: run.start, endColumn: run.start + run.length },
+  });
+  let lines = rows.length > 0 && columns.length === 0 ? rows.map(rowRuns)
+    : columns.length > 0 && rows.length === 0 ? columns.map(columnRuns) : [];
+  checkReadSize(lines);
+  return lines;
 }
 
 /** Values of cells of the sheets Google holds, by sheet ID and zero-based row and column. */
@@ -763,15 +820,32 @@ function insertedLine(grid: Grid, identity: string): boolean {
   return match !== null && grid.log[Number(match[1])]?.kind === "insert";
 }
 
+// The size of the line with `identity` along `axis` of `sheet`, from `sizes`, those of the lines
+// of the sheet Google holds: null for a line a queued insert made, whose size Google gives it from
+// the line beside it, and the default for one of a sheet a queued change added.
+function lineSize(grid: Grid, sheet: SimSheet, axis: Axis, identity: string | undefined, sizes: BaseSizes): number | null {
+  if (identity === undefined) return null;
+  let queued = grid.sizes.get(lineKey(sheet.id, axis, identity));
+  if (queued !== undefined) return queued;
+  if (insertedLine(grid, identity)) return null;
+  let index = baseIndexOf(identity);
+  if (sheet.source !== undefined && index !== undefined) return sizes(sheet.source, axis, index);
+  return axis === "rows" ? DEFAULT_ROW_HEIGHT : DEFAULT_COLUMN_WIDTH;
+}
+
 /**
- * `area` of `grid` as a format read returns it, from `base`, the formats of the cells of the
- * spreadsheet Google holds that `basePiecesOf` gives for it, or, for a grid whose log is empty,
- * of the area itself: what queued changes set merged over what each cell has, and cells moved
- * with their lines. Cells of added sheets start with no formatting. Cells of inserted lines read
+ * `area` of `grid` as a format read returns it, from `base` and `sizes`, the formats of the cells
+ * and the sizes of the lines of the spreadsheet Google holds that `basePiecesOf` gives for it, or,
+ * for a grid whose log is empty, of the area itself: what queued changes set merged over what each
+ * cell has, and cells and sizes moved with their lines, with the merges queued changes leave
+ * overlapping it. Cells of added sheets start with no formatting. Cells of inserted lines read
  * null and pending, since Google gives an inserted row the formatting of the row beside it but not
- * its borders, and an inserted column its borders as well.
+ * its borders, and an inserted column its borders as well, as do cells a queued merge covers, which
+ * take their merged cell's.
  */
-export function simulatedFormats(grid: Grid, area: SimulatedArea, base: BaseFormats): SpreadsheetFormats {
+export function simulatedFormats(
+  grid: Grid, area: SimulatedArea, base: BaseFormats, sizes: BaseSizes,
+): SpreadsheetFormats {
   let sheet = sheetOf(grid, area.sheetId);
   let { rect } = area;
   let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
@@ -781,8 +855,8 @@ export function simulatedFormats(grid: Grid, area: SimulatedArea, base: BaseForm
     let row = rows[r];
     let column = columns[c];
     if (row === undefined || column === undefined) return null;
-    let entry = grid.formats.get(cellKey(sheet.id, row, column));
-    if (insertedLine(grid, row) || insertedLine(grid, column)) {
+    let key = cellKey(sheet.id, row, column);
+    if (formatUnknown(grid, key)) {
       pendingCells.push(cellName(rect.startRow + r, rect.startColumn + c));
       return null;
     }
@@ -790,11 +864,17 @@ export function simulatedFormats(grid: Grid, area: SimulatedArea, base: BaseForm
     let baseColumn = baseIndexOf(column);
     let held = sheet.source === undefined || baseRow === undefined || baseColumn === undefined
       ? null : base(sheet.source, baseRow, baseColumn);
-    return mergeFormat(held, entry);
+    return mergeFormat(held, grid.formats.get(key));
   }));
+  let merges = (sheet.merges ?? []).filter(merge => intersection(merge, rect)).toSorted(byPosition);
+  let rowLines = linesAt(sheet.rows, rect.startRow, rect.startRow + area.rows);
+  let columnLines = linesAt(sheet.columns, rect.startColumn, rect.startColumn + area.columns);
   return {
     range: a1Of(sheet.title, rect),
     formats,
+    ...(merges.length > 0 ? { merges: merges.map(rectName) } : {}),
+    rowHeights: rowLines.map(row => lineSize(grid, sheet, "rows", row, sizes)),
+    columnWidths: columnLines.map(column => lineSize(grid, sheet, "columns", column, sizes)),
     ...(pendingCells.length > 0 ? { pendingCells } : {}),
   };
 }

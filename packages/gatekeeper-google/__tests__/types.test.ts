@@ -310,7 +310,17 @@ sheet.updateSpreadsheet([
   { op: "insertColumns", sheet: "Sales", at: "C" },
   { op: "deleteColumns", sheet: "Sales", at: "C", count: 2 },
   { op: "deleteSheet", sheet: "Copy" },
+  { op: "resizeRows", sheet: "Sales", at: 1, count: 2, height: 30 },
+  { op: "resizeColumns", sheet: "Sales", at: "C", width: 150 },
+  { op: "freeze", sheet: "Sales", rows: 1, columns: 0 },
+  { op: "mergeCells", range: "Sales!A1:C1" },
+  { op: "mergeCells", range: "Sales!A2:C3", merge: "ROWS" },
+  { op: "unmergeCells", range: "Sales!A1:C3" },
 ]);
+// @ts-expect-error A merge is whole, by row or by column.
+sheet.updateSpreadsheet([{ op: "mergeCells", range: "Sales!A1:C1", merge: "BOTH" }]);
+// @ts-expect-error A column is resized by its width.
+sheet.updateSpreadsheet([{ op: "resizeColumns", sheet: "Sales", at: "C", height: 30 }]);
 // @ts-expect-error Columns are named by their letters.
 sheet.updateSpreadsheet([{ op: "insertColumns", sheet: "Sales", at: 3 }]);
 // @ts-expect-error A sheet is named by its title, not its ID.

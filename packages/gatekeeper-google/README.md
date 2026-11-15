@@ -788,8 +788,8 @@ already holds are not inspected, and one of its named functions could wrap a ref
 a batch with a formula may apply without asking, as "Spreadsheet edits that keep every sheet, row
 and column" (below), only when every function its formulas call is a built-in the gatekeeper
 knows computes from the spreadsheet alone, such as `SUM`, `IF`, `VLOOKUP` or `FILTER`. The batch
-waits for approval as "Spreadsheet changes that delete or run unchecked formulas" when a formula
-has any of these:
+waits for approval as "Spreadsheet changes that run unchecked formulas" when a formula has any of
+these:
 
 - a call to any other name, including `HYPERLINK`, whose link carries what the formula puts in it
   to the site a click opens, and `LET` and `LAMBDA`, whose names can take a listed function's name
@@ -822,8 +822,11 @@ renames, so it never needs an ID the spreadsheet has not assigned yet. The gatek
 of each sheet a batch adds. A batch that adds, copies or renames sheets or inserts rows or columns,
 alone or together with values, clears and formatting, is queued as "Spreadsheet edits that keep
 every sheet, row and column", which a user may let apply without asking unless one of its formulas
-calls a function the paragraphs above exclude. A batch that deletes a sheet, rows or columns always
-waits for approval, as "Spreadsheet changes that delete or run unchecked formulas". Each batch is
+calls a function the paragraphs above exclude. A batch that also deletes a sheet, rows or columns, or
+merges cells, is queued as "Spreadsheet changes that delete sheets, rows, columns or merged cells'
+values", which a user may also let apply without asking, since the spreadsheet's version history
+restores what it deletes, unless one of its formulas calls such a function: that batch waits for
+approval as "Spreadsheet changes that run unchecked formulas". Each batch is
 queued as exactly one kind, so letting edits that keep every sheet, row and column apply without
 asking leaves batches of only literal values and clears, or only formatting, to their own kinds.
 Every default is sent explicitly, so the approver sees what will be made: a new sheet has Google's
@@ -832,7 +835,11 @@ after its source (Google would put it first, under a name of its own choosing). 
 when queued that would delete the last visible sheet, every row or column of a sheet, or every one
 of its unfrozen ones, delete a sheet of more than 50,000 cells, whose content the guard below could
 not cover (delete it in Google Sheets instead), grow a sheet past 18,278 columns or the spreadsheet
-past 10,000,000 cells, or change or copy a sheet holding a protected range the account cannot edit. Reads show the
+past 10,000,000 cells, or change or copy a sheet holding a protected range the account cannot edit,
+though rows and columns outside that range may be resized and lines frozen through it, as Google
+allows: in a scratch spreadsheet where another account protected A1:C1, resizing row 1 or column A
+was refused with "You are trying to edit a protected cell or object", and a freeze was allowed.
+Reads show the
 queued structure: sheets, rows and columns where the changes put them, cells moved with their rows
 and columns, and formulas rewritten as Google rewrites them, references shifted, grown, shrunk or
 turned into `#REF!`, and sheet titles requoted. A formula's value is shown only while every
@@ -869,6 +876,29 @@ integer from 1 to 400, and a pattern holds 1 to 200 characters and no control ch
 Formatting is not guarded: a collaborator's formatting change made after a batch is queued is
 overwritten when it applies.
 
+`getSpreadsheet()` lists how many leading rows and columns each sheet freezes, and `readFormats()`
+lists the merges that overlap the range, each whole, and each of its rows' height and columns' width
+in pixels. Queued changes to rows and columns move them as a scratch spreadsheet showed Google moving
+them: lines inserted within a merge or among the frozen lines join it, lines inserted at either of its
+edges do not, and deleted lines shrink it, a merge left one cell vanishing. An inserted line's size
+reads `null` unless a queued resize sets it, since Google takes it from the line beside it. `resizeRows` and `resizeColumns` set
+lines' sizes, a whole number of pixels from 1 to 10,000 (Google accepts any number, negative ones
+included), and `freeze` sets how many leading rows or columns a sheet freezes. Both keep every sheet,
+row and column, and are queued as such. A freeze is refused when queued that would leave no row or
+column unfrozen, or freeze only part of a merge, as Google refuses both.
+
+`mergeCells` merges a range into one cell, or with `merge: "ROWS"` or `"COLUMNS"` each of its rows
+or columns, and `unmergeCells` unmerges every merge within a range. As a scratch spreadsheet showed,
+a merged cell shows its top-left cell's value, and Google clears every other cell it covers, gives
+them the top-left cell's formatting, and restores neither on unmerging; reads show the cleared cells
+blank and their formatting `null`, listed in `pendingCells`. A merge is refused when queued that would
+take in part of an existing merge (one the range holds whole is replaced) or merge frozen lines with
+others, as is an unmerge of a range holding part of one and a value written into a cell a merge
+covers, which Google accepts and drops. Since a merge clears cells, a batch with one is queued as
+"Spreadsheet changes that delete sheets, rows, columns or merged cells' values", which a user may
+let apply without asking, and its guard covers the cells it clears; an unmerge keeps every sheet,
+row and column.
+
 Sheets has no revision to pin a write to, so each approved batch is planned against a fresh read
 and guarded by a digest of what it overwrites or removes: the cells it writes and the rows,
 columns and sheets it deletes, as entered, the title and size of each sheet it addresses, and,
@@ -897,7 +927,6 @@ changes to rows, columns and sheets, and a queued batch is capped at 100 KiB. Wh
 queued, a read or a batch may involve at most 5,000,000 characters of formulas times their number,
 since each formula is rewritten through each of them, and hold at most 5 MiB of text as rewritten.
 Google allows 60 write requests a minute per user; a write over that quota stays pending.
-user; a write over that quota stays pending.
 
 ## Google Drive bindings
 
