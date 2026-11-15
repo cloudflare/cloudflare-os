@@ -1,6 +1,6 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, UnreadStateScope, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
-import { ADMIN_ACCESS_ERROR_CODES, createAdminAccessError, type AdminUserView } from "@gadgets/workshop-shared/api";
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_LIFETIME_SECONDS, createAdminAccessError, type AdminAccessGrant, type AdminUserView } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
 import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection, getResourceTypeId, findResourceType } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
@@ -24,6 +24,8 @@ import type { AdminSettings } from "./admin-settings.js";
 import { deleteBlueprintContent } from "./blueprint-archive.js";
 import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
+import { adminAccessPolicy, namedUser } from "./admin-access.js";
+import { isAdminGrantLive, isAdminGrantPrunable, newAdminGrant } from "./admin-grants.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
 import {
@@ -1472,6 +1474,55 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       profile.commitEmail = email;
     }
     this.storage.profile.put(profile);
+  }
+
+  // --- The account-wide admin access grant ---
+  //
+  // One record, in this account alone, that lets deployment admins read the content of every
+  // workspace the user owns. It is the user's own record: none of these methods writes to the
+  // admin audit log, and nothing bounds how often the grant is given or renewed.
+
+  /** The account-wide grant while isAdminGrantLive(), else null: what a workspace asks when an
+   * admin's call needs content and its own storage holds no live grant. It reads one stored
+   * value and writes nothing. */
+  async liveAccountAdminGrant(): Promise<AdminAccessGrant | null> {
+    let grant = this.storage.accountAdminGrant.get();
+    return grant && isAdminGrantLive(grant) ? grant : null;
+  }
+
+  /** AuthenticatedApi.getAccountAdminGrant(). An ended grant kept for as long as the admin audit
+   * log keeps its records is deleted here. */
+  async getAccountAdminGrant(): Promise<AdminAccessGrant | null> {
+    let policy = adminAccessPolicy(await readAdminConfig(this.env), this.env);
+    let grant = this.storage.accountAdminGrant.get();
+    if (!grant || !isAdminGrantPrunable(grant, policy.retentionDays)) return grant;
+    this.storage.accountAdminGrant.put(null);
+    return null;
+  }
+
+  /** AuthenticatedApi.grantAccountAdminAccess(). A live grant is renewed under its id; an ended
+   * one is replaced by a fresh grant. */
+  async grantAccountAdminAccess(): Promise<AdminAccessGrant> {
+    let policy = adminAccessPolicy(await readAdminConfig(this.env), this.env);
+    if (policy.access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
+    let stored = this.storage.accountAdminGrant.get();
+    let grant: AdminAccessGrant = stored && isAdminGrantLive(stored)
+        ? {...stored, expiresAt: new Date(Date.now() + ADMIN_GRANT_LIFETIME_SECONDS * 1000)}
+        : newAdminGrant({source: "owner", scope: "account", grantedBy: this.storage.profile.get()});
+    this.storage.accountAdminGrant.put(grant);
+    return grant;
+  }
+
+  /** AuthenticatedApi.revokeAccountAdminAccess(). It reads no admin configuration, so a grant
+   * can be ended whatever the deployment's level. */
+  async revokeAccountAdminAccess(): Promise<void> {
+    let grant = this.storage.accountAdminGrant.get();
+    if (!grant || !isAdminGrantLive(grant)) return;
+    this.storage.accountAdminGrant.put({
+      ...grant, revokedAt: new Date(), revokedBy: namedUser(this.storage.profile.get()),
+    });
   }
 
   async listModels(kind: ModelKind = "language"): Promise<AiChatAuthorInfo[]> {
