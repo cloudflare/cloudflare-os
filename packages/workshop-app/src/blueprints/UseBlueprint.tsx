@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { CubeIcon, RobotIcon } from '@phosphor-icons/react'
+import { CubeIcon } from '@phosphor-icons/react'
 import type { AiChatAuthorInfo, BlueprintBindingAssignment, BlueprintPublicInfo } from '@gadgets/workshop-shared/api'
 import { UseBlueprintDialog, type UseBlueprintNeed } from '@/blocks/UseBlueprintDialog'
 import { useModels } from '@/chat/useModels'
@@ -11,6 +11,7 @@ import { isNamedWorkspace } from '@/workspaces/workspaceKind'
 import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { useRefreshWorkspaces, useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { initialAnswers, modelsFor, needsOf, shortResource, type BlueprintNeed, type NeedAnswers } from './blueprintNeeds'
+import { KindMark } from '@/components/KindMark'
 
 /** The gadget a blueprint was made into, and whether it is an app, which has a page of its own. */
 export type MadeGadget = { workspaceId: string; gadgetId: number; app: boolean }
@@ -108,7 +109,7 @@ export const UseBlueprint = ({ blueprint, open, onOpenChange, onMade }: UseBluep
       key: need.key,
       title: need.title,
       description: need.description || (need.type === 'agent' ? 'The model an agent it starts runs on' : need.kind === 'decision' ? 'A decision model' : 'An AI model it uses'),
-      icon: need.type === 'agent' ? <RobotIcon /> : <CubeIcon />,
+      icon: need.type === 'agent' ? <KindMark name="agent" /> : <CubeIcon />,
       kind: 'model',
       models: modelsFor(need, offered),
       chosen: answer && answer.type !== 'gatekeeper' ? answer.modelId : undefined,

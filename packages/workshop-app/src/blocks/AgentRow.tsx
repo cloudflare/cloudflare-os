@@ -1,4 +1,5 @@
-import { CaretRightIcon, RobotIcon } from '@phosphor-icons/react'
+import { CaretRightIcon } from '@phosphor-icons/react'
+import { KindMark } from '@/components/KindMark'
 import { LinkButton } from '@/components/LinkButton'
 
 export type AgentRowProps = {
@@ -27,7 +28,7 @@ export const AgentRow = ({ name, model, calledBy, runs, waiting = 0, href, onOpe
     className="group flex w-full items-start gap-3 rounded-2xl py-3 pr-3 pl-3 text-left text-base outline-none hover:bg-kumo-contrast/3 focus-visible:ring-2 focus-visible:ring-kumo-ring"
   >
     <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-contrast/7 text-kumo-default">
-      <RobotIcon className="size-[1.125rem]" />
+      <KindMark name="agent" className="size-[1.125rem]" />
     </span>
     <span className="flex min-w-0 flex-1 flex-col gap-0.5 pt-px">
       <span className="truncate font-medium text-kumo-default">{name}</span>

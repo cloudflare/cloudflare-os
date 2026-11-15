@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { Input, Switch } from '@cloudflare/kumo'
-import { RobotIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Dialog } from '@/components/Dialog'
+import { KindMark } from '@/components/KindMark'
 import { MenuChooser, type MenuChoice } from './MenuChooser'
 
 /** What setting up an agent chose. */
@@ -75,7 +75,7 @@ export const SetUpAgentDialog = ({ open, onOpenChange, reason, models, initialMo
     >
       <div className="flex items-start gap-3 rounded-2xl bg-kumo-tint p-3.5">
         <span aria-hidden="true" className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-base text-kumo-default shadow-xs ring-1 ring-kumo-line">
-          <RobotIcon className="size-[1.125rem]" />
+          <KindMark name="agent" className="size-[1.125rem]" />
         </span>
         <p className="text-sm/5 text-kumo-subtle">
           It works on its own whenever it’s called on, by a gadget, a schedule or this chat. Each run is a

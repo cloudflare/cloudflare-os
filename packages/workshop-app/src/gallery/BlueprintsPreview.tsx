@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { AppWindowIcon, ArrowUpRightIcon, BookmarkSimpleIcon, CubeIcon, FileTextIcon, LinkIcon, RobotIcon, SparkleIcon } from '@phosphor-icons/react'
+import { AppWindowIcon, ArrowUpRightIcon, BookmarkSimpleIcon, CubeIcon, FileTextIcon, LinkIcon, SparkleIcon } from '@phosphor-icons/react'
+import { KindMark } from '@/components/KindMark'
 import { BlueprintNeedRow } from '@/blocks/BlueprintNeedRow'
 import { BlueprintSuggestions } from '@/blocks/BlueprintSuggestions'
 import { BlueprintPicture, BlueprintTile } from '@/blocks/BlueprintTile'
@@ -68,7 +69,7 @@ export const BlueprintsPreview = () => {
           <div className="flex flex-col rounded-3xl bg-kumo-tint p-1.5">
             <BlueprintNeedRow title="Budget sheet" detail="Google · Spreadsheet" service={{ name: 'Google', logoUrl: '/favicon.svg', color: '#ffffff' }} />
             <BlueprintNeedRow title="Writer" detail="One of your AI models" icon={<CubeIcon />} />
-            <BlueprintNeedRow title="Reminders" detail="One of your models, for an agent it starts" icon={<RobotIcon />} met />
+            <BlueprintNeedRow title="Reminders" detail="One of your models, for an agent it starts" icon={<KindMark name="agent" />} met />
           </div>
         </div>
       </Section>
@@ -94,7 +95,7 @@ export const BlueprintsPreview = () => {
           // A service this deployment does not offer, which keeps it from being used.
           ...(using === 'needs' ? [{ key: 'MAIL', title: 'Mailbox', service: { name: 'Fastmail' }, kind: 'connection' as const, unavailable: 'Not offered here', onChoose: () => {} }] : []),
           { key: 'LLM', title: 'Writer', description: 'An AI model it uses', icon: <CubeIcon />, kind: 'model', models: MODELS, chosen: model, onChoose: (id) => setModel(id ?? 'sonnet') },
-          { key: 'AGENT', title: 'Reminders', description: 'The model an agent it starts runs on', icon: <RobotIcon />, kind: 'model', models: MODELS, chosen: agent, none: 'No agent', onChoose: setAgent },
+          { key: 'AGENT', title: 'Reminders', description: 'The model an agent it starts runs on', icon: <KindMark name="agent" />, kind: 'model', models: MODELS, chosen: agent, none: 'No agent', onChoose: setAgent },
         ]}
         place={using === 'nothing' ? { workspaces: PLACES, value: place, onChange: setPlace } : undefined}
         onUse={async () => {

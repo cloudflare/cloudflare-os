@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
-  ArrowSquareOutIcon, BookmarkSimpleIcon, CaretLeftIcon, CubeIcon, DotsThreeIcon, DownloadSimpleIcon, LinkIcon, RobotIcon, SparkleIcon, WarningCircleIcon,
+  ArrowSquareOutIcon, BookmarkSimpleIcon, CaretLeftIcon, CubeIcon, DotsThreeIcon, DownloadSimpleIcon, LinkIcon, SparkleIcon, WarningCircleIcon,
 } from '@phosphor-icons/react'
 import { BlueprintNeedRow } from '@/blocks/BlueprintNeedRow'
 import { BlueprintPicture } from '@/blocks/BlueprintTile'
@@ -9,6 +9,7 @@ import { Button } from '@/components/Button'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { FormatIcon } from '@/components/FormatIcon'
 import { HeaderBubble } from '@/components/HeaderBubble'
+import { KindMark } from '@/components/KindMark'
 import { useServices } from '@/connections/useServices'
 import { fileNameOf, saveStream } from '@/files/saveFile'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
@@ -166,7 +167,7 @@ export const BlueprintPane = ({ blueprintId, onBack, onMade, onOpenWorkspace, li
                     key={need.key}
                     title={need.title}
                     service={need.type === 'connection' ? found?.service ?? { name: need.vendorId } : undefined}
-                    icon={need.type === 'agent' ? <RobotIcon /> : <CubeIcon />}
+                    icon={need.type === 'agent' ? <KindMark name="agent" /> : <CubeIcon />}
                     detail={need.description || (need.type === 'connection'
                       ? [found?.service.name, kind].filter(Boolean).join(' · ')
                       : need.type === 'agent' ? 'One of your models, for an agent it starts' : 'One of your AI models')}

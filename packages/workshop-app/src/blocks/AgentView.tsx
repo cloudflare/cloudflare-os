@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
-import { ChatCircleIcon, RobotIcon } from '@phosphor-icons/react'
+import { ChatCircleIcon } from '@phosphor-icons/react'
 import { EditableTitle } from '@/components/EditableTitle'
+import { KindMark } from '@/components/KindMark'
 import { LinkButton } from '@/components/LinkButton'
 import { ListGroup } from './ListGroup'
 import { MenuChooser, type MenuChoice } from './MenuChooser'
@@ -109,7 +110,7 @@ export const AgentView = ({ name, onRename, models, modelId, modelName, onModelC
     <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-8">
       <div className="flex flex-col items-center gap-2 pt-8 text-center">
         <span aria-hidden="true" className="grid size-14 place-items-center rounded-full bg-kumo-contrast/7 text-kumo-default">
-          <RobotIcon className="size-7" />
+          <KindMark name="agent" className="size-7" />
         </span>
         {onRename
           ? <h1 className="max-w-full"><EditableTitle value={name} onRename={(next) => void run(() => onRename(next))} aria-label="Agent name" className="text-center text-xl font-medium text-kumo-default" /></h1>
