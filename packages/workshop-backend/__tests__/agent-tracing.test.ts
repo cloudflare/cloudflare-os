@@ -36,6 +36,7 @@ interface OverseerInternals {
     actions: { list(): Iterable<ActionRecord>, put(record: ActionRecord): void };
     autoApproveTags: { put(record: AutoApproveTagRecord): void };
     chatNotifications: OverseerDurableObject["impl"]["storage"]["chatNotifications"];
+    nextChatSequences: OverseerDurableObject["impl"]["storage"]["nextChatSequences"];
   };
   nextChatSequence(chatId: number): number;
   commitAgentStep(...args: unknown[]): Promise<boolean>;
@@ -480,10 +481,24 @@ describe("turn notifications", () => {
       initiator: { type: "gadget", id: "spawner", name: "Spawner" },
       spawned: true,
     });
+    await turn.requested;
+    await inOverseer(turn.workspace, impl => {
+      impl.storage.nextChatSequences.put({...impl.storage.nextChatSequences.get(CHAT_ID)!, notificationParticipants: []});
+    });
     turn.release();
 
     await turn.session;
     expect(turn.notifications).toEqual([notification(turn, "taskCompleted")]);
+  });
+
+  it("keeps legacy spawned callback completions silent", async () => {
+    let turn = startTurn([reply], {
+      initiator: { type: "gadget", id: "spawner", name: "Spawner" },
+      spawned: true,
+    });
+    turn.release();
+    await turn.session;
+    expect(turn.notifications).toEqual([]);
   });
 
   it("records completion eligibility for a later user turn in a spawned chat", async () => {

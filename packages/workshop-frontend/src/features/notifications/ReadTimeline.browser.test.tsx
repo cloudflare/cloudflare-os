@@ -375,6 +375,56 @@ it("jumps below the sticky toolbar and does not acknowledge a message hidden und
   await vi.waitFor(() => expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1));
 });
 
+it("positions first-open catch-up at an already-loaded unread item before acknowledging the tail", async () => {
+  navigate.mockClear();
+  let subscriber!: RpcStub<UnreadStateSubscriber>;
+  let state: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,
+    chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: 0, unreadMessageCount: 0,
+      notificationsEnabled: false, readStatePending: true}]};
+  const api = {
+    markChatRead: vi.fn<Overseer["markChatRead"]>().mockResolvedValue(undefined),
+    markChatUnread: async () => false,
+    subscribeToUnreadState: (_scope: unknown, next: RpcStub<UnreadStateSubscriber>) => {
+      subscriber = next;
+      void next.updated(state);
+      return Object.assign(Promise.resolve(), {[Symbol.dispose]: () => {}});
+    },
+  };
+  withdraw = reportVisibleChat(() => ({workspaceId: "workspace", chatId: 1}));
+  host = document.body.appendChild(document.createElement("div"));
+  root = createRoot(host);
+  await act(async () => root!.render(
+    <UnreadStateBridge scope={{workspaceId: "workspace"}} authenticatedApi={api as unknown as RpcStub<AuthenticatedApi>}>
+      <View overseer={api} />
+    </UnreadStateBridge>,
+  ));
+  await act(async () => userEvent.click(page.getByRole("button", {name: "Focus chat"})));
+  const viewport = host.querySelector<HTMLElement>("[data-viewport]")!;
+  await act(async () => {
+    viewport.scrollTop = viewport.scrollHeight;
+    viewport.dispatchEvent(new Event("scroll"));
+  });
+  state = {...state, chats: [{...state.chats[0], unreadMessageCount: 2, readStatePending: undefined}]};
+  await act(async () => subscriber.chatUpdated("workspace", 1, state.chats[0], {
+    unreadChatCount: 0, unreadMessageCount: 0,
+    workspace: {workspaceId: "workspace", unreadChatCount: 0, unreadMessageCount: 0},
+  }));
+  await vi.waitFor(() => expect(navigate).toHaveBeenCalledWith(true));
+  await vi.waitFor(() => expect(navigate).toHaveBeenLastCalledWith(false));
+  const item = host.querySelector<HTMLElement>('[data-read-start="1"]')!;
+  expect(item.querySelector("[data-unread-divider]")).not.toBeNull();
+  const toolbar = page.getByRole("button", {name: "Jump to first unread"}).element().closest(".sticky")!;
+  expect(Math.abs(item.getBoundingClientRect().top - toolbar.getBoundingClientRect().bottom)).toBeLessThan(1);
+  await new Promise(resolve => setTimeout(resolve, 400));
+  expect(api.markChatRead).not.toHaveBeenCalled();
+  const marker = item.querySelector<HTMLElement>('[data-read-through="1"]')!;
+  await act(async () => {
+    viewport.scrollTop += marker.getBoundingClientRect().bottom - viewport.getBoundingClientRect().bottom + 10;
+    viewport.dispatchEvent(new Event("scroll"));
+  });
+  await vi.waitFor(() => expect(api.markChatRead).toHaveBeenCalledExactlyOnceWith(1, 1));
+});
+
 it("keeps a live reply stable in a caught-up viewport without inserting unread controls", async () => {
   let subscriber!: RpcStub<UnreadStateSubscriber>;
   let state: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,

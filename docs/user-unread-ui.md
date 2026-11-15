@@ -25,6 +25,7 @@ in [the stacked badge PR](https://github.com/cloudflare/cloudflare-os/pull/842).
   history; catch-up still positions before acknowledging that page. Jump remains available as the pointer
   advances. Preference-only and approval-only rows do not authorize viewport receipts while initial
   catch-up is pending, even after Mark all read consumes their locally known activity.
+  Becoming ready initializes the unread boundary even when its message is already on the loaded page.
   Live horizon changes and reconnect snapshots never initiate another scroll; automatic
   positioning happens only on thread entry, and subsequent jumps require the explicit button.
 - Automatic reads require a visible document, focused window, visible chat pane and an item's

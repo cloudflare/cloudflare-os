@@ -41,9 +41,10 @@ export const ReadTimeline = ({
   children: ReactNode;
 }) => {
   const unread = useUnreadState();
-  const chat = unread?.chats?.find(
-    (item) => item.workspaceId === workspaceId && item.chatId === chatId && !item.readStatePending,
+  const readState = unread?.chats?.find(
+    (item) => item.workspaceId === workspaceId && item.chatId === chatId,
   );
+  const chat = readState?.readStatePending ? undefined : readState;
   const [visit, renderVisit] = useState<{ divider?: number; paused: boolean }>();
   // A new request also retries a failed page when navigation is already pending; zero is idle.
   const [jump, setJump] = useState(1);
@@ -53,6 +54,7 @@ export const ReadTimeline = ({
   const requestedPage = useRef<number | undefined>(undefined);
   const jumpSequence = useRef<number | undefined>(undefined);
   const receivedChat = useRef<ChatReadState | undefined>(undefined);
+  const enrollmentPending = useRef(false);
   const latestAction = useRef<symbol | undefined>(undefined);
   const requestRead = useRef<(() => void) | undefined>(undefined);
   const latest = useRef({ chat, unread, visit, latestSequence, overseer });
@@ -68,7 +70,9 @@ export const ReadTimeline = ({
   // A departed visit must not restore navigation through the parent's shared callback.
   useLayoutEffect(() => () => { latestAction.current = undefined; }, []);
 
-  const reconcileChat = useCallback((chat: ChatReadState | undefined, available = true, initialSnapshot = false) => {
+  const reconcileChat = useCallback((incoming: ChatReadState | undefined, available = true, initialSnapshot = false) => {
+    if (incoming?.readStatePending) enrollmentPending.current = true;
+    const chat = incoming?.readStatePending ? undefined : incoming;
     const visit = latest.current.visit;
     latest.current.chat = chat;
     if (!chat) {
@@ -85,9 +89,11 @@ export const ReadTimeline = ({
     if (!previous && visit?.paused && chat.readThroughSequence + 1 === visit.divider) {
       latestAction.current = undefined;
     }
-    // First-open enrollment can arrive after history. A horizon before all loaded items
-    // represents catch-up history, so navigate before acknowledging the current viewport.
-    const initialHistory = !previous && oldestSequence !== undefined && chat.readThroughSequence < oldestSequence;
+    // Pending enrollment is catch-up even when its unread boundary is on the loaded page.
+    // Legacy first arrivals only need navigation when their horizon precedes that page.
+    const initialHistory = !previous && (enrollmentPending.current ||
+      (oldestSequence !== undefined && chat.readThroughSequence < oldestSequence));
+    enrollmentPending.current = false;
     // Server transitions supersede local optimism, even before the command ACK arrives.
     if (!visit || (!visit.paused && initialHistory)) {
       const divider = chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
@@ -120,13 +126,13 @@ export const ReadTimeline = ({
   }, [oldestSequence, onUnreadNavigation, setVisit, container, workspaceId, chatId]);
 
   useLayoutEffect(() => unread?.subscribeToUpdates((state, initialSnapshot) => {
-    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId && !item.readStatePending), true, initialSnapshot);
+    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), true, initialSnapshot);
   }), [unread?.subscribeToUpdates, workspaceId, chatId, reconcileChat]);
 
   useLayoutEffect(() => {
     // Also reconcile the initial snapshot when entering an already-subscribed workspace.
-    reconcileChat(chat, !!unread?.chats);
-  }, [chat, unread?.chats, reconcileChat]);
+    reconcileChat(readState, !!unread?.chats);
+  }, [readState, unread?.chats, reconcileChat]);
 
   // Walk checkpoint pages until the boundary is present, then position before acknowledging any
   // viewport. Read state isn't advanced merely because the newest history page was fetched.

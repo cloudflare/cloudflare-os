@@ -274,6 +274,8 @@ all alerts and badges. Before first participation, permission requests still ale
 completion alerts, inbox entries or badges. Browser acknowledgement and native fallback are unchanged; see
 [notifications](notifications.md). Native/push badge consumers are added by the
 [stacked consumer PR](https://github.com/cloudflare/cloudflare-os/pull/842).
+Legacy spawned chats retain their existing suppression of callback completion alerts; new spawned
+chats record those outcomes so participants can opt in. Permission requests still alert in both.
 
 `packages/workshop-backend/__tests__/unread-state.test.ts` covers dense positions, no historical
 backfill, local hydration/no-op reads, read/arrival races, deltas, real source and User DO resets,

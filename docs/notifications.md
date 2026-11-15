@@ -246,7 +246,8 @@ and removes the chat from the unread inbox and badge totals, including workspace
 Read history and the unread divider remain available when the user opens the chat. Notifications
 default off for new chats until that user first sends a message or slash command, except permission
 requests still alert before participation without enabling inbox entries or badges. Existing chats
-stay subscribed by default, and an explicit choice always wins. Turning notifications on preserves unread history and alerts only
+stay subscribed by default, with legacy spawned callback completions still silent, and an explicit
+choice always wins. Turning notifications on preserves unread history and alerts only
 about future activity. For new chats, ordinary unread updates reach the User DO only after opening,
 participating in, or setting a preference for that chat. A normal chat's creator is enrolled by their
 first message; agent-spawned chats start with nobody enrolled. Opening enrolls updates without

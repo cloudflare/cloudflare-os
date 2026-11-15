@@ -10046,13 +10046,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Normal teardown and recovery of a logged outcome notify the same original caller. Only a
-  // person waits on normal-chat completion; spawned chats also record callback outcomes so the
-  // recipient can opt in. The User DO applies its private per-chat preference.
+  // person waits on normal-chat completion; new spawned chats also record callback outcomes so
+  // the recipient can opt in. Legacy callback completions stay silent. The User DO applies its
+  // private per-chat preference.
   #publishAgentTurnNotification(chatId: number, initiator: AiChatAuthorInfo, initiatorUserId: string): void {
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return;
     let awaitingDecision = this.#decisionWait(chatId)?.pending ?? false;
-    if (!awaitingDecision && initiator.type !== "user" && meta.spawnerName === undefined) return;
+    if (!awaitingDecision && initiator.type !== "user" && (meta.spawnerName === undefined ||
+        this.storage.nextChatSequences.get(chatId)?.notificationParticipants === undefined)) return;
     // The outcome already exists in the timeline. Recovery reuses this position and event ID.
     let sequence = this.nextChatSequencePeek(chatId) - 1;
     let kind = awaitingDecision ? "permissionRequested" as const : "taskCompleted" as const;
