@@ -133,7 +133,10 @@ export class BrowserRpcTransport implements RpcTransport {
 
 /** A browser-mode export as a Gadget UI's host. There is no Workshop UI around the page. */
 @validateRpc()
-class ExportGadgetHost extends RpcTarget implements GadgetHost {}
+class ExportGadgetHost extends RpcTarget implements GadgetHost {
+  // No chat sidebar to open it in.
+  async openAgentChat(_chatToken: string): Promise<void> {}
+}
 
 /**
  * The main object of the export page's RPC session, as in the live iframe: the Gadget's server and

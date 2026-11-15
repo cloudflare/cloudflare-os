@@ -800,7 +800,7 @@ export default {
 
 \`gadget\` is not a global variable: pass it to whatever code needs to call the server.
 
-\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`. It is an RPC stub for whatever is running the UI, either the Workshop or a browser-mode export. It has no methods yet, so do not call anything on it.
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`. It is an RPC stub for whatever is running the UI, either the Workshop or a browser-mode export. Its one method is \`host.openAgentChat(chatToken)\`, which shows the user the chat of an agent the gadget spawned with an agent spawner's \`spawnAgent()\`: the gadget's server gets the token from the \`SpawnedAgent\` with \`getChatToken()\` and passes it to the UI. It does nothing when the UI isn't running in the Workshop or isn't on screen.
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 

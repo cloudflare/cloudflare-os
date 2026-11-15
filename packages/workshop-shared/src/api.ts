@@ -3072,10 +3072,17 @@ export type UiBundle = {
  * It travels on the frame's one RPC session with the page, beside `gadget`, so that a capability
  * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
  * proxies through the frame.
- *
- * It has no methods yet.
  */
-export interface GadgetHost {}
+export interface GadgetHost {
+  /**
+   * Shows the user the chat of an agent this gadget spawned, named by its
+   * `SpawnedAgent.getChatToken()` (see `AiChatMetadata.chatToken`). The Workshop opens the chat in
+   * its chat sidebar. Does nothing where there is no chat sidebar (a use-only view, or a
+   * browser-mode export) or while the gadget isn't on screen. Throws if the token names no chat in
+   * this workspace.
+   */
+  openAgentChat(chatToken: string): Promise<void>;
+}
 
 /** One module of a Gadget UI. */
 export type UiModule = {
