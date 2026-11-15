@@ -2019,8 +2019,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
     let callback = this.ctx.exports.GatekeeperConnectCallbackImpl({props});
 
-    let resources = await vendor.getSupportedResources({ userId: this.storage.profile.get().id });
-    let usesIds = resources.some(resource => resource.id !== undefined);
+    let usesIds = resourceTypeIds !== undefined &&
+      (await vendor.getSupportedResources({ userId: this.storage.profile.get().id }))
+        .some(resource => resource.id !== undefined);
     let {url} = await vendor.connectAccount(callback, usesIds
         ? {resourceTypeIds} : {resourceUrlPatterns: resourceTypeIds});
     let nonce = await this.openConnectFlow(accountId);

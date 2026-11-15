@@ -38,8 +38,8 @@ function fixture(resources: SupportedResource[] = [CREATION], config: Partial<Ad
     resource: resources.find(r => getResourceTypeId(r) === pattern)!,
     action: { title: "Create environment", description: "Create a fresh environment" },
   }));
-  const vendor = { describe: async () => description, getSupportedResources: async () => resources,
-    createResource };
+  const vendor = { describe: async () => description, getSupportedResources: vi.fn(async () => resources),
+    connectAccount: vi.fn(async () => ({ url: "https://example.com/connect" })), createResource };
   const vars = { ...env, GATEKEEPER_EXAMPLE: vendor,
     BLUEPRINTS: { get: async () => JSON.stringify(config), put: async () => {} },
   } as unknown as Cloudflare.Env;
@@ -48,10 +48,19 @@ function fixture(resources: SupportedResource[] = [CREATION], config: Partial<Ad
     runInDurableObject(stub, (_host, state) => f(new UserDurableObject(state, vars)));
   const inAdmin = <T>(f: (admin: AdminSettings) => Promise<T>) =>
     runInDurableObject(stub, (_host, state) => f(new AdminSettings(state, vars)));
-  return { description, createResource, inUser, inAdmin };
+  return { description, createResource, inUser, inAdmin, vendor };
 }
 
 describe("independent creation and connection discovery", () => {
+  it("starts an unfiltered account connection without depending on the resource catalog", async () => {
+    const { inUser, vendor } = fixture();
+    vendor.getSupportedResources.mockRejectedValue(new Error("Catalog unavailable"));
+    expect(await inUser(user => user.connectAccount("example")))
+      .toMatchObject({ url: "https://example.com/connect" });
+    expect(vendor.getSupportedResources).not.toHaveBeenCalled();
+    expect(vendor.connectAccount).toHaveBeenCalledOnce();
+  });
+
   it("keeps creation-only vendors visible without advertising an existing-resource picker", async () => {
     const { inUser } = fixture();
     expect(await inUser(user => user.listGatekeeperVendors())).toMatchObject([{
@@ -261,6 +270,14 @@ describe("agent resource discovery", () => {
       expect(impl.consumeCapturedDecisionRequests(1)).toMatchObject([{
         type: "connectionRequest", resourceTypeId: "instance", resourceUrl: "http://homeassistant.local:8123",
       }]);
+    });
+  });
+
+  it("accepts an insecure MCP server URL with a path", async () => {
+    await withDiscovery([{ ...EXISTING, id: "http-server", urlPattern: "http://*" }], async impl => {
+      expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "MCP",
+        reason: "Use local MCP", resourceTypeId: "http-server", resourceUrl: "http://host/mcp" }))
+        .toMatchObject({ requested: true });
     });
   });
 });

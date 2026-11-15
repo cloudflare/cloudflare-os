@@ -35,6 +35,11 @@ grants). An explicit ID grant list takes precedence over a legacy pattern list, 
 empty. Legacy grants translate by exact current match. A gatekeeper may separately retain explicit
 historical mappings that it already knows; the Workshop does not guess them.
 
+During a mixed-version Google gatekeeper rollout, an older worker updates only the legacy grant
+list. If stable IDs have already been saved, a newer worker keeps preferring them, so consent
+completed by the older worker may need to be repeated on the newer version. Legacy grants are
+not unioned into an explicit ID list, which could otherwise override an intentionally empty grant.
+
 ## Deployment rollback
 
 Admin restrictions written or migrated to `disabledResourceTypeIds` are not compatible with a
