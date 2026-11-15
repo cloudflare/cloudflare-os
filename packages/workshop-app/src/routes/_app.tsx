@@ -107,7 +107,9 @@ const AppFrame = () => {
   const [openedEmptyAt, setOpenedEmptyAt] = useState<string>()
   if (openedEmptyAt !== undefined && (named || openedEmptyAt !== chatKey)) setOpenedEmptyAt(undefined)
   const openedEmpty = chatRef !== undefined && !named && openedEmptyAt === chatKey
-  const library = useChatLibrary(shownFrom)
+  // The file shown, which the chat may need to be asked about to know its name and type.
+  const shownRef = itemPage ? pageItem?.ref : named
+  const library = useChatLibrary(shownFrom, shownRef?.kind === 'file' ? shownRef.fileId : undefined)
   const { items, known } = library
 
   // What was made last, once the library has been read.
