@@ -271,6 +271,19 @@ Frontend:
   the gadget's title, followed by the spot's label if the current frame has reported one:
   "Budget" or "Budget › Q3 › cell B7". Every gadget gets the first form, including legacy UIs and
   the bundled blueprints.
+- On a single-pane layout (under 48rem, where the chat and the pane take turns on screen), the
+  composer treats a closed pane as still showing what it showed when last open, since switching to
+  the Chat tab is how a phone user gets to the composer at all. If the pane last showed a gadget
+  (any of its tabs), the chip is that gadget, with the spot its frame last reported or a
+  transcript chip opened; the frame stays mounted, hidden, so it keeps that spot and goes on
+  reporting. If the pane last showed activity or a worktree, there is no chip. The editor keeps
+  the id of the gadget the pane last showed, so if the selection moves while the pane is closed
+  (the agent's edits pull it along, and a closed pane with no `w` in the URL falls back to the
+  workspace's default gadget), there is no chip: the user hasn't seen the gadget it moved to.
+  Until the pane has been open in the current workspace (a phone user who lands on the Chat tab),
+  there is no chip: the user hasn't looked at anything. Beside the chat, closing the pane is
+  deliberate, and a closed pane offers nothing. The chip follows the layout in effect, so a
+  rotation or a resize across the breakpoint can bring it back or take it away.
 - Dismissing the chip sends that message with no focus at all. The chip returns for the next one.
 - The transcript draws the same chip on a sent message. Clicking it sets `w` to that gadget and,
   if the focus has a spot, `at` to its anchor, in one navigation. That selects the gadget and
@@ -387,19 +400,30 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   turn, and replaying the chat afterwards produces the same bytes; hostile label, anchor and
   context text cannot break out of the block; a bad `gadgetId` or an oversized string is refused.
 - **Chips** (frontend tests): shown whenever the pane shows a gadget; the label gains the spot
-  when one is reported; dismissal lasts one message. After a transcript chip's click, the
-  composer offers the clicked spot though the gadget never reports, for the same gadget and
-  across a new frame for another; the gadget's report replaces it, a failed `navigate` drops it,
-  and a navigation without a chip drops the reported spot.
+  when one is reported; dismissal lasts one message. On a single-pane layout, offered with the
+  pane closed after it showed a gadget, with the spot last reported or opened from a transcript
+  chip; not after it showed activity or a worktree, nor for a gadget selected since, nor before it
+  has been open in the workspace; following the layout across the breakpoint. Beside the chat, a
+  closed pane offers none. After a transcript chip's click, the composer offers the clicked spot
+  though the gadget never reports, for the same gadget and across a new frame for another; the
+  gadget's report replaces it, a failed `navigate` drops it, and a navigation without a chip drops
+  the reported spot.
 - **Live**: a hand-written gadget with two views, checked in a browser for restore across a code
-  change and a page reload, and for the transcript chip navigating back.
+  change and a page reload, and for the transcript chip navigating back. At a phone viewport, a
+  spot selected in a gadget shows in the Chat tab's chip and reaches the agent, and a dismissed
+  chip sends none; at a desktop viewport, a closed pane shows no chip.
 
 ## Known edge cases
 
 - **Legacy UIs** have no `host`, so they never report a spot. They still get the gadget-level
   focus. That includes the bundled Docs, Sheets and Slides.
 - **Worktrees and the activity pane.** Only a gadget is a focus. With a worktree selected, or the
-  pane showing activity, there is no chip.
+  pane showing activity, there is no chip. On a single-pane layout the same holds for the Chat tab
+  when the pane last showed one of those.
+- **A phone's Chat tab.** On a single-pane layout the composer and the pane are never on screen
+  together, so the chip there names what the pane showed when last open (see "Sending the focus
+  with a prompt"). Rotating a tablet so the pane closed beside the chat becomes the Chat tab
+  brings the chip back, since that pane is now merely hidden.
 - **A hidden app tab.** With the gadget's code tab showing, the focus is still the gadget, and
   still includes the spot the frame last reported.
 - **Chat preview.** `GadgetUI` may be showing a chat's uncommitted code. The anchor is applied

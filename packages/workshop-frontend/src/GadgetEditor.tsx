@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef, type ComponentProps, type PointerEvent as ReactPointerEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore, type ComponentProps, type PointerEvent as ReactPointerEvent } from 'react'
 import { useParams, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
@@ -380,7 +380,14 @@ const isBrowser = typeof window !== 'undefined'
 // Below Tailwind's `md` breakpoint the chat and the workspace pane take turns filling the screen
 // (the `max-md:` classes in the layout below), where above it they sit side by side. The query is
 // the one `max-md:` compiles to, so the two agree at fractional widths and at any root font size.
-const isSinglePaneLayout = () => window.matchMedia?.('(width < 48rem)').matches ?? false
+const SINGLE_PANE_QUERY = '(width < 48rem)'
+const isSinglePaneLayout = () => window.matchMedia?.(SINGLE_PANE_QUERY).matches ?? false
+// For what renders by the layout, so it follows a rotation or a resize across the breakpoint.
+const subscribeToSinglePaneLayout = (onChange: () => void) => {
+  const query = window.matchMedia?.(SINGLE_PANE_QUERY)
+  query?.addEventListener('change', onChange)
+  return () => query?.removeEventListener('change', onChange)
+}
 
 function clampChatWidth(width: number) {
   if (!isBrowser) return Math.max(MIN_CHAT_WIDTH, Math.min(DEFAULT_CHAT_WIDTH, width))
@@ -1061,10 +1068,12 @@ export default function GadgetEditor() {
       })
     },
   })
-  const { uiFocus: gadgetFocus, paneFocus, onFocusOpened } = usePaneFocus({
+  const singlePane = useSyncExternalStore(subscribeToSinglePaneLayout, isSinglePaneLayout, () => false)
+  const { uiFocus: gadgetFocus, paneFocus, onFocusOpened, onWorkspaceChange: forgetPaneFocus } = usePaneFocus({
     uiFocus: focusUrl,
     gadget: selectedGadgetSummary,
-    showsGadget: showFullEditor && !showingActivity,
+    pane: !showFullEditor ? null : showingActivity ? 'activity' : 'workpiece',
+    singlePane,
   })
 
   const openActivity = useCallback((initialView: ActivityView) => {
@@ -1229,7 +1238,8 @@ export default function GadgetEditor() {
     turnOutputRef.current = null
     setUserNavigatedToList(false)
     setGadgetToDelete(null)
-  }, [id])
+    forgetPaneFocus()
+  }, [id, forgetPaneFocus])
 
   // ?showChat (a notification's "Open task") asks to see the chat, not merely select it: full-screen
   // preview covers it, and on a phone so does the pane. Declared after the reset above, so arriving

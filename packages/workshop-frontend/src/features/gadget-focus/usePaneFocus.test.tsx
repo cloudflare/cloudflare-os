@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import type { GadgetFocus, GadgetSummary, MessageFocus } from '@gadgets/workshop-shared/api'
 import type { GadgetUIFocus } from '../../GadgetUI'
 import type { PaneFocus } from './paneFocus'
-import { usePaneFocus } from './usePaneFocus'
+import { usePaneFocus, type PaneView } from './usePaneFocus'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -26,7 +26,7 @@ const q4: GadgetFocus = { anchor: 'sheet/q4/cell/C2', label: 'Q4 › cell C2', c
 const lisbon: GadgetFocus = { anchor: 'trip/t_9', label: 'Lisbon', context: 'Flights booked, hotel pending' }
 
 // `anchor` is the URL's `at` for the selected gadget.
-type State = { gadget: GadgetSummary | undefined; anchor: string | undefined; showsGadget: boolean }
+type State = { gadget: GadgetSummary | undefined; anchor: string | undefined; pane: PaneView; singlePane: boolean }
 
 let container: HTMLDivElement
 let root: Root
@@ -35,13 +35,15 @@ let state: State
 let uiFocus: GadgetUIFocus | undefined
 let paneFocus: PaneFocus | undefined
 let onFocusOpened: (focus: MessageFocus) => void
+let onWorkspaceChange: () => void
 const urlFocusChange = vi.fn<(focus: GadgetFocus | null) => void>()
 
 const Harness = () => {
-  ({ uiFocus, paneFocus, onFocusOpened } = usePaneFocus({
+  ({ uiFocus, paneFocus, onFocusOpened, onWorkspaceChange } = usePaneFocus({
     uiFocus: state.gadget && { anchor: state.anchor, onFocusChange: urlFocusChange },
     gadget: state.gadget,
-    showsGadget: state.showsGadget,
+    pane: state.pane,
+    singlePane: state.singlePane,
   }))
   return null
 }
@@ -62,7 +64,7 @@ const openChip = async (focus: MessageFocus) => {
 beforeEach(() => {
   container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
-  state = { gadget: budget, anchor: undefined, showsGadget: true }
+  state = { gadget: budget, anchor: undefined, pane: 'workpiece', singlePane: false }
   urlFocusChange.mockClear()
 })
 
@@ -84,9 +86,85 @@ describe('usePaneFocus', () => {
   })
 
   it('offers nothing with activity, a worktree or nothing in the pane', async () => {
-    await render({ showsGadget: false })
+    await render({ pane: 'activity' })
     expect(paneFocus).toBeUndefined()
-    await render({ showsGadget: true, gadget: undefined })
+    await render({ pane: 'workpiece', gadget: undefined })
+    expect(paneFocus).toBeUndefined()
+    await render({ pane: null, gadget: budget })
+    expect(paneFocus).toBeUndefined()
+  })
+
+  describe('on a single-pane layout, where the chat tab hides the pane', () => {
+    beforeEach(() => { state.singlePane = true })
+
+    it('offers the gadget the pane showed, with the spot its frame last reported', async () => {
+      await render({})
+      await report(q3)
+      await render({ pane: null })
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget', spot: q3 })
+    })
+
+    it('offers the spot a sent message\'s chip opened', async () => {
+      await render({ pane: null })
+      await openChip({ gadgetId: 3, spot: q4 })
+      await render({ pane: 'workpiece' })
+      await reset()
+      await render({ pane: null })
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget', spot: q4 })
+    })
+
+    it('offers nothing when the pane last showed activity or a worktree', async () => {
+      await render({ pane: 'activity' })
+      await render({ pane: null })
+      expect(paneFocus).toBeUndefined()
+
+      // The selection then moving to a gadget, with the pane still closed, doesn't show it.
+      await render({ pane: 'workpiece', gadget: undefined })
+      await render({ pane: null, gadget: budget })
+      expect(paneFocus).toBeUndefined()
+    })
+
+    it('offers nothing for a gadget the selection moved to while the pane was closed', async () => {
+      await render({})
+      await render({ pane: null, gadget: trips })
+      expect(paneFocus).toBeUndefined()
+    })
+
+    it('offers nothing until the pane has been open in the workspace', async () => {
+      await render({ pane: null })
+      expect(paneFocus).toBeUndefined()
+
+      await render({ pane: 'workpiece' })
+      // The editor resets the pane's view as it does this, in the same update.
+      state = { ...state, pane: null }
+      await act(async () => {
+        onWorkspaceChange()
+        root.render(<Harness />)
+      })
+      expect(paneFocus).toBeUndefined()
+    })
+
+    it('still refuses a gadget pending in another chat', async () => {
+      await render({ gadget: gadget(5, 'Draft', 7) })
+      await render({ pane: null })
+      expect(paneFocus?.pendingChatId).toBe(7)
+    })
+
+    it('follows the layout across the breakpoint', async () => {
+      await render({ pane: 'workpiece' })
+      await render({ pane: null })
+      expect(paneFocus?.focus.gadgetId).toBe(3)
+      await render({ singlePane: false })
+      expect(paneFocus).toBeUndefined()
+      await render({ singlePane: true })
+      expect(paneFocus?.focus.gadgetId).toBe(3)
+    })
+  })
+
+  it('offers nothing beside the chat once the pane is closed, whatever it showed', async () => {
+    await render({})
+    await report(q3)
+    await render({ pane: null })
     expect(paneFocus).toBeUndefined()
   })
 
