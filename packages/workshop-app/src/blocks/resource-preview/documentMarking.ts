@@ -96,6 +96,28 @@ function locateByContext(markdown: string, edit: DocumentEdit): number | undefin
 }
 
 /**
+ * Where each append that landed at the end of the tab starts in `markdown` (as `locateByContext`
+ * says), for text that occurs more than once, as the same line appended again and again does:
+ * appends land in order, each after the last, so the last of them is the last occurrence of its
+ * text, the one before it the last occurrence before that, and so on back. An append is one that
+ * replaced nothing and had nothing after it once it applied (`DocumentEdit.context`). Stops at the
+ * first that is not where that puts it, leaving it and those before it to be found otherwise.
+ */
+function appendsAtEnd(markdown: string, edits: readonly DocumentEdit[]): Map<DocumentEdit, number> {
+  const found = new Map<DocumentEdit, number>()
+  let end = markdown.length
+  for (const edit of edits.toReversed()) {
+    if (edit.before.trim() || !edit.after.trim() || !edit.context || edit.context.after.trim()) continue
+    const from = end - edit.after.length
+    const at = from < 0 ? -1 : markdown.lastIndexOf(edit.after, from)
+    if (at < 0) break
+    found.set(edit, at)
+    end = at
+  }
+  return found
+}
+
+/**
  * Finds where each edit landed in `markdown`, by the one place its `after` text occurs. An edit
  * whose text is missing, repeated, empty, or overlapped by a later edit is returned unplaced
  * rather than guessed at.
@@ -103,6 +125,7 @@ function locateByContext(markdown: string, edit: DocumentEdit): number | undefin
 export function placeEdits(markdown: string, edits: readonly DocumentEdit[], actions: readonly number[]) {
   const candidates: (PlacedEdit | UnplacedEdit)[] = []
   const texts: { before: string; after: string }[] = []
+  const atEnd = appendsAtEnd(markdown, edits)
   for (const edit of edits) {
     const changeId = changeIdAt(actions, edit.change)
     if (changeId === undefined) continue
@@ -112,7 +135,7 @@ export function placeEdits(markdown: string, edits: readonly DocumentEdit[], act
     texts.push({ before, after })
     // The text around it says where it landed: the only way to place a deletion, and a way to
     // place text that occurs more than once.
-    const anchored = locateByContext(markdown, edit)
+    const anchored = locateByContext(markdown, edit) ?? atEnd.get(edit)
     if (!after) {
       const removed = plainText(before)
       if (anchored === undefined || !removed) {

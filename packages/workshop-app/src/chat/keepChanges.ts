@@ -5,7 +5,9 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 
 /**
  * What a chat's waiting changes do, a line each, in the words of whoever is asked to keep them.
- * A gadget is named by `titleOf`, or else by the title the changes gave it, or else plainly.
+ * A gadget, a connection or an agent spawner is named by `titleOf`, a gadget else by the title the
+ * changes gave it, else plainly; what is given is said by name ("Lets “Calculator” use “Joke”"),
+ * or by the name its code reaches it by where it has none to go by.
  */
 export const keepChangeLines = ({ changes }: KeepAsk, titleOf: (gadgetId: number) => string | undefined): string[] => {
   const created = new Map(changes.created.map(({ gadgetId, title }) => [gadgetId, title]))
@@ -15,7 +17,10 @@ export const keepChangeLines = ({ changes }: KeepAsk, titleOf: (gadgetId: number
   }
   const lines = [
     ...changes.created.map(({ gadgetId }) => `Makes ${name(gadgetId)}`),
-    ...changes.bindings.map(({ gadgetId, name: binding }) => `Gives ${name(gadgetId)} access to env.${binding}`),
+    ...changes.bindings.map(({ gadgetId, name: binding, target }) => {
+      const reached = titleOf(target)
+      return reached ? `Lets ${name(gadgetId)} use ${quoted(reached)}` : `Gives ${name(gadgetId)} access to env.${binding}`
+    }),
     ...changes.updates.map(({ gadgetId }) => `Brings its blueprint’s update into ${name(gadgetId)}`),
   ]
   if (changes.mainline) lines.push('Brings in what was kept elsewhere since')

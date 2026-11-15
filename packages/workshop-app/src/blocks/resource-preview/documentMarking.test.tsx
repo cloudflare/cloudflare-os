@@ -24,6 +24,9 @@ const inserted = (container: Element, changeId: number) =>
 const removed = (container: Element, changeId: number) =>
   changeElements(container, changeId).filter(e => e.tagName === 'DEL').map(e => e.textContent).join('|')
 
+// The same line appended at the end of a tab, as each landed: after another, at the end.
+const appended = (change: number) => ({ change, before: '', after: 'hello', context: { before: 'hello\n\n', after: '\n' } })
+
 describe('placing document edits', () => {
   it('marks only the words that differ, inside a list item', async () => {
     const page = await render('- Launch on **May 3**\n- Retro after\n', [
@@ -81,6 +84,17 @@ describe('placing document edits', () => {
     const page = await render(markdown, [{ change: 0, before: '', after: '\n\nClosing note.\n' }])
     expect(inserted(page, 11)).toBe('Closing note.')
     expect(changeElements(page, 11)[0].closest('p')).toBe(page.querySelectorAll('p')[1])
+  })
+
+  it('marks the same line appended again and again, each where it landed', () => {
+    // Two already in the document, then three waiting, each appended after the last.
+    const markdown = 'Log\n\nhello\n\nhello\n\nhello\n\nhello\n\nhello\n'
+    const { placed, unplaced } = placeEdits(markdown, [appended(0), appended(1), appended(2)], ACTIONS)
+    expect(unplaced).toEqual([])
+    const last = markdown.lastIndexOf('hello')
+    const before = (at: number) => markdown.lastIndexOf('hello', at - 1)
+    expect(placed.map(({ changeId, start }) => [changeId, start]).toSorted(([a], [b]) => a - b))
+      .toEqual([[11, before(before(last))], [12, before(last)], [13, last]])
   })
 
   it('marks text spanning several blocks in each, with one button for the change', async () => {

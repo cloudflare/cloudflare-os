@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useNavigate, useRouterState } from '@tanstack/react-router'
 import { validateAsideParam } from '@/aside/asideItems'
 import { rememberShown } from '@/aside/lastShown'
 import { ChatHeader } from '@/blocks/ChatHeader'
@@ -24,6 +24,8 @@ function NewChat() {
   const { api, user } = useApi()
   const navigate = useNavigate()
   const workspaces = useWorkspaces()
+  // Started from what it opens beside, it is greeted by its name.
+  const about = useRouterState({ select: (state) => (open ? state.location.state.gadgetTitle : undefined) })
   const title = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceId)?.title : undefined
 
   return (
@@ -31,7 +33,7 @@ function NewChat() {
       // Keyed, so a message being sent in one workspace is not shown in another's.
       key={workspaceId}
       // Greeted as on the home page, under the workspace it is in.
-      greeting={greeting(user.name)}
+      greeting={greeting(user.name, about)}
       header={(
         <ChatHeader
           workspace={title === undefined ? undefined : {

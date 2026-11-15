@@ -6,7 +6,7 @@ import { ContextMenu } from '@/components/ContextMenu'
 import { DropdownMenu } from '@/components/DropdownMenu'
 import { LinkButton } from '@/components/LinkButton'
 import { AttachmentTileFace } from './AttachmentTileFace'
-import { libraryMenu, type LibraryItemProps } from './LibraryRow'
+import { libraryMenu, WaitingLabel, type LibraryItemProps } from './LibraryRow'
 
 // Over a picture as much as over the tile's own surface, so on a disc of their own.
 const BUTTON = 'size-7 rounded-full bg-kumo-base/85 text-kumo-default shadow-[0_1px_2px_rgb(0_0_0/0.08)] backdrop-blur-sm [&_svg]:size-3.5 not-data-disabled:hover:bg-kumo-base'
@@ -26,13 +26,13 @@ const POP = 'transition-[opacity,scale] duration-100 ease-[cubic-bezier(0.2,0,0.
  * the same menu as More. `ref` is its square, for whoever draws its glimpse once it is near the
  * screen.
  */
-export const LibraryTile = ({ title, icon, thumbnail, preview, time, starred, onStarredChange, actions, href, onSelect, ref }: LibraryItemProps & { ref?: Ref<HTMLDivElement> }) => (
+export const LibraryTile = ({ title, icon, thumbnail, preview, time, waiting, starred, onStarredChange, actions, href, onSelect, ref }: LibraryItemProps & { ref?: Ref<HTMLDivElement> }) => (
   <ContextMenu menu={libraryMenu(actions)} aria-label={`More for ${title}`} className="block">
     <div ref={ref} className="group relative aspect-square overflow-hidden rounded-2xl bg-kumo-contrast/5 ring-1 ring-kumo-contrast/6 transition-[scale] duration-150 ease-out has-[.tile:active]:scale-[0.97] has-focus-visible:ring-kumo-contrast/20 motion-reduce:transition-none">
       <LinkButton
         href={href}
         onClick={onSelect}
-        title={time ? `${title} · ${time}` : title}
+        title={waiting ? `${title} · ${waiting} to approve` : time ? `${title} · ${time}` : title}
         className="tile absolute inset-0 flex flex-col justify-between p-3 text-left outline-none"
       >
         {thumbnail ? (
@@ -56,7 +56,7 @@ export const LibraryTile = ({ title, icon, thumbnail, preview, time, starred, on
             </span>
             {/* The glimpse is a sheet standing in the tile, rising out of its foot, lifted a little
                 more when pointed at. */}
-            <span aria-hidden="true" className="appears absolute inset-x-3 top-10 -bottom-px overflow-hidden rounded-t-lg bg-kumo-base shadow-[0_1px_2px_rgb(0_0_0/0.1),0_8px_20px_-8px_rgb(0_0_0/0.22)] ring-1 ring-kumo-contrast/12 transition-[translate,box-shadow] duration-300 ease-out group-hover:-translate-y-1 group-hover:shadow-[0_2px_4px_rgb(0_0_0/0.08),0_12px_24px_-8px_rgb(0_0_0/0.18)] motion-reduce:transition-none">
+            <span aria-hidden="true" className="appears absolute inset-x-3 top-10 -bottom-3 overflow-hidden rounded-t-lg bg-kumo-base shadow-[0_1px_2px_rgb(0_0_0/0.1),0_8px_20px_-8px_rgb(0_0_0/0.22)] ring-1 ring-kumo-contrast/12 transition-[translate,box-shadow] duration-300 ease-out group-hover:-translate-y-1 group-hover:shadow-[0_2px_4px_rgb(0_0_0/0.08),0_12px_24px_-8px_rgb(0_0_0/0.18)] motion-reduce:transition-none">
               <AttachmentTileFace name={title} kind="file" thumbnail={preview} />
             </span>
           </>
@@ -66,6 +66,12 @@ export const LibraryTile = ({ title, icon, thumbnail, preview, time, starred, on
             <span className="line-clamp-2 text-sm/[1.125rem] font-medium break-words text-kumo-default">{title}</span>
           </>
         )}
+        {/* Over its foot, clear of More and the star at its head. */}
+        {waiting ? (
+          <span className="absolute start-2 bottom-2 rounded-full bg-kumo-base px-2 py-0.5 text-xs/4 shadow-sm ring-1 ring-kumo-contrast/10">
+            <WaitingLabel count={waiting} />
+          </span>
+        ) : null}
       </LinkButton>
       <div className="pointer-events-none absolute end-2 top-2 flex gap-1">
         {actions.length > 0 && (

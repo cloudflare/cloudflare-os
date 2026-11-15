@@ -1,5 +1,4 @@
 import { useState } from 'react'
-import { PencilSimpleLineIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { Card } from '@/components/Card'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
@@ -25,19 +24,14 @@ export const KeepChangesCard = ({ changes, reason, onKeep, onDiscard }: KeepChan
 
   return (
     <Card>
-      <div className="flex items-start gap-3">
-        <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
-          <PencilSimpleLineIcon aria-hidden="true" className="size-5" />
-        </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="font-medium text-kumo-default">Keep these changes?</span>
-          {changes.length > 0 && (
-            <ul className="flex flex-col gap-0.5 text-sm text-kumo-default">
-              {changes.map((change) => <li key={change}>{change}</li>)}
-            </ul>
-          )}
-          <p className="text-sm text-kumo-subtle">{reason}</p>
-        </div>
+      <div className="flex min-w-0 flex-col gap-1">
+        <span className="font-medium text-kumo-default">Keep these changes?</span>
+        {changes.length > 0 && (
+          <ul className="flex flex-col gap-0.5 text-sm text-kumo-default">
+            {changes.map((change) => <li key={change}>{change}</li>)}
+          </ul>
+        )}
+        <p className="text-sm text-kumo-subtle">{reason}</p>
       </div>
       <div className="flex justify-end gap-2">
         <Button disabled={pending} onClick={() => setConfirming(true)}>Discard</Button>

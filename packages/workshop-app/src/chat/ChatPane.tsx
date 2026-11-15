@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AssistantPresence } from '@/blocks/AssistantPresence'
 import { ChatHeader } from '@/blocks/ChatHeader'
-import { KeepChangesCard } from '@/blocks/KeepChangesCard'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import type { ComposerCommand } from '@/blocks/ComposerCommandPicker'
 import type { ComposerConnection } from '@/blocks/ComposerConnectionLines'
@@ -29,7 +28,7 @@ import { continuesRun, EMPTY_FEED, type ActionItem, type ChatItem, type OutputIt
 import type { ChatSnapshot } from './ChatSession'
 import { DisclosureStore, useOpenKeys } from './DisclosureStore'
 import { nameGadgets, type GoBack } from './changePoints'
-import { keepChangeLines, keepReason } from './keepChanges'
+import { KeepAskCard } from './KeepAskCard'
 import { quoteLine, withQuote } from './replyQuote'
 import { describeModelProblem, modelFor } from './models'
 import { useModels } from './useModels'
@@ -369,9 +368,11 @@ export const ChatPane = ({
             ))}
             {keep && (
               <LiveRows.Row key="keep">
-                <KeepChangesCard
-                  changes={keepChangeLines(keep, (gadgetId) => outputTitle(items, chat, gadgetId))}
-                  reason={keepReason(keep)}
+                <KeepAskCard
+                  workspaceId={workspaceId}
+                  chatId={chatId}
+                  keep={keep}
+                  outputTitle={(gadgetId) => outputTitle(items, chat, gadgetId)}
                   onKeep={actions.keepChanges}
                   onDiscard={actions.discardChanges}
                 />

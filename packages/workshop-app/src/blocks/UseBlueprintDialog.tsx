@@ -34,6 +34,8 @@ export type UseBlueprintDialogProps = {
   onOpenChange: (open: boolean) => void
   /** The blueprint's name. */
   title: string
+  /** Who made it, when that is someone other than the user: their code asks before it changes things. */
+  madeBy?: string
   needs: readonly UseBlueprintNeed[]
   /**
    * Where the gadget goes, for one that can go in a workspace the user has as well as a new one:
@@ -91,7 +93,7 @@ const PlaceChooser = ({ place }: { place: NonNullable<UseBlueprintDialogProps['p
  * it is; and, for one that needs nothing, where it goes: a new workspace named after it, or one
  * the user has. Use is ready once everything is met.
  */
-export const UseBlueprintDialog = ({ open, onOpenChange, title, needs, place, onUse }: UseBlueprintDialogProps) => {
+export const UseBlueprintDialog = ({ open, onOpenChange, title, madeBy, needs, place, onUse }: UseBlueprintDialogProps) => {
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState<string>()
   // A model need with none chosen is null only where none is a choice.
@@ -116,9 +118,9 @@ export const UseBlueprintDialog = ({ open, onOpenChange, title, needs, place, on
       onClosed={() => setProblem(undefined)}
       size={needs.length > 0 ? 'lg' : 'md'}
       title={`Use “${title}”`}
-      description={needs.length > 0
+      description={`${needs.length > 0
         ? 'Set up what it needs, with your own accounts and models. It’s made in a new workspace, named after it.'
-        : 'It needs nothing set up. Choose where your gadget goes.'}
+        : 'It needs nothing set up. Choose where your gadget goes.'}${madeBy ? ` Made by ${madeBy}: it asks before it first changes anything through your accounts.` : ''}`}
       footer={(
         <>
           <Button disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>

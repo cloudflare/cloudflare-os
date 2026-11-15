@@ -2,7 +2,7 @@ import { useEffect, useState, useSyncExternalStore, type ReactNode } from 'react
 import { createFileRoute, Outlet, useLocation, useMatch, useNavigate, useParams, useRouter } from '@tanstack/react-router'
 import { asideItemFor, formatAsideRef, itemPageId, pageOf, parseAsideRef, parseItemPageId, type AsideItem, type AsideOutput } from '@/aside/asideItems'
 import { AsidePane, EmptyAsidePane } from '@/aside/AsidePane'
-import { lastShown } from '@/aside/lastShown'
+import { lastShown, rememberShown } from '@/aside/lastShown'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
 import { useChatLibrary } from '@/aside/useChatLibrary'
 import { ConnectionIsland } from '@/blocks/ConnectionIsland'
@@ -22,6 +22,7 @@ import { sharedConnection } from '@/rpc/sharedConnection'
 import { clearToken } from '@/rpc/token'
 import { AppSearch } from './-AppSearch'
 import { ShareLinkGate } from '@/sharing/ShareLinkGate'
+import { WaitingProvider, useWaiting } from '@/library/WaitingProvider'
 import { ProfileProvider } from '@/profile/ProfileProvider'
 import { useProfile } from '@/profile/ProfileContext'
 import { SkillsProvider } from '@/skills/SkillsProvider'
@@ -41,7 +42,9 @@ export const Route = createFileRoute('/_app')({
             <ChatSessionsProvider>
               <SkillsProvider>
                 <ProfileProvider>
-                  <AppFrame />
+                  <WaitingProvider>
+                    <AppFrame />
+                  </WaitingProvider>
                 </ProfileProvider>
               </SkillsProvider>
             </ChatSessionsProvider>
@@ -69,6 +72,7 @@ const AppFrame = () => {
   const workspacesState = useWorkspaces()
   const chatThreads = useChatThreads()
   const accounts = useConnectedAccounts()
+  const { snapshot: waiting } = useWaiting()
   const { services } = useServices()
   const navigate = useNavigate()
   const router = useRouter()
@@ -163,6 +167,8 @@ const AppFrame = () => {
     const item = asideItemFor(pageWorkspaceId, ref, fromChat, known)
     const open = formatAsideRef(ref)
     const expandedHere = router.state.location.state.fromChat === true
+    // Collapsing goes back beside the chat it came from, so there is no other chat to offer.
+    const backToChat = !narrow && (expandedHere || (fromChat !== undefined && !router.state.location.state.fromLibrary))
     asideElement = (
       <AsidePane
         placement="page"
@@ -180,6 +186,13 @@ const AppFrame = () => {
           : fromChat !== undefined && !router.state.location.state.fromLibrary
             ? () => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: fromChat }, search: { open } })
             : undefined}
+        onOpenWorkspace={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId: pageWorkspaceId } })}
+        // Beside the chat it is opened in, it stays there, as one shown from the chat would.
+        onOpenChat={backToChat ? undefined : (toChat) => {
+          rememberShown(pageWorkspaceId, toChat, open)
+          void navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId: pageWorkspaceId, chatId: toChat }, search: { open } })
+        }}
+        onNewChat={backToChat ? undefined : (title) => navigate({ to: '/workspace/$workspaceId/new', params: { workspaceId: pageWorkspaceId }, search: { open }, state: { gadgetTitle: title } })}
       />
     )
   } else if (besideOf && named) {
@@ -275,6 +288,7 @@ const AppFrame = () => {
       }}
       library={{
         current: libraryPage !== undefined || libraryItemPage !== undefined || skillPage !== undefined || blueprintPage !== undefined,
+        waiting: waiting.total,
         onOpen: () => {
           leaveSidebar()
           void navigate({ to: '/library' })

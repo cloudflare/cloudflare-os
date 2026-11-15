@@ -34,7 +34,7 @@ type Connected = { assignment: Extract<BlueprintBindingAssignment, { type: 'gate
  * workspace the user builds in, if they choose one (`createGadgetFromBlueprint`).
  */
 export const UseBlueprint = ({ blueprint, open, onOpenChange, onMade }: UseBlueprintProps) => {
-  const { api, reconnecting } = useApi()
+  const { api, user, reconnecting } = useApi()
   const connection = useConnectionNotice()
   const { services } = useServices()
   const { models } = useModels()
@@ -155,6 +155,7 @@ export const UseBlueprint = ({ blueprint, open, onOpenChange, onMade }: UseBluep
         open={open && !connectingNeed}
         onOpenChange={onOpenChange}
         title={metadata.title}
+        madeBy={metadata.author.id === user.id ? undefined : metadata.author.name}
         needs={rows}
         place={needs.length === 0 ? { workspaces: named, value: named.some(({ id }) => id === into) ? into : undefined, onChange: setInto } : undefined}
         onUse={make}

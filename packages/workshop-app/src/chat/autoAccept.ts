@@ -49,8 +49,11 @@ export const proposesOnlyCode = (messages: readonly AiChatMessage[], epoch: numb
 export type ProposedChanges = {
   /** Gadgets they make. */
   created: { gadgetId: number; title: string }[]
-  /** Resources they give gadgets, by the name the gadget's code reaches each by (`env.NAME`). */
-  bindings: { gadgetId: number; name: string }[]
+  /**
+   * What they give gadgets and agent spawners to reach: the one given it (`gadgetId`), the name its
+   * code reaches it by (`env.NAME`), and what it reaches.
+   */
+  bindings: { gadgetId: number; name: string; target: number }[]
   /** Gadgets they bring a blueprint's update into. */
   updates: { gadgetId: number; title: string }[]
   /** They bring in what has been accepted elsewhere since the chat began. */
@@ -70,7 +73,7 @@ export const proposedChanges = (messages: readonly AiChatMessage[], epoch: numbe
   }
   return {
     created: batches.flatMap(({ createdGadgets = [] }) => createdGadgets.map(({ gadgetId, title }) => ({ gadgetId, title }))),
-    bindings: batches.flatMap(({ addedBindings = [] }) => addedBindings.map(({ gadgetId, name }) => ({ gadgetId, name }))),
+    bindings: batches.flatMap(({ addedBindings = [] }) => addedBindings.map(({ gadgetId, name, target }) => ({ gadgetId, name, target }))),
     updates: batches.flatMap(({ blueprintMerges = [] }) => blueprintMerges.map(({ gadgetId, title }) => ({ gadgetId, title }))),
     mainline: batches.some(({ mainlineMerge }) => mainlineMerge !== undefined),
     conflicts: [...conflicts],

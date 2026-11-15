@@ -31,6 +31,16 @@ const ICONS: { name: FormatIconName; label: string }[] = [
   { name: 'listChecks', label: 'Checklist' },
   { name: 'notebook', label: 'Notebook' },
   { name: 'flowArrow', label: 'Flow' },
+  { name: 'calendar', label: 'Calendar' },
+  { name: 'inbox', label: 'Inbox' },
+  { name: 'form', label: 'Form' },
+  { name: 'map', label: 'Map' },
+  { name: 'dashboard', label: 'Dashboard' },
+  { name: 'database', label: 'Database' },
+  { name: 'schedule', label: 'Schedule' },
+  { name: 'agent', label: 'Agent' },
+  { name: 'people', label: 'People' },
+  { name: 'web', label: 'Web' },
 ]
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))

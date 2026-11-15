@@ -1076,7 +1076,7 @@ describe('ChatSession', () => {
 
       await vi.advanceTimersByTimeAsync(1500)
       expect(ready(session).keep).toEqual({
-        changes: { created: [], bindings: [{ gadgetId: 1, name: 'JIRA' }], updates: [], mainline: false, conflicts: [] },
+        changes: { created: [], bindings: [{ gadgetId: 1, name: 'JIRA', target: 9 }], updates: [], mainline: false, conflicts: [] },
         shared: false,
       })
     })

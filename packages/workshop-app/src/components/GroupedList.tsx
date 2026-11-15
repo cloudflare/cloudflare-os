@@ -6,7 +6,7 @@ import { GroupedListMotion } from './groupedListMotion'
 export type GroupedListGroup = {
   /** Which group it is, from one render to the next. */
   key: string
-  /** What its rows have in common, such as when they were: "Today", "Starred". Not shown; read out. */
+  /** What its rows have in common, such as when they were: "Today", "Starred". Read out, and shown with `headed`. */
   label: string
   rows: Array<{ key: string; content: ReactNode }>
   /** Lets its rows be put in another order, giving the keys in the new one. */
@@ -15,6 +15,8 @@ export type GroupedListGroup = {
 
 export type GroupedListProps = {
   groups: GroupedListGroup[]
+  /** Shows each group's label at the top of its surface, where what sets the groups apart is not plain from their rows. */
+  headed?: boolean
 }
 
 const { pad, gap } = SPACING
@@ -32,7 +34,7 @@ const { pad, gap } = SPACING
  * A group with `onReorder` can have its rows dragged with a mouse, held and dragged with a finger,
  * or moved a place at a time with Alt and the up or down arrow from anything focused in a row.
  */
-export const GroupedList = ({ groups }: GroupedListProps) => {
+export const GroupedList = ({ groups, headed = false }: GroupedListProps) => {
   const listRef = useRef<HTMLDivElement>(null)
   const surfaceRef = useRef<HTMLDivElement>(null)
   const ghostsRef = useRef<HTMLDivElement>(null)
@@ -73,7 +75,7 @@ export const GroupedList = ({ groups }: GroupedListProps) => {
               marginBottom: rowIndex === group.rows.length - 1 ? pad : 0,
             }}
           >
-            {rowIndex === 0 && <h2 className="sr-only">{group.label}</h2>}
+            {rowIndex === 0 && <h2 className={headed ? 'px-3 pt-2 pb-1 text-sm font-medium text-kumo-subtle' : 'sr-only'}>{group.label}</h2>}
             {row.content}
           </div>
         )),

@@ -30,7 +30,7 @@ export type GadgetSettingsSnapshot =
   }
 
 /** The part of a gadget the settings use, and the lease that must be disposed. */
-export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'bindWithSuggestedName' | 'unbind' | 'createBlueprint' | 'getThumbnail'> & Disposable
+export type SettingsGadget = Pick<GadgetClient, 'setTitle' | 'setOutput' | 'remove' | 'listBindings' | 'bindWithSuggestedName' | 'unbind' | 'createBlueprint' | 'getThumbnail' | 'setAutoApprove' | 'disallowActionKind'> & Disposable
 
 /** The part of a workspace's Overseer the settings use, and the lease that must be disposed. */
 export type SettingsOverseer = {
@@ -162,6 +162,15 @@ export class GadgetSettings {
 
   /** Says what it is, such as a Dashboard, and its icon; with `null`, that it is a plain app. */
   setKind = (format: GadgetFormat | null) => this.#with((gadget) => gadget.setOutput(format))
+
+  /**
+   * Lets it make any change its services let go ahead unasked, whoever uses it (`true`), or has it
+   * ask again except for what was allowed one kind at a time.
+   */
+  setAllowEverything = (on: boolean) => this.#with((gadget) => gadget.setAutoApprove(on))
+
+  /** Has changes of this kind through this connection ask again. */
+  askAgain = (gatekeeperId: number, tag: string) => this.#with((gadget) => gadget.disallowActionKind(gatekeeperId, tag))
 
   /** Deletes it, for everyone. */
   remove = () => this.#with((gadget) => gadget.remove())

@@ -27,10 +27,13 @@ import { BlueprintsPreview } from '@/gallery/BlueprintsPreview'
 import { CardBlocksPreview } from '@/gallery/CardBlocksPreview'
 import { CodePreview } from '@/gallery/CodePreview'
 import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
+import { GadgetPagePreview } from '@/gallery/GadgetPagePreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
+import { KindMarksPreview } from '@/gallery/KindMarksPreview'
 import { LibraryPreview } from '@/gallery/LibraryPreview'
 import { PendingPreview } from '@/gallery/PendingPreview'
+import { GadgetTrustPreview } from '@/gallery/GadgetTrustPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
@@ -354,6 +357,9 @@ function Gallery() {
       <ToolBlocksPreview />
       <CardBlocksPreview />
       <PendingPreview />
+      <KindMarksPreview />
+      <GadgetPagePreview />
+      <GadgetTrustPreview />
       <LibraryPreview />
       <SystemBlocksPreview />
       <SettingsPreview />

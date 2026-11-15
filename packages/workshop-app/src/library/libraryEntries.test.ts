@@ -127,8 +127,29 @@ describe('libraryGroups', () => {
 
   it('shows favorites, then what was worked on last, across gadgets and files', () => {
     const groups = libraryGroups(entries, { tab: 'favorites', sort: 'recent' }, now)
-    expect(groups.map((group) => group.label)).toEqual(['Starred', 'Recent'])
+    expect(groups.map((group) => group.label)).toEqual(['Starred', 'Latest'])
     expect(groups[1].rows.map((row) => row.entry.title)).toEqual(['beta', 'Alpha', 'notes.pdf', 'Older'])
+  })
+
+  it('leads with what waits on the viewer to approve, out of the groups it would be in, but not what they only use', () => {
+    const waiting = libraryEntries(sources({
+      outputs: [
+        { ...output(1, 'beta', 1), waiting: 2 },
+        output(2, 'Alpha', 2),
+        { ...output(3, 'Zeta', 3), waiting: 1 },
+        { ...output(4, 'Shared', 4), waiting: 5, role: 'use' },
+      ],
+      favorites,
+    }))
+    expect(waiting.gadgets.map(({ title, waiting: count }) => [title, count])).toEqual([['beta', 2], ['Alpha', undefined], ['Zeta', 1], ['Shared', undefined]])
+    for (const tab of ['gadgets', 'favorites'] as const) {
+      const groups = libraryGroups(waiting, { tab, sort: 'recent' }, now)
+      expect(groups[0]).toMatchObject({ key: 'waiting', label: 'Needs approval' })
+      expect(groups[0].rows.map((row) => row.entry.title)).toEqual(['beta', 'Zeta'])
+      // Zeta, starred, is shown once, where it waits.
+      expect(groups.slice(1).flatMap((group) => group.rows.map((row) => row.entry.title))).not.toContain('Zeta')
+    }
+    expect(libraryGroups(waiting, { tab: 'files', sort: 'recent' }, now).some((group) => group.key === 'waiting')).toBe(false)
   })
 
   it('keeps what has every word searched for, in its name or its workspace’s', () => {

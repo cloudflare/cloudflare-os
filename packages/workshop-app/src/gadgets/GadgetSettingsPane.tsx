@@ -6,6 +6,7 @@ import { AutomationsTab, type AutomationLink } from '@/automations/AutomationsTa
 import { BindingRow } from '@/blocks/BindingRow'
 import { CodeBrowser } from '@/blocks/CodeBrowser'
 import { GadgetKindDialog } from '@/blocks/GadgetKindDialog'
+import { GadgetPermissions } from '@/blocks/GadgetPermissions'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { ListGroup } from '@/blocks/ListGroup'
 import { GadgetExportRow } from './GadgetExportRow'
@@ -22,6 +23,7 @@ import { AddConnection } from '@/connections/AddConnection'
 import { useServices } from '@/connections/useServices'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { PageLayout } from '@/layouts/PageLayout'
+import { useApi } from '@/rpc/ApiContext'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
@@ -86,6 +88,7 @@ export const GadgetSettingsPane = ({
   // Only whoever may build in the workspace changes what is in it; the server checks again.
   const builds = workspace !== undefined && workspace.role !== 'use'
   const { services } = useServices()
+  const { user } = useApi()
   const connection = useConnectionNotice()
   const gadget = snapshot.status === 'ready' ? snapshot.gadget : undefined
   const title = gadget?.title ?? initialTitle
@@ -235,6 +238,30 @@ export const GadgetSettingsPane = ({
                   </ListGroup>
                 ))}
               </section>
+              {builds && gadget && (
+                <GadgetPermissions
+                  madeBy={gadget.publishedBy?.name}
+                  everything={gadget.autoApprove === true}
+                  allowances={(gadget.allowed ?? []).map(({ gatekeeperId, actionKind, enabledBy }) => {
+                    const binding = snapshot.bindings.status === 'ready' ? snapshot.bindings.items.find(({ target }) => target === gatekeeperId) : undefined
+                    return {
+                      key: `${gatekeeperId}:${actionKind.tag}`,
+                      title: actionKind.label,
+                      detail: [binding?.resourceTitle, `Allowed by ${enabledBy.id === user.id ? 'you' : enabledBy.name}`].filter(Boolean).join(' · '),
+                      service: serviceOf(binding?.vendorId),
+                    }
+                  })}
+                  onEverythingChange={async (on) => {
+                    if (connection?.blocked()) return
+                    await settings.setAllowEverything(on)
+                  }}
+                  onAskAgain={(key) => {
+                    if (connection?.blocked()) return
+                    const [gatekeeperId, ...tag] = key.split(':')
+                    return settings.askAgain(Number(gatekeeperId), tag.join(':'))
+                  }}
+                />
+              )}
             </Tabs.Panel>
             {readsCode && (
               // Wider than the settings, as code is: a line of it reads whole.

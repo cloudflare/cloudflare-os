@@ -4,14 +4,14 @@ import { keepChangeLines, keepReason } from './keepChanges'
 
 const none: ProposedChanges = { created: [], bindings: [], updates: [], mainline: false, conflicts: [] }
 const ask = (changes: Partial<ProposedChanges>, shared = false) => ({ changes: { ...none, ...changes }, shared })
-const titles = new Map([[3, 'Tip Jar']])
+const titles = new Map([[3, 'Tip Jar'], [20, 'Joke'], [21, 'Paul Pierce']])
 const titleOf = (id: number) => titles.get(id)
 
 describe('keepChangeLines', () => {
   it('names each gadget by its title, or the one the changes gave it', () => {
     expect(keepChangeLines(ask({
       created: [{ gadgetId: 9, title: 'Standup notes' }],
-      bindings: [{ gadgetId: 3, name: 'JIRA' }, { gadgetId: 9, name: 'SLACK' }],
+      bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }, { gadgetId: 9, name: 'SLACK', target: 31 }],
     }), titleOf)).toEqual([
       'Makes “Standup notes”',
       'Gives “Tip Jar” access to env.JIRA',
@@ -19,8 +19,14 @@ describe('keepChangeLines', () => {
     ])
   })
 
+  it('says what is given by its name, to a spawner as to a gadget', () => {
+    expect(keepChangeLines(ask({
+      bindings: [{ gadgetId: 3, name: 'JOKE_WRITER', target: 20 }, { gadgetId: 20, name: 'PAUL_PIERCE_DOC', target: 21 }],
+    }), titleOf)).toEqual(['Lets “Tip Jar” use “Joke”', 'Lets “Joke” use “Paul Pierce”'])
+  })
+
   it('says “a gadget” for one it knows nothing of, and says a line once', () => {
-    expect(keepChangeLines(ask({ bindings: [{ gadgetId: 4, name: 'JIRA' }, { gadgetId: 4, name: 'JIRA' }] }), titleOf))
+    expect(keepChangeLines(ask({ bindings: [{ gadgetId: 4, name: 'JIRA', target: 30 }, { gadgetId: 4, name: 'JIRA', target: 30 }] }), titleOf))
       .toEqual(['Gives a gadget access to env.JIRA'])
   })
 
@@ -32,8 +38,8 @@ describe('keepChangeLines', () => {
 
 describe('keepReason', () => {
   it('gives the weightiest reason', () => {
-    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA' }], conflicts: ['a.ts'] }))).toMatch(/conflicts/)
-    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA' }] }, true))).toMatch(/yours to decide/)
+    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }], conflicts: ['a.ts'] }))).toMatch(/conflicts/)
+    expect(keepReason(ask({ bindings: [{ gadgetId: 3, name: 'JIRA', target: 30 }] }, true))).toMatch(/yours to decide/)
     expect(keepReason(ask({}, true))).toMatch(/Others/)
   })
 })

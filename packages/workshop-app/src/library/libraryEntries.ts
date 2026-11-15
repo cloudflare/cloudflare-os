@@ -3,6 +3,7 @@ import { formatAsideRef, type AsideItem } from '@/aside/asideItems'
 import { groupByTime } from '@/chat/timeGroups'
 import { formatActivity } from '@/workspaces/formatActivity'
 import type { ConnectedFile } from './connectedFiles'
+import { waitingOn } from './Waiting'
 
 /** What the Library page shows, a tab each. */
 export type LibraryTab = 'favorites' | 'gadgets' | 'files'
@@ -37,6 +38,8 @@ export type LibraryEntry = {
   removal: LibraryItemRef
   /** The viewer builds in its workspace, so may rename or delete it. Only a gadget can be. */
   canDelete: boolean
+  /** How many changes it has waiting on the viewer to approve: only a gadget's, and only theirs to decide. */
+  waiting?: number
 }
 
 /** Everything the Library is made from. */
@@ -72,7 +75,7 @@ const entryKey = (workspaceId: string, item: AsideItem) => `${workspaceId}/${ite
 /** A file's name, or else what it is. */
 export const fileTitle = ({ name, mimeType }: { name?: string; mimeType: string }) => name || `Untitled ${mimeType.split('/')[1] || 'file'}`
 
-type Gadget = Pick<OutputSummary, 'workspaceId' | 'workpieceId' | 'title' | 'output'> & Partial<Pick<OutputSummary, 'workspaceTitle' | 'owner'>> & { at: Date }
+type Gadget = Pick<OutputSummary, 'workspaceId' | 'workpieceId' | 'title' | 'output'> & Partial<Pick<OutputSummary, 'workspaceTitle' | 'owner' | 'role' | 'waiting'>> & { at: Date }
 
 const gadgetEntry = (gadget: Gadget, sources: LibrarySources, starred: ReadonlySet<string>): LibraryEntry => {
   const { workspaceId, workpieceId, output } = gadget
@@ -98,6 +101,7 @@ const gadgetEntry = (gadget: Gadget, sources: LibrarySources, starred: ReadonlyS
     favorite,
     starred: starred.has(favoriteKey(favorite)),
     removal: { kind: 'app', workspaceId, workpieceId },
+    waiting: waitingOn(gadget) || undefined,
     canDelete: sources.builds.has(workspaceId),
   }
 }
@@ -208,7 +212,7 @@ export type LibraryGroup = {
   rows: Array<{ entry: LibraryEntry; time?: string }>
 }
 
-// Favorites shows what is starred, then this many of what was worked on last, to reach for.
+// Recent shows what is starred, then this many of what was worked on last, to reach for.
 const RECENT = 8
 
 const matches = (entry: LibraryEntry, query: string) => {
@@ -220,9 +224,9 @@ const matches = (entry: LibraryEntry, query: string) => {
 const byName = (a: LibraryEntry, b: LibraryEntry) => a.title.localeCompare(b.title, undefined, { sensitivity: 'base', numeric: true })
 
 /**
- * What a tab lists, in groups: what is starred leads, then the rest, latest first and grouped by
- * when (as `groupByTime` groups), or by name in one group. Favorites has its starred items, then
- * a group of what was worked on last; `all`, as a workspace lists them, has gadgets and files
+ * What a tab lists, in groups: gadgets with changes waiting on the viewer to approve lead, then
+ * what is starred, then the rest, latest first and grouped by when (as `groupByTime` groups), or
+ * by name in one group. Recent (the `favorites` tab) has its starred items, then the latest worked on; `all`, as a workspace lists them, has gadgets and files
  * together. A search keeps what has every word of it in its name or its workspace's.
  */
 export const libraryGroups = (
@@ -235,19 +239,26 @@ export const libraryGroups = (
   const ordered = (list: LibraryEntry[]) => (sort === 'name' ? list.toSorted(byName) : list)
   const starredGroup = (list: LibraryEntry[]): LibraryGroup[] =>
     list.length > 0 ? [{ key: 'starred', label: 'Starred', rows: ordered(list).map(timed) }] : []
+  // What waits on the viewer leads, out of the groups it would be in otherwise, so it is seen first.
+  const waiting = tab === 'files' ? [] : found(entries.gadgets.filter((entry) => entry.waiting))
+  const waitingKeys = new Set(waiting.map(({ key }) => key))
+  const waits = (entry: LibraryEntry) => waitingKeys.has(entry.key)
+  const waitingGroup: LibraryGroup[] = waiting.length > 0
+    ? [{ key: 'waiting', label: 'Needs approval', rows: waiting.toSorted(latest).map(timed) }]
+    : []
 
   if (tab === 'favorites') {
-    const starred = found(entries.favorites)
-    const rest = found([...entries.gadgets, ...entries.files].filter((entry) => !entry.starred))
+    const starred = found(entries.favorites).filter((entry) => !waits(entry))
+    const rest = found([...entries.gadgets, ...entries.files].filter((entry) => !entry.starred && !waits(entry)))
       .toSorted(latest)
       .slice(0, RECENT)
-    return [...starredGroup(starred), ...(rest.length > 0 ? [{ key: 'recent', label: 'Recent', rows: rest.map(timed) }] : [])]
+    return [...waitingGroup, ...starredGroup(starred), ...(rest.length > 0 ? [{ key: 'recent', label: 'Latest', rows: rest.map(timed) }] : [])]
   }
 
   const listed = tab === 'gadgets' ? entries.gadgets : tab === 'files' ? entries.files : [...entries.gadgets, ...entries.files].toSorted(latest)
-  const all = found(listed)
+  const all = found(listed).filter((entry) => !waits(entry))
   const rest = all.filter((entry) => !entry.starred)
-  const groups = starredGroup(all.filter((entry) => entry.starred))
+  const groups = [...waitingGroup, ...starredGroup(all.filter((entry) => entry.starred))]
   if (rest.length === 0) return groups
   if (sort === 'name') return [...groups, { key: 'name', label: 'A to Z', rows: rest.toSorted(byName).map(timed) }]
   return [

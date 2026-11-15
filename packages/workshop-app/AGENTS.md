@@ -517,6 +517,21 @@ The dev server proxies `/blueprint-screenshot` to the backend, as the router doe
 
 ## A gadget's own pages
 
+A gadget's page (`/app/<id>`, the side pane as the page) says where it lives and leads to a chat
+with it, because using it with the agent (a slides gadget whose agent builds the slides with you)
+and carrying on building it both happen in a chat. Its header starts with its workspace's
+`WorkspaceCrumb`, title shown, as a chat's header starts with it, when the workspace is a named
+one. Its far end has Chat (`GadgetChatMenu`): New chat starts one in the workspace with the gadget
+beside it (`/workspace/$id/new?open=`, greeted "what should we do with Slides?" through the
+`gadgetTitle` history state), and below it up to four chats there to carry on in
+(`aside/itemChats.ts`), those that last had it beside them in this browser (`lastShown`) first and
+saying so. Opening one remembers it there. With no chats yet Chat starts a new one at once; made in
+a chat on its own, it has no crumb and Chat goes back to that chat. Chat is for whoever owns the
+workspace or builds in it, never for someone given the gadget alone to use or a snapshot of it
+(`role === 'use'`). It is left out where Collapse already goes back beside the chat the page came
+from, and in full screen. The backend does not record which chat made a gadget, so nothing claims
+to know it. The design record is `plans/gadget-to-chat.md`.
+
 `/app/<id>/settings` is a gadget's settings, from its More and from full screen. `GadgetSettings`
 watches one gadget's workpiece, bindings and hooks, and reports `denied` when the workspace refuses
 the viewer. Who has it (`ShareGadgetDialog`), publishing it as a blueprint and deleting it are on

@@ -1,29 +1,36 @@
-import {
-  AppWindowIcon, ChartBarIcon, FileTextIcon, FlowArrowIcon, GridNineIcon, KanbanIcon, ListChecksIcon,
-  NotebookIcon, PresentationIcon, TableIcon, type Icon, type IconProps,
-} from '@phosphor-icons/react'
+import { KindMark, type KindMarkName } from './KindMark'
 
-const ICONS = {
-  fileText: FileTextIcon,
-  gridNine: GridNineIcon,
-  presentation: PresentationIcon,
-  appWindow: AppWindowIcon,
-  flowArrow: FlowArrowIcon,
-  kanban: KanbanIcon,
-  chartBar: ChartBarIcon,
-  table: TableIcon,
-  notebook: NotebookIcon,
-  listChecks: ListChecksIcon,
-} satisfies Record<string, Icon>
+// Each format's glyph name, as blueprints and the API give it, and the mark it is drawn with.
+const MARKS = {
+  fileText: 'document',
+  gridNine: 'grid',
+  presentation: 'presentation',
+  appWindow: 'gadget',
+  flowArrow: 'flow',
+  kanban: 'board',
+  chartBar: 'chart',
+  table: 'spreadsheet',
+  notebook: 'notebook',
+  listChecks: 'checklist',
+  calendar: 'calendar',
+  inbox: 'inbox',
+  form: 'form',
+  map: 'map',
+  dashboard: 'dashboard',
+  database: 'database',
+  schedule: 'schedule',
+  agent: 'agent',
+  people: 'people',
+  web: 'web',
+} satisfies Record<string, KindMarkName>
 
 /** The glyphs an output format (a Document, a Spreadsheet, …) can be drawn with. */
-export type FormatIconName = keyof typeof ICONS
+export type FormatIconName = keyof typeof MARKS
 
 /**
- * The glyph for an output format. A name this build does not know draws the generic app window: a
- * deployment can serve a format newer than the browser's cached bundle.
+ * The mark for an output format (`KindMark`). A name this build does not know draws a gadget's
+ * window: a deployment can serve a format newer than the browser's cached bundle.
  */
-export const FormatIcon = ({ name, ...props }: { name?: FormatIconName } & IconProps) => {
-  const Glyph = (name && Object.hasOwn(ICONS, name) ? ICONS[name] : undefined) ?? AppWindowIcon
-  return <Glyph aria-hidden="true" {...props} />
-}
+export const FormatIcon = ({ name, className }: { name?: FormatIconName; className?: string }) => (
+  <KindMark name={(name && Object.hasOwn(MARKS, name) ? MARKS[name] : undefined) ?? 'gadget'} className={className} />
+)

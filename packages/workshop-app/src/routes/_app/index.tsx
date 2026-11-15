@@ -1,9 +1,11 @@
 import { useMemo, useState } from 'react'
 import { createFileRoute, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
+import { pageOf } from '@/aside/asideItems'
 import { WorkspacePicker } from '@/blocks/WorkspacePicker'
 import { FeaturedBlueprints } from '@/blueprints/FeaturedBlueprints'
 import { greeting } from '@/chat/greeting'
 import { NewChatPane } from '@/chat/NewChatPane'
+import { RecentGadgets } from '@/library/RecentGadgets'
 import { skillCommandOf } from '@/chat/slashCommands'
 import { startConversation } from '@/chat/startConversation'
 import { useProfile } from '@/profile/ProfileContext'
@@ -24,6 +26,7 @@ export const Route = createFileRoute('/_app/')({
 
 const blueprintPage = (blueprintId: string) => ({ to: '/blueprints/$blueprintId', params: { blueprintId } }) as const
 const allBlueprints = { to: '/library', search: { tab: 'blueprints' } } as const
+const library = { to: '/library', search: { tab: 'gadgets' } } as const
 
 function Home() {
   const { api } = useApi()
@@ -54,11 +57,19 @@ function Home() {
       onStarted={({ workspaceId, chatId }) => navigate({ to: '/workspace/$workspaceId/chat/$chatId', params: { workspaceId, chatId } })}
       below={<WorkspacePicker workspaces={named} value={into} onChange={setWhere} onCreate={() => void navigate({ to: '/workspaces/new' })} />}
       after={(
-        <FeaturedBlueprints
-          onOpen={(blueprintId) => navigate(blueprintPage(blueprintId))}
-          href={(blueprintId) => router.buildLocation(blueprintPage(blueprintId)).href}
-          onBrowse={() => navigate(allBlueprints)}
-          browseHref={router.buildLocation(allBlueprints).href}
+        <RecentGadgets
+          onOpen={(entry) => navigate(pageOf(entry.workspaceId, entry.item))}
+          href={(entry) => router.buildLocation(pageOf(entry.workspaceId, entry.item)).href}
+          onBrowse={() => navigate(library)}
+          browseHref={router.buildLocation(library).href}
+          fewer={(
+            <FeaturedBlueprints
+              onOpen={(blueprintId) => navigate(blueprintPage(blueprintId))}
+              href={(blueprintId) => router.buildLocation(blueprintPage(blueprintId)).href}
+              onBrowse={() => navigate(allBlueprints)}
+              browseHref={router.buildLocation(allBlueprints).href}
+            />
+          )}
         />
       )}
     />

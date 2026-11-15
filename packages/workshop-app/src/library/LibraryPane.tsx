@@ -26,7 +26,7 @@ export type LibraryPageTab = LibraryTab | 'automations' | 'skills' | 'blueprints
 
 /** The Library's tabs, in order. */
 export const LIBRARY_TABS: Array<{ value: LibraryPageTab; label: string }> = [
-  { value: 'favorites', label: 'Favorites' },
+  { value: 'favorites', label: 'Recent' },
   { value: 'gadgets', label: 'Gadgets' },
   { value: 'files', label: 'Files' },
   { value: 'automations', label: 'Automations' },
@@ -59,7 +59,7 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 
 // What a tab says when it has nothing, and when a search finds nothing in it.
 const EMPTY: Record<LibraryTab, string> = {
-  favorites: 'Nothing yet. Star a gadget or a file to keep it here, at hand.',
+  favorites: 'Nothing yet. What your chats make shows here, and what you star stays at the top.',
   gadgets: 'No gadgets yet. What your chats make shows here.',
   files: 'No files yet. What is sent in your chats, and the documents your agents work on, show here.',
 }
@@ -203,7 +203,7 @@ export const LibraryPane = ({ tab, onTabChange, onOpen, href, onOpenSkill, skill
             )}
           </Tabs.Panel>
           {ENTRY_TABS.map(({ value }) => (
-            <Tabs.Panel key={value} value={value} className="flex flex-col gap-4">
+            <Tabs.Panel key={value} value={value} className="flex flex-col gap-6">
               {library.loading && <p role="status" className="appears-late px-4 text-center text-base text-kumo-subtle">Loading the library…</p>}
               {library.problem && (
                 <p className="flex items-center justify-center gap-3 px-4 text-base text-kumo-subtle">

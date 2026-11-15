@@ -29,6 +29,8 @@ export type LibraryItemProps = {
   preview?: FileThumbnail | null
   /** When it was, as the list it is in puts it. */
   time?: string
+  /** How many changes it has waiting on the viewer to approve, said in place of when it was. */
+  waiting?: number
   /** Starred or not; absent for what cannot be, such as a file that lives with a connected service. */
   starred?: boolean
   onStarredChange?: (starred: boolean) => void
@@ -78,7 +80,15 @@ const Action = ({ shown, children }: { shown?: boolean; children: ReactNode }) =
  * keeps its star out, last, so that it stays where it is as More slides out before it. Right-click
  * it for the same menu as More.
  */
-export const LibraryRow = ({ title, icon, thumbnail, time, starred, onStarredChange, actions, href, onSelect }: LibraryItemProps) => (
+/** What a Library entry with changes waiting says of them: "3 to approve". */
+export const WaitingLabel = ({ count, className }: { count: number; className?: string }) => (
+  <span className={cn('flex shrink-0 items-center gap-1.5 text-kumo-warning', className)}>
+    <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-kumo-warning" />
+    {count} to approve
+  </span>
+)
+
+export const LibraryRow = ({ title, icon, thumbnail, time, waiting, starred, onStarredChange, actions, href, onSelect }: LibraryItemProps) => (
   <ContextMenu menu={libraryMenu(actions)} aria-label={`More for ${title}`} className="block">
     <div className="group relative flex items-center rounded-2xl pr-1.5 hover:bg-kumo-contrast/5 has-focus-visible:bg-kumo-contrast/5 has-data-popup-open:bg-kumo-contrast/5">
       <LinkButton
@@ -89,7 +99,7 @@ export const LibraryRow = ({ title, icon, thumbnail, time, starred, onStarredCha
       >
         <LibraryGlyph icon={icon} thumbnail={thumbnail} />
         <span className="min-w-0 flex-1 truncate font-medium text-kumo-default">{title}</span>
-        {time && <span className="shrink-0 text-end text-kumo-subtle">{time}</span>}
+        {waiting ? <WaitingLabel count={waiting} /> : time && <span className="shrink-0 text-end text-kumo-subtle">{time}</span>}
       </LinkButton>
       {actions.length > 0 && (
         <Action>

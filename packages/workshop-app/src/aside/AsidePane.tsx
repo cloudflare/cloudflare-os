@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { FileDashedIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
-import { ConnectedFileView, type ConnectedFileReview } from '@/blocks/ConnectedFileView'
 import { FileView } from '@/blocks/FileView'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
+import { GadgetAskDock } from './GadgetAskDock'
 import { PaneNotice } from '@/blocks/PaneNotice'
 import { SidePane, type SidePaneItem } from '@/blocks/SidePane'
 import { useDocumentTitle } from '@/hooks/useDocumentTitle'
 import { ShareGadgetDialog } from '@/sharing/ShareGadgetDialog'
-import { useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { useChatThreads, useWorkspaces } from '@/workspaces/WorkspacesContext'
+import { isNamedWorkspace } from '@/workspaces/workspaceKind'
+import { workspaceLabel } from '@/workspaces/workspaceLabel'
 import { asideItemIcon } from './asideItemIcon'
+import { itemChats } from './itemChats'
+import { lastShown } from './lastShown'
+import { ConnectedContent } from './ConnectedContent'
 import type { AsideFile, AsideItem, AsideOutput } from './asideItems'
 import type { GadgetUi } from './GadgetConnection'
-import { OPEN_IN, type ConnectedFileKind } from '@/files/connectedFile'
-import { useConnectedFilePreview, type ConnectedFileState } from './useConnectedFilePreview'
+import { OPEN_IN } from '@/files/connectedFile'
+import { useConnectedFilePreview } from './useConnectedFilePreview'
 import { useFilePreview, type FileState } from './useFilePreview'
 import { useFileReview } from './useFileReview'
 import { useGadgetConnection } from './useGadgetConnection'
@@ -54,6 +59,12 @@ export type AsidePaneProps = {
       fullScreen: boolean
       /** Back beside the chat it was expanded from, when it was. */
       onCollapse?: () => void
+      /** Goes to the workspace it is in, from the crumb its header starts with. */
+      onOpenWorkspace?: () => void
+      /** Goes to a chat in its workspace, with it beside it. */
+      onOpenChat?: (chatId: number) => void
+      /** Starts a new chat in its workspace with it beside it, greeted by its name. */
+      onNewChat?: (title: string) => void
     }
 )
 
@@ -64,6 +75,9 @@ const ownPage = (link: string) => {
   url.hash = ''
   return url.href
 }
+
+const workspaceOf = (item: AsideItem) =>
+  item.kind === 'file' ? item.file.workspaceId : item.kind === 'output' ? item.output.workspaceId : item.connected.workspaceId
 
 const paneItem = (item: AsideItem, title = item.title): SidePaneItem => ({ key: item.key, title, icon: asideItemIcon(item) })
 
@@ -100,6 +114,32 @@ export const AsidePane = (props: AsidePaneProps) => {
     return () => window.removeEventListener('keydown', pressed)
   }, [fullScreen, onFullScreenChange])
 
+  // A gadget can be shared on its own, by whoever can share what is in its workspace.
+  const workspaces = useWorkspaces()
+  const [sharing, setSharing] = useState(false)
+  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
+  const listed = gadget && workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === gadget.workspaceId) : undefined
+  // The workspace it is in, which its page names, and where whoever builds there can chat with it
+  // beside them; not someone given it alone to use, or a snapshot of it.
+  const home = workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === workspaceOf(item)) : undefined
+  const threads = useChatThreads()
+  const page = props.placement === 'page' ? props : undefined
+  const builds = home !== undefined && home.role !== 'use'
+  const named = isNamedWorkspace(home)
+  // A gadget or a connected file opens beside any chat there; a file sent in a chat, only beside that one.
+  const chattable = builds && page?.onOpenChat && (item.kind === 'connected' || gadget !== undefined)
+  const chats = chattable && threads ? itemChats(threads, home.id, item.key, lastShown) : []
+  const onNewChat = page?.onNewChat
+  const pageParts = page && {
+    workspace: home && named && page.onOpenWorkspace ? { id: home.id, title: home.title, label: workspaceLabel(home.title), expanded: true, onOpen: page.onOpenWorkspace } : undefined,
+    // In a chat on its own, it is that chat that it goes on in: a new one would be a chat on its own too.
+    chat: chattable && page.onOpenChat ? {
+      chats: chats.map(({ chatId, title: chatTitle, at, showing }) => ({ key: String(chatId), title: chatTitle, time: formatActivity(at), showing })),
+      onOpenChat: (key: string) => page.onOpenChat?.(Number(key)),
+      onNewChat: named && onNewChat ? () => onNewChat(title) : undefined,
+    } : undefined,
+  }
+
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.kind === 'connected' ? (
@@ -110,13 +150,22 @@ export const AsidePane = (props: AsidePaneProps) => {
   ) : item.output.type === 'worktree' ? (
     <WorktreeContent key={item.key} worktree={item.output} />
   ) : (
-    <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} link={link} onReload={connection?.reload} />
+    // While its changes to a file are reviewed over it, the gadget is hidden (running still), so
+    // none of it shows at the corners the review shares with it.
+    <div className="relative flex min-h-0 flex-1 flex-col [&:has(>[data-gadget-review])>:first-child]:invisible">
+      <GadgetView key={item.key} title={title} ui={snapshot.ui} frame={frame} link={link} onReload={connection?.reload} />
+      {/* What its own code asks, for whoever builds where it is. Shown beside a chat as well: what
+          the chat's version asks carries the chat, and is the chat's to ask; the rest is not. */}
+      {item.output.type === 'gadget' && listed?.role !== 'use' && snapshot.ui.status !== 'denied' && (
+        <GadgetAskDock
+          key={`ask:${item.key}`}
+          gadget={item.output}
+          title={title}
+          onOpenSettings={onOpenSettings && (() => onOpenSettings(item.output, title))}
+        />
+      )}
+    </div>
   )
-  // A gadget can be shared on its own, by whoever can share what is in its workspace.
-  const workspaces = useWorkspaces()
-  const [sharing, setSharing] = useState(false)
-  const gadget = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
-  const listed = gadget && workspaces.status === 'ready' ? workspaces.workspaces.find(({ id }) => id === gadget.workspaceId) : undefined
   const shareable = gadget !== undefined && link !== undefined && listed !== undefined && listed.role !== 'use'
   const share = shareable && (
     <ShareGadgetDialog
@@ -174,7 +223,7 @@ export const AsidePane = (props: AsidePaneProps) => {
       {share}
     </SidePane>
   ) : (
-    <SidePane {...shared} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
+    <SidePane {...shared} {...pageParts} placement="page" onCollapse={props.onCollapse} fullScreen={props.fullScreen} onFullScreenChange={onFullScreenChange}>
       {content}
       {share}
     </SidePane>
@@ -283,16 +332,3 @@ const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => 
   }
 }
 
-const ConnectedContent = ({ title, kind, state, review }: { title: string; kind?: ConnectedFileKind; state: ConnectedFileState; review?: ConnectedFileReview }) => {
-  switch (state.status) {
-    case 'loading':
-      // A blank one of its kind stands in, where one is known, so nothing moves when it arrives.
-      return kind ? <ConnectedFileView kind={kind} /> : <PaneNotice title="Loading…" />
-    case 'none':
-      return <PaneNotice icon={FileDashedIcon} title={title} description="It can’t be shown here. Open it in its own editor to see it." />
-    case 'failed':
-      return <PaneNotice icon={WarningCircleIcon} title={`Couldn’t show ${title}`} description={state.message} action={{ label: 'Try again', onClick: state.retry }} />
-    case 'ready':
-      return <ConnectedFileView preview={state.preview} kind={state.preview.content.type} review={review} />
-  }
-}

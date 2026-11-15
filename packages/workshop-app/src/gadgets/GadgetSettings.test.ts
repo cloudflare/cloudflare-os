@@ -16,6 +16,8 @@ const fakeWorkspace = ({ subscribe }: { subscribe?: () => Promise<Disposable> } 
     unbind: vi.fn<SettingsGadget['unbind']>(async () => {}),
     createBlueprint: vi.fn<SettingsGadget['createBlueprint']>(async (title = '') => ({ id: 'bp', title, description: '', version: 1, codeVersionDate: new Date() })),
     getThumbnail: vi.fn<SettingsGadget['getThumbnail']>(async () => null),
+    setAutoApprove: vi.fn<SettingsGadget['setAutoApprove']>(async () => {}),
+    disallowActionKind: vi.fn<SettingsGadget['disallowActionKind']>(async () => {}),
     [Symbol.dispose]: vi.fn<() => void>(),
   }
   const overseer: SettingsOverseer = {

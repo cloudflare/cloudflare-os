@@ -92,6 +92,7 @@ export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: Li
       title: entry.title,
       icon: asideItemIcon(entry.item),
       time,
+      waiting: entry.waiting,
       starred: entry.favorite ? entry.starred : undefined,
       onStarredChange: (starred: boolean) => act(starred ? 'star it' : 'unstar it', () => library.setStarred(entry, starred)),
       actions: actionsOf(entry, address),
@@ -106,6 +107,7 @@ export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: Li
       {view === 'list'
         ? (
             <GroupedList
+              headed
               groups={groups.map(({ key, label, rows }) => ({
                 key,
                 label,
@@ -114,8 +116,11 @@ export const LibraryList = ({ groups, view = 'list', library, onOpen, href }: Li
             />
           )
         : groups.map(({ key, label, rows }) => (
-            <section key={key} aria-label={label} className="appears grid grid-cols-[repeat(auto-fill,minmax(min(7rem,calc(50%-0.375rem)),1fr))] gap-3 px-1">
-              {rows.map(({ entry, time }) => <Tile key={entry.key} {...propsOf(entry, time)} />)}
+            <section key={key} aria-labelledby={`library-${key}`} className="appears flex flex-col gap-2 px-1">
+              <h2 id={`library-${key}`} className="px-2 text-sm font-medium text-kumo-subtle">{label}</h2>
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(min(7rem,calc(50%-0.375rem)),1fr))] gap-3">
+                {rows.map(({ entry, time }) => <Tile key={entry.key} {...propsOf(entry, time)} />)}
+              </div>
             </section>
           ))}
       <ConfirmDialog

@@ -1,5 +1,5 @@
 import type { AttachmentKind } from '@/files/attachmentKind'
-import { ATTACHMENT_KIND_ICONS } from './attachmentKindIcons'
+import { AttachmentKindIcon } from './AttachmentKindIcon'
 import type { FileThumbnail } from './file-preview/useFileThumbnail'
 
 /**
@@ -9,10 +9,9 @@ import type { FileThumbnail } from './file-preview/useFileThumbnail'
  */
 export const AttachmentTileFace = ({ name, kind, thumbnail }: { name: string; kind: AttachmentKind; thumbnail: FileThumbnail | null }) => {
   if (!thumbnail) {
-    const KindIcon = ATTACHMENT_KIND_ICONS[kind]
     return (
       <span className="flex h-full flex-col justify-between gap-2 p-3">
-        <KindIcon aria-hidden="true" className="size-5 shrink-0 text-kumo-subtle" />
+        <AttachmentKindIcon kind={kind} className="size-5" />
         <span className="line-clamp-2 text-xs/4 font-medium wrap-anywhere text-kumo-default">{name}</span>
       </span>
     )

@@ -25,8 +25,11 @@ export type SidebarProps = {
   suggestedConnections?: ConnectButtonLogo[]
   /** The connect button's page, of what is connected and what can be, and whether it is the one showing. */
   connectionsPage?: { current: boolean; onOpen: () => void }
-  /** The library's page, and whether it is the one showing. */
-  library?: { current: boolean; onOpen: () => void }
+  /**
+   * The library's page, and whether it is the one showing; `waiting`, how many changes the user's
+   * gadgets have waiting on them to approve, which a dot on its button says there are.
+   */
+  library?: { current: boolean; onOpen: () => void; waiting?: number }
   /** The page listing every workspace, and whether it is the one showing. */
   workspacesPage?: { current: boolean; onOpen: () => void }
   /** The user's profile, from the account menu's first row, and whether it is the one showing. */
@@ -69,14 +72,21 @@ export const Sidebar = ({
       className="aria-[current=page]:bg-kumo-tint"
     />
   )
+  const waiting = library?.waiting ?? 0
   const libraryButton = (
-    <Button
-      icon={CirclesFourIcon}
-      aria-label="Library"
-      aria-current={library?.current ? 'page' : undefined}
-      onClick={library?.onOpen}
-      className="aria-[current=page]:bg-kumo-tint"
-    />
+    <span className="relative flex">
+      <Button
+        icon={CirclesFourIcon}
+        aria-label={waiting > 0 ? `Library, ${waiting} to approve` : 'Library'}
+        title={waiting > 0 ? `${waiting} to approve` : undefined}
+        aria-current={library?.current ? 'page' : undefined}
+        onClick={library?.onOpen}
+        className="aria-[current=page]:bg-kumo-tint"
+      />
+      {waiting > 0 && (
+        <span aria-hidden="true" className="appears pointer-events-none absolute top-1.5 right-1.5 size-2 rounded-full bg-kumo-warning ring-2 ring-kumo-canvas" />
+      )}
+    </span>
   )
   const search = <Button icon={MagnifyingGlassIcon} aria-label="Search" title="Search (⌘K)" aria-haspopup="dialog" onClick={onSearch} />
   // Up from the bottom, and out to the side of the rail, so it opens over the page rather than off it.
