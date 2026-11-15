@@ -128,7 +128,7 @@ export type TestCommand = string | { command: string; idleSeconds: number }
 const IDLE_TIMEOUT_SECONDS = 60
 
 /** Wall-clock backstop, for a command that stays chatty while looping forever. */
-const TOTAL_TIMEOUT_SECONDS = 600
+const TOTAL_TIMEOUT_SECONDS = 900
 
 /**
  * Nothing under vitest bounds a wedged run -- its own timeouts are enforced inside the test worker

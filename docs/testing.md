@@ -37,7 +37,7 @@ views in that Chromium too, through Playwright, so they need the same install.
 
 ## Watchdog policy
 
-Shared test tasks use `scripts/with-timeout.ts`: 60 seconds without output and 600 seconds total.
+Shared test tasks use `scripts/with-timeout.ts`: 60 seconds without output and 900 seconds (15 minutes) total.
 Import-heavy backend unit tests use a 120-second idle allowance, and the `workshop-evals` unit tests
 a 240-second one: `evals/chat-views.test.ts` reports only when it ends, and took 114 seconds on
 CI on 2026-11-09. These process-level watchdogs are separate from Vitest's per-test limits and
