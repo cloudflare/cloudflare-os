@@ -1037,6 +1037,19 @@ async function storedAccount(
   return { account, user: new GatekeeperUserImpl(ctx as never, {} as never) };
 }
 
+it.each(SUPPORTED_RESOURCES.filter(resource => resource.creatable))(
+  "opens $title's creation configurator by stable ID or legacy pattern", async resource => {
+    let { user } = await storedAccount([]);
+    let byPattern = await user.startCreationConfigurator(resource.urlPattern);
+    try {
+      let byId = await user.startCreationConfigurator(resource.id!);
+      try {
+        expect(byId.iframeHtml).toBe(byPattern.iframeHtml);
+      } finally { byId.ui[Symbol.dispose](); }
+    } finally { byPattern.ui[Symbol.dispose](); }
+  },
+);
+
 describe("the Office import grant on a stored account", () => {
   it("is kept by the account, so asking for it again needs no consent, but is never described", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({

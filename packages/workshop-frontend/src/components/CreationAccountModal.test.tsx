@@ -144,8 +144,8 @@ afterEach(() => {
 })
 
 async function renderModal(configuration?: string, {
-  autoProvisionsAccount = false, forcedAccount = false, resourceTypeId = undefined as string | undefined,
-} = {}) {
+  autoProvisionsAccount = false, forcedAccount = false, resourceTypeId,
+}: { autoProvisionsAccount?: boolean; forcedAccount?: boolean; resourceTypeId?: string } = {}) {
   testState.collect = readFrame
   const startCreationConfigurator = vi.fn<(accountId: number) => Promise<object>>(accountId => {
     const frame = deferred<object>()
@@ -298,9 +298,9 @@ describe('CreationAccountModal', () => {
     expect(onChoose).toHaveBeenCalledWith({ accountId: 6, configuration: 'settings from frame-6' })
   })
 
-  it('opens each account\'s configurator on the configuration the agent suggested', async () => {
+  it.each([undefined, 'document'])('opens the suggested configuration with type ID %s', async resourceTypeId => {
     const suggested = 'https://drive.google.com/drive/folders/team'
-    await renderModal(suggested)
+    await renderModal(suggested, { resourceTypeId })
     await resolveStart(0)
     expect(testState.initialResource)
       .toEqual({ initialResourceUrl: suggested, resourceUrlPattern: PATTERN })

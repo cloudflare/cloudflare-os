@@ -105,7 +105,7 @@ describe("independent creation and connection discovery", () => {
   ])("refuses a configuration $name before minting anything", async ({ resource, configuration, error }) => {
     const { inUser, createResource } = fixture([resource]);
     await expect(inUser(user => user.createResourceGatekeeper("example", CREATION.urlPattern, "Build",
-      configuration)))
+      undefined, configuration)))
       .rejects.toThrow(error);
     expect(createResource).not.toHaveBeenCalled();
   });
