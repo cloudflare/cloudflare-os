@@ -361,7 +361,7 @@ describe("Slides batch kinds", () => {
     expect(batchKind([BOLD, { op: "setBackground", slideId: "s1", background: "none" }])).toBe("formatSlides");
   });
 
-  it("queues any other batch as an edit unless it deletes or downloads", () => {
+  it("queues any other batch as an edit unless it deletes or downloads, a download first", () => {
     let edits: DesignChange[] = [
       { op: "formatText", slideId: "s1", elementId: "t1", format: { link: IMAGE } },
       { op: "formatText", slideId: "s1", elementId: "t1", format: { fontFamily: "Georgia" } },
@@ -378,18 +378,27 @@ describe("Slides batch kinds", () => {
     for (let change of edits) expect(batchKind([change]), change.op).toBe("editSlides");
     expect(batchKind([TEXT, BOLD])).toBe("editSlides");
 
-    let held: DesignChange[] = [
+    let deletions: DesignChange[] = [
       { op: "deleteElement", slideId: "s1", elementId: "t1" },
       { op: "deleteTableRows", slideId: "s1", elementId: "tb", at: 0 },
       { op: "deleteTableColumns", slideId: "s1", elementId: "tb", at: 0 },
+    ];
+    for (let change of deletions) {
+      expect(batchKind([change]), change.op).toBe("deleteSlideContent");
+      expect(batchKind([TEXT, BOLD, change]), change.op).toBe("deleteSlideContent");
+    }
+
+    let downloads: DesignChange[] = [
       { op: "insertImage", slideId: "s1", id: "new", url: IMAGE },
       { op: "replaceImage", slideId: "s1", elementId: "img", url: IMAGE },
       { op: "setBackground", slideId: "s1", background: { imageUrl: IMAGE } },
       { op: "setBackground", masterId: "m1", background: { imageUrl: IMAGE } },
     ];
-    for (let change of held) {
+    for (let change of downloads) {
       expect(batchKind([change]), change.op).toBe("updateSlides");
       expect(batchKind([TEXT, BOLD, change]), change.op).toBe("updateSlides");
+      // A download holds back a batch that also deletes.
+      expect(batchKind([deletions[0], change]), change.op).toBe("updateSlides");
     }
   });
 

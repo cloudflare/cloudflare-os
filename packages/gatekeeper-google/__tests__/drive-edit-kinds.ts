@@ -13,7 +13,9 @@ export const DRIVE_SLIDES_KINDS: ActionKind[] = [
     tag: "edit-slides",
     label: "Slide edits that keep every element, table row and column and download no images",
   },
+  { tag: "delete-slide-content", label: "Slide changes that delete elements, table rows or columns" },
   { tag: "arrange-slides", label: "Adding, copying and reordering slides" },
+  { tag: "delete-slides", label: "Deleting slides" },
   { tag: "skipSlides", label: "Skipping slides" },
 ].map(kind => onDrive(kind, "presentation"));
 
