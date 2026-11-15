@@ -33,8 +33,8 @@ import type {
   SpreadsheetValueMode,
 } from "./sheets-read-types";
 import {
-  basePiecesOf, baseValues, conflictReason, enteredContent, gridOf, holdsFormula, MAX_REWRITE_WORK,
-  formatPiecesToFetch, overlayRange, rangesToFetch, replayChanges, resolveArea, rewriteWork,
+  basePiecesOf, baseValues, conflictReason, createReplay, enteredContent, gridOf, holdsFormula,
+  MAX_REWRITE_WORK, formatPiecesToFetch, overlayRange, rangesToFetch, resolveArea, rewriteWork,
   simulatedFormats,
   simulatedRange, SimulatedTextTooLong, textBudget, UnsimulatedFormula, type Grid, type PlannedChange,
   type QueuedChange, type SheetBatch, type SheetsAction, type SheetsActions, type SimulatedArea,
@@ -287,14 +287,6 @@ function mergesConsulted(
   return consulted;
 }
 
-/** A read with queued changes applied, and the first that no longer applies. */
-function replayed(base: Grid, changes: readonly QueuedChange[]): { grid: Grid; conflict?: string } {
-  let result = replayChanges(base, changes);
-  return result.kind === "complete"
-    ? { grid: result.value }
-    : { grid: result.partial, conflict: conflictReason(result.unsupported, result.reason) };
-}
-
 /**
  * `read`, Google's values for each of `ranges`, showing what queued changes enter in their cells,
  * for a grid whose queued changes leave rows, columns and sheets where they are.
@@ -361,6 +353,10 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
   #approvalQueue: RpcStub<ApprovalQueue>;
   #read: NativeRead;
   #changes: SheetsChangeQueue;
+  // Replays the queued changes over the grid of each read, as one entity under the spreadsheet's
+  // ID. Each read builds its own grid and folds it once, so no fold is reused, and none is to be
+  // forgotten when a change is applied or rejected.
+  #replay = createReplay();
 
   /** `reader` makes the reads with nothing queued: for a spreadsheet not created yet, a blank one. */
   constructor(
@@ -395,12 +391,20 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     return this.#api.withMerges(this.#spreadsheetId, metadata, mergesConsulted(metadata, pending, names));
   }
 
+  /** A read with queued changes applied, and the first that no longer applies. */
+  #replayed(base: Grid, changes: readonly QueuedChange[]): { grid: Grid; conflict?: string } {
+    let { entity, stopped } = this.#replay.fold(this.#spreadsheetId, base, changes);
+    // The fold of a fetched grid always holds one: no queued change deletes the grid.
+    let grid = entity!;
+    return stopped ? { grid, conflict: conflictReason(stopped.record, stopped.reason) } : { grid };
+  }
+
   async getSpreadsheet(): Promise<SpreadsheetInfo> {
     return this.#read(
       () => this.#changes.snapshot(async pending => {
         if (pending.length === 0) return this.#reader.getSpreadsheet(this.#spreadsheetId);
         let metadata = await this.#metadata(pending);
-        let { grid, conflict } = replayed(gridOf(metadata), pending);
+        let { grid, conflict } = this.#replayed(gridOf(metadata), pending);
         return {
           id: metadata.id,
           title: metadata.title,
@@ -449,7 +453,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
     let conflict: string | undefined;
     if (mayMoveCells(pending)) {
       validateRanges(ranges);
-      let replay = replayed(gridOf(await this.#metadata(pending)), pending);
+      let replay = this.#replayed(gridOf(await this.#metadata(pending)), pending);
       conflict = replay.conflict;
       shown = replay.grid.log.length > 0
         ? await this.#movedRanges(replay.grid, parsed, mode ?? "formatted")
@@ -458,7 +462,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
       let [metadata, read] = await Promise.all([
         this.#metadata(pending), this.#api.readRanges(this.#spreadsheetId, ranges, mode),
       ]);
-      let replay = replayed(gridOf(metadata), pending);
+      let replay = this.#replayed(gridOf(metadata), pending);
       conflict = replay.conflict;
       shown = overlaid(read, parsed, replay.grid, mode);
     }
@@ -594,7 +598,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
         this.#metadata(pending, [parsed.sheet]), this.#api.readFormats(this.#spreadsheetId, range),
       ]);
     }
-    let { grid, conflict } = replayed(gridOf(metadata), pending);
+    let { grid, conflict } = this.#replayed(gridOf(metadata), pending);
     let area: SimulatedArea;
     let pieces: SheetArea[];
     try {
@@ -629,7 +633,7 @@ export class GoogleSpreadsheetSessionImpl extends RpcTarget implements GoogleSpr
           let names = prepared.flatMap(change => "sheet" in change ? [change.sheet] : []);
           let metadata = await this.#api.withMerges(
             this.#spreadsheetId, found, mergesConsulted(found, pending, names));
-          let { grid, conflict } = replayed(gridOf(metadata), pending);
+          let { grid, conflict } = this.#replayed(gridOf(metadata), pending);
           if (conflict) return { title: metadata.title, editable, conflict };
           let planned: PlannedChange[];
           let cells: SheetArea[];

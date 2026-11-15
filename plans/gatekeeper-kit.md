@@ -2823,7 +2823,7 @@ Who uses what:
 | | Entities | List hooks | Status |
 |---|---|---|---|
 | Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | in the tree |
-| Sheets | one: the grid | none | planned |
+| Sheets | one: the grid | none | in the tree |
 | Slides | one: the deck | none | planned |
 | PagerDuty | incidents | the incident listing | planned |
 | Outlook | messages | the message listing | planned |
