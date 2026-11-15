@@ -379,3 +379,20 @@ when the user connects that account there. The page's groups would then read "Ne
 first / Automatic" above the per-workspace overrides. Not built: it adds a mechanism beside the
 rules, and changes who a rule in a shared workspace belongs to, which wants a kernel reviewer's eye first.
 
+## 14. Each account gets a page
+
+The Connections page's manage dialog becomes a page per account (`/connections/$accountId`), the
+home for standing permissions. Top to bottom:
+
+- The service, which account, and whether it is signed in; Reconnect when it is not.
+- **When it changes something.** "Reading never asks." Then each of the user's own workspaces that
+  holds a connection to the service, closed to a line ("2 of 6 go ahead on their own"), open to a
+  row per kind of change with **Ask first | Automatic**. Kind labels from gatekeepers ("Slide text
+  edits, in any presentation this connection reaches") read as a title and how far it reaches.
+- What it can reach, five until "Show all" (Google has thirteen), with more to grant.
+- Disconnect, asked first.
+
+**Kernel.** One line of behaviour: `listPreApprovableActions` now covers every connection the
+workspace holds, not only those a gadget binds, since connections added to a chat (where Google
+edits happen) were missing, so their rules could be set from a request but never seen again. It
+also reports an ambient connection's vendor. Integration test in `auto-approval-policy.test.ts`.

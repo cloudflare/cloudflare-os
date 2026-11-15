@@ -443,6 +443,18 @@ one of the user's accounts (`useApproveCreation`): with only one that can, there
 service puts new things (My Drive); otherwise, or when the agent suggested where, `ConnectResource`
 asks which account and where, in the service's creation form (`startCreationConfigurator`).
 
+An account opens its own page (`/connections/$accountId`, `ConnectionPane`, drawn by
+`ConnectionAccountView`); a service not connected yet opens `ConnectionDialog` to connect it. The
+page leads with what the account may change without asking: each of the user's own workspaces
+holding a connection to its service, one `ChangeRulesGroup` each, with "Ask first" or "Automatic"
+(`Segmented`) per kind of change its gatekeeper can let through (`useChangeRules`, over
+`listPreApprovableActions` and the workspace's rules). Rules are the workspace's, keyed by
+connection, so they are found by service: a workspace does not record which of the user's accounts
+it connected through, and one shared with them may hold another person's, so it lists only theirs.
+A kind's label splits at ", in " into what it is and how far it reaches (`kindLabel`). Then what
+the account can reach, five until "Show all", with more to grant, and Disconnect, asked first.
+"Always approve" on a request says this is where to change it.
+
 The user adds one themselves with `AddConnection`: `AddConnectionDialog` lists every connectable
 kind of resource of the services that are not built in, those with an account first, then
 `ConnectResource` (the account, grant and form half of `SetUpConnection`, with Back) makes it in

@@ -2,6 +2,8 @@ import { useRef, useState } from 'react'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { Button } from '@/components/Button'
+import { ChangeRulesGroup, type ChangeRulesConnection } from '@/blocks/ChangeRulesGroup'
+import { ConnectionAccountView, type ChangeRulesState, type WorkspaceChangeRules } from '@/blocks/ConnectionAccountView'
 import { ConnectionDialog, type ConnectionDialogResource } from '@/blocks/ConnectionDialog'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
 import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
@@ -25,10 +27,10 @@ const githubResources: ConnectionDialogResource[] = [
   { urlPattern: 'https://github.com/:owner/:repo', title: 'Repository', description: 'Code, issues and pull requests in one repository' },
 ]
 
-type Open = 'connect' | 'connect-granular' | 'add' | 'manage' | 'manage-partial' | 'expired' | SetUp | undefined
+type Open = 'connect' | 'connect-granular' | 'add' | SetUp | undefined
 type SetUp = 'setup-loading' | 'setup-none' | 'setup-ready' | 'setup-expired' | 'setup-grant' | 'setup-create' | 'setup-create-none'
 
-/** The Connections page's rows, and the dialog to connect a service or manage its account. */
+/** The Connections page's rows, the dialog to connect a service, and an account's own page. */
 export const ConnectionsPreview = () => {
   const { report, say, later } = useReport()
   const [open, setOpenAt] = useState<Open>()
@@ -38,7 +40,6 @@ export const ConnectionsPreview = () => {
     if (next) setRound((count) => count + 1)
     setOpenAt(next)
   }
-  const [granted, setGranted] = useState(['https://mail.google.com/*'])
   const close = (next: boolean) => { if (!next) setOpen(undefined) }
   const opened = async () => {
     await later()
@@ -78,13 +79,21 @@ export const ConnectionsPreview = () => {
           </ListGroup>
         </div>
       </Section>
-      <Section title="ConnectionDialog (connect; choose what it can reach, of which at least one; add one built in; manage; manage with more to grant, which waits for its window; expired)">
+      <Section title="ConnectionDialog (connect; choose what it can reach, of which at least one; add one built in)">
         <Button onClick={() => setOpen('connect')}>Connect</Button>
         <Button onClick={() => setOpen('connect-granular')}>Connect, choosing</Button>
         <Button onClick={() => setOpen('add')}>Add built in</Button>
-        <Button onClick={() => setOpen('manage')}>Manage</Button>
-        <Button onClick={() => setOpen('manage-partial')}>Manage, more to grant</Button>
-        <Button onClick={() => setOpen('expired')}>Expired</Button>
+      </Section>
+      <Section title="ChangeRulesGroup (what an account may change on its own in one workspace: closed, with some automatic; open; with two connections; restricted, where every change asks)">
+        <div className="flex w-full max-w-3xl flex-col gap-2">
+          <RulesPreview connections={[DRIVE]} title="Hello Workspace" />
+          <RulesPreview connections={[DRIVE]} title="Quarterly planning" defaultOpen />
+          <RulesPreview connections={[DRIVE, Q3_DOC]} title="Board pack" defaultOpen />
+          <RulesPreview connections={[DRIVE]} title="Payroll" restricted defaultOpen />
+        </div>
+      </Section>
+      <Section title="ConnectionAccountView (an account’s page, from the Connections page: what it can reach, with more to grant, which waits for its window; what changes go ahead on their own, by workspace; disconnecting, asked first. Signed in, expired, still reading its workspaces, and used by none)">
+        <AccountPreview />
       </Section>
       <Section title="SetUpConnectionDialog (a chat’s connection request: accounts loading, none yet, one with the service’s form, an expired one, one without access)">
         <Button onClick={() => setOpen('setup-loading')}>Loading</Button>
@@ -102,13 +111,13 @@ export const ConnectionsPreview = () => {
       </Section>
       <p role="status" className="text-sm text-kumo-subtle">{report}</p>
       {open?.startsWith('setup') && <SetUpPreview key={round} state={open as SetUp} onClose={() => setOpenAt(undefined)} say={say} opened={opened} />}
-      <ConnectionDialog key={`connect-${round}`} open={open === 'connect'} onOpenChange={close} mode="connect" service={github} resources={githubResources} onConnect={opened} />
-      <ConnectionDialog key={`granular-${round}`} open={open === 'connect-granular'} onOpenChange={close} mode="connect" service={google} resources={googleResources} onConnect={opened} />
+      <ConnectionDialog key={`connect-${round}`} open={open === 'connect'} onOpenChange={close} service={github} resources={githubResources} onConnect={opened} />
+      <ConnectionDialog key={`granular-${round}`} open={open === 'connect-granular'} onOpenChange={close} service={google} resources={googleResources} onConnect={opened} />
       <ConnectionDialog
         key={`add-${round}`}
         open={open === 'add'}
         onOpenChange={close}
-        mode="connect"
+       
         ambient
         service={{ name: 'Web Search', tagline: 'Search the web', description: 'Lets agents look things up on the web. It comes with this deployment.' }}
         resources={[]}
@@ -119,55 +128,111 @@ export const ConnectionsPreview = () => {
           return true
         }}
       />
-      <ConnectionDialog
-        key={`manage-${round}`}
-        open={open === 'manage'}
-        onOpenChange={close}
-        mode="manage"
-        account="octocat"
-        service={github}
-        resources={githubResources}
-        onGrant={opened}
-        onDisconnect={async () => {
-          await later()
-          setOpen(undefined)
-          say('GitHub disconnected')
-          return true
-        }}
-      />
-      <ConnectionDialog
-        key={`partial-${round}`}
-        open={open === 'manage-partial'}
-        onOpenChange={close}
-        mode="manage"
-        account="ada@example.com"
-        granted={granted}
-        service={google}
-        resources={googleResources}
-        onGrant={async (urlPatterns) => {
-          await opened()
-          // The grant arrives a moment after the window is done with.
-          setTimeout(() => setGranted((current) => [...current, ...urlPatterns]), 2500)
-          return true
-        }}
-        onDisconnect={async () => {
-          await later()
-          throw new Error('The service didn’t answer.')
-        }}
-      />
-      <ConnectionDialog
-        key={`expired-${round}`}
-        open={open === 'expired'}
-        onOpenChange={close}
-        mode="manage"
-        expired
-        service={{ name: 'Linear', tagline: 'Issues and projects' }}
-        resources={[]}
-        onGrant={opened}
-        onReconnect={opened}
-        onDisconnect={async () => true}
-      />
     </>
+  )
+}
+
+const kinds = (automatic: string[], labels: [tag: string, label: string][]) =>
+  labels.map(([tag, label]) => ({ tag, label, automatic: automatic.includes(tag) }))
+
+const DRIVE: ChangeRulesConnection = {
+  gatekeeperId: 5,
+  title: 'Google Drive Account (read and write)',
+  kinds: kinds(['editDocument', 'driveComments'], [
+    ['editDocument', 'Document edits, in any Doc this connection reaches'],
+    ['editSheetValues', 'Sheet value edits, in any spreadsheet this connection reaches'],
+    ['formatSheets', 'Sheet formatting, in any spreadsheet this connection reaches'],
+    ['editSlidesText', 'Slide text edits, in any presentation this connection reaches'],
+    ['arrange-slides', 'Adding, copying and reordering slides, in any presentation this connection reaches'],
+    ['driveComments', 'Drive comments'],
+  ]),
+}
+const Q3_DOC: ChangeRulesConnection = {
+  gatekeeperId: 9,
+  title: 'Q3 plan',
+  kinds: kinds([], [['editDocument', 'Document edits, in this Doc']]),
+}
+
+const withKind = (connections: ChangeRulesConnection[], gatekeeperId: number, tag: string, automatic: boolean) =>
+  connections.map((held) => held.gatekeeperId !== gatekeeperId ? held : {
+    ...held,
+    kinds: held.kinds.map((kind) => (kind.tag === tag ? { ...kind, automatic } : kind)),
+  })
+
+const RulesPreview = ({ connections: initial, title, restricted, defaultOpen }: { connections: ChangeRulesConnection[]; title: string; restricted?: boolean; defaultOpen?: boolean }) => {
+  const [connections, setConnections] = useState(initial)
+  return (
+    <ChangeRulesGroup
+      workspace={{ title, label: title.slice(0, 2).toUpperCase() }}
+      connections={connections}
+      restricted={restricted}
+      defaultOpen={defaultOpen}
+      onChange={(gatekeeperId, tag, automatic) => setConnections((current) => withKind(current, gatekeeperId, tag, automatic))}
+    />
+  )
+}
+
+type AccountState = 'signed-in' | 'expired' | 'loading' | 'unused'
+
+const WORKSPACES: WorkspaceChangeRules[] = [
+  { id: 'a', title: 'Quarterly planning', label: 'QP', restricted: false, connections: [DRIVE] },
+  { id: 'b', title: 'Board pack', label: 'BP', restricted: false, connections: [{ ...DRIVE, kinds: DRIVE.kinds.map((kind) => ({ ...kind, automatic: false })) }, Q3_DOC] },
+  { id: 'c', title: 'Payroll', label: 'PA', restricted: true, connections: [DRIVE] },
+]
+
+const AccountPreview = () => {
+  const { report, say, later } = useReport()
+  const [state, setState] = useState<AccountState>('signed-in')
+  const [workspaces, setWorkspaces] = useState(WORKSPACES)
+  const [granted, setGranted] = useState(['https://mail.google.com/*'])
+  const [failing, setFailing] = useState(false)
+  const rules: ChangeRulesState = state === 'loading' ? { status: 'loading' }
+    : { status: 'ready', workspaces: state === 'unused' ? [] : workspaces, failed: state === 'signed-in' ? ['Archive'] : [] }
+  return (
+    <div className="flex w-full flex-col gap-3">
+      <div className="flex flex-wrap gap-2">
+        {(['signed-in', 'expired', 'loading', 'unused'] as const).map((each) => (
+          <Button key={each} variant={each === state ? 'primary' : 'secondary'} onClick={() => setState(each)}>{each}</Button>
+        ))}
+        <Button variant={failing ? 'primary' : 'secondary'} onClick={() => setFailing((current) => !current)}>Changes fail</Button>
+      </div>
+      <p role="status" className="text-sm text-kumo-subtle">{report}</p>
+      <div className="w-full rounded-3xl ring-1 ring-kumo-line">
+        <ConnectionAccountView
+          key={state}
+          service={google}
+          account={state === 'expired' ? undefined : 'ada@example.com'}
+          expired={state === 'expired'}
+          resources={googleResources}
+          granted={granted}
+          onGrant={async (urlPatterns) => {
+            await later()
+            say('the service’s window opened')
+            setTimeout(() => setGranted((current) => [...current, ...urlPatterns]), 2500)
+            return true
+          }}
+          onReconnect={async () => {
+            await later()
+            say('the service’s window opened')
+            return true
+          }}
+          onDisconnect={async () => {
+            await later()
+            say('Google disconnected')
+            return true
+          }}
+          rules={rules}
+          onChangeRule={(workspaceId, gatekeeperId, tag, automatic) => {
+            const apply = (on: boolean) => setWorkspaces((current) => current.map((workspace) => workspace.id !== workspaceId ? workspace
+              : { ...workspace, connections: withKind(workspace.connections, gatekeeperId, tag, on) }))
+            apply(automatic)
+            say(`${tag} in ${workspaceId}: ${automatic ? 'automatic' : 'ask first'}`)
+            if (failing) setTimeout(() => apply(!automatic), 600)
+          }}
+          ruleProblem={failing ? 'Couldn’t change “Document edits”: The workspace didn’t answer.' : undefined}
+        />
+      </div>
+    </div>
   )
 }
 

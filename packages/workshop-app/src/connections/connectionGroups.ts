@@ -1,4 +1,5 @@
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
+import type { ConnectionDialogResource, ConnectionDialogService } from '@/blocks/ConnectionDialog'
 import type { ConnectedAccount } from './ConnectedAccounts'
 
 /** What the Connections page lists, in its three groups. */
@@ -51,3 +52,11 @@ export const accountName = ({ description, vendor }: ConnectedAccount): string |
  */
 export const newAccountOf = (accounts: readonly ConnectedAccount[], vendorId: string, before: ReadonlySet<number>) =>
   accounts.find((account) => account.vendorId === vendorId && !before.has(account.id))
+
+/** A service as the Connections blocks show it. */
+export const serviceOf = ({ displayName, tagline, description, logo, color }: GatekeeperVendorInfo['description']): ConnectionDialogService =>
+  ({ name: displayName, tagline, description, logoUrl: logo?.url, color })
+
+/** The kinds of thing on a service a gadget can be connected to, as the Connections blocks show them. */
+export const resourcesOf = (resources: GatekeeperVendorInfo['supportedResources']): ConnectionDialogResource[] =>
+  resources.map(({ urlPattern, title, description, icon, grantable }) => ({ urlPattern, title, description, iconUrl: icon?.url, grantable }))

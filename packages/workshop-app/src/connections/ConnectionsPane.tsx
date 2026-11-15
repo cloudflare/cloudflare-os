@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { PlugsConnectedIcon } from '@phosphor-icons/react'
 import type { GatekeeperVendorInfo } from '@gadgets/workshop-shared/api'
-import { ConnectionDialog, type ConnectionDialogResource } from '@/blocks/ConnectionDialog'
+import { ConnectionDialog } from '@/blocks/ConnectionDialog'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
 import { ListGroup } from '@/blocks/ListGroup'
 import { Button } from '@/components/Button'
@@ -13,22 +13,18 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import type { ConnectedAccount } from './ConnectedAccounts'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
 import { openConnectWindow } from './connectHandoff'
-import { accountName, groupConnections, newAccountOf } from './connectionGroups'
+import { accountName, groupConnections, newAccountOf, resourcesOf, serviceOf } from './connectionGroups'
 import { useServices } from './useServices'
 
-/** The dialog open, and what it is for. */
-type Target =
-  /** `before`: the accounts there were, so the one the flow makes is known when it comes. */
-  | { kind: 'connect'; vendor: GatekeeperVendorInfo; before: ReadonlySet<number> }
-  | { kind: 'manage'; accountId: number }
+/** The service being connected; `before`: the accounts there were, so the one the flow makes is known when it comes. */
+type Target = { vendor: GatekeeperVendorInfo; before: ReadonlySet<number> }
+
+export type ConnectionsPaneProps = {
+  /** Opens an account's own page (`ConnectionPane`). */
+  onOpenAccount: (accountId: number) => void
+}
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
-
-const resourcesOf = (resources: GatekeeperVendorInfo['supportedResources']): ConnectionDialogResource[] =>
-  resources.map(({ urlPattern, title, description, icon, grantable }) => ({ urlPattern, title, description, iconUrl: icon?.url, grantable }))
-
-const serviceOf = ({ displayName, tagline, description, logo, color }: GatekeeperVendorInfo['description']) =>
-  ({ name: displayName, tagline, description, logoUrl: logo?.url, color })
 
 const Group = ({ title, children }: { title: string; children: ReactNode }) => (
   <div className="flex flex-col gap-2">
@@ -39,11 +35,12 @@ const Group = ({ title, children }: { title: string; children: ReactNode }) => (
 
 /**
  * The services the user has connected, and those they can (the sidebar's connect button): the
- * accounts they signed in to, what comes with the deployment, then what else there is. Each opens
- * a dialog to connect it or manage its account (`ConnectionDialog`). Connecting goes on in a
- * window of the service's, and the account arrives as any does, which is when the dialog goes.
+ * accounts they signed in to, what comes with the deployment, then what else there is. An account
+ * opens its own page; a service not connected opens a dialog to connect it (`ConnectionDialog`).
+ * Connecting goes on in a window of the service's, and the account arrives as any does, which is
+ * when the dialog goes.
  */
-export const ConnectionsPane = () => {
+export const ConnectionsPane = ({ onOpenAccount }: ConnectionsPaneProps) => {
   const { api } = useApi()
   const connection = useConnectionNotice()
   const accounts = useConnectedAccounts()
@@ -57,11 +54,8 @@ export const ConnectionsPane = () => {
   const groups = groupConnections(all, services.status === 'ready' ? services.vendors : [], services.status === 'ready' ? services.addable : [])
 
   // The account a connect flow made has come: it is connected, and the dialog is done.
-  const made = target?.kind === 'connect' && newAccountOf(all, target.vendor.id, target.before)
+  const made = target && newAccountOf(all, target.vendor.id, target.before)
   if (made) setTarget(undefined)
-  const managed = target?.kind === 'manage' ? all.find(({ id }) => id === target.accountId) : undefined
-  // The account went while it was being managed, as when disconnected elsewhere.
-  if (target?.kind === 'manage' && accounts.status === 'ready' && !managed) setTarget(undefined)
 
   const reconnect = async (account: ConnectedAccount) => {
     setProblem(undefined)
@@ -96,7 +90,7 @@ export const ConnectionsPane = () => {
         detail={expired ? 'Sign-in expired' : accountName(account) ?? vendor.tagline}
         problem={expired}
         verb="Manage"
-        onSelect={() => open({ kind: 'manage', accountId: account.id })}
+        onSelect={() => onOpenAccount(account.id)}
         action={expired ? (
           <Button
             onClick={() => {
@@ -116,7 +110,7 @@ export const ConnectionsPane = () => {
       logo={{ src: vendor.description.logo?.url, color: vendor.description.color }}
       detail={vendor.description.tagline}
       verb={verb}
-      onSelect={() => open({ kind: 'connect', vendor, before: new Set(all.map(({ id }) => id)) })}
+      onSelect={() => open({ vendor, before: new Set(all.map(({ id }) => id)) })}
     />
   )
 
@@ -158,42 +152,15 @@ export const ConnectionsPane = () => {
         {groups.available.length > 0 && <Group title="Available">{groups.available.map((vendor) => vendorRow(vendor, 'Connect'))}</Group>}
         {nothing && <p className="px-4 text-center text-base text-kumo-subtle">Nothing can be connected yet.</p>}
       </div>
-      {target?.kind === 'connect' && (
+      {target && (
         <ConnectionDialog
           key={`connect:${target.vendor.id}`}
           open
           onOpenChange={(next) => { if (!next) setTarget(undefined) }}
-          mode="connect"
           ambient={target.vendor.description.autoProvisionsAccount}
           service={serviceOf(target.vendor.description)}
           resources={resourcesOf(target.vendor.supportedResources)}
           onConnect={(urlPatterns) => connect(target.vendor, urlPatterns)}
-        />
-      )}
-      {managed && (
-        <ConnectionDialog
-          key={`manage:${managed.id}`}
-          open
-          onOpenChange={(next) => { if (!next) setTarget(undefined) }}
-          mode="manage"
-          account={accountName(managed)}
-          expired={!managed.credentialsValid}
-          granted={managed.description.grantedResourceUrlPatterns}
-          service={serviceOf(managed.vendor)}
-          resources={resourcesOf(managed.supportedResources)}
-          onGrant={async (urlPatterns) => {
-            if (connection?.blocked()) return false
-            const flow = await api.ensureAccountResources(managed.id, urlPatterns)
-            if (flow) openConnectWindow(flow)
-            return true
-          }}
-          onReconnect={() => reconnect(managed)}
-          onDisconnect={async () => {
-            if (connection?.blocked()) return false
-            await api.disconnectAccount(managed.id)
-            reread()
-            return true
-          }}
         />
       )}
     </PageLayout>

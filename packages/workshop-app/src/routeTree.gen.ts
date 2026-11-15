@@ -20,6 +20,7 @@ import { Route as MockIndexRouteImport } from './routes/mock.index'
 import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
 import { Route as AppBlueprintsBlueprintIdRouteImport } from './routes/_app/blueprints.$blueprintId'
+import { Route as AppConnectionsAccountIdRouteImport } from './routes/_app/connections_.$accountId'
 import { Route as AppLibraryIndexRouteImport } from './routes/_app/library.index'
 import { Route as AppLibraryItemIdRouteImport } from './routes/_app/library.$itemId'
 import { Route as AppSkillsSkillIdRouteImport } from './routes/_app/skills.$skillId'
@@ -85,6 +86,11 @@ const AppBlueprintsBlueprintIdRoute =
     path: '/blueprints/$blueprintId',
     getParentRoute: () => AppRoute,
   } as any)
+const AppConnectionsAccountIdRoute = AppConnectionsAccountIdRouteImport.update({
+  id: '/connections_/$accountId',
+  path: '/connections/$accountId',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppLibraryIndexRoute = AppLibraryIndexRouteImport.update({
   id: '/library/',
   path: '/library/',
@@ -146,6 +152,7 @@ export interface FileRoutesByFullPath {
   '/mock/': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
   '/blueprints/$blueprintId': typeof AppBlueprintsBlueprintIdRoute
+  '/connections/$accountId': typeof AppConnectionsAccountIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/workspaces/new': typeof AppWorkspacesNewRoute
@@ -167,6 +174,7 @@ export interface FileRoutesByTo {
   '/mock': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
   '/blueprints/$blueprintId': typeof AppBlueprintsBlueprintIdRoute
+  '/connections/$accountId': typeof AppConnectionsAccountIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/workspaces/new': typeof AppWorkspacesNewRoute
@@ -190,6 +198,7 @@ export interface FileRoutesById {
   '/mock/': typeof MockIndexRoute
   '/_app/app/$itemId': typeof AppAppItemIdRoute
   '/_app/blueprints/$blueprintId': typeof AppBlueprintsBlueprintIdRoute
+  '/_app/connections_/$accountId': typeof AppConnectionsAccountIdRoute
   '/_app/library/$itemId': typeof AppLibraryItemIdRoute
   '/_app/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/_app/workspaces_/new': typeof AppWorkspacesNewRoute
@@ -213,6 +222,7 @@ export interface FileRouteTypes {
     | '/mock/'
     | '/app/$itemId'
     | '/blueprints/$blueprintId'
+    | '/connections/$accountId'
     | '/library/$itemId'
     | '/skills/$skillId'
     | '/workspaces/new'
@@ -234,6 +244,7 @@ export interface FileRouteTypes {
     | '/mock'
     | '/app/$itemId'
     | '/blueprints/$blueprintId'
+    | '/connections/$accountId'
     | '/library/$itemId'
     | '/skills/$skillId'
     | '/workspaces/new'
@@ -256,6 +267,7 @@ export interface FileRouteTypes {
     | '/mock/'
     | '/_app/app/$itemId'
     | '/_app/blueprints/$blueprintId'
+    | '/_app/connections_/$accountId'
     | '/_app/library/$itemId'
     | '/_app/skills/$skillId'
     | '/_app/workspaces_/new'
@@ -354,6 +366,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppBlueprintsBlueprintIdRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/connections_/$accountId': {
+      id: '/_app/connections_/$accountId'
+      path: '/connections/$accountId'
+      fullPath: '/connections/$accountId'
+      preLoaderRoute: typeof AppConnectionsAccountIdRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/library/': {
       id: '/_app/library/'
       path: '/library'
@@ -427,6 +446,7 @@ interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppAppItemIdRoute: typeof AppAppItemIdRoute
   AppBlueprintsBlueprintIdRoute: typeof AppBlueprintsBlueprintIdRoute
+  AppConnectionsAccountIdRoute: typeof AppConnectionsAccountIdRoute
   AppLibraryItemIdRoute: typeof AppLibraryItemIdRoute
   AppSkillsSkillIdRoute: typeof AppSkillsSkillIdRoute
   AppWorkspacesNewRoute: typeof AppWorkspacesNewRoute
@@ -445,6 +465,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppAppItemIdRoute: AppAppItemIdRoute,
   AppBlueprintsBlueprintIdRoute: AppBlueprintsBlueprintIdRoute,
+  AppConnectionsAccountIdRoute: AppConnectionsAccountIdRoute,
   AppLibraryItemIdRoute: AppLibraryItemIdRoute,
   AppSkillsSkillIdRoute: AppSkillsSkillIdRoute,
   AppWorkspacesNewRoute: AppWorkspacesNewRoute,
