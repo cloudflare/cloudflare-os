@@ -2977,6 +2977,14 @@ async function runAgentPass(
         replayCatalogChange(msg.sequence, msg.resources, msgTimestamp);
         break;
 
+      case "actionDenied":
+        modelMessages.push(...makeReplayObservation(
+            msg.sequence,
+            `The user denied a pending change in this conversation, "${msg.title}". It will not ` +
+                `be applied, and reads no longer reflect it.`,
+            handle.model, msgTimestamp));
+        break;
+
       case "action":
       case "useGadget":
       case "error":

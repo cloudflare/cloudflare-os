@@ -5803,21 +5803,24 @@ class OverseerImpl implements AgentHooks {
   // Rejects chat `chatId`'s pending actions whose `action` message is at or after `revertFrom`,
   // newest first, as discarding its changes from there does under the branch approval model; with
   // `revertFrom` 0, all of them, including any with no message yet.
-  async discardBranch(chatId: number, revertFrom: number, resolvedBy: AiChatAuthorInfo)
+  //
+  // With `chatId` null, rejects all that staging holds the same way (see discardStagedActions),
+  // each once no staged action applies at once on its connection, which would refuse the claim.
+  async discardBranch(chatId: number | null, revertFrom: number, resolvedBy: AiChatAuthorInfo)
       : Promise<void> {
     let sequences = new Map<number, number>();
-    if (revertFrom > 0) {
+    if (revertFrom > 0 && chatId !== null) {
       for (let msg of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
         if (msg.type === "action" && !sequences.has(msg.actionId)) {
           sequences.set(msg.actionId, msg.sequence);
         }
       }
     }
-    let doomed = [...this.storage.actions.pendingByBranch.get(`chat:${chatId}`)].filter(
-        (record): record is ActionRecord & {type: "action"} => record.type === "action" &&
-            (revertFrom === 0 || (sequences.get(record.id) ?? -1) >= revertFrom));
+    let doomed = this.#pendingOnBranch(chatId === null ? null : `chat:${chatId}`).filter(record =>
+        revertFrom === 0 || (sequences.get(record.id) ?? -1) >= revertFrom);
     for (let record of doomed.toReversed()) {
-      // One rejected along with a later one is passed over.
+      if (chatId === null) await this.#autoApprovalDrainer.settled(record.gatekeeperId);
+      // One rejected along with a later one, or applied meanwhile, is passed over.
       if (this.storage.actions.get(record.id)?.state !== "pending") continue;
       await this.rejectPendingAction(record, resolvedBy);
     }
@@ -5830,8 +5833,11 @@ class OverseerImpl implements AgentHooks {
   // marks). Their gatekeeper-side state goes with the facet's storage, so no rejectAction() is
   // called. For any other action the gatekeeper's rejectAction() is, and the pending actions it
   // reports it rejected along with this one are rejected too.
+  //
+  // Resolves to whether the gatekeeper reported that simulated work was built on the action (its
+  // `restart`).
   async rejectPendingAction(action: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo)
-      : Promise<void> {
+      : Promise<boolean> {
     if (action.action === "create") {
       using _decision = this.claimDecision(action.id);
       let queued = Array.from(this.storage.actions.pendingByGatekeeper.get(action.gatekeeperId));
@@ -5839,7 +5845,7 @@ class OverseerImpl implements AgentHooks {
         if (record.type === "action") this.recordRejection(record.id, resolvedBy);
       }
       this.removeGatekeeper(action.gatekeeperId);
-      return;
+      return false;
     }
     let gatekeeper = await this.getGatekeeperFacet(action.gatekeeperId);
     using _then = this.#thenApplyStaged(action.gatekeeperId, [action]);
@@ -5871,6 +5877,7 @@ class OverseerImpl implements AgentHooks {
         }
       }
     }
+    return result?.restart === true;
   }
 
   // The pending actions approving `record` applies, in order: the record's branch up to it (see
@@ -13565,8 +13572,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // Resolve the rejecter's identity before notifying the gatekeeper, so a failed profile fetch
     // can't leave the action rejected with the gatekeeper but still "pending" in storage.
     let profile = await this.#getClientProfile();
-    await this.impl.rejectPendingAction(action, profile);
+    let builtOn = await this.impl.rejectPendingAction(action, profile);
     if (action.action === "create") return;
+
+    // Under the branch approval model, when simulated work was built on the action, its chat's
+    // agent is told of the denial in its next turn, which replays the log.
+    let chatId = action.caller.from !== "hook" ? action.caller.chatId : undefined;
+    if (this.impl.branchApproval && builtOn && chatId !== undefined) {
+      this.impl.addChatMessages(chatId, profile, [
+        {type: "actionDenied", actionId: action.id, title: action.description.title},
+      ]);
+    }
 
     // Deny leaves the turn ended, like denyConnectionRequest. The rejected record also prevents a
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
@@ -13581,6 +13597,11 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let profile = await this.#getClientProfile();
     let taken = this.impl.branchSnapshot(null);
     return {outcome: await this.impl.acceptBranch(null, taken, profile) ? "applied" : "failed"};
+  }
+
+  async discardStagedActions(): Promise<void> {
+    if (!this.impl.branchApproval) throw new Error("Staged actions are rejected one at a time.");
+    await this.impl.discardBranch(null, 0, await this.#getClientProfile());
   }
 
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
@@ -14729,6 +14750,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async approveAction(_id: number): Promise<void> { this.#deny(); }
   async rejectAction(_id: number): Promise<void> { this.#deny(); }
   async acceptStagedActions(): Promise<{outcome: "applied" | "failed"}> { this.#deny(); }
+  async discardStagedActions(): Promise<void> { this.#deny(); }
   async listHooks(): Promise<BoundHookInfo[]> { this.#deny(); }
   async enableHook(_id: number): Promise<void> { this.#deny(); }
   async disableHook(_id: number): Promise<void> { this.#deny(); }

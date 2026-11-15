@@ -3566,7 +3566,8 @@ export interface Overseer extends RpcTarget {
    *
    * Under the branch approval model (see mergeChanges()), when the gatekeeper reports that other
    * simulated work was built on the action, the gadgets running on its chat's branch restart, or,
-   * for an action with no chat, every running gadget, since every chat sees those.
+   * for an action with no chat, every running gadget, since every chat sees those; and the chat's
+   * agent is told in its next turn that the action was denied (see the "actionDenied" message).
    */
   rejectAction(id: number): Promise<void>;
 
@@ -3580,6 +3581,13 @@ export interface Overseer extends RpcTarget {
    * retries it.
    */
   acceptStagedActions(): Promise<{outcome: "applied" | "failed"}>;
+
+  /**
+   * Under the branch approval model (see mergeChanges()), rejects the pending actions with no
+   * chat (see WorkspaceMetadata.stagedActions), newest first, as rejectAction() rejects each one:
+   * what discarding a chat's changes does to its actions (see revertChanges()), for staging.
+   */
+  discardStagedActions(): Promise<void>;
 
   /**
    * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
@@ -4996,6 +5004,20 @@ export type AiChatMessageBody = {
    */
   type: "agentNudge";
   text: string;
+} | {
+  /**
+   * Under the branch approval model (see Overseer.mergeChanges()), a user denied a pending
+   * gatekeeper action on the chat's branch whose gatekeeper reported that later simulated work
+   * was built on it (see Overseer.rejectAction()). Model-visible, so the agent learns in its next
+   * turn that the action will not apply. The action's own card already shows the denial.
+   */
+  type: "actionDenied";
+
+  /** The denied action (see ActionLogEntry.id). */
+  actionId: number;
+
+  /** The action's title (see ActionDescription.title), as the agent is told it. */
+  title: string;
 } | {
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").

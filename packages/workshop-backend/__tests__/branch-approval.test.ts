@@ -548,6 +548,31 @@ describe("staging", () => {
     });
   });
 
+  it("is discarded newest first, leaving the chats' actions, and only with the model on",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      holdStaging(impl);
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.submitAction(GK, 2, description(), CHAT_A);
+      await impl.submitAction(GK, 3, description(), STAGED);
+    });
+    using overseer = await client();
+    await overseer.discardStagedActions();
+    expect((await overseer.getMetadata()).stagedActions).toBeUndefined();
+    await visit(impl => {
+      expect(gatekeeper.rejected).toEqual([3, 1]);
+      expect(states(impl, 1, 2, 3)).toEqual(["rejected", "pending", "rejected"]);
+      expect(record(impl, 1).resolvedBy).toEqual(USER);
+    });
+
+    const off = await workspace(legacyGatekeeper().facet, false);
+    using offOverseer = await off.client();
+    const refused = await offOverseer.discardStagedActions().catch((error: unknown) => error);
+    expect(String(refused)).toContain("one at a time");
+  });
+
   it("is waited for by a chat's accept, which applies what staging still holds", async () => {
     const parked = Promise.withResolvers<void>();
     const applied: number[] = [];
@@ -677,6 +702,31 @@ describe("gadgets", () => {
       await impl.rejectPendingAction(record(impl, 3), USER);
       expect(aborted()).toEqual([impl.gadgetFacetName(10), impl.gadgetFacetName(11)]);
     });
+  });
+
+  it("tell a chat's agent of a denial its simulated work was built on", async () => {
+    const restart = {value: true};
+    const run = async (on: boolean, caller: GatekeeperCaller) => {
+      const {visit, client} = await workspace({
+        async applyAction() {},
+        async rejectAction() { return {restart: restart.value}; },
+      }, on);
+      const id = await visit(async impl => {
+        await impl.submitAction(GK, 1, description(), caller);
+        return record(impl, 1).id;
+      });
+      using overseer = await client();
+      await overseer.rejectAction(id);
+      return visit(impl => [...impl.storage.chats.list({prefix: chatKeyPrefix(1)})]
+          .filter(msg => msg.type === "actionDenied")
+          .map(msg => msg.type === "actionDenied" && {actionId: msg.actionId, title: msg.title}));
+    };
+    expect(await run(true, AGENT_A))
+        .toEqual([{actionId: expect.any(Number), title: "Set the value"}]);
+    expect(await run(true, CHAT_A)).toHaveLength(1);
+    expect(await run(false, AGENT_A)).toEqual([]);
+    restart.value = false;
+    expect(await run(true, AGENT_A)).toEqual([]);
   });
 
   it("include a gadget created later, in the metadata of a chat that takes them all", async () => {

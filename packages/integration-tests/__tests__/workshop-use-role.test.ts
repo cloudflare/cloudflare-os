@@ -102,6 +102,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   approveAction: ws => ws.approveAction(0),
   rejectAction: ws => ws.rejectAction(0),
   acceptStagedActions: ws => ws.acceptStagedActions(),
+  discardStagedActions: ws => ws.discardStagedActions(),
   listHooks: ws => ws.listHooks(),
   enableHook: ws => ws.enableHook(0),
   disableHook: ws => ws.disableHook(0),
