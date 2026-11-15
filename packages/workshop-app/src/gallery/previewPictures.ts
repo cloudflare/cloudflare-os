@@ -15,3 +15,5 @@ export const PREVIEW_TIP_JAR = screen('#f6821f', '#fff4e8', 4)
 export const PREVIEW_STANDUP = screen('#2c7cb0', '#eaf3fa', 5)
 /** A budget's screen, in green. */
 export const PREVIEW_BUDGET = screen('#2f8f5b', '#eaf6ef', 3)
+/** A roadmap board's screen, in purple. */
+export const PREVIEW_ROADMAP = screen('#6e56cf', '#f2effc', 4)

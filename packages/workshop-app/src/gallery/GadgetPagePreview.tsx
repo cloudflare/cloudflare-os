@@ -14,14 +14,14 @@ const CHATS: GadgetChatMenuChat[] = [
 const Page = ({ chats, named, onAction }: { chats: GadgetChatMenuChat[]; named: boolean; onAction: (said: string) => void }) => {
   const [fullScreen, setFullScreen] = useState(false)
   return (
-    <div className="flex h-72 w-full max-w-3xl flex-col rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
+    <div className="flex h-80 w-full max-w-3xl flex-col rounded-3xl bg-kumo-base ring-1 ring-kumo-line">
       <SidePane
         placement="page"
         fullScreen={fullScreen}
         onFullScreenChange={setFullScreen}
         active={{ key: '12', title: 'Slides', icon: <FormatIcon name="presentation" /> }}
         link="https://example.com/app/w-12"
-        workspace={named ? { id: 'w', title: 'Marketing', label: 'MA', onOpen: () => onAction('Preview: went to Marketing.') } : undefined}
+        workspace={named ? { id: 'w', title: 'Marketing', label: 'MA', expanded: true, onOpen: () => onAction('Preview: went to Marketing.') } : undefined}
         chat={{
           chats,
           onOpenChat: (key) => onAction(`Preview: opened “${chats.find((chat) => chat.key === key)?.title}” with Slides beside it.`),

@@ -1,13 +1,14 @@
 import { useState, type ReactNode } from 'react'
 import { AnimatePresence } from 'motion/react'
-import { ChartBarIcon, CurrencyDollarIcon, UsersThreeIcon } from '@phosphor-icons/react'
 import { ConnectedFileView } from '@/blocks/ConnectedFileView'
 import { GadgetAsk, type GadgetAskGroup } from '@/blocks/GadgetAsk'
+import { FanCard } from '@/blocks/FanCard'
 import { GadgetCard } from '@/blocks/GadgetCard'
+import { KindMark } from '@/components/KindMark'
 import { GadgetPermissions, type GadgetAllowanceItem } from '@/blocks/GadgetPermissions'
 import { GadgetReview } from '@/blocks/GadgetReview'
 import { documentFixture } from '@/blocks/resource-preview/fixtures'
-import { PREVIEW_BUDGET, PREVIEW_STANDUP, PREVIEW_TIP_JAR } from './previewPictures'
+import { PREVIEW_BUDGET, PREVIEW_ROADMAP, PREVIEW_STANDUP, PREVIEW_TIP_JAR } from './previewPictures'
 import { Section } from './Section'
 
 const GOOGLE = { name: 'Google', logoUrl: '/favicon.svg', color: '#ffffff' }
@@ -214,12 +215,25 @@ export const GadgetTrustPreview = () => (
       <PermissionsPreview madeBy="Cloudflare" initial={ALLOWED} />
       <PermissionsPreview initial={[]} />
     </Section>
-    <Section title="GadgetCard (Home’s gadgets: the one waiting on the viewer says so)">
-      <div className="grid w-full max-w-2xl grid-cols-3 gap-3">
-        <GadgetCard title="Budget Tracker" icon={<CurrencyDollarIcon />} picture={PREVIEW_BUDGET} waiting={3} onOpen={() => {}} />
-        <GadgetCard title="Standup Notes" icon={<UsersThreeIcon />} picture={PREVIEW_STANDUP} index={1} onOpen={() => {}} />
-        <GadgetCard title="Tip Jar" icon={<ChartBarIcon />} index={2} detail="From Grace Hopper" onOpen={() => {}} />
-      </div>
+    <Section title="GadgetCard, FanCard (Home’s Jump back in: what waits on the viewer first, saying how many, then starred, then recent; under each name its workspace, or who shared it; last, All gadgets, a fan of the rest)">
+      <section aria-labelledby="gallery-jump-back-in" className="flex w-full max-w-2xl flex-col gap-3">
+        <h2 id="gallery-jump-back-in" className="px-1 text-sm text-kumo-subtle">Jump back in</h2>
+        <div className="grid grid-cols-3 gap-3">
+          <GadgetCard title="Budget Tracker" icon={<KindMark name="spreadsheet" />} picture={PREVIEW_BUDGET} waiting={3} onOpen={() => {}} />
+          <GadgetCard title="Standup Notes" icon={<KindMark name="checklist" />} picture={PREVIEW_STANDUP} detail="Platform team" index={1} onOpen={() => {}} />
+          <GadgetCard title="Tip Jar" icon={<KindMark name="chart" />} picture={PREVIEW_TIP_JAR} detail="From Grace Hopper" index={2} onOpen={() => {}} />
+          <GadgetCard title="Q3 Roadmap" icon={<KindMark name="board" />} picture={PREVIEW_ROADMAP} detail="Product" index={3} onOpen={() => {}} />
+          <GadgetCard title="Hiring Pipeline" icon={<KindMark name="people" />} detail="Recruiting" index={4} onOpen={() => {}} />
+          <FanCard
+            title="All gadgets"
+            icon={<KindMark name="collection" />}
+            detail="14 in your Library"
+            sheets={[PREVIEW_ROADMAP, PREVIEW_STANDUP, PREVIEW_BUDGET].map((picture) => <img key={picture} src={picture} alt="" className="size-full object-cover object-top" />)}
+            onOpen={() => {}}
+            index={5}
+          />
+        </div>
+      </section>
     </Section>
   </>
 )
