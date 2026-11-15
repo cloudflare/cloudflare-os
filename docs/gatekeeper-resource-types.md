@@ -26,6 +26,9 @@ reconnection. The old pattern contains no trustworthy mapping to the new type. A
 admin restriction blocks that vendor until an admin explicitly clears it; it must not disappear
 just because a gatekeeper changes its patterns. The admin panel keeps such restrictions visible.
 Editing a vendor's restrictions upgrades exact known matches to IDs while retaining unknown ones.
+These edits require the vendor's live resource catalog. If that lookup fails, the edit fails and
+the saved restrictions remain in force; an unavailable catalog does not justify treating an ID
+as a legacy pattern.
 
 Account grant lists retain the distinction between omitted (legacy full grant) and empty (no
 grants). An explicit ID grant list takes precedence over a legacy pattern list, including when

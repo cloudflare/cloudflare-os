@@ -6,7 +6,7 @@ import {
   AccountDescription, SupportedResource, ResourceConfiguratorFrame, ActionKind, Cursor,
   GatekeeperUserVerifier, ObservationDescription,
   stripTrailingSlashes, workerVersionTag, type ConnectHandoff,
-  requestedResourceUrlPatterns, resourceTypeUrlPattern,
+  requestedResourceUrlPatterns, resourceTypeUrlPattern, getGrantedResourceTypeIds,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { KvTtlCache } from "@gadgets/gatekeeper-kit/cache";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -780,6 +780,7 @@ export class SlackUserImpl extends WorkerEntrypoint<Env, SlackUserImplProps>
     let description = await this.#api().getAccountDescription(
         await userIdPromise, installation);
     description.grantedResourceUrlPatterns = await grantedPromise;
+    description.grantedResourceTypeIds = getGrantedResourceTypeIds(description, SUPPORTED_RESOURCES);
     return description;
   }
 

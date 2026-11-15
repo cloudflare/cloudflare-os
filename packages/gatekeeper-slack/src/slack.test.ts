@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SlackApi, SlackApiError, type SlackInstallation, type SlackOAuthGrant } from "./slack-api";
 import { stageCredentials } from "@gadgets/gatekeeper-kit/credential-stage";
+import { getGrantedResourceTypeIds } from "@gadgets/workshop-shared/gatekeeper";
 
 // These tests exercise binding/observer behavior in Node; the production RPC schema is checked
 // separately by the Worker prebuild. The only emulation here is the Workers hosting surface.
@@ -228,6 +229,29 @@ describe("Slack org observer isolation", () => {
 
 describe("Slack resource type grants", () => {
   const threadPattern = "https://*.slack.com/archives/:conversationId/:messageId";
+
+  it.each([
+    { patterns: [threadPattern], ids: ["thread"] },
+    { patterns: [], ids: [] },
+  ])("describes stable grants independently of the URL grammar: $ids", async ({ patterns, ids }) => {
+    const ctx = { props: { userObjectId: "account" }, exports: { UserAccount: {
+      idFromString: (id: string) => id,
+      get: () => ({
+        getUserId: async () => "user",
+        getInstallation: async () => installation,
+        getGrantedResourceUrlPatterns: async () => patterns,
+      }),
+    } } };
+    vi.spyOn(SlackApi.prototype, "getAccountDescription").mockResolvedValue({ uniqueName: "slack-user" });
+    const user = new SlackUserImpl(ctx as never, {} as never);
+    const description = await user.describe();
+    expect(description.grantedResourceTypeIds).toEqual(ids);
+    expect(description.grantedResourceUrlPatterns).toEqual(patterns);
+    const renamedResources = (await user.getSupportedResources()).map(resource => ({
+      ...resource, urlPattern: `${resource.urlPattern}/new-grammar`,
+    }));
+    expect(getGrantedResourceTypeIds(description, renamedResources)).toEqual(ids);
+  });
 
   it.each([
     { options: { resourceTypeIds: ["thread"] }, search: false },

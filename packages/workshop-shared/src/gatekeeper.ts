@@ -705,6 +705,7 @@ export type ConnectHandoff = {
   ticket: string;
 };
 
+/** Root interface of a gatekeeper Worker: describes its service and connects user accounts. */
 export interface GatekeeperVendor extends WorkerEntrypoint {
   /** Get display info for the service, suitable for display to a user. */
   describe(): Promise<VendorDescription>;
