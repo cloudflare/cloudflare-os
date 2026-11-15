@@ -74,7 +74,8 @@ const RUNTIME_HELP = [
   "  --timeout <seconds>  end a subscription (exit 0), or fail any other command, after this long:",
   `                       at most ${MAX_TIMEOUT}; without it, no limit`,
   "  --out <file|->       where returned bytes go: a byte stream (default: stdout, unless a",
-  "                       terminal), or a byte value, decoded (default: printed as base64 JSON)",
+  "                       terminal), or a byte value, decoded (default: printed as base64 JSON);",
+  "                       <file> also saves the byte stream a JSON result holds inside it",
   "  -h, --help           help for the capability or command reached so far",
   "  --                   makes the next token an argument or a command, even one that reads as an",
   "                       option (`set-title -- --dry-run` sets the title, for real): one `--` each",
@@ -412,6 +413,7 @@ function describeReturn(returns: ApiReturn): string {
   switch (returns.kind) {
     case "value":
       if (returns.bytes) return `${returns.type}: bytes, printed as {"base64": "..."} JSON, or written decoded to --out <file|->`;
+      if (returns.stream) return `${returns.type}, printed as JSON; a byte stream inside it is written to --out <file>`;
       return returns.type === "void" ? "nothing (prints null)" : `${returns.type}, printed as JSON`;
     case "stub":
       return `a capability on ${returns.node}${returns.nullable ? ", or null" : ""}: follow with one of its commands`;
@@ -810,10 +812,18 @@ function walk(table: ApiTable, tokens: string[], refuseMisread: boolean): Invoca
     : { kind: "result", returns: position.returns };
   // Only bytes have somewhere to go: given with any other result, --out would be silently ignored.
   const returns = end.kind === "result" ? end.returns : undefined;
-  if (flags.out !== undefined && returns && returns.kind !== "stream" && !(returns.kind === "value" && returns.bytes)) {
+  if (flags.out !== undefined && returns && returns.kind !== "stream") {
     const last = finalHops.at(-1)!;
-    throw new UsageError(`${last.kind === "call" ? `call ${last.method}` : last.name} returns ` +
-      `${returns.kind === "call" ? "an untyped value" : resultNoun(returns)}, not bytes: --out applies only to a command that returns bytes.`);
+    const name = last.kind === "call" ? `call ${last.method}` : last.name;
+    const value = returns.kind === "value" ? returns : undefined;
+    if (!value?.bytes && !value?.stream) {
+      throw new UsageError(`${name} returns ${returns.kind === "call" ? "an untyped value" : resultNoun(returns)}, ` +
+        "not bytes: --out applies only to a command that returns bytes.");
+    }
+    // A value holding a stream is itself printed on stdout, which the stream's bytes would run into.
+    if (value.stream && flags.out === "-") {
+      throw new UsageError(`${name} --out -: the result is printed on stdout, so its bytes need a file (--out <file>).`);
+    }
   }
   return { public: isPublic, hops: finalHops, flags, end, path, literal, argv: tokens, argvAt };
 }
@@ -1573,7 +1583,8 @@ function refusedMessage(table: ApiTable, refused: Refused): string {
  * before the result, or before the failure is thrown. A callback method that returns a value gets
  * the decoded `--answer` for its first call; any other call of one is refused, stopping the run
  * with a usage error that says what it asked. Resolves to the exit code: 0; 1 when a null partway
- * through the chain left a later command not run; or 130 on SIGINT. A failure is thrown, its
+ * through the chain left a later command not run, or when `--out` was given and the result printed
+ * holds more than the one byte stream it writes; or 130 on SIGINT. A failure is thrown, its
  * message explained by the session when the connection never opened.
  */
 export async function execute(
@@ -1594,7 +1605,8 @@ export async function execute(
     }
     sink = out === undefined || out === "-" ? "stdout" : io.outputPath(out);
   } else if (out !== undefined) {
-    // A byte value: parseInvocation refuses --out for any other result.
+    // A byte value, or a value holding a stream, whose --out is a file: parseInvocation refuses --out
+    // for any other result.
     sink = out === "-" ? "stdout" : io.outputPath(out);
   }
 
@@ -1702,7 +1714,8 @@ export async function execute(
       io.out.json(null);
     } else {
       const found: Disposable[] = [];
-      io.out.json(encodeValue(result, found));
+      const streams: ReadableStream<Uint8Array>[] = [];
+      io.out.json(encodeValue(result, found, streams));
       disposables.push(...found);
       // The capabilities printed are released as the run ends: using one takes a longer chain.
       const names = Object.keys(capabilitiesOf(last.returns));
@@ -1710,6 +1723,19 @@ export async function execute(
         const hop = invocation.hops.at(-1) as Extract<Hop, { kind: "command" }>;
         io.out.log(`Its ${capabilityNames(names)}, released as this command ends; to use ${names.length === 1 ? "it" : "one"}, ` +
           `continue the chain on it: ${propertyLines(hop, invocation.path).map((line) => `\`${line}\``).join(" or ")}.`);
+      }
+      // The one stream the result holds is what --out saves. Any other is cancelled, so that the
+      // server stops reading what nobody will.
+      const saved = sink !== undefined && streams.length === 1 ? streams[0] : undefined;
+      for (const stream of streams) if (stream !== saved) stream.cancel().catch(() => {});
+      if (saved) {
+        await race(writeStream(saved, sink!, io));
+      } else if (sink !== undefined && last.returns.kind === "value" && last.returns.stream) {
+        if (streams.length > 1) {
+          io.out.log(`The result holds ${streams.length} byte streams, and --out writes one: nothing was written to ${sink}.`);
+          return 1;
+        }
+        io.out.log(`The result holds no byte stream: nothing was written to ${sink}.`);
       }
     }
     return 0;

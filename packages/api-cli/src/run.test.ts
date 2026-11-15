@@ -142,6 +142,17 @@ test("--out is refused before connecting unless the chain ends on bytes: a strea
   assert.deepEqual(parseInvocation(table, ["open-notebook", "n", "--out", "x"]).end, { kind: "node", node: "Notebook" });
 });
 
+test("--out takes a file for a value that holds a byte stream, and never stdout, where the value is printed", () => {
+  assert.equal(parseInvocation(table, ["export-note", "n", "--out", "note.bin"]).flags.out, "note.bin");
+  assert.equal(parseInvocation(table, ["export-notes", '["a", "b"]', "--out", "notes.bin"]).flags.out, "notes.bin");
+  assert.equal(parseInvocation(table, ["export-note", "n"]).flags.out, undefined);
+  usage(["export-note", "n", "--out", "-"],
+    /^export-note --out -: the result is printed on stdout, so its bytes need a file \(--out <file>\)\.$/);
+  usage(["export-notes", "[]", "--out=-"], /^export-notes --out -: the result is printed on stdout/);
+  // A value that holds none has nothing for --out to write, whatever it names.
+  usage(["find-notes", "q", "--out", "-"], /^find-notes returns a value, not bytes: --out applies only to a command that returns bytes\.$/);
+});
+
 function usage(tokens: string[], message: RegExp): void {
   assert.throws(() => parseInvocation(table, tokens), (error: Error) => error instanceof UsageError && message.test(error.message));
 }
@@ -293,6 +304,9 @@ test("help lists a capability's commands and a command's arguments, events and r
   assert.match(commandHelp(table, "Notebook", "move", ["move"]), /\n {2}--destination <json\|@file\|->  [^\n]*\n {32}Destination: Where a note is filed\.\n/);
   assert.match(flat(commandHelp(realTable, realTable.root, "get-avatar", ["get-avatar"])),
     /Returns Uint8Array \| null: bytes, printed as \{"base64": "\.\.\."\} JSON, or written decoded to --out <file\|->\./);
+  assert.match(flat(commandHelp(table, "FixtureAuthedApi", "export-note", ["export-note"])),
+    /Returns NoteExport = \{ kind: "text"; text: string \} \| \{ [^}]*content: ReadableStream[^}]* \}, printed as JSON; a byte stream inside it is written to --out <file>\./);
+  assert.match(flat(root), /--out <file\|-> where returned bytes go: [^]*; <file> also saves the byte stream a JSON result holds inside it/);
   const findNotes = commandHelp(table, "FixtureAuthedApi", "find-notes", ["find-notes"]);
   assert.match(findNotes, /\[--limit <number>\] \[--arg-url <string>\]/);
   // A plain string argument is taken as typed, which its command's help says, and how to read a file instead.

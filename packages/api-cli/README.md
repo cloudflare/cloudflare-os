@@ -106,7 +106,8 @@ declared type before anything is sent. Put `--` before a value that reads as an 
 Results are JSON on stdout: bigints as strings, bytes as `{"base64": "..."}`, dates as ISO strings.
 Messages go to stderr. A `subscribe-*` command prints one JSON line per event until `--timeout`,
 Ctrl-C or its reader closes; pair a pipe to `head` with `--timeout`. Byte streams go to
-`--out <file|->`.
+`--out <file|->`. `--out <file>` also saves the byte stream a JSON result holds inside it, printed as
+`{"$stream": true}`, and fails with exit 1 when the result holds more than one.
 
 | Code | Means |
 | --- | --- |

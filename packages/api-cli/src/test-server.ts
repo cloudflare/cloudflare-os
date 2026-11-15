@@ -1,8 +1,8 @@
 // An in-process Cap'n Web server for the `cf-os api` suites. It serves the generator fixture's API
 // (the one `generator/__fixtures__/generated/schema.json` describes, from the extractor fixture
 // `packages/api-schema/__tests__/__fixtures__/api.ts` before its format additions, with a method
-// whose argument holds secrets, one that reports the id of what it creates, and the `sketch`
-// gatekeeper app UI `getPanel` reaches) and, for
+// whose argument holds secrets, one that reports the id of what it creates, two whose results hold
+// byte streams, and the `sketch` gatekeeper app UI `getPanel` reaches) and, for
 // `open-workspace`, a sliver of the real API, as `RpcTarget`s that record every call and every
 // disposal, served over a MessageChannel through the session factory the runtime takes. Test
 // support only; not part of the build.
@@ -87,6 +87,28 @@ export interface FixtureOptions {
 export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTarget {
   const record = (method: string, args: unknown[]) => log.calls.push({ method, args });
   const accounts = options.accounts ??= new Map();
+
+  /**
+   * One note's export (`NoteExport`): its text for an id starting `text`, else two chunks in a stream,
+   * left open after them for an id starting `open`, as a file still being read. A cancel is recorded.
+   */
+  const noteExport = (id: string): Record<string, unknown> => {
+    if (id.startsWith("text")) return { kind: "text", text: `text of ${id}` };
+    const chunks = [`export of ${id}\n`, "second chunk\n"].map((chunk) => new TextEncoder().encode(chunk));
+    return {
+      kind: "stream",
+      byteLength: chunks.reduce((total, chunk) => total + chunk.byteLength, 0),
+      content: new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of chunks) controller.enqueue(chunk);
+          if (!id.startsWith("open")) controller.close();
+        },
+        cancel() {
+          record("exportCancelled", [id]);
+        },
+      }),
+    };
+  };
 
   class Admin extends RpcTarget {
     setBanner(text: string): void {
@@ -198,6 +220,14 @@ export function fixtureRoot(log: ServerLog, options: FixtureOptions = {}): RpcTa
     getPhoto(id: string): Uint8Array | null {
       record("getPhoto", [id]);
       return id === "none" ? null : new TextEncoder().encode(`photo ${id}`);
+    }
+    exportNote(id: string): Record<string, unknown> {
+      record("exportNote", [id]);
+      return noteExport(id);
+    }
+    exportNotes(ids: string[]): Record<string, unknown>[] {
+      record("exportNotes", [ids]);
+      return ids.map(noteExport);
     }
     async importArchive(archive: ReadableStream<Uint8Array>): Promise<string> {
       const chunks: Uint8Array[] = [];
