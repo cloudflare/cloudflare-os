@@ -606,6 +606,8 @@ describe('toChatFeed', () => {
       const args = '{title: "Tell a joke"}'
       const result = feed(agentCallback('onSchedule', args, 'A'), agent({ text: 'One' }), agentCallback('onSchedule', args, 'A'), agent({ text: 'Two' }), user('hi'), agent({ text: 'Hello' }), agentCallback('onSchedule', args, 'A'), agent({ text: 'Three' }))
       expect(only(result, 'assistant').map(({ prompt }) => prompt && (prompt.again ? 'again' : prompt.label))).toEqual(['Tell a joke', 'again', undefined, 'Tell a joke'])
+      // Each woken reply is a turn of its own, apart from the reply before it.
+      expect(result.items.map((item, index) => continuesRun(result.items[index - 1], item))).toEqual(result.items.map(() => false))
     })
 
     it('names a call whose arguments give no title by what it is', () => {

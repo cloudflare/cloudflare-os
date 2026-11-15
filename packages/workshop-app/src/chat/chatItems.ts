@@ -285,11 +285,12 @@ export type ChatItem = UserItem | AssistantItem | ArtefactItem | NoticeItem | Di
 /**
  * Whether a row carries on from the one before it: a message from the same sender with nothing of
  * its own (a name) above its bubbles. Such messages are drawn as one run. Only the viewer's own
- * messages go unnamed, so only theirs run together.
+ * messages go unnamed, so only theirs run together. A reply a call woke the agent to write is a
+ * turn of its own, so it starts a run rather than joining the reply before.
  */
 export const continuesRun = (before: ChatItem | undefined, item: ChatItem): boolean =>
   item.kind === 'assistant'
-    ? before?.kind === 'assistant'
+    ? before?.kind === 'assistant' && !item.prompt
     : item.kind === 'user' && before?.kind === 'user' && !item.from && !before.from
 
 /**
