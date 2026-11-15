@@ -2,6 +2,24 @@ import { Tooltip } from '@cloudflare/kumo'
 import { Crosshair, X } from '@phosphor-icons/react'
 import { focusLabel, type TitledFocus } from './paneFocus'
 
+/**
+ * A chip's tooltip: its heading, then the spot's context (what the agent is told is there) as plain
+ * text, clamped so a long quote doesn't fill the screen.
+ */
+const FocusTooltip = ({ heading, context }: { heading: string; context: string | undefined }) =>
+  context
+    ? (
+      <span className="block max-w-xs">
+        <span className="block break-words">{heading}</span>
+        {/* No `block` here: it would outrank the `-webkit-box` that line-clamp needs. The explicit
+            leading keeps the clamp's reserved height a whole number of rendered lines. */}
+        <span className="mt-1 line-clamp-6 whitespace-pre-line break-words leading-[18px] text-kumo-subtle">
+          {context}
+        </span>
+      </span>
+    )
+    : heading
+
 const CHIP_CLASS =
   'inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-kumo-line bg-kumo-elevated text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle'
 
@@ -14,6 +32,7 @@ export const FocusChip = (props: { focus: TitledFocus } & (
   | { onDismiss: () => void; disabled?: boolean }
 )) => {
   const label = focusLabel(props.focus)
+  const context = props.focus.spot?.context
   const face = (
     <>
       <Crosshair size={12} aria-hidden="true" className="shrink-0 text-kumo-inactive" />
@@ -23,7 +42,7 @@ export const FocusChip = (props: { focus: TitledFocus } & (
 
   if ('onOpen' in props) {
     return (
-      <Tooltip content={label} side="top" asChild>
+      <Tooltip content={<FocusTooltip heading={label} context={context} />} side="top" asChild>
         <button
           type="button"
           onClick={props.onOpen}
@@ -38,7 +57,11 @@ export const FocusChip = (props: { focus: TitledFocus } & (
 
   return (
     <div className={`${CHIP_CLASS} py-0.5 pl-2.5 pr-0.5`}>
-      <Tooltip content={`The agent will be told you're viewing ${label}`} side="top" asChild>
+      <Tooltip
+        content={<FocusTooltip heading={`The agent will be told you're viewing ${label}`} context={context} />}
+        side="top"
+        asChild
+      >
         <span className="flex min-w-0 items-center gap-1.5">{face}</span>
       </Tooltip>
       <button
