@@ -45,7 +45,7 @@ describe("scratch worktree attachment ingress", () => {
     impl.storage.chatAttachmentContent.put({fileId: id, data: original, state: {
       type: "staged", uploadedAt: Date.now(), mimeType: "text/plain", name: "notes.txt",
     }});
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", undefined, [{id}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect", {attachments: [{id}]});
     const context = impl.getChatAgentContext(chatId);
     const worktreeId = context.scratch!.worktreeId;
     delete context.attachmentsMigrated;
@@ -67,8 +67,8 @@ describe("scratch worktree attachment ingress", () => {
     await inKernel(name, async impl => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const seed = await impl.gitCache.writeBlob(new TextEncoder().encode("seed\n"));
-      chatId = await impl.newChat(user, {profile: USER}, "Old attachments", undefined,
-        existing ? [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}] : undefined);
+      chatId = await impl.newChat(user, {profile: USER}, "Old attachments", {attachments:
+        existing ? [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}] : undefined});
       const message = [...impl.storage.chats.list()].find(message => message.type === "message")!;
       if (message.type !== "message") throw new Error("Expected message");
       message.attachments = [...message.attachments ?? [], ...ids.map((id, i) => ({
@@ -203,14 +203,14 @@ describe("scratch worktree attachment ingress", () => {
   it("reads and greps a full-size text upload without changing its byte-backed OT state", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const small = await impl.gitCache.writeBlob(new TextEncoder().encode("seed"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
-      [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Seed", {attachments:
+      [{oid: small.oid, mimeType: "text/plain", name: "seed.txt"}]});
     const text = "first line\nneedle\n" + "padding\n".repeat(524286);
     // Exact upload cap, with short lines so the model requests only a small window.
     const bytes = new TextEncoder().encode(text.padEnd(4 * 1024 * 1024, "x").slice(0, 4 * 1024 * 1024));
     const ref = await impl.gitCache.writeBlob(bytes);
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", undefined,
-      [{oid: ref.oid, mimeType: "text/plain", name: "large.txt"}]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Inspect", {attachments:
+      [{oid: ref.oid, mimeType: "text/plain", name: "large.txt"}]});
     const worktree = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const requests = await scriptedTurn(impl, chatId, [
       fauxToolCall("readFile", {workpiece: "SCRATCH", filename: "large.txt", lineCount: 2}),
@@ -232,14 +232,14 @@ describe("scratch worktree attachment ingress", () => {
   it.each([false, true])("replays text replacements over a binary %s overlay without reading the obsolete base", existing => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const ref = await impl.gitCache.writeBlob(Uint8Array.of(0, 255));
-    const chatId = await impl.newChat(user, {profile: USER}, "Start", undefined,
-      existing ? undefined : [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Start", {attachments:
+      existing ? undefined : [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]});
     if (existing) {
       const seed = await impl.gitCache.writeBlob(new TextEncoder().encode("seed"));
-      await impl.sendChatMessage(user, {profile: USER}, chatId, "Seed", undefined,
-        [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}]);
-      await impl.sendChatMessage(user, {profile: USER}, chatId, "Binary", undefined,
-        [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]);
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Seed", {attachments:
+        [{oid: seed.oid, mimeType: "text/plain", name: "seed.txt"}]});
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "Binary", {attachments:
+        [{oid: ref.oid, mimeType: "application/octet-stream", name: "data.bin"}]});
     }
     const requests = await scriptedTurn(impl, chatId, [
       fauxToolCall("writeFile", {workpiece: "SCRATCH", filename: "data.bin", content: "replacement\n"}),
@@ -292,7 +292,7 @@ describe("scratch worktree attachment ingress", () => {
         type: "staged", uploadedAt: Date.now(), mimeType: "text/csv", name: "input.csv",
       }});
       const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()),
-        {profile: USER}, "Read this CSV", undefined, [{id}]);
+        {profile: USER}, "Read this CSV", {attachments: [{id}]});
       expect(await impl.getChatAttachmentData(chatId, id)).toEqual(bytes);
       const attachment = impl.storage.chatAttachmentContent.get(id)!;
       const context = impl.getChatAgentContext(chatId);
@@ -327,9 +327,9 @@ describe("scratch worktree attachment ingress", () => {
     validateChatAttachmentUpload({content: bytes, mimeType: "text/plain", name: "large.txt"});
     const upload = await stage(bytes, "large.txt");
     const chatId = existing
-      ? await impl.newChat(user, {profile: USER}, "Initial", undefined, [await stage(new TextEncoder().encode("small"), "small.txt")])
-      : await impl.newChat(user, {profile: USER}, "Read this", undefined, [upload]);
-    if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Read this", undefined, [upload]);
+      ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [await stage(new TextEncoder().encode("small"), "small.txt")]})
+      : await impl.newChat(user, {profile: USER}, "Read this", {attachments: [upload]});
+    if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Read this", {attachments: [upload]});
     const message = [...impl.storage.chats.list()].findLast(message => message.type === "message" &&
       message.attachments?.some(attachment => attachment.name === "large.txt"));
     if (!message || message.type !== "message") throw new Error("Missing attachment message");
@@ -371,9 +371,9 @@ describe("scratch worktree attachment ingress", () => {
       };
       const upload = stage(name);
       const chatId = existing
-        ? await impl.newChat(user, {profile: USER}, "Initial", undefined, [stage("seed.txt")])
-        : await impl.newChat(user, {profile: USER}, "Read this", undefined, [upload]);
-      if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Read this", undefined, [upload]);
+        ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [stage("seed.txt")]})
+        : await impl.newChat(user, {profile: USER}, "Read this", {attachments: [upload]});
+      if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Read this", {attachments: [upload]});
       const attachment = impl.storage.chatAttachmentContent.get(upload.id)!;
       expect(attachment.data).toBeUndefined();
       expect(attachment.state).toHaveProperty("workspacePath", path);
@@ -391,13 +391,13 @@ describe("scratch worktree attachment ingress", () => {
       }});
       return {id};
     };
-    const chatId = await impl.newChat(user, {profile: USER}, "Initial", undefined, [stage("input", "input.csv")]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Initial", {attachments: [stage("input", "input.csv")]});
     const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     const generatedPath = mode === "directory" ? "report.csv/part.txt" : "report.csv";
     await step(impl, chatId, {[worktreeId]: [[generatedPath, {set: "agent-created"}]]});
     if (mode === "accepted") expect(await impl.mergeChanges(chatId, {profile: USER}, USER.id)).toEqual({outcome: "merged"});
     const upload = stage("uploaded", "report.csv");
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "Another attachment", undefined, [upload]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Another attachment", {attachments: [upload]});
     expect(impl.storage.chatAttachmentContent.get(upload.id)?.state).toMatchObject({workspacePath: "report-2.csv"});
     const content = await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!);
     expect(content.get(worktreeId)?.get(generatedPath) ?? await impl.readFileAtCommit(impl.getWorktreePinBase(worktreeId)!, generatedPath)).toBe("agent-created");
@@ -407,15 +407,15 @@ describe("scratch worktree attachment ingress", () => {
   it("reuses deleted generated names but keeps historical upload names reserved", () => inKernel(crypto.randomUUID(), async impl => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const original = await impl.gitCache.writeBlob(new TextEncoder().encode("original"));
-    const chatId = await impl.newChat(user, {profile: USER}, "Seed", undefined,
-      [{oid: original.oid, mimeType: "text/plain", name: "upload.txt"}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Seed", {attachments:
+      [{oid: original.oid, mimeType: "text/plain", name: "upload.txt"}]});
     const id = impl.getChatAgentContext(chatId).scratch!.worktreeId;
     await step(impl, chatId, {[id]: [["generated.txt", {set: "temporary"}]]});
     await step(impl, chatId, {[id]: [["generated.txt", {remove: true}], ["upload.txt", {remove: true}]]});
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "Upload", undefined, [
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "Upload", {attachments: [
       {oid: original.oid, mimeType: "text/plain", name: "generated.txt"},
       {oid: original.oid, mimeType: "text/plain", name: "upload.txt"},
-    ]);
+    ]});
     const message = [...impl.storage.chats.list()].findLast(message => message.type === "message")!;
     if (message.type !== "message") throw new Error("Expected message");
     expect(message.attachments?.map(ref => ref.workspacePath)).toEqual(["generated.txt", "upload-2.txt"]);
@@ -449,9 +449,9 @@ describe("scratch worktree attachment ingress", () => {
       };
       const upload = await stage(bytes, mimeType, name);
       const chatId = existing
-        ? await impl.newChat(user, {profile: USER}, "Initial", undefined, [await stage(new TextEncoder().encode("seed"), "text/plain", "seed.txt")])
-        : await impl.newChat(user, {profile: USER}, "Read file", undefined, [upload]);
-      if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Another file", undefined, [upload]);
+        ? await impl.newChat(user, {profile: USER}, "Initial", {attachments: [await stage(new TextEncoder().encode("seed"), "text/plain", "seed.txt")]})
+        : await impl.newChat(user, {profile: USER}, "Read file", {attachments: [upload]});
+      if (existing) await impl.sendChatMessage(user, {profile: USER}, chatId, "Another file", {attachments: [upload]});
       const worktreeId = impl.getChatAgentContext(chatId).scratch!.worktreeId;
       const overlay = (await impl.getCurrentChatContent(chatId, impl.storage.chatMeta.get(chatId)!)).get(worktreeId)?.get(name);
       const value = overlay ?? await impl.gitCache.fileBytesAtCommit(impl.getWorktreePinBase(worktreeId)!, name);
@@ -496,7 +496,7 @@ describe("scratch worktree attachment ingress", () => {
         }});
         upload = {id};
       }
-      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Initial", undefined, [upload]);
+      chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Initial", {attachments: [upload]});
       const message = [...impl.storage.chats.list()].find(message => message.type === "message" && message.chatId === chatId);
       if (!message || message.type !== "message") throw new Error("Missing attachment message");
       id = message.attachments![0].id;
@@ -521,7 +521,7 @@ describe("scratch worktree attachment ingress", () => {
       impl.storage.chatAttachmentContent.put({fileId: id, data: file.content, state: {
         type: "staged", uploadedAt: Date.now(), mimeType: file.mimeType, name: file.name,
       }});
-      const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Inspect the file", undefined, [{id}]);
+      const chatId = await impl.newChat(env.TEST_USER.getByName(crypto.randomUUID()), {profile: USER}, "Inspect the file", {attachments: [{id}]});
       const faux = createFauxCore({models: [{id: "faux-model"}]});
       faux.setResponses([fauxAssistantMessage(fauxText("Acknowledged"))]);
       const requests: Message[][] = [];
@@ -549,8 +549,8 @@ describe("scratch worktree attachment ingress", () => {
     const bytes = Uint8Array.fromBase64(file.base64);
     const blob = await impl.gitCache.writeBlob(bytes);
     const user = env.TEST_USER.getByName(crypto.randomUUID());
-    const chatId = await impl.newChat(user, {profile: USER}, "Inspect the image", undefined,
-      [{oid: blob.oid, mimeType: "image/png", name: file.name}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Inspect the image", {attachments:
+      [{oid: blob.oid, mimeType: "image/png", name: file.name}]});
     const faux = createFauxCore({models: [{id: "faux-model"}]});
     faux.setResponses([fauxAssistantMessage(fauxText("First turn")), fauxAssistantMessage(fauxText("Second turn"))]);
     const requests: Message[][] = [];
@@ -589,11 +589,11 @@ describe("scratch worktree attachment ingress", () => {
       ({oid: (await impl.gitCache.writeBlob(new TextEncoder().encode(text))).oid, mimeType: "text/plain", name});
     const fits = "fits\n".padEnd(MAX_TOOL_RESULT_CHARS, "f");
     const large = "needle\n".padEnd(MAX_TOOL_RESULT_CHARS + 1, "l");
-    const chatId = await impl.newChat(user, {profile: USER}, "Read these", undefined,
-      [await upload("fits.txt", fits), await upload("first.txt", large)]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Read these", {attachments:
+      [await upload("fits.txt", fits), await upload("first.txt", large)]});
     const requests = await scriptedTurn(impl, chatId, []);
-    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", undefined,
-      [await upload("later.txt", large)]);
+    await impl.sendChatMessage(user, {profile: USER}, chatId, "And this", {attachments:
+      [await upload("later.txt", large)]});
     requests.push(...await scriptedTurn(impl, chatId, []));
     expect(requests).toHaveLength(2);
     const texts = requests.map(request => request.flatMap(message => {
@@ -622,16 +622,16 @@ describe("scratch worktree attachment ingress", () => {
       const user = env.TEST_USER.getByName(crypto.randomUUID());
       const blob = await impl.gitCache.writeBlob(large);
       const batch = Array.from({length: 5}, (_, i) => ({oid: blob.oid, mimeType: "image/png", name: `${i}.png`}));
-      const chatId = await impl.newChat(user, {profile: USER}, "First five", undefined, batch);
-      for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", undefined, batch);
+      const chatId = await impl.newChat(user, {profile: USER}, "First five", {attachments: batch});
+      for (let i = 1; i < 4; ++i) await impl.sendChatMessage(user, {profile: USER}, chatId, "Five more", {attachments: batch});
       const imageParts = (messages: Message[]) => messages.flatMap(message =>
         Array.isArray(message.content) ? message.content.filter(part => part.type === "image") : []);
       const before = await scriptedTurn(impl, chatId, [], "anthropic-messages");
       expect(imageParts(before[0])).toHaveLength(20);
       const lastBytes = mimeType === "image/png" ? small : new TextEncoder().encode("%PDF-1.7");
       const last = await impl.gitCache.writeBlob(lastBytes);
-      await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", undefined,
-        [{oid: last.oid, mimeType, name: "last"}]);
+      await impl.sendChatMessage(user, {profile: USER}, chatId, "One more", {attachments:
+        [{oid: last.oid, mimeType, name: "last"}]});
       for (let turn = 0; turn < 2; ++turn) {
         if (turn) await impl.sendChatMessage(user, {profile: USER}, chatId, "Replay again");
         const request = (await scriptedTurn(impl, chatId, [], "anthropic-messages"))[0];
@@ -659,16 +659,16 @@ describe("scratch worktree attachment ingress", () => {
       await impl.sendChatMessage(user, {profile: USER}, first, "Still no attachments");
       const blob = await impl.gitCache.writeBlob(new TextEncoder().encode("input"));
       const upload = {oid: blob.oid, mimeType: "text/plain", name: "notes.txt"};
-      await impl.sendChatMessage(user, {profile: USER}, first, "First upload", undefined, [upload]);
+      await impl.sendChatMessage(user, {profile: USER}, first, "First upload", {attachments: [upload]});
       const scratch = impl.getChatAgentContext(first).scratch!;
       expect(scratch.bindingName).toBe("SCRATCH");
       await step(impl, first, {[scratch.worktreeId]: [["plan.md", {set: "working plan"}]]});
-      await impl.sendChatMessage(user, {profile: USER}, first, "Repeat upload", undefined, [upload]);
+      await impl.sendChatMessage(user, {profile: USER}, first, "Repeat upload", {attachments: [upload]});
       expect(impl.getChatAgentContext(first).scratch).toEqual(scratch);
       const content = await impl.getCurrentChatContent(first, impl.storage.chatMeta.get(first)!);
       expect(content.get(scratch.worktreeId)?.get("plan.md")).toBe("working plan");
       expect(content.get(scratch.worktreeId)?.get("notes-2.txt")).toBe("input");
-      const other = await impl.newChat(user, {profile: USER}, "Other chat", undefined, [upload]);
+      const other = await impl.newChat(user, {profile: USER}, "Other chat", {attachments: [upload]});
       const otherScratch = impl.getChatAgentContext(other).scratch!;
       expect(otherScratch.worktreeId).not.toBe(scratch.worktreeId);
       const messages = [...impl.storage.chats.list()].filter(m => m.chatId === other && m.type === "message");
@@ -683,14 +683,14 @@ describe("scratch worktree attachment ingress", () => {
     const user = env.TEST_USER.getByName(crypto.randomUUID());
     const blob = await impl.gitCache.writeBlob(Uint8Array.of(1));
     const upload = {oid: blob.oid, mimeType: "image/png", name: "bad.png"};
-    await expect(impl.newChat(user, {profile: USER}, "Bad MIME", undefined, [upload]))
+    await expect(impl.newChat(user, {profile: USER}, "Bad MIME", {attachments: [upload]}))
       .rejects.toThrow("does not match its MIME");
     const local = await impl.gitCache.writeBlob(Uint8Array.of(2));
-    const chatId = await impl.newChat(user, {profile: USER}, "Local blob", undefined,
-      [{oid: local.oid, mimeType: "application/octet-stream"}]);
+    const chatId = await impl.newChat(user, {profile: USER}, "Local blob", {attachments:
+      [{oid: local.oid, mimeType: "application/octet-stream"}]});
     expect(impl.getChatAgentContext(chatId).scratch).toBeDefined();
-    await expect(impl.newChat(user, {profile: USER}, "Missing blob", undefined,
-      [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]))
+    await expect(impl.newChat(user, {profile: USER}, "Missing blob", {attachments:
+      [{oid: "a".repeat(40), mimeType: "application/octet-stream"}]}))
       .rejects.toThrow("Unknown Git blob");
     const tooBig = await impl.gitCache.writeBlob(new Uint8Array(4 * 1024 * 1024 + 1));
     // Refused by its size alone: none of its chunks is read.
@@ -703,8 +703,8 @@ describe("scratch worktree attachment ingress", () => {
       if (chunks.has(oid)) chunkReads++;
       return get(oid);
     };
-    await expect(impl.newChat(user, {profile: USER}, "Too large", undefined,
-      [{oid: tooBig.oid, mimeType: "application/octet-stream"}]))
+    await expect(impl.newChat(user, {profile: USER}, "Too large", {attachments:
+      [{oid: tooBig.oid, mimeType: "application/octet-stream"}]}))
       .rejects.toThrow("too large");
     expect(chunkReads).toBe(0);
   }));

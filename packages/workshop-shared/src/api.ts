@@ -3772,19 +3772,13 @@ export interface Overseer extends RpcTarget {
    * Starts a new chat in this workspace with an initial message or slash-command request.
    * A slash command always creates a visible chat event, even when it does not produce a message
    * for the agent.
-   * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns the new chat's id without waiting
    * for the agent's turn; `waitForAgent()` waits for it to end.
-   *
-   * `formats` records where the message names one of the deployment's standard output formats, so
-   * the transcript can draw it as a chip. Display only -- what the agent reads is the noun, which
-   * is already in the text.
    */
   newChat(initialMessage: string | SlashCommandRequest, modelId: string | null,
-          capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-          formats?: MessageFormatRef[]): Promise<number>;
+          options?: ChatMessageOptions): Promise<number>;
 
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
@@ -3795,16 +3789,13 @@ export interface Overseer extends RpcTarget {
    * agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
-   * Slash-command requests cannot include capsules or attachments.
    *
    * `modelId` is one of the IDs in the result of `listModels()`, or null to inhibit AI response
    * (useful when using chat to talk between humans). Returns without waiting for the agent's
    * turn; `waitForAgent()` waits for it to end.
-   *
    */
   sendChatMessage(chatId: number, message: string | SlashCommandRequest, modelId: string | null,
-                  capsules?: CapsuleSpecifier[], attachments?: ChatAttachmentHandle[],
-                  formats?: MessageFormatRef[]): Promise<void>;
+                  options?: ChatMessageOptions): Promise<void>;
 
   /**
    * Store raw bytes, such as a file to attach, as an immutable Git blob and return its OID. The OID
@@ -5428,6 +5419,22 @@ export type AiToolCall = {
 // TODO: Extend AiToolCall for code-mode tool calls.
 // - Includes inline audit logs from the action.
 // - Actions can be approved or rejected inline.
+
+/** What a chat message carries besides its text. See `Overseer.sendChatMessage()`. */
+export type ChatMessageOptions = {
+  /** Resources embedded inline in the message. A slash-command request cannot include any. */
+  capsules?: CapsuleSpecifier[];
+
+  /** Uploaded blobs attached to the message. A slash-command request cannot include any. */
+  attachments?: ChatAttachmentHandle[];
+
+  /**
+   * Where the message names one of the deployment's standard output formats, so the transcript
+   * can draw it as a chip. Display only -- what the agent reads is the noun, which is already in
+   * the text.
+   */
+  formats?: MessageFormatRef[];
+};
 
 /**
  * A standard output format named inline in a chat message, recorded so the message can be redrawn

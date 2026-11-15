@@ -207,7 +207,8 @@ newChat(initialMessage, modelId, options?: ChatMessageOptions): Promise<number>;
 sendChatMessage(chatId, message, modelId, options?: ChatMessageOptions): Promise<void>;
 ```
 
-The `OverseerImpl` methods take the same struct in place of their three positional arguments.
+The `OverseerImpl` methods behind them (`newChat`, `sendChatMessage` and `steerRunningTurn`) take
+the same struct in place of their three positional arguments.
 The existing field docs move onto the struct.
 
 Then the feature adds a field to the options and to the stored message:
