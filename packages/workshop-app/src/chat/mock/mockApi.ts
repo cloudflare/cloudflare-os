@@ -42,6 +42,8 @@ export const createMockApi = (scenario: Scenario): { session: ApiSession; overse
     // No Skills app to manage them with; the workspace still offers its skills (`listSlashCommands`).
     getGatekeeperApp: async () => null,
     listAddableGatekeepers: async () => [],
+    // No services to connect, and no accounts connected.
+    listGatekeeperVendors: async () => [],
   }
   const api = new Proxy(implemented, {
     get: (target, name) => {
