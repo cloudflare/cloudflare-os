@@ -1786,6 +1786,15 @@ class OverseerImpl implements AgentHooks {
     return this.storage.gadgets.get(id)?.type === "worktree";
   }
 
+  // Refuses a user's change to a gadget filed under a spawned agent's chat. Such a chat may hold
+  // changes only to worktrees, since its agent may modify nothing else (see
+  // assertMayModifyWorkpiece in agent.ts), and a gadget change there would be credited to it.
+  assertChatMayChangeGadget(chatId: number): void {
+    if (this.storage.chatContext.get(chatId)?.spawnerConfig) {
+      throw new Error("A spawned agent's chat can't hold changes to a gadget.");
+    }
+  }
+
   // Facet name for the given gadget. The facet name is a storage key, so the default gadget
   // keeps the legacy name "gadget"; all others get `gadget${id}` (collision-free with
   // `gatekeeper${id}` thanks to the shared workpiece counter).
@@ -3560,6 +3569,9 @@ class OverseerImpl implements AgentHooks {
       : Promise<{generation: number, revision: number}> {
     this.getChatMetaOrThrow(chatId);  // fail fast
     this.#validateSubmissionShape(submission);
+    if (changedGadgets(submission.change).some(id => !this.isWorktree(id))) {
+      this.assertChatMayChangeGadget(chatId);
+    }
     this.#validateByteChanges(submission.change);
     let digest = await submissionDigest(submission);
 
@@ -12370,6 +12382,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       if (!this.impl.storage.chatMeta.get(chatId)) {
         throw new Error(`No such chat: ${chatId}`);
       }
+      this.impl.assertChatMayChangeGadget(chatId);
       chatNames = this.impl.chatScopeNames(chatId);
     }
     if (bindingName === undefined) {
@@ -14177,6 +14190,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
     if (!this.impl.storage.chatMeta.get(chatId)) {
       throw new Error(`No such chat: ${chatId}`);
     }
+    this.impl.assertChatMayChangeGadget(chatId);
     let author = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
     this.impl.bindWorkpiece(this.id, name, target, chatId);
     this.impl.addChatMessages(chatId, author, [{
