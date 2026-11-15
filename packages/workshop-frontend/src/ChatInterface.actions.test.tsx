@@ -466,6 +466,24 @@ describe('the branch approval model', () => {
     chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
     expect([...document.querySelectorAll('button')].map(b => b.textContent)).toContain('Approve')
   })
+
+  it('accepts the held requests no chat made from the bar under the tray, outside any chat',
+      async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [])
+    const acceptStagedActions = vi.fn<Overseer['acceptStagedActions']>(
+      async () => ({ outcome: 'applied' }))
+    Object.assign(server.overseer as object, { acceptStagedActions })
+    await renderChat(server.overseer, { branchApproval: true })
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1), { ...entry(2), chatId: 2 } as ActionLogEntry] })
+
+    expect(document.body.textContent).toContain('Held changes · 1 request to apply')
+    const accept = [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.includes('Accept changes'))
+    await act(async () => accept!.click())
+    expect(acceptStagedActions).toHaveBeenCalledOnce()
+  })
 })
 
 describe('restricted approval', () => {

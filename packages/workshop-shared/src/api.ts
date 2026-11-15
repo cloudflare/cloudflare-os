@@ -2860,6 +2860,15 @@ export type WorkspaceMetadata = {
   containsRestrictedData?: boolean;
 
   /**
+   * Under the branch approval model (see Overseer.mergeChanges()), how many gatekeeper actions
+   * with no chat are pending: those staged by gadgets running outside any chat, hooks, and other
+   * sessions with no chat. They normally apply as soon as they are submitted, so this is present
+   * only while they wait (see Overseer.acceptStagedActions()). Absent when none, and for a "use"
+   * collaborator.
+   */
+  stagedActions?: number;
+
+  /**
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
@@ -3554,8 +3563,23 @@ export interface Overseer extends RpcTarget {
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
    * be approved in the future. The pending actions its gatekeeper reports it had to reject along
    * with it are rejected too.
+   *
+   * Under the branch approval model (see mergeChanges()), when the gatekeeper reports that other
+   * simulated work was built on the action, the gadgets running on its chat's branch restart, or,
+   * for an action with no chat, every running gadget, since every chat sees those.
    */
   rejectAction(id: number): Promise<void>;
+
+  /**
+   * Under the branch approval model (see mergeChanges()), applies the pending actions with no
+   * chat (see WorkspaceMetadata.stagedActions), one connection at a time, as they stood when the
+   * call began. Those normally apply as soon as they are submitted; they wait for this while the
+   * workspace has read restricted data, and behind one that failed to apply. The first that fails
+   * to apply stops it with a "failed" outcome, leaving that action pending with its
+   * ActionLogEntry.applyError and those after it on its connection pending; calling again
+   * retries it.
+   */
+  acceptStagedActions(): Promise<{outcome: "applied" | "failed"}>;
 
   /**
    * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
@@ -3816,6 +3840,16 @@ export interface Overseer extends RpcTarget {
    * the first message.
    */
   setChatTitle(chatId: number, title: string): Promise<void>;
+
+  /**
+   * Under the branch approval model (see mergeChanges()), turns holding on or off in a chat (see
+   * AiChatMetadata.holding). While it is on, every gadget opened in the chat runs on its branch,
+   * so the gadget's actions wait for the chat's changes to be accepted, and the chat is never
+   * accepted automatically. A chat with no agent (see newChat()) serves just for this. Turned
+   * off, gadgets go back to running outside the chat once nothing else keeps them on its branch
+   * (see AiChatMetadata.branchGadgets).
+   */
+  setChatHolding(chatId: number, holding: boolean): Promise<void>;
 
   /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
@@ -4207,6 +4241,30 @@ export type AiChatMetadata = {
    * server-side from the chat's log and delivered on metadata updates; never submitted by clients.
    */
   awaitingDecision?: true;
+
+  /**
+   * Under the branch approval model (see Overseer.mergeChanges()), how many of the chat's
+   * gatekeeper actions are pending: they apply when its changes are accepted. Absent when none.
+   * Derived server-side and delivered on metadata updates; never submitted by clients.
+   */
+  pendingActions?: number;
+
+  /**
+   * Under the branch approval model (see Overseer.mergeChanges()), the gadgets that run on the
+   * chat's branch when opened in the chat's context (see GadgetClient.connectToGadget()): their
+   * reads see the chat's pending actions and their actions join them. Those are the gadgets the
+   * chat proposes changes to, those an agent turn in the chat has invoked until the turn ends,
+   * and, while the chat has pending actions or holding is on, every gadget. Any other runs as it
+   * does outside the chat. Absent when none. Derived server-side and delivered on metadata
+   * updates; never submitted by clients.
+   */
+  branchGadgets?: WorkpieceId[];
+
+  /**
+   * Present while holding is on in the chat (see Overseer.setChatHolding()), under the branch
+   * approval model.
+   */
+  holding?: true;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction

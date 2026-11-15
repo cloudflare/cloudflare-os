@@ -2403,7 +2403,9 @@ interface ChatInterfaceProps {
   // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
   onAnyChatProposedChangesChange?: (workpieceIds: readonly WorkpieceId[]) => void;
   // The workpieces the selected chat proposes changes to (empty when none is selected or it
-  // proposes nothing); see AiChatMetadata.proposedChangeWorkpieces.
+  // proposes nothing); see AiChatMetadata.proposedChangeWorkpieces. Under the branch approval
+  // model, the gadgets that run on its branch instead (AiChatMetadata.branchGadgets), which
+  // include those.
   onSelectedChatProposedChangesChange?: (workpieceIds: readonly WorkpieceId[]) => void;
   constrainChatWidth?: boolean;
   // Opens a workpiece the transcript offers (a created gadget's app, a created worktree's code).
@@ -3192,7 +3194,9 @@ function ChatInterface({
   // Keyed on the list's *content*: metadata is redelivered wholesale on every lastActive bump,
   // and pushing a fresh (but equal) array into the parent's state each time would re-render it
   // for nothing.
-  const currentProposedWorkpieces = currentChatMetadata?.proposedChangeWorkpieces;
+  const currentProposedWorkpieces = branchApproval
+    ? currentChatMetadata?.branchGadgets
+    : currentChatMetadata?.proposedChangeWorkpieces;
   const currentProposedWorkpiecesKey = currentProposedWorkpieces?.join(",") ?? "";
   const metadataLoaded = currentChatMetadata !== undefined;
   useEffect(() => {
@@ -4314,6 +4318,35 @@ function ChatInterface({
     }
     void handleMergeChanges();
   };
+  // Under the branch approval model, holding keeps the gadgets opened in a chat on its branch, so
+  // their requests wait for its changes to be accepted (see Overseer.setChatHolding()).
+  const handleSetHolding = async (chatId: number, holding: boolean) => {
+    try {
+      await overseer.setChatHolding(chatId, holding);
+    } catch (err) {
+      console.error("Failed to change holding:", err);
+      toasts.add({ title: "Failed to change holding", variant: "error" });
+    }
+  };
+
+  // Under the branch approval model, applies the requests no chat made that are waiting (see
+  // Overseer.acceptStagedActions()). One that fails stays in the tray with its error.
+  const [isAcceptingStaged, setIsAcceptingStaged] = useState(false);
+  const handleAcceptStaged = async () => {
+    setIsAcceptingStaged(true);
+    try {
+      const { outcome } = await overseer.acceptStagedActions();
+      toasts.add(outcome === "applied"
+        ? { title: "Requests applied", variant: "success" }
+        : { title: "A request could not be applied", description: "Retry it or deny it.", variant: "error" });
+    } catch (err) {
+      console.error("Failed to apply requests:", err);
+      toasts.add({ title: "Failed to apply requests", variant: "error" });
+    } finally {
+      setIsAcceptingStaged(false);
+    }
+  };
+
   // For the tray's Retry, which an accept under the branch approval model performs.
   const acceptChangesRef = useRef(handleAcceptChanges);
   acceptChangesRef.current = handleAcceptChanges;
@@ -4667,6 +4700,31 @@ function ChatInterface({
       bulk={branchApproval ? undefined : bulkResolve}
     />
   );
+
+  // Under the branch approval model, outside any chat, the tray holds the requests no chat made
+  // that are waiting (while the workspace has read restricted data, or behind one that failed),
+  // and this bar under it accepts them, as a chat's bar accepts the chat's.
+  const stagingBar = branchApproval && selectedChatId === null && trayPending.length > 0 ? (
+    <div className="themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2">
+      <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
+        Held changes
+        <span className="font-normal text-kumo-inactive">
+          {trayPending.length === 1 ? " · 1 request to apply" : ` · ${trayPending.length} requests to apply`}
+        </span>
+      </span>
+      <Tooltip content="Apply the requests above, which were made outside any chat." asChild>
+        <WorkshopButton
+          disabled={isAcceptingStaged}
+          onClick={() => { void handleAcceptStaged(); }}
+          tone="primary"
+          className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
+        >
+          <Check size={11} weight="bold" />
+          Accept changes
+        </WorkshopButton>
+      </Tooltip>
+    </div>
+  ) : null;
 
   // The gadget's own code draft, docked under the tray. Accepting always merges everything the
   // chat proposes (drafts swept in, no partial accepts -- see Overseer.mergeChanges()), so the
@@ -5767,6 +5825,15 @@ function ChatInterface({
                           >
                             Rename
                           </DropdownMenu.Item>
+                          {branchApproval && (
+                            <DropdownMenu.CheckboxItem
+                              checked={chat.holding === true}
+                              onCheckedChange={(holding) => { void handleSetHolding(chat.id, holding); }}
+                              className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
+                            >
+                              Hold gadget changes
+                            </DropdownMenu.CheckboxItem>
+                          )}
                           <DropdownMenu.Item
                             icon={<Trash className="size-3" />}
                             variant="danger"
@@ -5813,7 +5880,7 @@ function ChatInterface({
             onToggleThinkingTraces={toggleShowThinkingTraces}
             minRows={2}
             newChat
-            draftUpdateBanner={workspaceTray}
+            draftUpdateBanner={stagingBar ? <>{workspaceTray}{stagingBar}</> : workspaceTray}
             draftStorageKey={currentUser && workspaceId
               ? composerDraftStorageKey(currentUser.id, `workspace:${workspaceId}:new`)
               : undefined}

@@ -71,10 +71,16 @@ export class AutoApprovalDrainer {
       // would refuse one anyway, and the catch below would stop there just the same; asking
       // first keeps that ordinary race out of the failure log.
       private isDeciding: (id: number) => boolean,
-      // Whether the drain applies a pending action at all. Under the branch approval model it
-      // applies only staged ones (see OverseerImpl.branchApproval): a chat's actions wait for
-      // its branch to be accepted, and hold up nothing here. TODO: Remove with the model's setting.
-      private inScope: (record: ActionRecord) => boolean = () => true) {}
+      // What a drain applies on the gatekeeper instead of the leading run of auto-eligible
+      // actions, when it returns a list: under the branch approval model, the staged actions,
+      // which apply at once (see OverseerImpl.branchApproval). TODO: Remove with the model's
+      // setting.
+      private select: (gatekeeperId: number) => ApplyItem[] | undefined = () => undefined) {}
+
+  /** Settles once no drain runs on the gatekeeper: at once, if none does. Never rejects. */
+  async settled(gatekeeperId: number): Promise<void> {
+    await this.#draining.get(gatekeeperId);
+  }
 
   drain(gatekeeperId: number): Promise<void> {
     let running = this.#draining.get(gatekeeperId);
@@ -108,9 +114,10 @@ export class AutoApprovalDrainer {
   async #drainOnce(gatekeeperId: number): Promise<void> {
     // Actions created after the list is picked trigger their own drain(), which drain()'s rerun
     // flag folds into this run if it's still in flight. Nothing eligible: no apply to start.
-    if (this.#eligible(gatekeeperId).length === 0) return;
+    let select = () => this.select(gatekeeperId) ?? this.#eligible(gatekeeperId);
+    if (select().length === 0) return;
     try {
-      await this.applyActionList(gatekeeperId, () => this.#eligible(gatekeeperId));
+      await this.applyActionList(gatekeeperId, select);
     } catch (err) {
       // Leave the action pending for manual handling and stop the drain (never skip ahead).
       logger.error("auto-approval failed", {
@@ -124,7 +131,7 @@ export class AutoApprovalDrainer {
   #eligible(gatekeeperId: number): ApplyItem[] {
     let eligible: ApplyItem[] = [];
     for (let record of this.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
-      if (record.type !== "action" || !this.inScope(record)) continue;
+      if (record.type !== "action") continue;
       let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
       // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
       if (rule === undefined) break;

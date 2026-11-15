@@ -3,8 +3,9 @@
 // (ActionDescription.awaitDecision), so the agent's turn waits on each: approving one applies its
 // chat's earlier actions on the connection and the older staged ones, in ID order, through
 // applyAction() for a gatekeeper that applies one action at a time; rules apply it at once; and
-// discarding the chat rejects it. The kernel's unit tests (branch-approval.test.ts) cover accepts
-// of actions nothing waits on.
+// discarding the chat rejects it. A write outside any chat is staged, and applies at once. The
+// kernel's unit tests (branch-approval.test.ts) cover accepts of actions nothing waits on, and
+// staging while it holds.
 
 import { afterAll, beforeAll, expect, it } from "vitest";
 import type { RpcStub } from "capnweb";
@@ -75,7 +76,7 @@ async function stagingSession(overseer: RpcStub<Overseer>) {
            session: await connection.openSession() as RpcStub<TestSession> };
 }
 
-it.concurrent("approving an awaited write applies the older staged one first, one at a time",
+it.concurrent("a staged write applies at once, and approving an awaited write applies it",
     async () => {
   const model = models.script([
     executeCode("await env.TEST_AMBIENT.readValue()"), { text: "Read." },
@@ -88,11 +89,14 @@ it.concurrent("approving an awaited write applies the older staged one first, on
     const staging = await stagingSession(overseer);
     using session = staging.session;
     await session.writeValue(5);
+    await waitFor("the staged write to apply", async () =>
+      (await writes(overseer))[0]?.state === "approved" || null);
+    expect((await writes(overseer))[0]).toMatchObject({ autoApproved: true });
+    expect(await testActionState(harness, label)).toEqual({ pending: [], value: 5, applyCount: 1 });
 
     await agent.runTurn("Set the test value to 7.");
-    const [staged, chatWrite] = await writes(overseer);
-    expect([staged.chatId, staged.state, chatWrite.state])
-        .toEqual([undefined, "pending", "pending"]);
+    const [, chatWrite] = await writes(overseer);
+    expect(chatWrite.state).toBe("pending");
     // Accepting is refused while the agent waits on the write.
     await expect(overseer.mergeChanges(chatWrite.chatId!)).rejects.toThrow("waiting for a decision");
 

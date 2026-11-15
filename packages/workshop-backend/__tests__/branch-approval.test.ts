@@ -1,8 +1,10 @@
 // The branch approval model (plans/forking-reality.md, behind the BRANCH_APPROVAL setting):
 // accepting a chat applies what staging holds on its connections and then the chat's actions,
 // discarding or deleting it rejects them, auto-approval accepts a chat whose actions rules cover
-// all of, and an awaited action keeps a decision of its own. The gatekeeper facets are plain
-// objects, as in apply-actions.test.ts; packages/integration-tests drives real ones and real turns.
+// all of, and an awaited action keeps a decision of its own; staged actions apply at once unless
+// staging holds them, and gadgets run on a chat's branch when the chat calls for it. The gatekeeper
+// facets are plain objects, as in apply-actions.test.ts; packages/integration-tests drives real
+// ones and real turns.
 
 import { env, RpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
@@ -111,6 +113,10 @@ function record(impl: Impl, action: number): ActionRecord & {type: "action"} {
 const states = (impl: Impl, ...actions: number[]) =>
   actions.map(action => record(impl, action).state);
 
+// Staging holds what it is given while the workspace has read restricted data (see
+// OverseerImpl.#stagedRun), which tests of what a chat's accept does with staging rely on.
+const holdStaging = (impl: Impl) => impl.storage.containsRestrictedData.put(true);
+
 const enableRule = (impl: Impl) =>
   impl.storage.autoApproveTags.put({gatekeeperId: GK, actionKind: EDITS, enabledBy: RULE_OWNER});
 
@@ -120,6 +126,7 @@ describe("accepting a chat", () => {
     const gatekeeper = legacyGatekeeper();
     const {visit} = await workspace(gatekeeper.facet);
     await visit(async impl => {
+      holdStaging(impl);
       await impl.submitAction(GK, 1, description(), STAGED);
       await impl.submitAction(GK, 2, description(), CHAT_A);
       await impl.submitAction(GK, 3, description(), CHAT_B);
@@ -149,6 +156,7 @@ describe("accepting a chat", () => {
       },
     });
     await visit(async impl => {
+      holdStaging(impl);
       impl.storage.gatekeepers.put({id: GK2, class: {} as never});
       await impl.submitAction(GK, 1, description(), CHAT_A);
       await impl.submitAction(GK2, 2, description(), CHAT_A);
@@ -170,6 +178,7 @@ describe("accepting a chat", () => {
     const gatekeeper = branchGatekeeper();
     const {visit} = await workspace(gatekeeper.facet);
     await visit(async impl => {
+      holdStaging(impl);
       await impl.adoptsBranches(GK);
       await impl.submitAction(GK, 1, description(), CHAT_A);
       await impl.submitAction(GK, 2, description(), CHAT_B);
@@ -209,6 +218,7 @@ describe("accepting a chat", () => {
     const gatekeeper = branchGatekeeper();
     const {visit} = await workspace(gatekeeper.facet);
     await visit(async impl => {
+      holdStaging(impl);
       await impl.adoptsBranches(GK);
       await impl.submitAction(GK, 1, description(), CHAT_A);
       await impl.submitAction(GK, 2, description(), STAGED);
@@ -268,6 +278,7 @@ describe("approving one action", () => {
     const gatekeeper = legacyGatekeeper();
     const {visit} = await workspace(gatekeeper.facet);
     await visit(async impl => {
+      holdStaging(impl);
       await impl.submitAction(GK, 1, description(), CHAT_A);
       await impl.submitAction(GK, 2, description(), STAGED);
       await impl.submitAction(GK, 3, description(), CHAT_B);
@@ -281,19 +292,6 @@ describe("approving one action", () => {
 });
 
 describe("auto-approval", () => {
-  it("applies a staged action at submit, but leaves a chat's for its accept", async () => {
-    const gatekeeper = legacyGatekeeper();
-    const {visit} = await workspace(gatekeeper.facet);
-    await visit(async impl => {
-      enableRule(impl);
-      await impl.submitAction(GK, 1, description(true), CHAT_A);
-      await impl.submitAction(GK, 2, description(true), STAGED);
-      await vi.waitFor(() => expect(states(impl, 2)).toEqual(["approved"]));
-      expect(states(impl, 1)).toEqual(["pending"]);
-      expect(gatekeeper.applied).toEqual([2]);
-    });
-  });
-
   it("applies an awaited action at once when rules cover it and what it follows", async () => {
     const gatekeeper = legacyGatekeeper();
     const {visit} = await workspace(gatekeeper.facet);
@@ -340,8 +338,15 @@ describe("auto-approval", () => {
     ["one of its actions needs a user", async (impl: Impl) => {
       await impl.submitAction(GK, 3, description(false), CHAT_A);
     }],
-    ["staging holds an action that needs one on its connection", async (impl: Impl) => {
-      await impl.submitAction(GK, 3, description(false), STAGED);
+    ["staging holds an action that failed on its connection",
+        async (impl: Impl, gatekeeper: ReturnType<typeof legacyGatekeeper>) => {
+      gatekeeper.next.refuse = 3;
+      await impl.submitAction(GK, 3, description(true), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(record(impl, 3).applyError?.message).toMatch(/^Out of order\./);
+    }],
+    ["holding is on in it", (impl: Impl) => {
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, holding: true});
     }],
     ["it proposes code changes", (impl: Impl) => {
       vi.spyOn(impl, "proposedChangeWorkpieceIds").mockReturnValue([5]);
@@ -356,7 +361,7 @@ describe("auto-approval", () => {
       enableRule(impl);
       await impl.submitAction(GK, 1, description(true), CHAT_A);
       await impl.submitAction(GK, 2, description(true), CHAT_A);
-      await arrange(impl);
+      await arrange(impl, gatekeeper);
       await impl.autoAcceptBranch(1);
       expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
       expect(gatekeeper.applied).toEqual([]);
@@ -446,5 +451,273 @@ describe("removing a connection", () => {
       impl.removeGatekeeper(GK);
       expect(states(impl, 1)).toEqual([state]);
     });
+  });
+});
+
+describe("staging", () => {
+  it("applies a staged action at once, as the owner, whatever its verdict", async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      await impl.submitAction(GK, 1, description(false), CHAT_A);
+      await impl.submitAction(GK, 2, description(false), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2)).toEqual(["pending", "approved"]);
+      expect(gatekeeper.applied).toEqual([2]);
+      expect(record(impl, 2)).toMatchObject({resolvedBy: USER, autoApproved: true});
+    });
+  });
+
+  it("holds staged actions while the workspace has read restricted data, until accepted",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      holdStaging(impl);
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.submitAction(GK, 2, description(), CHAT_A);
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2, 3)).toEqual(["pending", "pending", "pending"]);
+    });
+    using overseer = await client();
+    expect((await overseer.getMetadata()).stagedActions).toBe(2);
+    expect(await overseer.acceptStagedActions()).toEqual({outcome: "applied"});
+    expect((await overseer.getMetadata()).stagedActions).toBeUndefined();
+    await visit(impl => {
+      expect(gatekeeper.applied).toEqual([1, 3]);
+      expect(states(impl, 1, 2, 3)).toEqual(["approved", "pending", "approved"]);
+      expect(record(impl, 3)).toMatchObject({resolvedBy: USER, autoApproved: false});
+    });
+  });
+
+  it("holds what follows a staged action that failed, and retries it at the next apply",
+      async () => {
+    const gatekeeper = legacyGatekeeper();
+    const {visit, client} = await workspace(gatekeeper.facet);
+    await visit(async impl => {
+      gatekeeper.next.refuse = 1;
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2)).toEqual(["pending", "pending"]);
+      expect(record(impl, 1).applyError).toEqual({message: "Out of order.", retryable: true});
+    });
+    using overseer = await client();
+    expect(await overseer.acceptStagedActions()).toEqual({outcome: "failed"});
+    await visit(async impl => {
+      delete gatekeeper.next.refuse;
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(gatekeeper.applied).toEqual([1, 2, 3]);
+      expect(states(impl, 1, 2, 3)).toEqual(["approved", "approved", "approved"]);
+      expect(record(impl, 1).applyError).toBeUndefined();
+    });
+  });
+
+  it("rejects a staged action that can never apply, with what it takes along, and goes on",
+      async () => {
+    const calls: number[][] = [];
+    const rejected: number[] = [];
+    const {visit} = await workspace({
+      async applyActions(_view: BranchView, actions: number[]): Promise<ApplyActionsResult> {
+        calls.push(actions);
+        return actions[0] === 1
+          ? {applied: [], failed: {action: 1, message: "Gone.", retryable: false}}
+          : {applied: actions};
+      },
+      async rejectAction(action: number) {
+        rejected.push(action);
+        return {rejected: [2]};
+      },
+    });
+    await visit(async impl => {
+      await impl.adoptsBranches(GK);
+      // Submitted together, before the first at-once apply has the owner's profile to apply as.
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.submitAction(GK, 3, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(states(impl, 1, 2, 3)).toEqual(["rejected", "rejected", "approved"]);
+      expect(rejected).toEqual([1]);
+      expect(calls).toEqual([[1, 2, 3], [3]]);
+      expect(record(impl, 1)).toMatchObject({
+        resolvedBy: USER, applyError: {message: "Gone.", retryable: false},
+      });
+    });
+  });
+
+  it("is waited for by a chat's accept, which applies what staging still holds", async () => {
+    const parked = Promise.withResolvers<void>();
+    const applied: number[] = [];
+    const {visit} = await workspace({
+      async applyAction(action: number) {
+        if (action === 1) await parked.promise;
+        applied.push(action);
+      },
+    });
+    await visit(async impl => {
+      await impl.drainAutoApprovals(GK);  // the owner's profile, so the drain starts at once
+      await impl.submitAction(GK, 1, description(), STAGED);
+      await impl.submitAction(GK, 2, description(), CHAT_A);
+      const accept = impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+      parked.resolve();
+      await expect(accept).resolves.toBe(true);
+      expect(applied).toEqual([1, 2]);
+      expect(record(impl, 1)).toMatchObject({autoApproved: true});
+    });
+  });
+});
+
+describe("staging during a chat's accept", () => {
+  it("applies a staged action submitted meanwhile after the chat's actions", async () => {
+    const parked = Promise.withResolvers<void>();
+    const applying = Promise.withResolvers<void>();
+    const applied: number[] = [];
+    const {visit} = await workspace({
+      async applyAction(action: number) {
+        if (action === 1) {
+          applying.resolve();
+          await parked.promise;
+        }
+        applied.push(action);
+      },
+    });
+    await visit(async impl => {
+      await impl.drainAutoApprovals(GK);  // the owner's profile, so the drain starts at once
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      const accept = impl.acceptBranch(1, impl.branchSnapshot(1), USER);
+      await applying.promise;
+      await impl.submitAction(GK, 2, description(), STAGED);
+      await impl.drainAutoApprovals(GK);
+      expect(applied).toEqual([]);
+      parked.resolve();
+      await expect(accept).resolves.toBe(true);
+      await vi.waitFor(() => expect(applied).toEqual([1, 2]));
+      expect(states(impl, 1, 2)).toEqual(["approved", "approved"]);
+    });
+  });
+});
+
+describe("gadgets", () => {
+  const addGadget = (impl: Impl, id: number) => impl.storage.gadgets.put({
+    type: "gadget", id, title: `G${id}`, created: new Date(0), bindingName: `G${id}`, bindings: {},
+  } as never);
+  const branchGadgets = (impl: Impl, chatId: number) =>
+    impl.chatMetaForClient(impl.storage.chatMeta.get(chatId)!).branchGadgets;
+
+  it("run on a chat's branch while it has pending actions, holding, or an agent invoked them",
+      async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet);
+    await visit(async impl => {
+      holdStaging(impl);
+      addGadget(impl, 10);
+      addGadget(impl, 11);
+      expect(branchGadgets(impl, 1)).toBeUndefined();
+
+      // An agent turn's call puts the gadget on the branch.
+      vi.spyOn(impl, "getGadgetFacet").mockResolvedValue({} as never);
+      await impl.startGatekeeperSession({type: "gadget", id: 11}, AGENT_A);
+      expect(branchGadgets(impl, 1)).toEqual([11]);
+      expect(impl.getGadgetFacet).toHaveBeenCalledWith(11, 1);
+
+      // A pending action on the branch puts every gadget there; a staged one does not.
+      await impl.submitAction(GK, 1, description(), STAGED);
+      expect(branchGadgets(impl, 2)).toBeUndefined();
+      await impl.submitAction(GK, 2, description(), CHAT_B);
+      const meta = impl.chatMetaForClient(impl.storage.chatMeta.get(2)!);
+      expect(meta).toMatchObject({pendingActions: 1, branchGadgets: [10, 11]});
+      await impl.discardBranch(2, 0, USER);
+      expect(branchGadgets(impl, 2)).toBeUndefined();
+
+      // So does holding.
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(2)!, holding: true});
+      expect(branchGadgets(impl, 2)).toEqual([10, 11]);
+    });
+  });
+
+  it("are sent again in a chat's metadata as its actions come and go", async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet);
+    await visit(async impl => {
+      const sent: (number | undefined)[] = [];
+      impl.storage.chatMeta.subscribe({
+        add: () => {},
+        update: (_old, meta) => { sent.push(impl.chatMetaForClient(meta).pendingActions); },
+        remove: () => {},
+      });
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.discardBranch(1, 0, USER);
+      expect(sent).toEqual([1, undefined]);
+    });
+  });
+
+  it("restart on the branch a denial says was built on, or everywhere for a staged one",
+      async () => {
+    const {visit} = await workspace({
+      async applyAction() {},
+      async rejectAction() { return {restart: true}; },
+    });
+    await visit(async impl => {
+      holdStaging(impl);
+      addGadget(impl, 10);
+      addGadget(impl, 11);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      await impl.submitAction(GK, 2, description(), CHAT_A);
+      await impl.submitAction(GK, 3, description(), STAGED);
+      // Gadget 10 runs on chat 1's branch, and 11 outside any chat.
+      await impl.getGadgetFacetFetcher(10, 1);
+      await impl.getGadgetFacetFetcher(11);
+      const abort = vi.spyOn(impl.ctx.facets, "abort");
+      const aborted = () => abort.mock.calls.map(([name]) => name).toSorted();
+
+      await impl.rejectPendingAction(record(impl, 1), USER);
+      expect(aborted()).toEqual([impl.gadgetFacetName(10)]);
+      abort.mockClear();
+      await impl.rejectPendingAction(record(impl, 3), USER);
+      expect(aborted()).toEqual([impl.gadgetFacetName(10), impl.gadgetFacetName(11)]);
+    });
+  });
+
+  it("include a gadget created later, in the metadata of a chat that takes them all", async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet);
+    await visit(async impl => {
+      addGadget(impl, 10);
+      impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, holding: true});
+      const sent: (number[] | undefined)[] = [];
+      impl.storage.chatMeta.subscribe({
+        add: () => {},
+        update: (_old, meta) => { sent.push(impl.chatMetaForClient(meta).branchGadgets); },
+        remove: () => {},
+      });
+      addGadget(impl, 11);
+      await vi.waitFor(() => expect(sent.at(-1)).toEqual([10, 11]));
+    });
+  });
+
+  it("follow only proposed changes with the model off", async () => {
+    const {visit} = await workspace(legacyGatekeeper().facet, false);
+    await visit(async impl => {
+      addGadget(impl, 10);
+      await impl.submitAction(GK, 1, description(), CHAT_A);
+      expect(impl.chatMetaForClient(impl.storage.chatMeta.get(1)!)).not.toHaveProperty(
+          "branchGadgets");
+    });
+  });
+});
+
+describe("holding", () => {
+  it("is turned on and off in a chat, and only with the model on", async () => {
+    const {client} = await workspace(legacyGatekeeper().facet);
+    using overseer = await client();
+    await overseer.setChatHolding(1, true);
+    expect((await overseer.listChats()).find(chat => chat.id === 1)?.holding).toBe(true);
+    await overseer.setChatHolding(1, false);
+    expect((await overseer.listChats()).find(chat => chat.id === 1)?.holding).toBeUndefined();
+
+    const off = await workspace(legacyGatekeeper().facet, false);
+    using offOverseer = await off.client();
+    const refused = await offOverseer.setChatHolding(1, true).catch((error: unknown) => error);
+    expect(String(refused)).toContain("branch approval");
   });
 });
