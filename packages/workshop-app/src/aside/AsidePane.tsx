@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { FileDashedIcon, GitBranchIcon, SmileyMehIcon, TrayIcon, WarningCircleIcon } from '@phosphor-icons/react'
-import { ConnectedFileView } from '@/blocks/ConnectedFileView'
+import { ConnectedFileView, type ConnectedFileReview } from '@/blocks/ConnectedFileView'
 import { FileView } from '@/blocks/FileView'
 import { GadgetNoAccess } from '@/blocks/GadgetNoAccess'
 import { GadgetFrame } from '@/blocks/GadgetFrame'
@@ -15,6 +15,7 @@ import type { GadgetUi } from './GadgetConnection'
 import { OPEN_IN, type ConnectedFileKind } from '@/files/connectedFile'
 import { useConnectedFilePreview, type ConnectedFileState } from './useConnectedFilePreview'
 import { useFilePreview, type FileState } from './useFilePreview'
+import { useFileReview } from './useFileReview'
 import { useGadgetConnection } from './useGadgetConnection'
 import { useGadgetExports } from '@/gadgets/useGadgetExports'
 
@@ -74,7 +75,9 @@ export const AsidePane = (props: AsidePaneProps) => {
   const frame = useRef<HTMLIFrameElement>(null)
   useEffect(() => connection?.showIn(() => frame.current?.contentWindow), [connection])
   const fileState = useFilePreview(item.kind === 'file' ? item.file : undefined)
-  const connectedState = useConnectedFilePreview(item.kind === 'connected' ? item.connected : undefined)
+  // Its changes waiting, from the chat it is shown beside, are decided on it, and it is drawn again as they are.
+  const fileReview = useFileReview(item.kind === 'connected' ? item.connected : undefined)
+  const connectedState = useConnectedFilePreview(item.kind === 'connected' ? item.connected : undefined, fileReview.version)
   // A connected file says what it is, and where it opens, once drawn if not before.
   const drawn = connectedState.status === 'ready' ? connectedState.preview : undefined
   const connectedKind = item.kind === 'connected' ? (item.connected.fileKind ?? (drawn && drawn.content.type)) : undefined
@@ -96,7 +99,7 @@ export const AsidePane = (props: AsidePaneProps) => {
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.kind === 'connected' ? (
-    <ConnectedContent key={item.key} title={title} kind={connectedKind} state={connectedState} />
+    <ConnectedContent key={item.key} title={title} kind={connectedKind} state={connectedState} review={fileReview.review} />
   ) : item.output.type === 'worktree' ? (
     <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
   ) : (
@@ -248,7 +251,7 @@ const FileContent = ({ file, state }: { file: AsideFile; state: FileState }) => 
   }
 }
 
-const ConnectedContent = ({ title, kind, state }: { title: string; kind?: ConnectedFileKind; state: ConnectedFileState }) => {
+const ConnectedContent = ({ title, kind, state, review }: { title: string; kind?: ConnectedFileKind; state: ConnectedFileState; review?: ConnectedFileReview }) => {
   switch (state.status) {
     case 'loading':
       // A blank one of its kind stands in, where one is known, so nothing moves when it arrives.
@@ -258,6 +261,6 @@ const ConnectedContent = ({ title, kind, state }: { title: string; kind?: Connec
     case 'failed':
       return <PaneNotice icon={WarningCircleIcon} title={`Couldn’t show ${title}`} description={state.message} action={{ label: 'Try again', onClick: state.retry }} />
     case 'ready':
-      return <ConnectedFileView preview={state.preview} kind={state.preview.content.type} />
+      return <ConnectedFileView preview={state.preview} kind={state.preview.content.type} review={review} />
   }
 }

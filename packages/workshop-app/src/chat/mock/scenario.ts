@@ -8,7 +8,7 @@ import type {
   AiToolCall,
   BlueprintOutput,
 } from '@gadgets/workshop-shared/api'
-import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import type { ActionField, ActionKind, ResourceSubject } from '@gadgets/workshop-shared/gatekeeper'
 
 /** Who the mock backend says is signed in. */
 export const VIEWER: AiChatAuthorInfo = { type: 'user', id: 'ada@example.com', name: 'Ada Lovelace' }
@@ -84,6 +84,8 @@ export type ActionOptions = {
   resource?: { title?: string; url?: string }
   /** It creates something in one of the approver's accounts (`ActionLogEntry.creation`). */
   creation?: boolean
+  /** The one item it acts on, such as a Google Doc (`ResourceDescription.subject`). */
+  subject?: ResourceSubject
 }
 
 export const action = ({
@@ -98,6 +100,7 @@ export const action = ({
   awaitDecision,
   resource = {},
   creation,
+  subject,
 }: ActionOptions): Authored<'action'> => {
   const resolver = autoApprovedBy ?? resolvedBy ?? (state === 'pending' ? undefined : VIEWER)
   return actionMessage({
@@ -112,6 +115,7 @@ export const action = ({
       awaitDecision,
       actionKind: kind,
       autoApprovable: kind !== undefined,
+      ...(subject ? { subject } : {}),
     },
     resolvedBy: resolver,
     autoApproved: autoApprovedBy ? true : undefined,

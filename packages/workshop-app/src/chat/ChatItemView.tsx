@@ -158,7 +158,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
         return <OutputCard title={made.title} kind="gadget" file={made.fileKind} href={handlers.madeHref?.(made)} onOpen={() => handlers.onOpenMade(made)} />
       }
       if (item.state !== 'pending') {
-        return <ActionCard {...request} state={item.state} resolution={item.resolution ?? ''} />
+        return <ActionCard {...request} state={item.state} resolution={item.resolution ?? ''} run={item.runOf} />
       }
       const { rule } = item
       return (

@@ -5,7 +5,8 @@ import type { AsideConnectedFile } from './asideItems'
 
 export type ConnectedFileState =
   | { status: 'loading' }
-  | { status: 'ready'; preview: ResourcePreview }
+  /** `refreshing` while it is read again, as after a change to it was decided. */
+  | { status: 'ready'; preview: ResourcePreview; refreshing?: boolean }
   /** The connection draws no picture of it, such as one reached through a whole drive. */
   | { status: 'none' }
   | { status: 'failed'; message: string; retry: () => void }
@@ -15,10 +16,11 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
 /**
  * A connected file, drawn as it is through the connection its workspace reaches it by
  * (`Overseer.previewResource`), with any changes still waiting on someone drawn in. Asked once
- * for each file, and again when asked to after a failure; nothing, for no file. Showing another
+ * for each file, and again when asked to after a failure, or when `version` changes, such as the
+ * changes waiting on it: it is shown as it was meanwhile. Nothing, for no file. Showing another
  * starts over, rather than showing the last one's page while it loads.
  */
-export const useConnectedFilePreview = (file: AsideConnectedFile | undefined): ConnectedFileState => {
+export const useConnectedFilePreview = (file: AsideConnectedFile | undefined, version = ''): ConnectedFileState => {
   const { api, reconnecting } = useApi()
   const key = file && `${file.workspaceId}/${file.gatekeeperId}/${file.subjectId}`
   const [drawn, setDrawn] = useState<{ key: string; state: ConnectedFileState }>()
@@ -32,6 +34,7 @@ export const useConnectedFilePreview = (file: AsideConnectedFile | undefined): C
     // Over a lost connection it could only fail; the new connection's `api` asks.
     if (!key || reconnecting || workspaceId === undefined || gatekeeperId === undefined) return
     let cancelled = false
+    setDrawn((current) => (current?.key === key && current.state.status === 'ready' ? { key, state: { ...current.state, refreshing: true } } : current))
     const overseer = api.openWorkspace(workspaceId)
     overseer.previewResource(gatekeeperId, subjectId).then(
       (preview) => {
@@ -50,7 +53,7 @@ export const useConnectedFilePreview = (file: AsideConnectedFile | undefined): C
       cancelled = true
       overseer[Symbol.dispose]()
     }
-  }, [api, reconnecting, key, workspaceId, gatekeeperId, subjectId, attempt])
+  }, [api, reconnecting, key, workspaceId, gatekeeperId, subjectId, attempt, version])
 
   return drawn?.key === key && drawn ? drawn.state : { status: 'loading' }
 }

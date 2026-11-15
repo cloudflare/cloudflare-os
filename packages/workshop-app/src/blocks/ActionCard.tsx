@@ -40,6 +40,11 @@ export type ActionCardProps = Request & {
       state: 'approved' | 'denied'
       /** Who decided it, e.g. "Approved by Ada". */
       resolution: string
+      /**
+       * The requests it stands for, its own among them, when several were decided as one run on
+       * the same thing: each is unfolded under its own title.
+       */
+      run?: Pick<Request, 'title' | 'description' | 'fields'>[]
     }
 )
 
@@ -94,6 +99,40 @@ export const ActionCard = (props: ActionCardProps) => {
       </div>
     </div>
   )
+
+  if (props.state !== 'pending' && props.run && props.run.length > 1) {
+    const { run } = props
+    const same = run.every((each) => each.title === run[0].title)
+    return (
+      <Card>
+        <section aria-labelledby={`${id}-title`} className="contents">
+          <div className="flex items-start gap-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-kumo-fill text-kumo-default">
+              <ShieldCheckIcon aria-hidden="true" className="size-5" />
+            </span>
+            <div className="flex min-w-0 flex-1 flex-col gap-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 id={`${id}-title`} className="font-medium text-kumo-default">{same ? `${run[0].title}, ${run.length} times` : `${run.length} requests`}</h3>
+                <Badge variant={props.state === 'approved' ? 'success' : 'error'}>{props.resolution}</Badge>
+              </div>
+              {resource && <ResourceLink {...resource} />}
+            </div>
+          </div>
+          <Disclosure open={open} onToggle={onToggle} summary={`${run.length} requests`} className="-mx-2 -my-1">
+            {/* Ruled apart, as the same request asked again reads as one otherwise. */}
+            <ol className="mx-2 mt-1 mb-1 flex flex-col divide-y divide-kumo-line">
+              {run.map((each, index) => (
+                <li key={index} className="flex flex-col gap-2 py-3 last:pb-0">
+                  {!same && <span className="text-sm font-medium text-kumo-default">{each.title}</span>}
+                  <RequestBody description={each.description} fields={each.fields} />
+                </li>
+              ))}
+            </ol>
+          </Disclosure>
+        </section>
+      </Card>
+    )
+  }
 
   if (props.state !== 'pending') {
     return (

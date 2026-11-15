@@ -15,6 +15,9 @@ import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import { useApproveCreation } from '@/connections/ApproveCreation'
+import { PendingTray, type PendingTrayGroup } from '@/blocks/PendingTray'
+import { pendingActions, pendingCount, pendingGroups } from './pendingGroups'
+import { usePendingDecisions } from './usePendingDecisions'
 import { ShareWorkspaceDialog } from '@/sharing/ShareWorkspaceDialog'
 import { useWorkspaces } from '@/workspaces/WorkspacesContext'
 import { isNamedWorkspace } from '@/workspaces/workspaceKind'
@@ -50,6 +53,8 @@ export type ChatPaneProps = {
   onOpenAttachment?: ChatItemHandlers['onOpenAttachment']
   onOpenOutput?: ChatItemHandlers['onOpenOutput']
   onOpenMade?: ChatItemHandlers['onOpenMade']
+  /** The connected file open beside the chat, if one is, whose changes are reviewed there. */
+  shownBeside?: { gatekeeperId: number; subjectId: string }
   madeHref?: ChatItemHandlers['madeHref']
   outputHref?: ChatItemHandlers['outputHref']
   onSetUpConnection?: ChatItemHandlers['onSetUpConnection']
@@ -60,6 +65,8 @@ export type ChatPaneProps = {
 }
 
 const LIVE_WORK = 'live:work'
+
+const FILE_NOUNS = { document: 'Google Doc', spreadsheet: 'Google Sheet', presentation: 'Google Slides' } as const
 
 /** A gadget's title, as the chat's own cards for it have it: what the chat made, or worked on. */
 const outputTitle = (items: readonly ChatItem[] | undefined, chat: ChatSnapshot, gadgetId: number) => {
@@ -78,6 +85,7 @@ export const ChatPane = ({
   onOpenAttachment,
   onOpenOutput,
   onOpenMade,
+  shownBeside,
   madeHref,
   outputHref,
   onSetUpConnection,
@@ -95,7 +103,11 @@ export const ChatPane = ({
   const model = useMemo(() => modelFor(models, { picked: pickedId, chat: chatModel }), [models, pickedId, chatModel])
   const workspaces = useWorkspaces()
   const connection = useConnectionNotice()
-  const { approveCreation, dialog: creationDialog } = useApproveCreation({ workspaceId, approve: actions.approveAction })
+  const { approveCreation, dialog: creationDialog } = useApproveCreation({
+    workspaceId,
+    approve: (actionId, creation) => actions.decideAction(actionId, 'approve', creation),
+  })
+  const decisions = usePendingDecisions({ decide: actions.decideAction, approveCreation })
   // Why the last message could not be sent, when it never reached the conversation.
   const [problem, setProblem] = useState<string>()
   // What a row asked for that this app cannot do yet.
@@ -158,12 +170,7 @@ export const ChatPane = ({
       onOpenMade: onOpenMade ?? unavailable('Opening files'),
       madeHref,
       outputHref,
-      onApprove: (action) => {
-        const { creation } = action
-        if (!creation) return actions.approveAction(action.actionId)
-        return approveCreation({ actionId: action.actionId, gatekeeperId: creation.gatekeeperId, title: action.title })
-          .catch((error: unknown) => setNotice(`Couldn’t create it: ${error instanceof Error ? error.message : String(error)}`))
-      },
+      onApprove: (action) => decisions.run([action], 'approve'),
       onDeny: actions.rejectAction,
       // Asked first: it reaches past this action, to every chat and gadget in the workspace.
       onAlwaysApprove: (rule) => setAsked({ rule, open: true }),
@@ -179,15 +186,49 @@ export const ChatPane = ({
       onOpenChat,
       chatHref,
     }
-  }, [actions, model, onOpenAttachment, onOpenOutput, onOpenMade, madeHref, outputHref, onSetUpConnection, onOpenChat, chatHref, approveCreation])
+  }, [actions, model, onOpenAttachment, onOpenOutput, onOpenMade, madeHref, outputHref, onSetUpConnection, onOpenChat, chatHref, decisions.run])
   const keep = chat.status === 'ready' ? chat.keep : undefined
+
+  // What waits on the user is docked above the composer, by what it would change, rather than
+  // left in the conversation where the next answer pushes it out of sight.
+  // Wherever they are: one asked for in an earlier turn is in the conversation, not under it.
+  const waiting = useMemo(() => pendingActions([...(items ?? []), ...(pinned ?? [])]), [items, pinned])
+  const live = useMemo(() => pinned?.filter((item) => !(item.kind === 'action' && item.state === 'pending')) ?? [], [pinned])
+  const trayGroups = useMemo((): PendingTrayGroup[] => pendingGroups(waiting).map((group) => {
+    const { target } = group
+    // A Google file that exists is reviewed beside the chat, drawn as it will be.
+    const drawn = target.fileKind && target.subjectId && target.gatekeeperId !== undefined && !group.creates
+    return {
+      key: group.key,
+      title: target.title,
+      fileKind: target.fileKind,
+      summary: group.creates
+        ? `New ${target.fileKind ? FILE_NOUNS[target.fileKind] : 'resource'}${group.actions.length > 1 ? `, with ${pendingCount(group)}` : ''}`
+        : pendingCount(group),
+      holdsAgent: group.holdsAgent,
+      reviewing: Boolean(drawn) && shownBeside?.gatekeeperId === target.gatekeeperId && shownBeside?.subjectId === target.subjectId,
+      onReview: drawn
+        ? () => handlers.onOpenMade({ gatekeeperId: target.gatekeeperId!, subjectId: target.subjectId!, title: target.title, fileKind: target.fileKind!, url: target.url ?? '' })
+        : undefined,
+      requests: group.actions.map((action) => ({
+        actionId: action.actionId,
+        title: action.title,
+        description: action.description,
+        fields: action.fields,
+        onAlwaysApprove: action.rule && (() => setAsked({ rule: action.rule!, open: true })),
+      })),
+    }
+  }), [waiting, handlers, shownBeside])
+  const byId = (actionId: number) => waiting.filter((action) => action.actionId === actionId)
 
 
   const messages = useMemo(() => {
     // An artefact is shown at the end of its turn, after rows from later messages, so a row's
     // place in the conversation is the furthest sequence reached so far.
     let sequence = 0
-    return items?.map((item, index) => {
+    // What waits on the user is in the tray above the composer, until it is decided.
+    const rows = items?.filter((item) => !(item.kind === 'action' && item.state === 'pending'))
+    return rows?.map((item, index) => {
       sequence = Math.max(sequence, item.id)
       return {
         id: item.key,
@@ -199,8 +240,8 @@ export const ChatPane = ({
             handlers={handlers}
             restricted={restricted}
             // The list wraps every row, so messages in a run are told about each other.
-            joinsAbove={continuesRun(items[index - 1], item)}
-            joinsBelow={index + 1 < items.length && continuesRun(item, items[index + 1])}
+            joinsAbove={continuesRun(rows[index - 1], item)}
+            joinsBelow={index + 1 < rows.length && continuesRun(item, rows[index + 1])}
           />
         ),
       }
@@ -250,6 +291,18 @@ export const ChatPane = ({
         />
       )}
       composer={(
+        <>
+        <PendingTray
+          groups={trayGroups}
+          restricted={restricted}
+          progress={decisions.progress}
+          problem={decisions.problem}
+          onDismissProblem={decisions.dismissProblem}
+          onApproveAll={() => decisions.run(waiting, 'approve')}
+          onDenyAll={() => decisions.run(waiting, 'deny')}
+          onApprove={(actionId) => decisions.run(byId(actionId), 'approve')}
+          onDeny={(actionId) => decisions.run(byId(actionId), 'deny')}
+        />
         <Composer
           ref={composer}
           onSend={sendMessage}
@@ -289,6 +342,7 @@ export const ChatPane = ({
             onCancel: () => setReply(undefined),
           }}
         />
+        </>
       )}
     >
       {chat.status === 'ready' && (
@@ -301,7 +355,7 @@ export const ChatPane = ({
           {/* Under the conversation, so what an answer produced is never left behind by what is said
               after it. These come and go, each in a row that opens and closes around it. */}
           <LiveRows>
-            {chat.pinned.map((item) => (
+            {live.map((item) => (
               <LiveRows.Row key={item.key}>
                 <ChatItemView item={item} disclosure={disclosure} handlers={handlers} restricted={restricted} />
               </LiveRows.Row>

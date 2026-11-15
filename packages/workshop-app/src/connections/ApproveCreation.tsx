@@ -20,7 +20,7 @@ export type CreationAction = {
 
 export type ApproveCreationOptions = {
   workspaceId: string
-  /** Approves it as it is to be made, as approving anything else is, saying in the chat why it failed. */
+  /** Approves it as it is to be made, rejecting with why it was not. */
   approve: (actionId: number, creation: CreationApproval) => Promise<void>
 }
 
@@ -29,7 +29,7 @@ export type ApproveCreationOptions = {
  * that can, it is made there at once, where the service puts what it makes (My Drive, for a Google
  * file); otherwise, or when the agent suggested where for the user to look over, `dialog` asks
  * which account, connecting one where there is none, and where, in the service's creation form.
- * `approve` resolves once it is made or asked.
+ * `approveCreation` resolves to whether it was made at once, false when the dialog asks.
  */
 export const useApproveCreation = ({ workspaceId, approve }: ApproveCreationOptions) => {
   const { api } = useApi()
@@ -41,8 +41,8 @@ export const useApproveCreation = ({ workspaceId, approve }: ApproveCreationOpti
   // The creation being asked about, with its service, kept as the dialog closes.
   const [asking, setAsking] = useState<{ action: CreationAction; target: CreationTarget; service: Service; open: boolean }>()
 
-  const approveCreation = useCallback(async (action: CreationAction) => {
-    if (connection?.blocked()) return
+  const approveCreation = useCallback(async (action: CreationAction): Promise<boolean> => {
+    if (connection?.blocked()) return false
     // Disposed by hand: `using` is not lowered for every browser this runs in.
     const overseer = api.openWorkspace(workspaceId)
     const gatekeeper = overseer.getGatekeeperById(action.gatekeeperId)
@@ -59,12 +59,16 @@ export const useApproveCreation = ({ workspaceId, approve }: ApproveCreationOpti
     const mine = known.status === 'ready' ? known.accounts : []
     const resources = mine.find(({ vendorId }) => vendorId === target.vendorId)?.supportedResources ?? []
     const accountId = creationAccountOf(mine, target, resources)
-    if (accountId !== undefined) return approve(action.actionId, { accountId })
+    if (accountId !== undefined) {
+      await approve(action.actionId, { accountId })
+      return true
+    }
     // Only now is the service needed, for the dialog to name it when there is no account on it to.
     const vendor = (await api.listGatekeeperVendors()).find(({ id }) => id === target.vendorId)
     if (!vendor) throw new Error('This service isn’t offered here anymore.')
     const resource = vendor.supportedResources.find(({ urlPattern }) => urlPattern === target.typeUrlPattern)
     setAsking({ action, target, service: { name: vendor.description.displayName, logoUrl: vendor.description.logo?.url, resource }, open: true })
+    return false
   }, [api, connection, workspaceId, approve])
 
   const resource = asking?.service.resource

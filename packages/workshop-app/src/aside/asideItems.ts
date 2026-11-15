@@ -39,6 +39,8 @@ export type AsideConnectedFile = {
   fileKind?: ConnectedFileKind
   /** Where it opens in its own editor, once known. */
   url?: string
+  /** The chat it is shown beside, whose changes waiting on it are reviewed on it. */
+  chatId?: number
 }
 
 /** A file, as what is needed to show it: what it is, and where its bytes are. */
@@ -127,10 +129,14 @@ export const pageOf = (workspaceId: string, item: AsideItem) =>
 export const asideItemFor = (workspaceId: string, ref: AsideRef, chatId: number | undefined, known: AsideItem[] = []): AsideItem => {
   const key = formatAsideRef(ref)
   const found = known.find((item) => item.key === key)
+  // A connected file the workspace listed is reviewed against the chat it is opened beside.
+  if (found?.kind === 'connected' && chatId !== undefined && found.connected.chatId !== chatId) {
+    return { ...found, connected: { ...found.connected, chatId } }
+  }
   if (found) return found
   if (ref.kind === 'output') return { key, title: 'Untitled', kind: 'output', output: { workspaceId, workpieceId: ref.workpieceId, type: 'gadget', chatId } }
   if (ref.kind === 'file') return { key, title: 'File', kind: 'file', file: { id: ref.fileId, name: 'File', mimeType: '', size: 0, workspaceId, chatId } }
-  return { key, title: 'File', kind: 'connected', connected: { workspaceId, gatekeeperId: ref.gatekeeperId, subjectId: ref.subjectId } }
+  return { key, title: 'File', kind: 'connected', connected: { workspaceId, gatekeeperId: ref.gatekeeperId, subjectId: ref.subjectId, chatId } }
 }
 
 /**
@@ -171,7 +177,7 @@ export const chatAsideItems = (workspaceId: string, chatId: number, chat: ChatSn
           title: made.title,
           at,
           kind: 'connected',
-          connected: { workspaceId, gatekeeperId: made.gatekeeperId, subjectId: made.subjectId, fileKind: made.fileKind, url: made.url },
+          connected: { workspaceId, gatekeeperId: made.gatekeeperId, subjectId: made.subjectId, fileKind: made.fileKind, url: made.url, chatId },
         })
       }
     } else if (row.kind === 'user') {

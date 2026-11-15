@@ -1,6 +1,6 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { createFileRoute, notFound, useLocation, useNavigate, useRouter } from '@tanstack/react-router'
-import { formatAsideRef, isApp, itemPage, validateAsideParam } from '@/aside/asideItems'
+import { formatAsideRef, isApp, itemPage, parseAsideRef, validateAsideParam } from '@/aside/asideItems'
 import { useAsideNavigation } from '@/aside/useAsideNavigation'
 import type { ChatAttachment, MadeFile, OutputItem } from '@/chat/chatItems'
 import { ChatPane } from '@/chat/ChatPane'
@@ -29,6 +29,12 @@ function WorkspaceChat() {
   const navigate = useNavigate()
   const router = useRouter()
   const aside = useAsideNavigation()
+  const { open } = Route.useSearch()
+  // Kept while the same file is open, or every row of the chat renders again.
+  const shownBeside = useMemo(() => {
+    const shown = parseAsideRef(open)
+    return shown?.kind === 'connected' ? { gatekeeperId: shown.gatekeeperId, subjectId: shown.subjectId } : undefined
+  }, [open])
   // Stable, or every row of the chat renders again.
   const openAttachment = useCallback(
     (file: ChatAttachment) => aside.show(formatAsideRef({ kind: 'file', fileId: file.id }), { workspaceId, chatId }),
@@ -77,6 +83,7 @@ function WorkspaceChat() {
         onOpenAttachment={openAttachment}
         onOpenOutput={openOutput}
         onOpenMade={openMade}
+        shownBeside={shownBeside}
         madeHref={madeHref}
         outputHref={outputHref}
         onSetUpConnection={setUpConnection}

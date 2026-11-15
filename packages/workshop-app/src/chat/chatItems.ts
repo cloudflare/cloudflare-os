@@ -1,7 +1,7 @@
 import type { ActionLogEntry, AiChatAuthorInfo, AiChatMessage, AiToolCall, OutputIcon } from '@gadgets/workshop-shared/api'
 import type { ActionField, ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { webUrl } from '@/components/webUrl'
-import { connectedFileIdOfUrl, connectedKindOfUrl, type ConnectedFileKind } from '@/files/connectedFile'
+import { connectedFileIdOfUrl, connectedFileKind, connectedKindOfUrl, type ConnectedFileKind } from '@/files/connectedFile'
 import { changePoints, type GoBack } from './changePoints'
 import { splitQuote } from './replyQuote'
 import { toolIcon, toolLabel, toolSections, type StepGadget, type ToolIcon, type ToolSection } from './toolCalls'
@@ -136,6 +136,51 @@ export type ActionItem = Row & {
    * anything the agent made is, rather than as the approval it was.
    */
   made?: MadeFile
+  /** What it acts on, which the changes waiting are grouped by (`pendingGroups`). */
+  target: ActionTarget
+  /** It holds the agent until it is decided (`ActionDescription.awaitDecision`). */
+  holdsAgent: boolean
+  /**
+   * The decisions it stands for besides its own, when it was decided the same way, on the same
+   * thing, as the ones just before it: their requests, in order, its own last.
+   */
+  runOf?: ActionRequest[]
+}
+
+/** One request as its card unfolds it. */
+export type ActionRequest = Pick<ActionItem, 'actionId' | 'title' | 'description' | 'fields'>
+
+/**
+ * The thing an action acts on: a file within a connection (`ResourceSubject`), or the connection
+ * itself. `key` tells one from another; a creation and what is done to what it creates share one.
+ */
+export type ActionTarget = {
+  key: string
+  title: string
+  url?: string
+  gatekeeperId?: number
+  /** The file within the connection, where the action names one. */
+  subjectId?: string
+  /** A Google file, which is drawn as itself. */
+  fileKind?: ConnectedFileKind
+}
+
+const targetOf = (log: ActionLog): ActionTarget => {
+  const { gatekeeperId } = log
+  const subject = log.description.subject
+  const url = subject?.url ?? log.resourceUrl
+  const fileKind = connectedFileKind(subject?.mediaType) ?? (url ? connectedKindOfUrl(url) : undefined)
+  // A file made by a creation is named by the address it was made at, as a later edit's subject is.
+  const subjectId = subject?.id ?? (log.creation && log.resourceUrl ? connectedFileIdOfUrl(log.resourceUrl) : undefined)
+  return {
+    // A creation is approved before its file has an id; what is done to it then has the one it made.
+    key: `${gatekeeperId ?? 'none'}:${log.creation && !subjectId ? '' : subjectId ?? ''}`,
+    title: subject?.title || log.resourceTitle || log.description.title,
+    url: webUrl(url),
+    gatekeeperId,
+    subjectId,
+    fileKind,
+  }
 }
 
 /** A file an approved creation made, as a chat opens it (`AsideConnectedFile`). */
@@ -308,6 +353,34 @@ const emitterFor = <Base extends { key: string }>(previous: readonly Base[]): Em
   }
 }
 
+const requestOf = ({ actionId, title, description, fields }: ActionItem): ActionRequest => ({ actionId, title, description, fields })
+
+// Decided the same way, by the same person, on the same thing, so one card can say it for both.
+const continuesDecision = (before: ChatItem | undefined, item: ActionItem): before is ActionItem =>
+  before?.kind === 'action' && item.state !== 'pending' && before.state === item.state && !before.made && !item.made &&
+  before.target.key === item.target.key && before.resolution === item.resolution
+
+/**
+ * The conversation with each run of decisions on one thing (three edits approved to a Doc) as one
+ * card, under the first one's key so that it stays where it is as the run grows.
+ */
+const foldDecisions = (items: ChatItem[], emit: Emit<ChatItem>): ChatItem[] => {
+  const runs: ChatItem[][] = []
+  for (const item of items) {
+    const run = runs.at(-1)
+    if (item.kind === 'action' && run && continuesDecision(run.at(-1), item)) run.push(item)
+    else runs.push([item])
+  }
+  if (runs.length === items.length) return items
+  return runs.map((run) => {
+    if (run.length === 1) return run[0]
+    const actions = run as ActionItem[]
+    const first = actions[0]
+    const last = actions.at(-1)!
+    return emit<ActionItem>(first.key, actions, () => ({ ...last, id: first.id, runOf: actions.map(requestOf) }))
+  })
+}
+
 const sameItems = <T,>(a: readonly T[] | undefined, b: readonly T[]) =>
   a !== undefined && a.length === b.length && a.every((item, index) => item === b[index])
 
@@ -434,6 +507,8 @@ const actionItem = (id: number, log: ActionLog): Omit<ActionItem, 'key'> => {
         : undefined,
     creation: state === 'pending' && log.creation && gatekeeperId !== undefined ? { gatekeeperId } : undefined,
     made: madeFile(log),
+    target: targetOf(log),
+    holdsAgent: state === 'pending' && log.description.awaitDecision === true,
   }
 }
 
@@ -875,8 +950,9 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     }))
   }
   const tail = [...pinned, ...acts]
+  const rows = foldDecisions(items, emit)
   return {
-    items: sameItems(previous?.items, items) ? previous!.items : items,
+    items: sameItems(previous?.items, rows) ? previous!.items : rows,
     work: sameItems(previous?.work, work) ? previous!.work : work,
     pinned: sameItems(previous?.pinned, tail) ? previous!.pinned : tail,
   }

@@ -28,6 +28,7 @@ import { ConnectionsPreview } from '@/gallery/ConnectionsPreview'
 import { GadgetSettingsPreview } from '@/gallery/GadgetSettingsPreview'
 import { HeaderPreview } from '@/gallery/HeaderPreview'
 import { LibraryPreview } from '@/gallery/LibraryPreview'
+import { PendingPreview } from '@/gallery/PendingPreview'
 import { MascotPreview } from '@/gallery/MascotPreview'
 import { MessageBlocksPreview } from '@/gallery/MessageBlocksPreview'
 import { MessageListPreview } from '@/gallery/MessageListPreview'
@@ -350,6 +351,7 @@ function Gallery() {
       <MessageBlocksPreview />
       <ToolBlocksPreview />
       <CardBlocksPreview />
+      <PendingPreview />
       <LibraryPreview />
       <SystemBlocksPreview />
       <SettingsPreview />

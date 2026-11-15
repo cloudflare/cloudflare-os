@@ -278,3 +278,28 @@ is needed for the chat-first flows built above, and nothing here was dropped by 
 - **Browser push and the native app's device handoff.** *Later.*
 - **The blueprint card on "You don't have access".** The kernel does not say which blueprint a
   gadget the viewer cannot open came from. *Needs the kernel, so it waits.*
+
+## 11. Approvals: one tray, reviewed on the file
+
+Approvals were cards at the end of each turn. Five appends to one Google Doc made five cards, and
+with a few waiting the newest pushed the oldest off screen, where the agent still waited on them.
+
+- **One place for what waits.** A tray over the composer, which is where the eye is when the agent
+  stops, holds every approval waiting in the chat, whichever turn asked. It is never scrolled away,
+  and it goes once nothing waits. The transcript keeps only what was decided.
+- **By what it changes, not by request.** The tray has a row per thing (a Google Doc, a Jira board),
+  counting its changes, and the amber dot pulses while the agent is held. The decision people make
+  is about the thing ("is this what I want in my doc?"), so that is the unit.
+- **A file is reviewed on the file.** From the old prototype's draft review: a Google Doc, Sheet or
+  Slides deck that exists opens beside the chat drawn as it will be, and a bar over its foot steps
+  through the changes in place, deciding one or all. We kept the bar, lean, because grouping takes
+  the single changes out of the tray (denying one append of five happens here), and on a phone the
+  file covers the chat. On a wide screen the tray's row says the file is open beside, rather than
+  offering Review again.
+- **Order is kept.** Approving goes oldest first, so an edit never lands before the one it builds
+  on; denying newest first. A run stops at the first failure and says which and why.
+- **Decided runs fold.** "Append to Google Doc, 5 times · Approved", unfolding to each request.
+- **Restricted workspaces** keep their rule: each request is read in full, and there is no Approve
+  all.
+
+No kernel change: it is all the chat's history and `approveAction` / `rejectAction` as they were.

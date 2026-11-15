@@ -109,7 +109,8 @@ describe('scenarios', () => {
       if (pending().length && ready().activity === 'Writing…') whilePending.push(pending()[0].title)
     }
     expect(new Set(whilePending)).toEqual(new Set(['Post to #platform']))
-    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'action', 'assistant', 'action', 'action', 'assistant', 'assistant', 'action'])
+    // The two labels the rule approved one after the other are one card.
+    expect(rows().map(({ kind }) => kind)).toEqual(['user', 'assistant', 'action', 'assistant', 'action', 'assistant', 'assistant', 'action'])
 
     // Denied after the agent had written on, the card stays below what was written while it waited.
     later()
@@ -120,9 +121,9 @@ describe('scenarios', () => {
     expect(of(rows(), 'action').map(({ resolution }) => resolution)).toEqual([
       'Approved by Ada Lovelace',
       'Auto-approved (Ada Lovelace’s rule)',
-      'Auto-approved (Ada Lovelace’s rule)',
       'Denied by Ada Lovelace',
     ])
+    expect(of(rows(), 'action')[1].runOf).toHaveLength(2)
   })
 
   it('observation-hook: what was read is a step of the work, and the hook stays under the answer while more is done', async () => {

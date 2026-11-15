@@ -153,6 +153,23 @@ divider, as a word after it. Undoing what made a gadget deletes it, which is ask
 An action whose gatekeeper allows it can be approved for good (`ActionItem.rule`), once the user
 has been told that it reaches every chat in the workspace, whichever gadget asks.
 
+Approvals waiting are not cards in the conversation: they are the tray over the composer
+(`PendingTray`), however many there are and whichever turn asked, so none is ever scrolled away.
+It groups them by what they change (`ActionItem.target`, `chat/pendingGroups.ts`): one row for the
+five appends to a Google Doc, not five cards. Approve all and Deny all (asked once) decide every
+one; a row unfolds its requests to decide each, except a Google file that exists, whose row opens
+it beside the chat with "Review". There the file is drawn as it will be, and `ReviewBar` over its
+foot steps through its changes in the order they are drawn, the file outlining and scrolling to
+each (clicking one on the file steps to it), and decides that one or all of the file's
+(`aside/useFileReview`, through the chat's own session, so the tray and the file agree). Both
+decide through `usePendingDecisions` (`decideInOrder`): approving oldest first, so an edit never
+lands before the one it builds on, denying newest first, stopping at a creation that asks where,
+or at the first failure, which it names. In a workspace that has read sensitive data there is no
+Approve all, and each request is read in full before it is approved. Decided, they are history
+where they were decided, and a run of decisions on one thing settles as one card (`ActionItem.runOf`,
+"Append to Google Doc, 5 times"), unfolding to each. A connected file beside a chat is drawn again
+whenever what the chat asks of it changes, approved or waiting.
+
 What another agent reported into the chat (`agentReport`) is said as that agent, with the way to
 the run it came from, and starts no turn. A run of code is named by what the agent said it does
 (`toolCallSummary`) while it runs.

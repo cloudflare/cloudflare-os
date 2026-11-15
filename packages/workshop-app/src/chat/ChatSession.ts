@@ -452,6 +452,17 @@ export class ChatSession {
   rejectAction = (actionId: number) => this.#ask((overseer) => overseer.rejectAction(actionId))
 
   /**
+   * Approves or denies a pending action as one of a run (`usePendingDecisions`), rejecting with
+   * why it did not go, rather than saying so in the chat as a card's own decision does.
+   */
+  decideAction = async (actionId: number, decision: 'approve' | 'deny', creation?: CreationApproval) => {
+    if (this.options.connection?.blocked()) throw new Error('The connection is being made again.')
+    const overseer = this.#overseer
+    if (!overseer || !this.#loaded) throw new Error('The chat is still loading.')
+    await (decision === 'approve' ? overseer.approveAction(actionId, creation) : overseer.rejectAction(actionId))
+  }
+
+  /**
    * Approves, from now on, every action of a kind its gatekeeper lets be approved for good, across
    * the workspace, and those of it already waiting (`ActionItem.rule`).
    */
