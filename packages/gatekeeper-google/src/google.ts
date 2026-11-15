@@ -1302,9 +1302,8 @@ export class UserAccount extends DurableObject<Env> {
    * Disconnects the account: its credentials and everything else it stored are deleted. The grant
    * is revoked at Google only when no other connection of the same Google account holds it, since
    * Google would end theirs with it. While the grant lives on, so does an access token this
-   * account already handed out: a gatekeeper object that memoized one (see AccessTokenCache) does
-   * not ask this account again, and so goes on reaching Google, until that token expires within
-   * the hour or the object is evicted.
+   * account already handed out: a gatekeeper object that memoized one goes on reaching Google
+   * until it next asks this account, within a minute (see AccessTokenCache).
    */
   async revoke(): Promise<void> {
     await this.#credentials.run(async () => {

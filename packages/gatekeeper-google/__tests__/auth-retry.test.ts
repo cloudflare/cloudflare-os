@@ -57,6 +57,38 @@ describe("AccessTokenCache", () => {
   });
 });
 
+describe("AccessTokenCache memo age", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // A disconnect that leaves the grant in place at Google leaves the token working there, so the
+  // account's refusal is the only thing that stops a gatekeeper.
+  it("asks the account again once the memo is a minute old, and stops when it refuses", async () => {
+    vi.useFakeTimers();
+    let connected = true;
+    let asked = 0;
+    let cache = new AccessTokenCache(async () => {
+      asked++;
+      if (!connected) throw new Error("This Google account is no longer connected.");
+      return { token: "tok", expires: new Date(Date.now() + 3600_000) };
+    });
+
+    expect(await cache.get()).toBe("tok");
+    vi.advanceTimersByTime(59_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(1);
+
+    vi.advanceTimersByTime(1_000);
+    expect(await cache.get()).toBe("tok");
+    expect(asked).toBe(2);
+
+    connected = false;
+    vi.advanceTimersByTime(59_000);
+    expect(await cache.get()).toBe("tok");
+    vi.advanceTimersByTime(1_000);
+    await expect(cache.get()).rejects.toThrow(/no longer connected/);
+  });
+});
+
 describe("fetchWithAuthRetry", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

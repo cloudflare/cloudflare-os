@@ -247,6 +247,14 @@ async function releasingOnFailure(response: Response, token: Promise<string>): P
 export const ACCESS_TOKEN_EXPIRY_SAFETY_MS = 60 * 1000;
 
 /**
+ * How long `AccessTokenCache` serves a token before it asks the `UserAccount` again. The account
+ * answers from the token it has stored, without minting, so asking costs one RPC. It is also the
+ * only way a gatekeeper learns that its connection was disconnected while the grant lives on at
+ * Google, where the token itself goes on working until it expires.
+ */
+export const ACCESS_TOKEN_MEMO_MAX_AGE_MS = 60 * 1000;
+
+/**
  * Mints an access token, bypassing any cache of its own when `forceRefresh` is set.
  */
 export type MintedAccessToken = { token: string; expires: Date };
@@ -257,7 +265,8 @@ export type MintAccessToken = (opts?: AccessTokenRequest) => Promise<MintedAcces
  * Per-Durable-Object memo of the access token minted by the `UserAccount`, so a gatekeeper doesn't
  * pay an RPC on every API call. The token is re-minted once it is within `skewMs` of expiring, and
  * `forceRefresh` discards it outright — which is what makes the 401 retry in `fetchWithAuthRetry`
- * able to heal a token that Google invalidated ahead of its recorded expiry.
+ * able to heal a token that Google invalidated ahead of its recorded expiry. The memo is served for
+ * at most `maxAgeMs`, after which the account is asked again and refuses once it is disconnected.
  *
  * Each gatekeeper Durable Object holds its own instance, so these can briefly diverge: two
  * gatekeepers may sit on different vintages of a token, both valid. They converge because every miss
@@ -270,12 +279,17 @@ export type MintAccessToken = (opts?: AccessTokenRequest) => Promise<MintedAcces
  */
 export class AccessTokenCache {
   #cached: MintedAccessToken | undefined;
+  #cachedAt = 0;
   #mint: MintAccessToken;
   #skewMs: number;
+  #maxAgeMs: number;
 
-  constructor(mint: MintAccessToken, skewMs: number = ACCESS_TOKEN_EXPIRY_SAFETY_MS) {
+  constructor(
+      mint: MintAccessToken, skewMs: number = ACCESS_TOKEN_EXPIRY_SAFETY_MS,
+      maxAgeMs: number = ACCESS_TOKEN_MEMO_MAX_AGE_MS) {
     this.#mint = mint;
     this.#skewMs = skewMs;
+    this.#maxAgeMs = maxAgeMs;
   }
 
   /**
@@ -293,6 +307,7 @@ export class AccessTokenCache {
     if (!cached) return false;
     if (opts?.reloadStored) return false;
     if (cached.expires.valueOf() <= Date.now() + this.#skewMs) return false;
+    if (Date.now() - this.#cachedAt >= this.#maxAgeMs) return false;
     if (opts?.staleToken !== undefined) return cached.token !== opts.staleToken;
     return !opts?.forceRefresh;
   }
@@ -302,6 +317,7 @@ export class AccessTokenCache {
     if (!this.#satisfies(cached, opts)) {
       cached = await this.#mint(opts);
       this.#cached = cached;
+      this.#cachedAt = Date.now();
     }
     return cached.token;
   }
