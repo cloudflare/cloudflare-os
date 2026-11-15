@@ -252,6 +252,17 @@ describe("agent resource discovery", () => {
       });
     },
   );
+
+  it("preserves HTTP instance URLs for the whole-instance catch-all type", async () => {
+    await withDiscovery([{ ...EXISTING, id: "instance", urlPattern: "https://*" }], async impl => {
+      expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "INSTANCE",
+        reason: "Read instance state", resourceTypeId: "instance",
+        resourceUrl: "http://homeassistant.local:8123" })).toMatchObject({ requested: true });
+      expect(impl.consumeCapturedDecisionRequests(1)).toMatchObject([{
+        type: "connectionRequest", resourceTypeId: "instance", resourceUrl: "http://homeassistant.local:8123",
+      }]);
+    });
+  });
 });
 
 

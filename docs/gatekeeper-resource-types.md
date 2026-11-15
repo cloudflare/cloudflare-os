@@ -1,6 +1,6 @@
 # Resource type identity
 
-Each selectable `SupportedResource` has a stable, vendor-scoped `id`, such as GitHub's
+Gatekeepers adopting stable IDs give each selectable `SupportedResource` a vendor-scoped `id`, such as GitHub's
 `repository`. The ID identifies the kind of resource in tool calls, configurator calls,
 blueprint bindings, creation requests, account grants and admin restrictions. Keep it unchanged
 when renaming the type or changing its URL grammar, and never reuse it for another kind of grant.

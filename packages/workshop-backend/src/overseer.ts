@@ -10260,6 +10260,7 @@ class OverseerImpl implements AgentHooks {
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
     }
     if (input.resourceTypeId !== undefined && input.resourceUrl !== undefined &&
+        resolved.resource.urlPattern !== "https://*" &&
         !matchesResourceUrlPattern(resolved.resource.urlPattern, input.resourceUrl)) {
       return { requested: false, message:
           `resourceUrl does not match resourceTypeId "${input.resourceTypeId}" ` +
