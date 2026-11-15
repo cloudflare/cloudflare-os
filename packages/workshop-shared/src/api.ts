@@ -3073,9 +3073,61 @@ export type UiBundle = {
  * the host gives the gadget's UI, passed on to the gadget's server (or the reverse), never
  * proxies through the frame.
  *
- * It has no methods yet.
+ * Through it the UI tells the host what the user is focused on and lets the host send the user
+ * back to a spot, so the Workshop can restore the spot after a reload and tell the agent what the
+ * user was looking at.
  */
-export interface GadgetHost {}
+export interface GadgetHost {
+  /**
+   * Reports the spot the user is focused on, replacing the previous report. Null means nothing
+   * more specific than the gadget itself. Does nothing during an export.
+   */
+  reportFocus(focus: GadgetFocus | null): void;
+
+  /**
+   * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor
+   * this gadget reported earlier: right away if there is a spot to return to, and later when the
+   * user follows a link to one. `navigate` returns false if the anchor no longer resolves. A
+   * second registration replaces the first. Resolves once the call for a spot to return to, if
+   * there is one, has settled, so a UI that awaits this before its first render never draws the
+   * wrong spot first. Never calls `navigate` during an export.
+   *
+   * The anchor can come from outside the gadget (a pasted link, for one), so `navigate` must treat
+   * it as untrusted input that selects what to show and never causes an action.
+   */
+  onNavigate(navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void>;
+}
+
+/** A spot in a gadget's UI that the user is focused on, as the UI reported it. */
+export type GadgetFocus = {
+  /**
+   * Identifies the spot, in a form only the gadget interprets. Built from stable ids rather than
+   * positions, so it still means the same thing after a reload, a code change or an edit to the
+   * data around it. At most MAX_FOCUS_ANCHOR_LENGTH characters.
+   */
+  anchor: string;
+
+  /**
+   * A short name for the spot, shown to people: "Q3 › cell B7". At most MAX_FOCUS_LABEL_LENGTH
+   * characters.
+   */
+  label: string;
+
+  /**
+   * What is at the spot, as text for the agent: the selected text, a row's values. At most
+   * MAX_FOCUS_CONTEXT_LENGTH characters.
+   */
+  context?: string;
+};
+
+/** The longest `GadgetFocus.anchor` a host accepts, in characters. */
+export const MAX_FOCUS_ANCHOR_LENGTH = 256;
+
+/** The longest `GadgetFocus.label` a host accepts, in characters. */
+export const MAX_FOCUS_LABEL_LENGTH = 120;
+
+/** The longest `GadgetFocus.context` a host accepts, in characters. */
+export const MAX_FOCUS_CONTEXT_LENGTH = 2000;
 
 /** One module of a Gadget UI. */
 export type UiModule = {

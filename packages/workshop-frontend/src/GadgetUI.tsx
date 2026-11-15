@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
-import { GadgetClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
+import { GadgetClient, ConsoleLogEvent, type GadgetFocus, type GadgetHost } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
 
@@ -126,8 +126,12 @@ import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
 const LEGACY_RUNTIME_URL = runtimeUrl(false)
 const MAIN_RUNTIME_URL = runtimeUrl(true)
 
-// The Workshop as a gadget UI's host.
-class WorkshopGadgetHost extends RpcTarget implements GadgetHost {}
+// The Workshop as a gadget UI's host. It does not track focus yet.
+class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
+  reportFocus(_focus: GadgetFocus | null): void {}
+
+  async onNavigate(_navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void> {}
+}
 
 // Where a console call or uncaught error happened in the frame, as the browser reported it.
 type ConsoleLocation = { url?: string; line?: number; column?: number }
