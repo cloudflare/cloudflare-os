@@ -883,6 +883,8 @@ it("gives a grant by a second admin's approval, which only an admin ends", async
   expect(steps.at(-1)).toMatchObject({
     admin: SECOND_ADMIN, passkey: secondKey.credentialId, outcome: applied.outcome,
   });
+  // The workspace's own record of the approval names the grant the reads carry.
+  expect(steps.at(-2)).toMatchObject({ event: "approved", admin: SECOND_ADMIN, grantId });
 
   // An owner's grant is the owner's to end, and an approval's an admin's: never renewed, it is
   // ended with a reason, by any admin, whatever the level.

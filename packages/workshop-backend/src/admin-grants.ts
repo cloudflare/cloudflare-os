@@ -36,16 +36,17 @@ export function isLiveAccountGrant(answer: AdminAccessGrant | null | undefined,
       answer.source === "owner" && isAdminGrantLive(answer, now);
 }
 
-/** A fresh grant: a random id, level "content", given now, ending ADMIN_GRANT_LIFETIME_SECONDS
- * from now. `grantedBy` is kept as namedUser() gives it, so that no caller stores a profile. */
+/** A fresh grant: a random id (`id` when its caller has recorded one for it), level "content",
+ * given now, ending ADMIN_GRANT_LIFETIME_SECONDS from now. `grantedBy` is kept as namedUser()
+ * gives it, so that no caller stores a profile. */
 export function newAdminGrant(
     fields: Pick<AdminAccessGrant,
         "source" | "scope" | "requestedBy" | "requestId" | "reason" | "reportId"> &
-        { grantedBy: Pick<AiChatAuthorInfo, "id" | "name"> }): AdminAccessGrant {
+        { id?: string; grantedBy: Pick<AiChatAuthorInfo, "id" | "name"> }): AdminAccessGrant {
   let { source, scope, requestedBy, requestId, reason, reportId } = fields;
   let now = Date.now();
   return {
-    id: crypto.randomUUID(),
+    id: fields.id ?? crypto.randomUUID(),
     level: "content",
     source,
     scope,

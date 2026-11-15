@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
 import type { IssueReportContext, WorkpieceId } from '@gadgets/workshop-shared/api'
+import { entryScriptOf } from '../stale-session/versionChecks'
 import { ReportIssueDialog } from './ReportIssueDialog'
 
 /**
@@ -29,6 +30,17 @@ export const issueReportContext = (
   ...(context.gadgetId !== undefined && { gadgetId: context.gadgetId }),
   ...(appVersion !== undefined && { appVersion }),
 })
+
+/**
+ * The version a report is filed with: the frontend build this page runs, by its entry script,
+ * then the backend the page is connected to. The two differ in a tab that outlived a
+ * deployment, whose connection moved to the newer backend while the page stayed the older
+ * build, and a fault in the page is the build's. Either part is left out when it is not known.
+ */
+export const reportAppVersion = (backendVersion: string | undefined): string | undefined => {
+  const parts = [entryScriptOf(document), backendVersion].filter((part) => part !== undefined)
+  return parts.length > 0 ? parts.join(' @ ') : undefined
+}
 
 type OpenReportIssue = (context: ReportIssueContext, opener: HTMLElement | null) => void
 

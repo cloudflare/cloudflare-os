@@ -6877,7 +6877,8 @@ class OverseerImpl implements AgentHooks {
    * owner's account-wide grant. A live answer from the owner's account is kept in memory, with
    * the id of the owner it was asked of, for ADMIN_GRANT_ACCOUNT_CACHE_SECONDS from the moment
    * the question was sent (the time is taken before the await, so the bound on a revocation does
-   * not grow by the round trip), and checked with isLiveAccountGrant() each time it is used. It
+   * not grow by the round trip), and checked with isLiveAccountGrant() each time it is used. An
+   * answer that arrives after that time is neither used nor kept: it counts as no grant. It
    * is dropped when `ownerId` is no longer the owner it was asked of, and by beginDeletion(): a
    * workspace id can live again under another owner in the same instance. An answer that there
    * is none is not kept, so a grant given a moment later is found by the next call. A question
@@ -6903,8 +6904,12 @@ class OverseerImpl implements AgentHooks {
     try {
       let answer = await retryOnDoReset(
           () => this.ownerUserDo().liveAccountAdminGrant(), this.logger);
-      // The account's word is not taken for the grant's liveness, scope or source.
-      if (!isLiveAccountGrant(answer)) return undefined;
+      // The account's word is not taken for the grant's liveness, scope or source, nor an
+      // answer that took the whole time one may be kept.
+      if (!isLiveAccountGrant(answer) ||
+          Date.now() - at >= ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000) {
+        return undefined;
+      }
       this.#accountGrant = {at, ownerId, grant: answer};
       return answer;
     } catch (err) {
@@ -12362,6 +12367,10 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.workspaceChanged);
     }
 
+    // The id of the grant "grantContentAccess" gives, drawn here so that the record names it:
+    // the calls made under the grant carry this id, and the request's closing record, which
+    // repeats it, is written after the fact and can be lost.
+    let grantId = grant.action === "grantContentAccess" ? crypto.randomUUID() : undefined;
     let record: AdminWriteRecord = {
       kind: "write",
       at: new Date(),
@@ -12378,6 +12387,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       reason,
       requestedBy: grant.requestedBy,
       passkey: grant.passkey,
+      ...grantId !== undefined && {grantId},
     };
     try {
       // No retention, as for a view's call (see adminViewCall()).
@@ -12400,7 +12410,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     let outcome: string | undefined;
     try {
       outcome = await runAdminWrite(impl, grant.action, args, admin,
-          {requestId: grant.requestId, requestedBy: grant.requestedBy, reason}, policy);
+          {requestId: grant.requestId, requestedBy: grant.requestedBy, reason, grantId}, policy);
     } catch (err) {
       if (entryId !== undefined) impl.failAdminWrite(entryId);
       throw err;
@@ -12474,6 +12484,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       args: {},
       reason: requestReason,
       requestedBy,
+      grantId,
       endReason,
     };
     try {
@@ -13660,7 +13671,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     await this.#syncReportGrant(grant);
   }
 
-  // The live ones come first so that the owner always sees a grant they can still end.
+  // The live ones come first, so that the owner sees a grant they can still end while there is
+  // one: the newest of them, when they alone pass the bound.
   async listAdminGrants(): Promise<AdminAccessGrant[]> {
     let policy = await this.#ownerGrantPolicy();
     if (!this.impl.ownerId) return [];
@@ -15313,8 +15325,9 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
         collaborators,
         access: this.#terms.access,
         // Who may read content is metadata, so every view lists the grants. The list is bounded
-        // because an owner's grants are not, and the "admins" ones come first so that the bound
-        // never hides one: only an admin can end it, and this is where an admin finds it.
+        // because an owner's grants are not, and the "admins" ones come first so that an owner's
+        // never crowd one out: only an admin can end it, and this is where an admin finds it.
+        // Each took a passkey approval, so they are few: past the bound, the newest are listed.
         grants: [
           ...live.filter(grant => grant.source === "admins"),
           ...live.filter(grant => grant.source === "owner"),
@@ -15652,12 +15665,13 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 // Runs the operation of an approved admin write (see OverseerDurableObject.applyAdminWrite()):
 // for each action, the one a member's session runs for it (see AdminApi.requestWorkspaceWrite()).
 // `args` are as adminWriteArgs() kept them, `admin` is the profile of the admin who approved it,
-// `request` is what a grant keeps of the request, and `policy` is the deployment's as
+// `request` is what a grant keeps of the request, with the id the "approved" record gave the
+// grant of "grantContentAccess", and `policy` is the deployment's as
 // applyAdminWrite() read it for "grantContentAccess", the one action that needs it. Resolves
 // what the workspace reported, for an action that reports something: "grantContentAccess" does.
 async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs,
     admin: AiChatAuthorInfo,
-    request: Pick<AdminWriteGrant, "requestId" | "requestedBy" | "reason">,
+    request: Pick<AdminWriteGrant, "requestId" | "requestedBy" | "reason"> & {grantId?: string},
     policy: AdminAccessPolicy | undefined): Promise<string | undefined> {
   // adminWriteArgs() checked that every argument the action needs was given.
   let {chatId} = args as Required<AdminWriteArgs>;
@@ -15695,8 +15709,8 @@ async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args:
       // Of either source: this is an admins' write.
       impl.pruneAdminGrants(policy.retentionDays);
       let stored = newAdminGrant({
-        source: "admins", scope: "workspace", grantedBy: admin, requestedBy: request.requestedBy,
-        requestId: request.requestId, reason: request.reason,
+        id: request.grantId, source: "admins", scope: "workspace", grantedBy: admin,
+        requestedBy: request.requestedBy, requestId: request.requestId, reason: request.reason,
       });
       impl.storage.adminGrants.put(stored);
       return `grant ${stored.id} until ${stored.expiresAt.toISOString()}`;

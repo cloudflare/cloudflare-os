@@ -629,9 +629,10 @@ needs content and the workspace's own storage holds no live grant (`contentGrant
 member-facing path, no listing and no metadata call ever asks.
 
 - **A live answer is kept for 60 seconds** (`ADMIN_GRANT_ACCOUNT_CACHE_SECONDS`), in memory,
-  counted from when the question was sent and for the owner it was asked of. A revocation of the
-  account-wide grant is therefore seen by content calls within a minute, where the end of a
-  workspace's own grant is seen by the very next call.
+  counted from when the question was sent and for the owner it was asked of. An answer that
+  takes that long to arrive is neither used nor kept, so the call that waited for it is one with
+  no grant. A revocation of the account-wide grant is therefore seen by content calls within a
+  minute, where the end of a workspace's own grant is seen by the very next call.
 - **"No grant" is not kept**, so a grant given a moment later is found by the next content call.
 - **The workspace checks the answer itself** (`isLiveAccountGrant()`), each time it uses it: the
   account's word is not taken for the grant's liveness, scope or source.
@@ -667,9 +668,13 @@ An owner gives grants without limit and a display name has no bound of its own, 
 are bounded, not the owner: each listing returns at most `MAX_ADMIN_GRANTS_LISTED` (20).
 
 - `listAdminGrants()` puts the owner's live grants first, newest first, then the ended ones still
-  kept, so a grant the owner can still end is always listed.
+  kept, so that while a grant the owner can still end exists, one is listed. An owner with more
+  than 20 live grants is shown the newest 20; ending one makes room for the next.
 - `describe().grants` lists live grants only: those a second admin approved first, newest first,
-  then the owner's newest, so the bound never hides the one kind of grant only an admin can end.
+  then the owner's newest, so that the owner's grants never crowd out the one kind of grant only
+  an admin can end. Each of those took a passkey approval, so they are few; a workspace that
+  held more than 20 live ones would show the newest 20, and the next as each is ended. Neither
+  listing is the whole set once it holds 20.
   The account-wide grant is not among them, since the workspace asks for it only when a call
   needs content.
 
@@ -917,16 +922,20 @@ request.
 without its owner's grant, who asked, and why; that the owner is not told and nothing in the
 workspace shows it; and that every read is recorded with the grant it ran under.
 
-**The grant is stored once per request.** The request's `"applied"` record carries the grant's id
-and its end in `outcome` (`grant <id> until <ISO time>`). A request handed to the workspace a
-second time is refused (`requestNotPending`): the workspace finds the grant that names it.
+**The grant is stored once per request.** The workspace draws the grant's id before it appends
+the `"approved"` record, which names it (`grantId`): every read made under the grant carries the
+same id, so it leads back to the approval even when the request's closing record never arrives
+(see [How a request ends](#how-a-request-ends)). The request's `"applied"` record carries the
+grant's id and its end in `outcome` (`grant <id> until <ISO time>`). A request handed to the
+workspace a second time is refused (`requestNotPending`): the workspace finds the grant that
+names it.
 
 **Only admins end it.** `endWorkspaceGrant(workspaceId, grantId, reason)` ends a live grant with
 source `"admins"`, and nothing else: an owner's grant is the owner's to end (`notFound`, as for an
 id that names no grant). It asks only for an admin, whatever the level and whether or not writes
 are on, since it only takes access away. The workspace (`endAdminGrant()`) appends the request's
-`"revoked"` record, with the admin who ended the grant and why (`endReason`), before it ends the
-grant: an ending whose record cannot be written does not happen. A grant another admin ended
+`"revoked"` record, with the grant's id (`grantId`), the admin who ended it and why
+(`endReason`), before it ends the grant: an ending whose record cannot be written does not happen. A grant another admin ended
 while the record was appended is refused `notFound`, and the record stands for the attempt.
 
 **A grant that runs out is recorded by nothing.** Its `"applied"` record says when it ends.
@@ -984,7 +993,12 @@ shows nobody:
   exactly as an unknown id is, so the owner cannot learn by probing that it exists;
 - nothing a member can call, see or subscribe to changes because such a grant exists or because
   content was read, under any grant. An owner's own grant is theirs to list and to end, and the
-  reads made under it are in the admins' audit log, not in the workspace.
+  reads made under it are in the admins' audit log, not in the workspace;
+- one thing is not hidden: an admin's call starts an idle workspace's Durable Object as any
+  call does, and a chat subscriber is sent the time that instance started
+  (`streamGeneration`). A member can therefore see that something woke the workspace, and
+  when. It does not say what: a scheduled task, a hook, a collaborator and an admin's metadata
+  inspection wake it the same way.
 
 What stands in for the owner's knowledge is a second admin's passkey approval, the reason, and
 the audit records of the request, the approval and every read made under the grant.
@@ -1320,18 +1334,19 @@ settings across deploys, while a variable only bounds what an admin session can 
   other steps),
   `method` (the action, named as on the other records so that one filter covers every kind), the
   request's `args` by name, its `reason`, `requestedBy`, and, where the step has one, the
-  `passkey`, the `refusal`, the `outcome`, the `error` or the `endReason`. The eight events:
+  `passkey`, the `refusal`, the `outcome`, the `error`, the `grantId` or the `endReason`. The
+  eight events:
 
   | Event | Step | Whose (`admin`) | Recorded |
   | --- | --- | --- | --- |
   | `requested` | An admin asked for the write. | The requester | Before the request is stored. |
   | `refused` | An attempt to approve was not accepted (`refusal`): the answer failed a passkey check, the request was no longer pending, or the requester tried to approve a request that needs a second admin (`"requester"`). | The admin who tried | When it is refused. |
-  | `approved` | An admin confirmed it with a passkey. | The approver | By the workspace, before it changes anything. |
+  | `approved` | An admin confirmed it with a passkey (for `"grantContentAccess"`, with the `grantId` of the grant it gives). | The approver | By the workspace, before it changes anything. |
   | `applied` | The workspace ran it (`outcome`, when it reports one: for `"grantContentAccess"`, the grant's id and when it ends). | The approver | After the fact, at least once. |
   | `failed` | The workspace refused it or failed to run it, or its answer never arrived (`error`). | The approver | After the fact, at least once. |
   | `denied` | An admin denied it. | The denier | Before the denial is stored. |
   | `expired` | It ran out unapproved, or its requester stopped being an admin first (`error`). | The requester | Before the expiry is stored. |
-  | `revoked` | For `"grantContentAccess"` only: an admin ended the grant the request gave, before its time (`endReason`; `reason` stays the requester's). | The admin who ended it | By the workspace, before the grant is ended. |
+  | `revoked` | For `"grantContentAccess"` only: an admin ended the grant the request gave, before its time (`grantId`, `endReason`; `reason` stays the requester's). | The admin who ended it | By the workspace, before the grant is ended. |
 
   `passkey` is the credential id of the passkey behind the step, as the setting record of its
   enrolment keys it: for `approved`, `applied` and `failed`, the one whose assertion approved the
@@ -1617,8 +1632,8 @@ it exposed, colored only for a content read, and, opened, what its view was open
 it ran under and the refusal it carries. The tab filters its log by admin, action, kind,
 workspace, target user and what a call exposed; the count of content reads opens the log filtered
 to them. A write record shows its step beside its kind and, opened, its request, arguments and
-reason, who requested it, and the refusal, passkey, outcome, error or end reason it carries. Its
-access setting offers Off, Metadata and Content, says what Metadata withholds of a workspace and
+reason, who requested it, and the refusal, passkey, grant, outcome, error or end reason it carries.
+Its access setting offers Off, Metadata and Content, says what Metadata withholds of a workspace and
 of a user's account and that Content is read only under a live grant, and, where the deployment's
 cap is below it, that only `ADMIN_WORKSPACE_ACCESS_MAX` can allow Content.
 

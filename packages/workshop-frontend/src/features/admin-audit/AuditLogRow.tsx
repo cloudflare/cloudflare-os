@@ -194,6 +194,10 @@ const WriteDetails = ({ record, onFilterBy }: {
     {record.passkey && (
       <Detail term="Passkey"><span className="font-mono text-xs break-all">{record.passkey}</span></Detail>
     )}
+    {/* The id the reads made under the grant carry (see "Under grant" on an access record). */}
+    {record.grantId && (
+      <Detail term="Grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
+    )}
     {record.outcome && <Detail term="Outcome">{record.outcome}</Detail>}
     {record.error && <Detail term="Error">{record.error}</Detail>}
     {record.endReason && <Detail term="Reason for ending">{record.endReason}</Detail>}

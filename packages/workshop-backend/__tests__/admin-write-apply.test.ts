@@ -774,13 +774,15 @@ describe("grantContentAccess", () => {
         .toBe(kept.grantedAt.getTime() + ADMIN_GRANT_LIFETIME_SECONDS * 1000);
     expect(outcome).toBe(`grant ${kept.id} until ${kept.expiresAt.toISOString()}`);
 
-    // The one record is the write's "approved": the grant has no record of its own.
+    // The one record is the write's "approved": the grant has no record of its own. It names
+    // the grant, so the calls made under it lead back to the approval whether or not the
+    // request's closing record is ever written.
     expect(await deploymentRecords(ws)).toEqual([{
       kind: "write", event: "approved", at: expect.any(Date),
       admin: ADMIN, sessionId: SESSION_ID, via: "api", requestId: grant.requestId,
       workspaceId: ws.id, workspaceOwner: OWNER.id, workspaceTitle: "Quarterly plan",
       method: "grantContentAccess", args: {}, reason: REASON, requestedBy: REQUESTER,
-      passkey: PASSKEY,
+      passkey: PASSKEY, grantId: kept.id,
     }]);
   }));
 
@@ -974,7 +976,7 @@ describe("endAdminGrant", () => {
       admin: REQUESTER, sessionId: "ending-session", via: "cli", requestId: request.requestId,
       workspaceId: ws.id, workspaceOwner: OWNER.id, workspaceTitle: "Quarterly plan",
       method: "grantContentAccess", args: {}, reason: REASON, requestedBy: REQUESTER,
-      endReason: END_REASON,
+      grantId: given.id, endReason: END_REASON,
     });
 
     let [ended] = storedGrants(ws);

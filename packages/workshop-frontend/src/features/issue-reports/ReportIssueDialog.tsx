@@ -1,13 +1,15 @@
-import { useRef, useState, type ClipboardEvent, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type ClipboardEvent, type FormEvent } from 'react'
 import { flushSync } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { Button, Dialog, InputArea, Radio } from '@cloudflare/kumo'
 import { Camera, ImageSquare, X } from '@phosphor-icons/react'
 import {
   ADMIN_GRANT_LIFETIME_SECONDS,
+  ISSUE_REPORT_ERROR_CODES,
   ISSUE_REPORT_PRIORITIES,
   MAX_ISSUE_REPORT_IMAGES,
   MAX_ISSUE_REPORT_TEXT_LENGTH,
+  getIssueReportErrorCode,
   type IssueReportPriority,
   type OwnIssueReport,
 } from '@gadgets/workshop-shared/api'
@@ -18,7 +20,7 @@ import { canCaptureTab, captureTab } from './captureTab'
 import { issueFailure } from './issueFailure'
 import { ISSUE_PRIORITY_NAMES } from './issueLabels'
 import { REPORT_IMAGE_ACCEPT } from './reportImage'
-import { issueReportContext, type ReportIssueContext } from './ReportIssueHost'
+import { issueReportContext, reportAppVersion, type ReportIssueContext } from './ReportIssueHost'
 import { useIssueReportCount } from './useIssueReportCount'
 import { useReportImages } from './useReportImages'
 
@@ -80,8 +82,10 @@ export const ReportIssueDialog = ({ context, onClosed }: {
   // The latest press of Capture, while the browser's prompt for it can still be unanswered. A
   // prompt can stay so for good (one dismissed by a click elsewhere, in a browser that then
   // leaves the request pending), so it holds nothing back: the dialog closes under it and
-  // Capture can be pressed again, and either withdraws the press.
+  // Capture can be pressed again, and either withdraws the press. So does an unmount that is
+  // no close, as when the signed-in shell around the dialog is replaced.
   const capturePress = useRef<AbortController | null>(null)
+  useEffect(() => () => { capturePress.current?.abort() }, [])
   // True while the dialog is out of sight for a capture.
   const hiddenForCapture = useRef(false)
   // Set while a capture is about to fill the last slot: the Capture button is then disabled,
@@ -180,12 +184,23 @@ export const ReportIssueDialog = ({ context, onClosed }: {
     // A picture taken from here on would miss the report.
     capturePress.current?.abort()
     setPhase({ step: 'sending' })
+    const file = (where: ReportIssueContext) => authenticatedApi.submitIssueReport({
+      text: trimmed,
+      priority,
+      context: issueReportContext(where, reportAppVersion(serverConfig?.backendVersion)),
+    })
     let report: OwnIssueReport
     try {
-      report = await authenticatedApi.submitIssueReport({
-        text: trimmed,
-        priority,
-        context: issueReportContext(context, serverConfig?.backendVersion),
+      report = await file(context).catch((err: unknown) => {
+        // The chat or the gadget can be gone by now: deleted since the dialog opened, or named
+        // by a link the editor was opened with. The draft has no control that takes either
+        // out, so the report is filed for the workspace alone instead of being refused again
+        // on every try.
+        const named = context.chatId !== undefined || context.gadgetId !== undefined
+        if (!named || getIssueReportErrorCode(err) !== ISSUE_REPORT_ERROR_CODES.contextNotFound) {
+          throw err
+        }
+        return file({ workspace: context.workspace })
       })
     } catch (err) {
       setPhase({ step: 'draft', problem: issueFailure(err, 'Couldn’t file your report.') })

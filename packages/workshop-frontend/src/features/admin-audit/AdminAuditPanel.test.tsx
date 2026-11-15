@@ -1229,7 +1229,7 @@ describe('AdminAuditPanel', () => {
       const admin = fakeAdmin()
       admin.listAdminAudit.mockResolvedValue(testPage([writeRecord({
         event: 'revoked', admin: 'third-admin', method: 'grantContentAccess', args: {},
-        reason: 'Ticket 42: owner unreachable', endReason: 'Ticket 42 closed',
+        reason: 'Ticket 42: owner unreachable', grantId: 'grant-7f3a', endReason: 'Ticket 42 closed',
       })]))
       await render(settingsWith(), admin)
 
@@ -1237,6 +1237,7 @@ describe('AdminAuditPanel', () => {
       expect(cells.slice(2)).toEqual(['third-admin', 'grantContentAccess', 'Workspace writeGrant ended', 'owner@example.test'])
       const details = await expand()
       expect(detail(details, 'Reason for ending')).toBe('Ticket 42 closed')
+      expect(detail(details, 'Grant')).toBe('grant-7f3a')
       expect(detail(details, 'Reason')).toBe('Ticket 42: owner unreachable')
       expect(detail(details, 'Requested by')).toBe('admin')
       expect(detail(details, 'Passkey')).toBeNull()

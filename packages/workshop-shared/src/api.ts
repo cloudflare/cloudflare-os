@@ -1405,7 +1405,7 @@ export interface AuthenticatedApi extends RpcTarget {
   /** The issue reports the caller filed that are still kept, newest first, a page of at most
    * ISSUE_REPORT_PAGE_SIZE at a time: a user can keep more reports than one answer holds.
    * `cursor` is the previous page's `nextCursor`; absent for the first page. Throws for a cursor
-   * that is not one this method returned. */
+   * that is not one this method returned to the caller. */
   listIssueReports(cursor?: string): Promise<OwnIssueReportPage>;
 
   /** One issue report the caller filed, with its public thread, oldest entry first. An admin's
@@ -2697,6 +2697,10 @@ export type AdminWriteRecord = {
   /** For "failed": why. For "expired": why it ended before its time, absent when it simply ran
    * out. Cut to MAX_ADMIN_AUDIT_ARG_LENGTH characters. */
   error?: string;
+  /** For "grantContentAccess", on "approved" and "revoked": the grant the approval gives or the
+   * admin ended (AdminAccessGrant.id), which is the `grantId` of every AdminAccessRecord made
+   * under it. An approval whose write then fails gave no grant. */
+  grantId?: string;
   /** For "revoked": why, as the admin who ended the grant gave it. `reason` stays the
    * requester's. */
   endReason?: string;

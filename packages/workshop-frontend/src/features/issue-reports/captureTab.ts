@@ -7,6 +7,14 @@
  */
 export const CAPTURE_FRAME_WAIT_MS = 300
 
+/**
+ * How long a capture may take, from the answer to the prompt, to play and for the page to paint
+ * the dialog hidden. Both take a few frames. A page in the background is given no animation
+ * frame, and a stream can deliver nothing: past the bound the capture is stopped with no picture
+ * instead of sharing on until the page is looked at again.
+ */
+export const CAPTURE_START_WAIT_MS = 3000
+
 // Options the DOM types do not list yet: both ask the browser to offer this tab first.
 type TabCaptureOptions = DisplayMediaStreamOptions & {
   preferCurrentTab?: boolean
@@ -74,8 +82,9 @@ const toPng = (canvas: HTMLCanvasElement): Promise<Blob> =>
  * resolved (the dialog stays visible under it), `hide()` takes the dialog out of sight without
  * unmounting it, and returns what puts it back and gives focus back. The frame is drawn only
  * after two animation frames of the page (the hidden state has been painted) and then a frame
- * of the capture taken after those (see CAPTURE_FRAME_WAIT_MS). The dialog is put back on every
- * path that hid it.
+ * of the capture taken after those (see CAPTURE_FRAME_WAIT_MS). A capture that has not come that
+ * far CAPTURE_START_WAIT_MS after the prompt was answered is stopped and rejects. The dialog is
+ * put back on every path that hid it.
  *
  * Aborting `signal` withdraws a press whose prompt is still unanswered: the browser offers no way
  * to take its prompt back, so a prompt answered after that has its capture stopped at once, hides
@@ -105,8 +114,15 @@ export const captureTab = async ({ hide, signal }: {
 
   let restore: (() => void) | undefined
   let frameWait: ReturnType<typeof frameAfter> | undefined
+  let startTimer: ReturnType<typeof setTimeout> | undefined
   const video = document.createElement('video')
   try {
+    const overdue = new Promise<never>((_resolve, reject) => {
+      startTimer = setTimeout(
+        () => reject(new Error('The capture took too long to start.')),
+        CAPTURE_START_WAIT_MS,
+      )
+    })
     // The user can stop sharing from the browser's own bar while the frame is awaited.
     const ended = new Promise<never>((_resolve, reject) => {
       for (const track of stream.getTracks()) {
@@ -122,7 +138,8 @@ export const captureTab = async ({ hide, signal }: {
     video.playsInline = true
     video.srcObject = stream
     const painted = animationFrame().then(animationFrame)
-    const [paintedAt] = await Promise.race([Promise.all([painted, video.play()]), ended])
+    const [paintedAt] = await Promise.race([Promise.all([painted, video.play()]), ended, overdue])
+    clearTimeout(startTimer)
     frameWait = frameAfter(video, paintedAt)
     await Promise.race([frameWait.arrived, ended])
 
@@ -137,6 +154,7 @@ export const captureTab = async ({ hide, signal }: {
     return await toPng(canvas)
   } finally {
     for (const track of stream.getTracks()) track.stop()
+    clearTimeout(startTimer)
     frameWait?.cancel()
     video.srcObject = null
     restore?.()

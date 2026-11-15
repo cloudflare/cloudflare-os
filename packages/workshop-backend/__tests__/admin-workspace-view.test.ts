@@ -2510,6 +2510,33 @@ describe("the owner's account-wide grant", () => {
     expect(ws.account.asked).toHaveLength(2);
   })));
 
+  it("is not used when its answer took the minute it may be kept for",
+      () => withWorkspace(ws => withClock(async advance => {
+    allowContent(ws);
+    let grant = accountGrant();
+    // The owner ends the grant once the account has read it, and the answer is a minute on its
+    // way.
+    ws.account.answer = () => {
+      ws.account.answer = () => null;
+      advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000);
+      return grant;
+    };
+    let view = await openForContent(ws);
+    expect(await readsContent(view)).toBe(false);
+    // It was not kept either: the next call asks again.
+    expect(await readsContent(view)).toBe(false);
+    expect(ws.account.asked).toHaveLength(2);
+    expect((await deploymentRecords(ws)).slice(1).map(r => r.grantId))
+        .toStrictEqual([undefined, undefined]);
+
+    // An answer a moment quicker is used.
+    ws.account.answer = () => {
+      advance(ADMIN_GRANT_ACCOUNT_CACHE_SECONDS * 1000 - 1);
+      return grant;
+    };
+    expect(await ws.impl.contentGrant()).toStrictEqual(grant);
+  })));
+
   it("is kept for the owner it was asked of, and dropped when the workspace is deleted",
       () => withWorkspace(async ws => {
     allowContent(ws);

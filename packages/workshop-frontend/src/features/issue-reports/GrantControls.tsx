@@ -131,8 +131,10 @@ export const GrantControls = ({ grant, report, onChanged }: {
             </Button>
           </div>
           <p className="text-xs text-kumo-subtle">
-            Renew gives admins {GRANT_HOURS} hours from now. After End access, admins can no longer
-            read {content}{account ? ' within a minute.' : ' from their next call.'}
+            Renew gives admins {GRANT_HOURS} hours from now. End access ends this grant alone:
+            admins can read nothing more under it
+            {account ? ' within a minute.' : ' from their next call.'} Any other grant you gave
+            stays until you end it too.
           </p>
         </>
       )}

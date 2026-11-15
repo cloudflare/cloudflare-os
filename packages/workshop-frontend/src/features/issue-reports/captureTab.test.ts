@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CAPTURE_FRAME_WAIT_MS, canCaptureTab, captureTab } from './captureTab'
+import { CAPTURE_FRAME_WAIT_MS, CAPTURE_START_WAIT_MS, canCaptureTab, captureTab } from './captureTab'
 
 // The second animation frame's timestamp in every test: when the hidden dialog has been painted.
 const PAINTED_AT = 1016
@@ -253,6 +253,36 @@ describe('captureTab', () => {
       await expect(picture).rejects.toThrow('The canvas is tainted.')
       expect(capture.log).toEqual(['hide', 'cancel-frame', 'stop', 'restore'])
       expect(capture.restore).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('when the page is given no animation frame, as one in the background is', async () => {
+      const capture = fakeCapture()
+      const picture = capture.start()
+      picture.catch(() => {})
+      await capture.answerPrompt()
+      await vi.advanceTimersByTimeAsync(CAPTURE_START_WAIT_MS - 1)
+      expect(capture.log).toEqual(['hide'])
+
+      await vi.advanceTimersByTimeAsync(1)
+      await expect(picture).rejects.toThrow('The capture took too long to start.')
+      expect(capture.log).toEqual(['hide', 'stop', 'restore'])
+      expect(capture.video.srcObject).toBeNull()
+      expect(capture.drawImage).not.toHaveBeenCalled()
+      expect(vi.getTimerCount()).toBe(0)
+    })
+
+    it('when the capture never plays', async () => {
+      const capture = fakeCapture()
+      capture.video.play.mockReturnValue(new Promise(() => {}))
+      const picture = capture.start()
+      picture.catch(() => {})
+      await capture.paintHidden()
+      await vi.advanceTimersByTimeAsync(CAPTURE_START_WAIT_MS)
+
+      await expect(picture).rejects.toThrow('The capture took too long to start.')
+      expect(capture.log).toEqual(['hide', 'stop', 'restore'])
+      expect(capture.drawImage).not.toHaveBeenCalled()
       expect(vi.getTimerCount()).toBe(0)
     })
 
