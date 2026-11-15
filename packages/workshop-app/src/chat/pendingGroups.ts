@@ -55,7 +55,8 @@ export type FileChanges = {
 }
 
 /**
- * The changes a chat asks for to one file (`gatekeeperId`, `subjectId`), for reviewing them on it:
+ * The changes a chat asks for to one file (`gatekeeperId`, `subjectId`, empty for one not made yet,
+ * whose creation and edits name none), for reviewing them on it:
  * those waiting, and those decided, which the file draws as decided while it was drawn with them
  * (`ResourcePreview.actions`), until it is drawn again. A run of decisions folded into one row
  * (`ActionItem.runOf`) counts each of its own.
@@ -64,7 +65,7 @@ export const fileChanges = (rows: readonly ChatItem[], gatekeeperId: number, sub
   const waiting: ActionItem[] = []
   const decided = new Map<number, 'approved' | 'rejected'>()
   for (const item of rows) {
-    if (item.kind !== 'action' || item.target.gatekeeperId !== gatekeeperId || item.target.subjectId !== subjectId) continue
+    if (item.kind !== 'action' || item.target.gatekeeperId !== gatekeeperId || (item.target.subjectId ?? '') !== subjectId) continue
     if (item.state === 'pending') {
       waiting.push(item)
       continue

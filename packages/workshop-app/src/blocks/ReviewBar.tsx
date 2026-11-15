@@ -30,7 +30,14 @@ export type ReviewBarProps = {
   progress?: { verb: 'Approving' | 'Denying'; done: number; total: number }
   problem?: string
   onDismissProblem?: () => void
+  /**
+   * The file is not made yet, and one of `changes` makes it: they are decided whole, with Create,
+   * which approves them all, or Discard.
+   */
+  creates?: { title: string; kind: 'document' | 'spreadsheet' | 'presentation' }
 }
+
+const NOUN = { document: 'document', spreadsheet: 'spreadsheet', presentation: 'presentation' } as const
 
 const EASE = [0.25, 0.1, 0.25, 1] as const
 
@@ -52,7 +59,7 @@ const STEP = 'grid size-8 place-items-center rounded-full text-kumo-subtle outli
  * workspace that has read sensitive data the change is shown in full, and only it can be approved.
  */
 export const ReviewBar = ({
-  changes, focusedId, onFocus, onApprove, onDeny, onApproveAll, onDenyAll, restricted, progress, problem, onDismissProblem,
+  changes, focusedId, onFocus, onApprove, onDeny, onApproveAll, onDenyAll, restricted, progress, problem, onDismissProblem, creates,
 }: ReviewBarProps) => {
   const reduced = useReducedMotion()
   const transition = reduced ? { duration: 0 } : { duration: 0.2, ease: EASE }
@@ -93,6 +100,31 @@ export const ReviewBar = ({
       </AnimatePresence>
 
       {/* Too narrow for all of it on a line, as on a phone, the change has its own line above the controls. */}
+      {creates ? (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 py-2 ps-4 pe-2">
+          <span className="min-w-0 flex-1 @max-md:basis-full">
+            <span className="flex items-center gap-1.5">
+              <span id={`${id}-title`} className="truncate text-base/5 font-medium text-kumo-default">{creates.title}</span>
+              <span className="shrink-0 rounded-md bg-kumo-tint px-1.5 text-xs/4 font-medium text-kumo-subtle">New</span>
+            </span>
+            <span className="block truncate text-sm text-kumo-subtle">
+              {progress ? `${progress.verb} ${Math.min(progress.done + 1, progress.total)} of ${progress.total}…` : 'Not created yet'}
+            </span>
+          </span>
+          {confirming ? (
+            <span role="alert" className="ms-auto flex items-center gap-1">
+              <span className="px-1 text-sm text-kumo-default">Discard this {NOUN[creates.kind]}?</span>
+              <Button variant="ghost" onClick={() => setConfirming(false)}>Keep</Button>
+              <Button variant="danger" onClick={() => { setConfirming(false); run(onDenyAll) }}>Discard</Button>
+            </span>
+          ) : (
+            <span className="ms-auto flex shrink-0 items-center gap-1">
+              <Button variant="ghost" disabled={busy} onClick={() => setConfirming(true)}>Discard</Button>
+              {!restricted && <Button variant="primary" disabled={busy} aria-describedby={`${id}-title`} onClick={() => run(onApproveAll)}>Create {NOUN[creates.kind]}</Button>}
+            </span>
+          )}
+        </div>
+      ) : (
       <div className="flex flex-wrap items-center gap-1 p-2">
         {many && (
           <div className="flex shrink-0 items-center">
@@ -125,6 +157,8 @@ export const ReviewBar = ({
         </span>
       </div>
 
+      )}
+
       {restricted && (
         <div className="max-h-48 overflow-y-auto border-t border-kumo-line px-4 py-3">
           {current.description && <div className="text-sm text-kumo-default"><Markdown>{current.description}</Markdown></div>}
@@ -132,7 +166,7 @@ export const ReviewBar = ({
         </div>
       )}
 
-      {many && (
+      {many && !creates && (
         <div className="flex items-center gap-2 border-t border-kumo-line bg-kumo-tint/60 py-1.5 ps-4 pe-2">
           {progress ? (
             <span role="status" className="flex-1 py-2 text-sm text-kumo-subtle tabular-nums">

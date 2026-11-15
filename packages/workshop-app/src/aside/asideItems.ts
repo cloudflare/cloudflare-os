@@ -33,7 +33,10 @@ export type AsideConnectedFile = {
   workspaceId: string
   /** The connection it is reached through, which draws it. */
   gatekeeperId: number
-  /** The service's id for it (`ResourceSubject.id`). */
+  /**
+   * The service's id for it (`ResourceSubject.id`); empty for the file a creation waiting on
+   * the user will make, drawn as it will be once made.
+   */
   subjectId: string
   /** What it is, when that is known before it is drawn. */
   fileKind?: ConnectedFileKind
@@ -53,7 +56,7 @@ export type AsideFile = ChatAttachment & {
 /**
  * Something within a workspace that can be shown, as the URL names it: `12` for what was made
  * there (an app, a document), `file-<id>` for a file sent there, and `connected-<connection>-<id>`
- * for a file of a connected service that it worked on. Beside a chat that is all of it (`?open=`);
+ * for a file of a connected service that it worked on (with no id, the one a creation waiting will make). Beside a chat that is all of it (`?open=`);
  * on its own page the workspace goes in front (see `itemPageId`).
  */
 export type AsideRef =
@@ -62,7 +65,7 @@ export type AsideRef =
   | { kind: 'connected'; gatekeeperId: number; subjectId: string }
 
 const FILE = 'file-'
-const CONNECTED = /^connected-(\d+)-(.+)$/
+const CONNECTED = /^connected-(\d+)-(.*)$/
 
 export const formatAsideRef = (ref: AsideRef): string =>
   ref.kind === 'output' ? String(ref.workpieceId)
@@ -100,7 +103,7 @@ export const itemPageId = (workspaceId: string, ref: AsideRef) => `${workspaceId
 /** The item a page's id names, or nothing when it names none. */
 export const parseItemPageId = (id: string): { workspaceId: string; ref: AsideRef } | undefined => {
   // A workspace's id has no dash in it, but the ref after it can.
-  const found = /^(.+?)-(\d+|file-.+|connected-\d+-.+)$/.exec(id)
+  const found = /^(.+?)-(\d+|file-.+|connected-\d+-.*)$/.exec(id)
   const ref = found && parseAsideRef(found[2])
   return found && ref ? { workspaceId: found[1], ref } : undefined
 }

@@ -52,6 +52,15 @@ describe('fileChanges', () => {
   })
 })
 
+describe('fileChanges, for a file not made yet', () => {
+  it('finds its creation and the edits to it, which name no file', () => {
+    const items = rows(action({ title: 'Create deck', creation: true }), action({ title: 'Add a slide' }), action({ title: 'Append', subject: DOC }))
+    const [create] = actionsOf(items)
+    const { waiting } = fileChanges(items, create.target.gatekeeperId!, '')
+    expect(waiting.map(({ title }) => title)).toEqual(['Create deck', 'Add a slide'])
+  })
+})
+
 describe('decideInOrder', () => {
   const three = actionsOf(rows(action({ title: 'One', subject: DOC }), action({ title: 'Two', subject: DOC }), action({ title: 'Three', subject: DOC })))
   const ids = three.map(({ actionId }) => actionId)
@@ -89,5 +98,18 @@ describe('decideInOrder', () => {
     expect(problem).toBeUndefined()
     expect(asked).toEqual([create.actionId])
     expect(decided).toEqual([])
+  })
+
+  it('hands what builds on a creation that asked to be carried on once it is made', async () => {
+    const [create, edit] = actionsOf(rows(action({ title: 'Create', creation: true }), action({ title: 'Edit' })))
+    let made: (() => void) | undefined
+    const resumed: number[][] = []
+    await decideInOrder([create, edit], 'approve', {
+      decide: async () => {},
+      approveCreation: async ({ onMade }) => ((made = onMade), false),
+    }, undefined, (rest) => resumed.push(rest.map(({ actionId }) => actionId)))
+    expect(resumed).toEqual([])
+    made?.()
+    expect(resumed).toEqual([[edit.actionId]])
   })
 })

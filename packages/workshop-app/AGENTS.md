@@ -157,8 +157,12 @@ Approvals waiting are not cards in the conversation: they are the tray over the 
 (`PendingTray`), however many there are and whichever turn asked, so none is ever scrolled away.
 It groups them by what they change (`ActionItem.target`, `chat/pendingGroups.ts`): one row for the
 five appends to a Google Doc, not five cards. Approve all and Deny all (asked once) decide every
-one; a row unfolds its requests to decide each, except a Google file that exists, whose row opens
-it beside the chat with "Review". There the file is drawn as it will be, and `ReviewBar` over its
+one; a row unfolds its requests to decide each, except a Google file, whose row opens it beside
+the chat with "Review". One not created yet is shown as what it will be (its gatekeeper's creation
+spec, `useCreationKinds`), opened as `connected-<connection>-` with no id, drawn by the connection
+as made with its changes, and decided whole: Create, which makes it in the user's account as its
+card would (asking which, when there is a choice, and approving the rest once it is made) and
+then approves its changes, or Discard. There the file is drawn as it will be, and `ReviewBar` over its
 foot steps through its changes in the order they are drawn, the file outlining and scrolling to
 each (clicking one on the file steps to it), and decides that one or all of the file's
 (`aside/useFileReview`, through the chat's own session, so the tray and the file agree). Both
@@ -372,7 +376,8 @@ with one-inch margins), zoomed to fit the pane, and broken into pages where Docs
 (`blocks/resource-preview/usePages`): a block that would run past the foot of a page's text starts
 the next, a heading goes with the block after it, and a manual page break starts a page. Breaks
 fall between blocks and list items, never within a paragraph, and a table moves whole. A pageless
-tab, or a pane too narrow for a readable page (under half size), is one continuous page.
+tab, or a pane too narrow for a readable page (under half size), is one continuous page. A Slides
+deck in a pane under 640px wide has its filmstrip across the top and the slide at full width.
 
 ## Skills
 

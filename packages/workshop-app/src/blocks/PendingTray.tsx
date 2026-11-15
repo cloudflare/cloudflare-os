@@ -177,13 +177,13 @@ export const PendingTray = ({ groups, restricted, progress, problem, onDismissPr
               {groups.map((group) => {
                 const expanded = unfolded === group.key
                 return (
-                  <motion.li key={group.key} {...ROW} transition={transition} className="overflow-hidden">
+                  <motion.li key={group.key} {...ROW} transition={transition} className="shrink-0 overflow-hidden">
                     <button
                       type="button"
                       aria-expanded={group.onReview ? undefined : expanded}
                       aria-current={group.reviewing || undefined}
                       onClick={() => (group.onReview ? group.onReview() : setOpen(expanded ? undefined : group.key))}
-                      className={cn('group flex w-full items-center gap-3 rounded-2xl px-2 py-1.5 text-left outline-none transition-colors duration-200 hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-kumo-ring motion-reduce:transition-none', group.reviewing && 'bg-kumo-tint')}
+                      className={cn('group flex w-full items-center gap-3 rounded-2xl px-2 py-1.5 text-left outline-none transition-colors duration-200 hover:bg-kumo-tint focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-kumo-ring motion-reduce:transition-none', group.reviewing && 'bg-kumo-tint')}
                     >
                       <GroupIcon fileKind={group.fileKind} />
                       <span className="flex min-w-0 flex-1 flex-col">

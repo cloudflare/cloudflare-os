@@ -16,6 +16,11 @@ const THUMBNAIL_RING = 3
 const THUMBNAIL_RADIUS = 8
 const NUMBER_COLUMN = 28
 const CANVAS_PADDING = 32
+// Narrower than this, as beside a chat or on a phone, the filmstrip runs across the top, smaller,
+// and the slide takes the width, as Slides' own narrow layout does.
+const NARROW_BELOW = 640
+const STRIP_THUMBNAIL_WIDTH = 104
+const STRIP_PADDING = 16
 // Above the slide: where a new or deleted slide says so, kept whether or not it does.
 const STATUS_ROW = 40
 const UNMEASURED_WIDTH = 640
@@ -56,7 +61,10 @@ const SlideSkeleton = ({ slideWidth }: { slideWidth: number }) => (
   </span>
 )
 
-/** A Google Slides deck as it will be: a filmstrip of every slide and the chosen one large. */
+/**
+ * A Google Slides deck as it will be: a filmstrip of every slide and the chosen one large. In a
+ * narrow pane the filmstrip runs across the top, smaller, and the slide takes the width.
+ */
 export const PresentationPreviewView = ({ content, actions, marks, overlay, loading = false }: {
   /** Floated over the bottom of the main area: the file's review controls. */
   overlay?: ReactNode
@@ -73,34 +81,44 @@ export const PresentationPreviewView = ({ content, actions, marks, overlay, load
     return index === -1 ? undefined : index
   })
   const index = Math.min(selected, Math.max(0, slides.length - 1))
-  const tabProps = useRovingTabs({ count: slides.length, selected: index, onSelect: setSelected, orientation: 'vertical' })
+  const [rootRef, rootSize] = useElementSize<HTMLDivElement>()
+  const narrow = rootSize !== null && rootSize.width > 0 && rootSize.width < NARROW_BELOW
+  const orientation = narrow ? 'horizontal' : 'vertical'
+  const tabProps = useRovingTabs({ count: slides.length, selected: index, onSelect: setSelected, orientation })
   const [canvasRef, canvasSize] = useElementSize<HTMLDivElement>()
   const slideSize = { width: content.width, height: content.height }
-  const bottomPadding = overlay ? OVERLAY_CLEARANCE : CANVAS_PADDING
+  const padding = narrow ? STRIP_PADDING : CANVAS_PADDING
+  const thumbnailWidth = narrow ? STRIP_THUMBNAIL_WIDTH : THUMBNAIL_WIDTH
+  const bottomPadding = overlay ? OVERLAY_CLEARANCE : padding
   // Fitted to exactly the room there is, a whole pixel down, so the canvas never overflows: a
   // scrollbar it brought on would narrow the room, shrink the slide, go, and start over.
   // Where there is no layout to measure -- a hidden pane -- the slide takes a default width.
   const fittedWidth = !canvasSize ? 0
     : canvasSize.width === 0 ? UNMEASURED_WIDTH
     : Math.floor(fitSlide({
-      width: canvasSize.width - 2 * CANVAS_PADDING,
-      height: canvasSize.height - CANVAS_PADDING - bottomPadding - STATUS_ROW,
+      width: canvasSize.width - 2 * padding,
+      height: canvasSize.height - padding - bottomPadding - STATUS_ROW,
     }, slideSize).width)
   const slide = slides[index]
   // A slide's own status follows the decision on the change that adds or deletes it.
-  const statusChange = slide ? slideLevelChanges(slide, actions)[0] ?? changeIdAt(actions, slide.changes[0]) : undefined
-  const statusState = statusChange === undefined ? 'pending' : changeState(marks, statusChange)
+  const statusChangeOf = (of: PresentationSlide) => slideLevelChanges(of, actions)[0] ?? changeIdAt(actions, of.changes[0])
+  const slideState = (of: PresentationSlide) => {
+    const change = statusChangeOf(of)
+    return change === undefined ? 'pending' : changeState(marks, change)
+  }
+  const statusChange = slide ? statusChangeOf(slide) : undefined
+  const statusState = slide ? slideState(slide) : 'pending'
   const gone = slide && ((slide.status === 'removed' && statusState !== 'rejected') || (slide.status === 'added' && statusState === 'rejected'))
 
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: colors.slidesWorkspace }}>
-      <div className="flex min-h-0 flex-1">
+    <div ref={rootRef} className="flex h-full min-h-0 flex-col" style={{ background: colors.slidesWorkspace }}>
+      <div className={narrow ? 'flex min-h-0 flex-1 flex-col' : 'flex min-h-0 flex-1'}>
         <div
           role="tablist"
           aria-label="Slides"
-          aria-orientation="vertical"
-          className="shrink-0 overflow-y-auto pt-3 pb-3 pr-4"
-          style={{ width: NUMBER_COLUMN + THUMBNAIL_WIDTH + 2 * THUMBNAIL_RING + 16, fontFamily: fonts.ui }}
+          aria-orientation={orientation}
+          className={narrow ? 'flex shrink-0 gap-1 overflow-x-auto px-2 pt-3' : 'shrink-0 overflow-y-auto pt-3 pb-3 pr-4'}
+          style={narrow ? { fontFamily: fonts.ui } : { width: NUMBER_COLUMN + THUMBNAIL_WIDTH + 2 * THUMBNAIL_RING + 16, fontFamily: fonts.ui }}
         >
           {slides.map((s, i) => {
             const changed = s.changes.length > 0 || s.elements.some(e => e.change !== undefined)
@@ -111,11 +129,11 @@ export const PresentationPreviewView = ({ content, actions, marks, overlay, load
                 type="button"
                 {...tabProps(i)}
                 aria-label={[`Slide ${i + 1}`, s.status === 'added' ? 'new' : s.status === 'removed' ? 'deleted' : null, changed && !s.status ? 'changed' : null].filter(Boolean).join(', ')}
-                className="mb-3 flex w-full cursor-pointer items-start text-left focus-visible:outline-none"
+                className={narrow ? 'flex shrink-0 cursor-pointer items-start text-left focus-visible:outline-none' : 'mb-3 flex w-full cursor-pointer items-start text-left focus-visible:outline-none'}
               >
                 <span
                   className="flex shrink-0 flex-col items-end gap-1 pr-2 text-[12px] leading-4"
-                  style={{ width: NUMBER_COLUMN, paddingTop: THUMBNAIL_RING, color: colors.ink, textDecoration: s.status === 'removed' ? 'line-through' : undefined }}
+                  style={{ width: narrow ? NUMBER_COLUMN - 8 : NUMBER_COLUMN, paddingTop: THUMBNAIL_RING, color: colors.ink, textDecoration: s.status === 'removed' ? 'line-through' : undefined }}
                 >
                   {i + 1}
                   {changed && !s.status && <span aria-hidden="true" className="block size-1.5 rounded-full" style={{ background: colors.cellMarker }} />}
@@ -132,11 +150,12 @@ export const PresentationPreviewView = ({ content, actions, marks, overlay, load
                     className="block overflow-hidden"
                     style={{ borderRadius: THUMBNAIL_RADIUS, position: 'relative' }}
                   >
-                    <SlideCanvas slide={s} slideSize={slideSize} renderWidth={THUMBNAIL_WIDTH} actions={actions} marks={marks} interactive={false} />
-                    {loading && <SlideSkeleton slideWidth={THUMBNAIL_WIDTH} />}
+                    <SlideCanvas slide={s} slideSize={slideSize} renderWidth={thumbnailWidth} actions={actions} marks={marks} interactive={false} />
+                    {loading && <SlideSkeleton slideWidth={thumbnailWidth} />}
                     {!isSelected && <span aria-hidden="true" className="pointer-events-none absolute inset-0" style={{ borderRadius: THUMBNAIL_RADIUS, boxShadow: `inset 0 0 0 1px ${colors.thumbnailBorder}` }} />}
                   </span>
-                  {s.status === 'added' && (
+                  {/* Only while it waits: decided, as for a deck drawn as made, it is the deck's own. */}
+                  {s.status === 'added' && slideState(s) === 'pending' && (
                     <span className="absolute top-1 right-1 rounded px-1 text-[10px] leading-4 font-medium" style={{ background: colors.badge, color: colors.badgeInk }}>New</span>
                   )}
                 </span>
@@ -146,7 +165,7 @@ export const PresentationPreviewView = ({ content, actions, marks, overlay, load
         </div>
 
         <div className="relative flex min-w-0 flex-1">
-        <div ref={canvasRef} data-preview-scroll role="tabpanel" className="flex min-w-0 flex-1 flex-col items-center justify-center overflow-auto" style={{ background: colors.slidesWorkspace, padding: CANVAS_PADDING, paddingBottom: bottomPadding }}>
+        <div ref={canvasRef} data-preview-scroll role="tabpanel" className="flex min-w-0 flex-1 flex-col items-center justify-center overflow-auto" style={{ background: colors.slidesWorkspace, padding: `${padding}px ${padding}px ${bottomPadding}px` }}>
           {slide && fittedWidth > 0 && (
             <>
               <div className="flex items-end" style={{ height: STATUS_ROW, paddingBottom: 8, fontFamily: fonts.ui }}>

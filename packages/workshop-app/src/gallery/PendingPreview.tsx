@@ -3,7 +3,7 @@ import { ActionCard } from '@/blocks/ActionCard'
 import { ConnectedFileView } from '@/blocks/ConnectedFileView'
 import { PendingTray, type PendingTrayGroup } from '@/blocks/PendingTray'
 import type { ReviewChange } from '@/blocks/ReviewBar'
-import { documentFixture } from '@/blocks/resource-preview/fixtures'
+import { documentFixture, presentationFixture } from '@/blocks/resource-preview/fixtures'
 import { useOpen, useReport } from './previewState'
 import { Section } from './Section'
 
@@ -112,6 +112,36 @@ const ReviewPreview = ({ restricted }: { restricted?: boolean }) => {
   )
 }
 
+/** A Slides deck not made yet, reviewed whole: made with its slides, or discarded. */
+const NewFilePreview = () => {
+  const { later } = useReport()
+  const [done, setDone] = useState<string>()
+  const changes = presentationFixture.actions.map((actionId, index) => ({
+    actionId,
+    title: index === 0 ? 'Create Google Slides presentation' : 'Add a slide',
+    description: '',
+    fields: [],
+  }))
+  return (
+    <div className="flex h-[30rem] w-full flex-col overflow-hidden rounded-xl bg-kumo-base ring-1 ring-kumo-line">
+      <ConnectedFileView
+        preview={presentationFixture}
+        kind="presentation"
+        review={{
+          changes: done ? [] : changes,
+          decided: new Map(),
+          creates: true,
+          onDecide: async (_, decision) => {
+            await later()
+            setDone(decision === 'approve' ? 'Created' : 'Discarded')
+          },
+        }}
+      />
+      {done && <button type="button" className="py-2 text-sm text-kumo-subtle hover:underline" onClick={() => setDone(undefined)}>{done}. Ask again</button>}
+    </div>
+  )
+}
+
 /** Approvals waiting on the chat, grouped by what they change, and reviewed on the file. */
 export const PendingPreview = () => {
   const { of } = useOpen(['run'])
@@ -123,10 +153,11 @@ export const PendingPreview = () => {
           <TrayPreview restricted />
         </Column>
       </Section>
-      <Section title="ConnectedFileView with a review, ReviewBar (a Google Doc’s waiting changes decided on it: step with the arrows or click a change on the page, decide one and the bar moves to the next, or all; then restricted, where each is read in full and only it can be approved)">
+      <Section title="ConnectedFileView with a review, ReviewBar (a Google Doc’s waiting changes decided on it: step with the arrows or click a change on the page, decide one and the bar moves to the next, or all; then restricted, where each is read in full and only it can be approved; and a Slides deck not created yet, drawn as it will be made, with Create or Discard)">
         <Column>
           <ReviewPreview />
           <ReviewPreview restricted />
+          <NewFilePreview />
         </Column>
       </Section>
       <Section title="ActionCard, folded (a run of decisions on one thing, settled as one card: five appends approved together, unfolded to each)">

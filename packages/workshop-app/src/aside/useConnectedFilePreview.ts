@@ -36,7 +36,8 @@ export const useConnectedFilePreview = (file: AsideConnectedFile | undefined, ve
     let cancelled = false
     setDrawn((current) => (current?.key === key && current.state.status === 'ready' ? { key, state: { ...current.state, refreshing: true } } : current))
     const overseer = api.openWorkspace(workspaceId)
-    overseer.previewResource(gatekeeperId, subjectId).then(
+    // No id is the file a creation will make, which the connection draws as made.
+    overseer.previewResource(gatekeeperId, subjectId || undefined).then(
       (preview) => {
         if (!cancelled) setDrawn({ key, state: preview ? { status: 'ready', preview } : { status: 'none' } })
       },

@@ -16,6 +16,8 @@ export type CreationAction = {
   gatekeeperId: number
   /** What the card says: "Create Google Doc: Weekly notes". */
   title: string
+  /** Carries on once it is made after asking, such as with the edits to it that wait on it. */
+  onMade?: () => void
 }
 
 export type ApproveCreationOptions = {
@@ -91,6 +93,7 @@ export const useApproveCreation = ({ workspaceId, approve }: ApproveCreationOpti
           } finally {
             overseer[Symbol.dispose]()
           }
+          asking.action.onMade?.()
         },
       }}
     />

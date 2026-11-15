@@ -296,6 +296,9 @@ with a few waiting the newest pushed the oldest off screen, where the agent stil
   the single changes out of the tray (denying one append of five happens here), and on a phone the
   file covers the chat. On a wide screen the tray's row says the file is open beside, rather than
   offering Review again.
+- **A new file is reviewed whole.** From the old prototype too: a Google Doc, Sheet or Slides deck
+  the agent wants to create is drawn as it will be made, with its slides or text, and the bar
+  offers Create or Discard rather than stepping through edits to something that does not exist.
 - **Order is kept.** Approving goes oldest first, so an edit never lands before the one it builds
   on; denying newest first. A run stops at the first failure and says which and why.
 - **Decided runs fold.** "Append to Google Doc, 5 times · Approved", unfolding to each request.

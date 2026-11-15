@@ -15,6 +15,7 @@ import { ChatLayout } from '@/layouts/ChatLayout'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { AddConnection, type AddedConnection } from '@/connections/AddConnection'
 import { useApproveCreation } from '@/connections/ApproveCreation'
+import { useCreationKinds } from '@/connections/useCreationKinds'
 import { PendingTray, type PendingTrayGroup } from '@/blocks/PendingTray'
 import { pendingActions, pendingCount, pendingGroups } from './pendingGroups'
 import { usePendingDecisions } from './usePendingDecisions'
@@ -66,7 +67,7 @@ export type ChatPaneProps = {
 
 const LIVE_WORK = 'live:work'
 
-const FILE_NOUNS = { document: 'Google Doc', spreadsheet: 'Google Sheet', presentation: 'Google Slides' } as const
+const FILE_NOUNS = { document: 'Google Doc', spreadsheet: 'Google Sheet', presentation: 'Google Slides deck' } as const
 
 /** A gadget's title, as the chat's own cards for it have it: what the chat made, or worked on. */
 const outputTitle = (items: readonly ChatItem[] | undefined, chat: ChatSnapshot, gadgetId: number) => {
@@ -194,10 +195,16 @@ export const ChatPane = ({
   // Wherever they are: one asked for in an earlier turn is in the conversation, not under it.
   const waiting = useMemo(() => pendingActions([...(items ?? []), ...(pinned ?? [])]), [items, pinned])
   const live = useMemo(() => pinned?.filter((item) => !(item.kind === 'action' && item.state === 'pending')) ?? [], [pinned])
-  const trayGroups = useMemo((): PendingTrayGroup[] => pendingGroups(waiting).map((group) => {
+  // A Google file not made yet is shown as what it will be, once its gatekeeper says.
+  const creationKind = useCreationKinds(workspaceId, waiting.flatMap(({ creation }) => (creation ? [creation.gatekeeperId] : [])))
+  const trayGroups = useMemo((): PendingTrayGroup[] => pendingGroups(waiting).map((pending) => {
+    const made = pending.creates && pending.target.gatekeeperId !== undefined ? creationKind(pending.target.gatekeeperId) : undefined
+    const group = made && !pending.target.fileKind ? { ...pending, target: { ...pending.target, fileKind: made } } : pending
     const { target } = group
-    // A Google file that exists is reviewed beside the chat, drawn as it will be.
-    const drawn = target.fileKind && target.subjectId && target.gatekeeperId !== undefined && !group.creates
+    // A Google file is reviewed beside the chat, drawn as it will be: one not made yet as the new
+    // file (an empty id, `AsideConnectedFile`).
+    const subjectId = group.creates ? '' : target.subjectId
+    const drawn = target.fileKind !== undefined && subjectId !== undefined && target.gatekeeperId !== undefined
     return {
       key: group.key,
       title: target.title,
@@ -206,9 +213,9 @@ export const ChatPane = ({
         ? `New ${target.fileKind ? FILE_NOUNS[target.fileKind] : 'resource'}${group.actions.length > 1 ? `, with ${pendingCount(group)}` : ''}`
         : pendingCount(group),
       holdsAgent: group.holdsAgent,
-      reviewing: Boolean(drawn) && shownBeside?.gatekeeperId === target.gatekeeperId && shownBeside?.subjectId === target.subjectId,
+      reviewing: drawn && shownBeside?.gatekeeperId === target.gatekeeperId && shownBeside?.subjectId === subjectId,
       onReview: drawn
-        ? () => handlers.onOpenMade({ gatekeeperId: target.gatekeeperId!, subjectId: target.subjectId!, title: target.title, fileKind: target.fileKind!, url: target.url ?? '' })
+        ? () => handlers.onOpenMade({ gatekeeperId: target.gatekeeperId!, subjectId: subjectId!, title: target.title, fileKind: target.fileKind!, url: target.url ?? '' })
         : undefined,
       requests: group.actions.map((action) => ({
         actionId: action.actionId,
@@ -218,7 +225,7 @@ export const ChatPane = ({
         onAlwaysApprove: action.rule && (() => setAsked({ rule: action.rule!, open: true })),
       })),
     }
-  }), [waiting, handlers, shownBeside])
+  }), [waiting, handlers, shownBeside, creationKind])
   const byId = (actionId: number) => waiting.filter((action) => action.actionId === actionId)
 
 

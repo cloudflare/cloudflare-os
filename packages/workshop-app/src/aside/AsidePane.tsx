@@ -99,7 +99,10 @@ export const AsidePane = (props: AsidePaneProps) => {
   const content = item.kind === 'file' ? (
     <FileContent key={item.key} file={item.file} state={fileState} />
   ) : item.kind === 'connected' ? (
-    <ConnectedContent key={item.key} title={title} kind={connectedKind} state={connectedState} review={fileReview.review} />
+    <>
+      <ConnectedContent key={item.key} title={title} kind={connectedKind} state={connectedState} review={fileReview.review} />
+      {fileReview.dialog}
+    </>
   ) : item.output.type === 'worktree' ? (
     <PaneNotice key={item.key} icon={GitBranchIcon} title={title} description="Worktrees will open here once there is a code view." />
   ) : (

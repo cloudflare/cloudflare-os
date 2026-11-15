@@ -20,14 +20,16 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * Decides `actions` one at a time, in the order a connection applies them: approving oldest first,
  * so an edit never lands before the one it builds on, and denying newest first, so a file's
  * creation is denied after the edits to it. A creation that asks which account to make it in
- * stops the run there, as what builds on it waits for it. Stops at the first that fails, and
- * resolves to why, naming it; to nothing once all went, or the run stopped to ask.
+ * stops the run there, as what builds on it waits for it, and hands what is left to `resume`
+ * for once it is made. Stops at the first that fails, and resolves to why, naming it; to nothing
+ * once all went, or the run stopped to ask.
  */
 export const decideInOrder = async (
   actions: readonly ActionItem[],
   decision: Decision,
   { decide, approveCreation }: PendingDecisionsOptions,
   onProgress: (progress: DecisionProgress) => void = () => {},
+  resume: (rest: ActionItem[]) => void = () => {},
 ): Promise<string | undefined> => {
   const ordered = actions.toSorted((a, b) => (decision === 'approve' ? a.actionId - b.actionId : b.actionId - a.actionId))
   const verb = decision === 'approve' ? 'Approving' : 'Denying'
@@ -36,7 +38,13 @@ export const decideInOrder = async (
     if (ordered.length > 1) onProgress({ verb, done, total: ordered.length })
     try {
       if (decision === 'approve' && action.creation) {
-        const made = await approveCreation({ actionId: action.actionId, gatekeeperId: action.creation.gatekeeperId, title: action.title })
+        const rest = ordered.slice(done + 1)
+        const made = await approveCreation({
+          actionId: action.actionId,
+          gatekeeperId: action.creation.gatekeeperId,
+          title: action.title,
+          onMade: rest.length > 0 ? () => resume(rest) : undefined,
+        })
         if (!made) return undefined
       } else {
         await decide(action.actionId, decision)
@@ -51,7 +59,8 @@ export const decideInOrder = async (
 /**
  * Decides approvals as one run (`decideInOrder`), for the tray and the review beside the chat,
  * saying how far it has got (`progress`) and, when it stopped short, which failed and why
- * (`problem`), with the rest left waiting. One run at a time.
+ * (`problem`), with the rest left waiting. One run at a time; one that stopped to ask where a
+ * creation goes carries on once it is made.
  */
 export const usePendingDecisions = (options: PendingDecisionsOptions) => {
   const [progress, setProgress] = useState<DecisionProgress>()
@@ -59,12 +68,14 @@ export const usePendingDecisions = (options: PendingDecisionsOptions) => {
   const running = useRef(false)
   const { decide, approveCreation } = options
 
-  const run = useCallback(async (actions: readonly ActionItem[], decision: Decision) => {
+  const run = useCallback(async (actions: readonly ActionItem[], decision: Decision): Promise<void> => {
     if (running.current || actions.length === 0) return
     running.current = true
     setProblem(undefined)
     try {
-      setProblem(await decideInOrder(actions, decision, { decide, approveCreation }, setProgress))
+      // What builds on a creation that asked first is approved once it is made.
+      const resume = (rest: ActionItem[]) => void run(rest, 'approve')
+      setProblem(await decideInOrder(actions, decision, { decide, approveCreation }, setProgress, resume))
     } finally {
       running.current = false
       setProgress(undefined)

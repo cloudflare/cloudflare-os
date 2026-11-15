@@ -30,9 +30,14 @@ describe('aside refs', () => {
   })
 
   it('names nothing for what is not a ref', () => {
-    for (const value of [undefined, 1.5, -1, '', 'output', 'output:12', '-1', '1.5', 'abc', 'file-', 'chat-1', 'connected-', 'connected-7', 'connected-7-', 'connected-x-1']) {
+    for (const value of [undefined, 1.5, -1, '', 'output', 'output:12', '-1', '1.5', 'abc', 'file-', 'chat-1', 'connected-', 'connected-7', 'connected-x-1']) {
       expect(validateAsideParam(value)).toBeUndefined()
     }
+  })
+
+  it('reads a connection with no file id as the file its creation will make', () => {
+    expect(parseAsideRef('connected-7-')).toEqual({ kind: 'connected', gatekeeperId: 7, subjectId: '' })
+    expect(formatAsideRef({ kind: 'connected', gatekeeperId: 7, subjectId: '' })).toBe('connected-7-')
   })
 
   it('puts the workspace in front on an item’s own page, and reads it back', () => {

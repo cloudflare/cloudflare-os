@@ -16,6 +16,8 @@ export type ConnectedFileReview = {
   decided: ReadonlyMap<number, ChangeDecision>
   /** Decides these, in the order given. */
   onDecide: (actionIds: number[], decision: 'approve' | 'deny') => ActionResult
+  /** One of them makes the file, so they are decided whole: made with them, or not at all. */
+  creates?: boolean
 } & Pick<ReviewBarProps, 'restricted' | 'progress' | 'problem' | 'onDismissProblem'>
 
 export type ConnectedFileViewProps = {
@@ -49,18 +51,24 @@ const focusOf = (wanted: number | undefined, waiting: readonly ReviewChange[], o
  * With a `review`, its waiting changes are decided on it: a bar over its foot (`ReviewBar`) steps
  * through them in the order they are drawn, the file outlining and scrolling to each, and clicking
  * one on the file steps to it. Decided, a change settles or is undone where it is, and the bar
- * moves on to the next; it goes once nothing waits. Without one, as from the Library, a pill over its
+ * moves on to the next; it goes once nothing waits. A file not made yet is drawn as it will be
+ * made, and made with its changes, or not at all. Without one, as from the Library, a pill over its
  * foot counts them.
  */
 export const ConnectedFileView = ({ preview, kind, review }: ConnectedFileViewProps) => {
   const [wanted, setWanted] = useState<number>()
   const drawnOrder = preview?.actions ?? []
-  // Drawn first in the order the file draws them; any it does not, such as a change to its name, after.
-  const changes = review
-    ? review.changes.toSorted((a, b) => rank(drawnOrder, a.actionId) - rank(drawnOrder, b.actionId))
-    : []
+  // A file not made yet is made first, then changed. One that exists is stepped through in the
+  // order it draws them, and any it does not, such as a change to its name, after.
+  const changes = !review ? []
+    : review.creates ? review.changes.toSorted((a, b) => a.actionId - b.actionId)
+    : review.changes.toSorted((a, b) => rank(drawnOrder, a.actionId) - rank(drawnOrder, b.actionId))
   const order = changes.map(({ actionId }) => actionId)
-  const focused = review ? focusOf(wanted, changes, [...drawnOrder, ...order]) : undefined
+  // A file not made yet is drawn as made, its changes as its own text, and has nothing to step to.
+  // Where each must be read before it is approved, it is stepped through instead, its making first.
+  const creating = review?.creates === true && !review.restricted
+  const focused = review && !creating ? focusOf(wanted, changes, [...drawnOrder, ...order]) : undefined
+  const decided = creating ? new Map(drawnOrder.map((id) => [id, 'approved' as const])) : review?.decided ?? NO_DECISIONS
   // Without a review, those drawn are only counted.
   const waiting = drawnOrder.filter((id) => id >= 0).length
   const decide = (ids: number[], decision: 'approve' | 'deny') => {
@@ -75,15 +83,16 @@ export const ConnectedFileView = ({ preview, kind, review }: ConnectedFileViewPr
         preview={preview ?? loadingPreview(kind)}
         loading={!preview}
         focusedChangeId={focused ?? null}
-        decided={review?.decided ?? NO_DECISIONS}
-        onChangeClick={(id) => order.includes(id) && setWanted(id)}
+        decided={decided}
+        onChangeClick={(id) => !creating && order.includes(id) && setWanted(id)}
         overlay={review ? (
           <AnimatePresence>
-            {focused !== undefined && preview && (
+            {(focused !== undefined || (creating && changes.length > 0)) && preview && (
               <ReviewBar
                 key="review"
                 changes={changes}
-                focusedId={focused}
+                focusedId={focused ?? changes[0].actionId}
+                creates={creating ? { title: preview.title, kind: preview.content.type } : undefined}
                 onFocus={setWanted}
                 onApprove={(id) => decide([id], 'approve')}
                 onDeny={(id) => decide([id], 'deny')}
