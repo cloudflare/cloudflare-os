@@ -325,13 +325,14 @@ export const SharingPreview = () => (
         <ShareAudienceCard picture={SCREEN} viewsAvailable viewers={1} when="yesterday" updateFailed services={['Google Drive']} onOpen={() => {}} />
       </Column>
     </Section>
-    <Section title="ShareAudiencePage (the share dialog's page of what people see: the snapshot, running as viewers get it at half size, then Can view and Can use. Running; taking it; it could not be shown; the last update failed; and where the deployment gives no snapshots)">
+    <Section title="ShareAudiencePage (the share dialog's page of what people see: the snapshot, running as viewers get it at half size, then Can view and Can use. Running; taking it; it could not be shown; the last update failed; where the deployment gives no snapshots; and a gadget that reads from no connection)">
       <div className="flex flex-wrap items-start gap-6">
         <Column><ShareAudiencePage title="Tasks" preview={{ status: 'ready', page: VIEW_PAGE, load: 1 }} when="12 min ago" resources={AUDIENCE} /></Column>
         <Column><ShareAudiencePage title="Tasks" preview={{ status: 'loading' }} resources={AUDIENCE.slice(1)} /></Column>
         <Column><ShareAudiencePage title="Tasks" preview={{ status: 'failed', message: 'The workspace didn’t answer.' }} onReload={() => {}} resources={AUDIENCE.slice(1)} /></Column>
         <Column><ShareAudiencePage title="Tasks" preview={{ status: 'ready', page: VIEW_PAGE, load: 2 }} when="yesterday" updateFailed resources={AUDIENCE.slice(1)} /></Column>
         <Column><ShareAudiencePage title="Tasks" resources={AUDIENCE} /></Column>
+        <Column><ShareAudiencePage title="Calculator" preview={{ status: 'ready', page: VIEW_PAGE, load: 3 }} when="just now" resources={[]} /></Column>
       </div>
     </Section>
     <Section title="ShareGadgetDialog (share to use or only to view; anyone with the link, on or off, and the copied link follows; change or take away what each person has)">

@@ -329,7 +329,8 @@ sharing takes that responsibility, knowingly.
   running in a frame at 0.6 scale, as #1077 does, so a page laid out for a window reads as itself.
   It can be used, since what is done in the copy is overwritten when it is next taken. Under it the
   two tiers, each saying what it costs the recipient, with the connections listed by service. The
-  card appears only for a gadget that reads from a connection that needs a sign-in.
+  card appears wherever someone can be given a snapshot (even a gadget that reads from no
+  connection: "Can view" still gets the copy), or must confirm accounts to use it live.
 - **Honest about freshness.** The snapshot is taken again when the owner opens the gadget or this
   page (`viewTakenAt`), and a failed update says so (`viewUpdateFailedAt`). "Always up to date"
   from Option B is not true of the kernel, so it is not said.

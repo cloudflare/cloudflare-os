@@ -24,9 +24,9 @@ const people = (count: number) => `${count} ${count === 1 ? 'person' : 'people'}
 const LIST = new Intl.ListFormat('en', { type: 'conjunction' })
 
 /**
- * What the people a gadget is shared with will see of it, in a line under who has it, for one that
- * reads from connections: its picture, then who sees a snapshot and from when, or that it opens
- * live. It opens the page that shows them (`ShareAudiencePage`), the way the prototype's card does.
+ * What the people a gadget is shared with will see of it, in a line under who has it, wherever some
+ * can be given a snapshot or must confirm accounts to use it live: its picture, then who sees a
+ * snapshot and from when, or that it opens live. It opens the page that shows them (`ShareAudiencePage`), the way the prototype's card does.
  */
 export const ShareAudienceCard = ({ picture, viewsAvailable, viewers, when, updateFailed, services, onOpen }: ShareAudienceCardProps) => {
   const id = useId()

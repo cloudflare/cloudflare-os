@@ -289,7 +289,8 @@ const GadgetSharing = ({ workspaceId, gadgetId, title, page, open, onOpenChange 
               )
             })}
           </ShareList>
-          {standing?.canShare && resources.length > 0 && (
+          {/* Wherever someone can be given a snapshot, or must confirm accounts to use it live. */}
+          {standing?.canShare && (viewsAvailable || resources.length > 0) && (
             <ShareAudienceCard
               picture={view.picture}
               viewsAvailable={viewsAvailable}

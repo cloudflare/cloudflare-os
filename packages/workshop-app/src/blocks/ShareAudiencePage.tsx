@@ -112,16 +112,18 @@ export const ShareAudiencePage = ({ title, preview, frameRef, onReload, when, up
         )}
         <Tier icon={LightningIcon} title="Can use">
           <p className="mt-0.5 text-sm/5 text-kumo-subtle">
-            The gadget live, with your data, once they confirm with their own {accounts} that they can see what it reads:
+            {resources.length === 0
+              ? 'The gadget live, with your data, as you use it. It reads from nothing that needs an account of theirs.'
+              : `The gadget live, with your data, once they confirm with their own ${accounts} that they can see what it reads:`}
           </p>
-          <ul className="mt-2 flex max-h-36 flex-col gap-2 overflow-y-auto">
+          {resources.length > 0 && <ul className="mt-2 flex max-h-36 flex-col gap-2 overflow-y-auto">
             {resources.map((resource) => (
               <li key={resource.key} className="flex min-w-0 items-center gap-2.5">
                 <ServiceLogo name={resource.service.name} src={resource.service.logoUrl} color={resource.service.color} />
                 <span className="min-w-0 flex-1 truncate text-base/5 text-kumo-default">{resource.title}</span>
               </li>
             ))}
-          </ul>
+          </ul>}
         </Tier>
       </div>
     </div>

@@ -349,7 +349,7 @@ dialogs say what came of an invite under the field, not in a toast.
 A gadget is shared to use (live, with the owner's data, once each person confirms with their own
 account on each service that they can see what it reads) or, where the deployment serves owner's
 views (`sharedViewsAvailable`), only to view: a snapshot of the owner's data, which reaches
-nothing. For one that reads from a connection needing a sign-in, a card under who has it
+nothing. Wherever someone can be given a snapshot, or must confirm accounts to use it live, a card under who has it
 (`ShareAudienceCard`, read by `useGadgetView`) says who sees a snapshot and from when, and opens
 the dialog's second page, "What people see" (`ShareAudiencePage`): the owner's view itself,
 running (`useViewPreview`, a `GadgetConnection` with `view`, over `GadgetClient.openView()`, which
