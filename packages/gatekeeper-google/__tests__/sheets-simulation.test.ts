@@ -698,8 +698,11 @@ const FORMATTED_A1: BaseFormats = (sheetId, row, column) =>
 const BORDERED: BaseFormats = () => ({ borders: { top: { style: "SOLID" }, left: { style: "DASHED" } } });
 
 /** The formatting `rect` of sheet `sheetId` of `g` reads with, over `base`. */
-const formatsOf = (g: Grid, sheetId: number, at: Rect, base = UNFORMATTED) => simulatedFormats(
-  g, { sheetId, rect: at, rows: at.endRow - at.startRow, columns: at.endColumn - at.startColumn }, base);
+const formatsOf = (g: Grid, sheetId: number, at: Rect, base = UNFORMATTED) => {
+  let { rowHeights: _rows, columnWidths: _columns, ...read } = simulatedFormats(
+    g, { sheetId, rect: at, rows: at.endRow - at.startRow, columns: at.endColumn - at.startColumn }, base, () => null);
+  return read;
+};
 
 describe("Sheets queued formatting", () => {
   it("merges queued formatting over each cell's own, a later change over an earlier", () => {
@@ -873,6 +876,20 @@ describe("Sheets formatted values with a number format queued", () => {
     });
     expect(simulatedRange(moved, area, base([[5, "text", null, 0.25, 7]]), "raw").values)
       .toEqual([[5, "text", null, 0.25, 7]]);
+  });
+
+  it("reads pending a value queued into a cell whose format a queued merge left to Google", () => {
+    let hidden = { numberFormat: { type: "NUMBER" as const, pattern: ";;;" } };
+    let sheets = [sheet(0, "Sales", { rowCount: 10, columnCount: 4 })];
+    let g = replayed(gridOf({ sheets }), [queued(1, [
+      { op: "formatCells", sheetId: 0, rect: rect(0, 0), format: hidden },
+      { op: "mergeCells", sheetId: 0, rect: rect(0, 0, 1, 2), merge: "ALL" },
+      { op: "unmergeCells", sheetId: 0, rect: rect(0, 0, 1, 2) },
+      { op: "writeCells", sheetId: 0, rect: rect(0, 1), values: [["x"]] },
+    ])]);
+    let area = { sheetId: 0, rect: rect(0, 1), rows: 1, columns: 1 };
+    expect(simulatedRange(g, area, BLANK)).toEqual({ range: "Sales!B1", values: [[null]], pendingCells: ["B1"] });
+    expect(simulatedRange(g, area, BLANK, "raw")).toEqual({ range: "Sales!B1", values: [["x"]] });
   });
 
   it("reads pending a value queued on an inserted line, which takes the number format before it", () => {

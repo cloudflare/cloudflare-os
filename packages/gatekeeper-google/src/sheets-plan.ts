@@ -12,14 +12,14 @@
  */
 
 import type { SheetArea, SheetProtection } from "./sheets-api";
-import { colorStyle, wrapStrategy, type BorderSide, type FormatEntry } from "./sheets-format";
+import { colorStyle, wrapStrategy, type Axis, type BorderSide, type FormatEntry } from "./sheets-format";
 import { canonicalFormula, compactFormula } from "./sheets-formula";
 import {
-  isCellChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS, MAX_TITLE_LENGTH,
-  type LineOp, type PreparedChange,
+  isCellChange, isLayoutChange, isRangeChange, MAX_CELL_LENGTH, MAX_COLUMNS, MAX_SPREADSHEET_CELLS,
+  MAX_TITLE_LENGTH, type LineOp, type MergeType, type PreparedChange, type ResizeOp,
 } from "./sheets-input";
 import {
-  a1Of, cellName, columnLetters, findSheet, isFormula, type EnteredValue, type Rect,
+  a1Of, cellName, columnLetters, findSheet, intersection, isFormula, rectName, type EnteredValue, type Rect,
 } from "./sheets-model";
 import type { SheetBorder, SheetColor } from "./sheets-read-types";
 import type {
@@ -59,6 +59,11 @@ export function cellKey(sheetId: number, row: string, column: string): string {
   return `${sheetId}:${row}:${column}`;
 }
 
+/** The key in `Grid.sizes` of a line, by its sheet, axis and identity. */
+export function lineKey(sheetId: number, axis: Axis, identity: string): string {
+  return `${sheetId}:${axis}:${identity}`;
+}
+
 // A cell of `rect` that lies outside `sheet`'s grid: past its last column if any is, else below it.
 function outsideCell(sheet: SheetMeta, rect: Rect): string | undefined {
   if (rect.endColumn > sheet.columnCount) {
@@ -68,10 +73,8 @@ function outsideCell(sheet: SheetMeta, rect: Rect): string | undefined {
   return undefined;
 }
 
-type Axis = "rows" | "columns";
-
-function axisOf(op: LineOp): Axis {
-  return op === "insertRows" || op === "deleteRows" ? "rows" : "columns";
+function axisOf(op: LineOp | ResizeOp): Axis {
+  return op === "insertRows" || op === "deleteRows" || op === "resizeRows" ? "rows" : "columns";
 }
 
 function lineName(axis: Axis, position: number): string {
@@ -95,13 +98,14 @@ function cellsOf(sheets: readonly SheetMeta[]): number {
  * by sheet once a change needs one sheet's, so it visits only those.
  */
 type Working = {
-  sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; log: StructuralStep[];
-  keys?: Map<number, Set<string>>;
+  sheets: SimSheet[]; cells: Map<string, Entry>; formats: Map<string, FormatEntry>; sizes: Map<string, number>;
+  log: StructuralStep[]; keys?: Map<number, Set<string>>;
 };
 
 function working(grid: Grid): Working {
   return {
-    sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats), log: [...grid.log],
+    sheets: [...grid.sheets], cells: new Map(grid.cells), formats: new Map(grid.formats),
+    sizes: new Map(grid.sizes), log: [...grid.log],
   };
 }
 
@@ -140,9 +144,24 @@ function enterFormat(work: Working, sheetId: number, key: string, format: Format
   if (work.keys) keySet(work.keys, sheetId).add(key);
 }
 
-// The entries and formats queued changes have made.
+// The entries, formats and line sizes queued changes have made.
 function queued(work: Working): number {
-  return work.cells.size + work.formats.size;
+  return work.cells.size + work.formats.size + work.sizes.size;
+}
+
+// The keys of the sizes of sheet `sheetId`'s lines in `work`, which a resize has set. Only queued
+// resizes make them, so most grids have none to visit.
+function sizeKeysOn(work: Working, sheetId: number): string[] {
+  if (work.sizes.size === 0) return [];
+  let prefix = `${sheetId}:`;
+  return [...work.sizes.keys()].filter(key => key.startsWith(prefix));
+}
+
+// How many of the lines a resize sets have no size queued yet.
+function sizesAdded(work: Working, sheet: SimSheet, change: Extract<PlannedChange, { op: ResizeOp }>): number {
+  let axis = axisOf(change.op);
+  return linesAt(axis === "rows" ? sheet.rows : sheet.columns, change.start, change.start + change.count)
+    .filter(identity => identity !== undefined && !work.sizes.has(lineKey(sheet.id, axis, identity))).length;
 }
 
 // The entries and formats on the cells `keys` names, which a copy of them makes.
@@ -167,9 +186,20 @@ function unentered(
 // The entries and formats `change`, which applies to `work`, adds: those of the cells a write,
 // clear or format sets that have none yet, or those a copy takes from its original.
 function entriesAdded(work: Working, change: PlannedChange): number {
-  if (change.op === "duplicateSheet") return heldBy(work, keysOn(work, change.sheetId));
-  if (!isRangeChange(change)) return 0;
+  if (change.op === "duplicateSheet") {
+    return heldBy(work, keysOn(work, change.sheetId)) + sizeKeysOn(work, change.sheetId).length;
+  }
   let sheet = work.sheets.find(candidate => candidate.id === change.sheetId)!;
+  if (change.op === "resizeRows" || change.op === "resizeColumns") return sizesAdded(work, sheet, change);
+  if (change.op === "unmergeCells") return 0;
+  if (change.op === "mergeCells") {
+    return mergeCleared(change.rect, change.merge).reduce((total, rect) => {
+      let rows = linesAt(sheet.rows, rect.startRow, rect.endRow);
+      let columns = linesAt(sheet.columns, rect.startColumn, rect.endColumn);
+      return total + unentered(work.cells, sheet.id, rows, columns) + unentered(work.formats, sheet.id, rows, columns);
+    }, 0);
+  }
+  if (!isRangeChange(change)) return 0;
   let { rect } = change;
   if (change.op === "formatCells") return formatsAdded(work, sheet, rect, change.format);
   return unentered(work.cells, sheet.id,
@@ -228,6 +258,178 @@ function withLines(sheet: SimSheet, axis: Axis, lines: Lines): SimSheet {
   return axis === "rows"
     ? { ...sheet, rows: lines, rowCount: lineCount(lines) }
     : { ...sheet, columns: lines, columnCount: lineCount(lines) };
+}
+
+// `sheet` with `frozen` lines frozen along `axis`, and `merges`.
+function withLayout(sheet: SimSheet, axis: Axis, frozen: number, merges: Rect[]): SimSheet {
+  let { frozenRowCount: _rows, frozenColumnCount: _columns, merges: _merges, ...rest } = sheet;
+  let rows = axis === "rows" ? frozen : frozenCount(sheet, "rows");
+  let columns = axis === "columns" ? frozen : frozenCount(sheet, "columns");
+  return {
+    ...rest,
+    ...(rows > 0 ? { frozenRowCount: rows } : {}),
+    ...(columns > 0 ? { frozenColumnCount: columns } : {}),
+    ...(merges.length > 0 ? { merges } : {}),
+  };
+}
+
+// The positions a merge spans along `axis`, and the merge spanning `start` to `end` there instead.
+function spanOf(rect: Rect, axis: Axis): [number, number] {
+  return axis === "rows" ? [rect.startRow, rect.endRow] : [rect.startColumn, rect.endColumn];
+}
+
+function withSpan(rect: Rect, axis: Axis, start: number, end: number): Rect {
+  return axis === "rows" ? { ...rect, startRow: start, endRow: end } : { ...rect, startColumn: start, endColumn: end };
+}
+
+// Whether `outer` holds every cell of `inner`.
+function contains(outer: Rect, inner: Rect): boolean {
+  return inner.startRow >= outer.startRow && inner.endRow <= outer.endRow &&
+    inner.startColumn >= outer.startColumn && inner.endColumn <= outer.endColumn;
+}
+
+/** The merged cells a merge of `rect` makes: the range whole, or each of its rows or columns. */
+export function mergeBlocks(rect: Rect, merge: MergeType): Rect[] {
+  if (merge === "ALL") return [rect];
+  let rows = merge === "ROWS";
+  let [start, end] = rows ? [rect.startRow, rect.endRow] : [rect.startColumn, rect.endColumn];
+  return Array.from({ length: end - start }, (_, i) =>
+    rows ? { ...rect, startRow: start + i, endRow: start + i + 1 } : { ...rect, startColumn: start + i, endColumn: start + i + 1 });
+}
+
+/**
+ * The cells of `rect` a merge clears, as a scratch spreadsheet showed Google clearing them: every
+ * cell of each merged block but its top-left, whose value the block shows.
+ */
+export function mergeCleared(rect: Rect, merge: MergeType): Rect[] {
+  let below = { ...rect, startRow: rect.startRow + 1 };
+  let right = { ...rect, startColumn: rect.startColumn + 1 };
+  let pieces = merge === "ALL" ? [{ ...right, endRow: rect.startRow + 1 }, below] : merge === "ROWS" ? [right] : [below];
+  return pieces.filter(piece => piece.startRow < piece.endRow && piece.startColumn < piece.endColumn);
+}
+
+// `sheet` with `merges` as its merged cells.
+function withMerges(sheet: SimSheet, merges: readonly Rect[]): SimSheet {
+  let { merges: _merges, ...rest } = sheet;
+  return merges.length > 0 ? { ...rest, merges } : rest;
+}
+
+// The first of `sheet`'s merges that overlaps `rect` without lying wholly in one of `blocks`.
+function cutMerge(sheet: SimSheet, rect: Rect, blocks: readonly Rect[]): Rect | undefined {
+  return (sheet.merges ?? []).find(merge =>
+    intersection(merge, rect) && !blocks.some(block => contains(block, merge)));
+}
+
+/**
+ * Why `sheet` cannot merge `rect` as `merge`, if it cannot: Google merges no part of a merge
+ * without the rest, which it replaces when the range holds it whole, and no frozen line with one
+ * that is not.
+ */
+function unmergeable(sheet: SimSheet, rect: Rect, merge: MergeType): string | undefined {
+  let blocks = mergeBlocks(rect, merge);
+  let cut = cutMerge(sheet, rect, blocks);
+  if (cut) {
+    return `merging ${rectName(rect)} would merge only part of the merged cells ${rectName(cut)}, and a ` +
+      "merge takes in all of a merged cell or none of it";
+  }
+  for (let axis of ["rows", "columns"] as const) {
+    let frozen = frozenCount(sheet, axis);
+    if (blocks.some(block => {
+      let [start, end] = spanOf(block, axis);
+      return start < frozen && frozen < end;
+    })) {
+      return `"${sheet.title}" freezes its first ${plural(frozen, axis === "rows" ? "row" : "column")}, ` +
+        `and merging ${rectName(rect)} would merge frozen ${axis} with others, which Google does not`;
+    }
+  }
+  return undefined;
+}
+
+/** Why `sheet` cannot unmerge `rect`, if it cannot: the range holds part of a merge. */
+function ununmergeable(sheet: SimSheet, rect: Rect): string | undefined {
+  let cut = cutMerge(sheet, rect, [rect]);
+  return cut && `${rectName(rect)} holds only part of the merged cells ${rectName(cut)}; unmerge a range ` +
+    "that holds all of them";
+}
+
+/**
+ * The first cell of `rect` that `values` gives a value and a merge of `sheet` covers, other than
+ * its top-left, whose value the merge shows: Google drops what is written there.
+ */
+function coveredWrite(
+  sheet: SimSheet, rect: Rect, values: readonly (readonly SheetCellInput[])[],
+): { cell: string; merge: Rect } | undefined {
+  for (let merge of sheet.merges ?? []) {
+    if (!intersection(merge, rect)) continue;
+    for (let row = Math.max(merge.startRow, rect.startRow); row < Math.min(merge.endRow, rect.endRow); row++) {
+      for (let column = Math.max(merge.startColumn, rect.startColumn); column < Math.min(merge.endColumn, rect.endColumn); column++) {
+        let head = row === merge.startRow && column === merge.startColumn;
+        if (!head && values[row - rect.startRow][column - rect.startColumn] !== null) {
+          return { cell: cellName(row, column), merge };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+// Why writing `values` there would lose one, for a change's refusal.
+function droppedWrite({ cell, merge }: { cell: string; merge: Rect }): string {
+  let head = cellName(merge.startRow, merge.startColumn);
+  return `${cell} is covered by the merged cells ${rectName(merge)}, which show only ${head}'s value, so ` +
+    `Google would drop the value written there. Write it to ${head}, or unmerge the cells first`;
+}
+
+/**
+ * Why `sheet` cannot freeze `count` lines along `axis`, if it cannot: Google keeps at least one
+ * line unfrozen, and freezes no part of a merge without the rest.
+ */
+function unfreezable(sheet: SimSheet, axis: Axis, count: number): string | undefined {
+  let size = axis === "rows" ? sheet.rowCount : sheet.columnCount;
+  let noun = axis === "rows" ? "row" : "column";
+  if (count >= size) {
+    return `"${sheet.title}" has ${plural(size, noun)}, and a sheet keeps at least one ${noun} unfrozen`;
+  }
+  let cut = (sheet.merges ?? []).find(merge => {
+    let [start, end] = spanOf(merge, axis);
+    return start < count && count < end;
+  });
+  if (cut) {
+    return `freezing ${plural(count, noun)} of "${sheet.title}" would freeze only part of the merged ` +
+      `cells ${rectName(cut)}. Unmerge them, or freeze ${axis} up to one of their edges`;
+  }
+  return undefined;
+}
+
+/**
+ * `sheet`, whose lines along `axis` are as they were, once `count` lines are inserted before
+ * position `at`: a merge, or the frozen lines, grow by lines inserted within them and move by
+ * lines inserted before them, as Google moves them; lines inserted at either edge are outside.
+ */
+function afterInsert(sheet: SimSheet, axis: Axis, at: number, count: number): SimSheet {
+  let frozen = frozenCount(sheet, axis);
+  let merges = (sheet.merges ?? []).map(merge => {
+    let [start, end] = spanOf(merge, axis);
+    if (at <= start) return withSpan(merge, axis, start + count, end + count);
+    return at < end ? withSpan(merge, axis, start, end + count) : merge;
+  });
+  return withLayout(sheet, axis, at < frozen ? frozen + count : frozen, merges);
+}
+
+/**
+ * `sheet` once the `count` lines along `axis` from `start` are deleted: merges and the frozen lines
+ * shrink by the lines deleted from them, and a merge left one cell is gone.
+ */
+function afterDelete(sheet: SimSheet, axis: Axis, start: number, count: number): SimSheet {
+  let end = start + count;
+  let shrunk = (position: number) => position - Math.max(0, Math.min(end, position) - start);
+  let merges = (sheet.merges ?? []).flatMap(merge => {
+    let [from, to] = spanOf(merge, axis);
+    let kept = withSpan(merge, axis, shrunk(from), shrunk(to));
+    let cells = (kept.endRow - kept.startRow) * (kept.endColumn - kept.startColumn);
+    return cells > 1 ? [kept] : [];
+  });
+  return withLayout(sheet, axis, shrunk(frozenCount(sheet, axis)), merges);
 }
 
 /** Sheets' `GridRange` for `rect` of sheet `sheetId`. */
@@ -361,6 +563,7 @@ function recordFormat(work: Working, sheet: SimSheet, rect: Rect, format: SheetF
     edge("left", c === 0, "innerVertical");
     edge("right", c === columns.length - 1, "innerVertical");
     update(row!, column!, entry => ({
+      ...entry,
       set: { ...entry.set, ...set },
       borders: { ...entry.borders, ...sides },
     }));
@@ -413,6 +616,10 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         recordFormat(work, sheet, rect, change.format);
         return formatRequests(range, change.format);
       }
+      if (change.op === "writeCells") {
+        let dropped = coveredWrite(sheet, rect, change.values);
+        if (dropped) throw conflict(droppedWrite(dropped));
+      }
       room(unentered(work.cells, sheet.id, rows, columns));
       rows.forEach((row, r) => columns.forEach((column, c) => {
         let input = change.op === "writeCells" ? change.values[r][c] : null;
@@ -428,6 +635,36 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
               fields: "userEnteredValue",
             },
           }];
+    }
+    case "mergeCells":
+    case "unmergeCells": {
+      let sheet = existing(change.sheetId);
+      let { rect } = change;
+      let outside = outsideCell(sheet, rect);
+      if (outside !== undefined) throw conflict(`${outside} is outside "${sheet.title}"`);
+      let range = gridRange(change.sheetId, rect);
+      let reason = change.op === "mergeCells" ? unmergeable(sheet, rect, change.merge) : ununmergeable(sheet, rect);
+      if (reason !== undefined) throw conflict(reason);
+      // Merges the range holds whole are replaced, or undone.
+      let merges = (sheet.merges ?? []).filter(merge => !contains(rect, merge));
+      if (change.op === "unmergeCells") {
+        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withMerges(candidate, merges) : candidate);
+        return [{ unmergeCells: { range } }];
+      }
+      room(entriesAdded(work, change));
+      for (let cleared of mergeCleared(rect, change.merge)) {
+        let columns = linesAt(sheet.columns, cleared.startColumn, cleared.endColumn);
+        for (let row of linesAt(sheet.rows, cleared.startRow, cleared.endRow)) {
+          for (let column of columns) {
+            let key = cellKey(sheet.id, row!, column!);
+            enter(work, sheet.id, key, { input: null, at: work.log.length, by });
+            enterFormat(work, sheet.id, key, { set: {}, borders: {}, unknown: true });
+          }
+        }
+      }
+      merges.push(...mergeBlocks(rect, change.merge));
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withMerges(candidate, merges) : candidate);
+      return [{ mergeCells: { range, mergeType: `MERGE_${change.merge}` } }];
     }
     case "addSheet": {
       let { sheetId, title, index, rowCount, columnCount } = change;
@@ -461,6 +698,7 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         ...(source.source === undefined ? {} : { source: source.source }),
         ...(source.frozenRowCount === undefined ? {} : { frozenRowCount: source.frozenRowCount }),
         ...(source.frozenColumnCount === undefined ? {} : { frozenColumnCount: source.frozenColumnCount }),
+        ...(source.merges === undefined ? {} : { merges: source.merges }),
       });
       // The copy holds what is queued for the original, and its cells move with its own lines.
       for (let key of copied) {
@@ -470,6 +708,9 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         if (entry) enter(work, newSheetId, copy, entry);
         let format = work.formats.get(key);
         if (format) enterFormat(work, newSheetId, copy, format);
+      }
+      for (let key of sizeKeysOn(work, source.id)) {
+        work.sizes.set(`${newSheetId}${key.slice(key.indexOf(":"))}`, work.sizes.get(key)!);
       }
       work.log.push({ kind: "duplicate", sheetId: source.id, title: source.title, newSheetId, newTitle: title });
       // Google picks a localized name, and the first position, for a copy given neither.
@@ -487,8 +728,55 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         for (let map of byCell(work)) map.delete(key);
       }
       work.keys!.delete(sheet.id);
+      for (let key of sizeKeysOn(work, sheet.id)) work.sizes.delete(key);
       work.log.push({ kind: "deleteSheet", sheetId: sheet.id, title: sheet.title });
       return [{ deleteSheet: { sheetId: sheet.id } }];
+    }
+    case "resizeRows":
+    case "resizeColumns": {
+      let sheet = existing(change.sheetId);
+      let axis = axisOf(change.op);
+      let lines = axis === "rows" ? sheet.rows : sheet.columns;
+      let count = lineCount(lines);
+      if (change.start + change.count > count) {
+        throw conflict(`"${sheet.title}" has ${plural(count, axis === "rows" ? "row" : "column")}, so ` +
+          `${band(axis, change.start, change.count)} cannot be resized`);
+      }
+      room(sizesAdded(work, sheet, change));
+      for (let identity of linesAt(lines, change.start, change.start + change.count)) {
+        work.sizes.set(lineKey(sheet.id, axis, identity!), change.size);
+      }
+      return [{
+        updateDimensionProperties: {
+          range: {
+            sheetId: sheet.id, dimension: axis === "rows" ? "ROWS" : "COLUMNS",
+            startIndex: change.start, endIndex: change.start + change.count,
+          },
+          properties: { pixelSize: change.size },
+          fields: "pixelSize",
+        },
+      }];
+    }
+    case "freeze": {
+      let sheet = existing(change.sheetId);
+      let frozen = sheet;
+      for (let [axis, count] of [["rows", change.rows], ["columns", change.columns]] as const) {
+        if (count === undefined) continue;
+        let reason = unfreezable(frozen, axis, count);
+        if (reason !== undefined) throw conflict(reason);
+        frozen = withLayout(frozen, axis, count, [...frozen.merges ?? []]);
+      }
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? frozen : candidate);
+      let gridProperties = {
+        ...(change.rows === undefined ? {} : { frozenRowCount: change.rows }),
+        ...(change.columns === undefined ? {} : { frozenColumnCount: change.columns }),
+      };
+      return [{
+        updateSheetProperties: {
+          properties: { sheetId: sheet.id, gridProperties },
+          fields: Object.keys(gridProperties).map(field => `gridProperties.${field}`).join(","),
+        },
+      }];
     }
     default: {
       let sheet = existing(change.sheetId);
@@ -510,7 +798,8 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
         work.log.push({ kind: "insert", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
         // New lines take the formatting of the line before them; Google refuses lines added after
         // the last unless they do.
-        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
+        work.sheets = work.sheets.map(candidate => candidate.id === sheet.id
+          ? withLines(afterInsert(candidate, axis, change.start, change.count), axis, next) : candidate);
         return [{ insertDimension: { range, inheritFromBefore: change.start > 0 } }];
       }
       if (change.start + change.count > count) {
@@ -526,16 +815,24 @@ function applyOne(work: Working, change: PlannedChange, by: number, conflict: (r
       // A band may span millions of lines, so the sheet's entries are found by their position.
       let part = axis === "rows" ? 1 : 2;
       let keys = keysOn(work, sheet.id);
+      let deleted = (identity: string) => {
+        let position = positionOf(lines, identity);
+        return position !== undefined && position >= change.start && position < change.start + change.count;
+      };
       for (let key of keys) {
-        let position = positionOf(lines, key.split(":")[part]);
-        if (position !== undefined && position >= change.start && position < change.start + change.count) {
+        if (deleted(key.split(":")[part])) {
           for (let map of byCell(work)) map.delete(key);
           keys.delete(key);
         }
       }
+      for (let key of sizeKeysOn(work, sheet.id)) {
+        let [, along, identity] = key.split(":");
+        if (along === axis && deleted(identity)) work.sizes.delete(key);
+      }
       next = deleteLines(lines, change.start, change.count);
       work.log.push({ kind: "delete", sheetId: sheet.id, title: sheet.title, axis, start: change.start, count: change.count });
-      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id ? withLines(candidate, axis, next) : candidate);
+      work.sheets = work.sheets.map(candidate => candidate.id === sheet.id
+        ? withLines(afterDelete(candidate, axis, change.start, change.count), axis, next) : candidate);
       return [{ deleteDimension: { range } }];
     }
   }
@@ -598,6 +895,8 @@ export function resolveChanges(
         case "writeCells":
         case "clearRange":
         case "formatCells":
+        case "mergeCells":
+        case "unmergeCells":
           return resolveCells(work, change, label);
         case "addSheet": {
           let index = change.index ?? work.sheets.length;
@@ -640,11 +939,37 @@ export function resolveChanges(
           }
           return { op: "deleteSheet", sheetId: sheet.id, rowCount: sheet.rowCount, columnCount: sheet.columnCount };
         }
+        case "resizeRows":
+        case "resizeColumns": {
+          let sheet = sheetFor(change.sheet);
+          let axis = axisOf(change.op);
+          let count = axis === "rows" ? sheet.rowCount : sheet.columnCount;
+          if (change.start + change.count > count) {
+            throw new Error(`${label}: "${sheet.title}" has ${plural(count, axis === "rows" ? "row" : "column")}, ` +
+              `so ${band(axis, change.start, change.count)} cannot be resized.`);
+          }
+          return { op: change.op, sheetId: sheet.id, start: change.start, count: change.count, size: change.size };
+        }
+        case "freeze": {
+          let sheet = sheetFor(change.sheet);
+          let frozen = sheet;
+          for (let [axis, count] of [["rows", change.rows], ["columns", change.columns]] as const) {
+            if (count === undefined) continue;
+            let reason = unfreezable(frozen, axis, count);
+            if (reason !== undefined) throw new Error(`${label}: ${reason}.`);
+            frozen = withLayout(frozen, axis, count, [...frozen.merges ?? []]);
+          }
+          return {
+            op: "freeze", sheetId: sheet.id,
+            ...(change.rows === undefined ? {} : { rows: change.rows }),
+            ...(change.columns === undefined ? {} : { columns: change.columns }),
+          };
+        }
         default:
           return resolveLines(change, sheetFor(change.sheet), label, fits);
       }
     })();
-    if (!isRangeChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
+    if (!isRangeChange(next) && !isLayoutChange(next) && work.log.length >= MAX_QUEUED_STEPS) {
       throw new Error(`${label}: ${MAX_QUEUED_STEPS} changes to rows, columns and sheets are queued already, ` +
         "the most that may be. Approve or reject queued changes first.");
     }
@@ -674,7 +999,8 @@ function sheetNamed(work: Working, title: string, label: string): SimSheet {
 }
 
 function resolveCells(
-  work: Working, change: Extract<PreparedChange, { op: "writeCells" | "clearRange" | "formatCells" }>,
+  work: Working,
+  change: Extract<PreparedChange, { op: "writeCells" | "clearRange" | "formatCells" | "mergeCells" | "unmergeCells" }>,
   label: string,
 ): PlannedChange {
   let sheet = sheetNamed(work, change.sheet, label);
@@ -688,6 +1014,16 @@ function resolveCells(
   }
   if (change.op === "clearRange") return { op: change.op, sheetId: sheet.id, rect: change.rect };
   if (change.op === "formatCells") return { op: change.op, sheetId: sheet.id, rect: change.rect, format: change.format };
+  if (change.op === "mergeCells" || change.op === "unmergeCells") {
+    let reason = change.op === "mergeCells"
+      ? unmergeable(sheet, change.rect, change.merge) : ununmergeable(sheet, change.rect);
+    if (reason !== undefined) throw new Error(`${label}: ${reason}.`);
+    return change.op === "mergeCells"
+      ? { op: change.op, sheetId: sheet.id, rect: change.rect, merge: change.merge }
+      : { op: change.op, sheetId: sheet.id, rect: change.rect };
+  }
+  let dropped = coveredWrite(sheet, change.rect, change.values);
+  if (dropped) throw new Error(`${label}: ${droppedWrite(dropped)}.`);
   let titleOf = (name: string) => findSheet(work.sheets, name)?.title;
   let values = change.values.map((row, r) => row.map((value, c) => {
     if (!isFormula(value)) return value;
@@ -754,7 +1090,10 @@ export function planSheet(
   if (changes.length === 0) return { grid, requests: [] };
   let work = working(grid);
   let requests = changes.flatMap((change, i) => applyOne(work, change, by, unexpected(i, change)));
-  return { grid: { sheets: work.sheets, cells: work.cells, formats: work.formats, log: work.log }, requests };
+  return {
+    grid: { sheets: work.sheets, cells: work.cells, formats: work.formats, sizes: work.sizes, log: work.log },
+    requests,
+  };
 }
 
 // The cells `rect` of `sheet` covers as they were in `original`, the same sheet before the batch,
@@ -784,8 +1123,9 @@ function uncovered(area: SheetArea, other: SheetArea): SheetArea[] {
 
 /**
  * The cells `planned` overwrites or removes, as `grid`, the spreadsheet just before the batch,
- * holds them: each write's cells mapped back through the batch's own earlier changes, less those
- * of lines and sheets it creates; each deleted band of rows or columns; each deleted sheet. Each
+ * holds them: each write's cells, and those a merge clears, mapped back through the batch's own
+ * earlier changes, less those of lines and sheets it creates; each deleted band of rows or columns;
+ * each deleted sheet. Each
  * cell is in one area only. Throws `Error` when they are more than `MAX_GUARDED_CELLS`.
  */
 export function guardCells(grid: Grid, planned: readonly PlannedChange[]): SheetArea[] {
@@ -797,6 +1137,9 @@ export function guardCells(grid: Grid, planned: readonly PlannedChange[]): Sheet
     let covered: SheetArea[] = [];
     if (sheet && original) {
       if (isCellChange(change)) covered = mappedBack(original, sheet, change.rect);
+      else if (change.op === "mergeCells") {
+        covered = mergeCleared(change.rect, change.merge).flatMap(rect => mappedBack(original, sheet, rect));
+      }
       else if (change.op === "deleteSheet") {
         covered = [{
           sheetId: original.id,
@@ -870,9 +1213,10 @@ export function guardFits(sheets: readonly SheetMeta[], cells: readonly SheetAre
   });
 }
 
-// The sheets a change to rows, columns or sheets acts on or creates.
+// The sheets a change to rows, columns or sheets acts on or creates. Sizing and freezing lines moves
+// no cell, so no later change builds on them.
 function structuralSheets(change: PlannedChange): number[] {
-  if (isRangeChange(change)) return [];
+  if (isRangeChange(change) || isLayoutChange(change)) return [];
   return change.op === "duplicateSheet" ? [change.sheetId, change.newSheetId] : [change.sheetId];
 }
 
@@ -917,20 +1261,27 @@ export function guardAfter(
   let addressed = new Set(guardedSheets(planned));
   // A formula names rows, columns and sheets as earlier structure leaves them, on any sheet, as do
   // those a copy takes from its original and those the guard digests, so a batch with one depends
-  // on every structural change queued before it. A copy also takes the formatting queued for its
-  // original, which records no change it came from, so it depends on every formatting change too.
+  // on every structural change queued before it. A copy also takes the formatting, line sizes,
+  // frozen lines and merges queued for its original, which record no change they came from, so it
+  // depends on every change to them too.
   let copies = planned.some(change => change.op === "duplicateSheet");
   let formulas = guardsFormula || copies ||
     planned.some(change => change.op === "writeCells" && change.values.some(row => row.some(isFormula)));
   let places = placesSheet(planned);
   for (let { id, action } of pending) {
-    if (action.payload.changes.some(change => (copies && change.op === "formatCells") ||
+    if (action.payload.changes.some(change => (copies && copiedLayout(change)) ||
       structuralSheets(change).some(sheetId => formulas || addressed.has(sheetId)) ||
       (places && (placesSheet([change]) || change.op === "deleteSheet")))) {
       after.add(id);
     }
   }
   return [...after].toSorted((a, b) => a - b);
+}
+
+/** Whether a change sets what a copy of its sheet takes as it stands: formatting or layout. */
+function copiedLayout(change: PlannedChange): boolean {
+  return change.op === "formatCells" || isLayoutChange(change) || change.op === "mergeCells" ||
+    change.op === "unmergeCells";
 }
 
 /** Titles for the approver of each sheet `planned` acts on, as `grid` has them, or creates. */
@@ -981,6 +1332,28 @@ export function checkProtections(
     let protections = locked.filter(protection => protection.area.sheetId === source);
     if (sheet && source !== undefined && protections.length > 0) {
       let title = metadata.sheets.find(candidate => candidate.id === source)?.title ?? sheet.title;
+      // Google freezes lines through a protected range, and resizes lines outside one (probe SH8).
+      if (change.op === "freeze") {
+        applyOne(work, change, 0, unexpected(i, change));
+        return;
+      }
+      if (change.op === "resizeRows" || change.op === "resizeColumns") {
+        let axis = axisOf(change.op);
+        let held = linesAt(axis === "rows" ? sheet.rows : sheet.columns, change.start, change.start + change.count)
+          .flatMap(line => {
+            let base = line === undefined ? undefined : baseIndexOf(line);
+            return base === undefined ? [] : [base];
+          });
+        let crossed = protections.find(({ area: { rect } }) => held.some(line => axis === "rows"
+          ? line >= rect.startRow && line < rect.endRow : line >= rect.startColumn && line < rect.endColumn));
+        if (crossed) {
+          throw new Error(`${label}: ${band(axis, change.start, change.count)} of "${sheet.title}" ` +
+            `${change.count === 1 ? "crosses" : "cross"} ${protectionName(crossed, title)}, which the ` +
+            "connected account may not edit.");
+        }
+        applyOne(work, change, 0, unexpected(i, change));
+        return;
+      }
       if (!isRangeChange(change)) {
         throw new Error(`${label}: "${sheet.title}" holds ${protectionName(protections[0], title)}, which ` +
           "the connected account may not edit, so its rows, columns and tab cannot be changed.");
