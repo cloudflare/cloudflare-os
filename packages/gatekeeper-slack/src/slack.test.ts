@@ -242,7 +242,9 @@ describe("Slack resource type grants", () => {
         getGrantedResourceUrlPatterns: async () => patterns,
       }),
     } } };
-    vi.spyOn(SlackApi.prototype, "getAccountDescription").mockResolvedValue({ uniqueName: "slack-user" });
+    vi.spyOn(SlackApi.prototype, "getAccountDescription").mockResolvedValue({
+      uniqueName: "slack-user", avatar: { url: "" },
+    });
     const user = new SlackUserImpl(ctx as never, {} as never);
     const description = await user.describe();
     expect(description.grantedResourceTypeIds).toEqual(ids);
