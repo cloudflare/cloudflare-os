@@ -89,7 +89,7 @@ export const GadgetFileReview = ({ file, gadgetTitle, waiting, detail, service, 
       for (const [done, request] of chosen.entries()) {
         if (chosen.length > 1) setProgress({ verb: decision === 'approve' ? 'Approving' : 'Denying', done, total: chosen.length })
         try {
-          await (decision === 'approve' ? requests.approve([request]) : requests.deny([request]))
+          await requests.decide(request.id, decision)
         } catch (error) {
           setProblem(`Couldn’t ${decision} “${request.description.title}”: ${messageOf(error)}`)
           return
@@ -121,7 +121,7 @@ export const GadgetFileReview = ({ file, gadgetTitle, waiting, detail, service, 
       onAlwaysAllow={allowable ? async () => {
         setProblem(undefined)
         try {
-          await requests.allow(file.gatekeeperId, allowable, waiting)
+          await requests.allow(file.gatekeeperId, allowable)
           onAllowed(allowable)
         } catch (error) {
           setProblem(`Couldn’t allow it: ${messageOf(error)}`)

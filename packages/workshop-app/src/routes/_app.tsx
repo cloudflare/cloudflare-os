@@ -19,6 +19,7 @@ import { readLayoutPrefs, writeLayoutPrefs } from '@/prefs/layoutPrefs'
 import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { RpcGate } from '@/rpc/RpcGate'
 import { sharedConnection } from '@/rpc/sharedConnection'
+import { useApi } from '@/rpc/ApiContext'
 import { clearToken } from '@/rpc/token'
 import { AppSearch } from './-AppSearch'
 import { ShareLinkGate } from '@/sharing/ShareLinkGate'
@@ -57,6 +58,23 @@ export const Route = createFileRoute('/_app')({
 
 const absolute = (href: string) => new URL(href, window.location.origin).href
 
+/** Whether the user is a deployment admin, in a build, where the admin page is served (`/admin`). */
+const useIsAdmin = () => {
+  const { api } = useApi()
+  const [admin, setAdmin] = useState(false)
+  useEffect(() => {
+    if (!import.meta.env.PROD) return
+    let cancelled = false
+    api.amIAdmin().then((yes) => {
+      if (!cancelled) setAdmin(yes)
+    }, () => {})
+    return () => {
+      cancelled = true
+    }
+  }, [api])
+  return admin
+}
+
 /**
  * The frame, laid out for the page the URL names (see `AppShell`): beside a chat, what it names
  * there (`?open=`); as an item's own page (an app's, or one in the library), the item alone. Both are the same card, so going from
@@ -80,6 +98,7 @@ const AppFrame = () => {
   const { workspaceId } = useParams({ strict: false })
   const [prefs] = useState(readLayoutPrefs)
   const narrow = useNarrowScreen()
+  const admin = useIsAdmin()
 
   const homePage = useMatch({ from: '/_app/', shouldThrow: false })
   const workspacePage = useMatch({ from: '/_app/workspace/$workspaceId/', shouldThrow: false })
@@ -268,6 +287,8 @@ const AppFrame = () => {
       }}
       notice={notice}
       onSearch={() => setSearching(true)}
+      // The existing Workshop's admin page, which a build serves beside this app.
+      onOpenAdmin={admin ? () => window.location.assign('/admin') : undefined}
       // Forgets the session here and starts again from nothing, so no one else at this browser sees it.
       onSignOut={() => {
         clearToken()

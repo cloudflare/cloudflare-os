@@ -4,6 +4,7 @@ import type {
   ActionLogEntry,
   ActionsSubscriber,
   AiChatMetadata,
+  CreationApproval,
   GadgetBindingInfo,
   GadgetClient,
   WorkpiecesSubscriber,
@@ -47,7 +48,7 @@ export type RequestsOverseer = {
   subscribeToActions(subscriber: ActionsSubscriber & RpcTarget): Promise<Disposable>
   listActions(options?: { beforeId?: number; filter?: 'pending' }): Promise<ActionHistoryPage>
   listChats(): Promise<Pick<AiChatMetadata, 'id' | 'title' | 'spawnerName' | 'spawnedByGadgetId'>[]>
-  approveAction(id: number): Promise<void>
+  approveAction(id: number, creation?: CreationApproval): Promise<void>
   rejectAction(id: number): Promise<void>
   onRpcBroken(callback: (error: unknown) => void): void
 } & Disposable
@@ -186,35 +187,24 @@ export class GadgetRequests {
     this.start()
   }
 
-  /** Approves these, oldest first, so a change never lands before the one it builds on. */
-  approve = async (requests: readonly GadgetRequest[]) => {
+  /**
+   * Approves or denies one. A creation is approved with how it is to be made. In what order a
+   * run of them goes is `decideInOrder`'s.
+   */
+  decide = async (actionId: number, decision: 'approve' | 'deny', creation?: CreationApproval) => {
     const overseer = this.#ready()
-    for (const request of requests.toSorted((a, b) => a.id - b.id)) await overseer.approveAction(request.id)
-  }
-
-  /** Denies these, newest first. */
-  deny = async (requests: readonly GadgetRequest[]) => {
-    const overseer = this.#ready()
-    for (const request of requests.toSorted((a, b) => b.id - a.id)) await overseer.rejectAction(request.id)
+    await (decision === 'approve' ? overseer.approveAction(actionId, creation) : overseer.rejectAction(actionId))
   }
 
   /**
    * Lets the gadget make changes of this kind through this connection from now on, without
-   * asking, and approves these, which are of that kind. The server applies those it can at once;
-   * the rest, held behind something else waiting on the connection, are approved here.
+   * asking. The server then applies those waiting, in order: each held behind something else
+   * waiting on the connection goes once that is decided, never ahead of it.
    */
-  allow = async (gatekeeperId: number, actionKind: ActionKind, requests: readonly GadgetRequest[]) => {
+  allow = async (gatekeeperId: number, actionKind: ActionKind) => {
     const gadget = this.#gadget
     if (!gadget) throw new Error('The gadget is still loading.')
     await gadget.allowActionKind(gatekeeperId, actionKind)
-    const overseer = this.#ready()
-    for (const request of requests.toSorted((a, b) => a.id - b.id)) {
-      if (this.#byId.get(request.id)?.state !== 'pending') continue
-      await overseer.approveAction(request.id).catch((error: unknown) => {
-        // The server got there first.
-        if (!/not pending/i.test(error instanceof Error ? error.message : String(error))) throw error
-      })
-    }
   }
 
   // Whether it is the gadget's, or an agent's it started.

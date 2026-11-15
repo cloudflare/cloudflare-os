@@ -3,7 +3,7 @@ import { KindMark } from '@/components/KindMark'
 import { cn } from '@cloudflare/kumo/utils'
 import { LinkButton } from '@/components/LinkButton'
 import { BlueprintPicture } from './BlueprintTile'
-import { CARD, CardHead, FanCard, SHEET } from './FanCard'
+import { CARD, CardHead, ENTRANCE, FanCard, SHEET } from './FanCard'
 
 /** A blueprint as Home suggests it. */
 export type SuggestedBlueprint = { id: string; title: string; picture?: string; icon: ReactElement; href?: string }
@@ -38,7 +38,7 @@ export const BlueprintSuggestions = ({ blueprints, more = [], onOpen, onBrowse, 
           title={blueprint.title}
           // One after another, a beat apart, rather than all at once.
           style={{ animationDelay: `${index * 60}ms` }}
-          className={CARD}
+          className={cn(CARD, ENTRANCE)}
         >
           <CardHead icon={blueprint.icon} title={blueprint.title} />
           <span className={cn(SHEET, 'absolute inset-x-3 top-10 -bottom-3 transition-[translate,box-shadow] duration-300 ease-out group-hover:-translate-y-1 group-hover:shadow-[0_2px_4px_rgb(0_0_0/0.08),0_12px_24px_-8px_rgb(0_0_0/0.18)] motion-reduce:transition-none')}>

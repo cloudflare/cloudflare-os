@@ -47,6 +47,26 @@ const files = new Kept<Uint8Array>()
 const gadgets = new Kept<Uint8Array | null>()
 const connected = new Kept<ResourcePreview | null>()
 
+// Each gadget's latest screen as a URL, by gadget, kept for the session: a tile drawn again (Home
+// left and come back to, or laid out afresh as the window narrows) shows it at once, from the
+// browser's own cache, and one whose gadget was worked on since keeps showing it until the new one
+// arrives. `key` says which drawing it is (`gadgetKey`).
+type ScreenUrl = { key: string; url: string }
+const screenUrls = new Map<string, ScreenUrl>()
+// Long enough for any tile showing a replaced URL to have moved to its successor.
+const REVOKE_AFTER = 30_000
+const keepScreen = (gadget: string, screen: ScreenUrl) => {
+  const before = screenUrls.get(gadget)
+  screenUrls.delete(gadget)
+  screenUrls.set(gadget, screen)
+  if (before) setTimeout(() => URL.revokeObjectURL(before.url), REVOKE_AFTER)
+  if (screenUrls.size > KEPT) {
+    const [oldest, { url }] = screenUrls.entries().next().value!
+    screenUrls.delete(oldest)
+    setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER)
+  }
+}
+
 // Gadgets' pictures, a few at a time, in the order their tiles came near the screen.
 let drawing = 0
 const waiting: Array<() => void> = []
@@ -136,23 +156,31 @@ export const useLibraryPicture = (entry: LibraryEntry) => {
   // A gadget's screen, drawn again by the server only when its code changed; asked for again
   // here when the gadget was worked on since.
   const output = item.kind === 'output' && item.output.type === 'gadget' ? item.output : undefined
-  const gadgetKey = output && `${output.workspaceId}/${output.workpieceId}/${entry.at.valueOf()}`
-  const [gadgetBytes, setGadgetBytes] = useState<{ key: string; bytes: Uint8Array }>()
+  const gadgetId = output && `${output.workspaceId}/${output.workpieceId}`
+  const gadgetKey = gadgetId && `${gadgetId}/${entry.at.valueOf()}`
+  // Its screen as last drawn, as soon as there is one, whether or not it is this drawing; drawn
+  // again here when a newer one arrives.
+  const [, redraw] = useState(0)
+  const screen = gadgetId ? screenUrls.get(gadgetId) : undefined
   // A Google file's top, read through the connection its workspace reaches it by.
   const linked = item.kind === 'connected' ? item.connected : undefined
   const linkedKey = linked && `${linked.workspaceId}/${linked.gatekeeperId}/${linked.subjectId}`
   const [linkedPreview, setLinkedPreview] = useState<{ key: string; preview: ResourcePreview }>()
 
-  useNearScreen(ref, !reconnecting && (gadgetKey !== undefined || linkedKey !== undefined), () => {
+  const drawn = gadgetKey !== undefined && screen?.key === gadgetKey
+  useNearScreen(ref, !reconnecting && ((gadgetKey !== undefined && !drawn) || linkedKey !== undefined), () => {
     let cancelled = false
     let retry: ReturnType<typeof setTimeout> | undefined
-    if (output && gadgetKey) {
+    if (output && gadgetKey && gadgetId && !drawn) {
       // None is not kept: the server may draw it a little later, and another tile asks again.
       const draw = (tries: number) => gadgets.get(gadgetKey, () => inTurn(() => inWorkspace(api, output.workspaceId,
         (overseer) => overseer.getGadget(output.workpieceId).getThumbnail())))
         .then((bytes) => {
           if (bytes) {
-            if (!cancelled) setGadgetBytes({ key: gadgetKey, bytes })
+            if (screenUrls.get(gadgetId)?.key !== gadgetKey) {
+              keepScreen(gadgetId, { key: gadgetKey, url: URL.createObjectURL(new Blob([bytes as BlobPart], { type: 'image/jpeg' })) })
+            }
+            if (!cancelled) redraw((count) => count + 1)
             return
           }
           gadgets.forget(gadgetKey)
@@ -172,7 +200,7 @@ export const useLibraryPicture = (entry: LibraryEntry) => {
   })
 
   const photoUrl = useObjectUrl(photoBytes?.key === photoKey ? photoBytes?.bytes : undefined, photo?.mimeType ?? '')
-  const gadgetUrl = useObjectUrl(gadgetBytes?.key === gadgetKey ? gadgetBytes?.bytes : undefined, 'image/jpeg')
+  const gadgetUrl = screen?.url
   const preview: FileThumbnail | null = gadgetUrl
     ? { type: 'image', url: gadgetUrl, whole: false }
     : linkedPreview && linkedPreview.key === linkedKey

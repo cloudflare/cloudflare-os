@@ -14,6 +14,9 @@ export type PendingDecisionsOptions = {
   approveCreation: (action: CreationAction) => Promise<boolean>
 }
 
+/** What deciding one needs of it: a chat's card has it, as does a gadget's request. */
+export type DecidedAction = Pick<ActionItem, 'actionId' | 'title' | 'creation'>
+
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error))
 
 /**
@@ -24,12 +27,12 @@ const messageOf = (error: unknown) => (error instanceof Error ? error.message : 
  * for once it is made. Stops at the first that fails, and resolves to why, naming it; to nothing
  * once all went, or the run stopped to ask.
  */
-export const decideInOrder = async (
-  actions: readonly ActionItem[],
+export const decideInOrder = async <A extends DecidedAction>(
+  actions: readonly A[],
   decision: Decision,
   { decide, approveCreation }: PendingDecisionsOptions,
   onProgress: (progress: DecisionProgress) => void = () => {},
-  resume: (rest: ActionItem[]) => void = () => {},
+  resume: (rest: A[]) => void = () => {},
 ): Promise<string | undefined> => {
   const ordered = actions.toSorted((a, b) => (decision === 'approve' ? a.actionId - b.actionId : b.actionId - a.actionId))
   const verb = decision === 'approve' ? 'Approving' : 'Denying'
@@ -68,13 +71,13 @@ export const usePendingDecisions = (options: PendingDecisionsOptions) => {
   const running = useRef(false)
   const { decide, approveCreation } = options
 
-  const run = useCallback(async (actions: readonly ActionItem[], decision: Decision): Promise<void> => {
+  const run = useCallback(async (actions: readonly DecidedAction[], decision: Decision): Promise<void> => {
     if (running.current || actions.length === 0) return
     running.current = true
     setProblem(undefined)
     try {
       // What builds on a creation that asked first is approved once it is made.
-      const resume = (rest: ActionItem[]) => void run(rest, 'approve')
+      const resume = (rest: DecidedAction[]) => void run(rest, 'approve')
       setProblem(await decideInOrder(actions, decision, { decide, approveCreation }, setProgress, resume))
     } finally {
       running.current = false

@@ -31,6 +31,11 @@ const ownDist = { pattern: '!dist/**', base: 'package' } as const
 const viteBuildCommand =
   `node --input-type=module -e "process.env.NODE_ENV='production'; await (await import('vite')).build()"`
 
+// The `dist` a deployment serves is the new Workshop, with this app's admin page beside it at
+// `/admin` (see compose-dist.mjs). The new app's build reads the same `VITE_*` flags.
+const newAppBuild = '@gadgets/workshop-app#build'
+const composeDistCommand = 'node compose-dist.mjs'
+
 const runConfig = {
   run: {
     tasks: {
@@ -54,12 +59,14 @@ const runConfig = {
        * was present before loading this config. The Node launcher is shell-neutral.
        */
       build: {
-        command: ['tsc', 'tsc -p tsconfig.vite.json', viteBuildCommand],
+        command: ['tsc', 'tsc -p tsconfig.vite.json', viteBuildCommand, composeDistCommand],
         ...frontendBundleTaskOptions,
+        dependsOn: [...frontendBundleTaskOptions.dependsOn, newAppBuild],
       },
       'build:assets': {
-        command: viteBuildCommand,
+        command: [viteBuildCommand, composeDistCommand],
         ...frontendBundleTaskOptions,
+        dependsOn: [...frontendBundleTaskOptions.dependsOn, newAppBuild],
       },
       // The browser suite second, under its own config (see vitest.browser.config.ts).
       test: vitestTask(['vitest run', 'vitest run -c vitest.browser.config.ts'], [ownDist]),

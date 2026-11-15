@@ -16,6 +16,14 @@ likewise behind an inline `import.meta.env.DEV` check around its dynamic import.
 either, build (`pnpm --filter @gadgets/workshop-app exec vite build`) and grep `dist/` for
 `devpassword`, `MockOverseer` and `gallery`: none should be there.
 
+What a deployment serves is `workshop-frontend/dist`, whose build (a vp task that depends on this
+package's `build`) ends by copying this app's `dist` over it and keeping the old app's page as
+`admin.html`, which Workers assets serves at `/admin` (`workshop-frontend/compose-dist.mjs`). So
+the old app survives only for its admin page, reached from the account menu by admins, and for its
+sign-in form, which a signed-out visitor is sent to outside Cloudflare Access. Behind Access
+(`VITE_CF_ACCESS_MODE=true`, as a gadgets-internal preview builds) `RpcGate` signs in with the
+user's Access credential instead.
+
 ## Layers
 
 ```text

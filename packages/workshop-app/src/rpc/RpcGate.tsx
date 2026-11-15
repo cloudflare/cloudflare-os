@@ -21,6 +21,9 @@ type Session =
 
 const CONNECTING: Session = { phase: 'connecting' }
 
+// A deployment behind Cloudflare Access signs in with the user's Access credential, not a token.
+const CF_ACCESS_MODE = import.meta.env.VITE_CF_ACCESS_MODE === 'true'
+
 const Notice = ({ children }: { children: ReactNode }) => (
   <div className="grid h-full place-items-center p-6 text-base text-kumo-subtle">{children}</div>
 )
@@ -49,14 +52,19 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
 
     const signIn = async () => {
       try {
-        // Written out where it is used, so that a build, where it is `false`, drops the import and
-        // everything behind it, the dev account's password included.
-        const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
-          ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
-          : null)
-        if (!token) return finish({ phase: 'signedOut' })
-        // Pipelined: whoami() goes out with authenticate(), and doubles as the token check.
-        api = publicApi.authenticate(token)
+        if (CF_ACCESS_MODE) {
+          // Behind Cloudflare Access the browser already carries the user's Access credential.
+          api = publicApi.authenticateFromCfAccess()
+        } else {
+          // Written out where it is used, so that a build, where it is `false`, drops the import and
+          // everything behind it, the dev account's password included.
+          const token = readToken() ?? (import.meta.env.DEV && import.meta.env.VITE_DEV_AUTO_LOGIN === 'true'
+            ? await (await import('./devAutoLogin')).devAutoLogin(publicApi)
+            : null)
+          if (!token) return finish({ phase: 'signedOut' })
+          api = publicApi.authenticate(token)
+        }
+        // Pipelined: whoami() goes out with the sign-in, and doubles as its check.
         const value: ApiSession = { api, user: await api.whoami(), reconnecting: false }
         finish({ phase: 'ready', value, reconnecting: { ...value, reconnecting: true } })
       } catch (error) {
@@ -110,9 +118,16 @@ export const RpcGate = ({ connection, children }: { connection: Connection; chil
 
   switch (session.phase) {
     case 'connecting':
-      return <Notice>Connecting…</Notice>
+      // Held back, then faded in: most connections are made before it would show.
+      return <Notice><span className="appears-late">Connecting…</span></Notice>
     case 'signedOut':
-      return <Notice>You’re not signed in.</Notice>
+      // A build is served beside the existing Workshop's admin page, whose sign-in this shares
+      // (the same stored token).
+      return (
+        <Notice>
+          {import.meta.env.PROD ? <span>You’re not signed in. <a href="/admin" className="text-kumo-default underline underline-offset-2">Sign in</a></span> : 'You’re not signed in.'}
+        </Notice>
+      )
     case 'failed':
       return <Notice>Couldn’t sign in: {session.message}</Notice>
     case 'ready':

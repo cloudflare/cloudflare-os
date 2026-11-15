@@ -1,4 +1,4 @@
-import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, SignOutIcon } from '@phosphor-icons/react'
+import { CirclesFourIcon, FolderIcon, MagnifyingGlassIcon, ShieldCheckIcon, SignOutIcon } from '@phosphor-icons/react'
 import { Avatar } from '@/components/Avatar'
 import { Button } from '@/components/Button'
 import { ConnectButton, type ConnectButtonLogo } from '@/components/ConnectButton'
@@ -36,6 +36,8 @@ export type SidebarProps = {
   profilePage?: { current: boolean; onOpen: () => void }
   /** Opens search. */
   onSearch?: () => void
+  /** Goes to the deployment's admin settings, in the account menu. Only for an admin. */
+  onOpenAdmin?: () => void
   /** Signs the user out of this browser. */
   onSignOut?: () => void
   /** Drawn as a rail one button wide: the same buttons in a column, and each workspace's icon. */
@@ -59,6 +61,7 @@ export const Sidebar = ({
   workspacesPage,
   profilePage,
   onSearch,
+  onOpenAdmin,
   onSignOut,
   collapsed = false,
 }: SidebarProps) => {
@@ -104,6 +107,7 @@ export const Sidebar = ({
         <div className="px-3 pt-2 pb-1.5 text-sm text-kumo-subtle">Signed in as <span className="text-kumo-default">{user.name}</span></div>
       )}
       <DropdownMenu.Separator />
+      {onOpenAdmin && <DropdownMenu.Item icon={ShieldCheckIcon} onSelect={onOpenAdmin}>Admin</DropdownMenu.Item>}
       <DropdownMenu.Item icon={SignOutIcon} onSelect={onSignOut} disabled={!onSignOut}>Sign out</DropdownMenu.Item>
     </DropdownMenu>
   )

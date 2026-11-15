@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AnimatePresence } from 'motion/react'
 import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
 import { GadgetAsk, type GadgetAskGroup } from '@/blocks/GadgetAsk'
+import { usePendingDecisions, type Decision } from '@/chat/usePendingDecisions'
+import { useApproveCreation } from '@/connections/ApproveCreation'
 import { useServices } from '@/connections/useServices'
 import { connectedFileIdOfUrl, connectedKindOfUrl } from '@/files/connectedFile'
 import type { GadgetAgent, GadgetRequest } from '@/gadgets/GadgetRequests'
@@ -81,6 +83,15 @@ export const GadgetAskDock = ({ gadget, title, onOpenSettings }: {
   const { requests, snapshot } = useGadgetRequests(gadget)
   const { services } = useServices()
   const [problem, setProblem] = useState<string>()
+  // Decided as a chat's are: in order, and a creation made in one of the user's accounts, asking
+  // which in `dialog` when there is a choice.
+  const decideOne = useCallback((actionId: number, decision: Decision) =>
+    requests ? requests.decide(actionId, decision) : Promise.reject(new Error('The gadget is still loading.')), [requests])
+  const { approveCreation, dialog } = useApproveCreation({
+    workspaceId: gadget.workspaceId,
+    approve: (actionId, creation) => requests ? requests.decide(actionId, 'approve', creation) : Promise.reject(new Error('The gadget is still loading.')),
+  })
+  const decisions = usePendingDecisions({ decide: decideOne, approveCreation })
   const [notice, setNotice] = useState<string>()
   // The connection whose file is being reviewed over the gadget.
   const [reviewing, setReviewing] = useState<number>()
@@ -137,11 +148,15 @@ export const GadgetAskDock = ({ gadget, title, onOpenSettings }: {
   // What it is allowed, it and its agents may do.
   const allowed = (actionKind: ActionKind) => setNotice(`${title}${snapshot.agents.size > 0 ? ' and its agents' : ''} can ${lowerFirst(actionKind.label)} without asking now.`)
 
-  const decide = (key: string, decision: (kind: GadgetRequest[]) => Promise<void>) => {
+  const decide = (key: string, decision: Decision) => {
     const kind = kinds.find((each) => each.key === key)
     if (!kind) return
     setProblem(undefined)
-    return decision(kind.requests).catch((error: unknown) => setProblem(`Couldn’t decide “${kind.requests[0].description.title}”: ${messageOf(error)}`))
+    return decisions.run(kind.requests.map(({ id, description, creation, gatekeeperId }) => ({
+      actionId: id,
+      title: description.title,
+      creation: creation && gatekeeperId !== undefined ? { gatekeeperId } : undefined,
+    })), decision)
   }
 
   return (
@@ -164,6 +179,7 @@ export const GadgetAskDock = ({ gadget, title, onOpenSettings }: {
         />
       )}
     </AnimatePresence>
+    {dialog}
     <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 flex justify-center p-3">
       <div className="w-full max-w-xl">
         <GadgetAsk
@@ -172,16 +188,26 @@ export const GadgetAskDock = ({ gadget, title, onOpenSettings }: {
           // The file under review takes the gadget's place, and is decided there.
           groups={file ? [] : groups}
           notice={notice ? { text: notice, action: onOpenSettings && { label: 'Settings', onClick: onOpenSettings } } : undefined}
-          problem={problem}
-          onDismissProblem={() => setProblem(undefined)}
-          onAllow={(key) => decide(key, async (kind) => {
-            const { gatekeeperId, description } = kind[0]
-            if (gatekeeperId === undefined || !description.actionKind) return requests.approve(kind)
-            await requests.allow(gatekeeperId, description.actionKind, kind)
-            allowed(description.actionKind)
-          })}
-          onAllowOnce={(key) => decide(key, requests.approve)}
-          onDeny={(key) => decide(key, requests.deny)}
+          problem={problem ?? decisions.problem}
+          onDismissProblem={() => {
+            setProblem(undefined)
+            decisions.dismissProblem()
+          }}
+          onAllow={async (key) => {
+            const kind = kinds.find((each) => each.key === key)
+            if (!kind) return
+            const { gatekeeperId, description } = kind.requests[0]
+            if (gatekeeperId === undefined || !description.actionKind) return decide(key, 'approve')
+            setProblem(undefined)
+            try {
+              await requests.allow(gatekeeperId, description.actionKind)
+              allowed(description.actionKind)
+            } catch (error) {
+              setProblem(`Couldn’t allow “${description.actionKind.label}”: ${messageOf(error)}`)
+            }
+          }}
+          onAllowOnce={(key) => decide(key, 'approve')}
+          onDeny={(key) => decide(key, 'deny')}
         />
       </div>
     </div>

@@ -14,9 +14,14 @@ export type FanCardProps = {
   onOpen: () => void
   /** Where it falls in its row, for coming in a beat after the one before. */
   index?: number
+  /** It fades in as it is first drawn, a beat after the one before (`index`). */
+  entrance?: boolean
 }
 
-export const CARD = 'appears group relative flex aspect-[4/3] w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-kumo-contrast/5 text-left ring-1 ring-kumo-contrast/6 outline-none transition-[scale,background-color] duration-150 ease-out [animation-fill-mode:backwards] hover:bg-kumo-contrast/7 focus-visible:ring-2 focus-visible:ring-kumo-ring active:scale-[0.97] motion-reduce:transition-none'
+export const CARD = 'group relative flex aspect-[4/3] w-full min-w-0 flex-col overflow-hidden rounded-2xl bg-kumo-contrast/5 text-left ring-1 ring-kumo-contrast/6 outline-none transition-[scale,background-color] duration-150 ease-out hover:bg-kumo-contrast/7 focus-visible:ring-2 focus-visible:ring-kumo-ring active:scale-[0.97] motion-reduce:transition-none'
+
+/** A card's fade as it is first drawn, a beat after the one before (its `animationDelay`). */
+export const ENTRANCE = 'appears [animation-fill-mode:backwards]'
 
 /** A sheet of paper standing in a card: a white page's edge still shows against the card in light. */
 export const SHEET = 'overflow-hidden rounded-t-lg bg-kumo-base shadow-[0_1px_2px_rgb(0_0_0/0.1),0_8px_20px_-8px_rgb(0_0_0/0.22)] ring-1 ring-kumo-contrast/12'
@@ -43,8 +48,8 @@ const FAN = [
  * The card at the end of a row of cards that goes to all of what they are a few of: headed by
  * where it goes, with a fan of three sheets standing out of its foot that spreads when pointed at.
  */
-export const FanCard = ({ title, icon, detail, sheets, href, onOpen, index = 0 }: FanCardProps) => (
-  <LinkButton href={href} onClick={onOpen} title={detail ? `${title}, ${detail}` : title} style={{ animationDelay: `${index * 60}ms` }} className={CARD}>
+export const FanCard = ({ title, icon, detail, sheets, href, onOpen, index = 0, entrance = true }: FanCardProps) => (
+  <LinkButton href={href} onClick={onOpen} title={detail ? `${title}, ${detail}` : title} style={entrance ? { animationDelay: `${index * 60}ms` } : undefined} className={cn(CARD, entrance && ENTRANCE)}>
     <CardHead icon={icon} title={title} detail={detail} />
     <span aria-hidden="true" className={cn('absolute inset-x-0 -bottom-3', detail ? 'top-[3.875rem]' : 'top-11')}>
       {FAN.map((turn, at) => (

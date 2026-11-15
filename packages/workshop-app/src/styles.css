@@ -42,6 +42,16 @@
   }
 }
 
+/* A card's picture that arrives while the card is in view, faded in rather than cut to. */
+.picture-appears {
+  animation: appears 400ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .picture-appears {
+    animation: none;
+  }
+}
+
 /* The chat's edge fades, driven by the messages' own scroll position. Each is a 0-1 amount: 0 while
    the conversation rests at that end (nothing is under the header at the first message; the newest
    message sits clear of the composer), eased in over the first pixels scrolled away from it. The

@@ -33,7 +33,7 @@ Reviewing a pull request: follow `REVIEW.md` as well.
 ## Packages
 
 * packages/workshop-frontend: The Gadgets Workshop UI, a pure client-side single-page app (React, Kumo UI (https://kumo-ui.com/api/component-registry), Phosphor icons, Vite) that speaks to the backend over a persistent WebSocket RPC connection.
-* packages/workshop-app: The in-progress rework of the Workshop frontend, built beside `workshop-frontend` with a reduced scope (chat, Library, Workspaces). Not yet served by the router.
+* packages/workshop-app: The in-progress rework of the Workshop frontend, built beside `workshop-frontend` with a reduced scope (chat, Library, Workspaces). On this branch it is what a deployment serves: `workshop-frontend`'s build puts it at the root of its `dist`, keeping only its own admin page, at `/admin` (`packages/workshop-frontend/compose-dist.mjs`).
 * packages/workshop-backend: The Gadgets Workshop server, on Cloudflare Workers. This is the **kernel** (see below).
 * packages/workshop-shared: The application's RPC interface, shared by client and server. The protocol is Cap'n Web, which has similar semantics to Cloudflare's Worker-to-Worker RPC while being able to run in a browser over WebSocket.
 * packages/bundled-blueprints: The blueprints the deployment ships with; `blueprints/<name>/` holds each blueprint's `blueprint.json` plus its gadget code under `files/`, which may be TypeScript.
