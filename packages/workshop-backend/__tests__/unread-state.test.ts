@@ -18,27 +18,30 @@ declare module "cloudflare:workers" {
   }
 }
 type Impl = OverseerDurableObject["impl"];
+const userProfiles = new Map<string, AiChatAuthorInfo>();
 const withImpl = <T>(stub: DurableObjectStub<OverseerDurableObject>, fn: (impl: Impl) => Promise<T>) =>
   runInDurableObject(env.TEST_OVERSEER.get(stub.id), instance => fn(instance.impl));
-// Most tests exercise already-participating users; default-policy tests opt out explicitly.
-const setup = async (user?: DurableObjectStub<UserDurableObject>, participating = true) => {
+// Most tests use legacy subscribed chats. New-policy fixtures represent an opened chat unless
+// `opened` is false, which exercises an untouched background chat.
+const setup = async (user?: DurableObjectStub<UserDurableObject>, participating = true, opened = true) => {
   if (!user) {
     const id = crypto.randomUUID();
     user = env.TEST_USER.getByName(id);
     await runInDurableObject(user, (_instance, ctx) => makeUserStorage(ctx.storage).profile.put({type: "user", id, name: "Owner"}));
   }
   const profile = await user.whoami();
+  userProfiles.set(user.id.toString(), profile);
   const workspace = env.TEST_OVERSEER.getByName(crypto.randomUUID());
   const workspaceId = workspace.id.toString();
   await user.newWorkspace(workspaceId, "Workspace");
   await withImpl(workspace, async impl => {
     impl.storage.version.put(OVERSEER_STORAGE_VERSION);
     impl.storage.chatMeta.put({id: 1, title: "Demo", started: new Date(), lastActive: new Date()});
-    impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 0, notificationParticipants: participating ? [profile.id] : []});
+    impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 0, notificationParticipants: participating ? undefined : opened ? [profile.id] : []});
     impl.storage.ownerId.put(user!.id.toString());
     impl.ownerId = user!.id.toString();
   });
-  return {user, workspace, workspaceId};
+  return {user, workspace, workspaceId, profile};
 };
 type Fixture = Awaited<ReturnType<typeof setup>>;
 const write = (impl: Impl, sequence: number, message = "Hello", chatId = 1,
@@ -54,8 +57,10 @@ const cursor = (fixture: Fixture) => runInDurableObject(fixture.user, (_instance
 const outbox = (fixture: Fixture) => runInDurableObject(fixture.user, (_instance, ctx) =>
   [...makeUserStorage(ctx.storage).notificationOutbox.list()]);
 const drained = (fixture: Fixture) => vi.waitFor(async () => expect(await outbox(fixture)).toEqual([]));
-const setRead = (fixture: Fixture, sequence: number | undefined, rewind = false, chatId = 1) =>
-  withImpl(fixture.workspace, impl => impl.setChatReadHorizon(fixture.user.id.toString(), chatId, sequence, rewind));
+const setRead = (fixture: Fixture, sequence: number | undefined, rewind = false, chatId = 1) => {
+  const profile = userProfiles.get(fixture.user.id.toString())!;
+  return withImpl(fixture.workspace, impl => impl.setChatReadHorizon(fixture.user.id.toString(), chatId, sequence, rewind, profile.id));
+};
 const progress = (first = 1, latest = first): ChatMessageProgress => ({
   head: {chatTitle: "Demo", latestSequence: first, latestMessagePreview: "Hello"},
   headUpdatedAt: new Date(0), hasParticipated: true,
@@ -64,22 +69,26 @@ const progress = (first = 1, latest = first): ChatMessageProgress => ({
 const event = (sequence: number) => ({id: crypto.randomUUID(), sequence,
   kind: "taskCompleted" as const, chatTitle: "Demo"});
 const notificationBaselines = (fixture: Fixture, user = fixture.user) => withImpl(fixture.workspace, async impl =>
-  [...impl.storage.chatMeta.list()].map(meta => ({chatId: meta.id,
+  [...impl.storage.chatMeta.list()].filter(meta => {
+    const participants = impl.storage.nextChatSequences.get(meta.id)?.notificationParticipants;
+    return participants === undefined || participants.includes(userProfiles.get(user.id.toString())!.id);
+  }).map(meta => ({chatId: meta.id,
     head: impl.chatHead(meta.id),
     headUpdatedAt: meta.lastActive,
-    hasParticipated: impl.hasChatParticipation(meta.id, user.id.toString()),
+    hasParticipated: impl.chatParticipationDefault(meta.id),
     notifiedThroughSequence: impl.nextChatSequencePeek(meta.id) - 1,
     readThroughVisibleSequence: impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0})));
-const addReader = async (fixture: Fixture, participating = true) => {
+const addReader = async (fixture: Fixture, opened = true) => {
   const owner = await fixture.user.whoami();
   const profile = {type: "user" as const, id: `reader-${crypto.randomUUID()}`, name: "Reader"};
   const reader = env.TEST_USER.getByName(profile.id);
+  userProfiles.set(reader.id.toString(), profile);
   await runInDurableObject(fixture.user, (_instance, ctx) => makeUserStorage(ctx.storage).profile.put(owner));
   await runInDurableObject(reader, (_instance, ctx) => makeUserStorage(ctx.storage).profile.put(profile));
   await withImpl(fixture.workspace, async impl => {
-    if (participating) {
-      const counter = impl.storage.nextChatSequences.get(1)!;
-      impl.storage.nextChatSequences.put({...counter, notificationParticipants: [...counter.notificationParticipants ?? [], profile.id]});
+    const counter = impl.storage.nextChatSequences.get(1)!;
+    if (opened && counter.notificationParticipants) {
+      impl.storage.nextChatSequences.put({...counter, notificationParticipants: [...counter.notificationParticipants, profile.id]});
     }
     impl.storage.collaborators.put({profile,
       addedBy: [{type: "user", sharer: owner.id, role: "build", created: new Date()}]});
@@ -124,6 +133,143 @@ it.each([false, true])("reports the source notification default without enrollin
   });
   expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
   expect(await cursor(fixture)).toBeUndefined();
+});
+
+describe("one-way chat fanout enrollment", () => {
+  it("skips untouched users, then preserves muted catch-up after first open without opting into alerts", async () => {
+    const fixture = await setup(undefined, false, false);
+    const {reader} = await addReader(fixture, false);
+    const dispatched: string[] = [];
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        dispatched.push(user.id.toString()); await user.messageArrived(...args);
+      });
+      try {
+        write(impl, 0, "Unattended result");
+        impl.storage.chatNotifications.put({...event(0), chatId: 1, userId: fixture.user.id.toString()});
+        await impl.deliverDirtyChats();
+        impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, title: "Renamed unattended chat"});
+        await impl.deliverDirtyChats();
+        expect(dispatched).toEqual([]);
+        impl.enrollChatParticipant(1, fixture.profile.id);
+        await impl.deliverDirtyChats();
+      } finally { restore(); }
+    });
+    expect(await reader.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({readThroughSequence: -1, unreadMessageCount: 1, notificationsEnabled: false});
+    expect(dispatched).toEqual([fixture.user.id.toString()]);
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
+    await evictDurableObject(fixture.workspace);
+    await evictDurableObject(fixture.user);
+    await append(fixture, 1, "Muted later result");
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({readThroughSequence: -1, unreadMessageCount: 2, notificationsEnabled: false,
+        notificationsEnabledOverride: false});
+    expect(await fixture.user.getUnreadThreads()).toEqual([]);
+    expect(await reader.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+    await withImpl(fixture.workspace, async impl => {
+      expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toEqual([fixture.profile.id]);
+    });
+  });
+
+  it("enrolls an explicit subscription before first open without replaying earlier completion alerts", async () => {
+    const fixture = await setup(undefined, false, false);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Old result");
+      impl.storage.chatNotifications.put({...event(0), chatId: 1, userId: fixture.user.id.toString()});
+      await impl.deliverDirtyChats();
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true, fixture.profile.id);
+      await impl.deliverDirtyChats();
+    });
+    expect(await fixture.user.getUnreadThreads()).toMatchObject([{unreadMessageCount: 1, notificationsEnabled: true}]);
+    expect(await outbox(fixture)).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 1, "New result");
+      impl.storage.chatNotifications.put({...event(1), chatId: 1, userId: fixture.user.id.toString()});
+      await impl.deliverDirtyChats();
+    });
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+  });
+
+  it("retains first-participation intent across a failed handoff and workspace eviction", async () => {
+    const fixture = await setup(undefined, false, false);
+    await append(fixture, 0, "Unattended result");
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptDelivery(impl, async () => { throw new Error("User unavailable"); });
+      try {
+        write(impl, 1, "First human participation", 1, fixture.profile);
+        write(impl, 2, "Coalesced reply");
+        await expect(impl.deliverDirtyChats()).rejects.toThrow("User unavailable");
+        expect(impl.storage.dirtyChats.get(1)?.failedRecipients).toMatchObject([
+          {userId: fixture.user.id.toString(), participatingUsers: [fixture.user.id.toString()]},
+        ]);
+      } finally { restore(); }
+    });
+    expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+    await evictDurableObject(fixture.workspace);
+    await withImpl(fixture.workspace, async impl => { await impl.deliverDirtyChats(); });
+    expect(await fixture.user.getUnreadThreads()).toMatchObject([{unreadMessageCount: 3, notificationsEnabled: true}]);
+    await append(fixture, 3, "Later background update");
+    expect(await fixture.user.getUnreadThreads()).toMatchObject([{unreadMessageCount: 4, notificationsEnabled: true}]);
+  });
+
+  it("retains a first open that races an in-flight fanout", async () => {
+    const fixture = await setup(undefined, false);
+    const {reader, profile} = await addReader(fixture, false);
+    await withImpl(fixture.workspace, async impl => {
+      const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+      let held = false;
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        if (!held && user.id.equals(fixture.user.id)) {
+          held = true; entered.resolve(); await release.promise;
+        }
+        await user.messageArrived(...args);
+      });
+      try {
+        write(impl, 0, "Before open");
+        const delivery = impl.deliverDirtyChats();
+        await entered.promise;
+        impl.enrollChatParticipant(1, profile.id);
+        write(impl, 1, "While opening");
+        release.resolve(); await delivery;
+        await impl.deliverDirtyChats();
+      } finally { release.resolve(); restore(); }
+    });
+    await vi.waitFor(async () => expect(await reader.getWorkspaceUnreadState(fixture.workspaceId))
+      .toMatchObject([{unreadMessageCount: 2, notificationsEnabled: false}]));
+  });
+
+  it("delivers one-off approvals without enrolling and removes their queued intent on deletion", async () => {
+    const fixture = await setup(undefined, false, false);
+    using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockRejectedValue(new Error("Device offline"));
+    const dispatched: string[] = [];
+    await withImpl(fixture.workspace, async impl => {
+      const restore = interceptDelivery(impl, async (user, ...args) => {
+        dispatched.push(user.id.toString()); await user.messageArrived(...args);
+      });
+      try {
+        write(impl, 0, "Approval required");
+        impl.storage.chatNotifications.put({...event(0), kind: "permissionRequested", chatId: 1, userId: fixture.user.id.toString()});
+        await impl.deliverDirtyChats();
+        write(impl, 1, "Unrelated callback");
+        await impl.deliverDirtyChats();
+        expect(dispatched).toHaveLength(1);
+        expect(impl.storage.nextChatSequences.get(1)?.notificationParticipants).toEqual([]);
+      } finally { restore(); }
+    });
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
+      .toMatchObject({readThroughSequence: -1, unreadMessageCount: 1, notificationsEnabled: false});
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    expect(await outbox(fixture)).toHaveLength(1);
+    await withImpl(fixture.workspace, async impl => {
+      impl.storage.chatMeta.delete(1); await impl.deliverDirtyChats();
+    });
+    expect(await outbox(fixture)).toEqual([]);
+    expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toEqual([]);
+  });
 });
 
 describe("persisted visible positions", () => {
@@ -214,7 +360,7 @@ describe("chat notification preferences", () => {
       await vi.waitFor(() => expect(snapshots).toHaveLength(1));
       expect(snapshots[0].chats[0]).toMatchObject({notificationsEnabled: false});
       expect(snapshots[0].chats[0].notificationsEnabledOverride).toBeUndefined();
-      await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+      await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
       await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toMatchObject({notificationsEnabled: false,
         notificationsEnabledOverride: false, unreadMessageCount: 1, readThroughSequence: -1}));
     }
@@ -223,7 +369,7 @@ describe("chat notification preferences", () => {
     ]);
     expect(await fixture.user.getUnreadThreads()).toEqual([]);
     expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(0);
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true, fixture.profile.id));
     expect(await fixture.user.getUnreadThreads()).toMatchObject([
       {notificationsEnabled: true, notificationsEnabledOverride: true, unreadMessageCount: 1, readThroughSequence: -1},
     ]);
@@ -244,20 +390,20 @@ describe("chat notification preferences", () => {
       await fixture.user.workspaceRemoved(fixture.workspaceId);
     }
     await expect(withImpl(fixture.workspace,
-      impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false))).rejects.toThrow(error);
+      impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id))).rejects.toThrow(error);
   });
 
   it("accepts repeated preference changes when the chat still exists", async () => {
     const fixture = await setup();
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     const before = await cursor(fixture);
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     expect(await cursor(fixture)).toEqual(before);
   });
 
   it.each(["read", "alarm"] as const)("consumes legacy queued alerts for a muted chat on %s", async recovery => {
     const fixture = await setup(undefined, false);
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     await append(fixture, 0);
     const alert = {...event(0), kind: "permissionRequested" as const};
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
@@ -284,11 +430,11 @@ describe("chat notification preferences", () => {
   });
 
   it.each([false, true])("preserves a collaborator's delayed first arrival across preference and reopen (enabled: %s)", async enabled => {
-    const fixture = await setup(); const {reader, owner} = await addReader(fixture);
+    const fixture = await setup(); const {reader, owner, profile} = await addReader(fixture);
     await withImpl(fixture.workspace, async impl => {
       impl.storage.chatMeta.put({id: 2, title: "New chat", started: new Date(), lastActive: new Date()});
       await impl.deliverDirtyChats();
-      await impl.setChatNotificationsEnabled(reader.id.toString(), 2, enabled);
+      await impl.setChatNotificationsEnabled(reader.id.toString(), 2, enabled, profile.id);
       const restore = interceptDelivery(impl, async (user, ...args) => {
         if (user.id.equals(reader.id)) throw new Error("Reader temporarily unavailable");
         await user.messageArrived(...args);
@@ -320,7 +466,7 @@ describe("chat notification preferences", () => {
     await evictDurableObject(fixture.workspace);
     await withImpl(fixture.workspace, async impl => {
       await impl.deliverDirtyChats();
-      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled);
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled, fixture.profile.id);
     });
     await evictDurableObject(fixture.user);
     await withImpl(fixture.workspace, async impl => {
@@ -348,7 +494,7 @@ describe("chat notification preferences", () => {
         write(impl, 4, "Mine while fanout waits", 1, owner);
         const delivery = impl.deliverDirtyChats();
         await entered.promise;
-        await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled);
+        await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled, fixture.profile.id);
         release.resolve(); await delivery;
       } finally {
         release.resolve(); restore();
@@ -366,7 +512,7 @@ describe("chat notification preferences", () => {
 
   it.each([false, true])("defaults nonparticipants to muted badges, inbox and completion alerts across eviction (spawned: %s)", async spawned => {
     const fixture = await setup(undefined, false);
-    const {reader} = await addReader(fixture, false);
+    const {reader} = await addReader(fixture);
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
     await withImpl(fixture.workspace, async impl => {
       if (spawned) impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
@@ -397,7 +543,7 @@ describe("chat notification preferences", () => {
 
   it.each([false, true])("delivers and recovers approvals for nonparticipants without subscribing them (spawned: %s)", async spawned => {
     const original = await setup(undefined, false);
-    const {reader, owner} = await addReader(original, false);
+    const {reader, owner} = await addReader(original);
     const fixture = {...original, user: reader};
     const approval = {...event(0), kind: "permissionRequested" as const};
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification")
@@ -445,7 +591,7 @@ describe("chat notification preferences", () => {
     using publish = vi.spyOn(UserDurableObject.prototype, "publishNotification").mockResolvedValue();
     await append(fixture, 0, "Existing activity");
     const setEnabled = (enabled: boolean) => withImpl(fixture.workspace,
-      impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled));
+      impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled, fixture.profile.id));
     await setEnabled(false);
     await evictDurableObject(fixture.user);
     await withImpl(fixture.workspace, async impl => {
@@ -503,20 +649,20 @@ describe("chat notification preferences", () => {
     });
     await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
     expect(await outbox(fixture)).toHaveLength(1);
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     expect(await outbox(fixture)).toEqual([]);
     await evictDurableObject(fixture.user);
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true, fixture.profile.id));
     await runDurableObjectAlarm(fixture.user);
     expect(publish).toHaveBeenCalledOnce();
   });
 
   it("preserves explicit opt-in across eviction and collaborator admission", async () => {
     const fixture = await setup(undefined, false);
-    const {reader, owner} = await addReader(fixture, false);
+    const {reader, owner} = await addReader(fixture);
     await append(fixture, 0);
     await withImpl(fixture.workspace, async impl => {
-      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true);
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true, fixture.profile.id);
       impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
     });
     await evictDurableObject(fixture.workspace);
@@ -536,13 +682,13 @@ describe("chat notification preferences", () => {
       // Existing chats have no participation policy marker, regardless of their authors.
       impl.storage.nextChatSequences.put({chatId: 1, nextSequence: 0});
     });
-    const {reader, owner, profile} = await addReader(fixture, false);
+    const {reader, owner, profile} = await addReader(fixture);
     await append(fixture, 0, "Existing activity");
     for (const user of [fixture.user, reader]) {
       expect((await user.getWorkspaceUnreadState(fixture.workspaceId))[0])
         .toMatchObject({notificationsEnabled: true, unreadMessageCount: 1});
     }
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     await evictDurableObject(fixture.workspace);
     await evictDurableObject(reader);
     await withImpl(fixture.workspace, async impl => {
@@ -583,7 +729,7 @@ describe("chat notification preferences", () => {
 
   it.each([false, true])("opts in only the first human participant, including coalesced replies (spawned: %s)", async spawned => {
     const fixture = await setup(undefined, false);
-    const {reader, owner} = await addReader(fixture, false);
+    const {reader, owner} = await addReader(fixture);
     await withImpl(fixture.workspace, async impl => {
       if (spawned) impl.storage.chatMeta.put({...impl.storage.chatMeta.get(1)!, spawnerName: "Spawner"});
       write(impl, 0, "Automated activity");
@@ -602,7 +748,7 @@ describe("chat notification preferences", () => {
       .toMatchObject({notificationsEnabled: false, unreadMessageCount: 3});
     expect(await cursor(fixture)).toMatchObject({hasParticipated: true});
     expect((await cursor(fixture))?.notificationsEnabled).toBeUndefined();
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     await evictDurableObject(fixture.workspace);
     await withImpl(fixture.workspace, async impl => {
       write(impl, 3, "Still participating, still muted", 1, owner);
@@ -617,7 +763,7 @@ describe("chat notification preferences", () => {
     const fixture = await setup(undefined, false);
     const owner = await fixture.user.whoami();
     await withImpl(fixture.workspace, async impl => {
-      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false);
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id);
       impl.storage.chats.put({chatId: 1, sequence: 0, timestamp: new Date(), author: owner,
         type: "slashCommand", request: {id: {gatekeeperId: 1, commandId: "test"}, args: ""}});
       await impl.deliverDirtyChats();
@@ -680,7 +826,7 @@ describe("local counts and explicit read boundaries", () => {
     expect((await fixture.user.getUnreadSummary()).unreadMessageCount).toBe(2);
     await withImpl(fixture.workspace, async impl => {
       using seek = vi.spyOn(impl.storage.chats, "list");
-      await impl.setChatReadHorizon(fixture.user.id.toString(), 1, 6, false);
+      await impl.setChatReadHorizon(fixture.user.id.toString(), 1, 6, false, fixture.profile.id);
       expect(seek).toHaveBeenCalledOnce();
       expect(seek.mock.calls[0]?.[0]).toMatchObject({reverse: true, limit: 1});
     });
@@ -886,7 +1032,7 @@ describe("local counts and explicit read boundaries", () => {
     const head = (await cursor(fixture))!.head!;
     await runInDurableObject(fixture.user, async instance => {
       using put = vi.spyOn(Reflect.get(instance, "storage").chatReadCursors, "put");
-      await instance.messageArrived(fixture.workspaceId, 1, {...progress(1), firstMessageSequence: 0, head});
+      await instance.messageArrived(fixture.workspaceId, 1, {...progress(1), hasParticipated: undefined, firstMessageSequence: 0, head});
       expect(put).not.toHaveBeenCalled();
     });
     expect(deltas).toHaveLength(2);
@@ -949,7 +1095,7 @@ describe("local counts and explicit read boundaries", () => {
     await withImpl(fixture.workspace, async impl => {
       impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(), lastActive: new Date()});
       write(impl, 2, "Second thread", 2);
-      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true);
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true, fixture.profile.id);
       await impl.deliverDirtyChats();
     });
     expect(await fixture.user.getUnreadSummary()).toEqual({unreadChatCount: 3, unreadMessageCount: 3,
@@ -985,14 +1131,14 @@ describe("local counts and explicit read boundaries", () => {
     using _subscription = await fixture.user.subscribeToUnreadState("unread", callback);
     await vi.waitFor(() => expect(snapshots[0]?.chats).toHaveLength(1));
     const before = (await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0];
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, false, fixture.profile.id));
     await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toBeNull());
     expect(await fixture.user.getUnreadThreads()).toEqual([]);
     expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0])
       .toEqual({...before, notificationsEnabled: false, notificationsEnabledOverride: false});
     using _mutedSnapshot = await fixture.user.subscribeToUnreadState("unread", callback);
     await vi.waitFor(() => expect(snapshots.at(-1)?.chats).toEqual([]));
-    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true));
+    await withImpl(fixture.workspace, impl => impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, true, fixture.profile.id));
     await vi.waitFor(() => expect(deltas.at(-1)?.[2]).toEqual({...before, notificationsEnabledOverride: true}));
     expect(await fixture.user.getUnreadThreads()).toMatchObject([{chatId: 1, unreadMessageCount: 1}]);
   });
@@ -1022,7 +1168,7 @@ describe("local counts and explicit read boundaries", () => {
     await withImpl(fixture.workspace, async impl => {
       impl.storage.chatMeta.put({id: 2, title: "Unread", started: new Date(), lastActive: new Date()});
       write(impl, 2, "New thread", 2);
-      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true);
+      await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 2, true, fixture.profile.id);
       await impl.deliverDirtyChats();
     });
     class Subscriber extends RpcTarget implements UnreadStateSubscriber {
@@ -1867,13 +2013,13 @@ describe("unread counts property", () => {
     // A second chat in the first workspace, and the collaborator in the second workspace too.
     await withImpl(first.workspace, async impl => {
       impl.storage.chatMeta.put({id: 2, title: "Second", started: new Date(), lastActive: new Date()});
-      impl.storage.nextChatSequences.put({chatId: 2, nextSequence: 0, notificationParticipants: [owner.id, profile.id]});
+      impl.storage.nextChatSequences.put({chatId: 2, nextSequence: 0, notificationParticipants: undefined});
       await impl.deliverDirtyChats();
     });
     await withImpl(second.workspace, async impl => {
       impl.storage.collaborators.put({profile, addedBy: [{type: "user", sharer: owner.id, role: "build", created: new Date()}]});
       const counter = impl.storage.nextChatSequences.get(1)!;
-      impl.storage.nextChatSequences.put({...counter, notificationParticipants: [owner.id, profile.id]});
+      impl.storage.nextChatSequences.put({...counter, notificationParticipants: undefined});
     });
     await reader.recordSharedWorkspaceOpen(second.workspaceId, "Workspace", owner, "build", await notificationBaselines(second, reader));
     const workspaces = [first, second], users = [first.user, reader], authors = [owner, profile];

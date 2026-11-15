@@ -79,6 +79,8 @@ it.each([false, true].flatMap(spawned => [false, true].map(enabled => ({ spawned
   }
   const defaultEnabled = !spawned;
   if (enabled !== defaultEnabled) await ws.setChatNotificationsEnabled(chatId, enabled);
+  // Opening enrolls catch-up updates even while notifications remain off.
+  stubs.use(await ws.viewChat(chatId));
   await start();
   await waitForIdleChat(ws, chatId);
   if (enabled) await waitFor("the completion alert", async () => received.events.length === 1 ? true : null);
@@ -147,8 +149,12 @@ it("notifies a spawned chat's approval before participation without enabling com
   await ws.approveAction(pending.id);
   await waitForIdleChat(ws, chatId);
   expect((await ws.listActions({filter: "pending"})).entries).toEqual([]);
-  expect((await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId))
-    .toMatchObject({notificationsEnabled: false, unreadMessageCount: 1});
+  // The approval was a one-off delivery. Opening now enrolls the later result for catch-up.
+  using _view = await ws.viewChat(chatId);
+  await waitFor("catch-up after first open", async () => {
+    const state = (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId);
+    return state?.unreadMessageCount === 1 && !state.notificationsEnabled ? state : null;
+  });
   expect(await api.getUnreadThreads()).toEqual([]);
   expect(model.remainingSteps()).toBe(0);
 });
@@ -173,7 +179,10 @@ it("opts into a spawned chat on first human participation and preserves a later 
   const chatId = (await ws.listChats())[0]!.id;
   await callable.run();
   await waitForIdleChat(ws, chatId);
-  const initial = (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId)!;
+  expect(await api.getWorkspaceUnreadState(workspaceId)).toEqual([]);
+  using _view = await ws.viewChat(chatId);
+  const initial = await waitFor("first-open catch-up without notification opt-in", async () =>
+    (await api.getWorkspaceUnreadState(workspaceId)).find(chat => chat.chatId === chatId) ?? null);
   expect(initial).toMatchObject({notificationsEnabled: false, unreadMessageCount: 1});
   expect(await api.getUnreadThreads()).toEqual([]);
 

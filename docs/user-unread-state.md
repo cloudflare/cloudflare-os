@@ -8,14 +8,22 @@ For newly created chats, notifications default to off until each user sends thei
 or slash command, whether the chat was created normally or by an agent. Existing chats stay
 subscribed by default; there is no history scan or backfill migration. Each user can change this
 with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO stores the explicit
-override on its private read cursor; participation never overrides that choice. Source fanout
-carries participation from the workspace's persisted per-chat participant IDs, including when a
-batch coalesces a user's message with a later agent response. Only new chats initialize the
-participant list; ordinary writes maintain it alongside the visible counter. An absent list keeps
-the existing-chat default enabled, including after later messages.
+override on its private read cursor; participation never overrides that choice. Human messages
+carry a durable participation signal through the source's existing dirty journal, including when a
+batch coalesces a user's message with a later agent response or retries after eviction. The User DO
+latches participation independently of the workspace's fanout enrollment list.
+
+For new chats, the workspace's existing `notificationParticipants` list is permanent fanout
+enrollment: creating, first opening, participating in, or explicitly setting a chat preference
+adds the user. Opening the workspace or receiving an approval does not. Ordinary updates only
+reach enrolled users; muting never removes them. First enrollment queues a snapshot through the
+existing dirty journal, retaining numbered unread history without replaying earlier alerts.
+Opening alone leaves notifications off. Only new chats initialize this list; an absent list keeps
+legacy workspace-wide fanout and the subscribed default, without a migration.
 
 Approval requests bypass the default-off state so an unattended agent can ask for help, without
-subscribing the user or adding the chat to the unread inbox or badge totals. An explicit chat mute
+enrolling or subscribing the user or adding the chat to the unread inbox or badge totals. The
+workspace allows the targeted approval packet through even for an untouched chat. An explicit chat mute
 suppresses approval alerts too. Before participation, the thread menu offers **Enable notifications**
 and **Mute notifications**, so silencing approvals takes one action. An explicitly muted chat offers
 **Unmute notifications**. The private read state reports the explicit override separately from the
@@ -128,7 +136,8 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
    and first visible position, including through coalescing and resets.
 2. The workspace reads inbox metadata and pending eligibility records once per batch and checks current build
    membership plus previously established observer admission locally. It sends authorized packets
-   to the owner and established collaborators in parallel; independent threads also fan out in
+   to enrolled owners and collaborators (plus targeted approval recipients) in parallel; legacy
+   chats retain workspace-wide fanout. Independent threads also fan out in
    parallel. Each User DO handoff has a two-second limit. It does not enroll observers or call
    external gatekeeper verifiers per message.
 3. A listed User DO synchronously commits the absolute head/count and any new queued alerts in
@@ -136,10 +145,11 @@ versioned `notificationBadge` scalar outbox; its version is not a read-state/sou
    receipt. It arms the existing alarm before ACK. Slow browser/provider delivery does not hold
    up that ACK or later count updates.
 4. If everyone ACKs or is intentionally skipped, the workspace clears the marker without writing
-   recipient bookkeeping. Otherwise it writes only `failedRecipients` on that same row. Each entry
+   recipient bookkeeping. Otherwise it writes only `failedRecipients` on that same row, also used
+   for initial enrollment snapshots. Each entry
    keeps its earliest pending raw/visible positions; `retryOnly` means no new broadcast remains.
    Subsequent attempts target only those failures, rechecking current admission. An unchanged
-   repeated failure needs no row rewrite. New mutations still broadcast to everyone, retaining
+   repeated failure needs no row rewrite. New mutations still broadcast to enrolled users, retaining
    older work only for failed recipients. Mutations during an await become the next broadcast,
    without being erased by the older pass's checkpoint or delayed by its retry backoff.
 5. The User DO drains each chat's local queue under its existing per-thread mutex. A failed
@@ -240,11 +250,12 @@ removal callbacks and sends them in parallel. Failed recipients remain on that s
 storage is retained until every callback ACKs, then physically wiped. A reset after the last ACK
 still resumes that wipe. No recipient fetches the source during removal.
 
-Successful first admission seeds the captured existing tails as read. Ordinary reopen does not
+Successful first workspace admission seeds captured legacy or already-enrolled chat tails as read;
+it does not create private state for untouched new chats. Ordinary reopen does not
 initialize missing or preference-only cursors or consume pending new-thread arrivals. Initial join
 remains the existing best-effort flow: events racing the registration callback need not be covered. Once
-registration completes, new events follow the durable handoff above. There is no extra enrollment
-catch-up RPC or background admission lifecycle.
+registration completes, enrolled events follow the durable handoff above. First chat opening uses
+the existing `viewChat` call and dirty journal for catch-up, without a new RPC or background admission lifecycle.
 
 ## Consumers and verification
 

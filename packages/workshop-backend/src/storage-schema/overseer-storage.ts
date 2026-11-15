@@ -1472,8 +1472,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         role: CollaboratorRole | null;
       }>()({primaryKey: "userId"}),
       // Chats whose changes (new visible messages, new notifications, renames, deletion) haven't yet
-      // reached every user who tracks unread state for this workspace (the owner and build
-      // collaborators). Written in the same transaction as the change itself, so the update isn't
+      // reached enrolled owners/build collaborators, or a one-off approval recipient.
+      // Written in the same transaction as the change itself, so the update isn't
       // lost if the DO restarts; the alarm retries it. There's at most one row per chat: later
       // changes merge into it. The row is deleted once every recipient has accepted the update (or
       // been skipped for lacking access). See docs/user-unread-state.md.
@@ -1486,7 +1486,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         retryOnly?: true;
         /**
          * Recipients whose last attempt failed, each with the earliest change they still haven't
-         * received. Only written after a failure; a fully successful delivery deletes the row.
+         * received, or newly enrolled users awaiting their initial snapshot. A fully successful
+         * delivery deletes the row.
          */
         failedRecipients?: (ChatFanoutStart & {userId: string})[];
       }>()({primaryKey: "chatId"}),
@@ -1730,8 +1731,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         chatId: number;
         nextSequence: number;
         /**
-         * Notification participants for newly created chats. Initialized empty at creation and
-         * populated by human messages. Absent on existing chats, which stay subscribed by default.
+         * Users permanently enrolled for updates after opening, creating, participating in, or
+         * setting a preference for this chat. Profile IDs, resolved to User DOs at dispatch.
+         * Initialized empty for new chats; absent on legacy chats, which retain workspace fanout.
          */
         notificationParticipants?: string[];
         /**
@@ -1838,6 +1840,10 @@ export type ChatFanoutStart = {
   firstMessageSequence?: number;
   /** The `visibleThroughSequence` of the earliest new visible message in the pending update, if any. */
   firstVisibleSequence?: number;
+  /** Human authors whose private participation latch must be set before this batch is ACKed. User DO IDs. */
+  participatingUsers?: string[];
+  /** First enrollment skips earlier alerts while retaining the chat's numbered unread history. */
+  notificationBaseline?: number;
 };
 
 /** The Overseer's typed storage. See makeOverseerStorage. */

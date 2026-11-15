@@ -135,7 +135,7 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
         getChatContext: async () => ({profile: USER, aiModel: MODEL}), recordSharedWorkspaceOpen: async () => {}})},
     nextChatSequencePeek: impl.nextChatSequencePeek.bind(impl),
     chatHead: impl.chatHead.bind(impl),
-    hasChatParticipation: impl.hasChatParticipation.bind(impl),
+    chatParticipationDefault: impl.chatParticipationDefault.bind(impl),
     rememberDecisionInitiator: impl.rememberDecisionInitiator.bind(impl),
     resumeAgentAfterDecision: impl.resumeAgentAfterDecision.bind(impl),
     getChatTimestamp: impl.getChatTimestamp.bind(impl),

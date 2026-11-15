@@ -247,7 +247,10 @@ Read history and the unread divider remain available when the user opens the cha
 default off for new chats until that user first sends a message or slash command, except permission
 requests still alert before participation without enabling inbox entries or badges. Existing chats
 stay subscribed by default, and an explicit choice always wins. Turning notifications on preserves unread history and alerts only
-about future activity. See [user-owned unread state](user-unread-state.md).
+about future activity. For new chats, ordinary unread updates reach the User DO only after creating,
+opening, participating in, or setting a preference for that chat. Opening enrolls updates without
+enabling notifications; muting keeps that enrollment. Approval requests can alert an untouched chat
+without enrolling it. See [user-owned unread state](user-unread-state.md).
 
 ## Deployment contract
 

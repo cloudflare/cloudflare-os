@@ -85,8 +85,11 @@ export const ReadTimeline = ({
     if (!previous && visit?.paused && chat.readThroughSequence + 1 === visit.divider) {
       latestAction.current = undefined;
     }
+    // First-open enrollment can arrive after history. A horizon before all loaded items
+    // represents catch-up history, so navigate before acknowledging the current viewport.
+    const initialHistory = !previous && oldestSequence !== undefined && chat.readThroughSequence < oldestSequence;
     // Server transitions supersede local optimism, even before the command ACK arrives.
-    if (!visit) {
+    if (!visit || (!visit.paused && initialHistory)) {
       const divider = chat.unreadMessageCount > 0 ? chat.readThroughSequence + 1 : undefined;
       setVisit({divider, paused: false});
       if (divider !== undefined) {

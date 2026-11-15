@@ -3731,8 +3731,9 @@ export interface Overseer extends RpcTarget {
   subscribeToChat(subscriber: RpcStub<AiChatSubscriber>, startAfter?: Date): Promise<RpcStub<{}>>;
 
   /**
-   * Records that this client shows chat `chatId` until the returned handle is disposed. When a
-   * turn finishes in a chat someone is viewing, the workspace resends that turn's last model
+   * Records that this client shows chat `chatId` until the returned handle is disposed, and
+   * permanently enrolls this user for private unread updates without enabling notifications.
+   * When a turn finishes in a chat someone is viewing, the workspace resends that turn's last model
    * request just before the provider's cached copy of it would expire, so the user's next message
    * costs less and starts sooner. The resends are billed like the turn. They stop when the last
    * viewer leaves, at the chat's next turn, an hour after the turn, or before they would cost

@@ -180,6 +180,23 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 3);
   });
 
+  it.each([0, 2])("navigates to unread history when first-open enrollment arrives after history (oldest: %s)", async oldest => {
+    visibleBottom = 350;
+    await render(<View oldest={oldest} />);
+    await update({workspaces: [], chats: [], unreadChatCount: 0, unreadMessageCount: 0});
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    await updateChat(snapshot());
+    expect(navigate).toHaveBeenCalledWith(true);
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledTimes(oldest > 0 ? 1 : 0);
+    expect(markChatRead).toHaveBeenCalledTimes(oldest > 0 ? 0 : 1);
+    await render(<View />);
+    await settle();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
+    expect(container.querySelector("[data-unread-divider]")).not.toBeNull();
+  });
+
   it("shows unread activity for a live reply while scrolled away from the tail", async () => {
     await render(); await update(snapshot(1, 2)); await settle();
     await render(<View latestSequence={3} sequences={[0, 1, 2, 3]} />);

@@ -126,7 +126,18 @@ function mergeChatFanoutStarts(left: ChatFanoutStart | undefined, right: ChatFan
   let raw = Math.min(left?.firstMessageSequence ?? Infinity, right.firstMessageSequence ?? Infinity);
   let visible = Math.min(left?.firstVisibleSequence ?? Infinity, right.firstVisibleSequence ?? Infinity);
   return {firstMessageSequence: raw === Infinity ? undefined : raw,
-    firstVisibleSequence: visible === Infinity ? undefined : visible};
+    firstVisibleSequence: visible === Infinity ? undefined : visible,
+    participatingUsers: left?.participatingUsers || right.participatingUsers ?
+      [...new Set([...left?.participatingUsers ?? [], ...right.participatingUsers ?? []])] : undefined,
+    notificationBaseline: left?.notificationBaseline === undefined ? right.notificationBaseline :
+      Math.max(left.notificationBaseline, right.notificationBaseline ?? -1)};
+}
+
+function sameChatFanoutStart(left: ChatFanoutStart, right: ChatFanoutStart): boolean {
+  return left.firstMessageSequence === right.firstMessageSequence &&
+    left.firstVisibleSequence === right.firstVisibleSequence &&
+    left.notificationBaseline === right.notificationBaseline &&
+    left.participatingUsers?.join() === right.participatingUsers?.join();
 }
 
 async function boundedUserUpdate<T>(request: Promise<T>): Promise<T> {
@@ -1219,14 +1230,15 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Called by pre-write storage hooks: journal only; read committed data in a microtask.
-  markChatDirty(chatId: number, firstMessageSequence?: number, firstVisibleSequence?: number): void {
+  markChatDirty(chatId: number, firstMessageSequence?: number, firstVisibleSequence?: number,
+      participatingUser?: string): void {
     if (!this.ownerId) return;
-    let incoming = {firstMessageSequence, firstVisibleSequence};
+    let incoming: ChatFanoutStart = {firstMessageSequence, firstVisibleSequence,
+      participatingUsers: participatingUser ? [participatingUser] : undefined};
     this.#dirtyChatTokens.set(chatId, mergeChatFanoutStarts(this.#dirtyChatTokens.get(chatId), incoming));
     let pending = this.storage.dirtyChats.get(chatId);
     let start = mergeChatFanoutStarts(pending?.retryOnly ? undefined : pending, incoming);
-    if (!pending || pending.retryOnly || start.firstMessageSequence !== pending.firstMessageSequence ||
-        start.firstVisibleSequence !== pending.firstVisibleSequence) {
+    if (!pending || pending.retryOnly || !sameChatFanoutStart(start, pending)) {
       let updated = {...pending, chatId, ...start};
       delete updated.retryOnly;
       this.storage.dirtyChats.put(updated);
@@ -1303,17 +1315,27 @@ class OverseerImpl implements AgentHooks {
         let notifications = !meta || firstMessage === Infinity ? [] :
           [...this.storage.chatNotifications.list({prefix: chatKeyPrefix(chatId),
             start: chatKey(chatId, firstMessage)})];
-        let entries = [...targets];
+        let entries = [...targets].filter(([userId, start]) => participants === undefined || participants.has(userId) ||
+          (!meta ? dirty.failedRecipients?.some(pending => pending.userId === userId) :
+            notifications.some(event => event.userId === userId && event.kind === "permissionRequested" &&
+              start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)));
         let results = await Promise.allSettled(entries.map(async ([userId, start]) => {
           // Admission belongs to the source. Accepted alerts are delivery intent owned by the
           // recipient; retries need neither a source read nor a new authorization decision.
           if (meta && !await this.mayReadChatState(userId, recipients.get(userId)!)) return;
+          let {participatingUsers, ...progress} = start;
           await boundedUserUpdate(this.users.get(this.users.idFromString(userId)).messageArrived(
-            this.ctx.id.toString(), chatId, meta ? {...start, latestVisibleSequence, latestMessageAuthorId,
+            this.ctx.id.toString(), chatId, meta ? {...progress, latestVisibleSequence, latestMessageAuthorId,
+              // A one-off approval must not mark earlier unattended messages read.
+              ...(participants && !participants.has(userId) ? {
+                firstMessageSequence: counter?.trackingStartSequence ?? counter?.nextSequence,
+                firstVisibleSequence: 1,
+              } : {}),
               head: head!, headUpdatedAt: meta.lastActive,
-              hasParticipated: participants?.has(userId),
+              hasParticipated: participants === undefined ? undefined : participatingUsers?.includes(userId) ?? false,
               notifications: notifications.filter(event => event.userId === userId &&
-                start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence)
+                start.firstMessageSequence !== undefined && event.sequence >= start.firstMessageSequence &&
+                event.sequence > (start.notificationBaseline ?? -1))
                 .map(({id, kind, sequence}) => ({id, kind, sequence, chatTitle: meta.title}))} : null));
         }));
         // Workspace deletion cancels the durable intent, including outstanding failed handoffs.
@@ -1321,14 +1343,23 @@ class OverseerImpl implements AgentHooks {
         let failedRecipients = entries.flatMap(([userId, start], index) =>
           results[index].status === "rejected" ? [{userId, ...start}] : []);
         let newer = this.#dirtyChatTokens.get(chatId)!;
+        if (newer !== token) {
+          // A first open during delivery can enqueue a new recipient or baseline. Preserve it
+          // alongside failures from this captured batch.
+          for (let pending of this.storage.dirtyChats.get(chatId)?.failedRecipients ?? []) {
+            if (dirty.failedRecipients?.some(old => old.userId === pending.userId && sameChatFanoutStart(old, pending))) continue;
+            let index = failedRecipients.findIndex(failed => failed.userId === pending.userId);
+            if (index < 0) failedRecipients.push(pending);
+            else failedRecipients[index] = {...mergeChatFanoutStarts(failedRecipients[index], pending), userId: pending.userId};
+          }
+        }
         if (newer !== token || failedRecipients.length) {
           // ACKed/denied users are not retried. New broadcasts still reach everyone, while
           // failures alone retain older work. Eviction before this write can replay the batch.
           if (newer !== token || !dirty.retryOnly || failedRecipients.length !== dirty.failedRecipients?.length ||
               failedRecipients.some((failed, index) => {
                 let old = dirty.failedRecipients?.[index];
-                return !old || failed.userId !== old.userId || failed.firstMessageSequence !== old.firstMessageSequence ||
-                  failed.firstVisibleSequence !== old.firstVisibleSequence;
+                return !old || failed.userId !== old.userId || !sameChatFanoutStart(failed, old);
               })) {
             this.storage.dirtyChats.put({chatId, ...newer,
               ...(newer === token ? {retryOnly: true as const} : {}),
@@ -1361,9 +1392,30 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
-  hasChatParticipation(chatId: number, userId: string): boolean | undefined {
-    return this.storage.nextChatSequences.get(chatId)?.notificationParticipants?.some(profileId =>
-      this.users.idFromName(profileId).toString() === userId);
+  // This list is a one-way fanout enrollment, independent of the User DO's notification policy.
+  enrollChatParticipant(chatId: number, profileId: string): void {
+    let counter = this.storage.nextChatSequences.get(chatId);
+    if (!counter?.notificationParticipants || counter.notificationParticipants.includes(profileId)) return;
+    this.storage.nextChatSequences.put({...counter, notificationParticipants: [...counter.notificationParticipants, profileId]});
+    let userId = this.users.idFromName(profileId).toString();
+    this.queueChatRecipient(chatId, userId, {
+      firstMessageSequence: counter.trackingStartSequence ?? counter.nextSequence,
+      firstVisibleSequence: 1, notificationBaseline: counter.nextSequence - 1,
+    });
+  }
+
+  queueChatRecipient(chatId: number, userId: string, start: ChatFanoutStart): void {
+    let pending = this.storage.dirtyChats.get(chatId);
+    let previous = pending?.failedRecipients?.find(recipient => recipient.userId === userId);
+    this.storage.dirtyChats.put({...pending, chatId, failedRecipients: [
+      ...pending?.failedRecipients?.filter(recipient => recipient.userId !== userId) ?? [],
+      {userId, ...mergeChatFanoutStarts(previous, start)},
+    ]});
+    this.markChatDirty(chatId);
+  }
+
+  chatParticipationDefault(chatId: number): false | undefined {
+    return this.storage.nextChatSequences.get(chatId)?.notificationParticipants === undefined ? undefined : false;
   }
 
   chatHead(chatId: number): ChatTimelineHead | undefined {
@@ -1375,7 +1427,7 @@ class OverseerImpl implements AgentHooks {
   }
 
   async setChatReadHorizon(userId: string, chatId: number, sequence: number | undefined,
-      rewind: boolean): Promise<boolean> {
+      rewind: boolean, profileId: string): Promise<boolean> {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
     let meta = this.storage.chatMeta.get(chatId);
     if (!meta) return false;
@@ -1389,23 +1441,25 @@ class OverseerImpl implements AgentHooks {
     }
     let [message] = through < 0 ? [] : this.storage.chats.list({
       prefix: chatKeyPrefix(chatId), end: chatKey(chatId, through + 1), reverse: true, limit: 1});
+    this.enrollChatParticipant(chatId, profileId);
     return this.wrapUserDo(this.users.get(this.users.idFromString(userId))).applyReadHorizon(
       this.ctx.id.toString(), chatId, {
         readThroughSequence: through, readThroughVisibleSequence: message?.visibleThroughSequence ?? 0,
         latestVisibleSequence: counter?.visibleThroughSequence ?? 0,
         head: this.chatHead(chatId)!, headUpdatedAt: meta.lastActive,
-        hasParticipated: this.hasChatParticipation(chatId, userId),
+        hasParticipated: this.chatParticipationDefault(chatId),
         notificationBaseline: counter?.trackingStartSequence === undefined ? tail : counter.trackingStartSequence - 1,
       }, rewind);
   }
 
-  async setChatNotificationsEnabled(userId: string, chatId: number, enabled: boolean): Promise<void> {
+  async setChatNotificationsEnabled(userId: string, chatId: number, enabled: boolean, profileId: string): Promise<void> {
     if (!this.ownerId) throw new Error("Workspace has been deleted.");
     this.getChatMetaOrThrow(chatId);
+    this.enrollChatParticipant(chatId, profileId);
     let tail = this.nextChatSequencePeek(chatId) - 1;
     await this.wrapUserDo(this.users.get(this.users.idFromString(userId))).setChatNotificationsEnabled(
       this.ctx.id.toString(), chatId, enabled, {
-        hasParticipated: this.hasChatParticipation(chatId, userId),
+        hasParticipated: this.chatParticipationDefault(chatId),
         notifiedThroughSequence: tail,
       });
   }
@@ -1429,16 +1483,12 @@ class OverseerImpl implements AgentHooks {
     const stamp = (message: StoredChatMessage, old?: StoredChatMessage) => {
       if (old) { message.visibleThroughSequence = old.visibleThroughSequence; return; }
       if (!this.ownerId) return;
+      if (isChatParticipation(message)) this.enrollChatParticipant(message.chatId, message.author.id);
       let counter = this.storage.nextChatSequences.get(message.chatId) ?? {chatId: message.chatId, nextSequence: 0};
-      let notificationParticipants = counter.notificationParticipants;
-      if (notificationParticipants && isChatParticipation(message) && !notificationParticipants.includes(message.author.id)) {
-        notificationParticipants = [...notificationParticipants, message.author.id];
-      }
       let visible = counter.visibleThroughSequence ?? 0;
       if (isCountableChatMessage(message)) visible++;
-      if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence ||
-          notificationParticipants !== counter.notificationParticipants) {
-        this.storage.nextChatSequences.put({...counter, notificationParticipants, visibleThroughSequence: visible,
+      if (counter.trackingStartSequence === undefined || visible !== counter.visibleThroughSequence) {
+        this.storage.nextChatSequences.put({...counter, visibleThroughSequence: visible,
           latestVisibleMessageSequence: isCountableChatMessage(message) ? message.sequence : counter.latestVisibleMessageSequence,
           trackingStartSequence: counter.trackingStartSequence ?? message.sequence});
       }
@@ -1449,7 +1499,8 @@ class OverseerImpl implements AgentHooks {
         stamp(message);
         if (isCountableChatMessage(message) || isChatParticipation(message)) {
           this.markChatDirty(message.chatId, message.sequence,
-            isCountableChatMessage(message) ? message.visibleThroughSequence : undefined);
+            isCountableChatMessage(message) ? message.visibleThroughSequence : undefined,
+            isChatParticipation(message) ? this.users.idFromName(message.author.id).toString() : undefined);
         }
       },
       update: (old, message) => {
@@ -1463,7 +1514,15 @@ class OverseerImpl implements AgentHooks {
     this.storage.chatMeta.subscribe({
       add: meta => this.markChatDirty(meta.id),
       update: (old, meta) => { if (old.title !== meta.title) this.markChatDirty(meta.id); },
-      remove: meta => this.markChatDirty(meta.id),
+      remove: meta => {
+        // One-off approval recipients may have a private cursor/outbox without enrolling.
+        let recipients = new Set<string>();
+        for (let event of this.storage.chatNotifications.list({prefix: chatKeyPrefix(meta.id)})) {
+          if (event.kind === "permissionRequested") recipients.add(event.userId);
+        }
+        for (let userId of recipients) this.queueChatRecipient(meta.id, userId, {});
+        this.markChatDirty(meta.id);
+      },
     });
     this.storage.chatNotifications.subscribe({
       add: event => this.markChatDirty(event.chatId, event.sequence),
@@ -11475,11 +11534,15 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       // Enrollment is best-effort: events racing this first registration are not guaranteed;
       // subsequent arrivals fan out normally once the User DO has recorded the listing.
       let notificationBaselines = role === "build" ? [...this.impl.storage.chatMeta.list()]
+        .filter(meta => {
+          let participants = this.impl.storage.nextChatSequences.get(meta.id)?.notificationParticipants;
+          return participants === undefined || participants.includes(profileId);
+        })
         .map(meta => ({
         chatId: meta.id, notifiedThroughSequence: this.impl.nextChatSequencePeek(meta.id) - 1,
         head: this.impl.chatHead(meta.id),
         headUpdatedAt: meta.lastActive,
-        hasParticipated: this.impl.hasChatParticipation(meta.id, clientUser.id.toString()),
+        hasParticipated: this.impl.chatParticipationDefault(meta.id),
         readThroughVisibleSequence: this.impl.storage.nextChatSequences.get(meta.id)?.visibleThroughSequence ?? 0,
       })) : [];
       void (async () => {
@@ -13064,15 +13127,15 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async markChatRead(chatId: number, throughSequence?: number): Promise<void> {
-    await this.impl.setChatReadHorizon(this.clientUserId, chatId, throughSequence, false);
+    await this.impl.setChatReadHorizon(this.clientUserId, chatId, throughSequence, false, this.clientProfileId);
   }
 
   async markChatUnread(chatId: number, fromSequence?: number): Promise<boolean> {
-    return this.impl.setChatReadHorizon(this.clientUserId, chatId, fromSequence, true);
+    return this.impl.setChatReadHorizon(this.clientUserId, chatId, fromSequence, true, this.clientProfileId);
   }
 
   async setChatNotificationsEnabled(chatId: number, enabled: boolean): Promise<void> {
-    await this.impl.setChatNotificationsEnabled(this.clientUserId, chatId, enabled);
+    await this.impl.setChatNotificationsEnabled(this.clientUserId, chatId, enabled, this.clientProfileId);
   }
 
   async listChats(): Promise<AiChatMetadata[]> {
@@ -13254,6 +13317,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async viewChat(chatId: number): Promise<RpcStub<{}>> {
     this.impl.getChatMetaOrThrow(chatId);
+    this.impl.enrollChatParticipant(chatId, this.clientProfileId);
     let leave = this.impl.cacheWarmer.view(chatId);
     // @ts-expect-error Bugs in native RPC types make this not work currently.
     return this.#subscriptionLease(new NativeRpcStub<{}>({

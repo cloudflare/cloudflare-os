@@ -20,6 +20,7 @@ interface OverseerInternals {
   ownerId: string;
   users: {
     idFromString(id: string): string;
+    idFromName(name: string): string;
     get(id: string): {
       getChatContext(): Promise<{ profile: AiChatAuthorInfo, aiModel: AiModel }>;
       getCloudflareGatekeeperAccount(): Promise<null>;
@@ -193,6 +194,7 @@ function startTurn(responses: (() => Response)[], {
     impl.ownerId = OWNER_USER_ID;
     impl.users = {
       idFromString: (id: string) => id,
+      idFromName: () => OWNER_USER_ID,
       get: (userId: string) => ({
         getChatContext: async () => ({ profile: OWNER, aiModel: { profile: MODEL, config } }),
         getCloudflareGatekeeperAccount: async () => null,

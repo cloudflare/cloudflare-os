@@ -65,6 +65,8 @@ export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
  * it twice is harmless. "Sequence" and "visible sequence" are as described on `ChatReadCursor`.
  */
 export type ChatMessageProgress = {
+  /** Skip alerts at or before the user's first enrollment, without clearing queued approvals. */
+  notificationBaseline?: number;
   /** Participation default for new chats. Absent on existing chats, which stay subscribed by default. */
   hasParticipated?: boolean;
   /** The chat's current title and latest-message preview, for the inbox. */
@@ -1105,8 +1107,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       cursor = {...cursor,
         readThroughSequence: (progress.firstMessageSequence ?? 0) - 1,
         readThroughVisibleSequence,
-        notifiedThroughSequence: this.#readCursors.has(key) ? cursor.notifiedThroughSequence :
-          (progress.firstMessageSequence ?? 0) - 1};
+        notifiedThroughSequence: Math.max(progress.notificationBaseline ?? -1,
+          this.#readCursors.has(key) ? cursor.notifiedThroughSequence : (progress.firstMessageSequence ?? 0) - 1)};
     }
     let latest = Math.max(cursor.latestVisibleSequence ?? 0, progress.latestVisibleSequence);
     // Consume only a single own message when already caught up. Gaps/coalesced arrivals keep
