@@ -108,7 +108,8 @@ describe('UpdateAvailableNotice', () => {
     expect(liveToasts()).toHaveLength(0)
   })
 
-  // The kernel never notifies for a modified deployment; the deploy flow would refuse the update.
+  // The kernel never notifies for a modified deployment: an update would stop at the change made
+  // outside the deploy flow.
   it('shows nothing for a modified deployment', async () => {
     await render(testUpdateStatus({ modified: true, notify: false }))
 
