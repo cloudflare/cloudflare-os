@@ -49,14 +49,14 @@ export const BlueprintsPreview = () => {
         </div>
         <p role="status" className="w-full text-sm text-kumo-subtle">{report}</p>
       </Section>
-      <Section title="BlueprintSuggestions (under Home’s composer: a few featured, and the way to the rest)">
+      <Section title="BlueprintSuggestions (under Home’s composer: two featured, and the way to the rest, fanning more)">
         <div className="w-full max-w-md">
           <BlueprintSuggestions
             blueprints={[
               { id: 'tip', title: 'Tip jar', picture: PREVIEW_TIP_JAR, icon: <AppWindowIcon /> },
               { id: 'budget', title: 'Household budget', picture: PREVIEW_BUDGET, icon: <AppWindowIcon /> },
-              { id: 'brief', title: 'Weekly brief', icon: <FileTextIcon /> },
             ]}
+            more={[PREVIEW_STANDUP, PREVIEW_TIP_JAR, undefined]}
             onOpen={(id) => say(`opened ${id}`)}
             onBrowse={() => say('went to all blueprints')}
           />

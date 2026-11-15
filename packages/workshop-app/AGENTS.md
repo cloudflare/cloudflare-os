@@ -372,7 +372,10 @@ and is undone, with why, if it does not hold; deleting a gadget asks first and i
 whoever builds where it was made.
 
 A tile shows what it is: an image file fills it; otherwise, once the tile nears the screen,
-`library/useLibraryPicture.ts` fetches a glimpse that sits above the name on a solid foot. A
+`library/useLibraryPicture.ts` fetches a glimpse, drawn as a sheet standing up out of the tile's
+foot under the name, which heads the tile; the sheet has an edge and a shadow so a white page shows
+against the tile in light, and the name fades under More and the star while they are out, which
+sit on the tile, never on the picture. A
 gadget's is the server's picture of it (`GadgetClient.getThumbnail()`, asked again only when the
 gadget was worked on, two at a time; one the server could not draw yet is asked for twice more
 while shown, and is not kept); a file's is the chat's thumbnail (`useFileThumbnail`); a
@@ -490,9 +493,9 @@ which comes back to the dialog), a model from a menu that starts with the author
 the user has it (`initialAnswers`). It then makes the gadget in a new workspace
 (`newWorkspaceFromBlueprint`, then `Overseer.makeWorkspace` so it is named and listed as a
 workspace) or, for one that needs nothing, in a workspace the user builds in
-(`createGadgetFromBlueprint`), and opens the gadget. Home shows three featured blueprints under
-its composer (`FeaturedBlueprints`, in `ChatStart`'s `after`, which leaves the composer where it
-is). Publishing from a gadget's settings sends the gadget's picture (`GadgetClient.getThumbnail`,
+(`createGadgetFromBlueprint`), and opens the gadget. Home shows two featured blueprints under
+its composer, in the tiles' sheet style, and a third card to all of them, a fan of their pictures
+(`FeaturedBlueprints`, in `ChatStart`'s `after`, which leaves the composer where it is). Publishing from a gadget's settings sends the gadget's picture (`GadgetClient.getThumbnail`,
 drawn as the dialog opens, by `usePublishPicture`) and then offers to open the blueprint's page.
 The dev server proxies `/blueprint-screenshot` to the backend, as the router does.
 

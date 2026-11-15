@@ -448,3 +448,19 @@ checking what the agent wrote is how trust is earned. So it is quiet, not hidden
 Not done: a chat's proposed changes (the old frontend's diff view). The chat already shows what
 changed, as steps and the gadget itself; a diff can come once someone asks for it. No kernel
 change: `listTree` and `readFilesAtCommit` already exist.
+
+## 16. Library tiles and Home's blueprints
+
+A tile's name on a white strip under its picture read as a file manager of years ago, and a white
+document on it disappeared into the strip. The name now heads the tile, as a folder's tab, and the
+glimpse is a sheet standing up out of the tile's foot, with an edge and a soft shadow, so a page
+that is mostly white still reads as a page in light. More and the star stay on the tile's own
+surface, where they always show (on a white sheet they vanished), and the name fades out under
+them while they are out.
+
+Home keeps its blueprints: an empty composer says little of what can be made, and a picture of a
+made thing says it at once. But "Or start from a blueprint" over cropped crumbs of screenshots, and
+"All blueprints →" beside it, read as an afterthought. They are now cards in the tiles' style, two
+featured and then All blueprints as a card of its own, a fan of their pictures that spreads when
+pointed at; the cards come in a beat apart.
+

@@ -4,8 +4,9 @@ import { BlueprintSuggestions } from '@/blocks/BlueprintSuggestions'
 import { FormatIcon } from '@/components/FormatIcon'
 import { useApi } from '@/rpc/ApiContext'
 
-/** How many Home suggests: a row under the composer. */
-const SHOWN = 3
+/** How many Home offers, beside the way to all of them, which fans a few more. */
+const SHOWN = 2
+const FANNED = 3
 
 export type FeaturedBlueprintsProps = {
   onOpen: (blueprintId: string) => void
@@ -33,7 +34,8 @@ export const FeaturedBlueprints = ({ onOpen, href, onBrowse, browseHref }: Featu
   }, [api, reconnecting])
 
   if (!featured?.length) return null
-  const shown = featured.toSorted((a, b) => Number(Boolean(b.screenshotUrl)) - Number(Boolean(a.screenshotUrl))).slice(0, SHOWN)
+  const ordered = featured.toSorted((a, b) => Number(Boolean(b.screenshotUrl)) - Number(Boolean(a.screenshotUrl)))
+  const shown = ordered.slice(0, SHOWN)
   return (
     <BlueprintSuggestions
       blueprints={shown.map(({ id, metadata, screenshotUrl }) => ({
@@ -43,6 +45,8 @@ export const FeaturedBlueprints = ({ onOpen, href, onBrowse, browseHref }: Featu
         icon: <FormatIcon name={metadata.output?.icon} />,
         href: href?.(id),
       }))}
+      // Those not offered first, then those that are: the fan stands for all of them.
+      more={[...ordered.slice(SHOWN), ...shown].flatMap(({ screenshotUrl }) => (screenshotUrl ? [screenshotUrl] : [])).slice(0, FANNED)}
       onOpen={onOpen}
       onBrowse={onBrowse}
       browseHref={browseHref}
