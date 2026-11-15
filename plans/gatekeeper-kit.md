@@ -2835,7 +2835,8 @@ conditions, which are rules of the store and its adapter:
   has named the entity, the records behind the ref target that id, and the create targets nothing,
   so it is never reduced onto the provider's row. A gatekeeper whose overlay lists a pending create
   until it is decided (Outlook's drafts) keeps targeting the ref: the provider's row has another id,
-  so the create is still never reduced onto it.
+  so the create is still never reduced onto it, and the cursor's `identity` resolves the ref, so the
+  stand-in and the provider's row are served as one.
 - A gatekeeper whose overlay resolves provisional ids when a row is served builds its view on each
   call (the adapter reads `view` at every fold and keeps none), so that a row is folded with the ids
   as they are then.

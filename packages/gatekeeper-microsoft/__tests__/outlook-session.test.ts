@@ -76,6 +76,8 @@ type FakeOptions = {
   omitFromBatch?: string;
   /** Messages a folder's listing returns besides its own, each under the folder that holds it, as a search folder lists them. */
   alsoLists?: Record<string, string[]>;
+  /** Runs when a folder's messages are asked for, before Graph answers: what happens to the mailbox while a page is read. */
+  whileListing?: () => void;
 };
 
 /** Graph, faked at `fetch`. Listings ignore `$filter`, as a misbehaving Graph would, so the guard has to drop what the binding doesn't cover. */
@@ -129,6 +131,7 @@ function fakeGraph(options: FakeOptions = {}) {
       if (!found) return { status: 404, body: {} };
       if (folder[2] === "/childFolders") return { status: 200, body: { value: FOLDERS.filter(child => child.parentId === found.id).map(folderRow) } };
       if (folder[2] === "/messages") {
+        options.whileListing?.();
         const listed = MESSAGES.filter(message => message.folder === found.id || options.alsoLists?.[found.id]?.includes(message.id));
         return { status: 200, body: { value: listed.map(messageRow) } };
       }
@@ -599,6 +602,57 @@ describe("a listing with changes pending", () => {
       expect(rest).toHaveLength(2);
       expect(ids(rest)).toEqual([middle.id, USER_DRAFT]);
       expect(rest[0]).toMatchObject({ subject: "Middle", pending: "draft" });
+    });
+  });
+
+  describe("a draft Exchange holds whose stand-in the listing read", () => {
+    const NEW_DRAFT = "AAMkNewDraft";
+    /** An apply creates the draft: Exchange holds it and its temporary ID stands for it. */
+    function create(bound: Map<string, string>, draft: MessageInfo) {
+      MESSAGES.push({ id: NEW_DRAFT, folder: DRAFTS, conversationId: "c9", from: "phillip@contoso.com", subject: draft.subject, body: "<p>Hello</p>", isDraft: true, changeKey: "ck-new" });
+      bound.set(draft.id, NEW_DRAFT);
+    }
+    afterEach(() => {
+      const at = MESSAGES.findIndex(message => message.id === NEW_DRAFT);
+      if (at >= 0) MESSAGES.splice(at, 1);
+    });
+
+    it("lists a draft once when its creation is approved before the page that holds it is read", async () => {
+      const { reader, submitted, bound, draft } = await oneDraft();
+      const cursor = await reader.listMessages({ folderId: "drafts" });
+      submitted.length = 0;
+      create(bound, draft);
+      const listed = await all(cursor);
+      expect(ids(listed)).toEqual([draft.id, USER_DRAFT]);
+      expect(listed[0]).toMatchObject({ pending: "draft" });
+    });
+
+    it("lists a draft once while its creation, already applied, is still waiting", async () => {
+      const { reader, bound, draft } = await oneDraft();
+      create(bound, draft);
+      expect(ids(await all(await reader.listMessages({ folderId: "drafts" })))).toEqual([draft.id, USER_DRAFT]);
+    });
+
+    it("leaves out a draft created while its page was read that a pending action deletes", async () => {
+      const during: (() => void)[] = [];
+      const { reader, writer, submitted, bound, draft } = await oneDraft({ whileListing: () => during.shift()?.() });
+      await writer.deleteDraft(draft.id);
+      const cursor = await reader.listMessages({ folderId: "drafts" });
+      // The creation is approved and applied after this `next()` has read what is pending.
+      during.push(() => {
+        submitted.shift();
+        create(bound, draft);
+      });
+      expect(ids(await all(cursor))).toEqual([USER_DRAFT]);
+    });
+
+    it("drops the stand-in of a draft approved after the listing began once a pending action deletes the draft", async () => {
+      const { reader, writer, submitted, bound, draft } = await oneDraft({ ownDrafts: [NEW_DRAFT] });
+      const cursor = await reader.listMessages({ folderId: "drafts" });
+      submitted.length = 0;
+      create(bound, draft);
+      await writer.deleteDraft(NEW_DRAFT);
+      expect(ids(await all(cursor))).toEqual([USER_DRAFT]);
     });
   });
 

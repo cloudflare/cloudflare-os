@@ -650,7 +650,9 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     // `next()`: a row can wait in the cursor long after its page was read.
     const resolve = (id: string) => ctx.host.resolve(id);
     let pending = ctx.host.pending();
-    let view = messageView(pending, resolve);
+    // Indexed each time a row is folded, so an action on a draft's temporary ID reaches
+    // Exchange's row of the draft as soon as the ID stands for it.
+    const view = () => messageView(pending, resolve);
     // Where each pending move goes, by the folder ID its action holds. The fold is synchronous,
     // so they are read ahead of it, and once for the walk: a folder created part way through
     // keeps the ID this listing was asked for.
@@ -668,7 +670,7 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
       ? { folder: { id: known.drafts, path: await ctx.folderPath(known.drafts) }, mailbox: await ctx.mailbox() } : undefined;
     const list = simulatedList({
       store: messageStore({ destination: id => destinations.get(id) ?? { id, path: "" }, ...(drafts ? { drafts } : {}) }),
-      view: () => view,
+      view,
       id: row => row.id,
       compare: (a, b) => b.receivedAt.localeCompare(a.receivedAt),
       created: () => drafts ? pending.flatMap(({ action }) => action.kind === "createDraft" ? [action.payload.ref] : []) : [],
@@ -679,6 +681,14 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
     // before it is served is still the listing's to show, as it was read.
     const shown = (row: MessageInfo) => list.overlay(row)
       .filter(folded => listedFolder === undefined || folded.folderId === listedFolder || folded.folderId === row.folderId);
+    // A draft created since the listing began is still listed, as the listing read it: the page
+    // it would be on may have been read before Exchange held it. Its stand-in is folded as the
+    // draft it became, and goes once the listing would leave that draft out: a pending action
+    // deletes it.
+    const createdSince = (row: MessageInfo) => {
+      const id = resolve(row.id);
+      return id !== row.id && shown({ ...row, id }).length > 0 ? row : null;
+    };
     // The rows as Exchange holds them.
     const rows = async (messages: readonly GraphMessage[]) => {
       const [mailbox, domains] = await Promise.all([ctx.mailbox(), ctx.orgDomains()]);
@@ -698,16 +708,14 @@ export class OutlookReaderImpl extends RpcTarget implements OutlookReader {
       refresh: async () => {
         pending = ctx.host.pending();
         await readDestinations();
-        view = messageView(pending, resolve);
         list.refresh();
       },
       overlay: shown,
       inject: {
         ...list.inject,
-        // A draft created since the listing began is still listed, as the listing read it:
-        // the page it would be on may have been read before Exchange held it.
-        revalidate: row => list.inject.revalidate(row) ?? (resolve(row.id) !== row.id ? row : null),
-        identity: info => info.id,
+        revalidate: row => list.inject.revalidate(row) ?? createdSince(row),
+        // A draft waiting to be created and Exchange's row of it once it is are one message.
+        identity: info => resolve(info.id),
       },
       fetchPage: async (token, perPage) => {
         let moved: GraphMessage[] = [];

@@ -271,7 +271,8 @@ it is. A send can't be unsent.
 A message listing shows each row as the actions still waiting when its page is returned leave it,
 not as they stood when Exchange was read: a change proposed part way through a listing shows on its
 rows from the next page on, a row whose change was decided by then shows as Exchange held it when
-the row was read, and drafts waiting to be created are listed newest first, as Drafts lists them.
+the row was read, and drafts waiting to be created are listed newest first, as Drafts lists them,
+each once even when it is created part way through the listing.
 
 The approver of a send sees every recipient, marked when they're outside the organization, when the
 user has never written to them, or when they aren't in the conversation being replied to; the body
