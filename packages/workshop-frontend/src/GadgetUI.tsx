@@ -201,13 +201,17 @@ class WorkshopGadgetHost extends RpcTarget implements GadgetHost {
 
 // What GadgetUI knows about the frame currently showing, through its host.
 type FrameFocus = {
-  // The anchor of the frame's last report, or null.
+  // The anchor of the frame's last report since it was last sent somewhere, or null.
   lastReported: string | null
-  // The anchors the frame has reported that the parent's anchor may yet change to: its last report,
-  // and every one since the anchor last changed. The parent's anchor lags the reports (the URL is
-  // written after a pause and rendered later still), so a report the frame has since moved on from
-  // can still arrive, and is not a navigation.
-  unacknowledged: Set<string>
+  // The anchors the frame has reported that the parent's anchor may yet change to, undefined
+  // standing for a null report. The parent's anchor lags the reports (the URL is written after a
+  // pause and rendered later still), so a report the frame has since moved on from can still
+  // arrive, and is not a navigation. When the anchor arrives at one of them, only the frame's last
+  // report can still follow. An anchor set or cleared elsewhere supersedes every report on its way
+  // (the URL drops a write it still holds), and so does sending the frame somewhere: either empties
+  // the set. A report already behind it, such as the frame's report of the spot it was sent to, would
+  // otherwise pass for an echo when the anchor returns to that spot.
+  unacknowledged: Set<string | undefined>
   // Our duplicate of the frame's registered navigate callback.
   navigate: RpcStub<Navigate> | null
 }
@@ -370,6 +374,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
   const sendNavigate = async (frame: FrameFocus, navigate: RpcStub<Navigate>, anchor: string) => {
     const epoch = ++focusEpochRef.current
+    // What the frame reported is behind it now, and so is any write of it the URL still holds.
+    frame.lastReported = null
+    frame.unacknowledged.clear()
     let resolved: boolean
     try {
       const result: unknown = await navigate(anchor)
@@ -387,8 +394,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       }
     }
     if (resolved || epoch !== focusEpochRef.current) return
-    frame.lastReported = null
-    frame.unacknowledged.clear()
+    // A null report on the frame's behalf, so its clear coming back is an echo like the frame's.
+    frame.unacknowledged.add(undefined)
     focusRef.current?.onFocusChange(null)
   }
 
@@ -398,7 +405,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       if (frameFocusRef.current !== frame || !current) return
       ++focusEpochRef.current
       frame.lastReported = reported?.anchor ?? null
-      if (reported) frame.unacknowledged.add(reported.anchor)
+      frame.unacknowledged.add(reported?.anchor)
       current.onFocusChange(reported)
     },
     onNavigate: async navigate => {
@@ -420,8 +427,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     ++focusEpochRef.current
     const frame = frameFocusRef.current
     if (!frame) return
-    const echo = anchor !== undefined && frame.unacknowledged.has(anchor)
-    frame.unacknowledged = new Set(frame.lastReported === null ? [] : [frame.lastReported])
+    const echo = frame.unacknowledged.has(anchor)
+    // An echo means the frame has reported since it was last sent anywhere, so null here is a null
+    // report, which may still clear the anchor.
+    const last = frame.lastReported ?? undefined
+    frame.unacknowledged = new Set(echo && last !== anchor ? [last] : [])
     if (anchor === undefined || !frame.navigate || echo) return
     // What the frame last reported is the spot it is leaving, and it may never report the new one.
     focusRef.current?.onFocusReset?.()

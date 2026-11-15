@@ -348,6 +348,24 @@ describe('focus', () => {
     expect(recorder.events).toEqual(['navigate gone', 'change null'])
   })
 
+  it("doesn't navigate as the anchor trails reports through the clear of a spot that no longer resolves", async () => {
+    const gadget = focusGadget()
+    await show(gadget, 'gone')
+    const control = await frame(0)
+    const registration = control.register()
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(false)
+    await registration
+
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    await show(gadget, undefined)
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+    await show(gadget, 'cell/B7')
+    await settle()
+
+    expect(recorder.navigations.map(n => n.anchor)).toEqual(['gone'])
+  })
+
   it('keeps a report made while navigate was pending', async () => {
     await show(focusGadget(), 'gone')
     const control = await frame(0)
@@ -376,7 +394,7 @@ describe('focus', () => {
     expect(recorder.events).toEqual(['navigate gone', 'reset', 'navigate cell/C1'])
   })
 
-  it('ignores a failure superseded by a return to the spot the frame reported', async () => {
+  it('sends the frame back to a spot it reported after sending it elsewhere', async () => {
     const gadget = focusGadget()
     await show(gadget, undefined)
     const control = await frame(0)
@@ -387,10 +405,122 @@ describe('focus', () => {
     await show(gadget, 'gone')
     await expect.poll(() => recorder.navigations.length).toBe(1)
     await show(gadget, 'cell/B7')
+    await expect.poll(() => recorder.navigations.length).toBe(2)
+    // The return supersedes the failure.
     recorder.navigations[0].resolve(false)
+    recorder.navigations[1].resolve(true)
     await settle()
 
-    expect(recorder.events).toEqual(['change {"anchor":"cell/B7","label":"B7"}', 'reset', 'navigate gone'])
+    expect(recorder.events).toEqual([
+      'change {"anchor":"cell/B7","label":"B7"}', 'reset', 'navigate gone', 'reset', 'navigate cell/B7',
+    ])
+  })
+
+  it('sends the frame back and forth between spots, though it reports each one it is sent to', async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    const control = await frame(0)
+    await control.register()
+
+    // As a chip clicked in each of two messages in turn would, with the gadget reporting from
+    // navigate as it is asked to.
+    const anchors = ['cell/B7', 'cell/C1', 'cell/B7', 'cell/C1']
+    for (const [index, anchor] of anchors.entries()) {
+      await show(gadget, anchor)
+      await expect.poll(() => recorder.navigations.length).toBe(index + 1)
+      recorder.navigations[index].resolve(true)
+      await control.report({ anchor, label: anchor })
+    }
+
+    expect(recorder.navigations.map(n => n.anchor)).toEqual(anchors)
+  })
+
+  it("doesn't navigate as the anchor catches up with the frame leaving the spot it was sent to and returning", async () => {
+    const gadget = focusGadget()
+    await show(gadget, 'cell/B7')
+    const control = await frame(0)
+    const registration = control.register()
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(true)
+    await registration
+
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    await show(gadget, 'cell/C1')
+    await show(gadget, 'cell/B7')
+    await settle()
+
+    expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
+  })
+
+  it('sends the frame back to a spot it reported before it was sent elsewhere and the anchor cleared', async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    const control = await frame(0)
+    await control.register()
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    await show(gadget, 'cell/B7')
+    await show(gadget, 'cell/C1')
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(true)
+
+    await show(gadget, undefined)
+    await show(gadget, 'cell/B7')
+
+    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/C1', 'cell/B7'])
+  })
+
+  it("doesn't navigate as the anchor trails reports through a null one", async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    const control = await frame(0)
+    await control.register()
+
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    await control.report(null)
+    await show(gadget, 'cell/B7')
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+    await show(gadget, undefined)
+    await control.report({ anchor: 'cell/D4', label: 'D4' })
+    await show(gadget, 'cell/C1')
+    await settle()
+
+    expect(recorder.navigations).toEqual([])
+  })
+
+  it('navigates to a report the anchor was cleared over, since the URL dropped it', async () => {
+    const gadget = focusGadget()
+    await show(gadget, 'cell/A1')
+    const control = await frame(0)
+    const registration = control.register()
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(true)
+    await registration
+
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    await show(gadget, undefined)
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+    await show(gadget, 'cell/B7')
+
+    await expect.poll(() => recorder.navigations.map(n => n.anchor)).toEqual(['cell/A1', 'cell/B7'])
+  })
+
+  it("doesn't navigate as the anchor catches up with a null report and the frame's next", async () => {
+    const gadget = focusGadget()
+    await show(gadget, 'cell/B7')
+    const control = await frame(0)
+    const registration = control.register()
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(true)
+    await registration
+
+    await control.report(null)
+    await control.report({ anchor: 'cell/C1', label: 'C1' })
+    await show(gadget, undefined)
+    await show(gadget, 'cell/C1')
+    await settle()
+
+    expect(recorder.navigations.map(n => n.anchor)).toEqual(['cell/B7'])
   })
 
   it("ignores a replaced frame's pending navigate failing as its session closes", async () => {

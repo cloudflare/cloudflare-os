@@ -158,16 +158,20 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   `navigate`. That covers a pasted link and, later, a clicked comment, without echoing the
   gadget's own reports back to it. Because the URL lags the reports, an anchor the frame reported
   since `anchor` last changed is not a navigation either: after reports A then B, the URL can
-  still catch up through A, and sending the frame back to A would undo B. Before it sends that
-  `navigate`, `GadgetUI` calls `onFocusReset`: the frame's last report describes the spot it is
-  leaving, and a gadget is asked to report from `navigate` but may not.
-- A `navigate` that returns false, or fails, reports a null focus, which clears the stale anchor.
-  It does so only if nothing has superseded it: a `navigate` can still be pending when the user
+  still catch up through A, and sending the frame back to A would undo B. A null report counts
+  too, as `anchor` cleared. An `anchor` set or cleared elsewhere supersedes every report still on
+  its way to the URL (`useFocusUrl` drops a write it holds), and so does sending the frame
+  somewhere, so either forgets them all: a gadget reports the spot it was sent to, and when a
+  clicked chip later sends `anchor` back to that spot it is a navigation, not that report coming
+  back. Before it sends a `navigate`, `GadgetUI` calls `onFocusReset`: the frame's last report
+  describes the spot it is leaving, and a gadget is asked to report from `navigate` but may not.
+- A `navigate` that returns false, or fails, reports a null focus, which clears the stale anchor
+  and, like the frame's own null report, is not a navigation when it comes back. It reports only if nothing has superseded it: a `navigate` can still be pending when the user
   moves on, so each call is numbered, and its failure is ignored if the frame has reported a focus
-  or been sent a newer `navigate` since, if `anchor` has changed since (even back to the spot the
-  frame reported, which sends no `navigate`), or if the frame has been replaced. A replaced frame's
-  session ending rejects its pending call, and that must not clear the anchor its successor is
-  about to be sent to.
+  or been sent a newer `navigate` since, if `anchor` has changed since (even to one of the frame's
+  reports coming back, which sends no `navigate`), or if the frame has been replaced. A replaced
+  frame's session ending rejects its pending call, and that must not clear the anchor its
+  successor is about to be sent to.
 - A new frame starts with no "last reported" anchor and no callback, so it gets `navigate(anchor)`
   when it registers. That is the whole restore mechanism for code-change reloads and page reloads.
 - Whenever the frame is replaced, `GadgetUI` calls `onFocusReset` too. That includes replacements
@@ -404,7 +408,9 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   with an anchor set calls `navigate`, and `onNavigate()` does not resolve until a delayed
   `navigate` has; a later anchor change still reaches the callback, after the registering call
   has returned; a reload calls `onFocusReset` and then `navigate` on the new frame, including a
-  reload from a failed reconnect; the gadget's own report is not echoed back; a false result
+  reload from a failed reconnect; the gadget's own report is not echoed back, but a spot it
+  reported is a navigation once the frame has been sent elsewhere, so a gadget that reports each
+  spot it is sent to can be sent back and forth between two; a false result
   clears the anchor, but not after a newer report, and not when it arrives from a frame that has
   since been replaced; malformed and oversized reports are dropped.
 - **URL** (frontend unit tests, on the route and on `useFocusUrl`, the hook `GadgetEditor` keeps
