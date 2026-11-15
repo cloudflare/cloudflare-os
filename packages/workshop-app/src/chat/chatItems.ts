@@ -102,6 +102,22 @@ export type AssistantItem = Row & {
   skills: string[]
   /** The changes its turn kept can be undone, or gone back to, from here. */
   goBack?: GoBack
+  /**
+   * What woke the agent to write it, when that was an automation's call rather than a person: by
+   * the automation's name, and the call as it arrived, for its details.
+   */
+  prompt?: CallPrompt
+}
+/** A call that woke the agent (`agentCallback`), as the reply it prompted shows it. */
+export type CallPrompt = {
+  /** What called, in plain words: the automation's title, "Tell a joke", else what it is. */
+  label: string
+  /** The call: "onSchedule() with env.onSchedule_ARGS". */
+  call: string
+  /** Its arguments, as the agent was given them in summary. */
+  args?: string
+  /** The reply just above was woken by the same automation, which it has already named. */
+  again?: true
 }
 export type OutputItem = Row & {
   kind: 'output'
@@ -221,7 +237,7 @@ export type ConnectionItem = Row & {
 }
 export type NoticeItem = Row & {
   kind: 'notice'
-  notice: 'callback' | 'unknown'
+  notice: 'unknown'
   text: string
   detail?: string
 }
@@ -539,6 +555,19 @@ const observationEntry = (log: ActionLogEntry & { type: 'observation' }): Omit<O
 }
 
 /** The skills a reply followed, in plain words, each once, in the order they were picked up. */
+// A title in the arguments' summary, as a scheduled task's: `title: "Tell a joke"`.
+const TITLE = /\btitle: "((?:[^"\\]|\\.)*)"/
+
+/** A call that woke the agent, named by the automation's title where its arguments give one. */
+export const callPrompt = (methodName: string, bindingName: string | undefined, argsSummary: string): CallPrompt => {
+  const title = TITLE.exec(argsSummary)?.[1]?.replace(/\\(.)/g, '$1')
+  return {
+    label: title || (methodName === 'onSchedule' ? 'A scheduled task' : 'An automation'),
+    call: `${methodName}()${bindingName ? ` with env.${bindingName}` : ''}`,
+    ...(argsSummary ? { args: argsSummary } : {}),
+  }
+}
+
 const skillsOf = (trace: readonly TraceEntry[]) =>
   [...new Set(trace.flatMap((entry) => (entry.type === 'observation' && entry.skill ? [entry.skill] : [])))]
 
@@ -685,6 +714,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
   const steerKey = () => `steer:${turn}:${steers++}`
 
   /** Ends the turn before the message, numbered `opener`, that starts the next. */
+  // The call that woke the agent for this turn, for the first thing it then says.
+  let prompt: CallPrompt | undefined
   const closeTurn = (opener: number) => {
     settle()
     items.push(...pinned, ...acts)
@@ -693,6 +724,7 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
     work = []
     turn = String(opener)
     steers = 0
+    prompt = undefined
   }
   /** The turn goes on, so what people did before this point stays where it happened. */
   const carryOn = () => {
@@ -776,7 +808,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             ? [...work, emitStep<ThinkingEntry>(`thinking:${id}`, [thought], () => ({ type: 'thinking', text: thought }))]
             : work
           const goBack = points.answers.get(id)
-          items.push(emit<AssistantItem>(`assistant:${id}`, [message, goBack?.sequence, goBack?.action, ...trace], () => ({
+          // A run of replies one automation woke names it once, at the first.
+          const above = items.at(-1)
+          if (prompt && above?.kind === 'assistant' && above.prompt?.label === prompt.label) prompt = { ...prompt, again: true }
+          items.push(emit<AssistantItem>(`assistant:${id}`, [message, goBack?.sequence, goBack?.action, prompt, ...trace], () => ({
             kind: 'assistant',
             id,
             text,
@@ -785,8 +820,10 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
             trace,
             skills: skillsOf(trace),
             goBack,
+            ...(prompt ? { prompt } : {}),
           })))
           work = []
+          prompt = undefined
         }
         // The thinking behind a step that said nothing is kept with the first thing it did.
         let reasoning = text ? undefined : thought
@@ -911,7 +948,8 @@ export const toChatFeed = (messages: AiChatMessage[], context: FeedContext = {},
         // A call delivered to the agent prompts it, as a message would.
         closeTurn(id)
         const { methodName, bindingName, argsSummary } = message
-        notice(message, 'callback', `${methodName}()${bindingName ? ` with env.${bindingName}` : ''}`, argsSummary || undefined)
+        // Not a row of its own: the reply it prompts says what woke it, and keeps the call.
+        prompt = callPrompt(methodName, bindingName, argsSummary)
         break
       }
 

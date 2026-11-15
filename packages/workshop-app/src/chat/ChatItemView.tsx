@@ -74,7 +74,6 @@ const dividerAction = (point: GoBack | undefined, { onGoBack }: ChatItemHandlers
   point && onGoBack && { ...DIVIDER_ACTIONS[point.action], onSelect: () => onGoBack(point) }
 
 const NOTICE_ICONS: Record<NoticeItem['notice'], SystemRowProps['icon']> = {
-  callback: 'code',
   unknown: 'info',
 }
 
@@ -115,6 +114,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
         <AssistantMessage
           text={item.text}
           skills={item.skills}
+          wokenBy={item.prompt && !item.prompt.again ? item.prompt.label : undefined}
           joins={joins}
           onReply={() => handlers.onReply(item)}
           goBack={goBackOf(item.goBack, handlers)}
@@ -125,6 +125,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
               sender: item.sender,
               sentAt: item.sentAt,
               trace: { steps: item.trace, openSteps: open, onToggleStep: disclosure.toggle },
+              prompt: item.prompt,
             }),
           }}
         />
@@ -200,7 +201,7 @@ export const ChatItemView = memo(function ChatItemView({ item, disclosure, handl
         : <ConnectionRequestCard {...request} state={item.state} />
     }
     case 'notice':
-      return <SystemRow icon={NOTICE_ICONS[item.notice]} detail={item.detail}>{item.text}</SystemRow>
+      return <SystemRow icon={NOTICE_ICONS[item.notice]}>{item.text}</SystemRow>
     case 'divider':
       return <FeedDivider action={dividerAction(item.goBack, handlers)}>{item.label}</FeedDivider>
     case 'error':

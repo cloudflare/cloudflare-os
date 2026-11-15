@@ -593,11 +593,24 @@ describe('toChatFeed', () => {
       expect(only(result, 'assistant')[0].trace.map((step) => (step.type === 'call' ? step.label : step.type))).toEqual(['Used the gadget', 'Read a.ts', 'Used the gadget'])
     })
 
-    it('shows a call delivered to the agent', () => {
-      const result = feed(agentCallback('onTicket', '{ key: "PLAT-1" }', 'TICKETS'))
-      expect(only(result, 'notice')).toMatchObject([
-        { notice: 'callback', text: 'onTicket() with env.TICKETS', detail: '{ key: "PLAT-1" }' },
-      ])
+    it('says on the reply what call woke the agent, by the automation’s title, keeping the call for its details', () => {
+      const args = '[0]: {scheduleId: "s1", title: "Tell a \\"clean\\" joke", description: "Every 2 minutes"}'
+      const result = feed(user('jokes'), agent({ text: 'Set up' }), agentCallback('onSchedule', args, 'onSchedule_ARGS'), agent({ text: 'A joke' }), agent({ text: 'Another' }))
+      expect(kinds(result)).toEqual(['user', 'assistant', 'assistant', 'assistant'])
+      const [, woken, after] = only(result, 'assistant')
+      expect(woken.prompt).toEqual({ label: 'Tell a "clean" joke', call: 'onSchedule() with env.onSchedule_ARGS', args })
+      expect(after.prompt).toBeUndefined()
+    })
+
+    it('names the automation once over a run of replies it woke', () => {
+      const args = '{title: "Tell a joke"}'
+      const result = feed(agentCallback('onSchedule', args, 'A'), agent({ text: 'One' }), agentCallback('onSchedule', args, 'A'), agent({ text: 'Two' }), user('hi'), agent({ text: 'Hello' }), agentCallback('onSchedule', args, 'A'), agent({ text: 'Three' }))
+      expect(only(result, 'assistant').map(({ prompt }) => prompt && (prompt.again ? 'again' : prompt.label))).toEqual(['Tell a joke', 'again', undefined, 'Tell a joke'])
+    })
+
+    it('names a call whose arguments give no title by what it is', () => {
+      const result = feed(agentCallback('onTicket', '{ key: "PLAT-1" }', 'TICKETS'), agent({ text: 'On it' }))
+      expect(only(result, 'assistant')[0].prompt).toMatchObject({ label: 'An automation', call: 'onTicket() with env.TICKETS' })
     })
   })
 

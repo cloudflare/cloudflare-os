@@ -176,6 +176,12 @@ where they were decided, and a run of decisions on one thing settles as one card
 "Append to Google Doc, 5 times"), unfolding to each. A connected file beside a chat is drawn again
 whenever what the chat asks of it changes, approved or waiting.
 
+A call that wakes the agent (`agentCallback`, such as a scheduled task's `onSchedule`) is not a row:
+it starts a turn, as a person's message does, and the reply it prompts says what woke it in a quiet
+line at its top, by the automation's title from the call's arguments (`AssistantItem.prompt`,
+`callPrompt`), once over a run of replies the same automation woke. The call and its arguments are
+in that reply's details.
+
 What another agent reported into the chat (`agentReport`) is said as that agent, with the way to
 the run it came from, and starts no turn. A run of code is named by what the agent said it does
 (`toolCallSummary`) while it runs.

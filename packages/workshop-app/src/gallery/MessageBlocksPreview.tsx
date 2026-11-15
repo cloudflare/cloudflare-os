@@ -76,7 +76,7 @@ export const MessageBlocksPreview = () => {
           <UserMessage parts={[{ type: 'text', text: 'Keep it under 100 words.' }]} unread />
         </Column>
       </Section>
-      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, folding to their first line before they leave: a reply that took no steps, one with steps to open, one's own message, another person's, one not read yet; Details or the chevron puts them away)">
+      <Section title="Message details (a bubble of their own under the message, as wide as what is in them, folding to their first line before they leave: a reply that took no steps, one with steps to open, one an automation woke it to write (the call in its details), one's own message, another person's, one not read yet; Details or the chevron puts them away)">
         <Column>
           <AssistantMessage
             text="I’ll build a personal Jira dashboard."
@@ -85,6 +85,23 @@ export const MessageBlocksPreview = () => {
           <AssistantMessage
             text={'The chart now covers **twelve weeks**:\n\n- the window is a constant in `chart.tsx`\n- the worker already returned twelve'}
             details={{ ...of('details'), ...messageInfo({ sender: 'Mock Model', sentAt: SENT, trace: { steps: TRACE, openSteps: open, onToggleStep: toggle } }) }}
+          />
+          <AssistantMessage
+            text="I told my computer I needed a break, and now it won’t stop sending me vacation ads."
+            wokenBy="Tell a joke"
+            details={{
+              ...of('woken'),
+              ...messageInfo({
+                sender: 'Mock Model',
+                sentAt: SENT,
+                trace: { steps: [], openSteps: open, onToggleStep: toggle },
+                prompt: {
+                  label: 'Tell a joke',
+                  call: 'onSchedule() with env.onSchedule_ARGS',
+                  args: '[0]: {scheduleId: "b84856bb", title: "Tell a joke", description: "Every 2 minutes. Reply with a short, new, clean joke in this chat."}',
+                },
+              }),
+            }}
           />
           <UserMessage
             parts={[{ type: 'text', text: 'Make it dark' }]}

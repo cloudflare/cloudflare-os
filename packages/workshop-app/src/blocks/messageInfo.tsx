@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { CalendarBlankIcon, CpuIcon, UserIcon, type Icon } from '@phosphor-icons/react'
+import { CalendarBlankIcon, ClockIcon, CpuIcon, UserIcon, type Icon } from '@phosphor-icons/react'
+import { CodeBlock } from '@/components/CodeBlock'
 import { cn } from '@cloudflare/kumo/utils'
 import type { ToolStepEntry } from './ToolStep'
 import { WorkLog } from './WorkLog'
@@ -19,6 +20,8 @@ export type MessageInfo = {
     openSteps: ReadonlySet<string>
     onToggleStep: (key: string) => void
   }
+  /** The call that woke the agent to write it, when an automation did rather than a person. */
+  prompt?: { label: string; call: string; args?: string }
 }
 
 const WHEN = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
@@ -35,12 +38,18 @@ const Line = ({ icon: LineIcon, name, children }: { icon: Icon; name: string; ch
  * What there is to know about a message, as the two parts a message's details show it in (see
  * `MessageBubble`): their first line, and the rest, when there is more.
  */
-export const messageInfo = ({ sender, sentAt, trace }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
+export const messageInfo = ({ sender, sentAt, trace, prompt }: MessageInfo): { summary: ReactNode; more?: ReactNode } => {
   const from = sender && <Line icon={trace ? CpuIcon : UserIcon} name="From">{sender}</Line>
   const sent = (
     <Line icon={CalendarBlankIcon} name="Sent">
       {sentAt ? <time dateTime={sentAt.toISOString()}>{WHEN.format(sentAt)}</time> : 'Not read yet'}
     </Line>
+  )
+  const woken = prompt && (
+    <section aria-label="What woke it" className="flex flex-col gap-2 border-t border-kumo-line pt-2 text-start">
+      <Line icon={ClockIcon} name="Woken by">{prompt.label}, which called <code className="font-mono text-xs">{prompt.call}</code></Line>
+      {prompt.args && <CodeBlock label="With">{prompt.args}</CodeBlock>}
+    </section>
   )
   const steps = trace && trace.steps.length > 0 && (
     <section aria-label="What led to this message" className="border-t border-kumo-line pt-2 text-start">
@@ -51,13 +60,14 @@ export const messageInfo = ({ sender, sentAt, trace }: MessageInfo): { summary: 
     </section>
   )
 
-  if (!from && !steps) return { summary: sent }
+  if (!from && !steps && !woken) return { summary: sent }
   return {
     summary: from || sent,
     // The space above is part of it, so that folded away it leaves exactly the one line.
     more: (
       <div className={cn('flex flex-col gap-3', from ? 'pt-2' : 'pt-3')}>
         {from && sent}
+        {woken}
         {steps}
       </div>
     ),
