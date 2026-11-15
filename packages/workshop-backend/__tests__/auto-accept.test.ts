@@ -155,6 +155,42 @@ describe("accepting a turn's changes as it ends", () => {
   });
 });
 
+// The app holds a doc (21); the chat accepts a spawner (40), binds the app to it, and gives the
+// spawner `doc`, as a chat setting up an agent for a button leaves it.
+async function settingUp(doc: number) {
+  answerDone();
+  const chat = await proposingChat();
+  await chat.visit(impl => {
+    impl.addChatMessages(CHAT, USER, [{type: "connectionRequest", requestId: "1:1", vendorId: "agent-spawner",
+      vendorName: "Agent spawner", reason: "To write jokes", state: "accepted", gatekeeperId: 40}]);
+    const sequence = impl.nextChatSequencePeek(CHAT);
+    impl.addChatMessages(CHAT, USER, [{type: "changes", addedBindings: [
+      {gadgetId: 1, name: "JOKES", target: 40}, {gadgetId: 40, name: "DOC", target: doc}]}]);
+    const pending = {chatId: CHAT, sequence};
+    const record = impl.storage.gadgets.get(1)!;
+    impl.storage.gadgets.put({...record, bindings: {DOC: {target: 21}, JOKES: {target: 40, pending}}} as never);
+    const config = {displayName: "Jokes", modelId: null};
+    impl.storage.gatekeepers.put({id: 40, resourceTitle: "Jokes",
+      class: impl.ctx.exports.AgentSpawnerGatekeeper({props: {config, creatorUserId: USER.id}}),
+      creationSpec: {type: "agentSpawner", config}, bindings: {DOC: {target: doc, pending}}} as never);
+  });
+  return chat;
+}
+
+describe("a spawner a turn sets up", () => {
+  it("is merged when it reaches only what the app that starts its agents holds", async () => {
+    const {runTurn, messages} = await settingUp(21);
+    await runTurn();
+    expect((await messages()).find(msg => msg.type === "merge")).toMatchObject({automatic: true});
+  });
+
+  it("waits for the user when it reaches what the app does not", async () => {
+    const {runTurn, messages} = await settingUp(22);
+    await runTurn();
+    expect((await messages()).some(msg => msg.type === "merge")).toBe(false);
+  });
+});
+
 describe("a spawned agent's result", () => {
   it("is posted in the chat its spawner reports to, starting no turn there", async () => {
     answerDone();

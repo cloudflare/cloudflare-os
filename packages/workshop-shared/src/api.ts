@@ -3065,7 +3065,8 @@ export type WorkspaceMetadataWithTimestamps = WorkspaceMetadata & {
  * The glyphs themselves live in the frontend, so only these keys ever cross the wire.
  */
 export const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow", "flowArrow",
-    "kanban", "chartBar", "table", "notebook", "listChecks"] as const;
+    "kanban", "chartBar", "table", "notebook", "listChecks", "calendar", "inbox", "form", "map",
+    "dashboard", "database", "schedule", "agent", "people", "web"] as const;
 
 /** One of `OUTPUT_ICONS`, naming a glyph the frontend knows how to draw. */
 export type OutputIcon = typeof OUTPUT_ICONS[number];
@@ -3206,6 +3207,12 @@ export type OutputSummary = {
    * predates this field.
    */
   role?: CollaboratorRole;
+
+  /**
+   * How many of the gadget's own actions are waiting for someone who builds in its workspace to
+   * approve them, while any are.
+   */
+  waiting?: number;
 }
 
 /**
@@ -4534,6 +4541,15 @@ export type AiChatMetadata = {
    * recorded.
    */
   spawnerId?: WorkpieceId;
+
+  /**
+   * The gadget whose code started this chat through its spawner (a click in it, or a hook waking
+   * it), when one did. The agent acts for that gadget: what the gadget may do without asking
+   * (`GadgetSummary.autoApprove`, `GadgetSummary.allowed`) the agent may do too, and its actions
+   * waiting count as the gadget's (`OutputSummary.waiting`). Absent for a chat a person or an
+   * agent started, and on chats spawned before it was recorded.
+   */
+  spawnedByGadgetId?: WorkpieceId;
 
   /**
    * Present while the agent's turn is stopped on a decision only a user can make: an action it
@@ -6291,6 +6307,31 @@ export type GadgetSummary = {
    * drafts (see `GadgetClient.setAutoApprove()`). Delivered to build-role clients only.
    */
   autoApprove?: true;
+
+  /**
+   * Who published the blueprint this gadget's code came from, when that is not the workspace's
+   * owner. Such a gadget's actions go ahead unasked only as the gadget itself is allowed (`allowed`,
+   * `autoApprove`), never by a workspace rule or the owner's defaults, which are trust in the
+   * owner's own work. Delivered to build-role clients only.
+   */
+  publishedBy?: AiChatAuthorInfo;
+
+  /**
+   * The kinds of change this gadget may make through each connection without asking, whoever is
+   * using it and when a hook wakes it (see `GadgetClient.allowActionKind()`). Delivered to
+   * build-role clients only.
+   */
+  allowed?: GadgetAllowance[];
+};
+
+/** A kind of change a gadget may make through one connection without asking. */
+export type GadgetAllowance = {
+  /** The connection it goes through. */
+  gatekeeperId: WorkpieceId;
+  /** The kind, as its gatekeeper names it. */
+  actionKind: ActionKind;
+  /** Who allowed it, under whose authority the changes go ahead. */
+  enabledBy: AiChatAuthorInfo;
 };
 
 /**
@@ -6921,6 +6962,17 @@ export interface GadgetClient extends WorkpieceClient {
    * workspace has read restricted data.
    */
   setAutoApprove(enabled: boolean): Promise<void>;
+
+  /**
+   * Let the gadget make changes of `actionKind` through the connection `gatekeeperId` without
+   * asking, attributed to the caller (see GadgetSummary.allowed): whoever is using it, and when a
+   * hook wakes it. Only actions their gatekeeper marks `autoApprovable` go ahead so, and none once
+   * the workspace has read restricted data. Those already waiting go ahead now, in order.
+   */
+  allowActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void>;
+
+  /** Have changes of the kind `tag` through the connection `gatekeeperId` ask again. */
+  disallowActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void>;
 
   /**
    * Say what the gadget is -- a Document, a Tracker -- and the icon it is drawn with, or with null

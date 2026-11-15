@@ -21,7 +21,7 @@
 // This file has no runtime dependency on any other backend module, so any of them may import it
 // without creating a cycle.
 
-import type { BlueprintMetadata, BlueprintPublicInfo } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, BlueprintMetadata, BlueprintPublicInfo } from "@gadgets/workshop-shared/api";
 
 /** Reserved key holding the featured blueprints (see parseFeaturedBlueprints). */
 export const FEATURED_BLUEPRINTS_KEY = '.featured';
@@ -52,6 +52,19 @@ export type BlueprintKvRecord = {
   ownerId?: string;
   gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
 };
+
+/**
+ * Who wrote `record`'s blueprint's code, when that is not `ownerId` (a workspace's owner): its
+ * author as it describes itself, for a blueprint someone else published, one uploaded from a file
+ * (by anyone: a file's code is whoever made the file's), or one the deployment installed. Undefined
+ * for one the owner published from a gadget of theirs here, and for a blueprint that is gone.
+ */
+export function blueprintPublisher(record: BlueprintKvRecord | null | undefined, ownerId: string | undefined)
+    : AiChatAuthorInfo | undefined {
+  if (!record) return undefined;
+  let ownWork = ownerId !== undefined && record.ownerId === ownerId && record.gadgetId !== undefined;
+  return ownWork ? undefined : record.metadata.author;
+}
 
 /**
  * Restore the Dates in blueprint metadata that has been through JSON, in place. Also used for the

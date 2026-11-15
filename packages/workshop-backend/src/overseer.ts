@@ -73,7 +73,7 @@ import {
 } from "./blueprint-release";
 import { EMPTY_TREE_OID, gitObjectOid, parseGitCommitRefs, validateGitOid } from "./git-codec";
 import {
-  listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
+  blueprintPublisher, listFeaturedBlueprintsFromKv, readBlueprintKvRecord, type BlueprintKvRecord,
 } from "./storage-schema/blueprints-kv";
 import { WebFetchEnv, validateWebFetchUrl } from "./web-fetch";
 import { UserDurableObject, type UserChatContext } from "./user";
@@ -88,7 +88,7 @@ import { SharingManager, SharingCaller, accessIncludesGadget, accessIsLive } fro
 import {
   MAX_VERIFICATION_PASSES, ObserverLedger, requireVerifier, sameObserverScope, type ObserverScope,
 } from "./observer-ledger";
-import { AutoApprovalDrainer, autoApprovalRule, awaitsManualApproval } from "./auto-approval";
+import { actingGadgetId, AutoApprovalDrainer, autoApprovalRule, awaitsManualApproval } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
@@ -2463,6 +2463,12 @@ class OverseerImpl implements AgentHooks {
       }
       if (record.autoApprove && includePending) {
         summary.autoApprove = true;
+      }
+      if (record.publishedBy && includePending) {
+        summary.publishedBy = record.publishedBy;
+      }
+      if (record.allowed?.length && includePending) {
+        summary.allowed = record.allowed;
       }
       if (record.pending) {
         summary.chatId = record.pending.chatId;
@@ -5010,7 +5016,9 @@ class OverseerImpl implements AgentHooks {
           if (!meta || meta.activeAgent) return;
           // New access waits for the user, unless it is to a connection the user accepted in this
           // chat: having said yes to it here, they need not say yes again to the app the chat
-          // builds to use it.
+          // builds to use it. Nor is it new for an agent spawner to reach what every gadget that
+          // binds it (or will, once this chat's changes are kept) holds already: its agents, which
+          // those gadgets start, then reach nothing the gadgets could not.
           let accepted = new Set<WorkpieceId>();
           for (let message of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
             if (message.type === "connectionRequest" && message.state === "accepted" &&
@@ -5018,8 +5026,19 @@ class OverseerImpl implements AgentHooks {
               accepted.add(message.gatekeeperId);
             }
           }
-          if (this.#bindingHolders().some(holder => Object.values(holder.bindings)
-              .some(edge => edge.pending?.chatId === chatId && !accepted.has(edge.target)))) {
+          let holders = this.#bindingHolders();
+          let reaches = (holder: BindingHolder, target: WorkpieceId,
+              kept = (edge: BindingRecord) => !edge.pending) =>
+            Object.values(holder.bindings).some(edge => edge.target === target && kept(edge));
+          let heldByBinders = (holder: BindingHolder, target: WorkpieceId) => {
+            if (!this.storage.gatekeepers.get(holder.id)) return false;
+            let binders = holders.filter(other => reaches(other, holder.id,
+                edge => !edge.pending || edge.pending.chatId === chatId));
+            return binders.length > 0 && binders.every(binder => reaches(binder, target));
+          };
+          if (holders.some(holder => Object.values(holder.bindings).some(edge =>
+              edge.pending?.chatId === chatId && !accepted.has(edge.target) &&
+              !heldByBinders(holder, edge.target)))) {
             return;
           }
           let userMeta = await retryOnDoReset(() =>
@@ -6012,6 +6031,7 @@ class OverseerImpl implements AgentHooks {
     }
     // Also when a rule applies it: a user's "always approve" answers a pending request that way.
     this.traceAgentActionApproval(record, "approved");
+    this.#markGadgetActionsDirty(record.caller);
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -7087,6 +7107,12 @@ class OverseerImpl implements AgentHooks {
     if (willAutoApprove) {
       this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
     }
+    this.#markGadgetActionsDirty(caller);
+  }
+
+  // A gadget's actions waiting, and its agents', are counted in the outputs index (see outputsSnapshot()).
+  #markGadgetActionsDirty(caller: GatekeeperCaller): void {
+    if (actingGadgetId(this.storage, caller) !== undefined) this.markOutputsDirty();
   }
 
   async bindHook<Hook extends RpcTarget>(
@@ -7288,15 +7314,27 @@ class OverseerImpl implements AgentHooks {
   // Whole-snapshot rather than a delta, so that a user's index can be brought into line with this
   // workspace in one call from anywhere, without either side reconciling per workpiece.
   outputsSnapshot(access?: CollaboratorAccess): WorkspaceOutputEntry[] {
+    // What each gadget's code and the agents it spawned wait on a person for, from the sparse
+    // index of pending actions; not what it asks while shown in a chat, which that chat shows.
+    let waiting = new Map<WorkpieceId, number>();
+    for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
+      let {caller} = record;
+      let gadgetId = actingGadgetId(this.storage, caller);
+      if (gadgetId === undefined || caller.from === "gadget" && caller.chatId !== undefined) continue;
+      if (!awaitsManualApproval(this.storage, record)) continue;
+      waiting.set(gadgetId, (waiting.get(gadgetId) ?? 0) + 1);
+    }
     let entries: WorkspaceOutputEntry[] = [];
     for (let gadget of this.storage.gadgets.list()) {
       if (gadget.type !== "gadget" || gadget.pending) continue;  // worktrees have no outputs
       if (access && !accessIncludesGadget(access, gadget.id)) continue;
+      let count = waiting.get(gadget.id);
       entries.push({
         workpieceId: gadget.id,
         title: gadget.title,
         created: gadget.created,
         ...(gadget.output ? {output: gadget.output} : {}),
+        ...(count ? {waiting: count} : {}),
       });
     }
     return entries;
@@ -12374,9 +12412,11 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * describes. Called by AuthenticatedApi.newWorkspaceFromBlueprint() after creating (and opening)
    * the DO, with the metadata it goes on to set up the gadget's bindings from: the blueprint may
    * be republished meanwhile, and the code has to be the version those bindings belong to.
+   * `publishedBy` is who wrote its code when not the owner (see GadgetRecord.publishedBy).
    */
   async initializeFromBlueprint(
-      blueprintId: string, metadata: BlueprintMetadata, output?: BlueprintOutput): Promise<void> {
+      blueprintId: string, metadata: BlueprintMetadata, output?: BlueprintOutput,
+      publishedBy?: AiChatAuthorInfo): Promise<void> {
     // Set the title. The default gadget (created below) inherits it.
     let { title } = metadata;
     this.impl.storage.title.put(title);
@@ -12411,6 +12451,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (output) {
       record.output = output;
     }
+    if (publishedBy) record.publishedBy = publishedBy;
     this.impl.storage.gadgets.put(record);
 
     // Mark gadget as non-provisional (it has code, so it should appear in the gadget list).
@@ -13124,6 +13165,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // release it was made from.
     let record = this.impl.createGadget(title, bindingName, undefined, {output}, commitId);
     record.upstream = {blueprintId, commitId: release};
+    let publishedBy = blueprintPublisher(kvRecord, this.impl.ownerId);
+    if (publishedBy) record.publishedBy = publishedBy;
     this.impl.storage.gadgets.put(record);
     this.impl.recordGadgetAnalytics({
       event_name: "workpiece_created",
@@ -13584,6 +13627,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     // sibling approval from resuming this turn. Like an approval, though, clearing this manual gate
     // may unblock later auto-eligible pending actions, whose turns do resume.
     this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(action.gatekeeperId));
+    if (actingGadgetId(this.impl.storage, action.caller) !== undefined) this.impl.markOutputsDirty();
   }
 
   // Enable auto-approval of actions carrying `actionKind` on the given gatekeeper. Stores the
@@ -15063,8 +15107,31 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       delete record.autoApprove;
     }
     this.impl.storage.gadgets.put(record);
-    if (enabled) this.impl.drainAutoApprovalsOf(caller =>
-        (caller.from === "gadget" || caller.from === "hook") && caller.gadgetId === this.id);
+    if (enabled) {
+      this.impl.drainAutoApprovalsOf(caller => actingGadgetId(this.impl.storage, caller) === this.id);
+    }
+  }
+
+  async allowActionKind(gatekeeperId: WorkpieceId, actionKind: ActionKind): Promise<void> {
+    if (!this.impl.storage.gatekeepers.get(gatekeeperId)) throw new Error("No such connection.");
+    let enabledBy = await retryOnDoReset(() => this.#clientUser.whoami(), this.impl.logger);
+    let record = this.impl.getGadgetRecord(this.id);
+    record.allowed = [
+      ...(record.allowed ?? []).filter(entry =>
+          entry.gatekeeperId !== gatekeeperId || entry.actionKind.tag !== actionKind.tag),
+      {gatekeeperId, actionKind, enabledBy},
+    ];
+    this.impl.storage.gadgets.put(record);
+    this.impl.drainAutoApprovalsOf(caller => actingGadgetId(this.impl.storage, caller) === this.id);
+  }
+
+  async disallowActionKind(gatekeeperId: WorkpieceId, tag: string): Promise<void> {
+    let record = this.impl.getGadgetRecord(this.id);
+    let allowed = (record.allowed ?? []).filter(entry =>
+        entry.gatekeeperId !== gatekeeperId || entry.actionKind.tag !== tag);
+    if (allowed.length) record.allowed = allowed;
+    else delete record.allowed;
+    this.impl.storage.gadgets.put(record);
   }
 
   async remove(): Promise<void> {
@@ -15414,6 +15481,10 @@ class UseGadgetClientInterface extends RpcTarget implements GadgetClient {
   async getView(): Promise<GadgetView> { this.#deny(); }
   async openView(): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
+  async allowActionKind(_gatekeeperId: WorkpieceId, _actionKind: ActionKind): Promise<void> {
+    this.#deny();
+  }
+  async disallowActionKind(_gatekeeperId: WorkpieceId, _tag: string): Promise<void> { this.#deny(); }
   async setOutput(_output: GadgetFormat | null): Promise<void> { this.#deny(); }
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
@@ -15504,6 +15575,10 @@ class ViewGadgetClientInterface extends RpcTarget implements GadgetClient {
 
   async openView(): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async setAutoApprove(_enabled: boolean): Promise<void> { this.#deny(); }
+  async allowActionKind(_gatekeeperId: WorkpieceId, _actionKind: ActionKind): Promise<void> {
+    this.#deny();
+  }
+  async disallowActionKind(_gatekeeperId: WorkpieceId, _tag: string): Promise<void> { this.#deny(); }
   async setOutput(_output: GadgetFormat | null): Promise<void> { this.#deny(); }
   async getExportFormats(_chatId?: number): Promise<GadgetExportFormat[]> { this.#deny(); }
   async getThumbnail(): Promise<Uint8Array | null> { this.#deny(); }
@@ -15908,6 +15983,9 @@ class AgentSpawnerQueueImpl extends ApprovalQueueImpl implements AgentSpawnerQue
       lastActive: timestamp,
       spawnerName: config.displayName,
       spawnerId: this.gatekeeperId,
+      // The agent a gadget's code starts acts for that gadget (AiChatMetadata.spawnedByGadgetId).
+      ...((this.caller.from === "gadget" || this.caller.from === "hook") && this.caller.gadgetId !== undefined
+          ? {spawnedByGadgetId: this.caller.gadgetId} : {}),
       ...(this.caller.from === "agent" ? {parentChatId: this.caller.chatId}
           : config.reportsToChatId !== undefined ? {parentChatId: config.reportsToChatId} : {}),
     };

@@ -221,6 +221,9 @@ export type WorkspaceOutputEntry = {
 
   /** The format the gadget was built as, if it was instantiated from a blueprint declaring one. */
   output?: BlueprintOutput;
+
+  /** How many of the gadget's own actions wait for someone to approve them, while any do. */
+  waiting?: number;
 };
 
 /** The storage key of a starred item: its kind and its identity within its workspace. */

@@ -4,7 +4,8 @@
 // Icons a blueprint may declare. Duplicated from the shared API's OUTPUT_ICONS because these
 // scripts run before (and without) a TypeScript build; runtime validates against the real list.
 const OUTPUT_ICONS = ["fileText", "gridNine", "presentation", "appWindow", "flowArrow",
-    "kanban", "chartBar", "table", "notebook", "listChecks"];
+    "kanban", "chartBar", "table", "notebook", "listChecks", "calendar", "inbox", "form", "map",
+    "dashboard", "database", "schedule", "agent", "people", "web"];
 
 // Must match isReservedBlueprintKey() in workshop-backend's src/storage-schema/blueprints-kv.ts.
 const RESERVED_BLUEPRINT_KEYS = new Set([".featured", ".adminConfig"]);

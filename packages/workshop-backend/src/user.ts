@@ -1888,6 +1888,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         lastActive: workspace.lastActive,
         ...(workspace.owner ? {owner: workspace.owner} : {}),
         ...(workspace.role ? {role: workspace.role} : {}),
+        ...(output.waiting ? {waiting: output.waiting} : {}),
       });
     }
     result.sort((a, b) => b.lastActive.getTime() - a.lastActive.getTime());

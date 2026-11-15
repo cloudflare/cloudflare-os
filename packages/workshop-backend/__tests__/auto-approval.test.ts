@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule }
-    from "../src/auto-approval.js";
+import {
+  actingGadgetId, AutoApprovalDrainer, AutoApprovalStorage, ApplyPendingActionFn, autoApprovalRule,
+} from "../src/auto-approval.js";
 import type { ActionRecord, StoredActionDescription }
     from "../src/storage-schema/overseer-storage.js";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
@@ -425,6 +426,56 @@ describe("autoApprovalRule", () => {
         .toBeUndefined();
     storage.containsRestrictedData.put(true);
     expect(autoApprovalRule(storage, GK, eligibleDescription(), AGENT)).toBeUndefined();
+  });
+});
+
+const SPAWNED = { from: "agent", chatId: 7 } as const;
+
+// Gadget 5, allowed edits on GK, and chat 7, which its code spawned.
+function spawnedBy(storage: AutoApprovalStorage, gadget: Record<string, unknown> = {}) {
+  storage.gadgets.put({
+    type: "gadget", id: 5, title: "Calculator", created: new Date(0),
+    allowed: [{ gatekeeperId: GK, actionKind: { tag: "edit", label: "Edits" }, enabledBy: ENABLER }],
+    ...gadget,
+  } as never);
+  storage.chatMeta.put({
+    id: 7, title: "Joke", started: new Date(0), lastActive: new Date(0), spawnerId: 9, spawnedByGadgetId: 5,
+  });
+}
+
+describe("an agent a gadget spawned", () => {
+  it("acts for that gadget, and no other caller does through it", () => {
+    let storage = makeStorage();
+    spawnedBy(storage);
+    storage.chatMeta.put({ id: 8, title: "Asked", started: new Date(1), lastActive: new Date(1), spawnerId: 9 });
+    expect(actingGadgetId(storage, SPAWNED)).toBe(5);
+    expect(actingGadgetId(storage, { from: "hook", gadgetId: 5 })).toBe(5);
+    // An agent a person or another agent started acts for no gadget, nor does a person.
+    expect(actingGadgetId(storage, { from: "agent", chatId: 8 })).toBeUndefined();
+    expect(actingGadgetId(storage, { from: "user", chatId: 7 })).toBeUndefined();
+  });
+
+  it("goes ahead as far as the gadget is allowed, and no further", () => {
+    let storage = makeStorage();
+    spawnedBy(storage);
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), SPAWNED)?.enabledBy).toEqual(ENABLER);
+    expect(autoApprovalRule(storage, GK + 1, eligibleDescription(), SPAWNED)).toBeUndefined();
+    expect(autoApprovalRule(storage, GK, eligibleDescription({ autoApprovable: false }), SPAWNED)).toBeUndefined();
+    storage.containsRestrictedData.put(true);
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), SPAWNED)).toBeUndefined();
+  });
+
+  it("goes ahead while the gadget is in Auto", () => {
+    let storage = makeStorage();
+    spawnedBy(storage, { allowed: undefined, autoApprove: { enabledBy: ENABLER } });
+    expect(autoApprovalRule(storage, GK + 1, eligibleDescription(), SPAWNED)?.enabledBy).toEqual(ENABLER);
+  });
+
+  it("is held to what a published gadget was allowed, past the workspace's rules", () => {
+    let storage = makeStorage();
+    spawnedBy(storage, { allowed: undefined, publishedBy: { type: "user", id: "ada", name: "Ada" } });
+    enableRule(storage);
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), SPAWNED)).toBeUndefined();
   });
 });
 

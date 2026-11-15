@@ -15,6 +15,16 @@ import {
   Table,
   Notebook,
   ListChecks,
+  CalendarBlank,
+  Tray,
+  ClipboardText,
+  MapTrifold,
+  Gauge,
+  Database,
+  Clock,
+  Sparkle,
+  Users,
+  Globe,
   type Icon as PhosphorIcon,
 } from '@phosphor-icons/react'
 import type { BlueprintOutput, OutputIcon } from '@gadgets/workshop-shared/api'
@@ -31,6 +41,16 @@ export const FORMAT_ICONS = {
   table: Table,
   notebook: Notebook,
   listChecks: ListChecks,
+  calendar: CalendarBlank,
+  inbox: Tray,
+  form: ClipboardText,
+  map: MapTrifold,
+  dashboard: Gauge,
+  database: Database,
+  schedule: Clock,
+  agent: Sparkle,
+  people: Users,
+  web: Globe,
 } satisfies Record<OutputIcon, PhosphorIcon>
 
 /**
@@ -50,6 +70,16 @@ const WIREFRAME_FOR_ICON: Record<OutputIcon, FormatWireframe> = {
   flowArrow: 'board',
   kanban: 'board',
   listChecks: 'list',
+  calendar: 'grid',
+  inbox: 'list',
+  form: 'page',
+  map: 'window',
+  dashboard: 'chart',
+  database: 'grid',
+  schedule: 'list',
+  agent: 'window',
+  people: 'list',
+  web: 'window',
 }
 
 /**

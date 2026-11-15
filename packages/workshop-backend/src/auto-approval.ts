@@ -30,14 +30,28 @@ export interface AutoApprovalStorage {
 }
 
 /**
+ * The gadget a caller acts for: the gadget itself, a hook waking it, or an agent its code spawned
+ * (AiChatMetadata.spawnedByGadgetId). Undefined for a person, for an agent a person or another
+ * agent started, and for a gadget caller recorded without its gadget.
+ */
+export function actingGadgetId(
+    storage: Pick<AutoApprovalStorage, "chatMeta">, caller: GatekeeperCaller): number | undefined {
+  if (caller.from === "agent") return storage.chatMeta.get(caller.chatId)?.spawnedByGadgetId;
+  return caller.from === "gadget" || caller.from === "hook" ? caller.gadgetId : undefined;
+}
+
+/**
  * The single authority on whether an action may be applied without a human, returning who
  * authorized it: the author marked the action `autoApprovable`, the workspace has not latched
- * restricted mode, and either the agent's chat or the acting gadget is in Auto
- * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove), the user enabled a rule for the
- * action's `actionKind` on this gatekeeper, or the owner lets that kind go ahead on the
+ * restricted mode, and either the agent's chat or the gadget the caller acts for (`actingGadgetId`,
+ * which takes in an agent its code spawned) is in Auto
+ * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove), that gadget is allowed the
+ * action's `actionKind` on this gatekeeper (GadgetSummary.allowed), the user enabled a rule for it
+ * on this gatekeeper, or the owner lets that kind go ahead on the
  * gatekeeper's service in all their workspaces (`ownerAutoApproveDefaults`); else undefined. A
  * stored description may lack the verdict, which counts as no. A gadget caller recorded without
- * its gadget names none.
+ * its gadget names none. A gadget whose code someone else published (GadgetSummary.publishedBy)
+ * goes ahead only by its own Auto or allowances.
  */
 export function autoApprovalRule(
     storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription,
@@ -48,11 +62,20 @@ export function autoApprovalRule(
   if (caller.from === "agent") {
     let chatRule = storage.chatMeta.get(caller.chatId)?.autoApprove;
     if (chatRule) return chatRule;
-  } else if ((caller.from === "gadget" || caller.from === "hook") && caller.gadgetId !== undefined) {
-    let gadget = storage.gadgets.get(caller.gadgetId);
-    if (gadget?.type === "gadget" && gadget.autoApprove) return gadget.autoApprove;
   }
   let tag = description.actionKind?.tag;
+  let gadgetId = actingGadgetId(storage, caller);
+  if (gadgetId !== undefined) {
+    let gadget = storage.gadgets.get(gadgetId);
+    if (gadget?.type === "gadget") {
+      if (gadget.autoApprove) return gadget.autoApprove;
+      let allowance = tag === undefined ? undefined : gadget.allowed?.find(entry =>
+          entry.gatekeeperId === gatekeeperId && entry.actionKind.tag === tag);
+      if (allowance) return allowance;
+      // Code someone else wrote is trusted only as far as it has been allowed itself.
+      if (gadget.publishedBy) return undefined;
+    }
+  }
   if (tag === undefined) return undefined;
   let rule = storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
   if (rule) return rule;

@@ -20,7 +20,9 @@ import { DecisionModelGatekeeper, LanguageModelGatekeeper } from "./ai-models";
 import { getGatewayModels } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutput, parseBlueprintArchive, randomBlueprintId } from "./blueprint-archive.js";
-import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
+import {
+  BlueprintKvRecord, blueprintPublisher, listFeaturedBlueprintsFromKv, readBlueprintKvRecord,
+} from "./storage-schema/blueprints-kv.js";
 import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
@@ -597,7 +599,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let overseerDo = this.overseers.get(this.overseers.idFromString(id));
     await overseerDo.initializeFromBlueprint(blueprintId, kvRecord.metadata,
         deploymentOutputForBlueprint(await readAdminConfig(this.env), blueprintId,
-            sanitizeBlueprintOutput(kvRecord.metadata.output)));
+            sanitizeBlueprintOutput(kvRecord.metadata.output)),
+        blueprintPublisher(kvRecord, this.#userId.toString()));
 
     // 4. Create gatekeepers from assignments and bind them into the workspace's (only) gadget.
     let metadata = await overseerResult.getMetadata();

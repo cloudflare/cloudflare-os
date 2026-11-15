@@ -24,7 +24,7 @@ import {
   type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
   type AlwaysAvailableResource,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
-  type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetAccessMode, type GadgetUpstream,
+  type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetAccessMode, type GadgetAllowance, type GadgetUpstream,
   type GatekeeperCreationSpec, type PermissionEdge, type WorkpieceId, type WorkspaceKind,
 } from "@gadgets/workshop-shared/api";
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -182,6 +182,15 @@ export type GadgetRecord = {
    * whose authority its auto-approvable actions apply.
    */
   autoApprove?: {enabledBy: AiChatAuthorInfo};
+
+  /**
+   * Who published the blueprint the gadget's code came from, when not the workspace's owner (see
+   * GadgetSummary.publishedBy): its actions then go ahead unasked only as the gadget is allowed.
+   */
+  publishedBy?: AiChatAuthorInfo;
+
+  /** What the gadget may change without asking (see GadgetClient.allowActionKind()). */
+  allowed?: GadgetAllowance[];
 
   /**
    * The output format this gadget was built as, copied from the blueprint it was instantiated
