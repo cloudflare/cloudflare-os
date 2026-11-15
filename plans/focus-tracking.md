@@ -278,12 +278,21 @@ Frontend:
   transcript chip opened; the frame stays mounted, hidden, so it keeps that spot and goes on
   reporting. If the pane last showed activity or a worktree, there is no chip. The editor keeps
   the id of the gadget the pane last showed, so if the selection moves while the pane is closed
-  (the agent's edits pull it along, and a closed pane with no `w` in the URL falls back to the
-  workspace's default gadget), there is no chip: the user hasn't seen the gadget it moved to.
-  Until the pane has been open in the current workspace (a phone user who lands on the Chat tab),
-  there is no chip: the user hasn't looked at anything. Beside the chat, closing the pane is
-  deliberate, and a closed pane offers nothing. The chip follows the layout in effect, so a
-  rotation or a resize across the breakpoint can bring it back or take it away.
+  (the agent's edits pull it along, or the gadget it showed is deleted), there is no chip: the
+  user hasn't seen the gadget it moved to. Until the pane has been open in the current workspace
+  (a phone user who lands on the Chat tab), there is no chip: the user hasn't looked at anything.
+  Beside the chat, closing the pane is deliberate, and a closed pane offers nothing. The chip
+  follows the layout in effect, so a rotation or a resize across the breakpoint can bring it back
+  or take it away.
+- Closing the pane doesn't move the selection, on any layout. The closed view (and the activity
+  view) remembers the workpiece the pane was showing, and the selection honours it as it does an
+  open pane's, after the URL's `w` and before the workspace's default; reopening the pane without
+  naming a workpiece returns to it. Without this, a closed pane with no `w` in the URL (a stored
+  view that named a gadget other than the default, or a pane reopened from the phone's Preview
+  tab) fell back to the default gadget, swapping the hidden frame, so the Chat tab offered
+  nothing. What it remembers is kept in memory only: a closed pane is still stored as closed, with
+  no workpiece, and one no longer visible (deleted, or a draft of another chat) falls through to
+  the default.
 - Dismissing the chip sends that message with no focus at all. The chip returns for the next one.
 - The transcript draws the same chip on a sent message. Clicking it sets `w` to that gadget and,
   if the focus has a spot, `at` to its anchor, in one navigation. That selects the gadget and
@@ -403,11 +412,14 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   when one is reported; dismissal lasts one message. On a single-pane layout, offered with the
   pane closed after it showed a gadget, with the spot last reported or opened from a transcript
   chip; not after it showed activity or a worktree, nor for a gadget selected since, nor before it
-  has been open in the workspace; following the layout across the breakpoint. Beside the chat, a
-  closed pane offers none. After a transcript chip's click, the composer offers the clicked spot
-  though the gadget never reports, for the same gadget and across a new frame for another; the
-  gadget's report replaces it, a failed `navigate` drops it, and a navigation without a chip drops
-  the reported spot.
+  has been open in the workspace; following the layout across the breakpoint; and for a gadget
+  other than the default shown with no `w`. Selection (`workspaceView.test.ts`): the URL's `w`,
+  then the workpiece the view names, open or closed, then the default, then the first visible;
+  kept across a close and a reopen; one no longer visible falls through; a closed pane is stored
+  with no workpiece. Beside the chat, a closed pane offers none. After a transcript chip's click,
+  the composer offers the clicked spot though the gadget never reports, for the same gadget and
+  across a new frame for another; the gadget's report replaces it, a failed `navigate` drops it,
+  and a navigation without a chip drops the reported spot.
 - **Live**: a hand-written gadget with two views, checked in a browser for restore across a code
   change and a page reload, and for the transcript chip navigating back. At a phone viewport, a
   spot selected in a gadget shows in the Chat tab's chip and reaches the agent, and a dismissed
@@ -422,8 +434,10 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   when the pane last showed one of those.
 - **A phone's Chat tab.** On a single-pane layout the composer and the pane are never on screen
   together, so the chip there names what the pane showed when last open (see "Sending the focus
-  with a prompt"). Rotating a tablet so the pane closed beside the chat becomes the Chat tab
-  brings the chip back, since that pane is now merely hidden.
+  with a prompt"). Closing the pane keeps that gadget selected, so its frame stays mounted and the
+  chip holds even with no `w` in the URL. After a reload, a phone that lands on the Chat tab
+  offers nothing until the pane is opened. Rotating a tablet so the pane closed beside the chat
+  becomes the Chat tab brings the chip back, since that pane is now merely hidden.
 - **A hidden app tab.** With the gadget's code tab showing, the focus is still the gadget, and
   still includes the spot the frame last reported.
 - **Chat preview.** `GadgetUI` may be showing a chat's uncommitted code. The anchor is applied

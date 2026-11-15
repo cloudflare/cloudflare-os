@@ -8,6 +8,7 @@ import type { GadgetFocus, GadgetSummary, MessageFocus } from '@gadgets/workshop
 import type { GadgetUIFocus } from '../../GadgetUI'
 import type { PaneFocus } from './paneFocus'
 import { usePaneFocus, type PaneView } from './usePaneFocus'
+import { closedWorkspaceView, selectWorkpiece, type WorkspaceView } from '../workspace-pane/workspaceView'
 
 const testGlobal = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }
 const previousActEnvironment = testGlobal.IS_REACT_ACT_ENVIRONMENT
@@ -128,6 +129,25 @@ describe('usePaneFocus', () => {
       await render({})
       await render({ pane: null, gadget: trips })
       expect(paneFocus).toBeUndefined()
+    })
+
+    it('offers a gadget other than the default, shown with no `w`, once the Chat tab closes the pane', async () => {
+      // The selection as the editor makes it, from the pane's view.
+      const selected = (view: WorkspaceView) => {
+        const id = selectWorkpiece({
+          urlWorkpieceId: null,
+          view,
+          visibleWorkpieces: [budget, trips],
+          visibleGadgets: [budget, trips],
+          defaultGadgetId: budget.id,
+        })
+        return [budget, trips].find(g => g.id === id)
+      }
+      const shown = selected({ mode: 'app', appId: trips.id })
+      await render({ gadget: shown })
+      await report(lisbon)
+      await render({ pane: null, gadget: selected(closedWorkspaceView(shown?.id ?? null)) })
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 4, gadgetTitle: 'Trips', spot: lisbon })
     })
 
     it('offers nothing until the pane has been open in the workspace', async () => {

@@ -38,8 +38,8 @@ export const usePaneFocus = ({ uiFocus, gadget, pane, singlePane }: {
 } => {
   // The gadget the pane showed when last open in this workspace; null if it showed something else
   // or hasn't been open. Kept by id, because the selection can move while the pane is closed (the
-  // agent's edits pull it along, and a closed pane may fall back to the workspace's default), and
-  // the user hasn't seen the gadget it moves to.
+  // agent's edits pull it along, and a workpiece the pane remembers may be deleted), and the user
+  // hasn't seen the gadget it moves to.
   const [lastShown, setLastShown] = useState<WorkpieceId | null>(null)
   const showing = pane === 'workpiece' ? gadget?.id ?? null : null
   if (pane !== null && showing !== lastShown) setLastShown(showing)

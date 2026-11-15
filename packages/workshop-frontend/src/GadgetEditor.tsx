@@ -38,6 +38,14 @@ import {
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
+import {
+  closedWorkspaceView,
+  getStoredWorkspaceView,
+  openedWorkspaceView,
+  persistWorkspaceView,
+  selectWorkpiece,
+  type WorkspaceView,
+} from './features/workspace-pane/workspaceView'
 import type { ChatContentReader } from './features/code/otClient'
 import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
@@ -172,12 +180,6 @@ function formatConsoleLogs(logs: BufferedLogEntry[]): string {
 // ─── right-panel tabs ─────────────────────────────────────────────────────────
 
 type RightTab = 'app' | 'code' | 'connections'
-
-type WorkspaceView =
-  | { mode: 'chat' }
-  // `appId` is absent only while lazily migrating the legacy "open" value.
-  | { mode: 'app'; appId?: WorkpieceId }
-  | { mode: 'activity' }
 
 function formatHeaderCost(cost: number) {
   if (cost === 0) return '$0'
@@ -367,8 +369,6 @@ function PaneTab({
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'gadgets:workshop:chatWidth'
-// Keep the old key prefix so existing "open" / "closed" preferences can migrate lazily.
-const WORKSPACE_VIEW_STORAGE_KEY_PREFIX = 'gadgets:workshop:workspaceVisibility:'
 const APP_RAIL_EXPANDED_STORAGE_KEY = 'gadgets:workshop:appRailExpanded'
 const MIN_CHAT_WIDTH = 280
 const MIN_WORKSPACE_WIDTH = 400
@@ -406,45 +406,6 @@ function getInitialChatWidth() {
     // private mode / sandboxed iframes
   }
   return clampChatWidth(Number.isFinite(parsed) ? parsed : fallback)
-}
-
-function workspaceViewStorageKey(gadgetId: string) {
-  // Per-workspace keys may outlive deleted workspaces, but each entry is tiny and bounded by
-  // workspaces created or opened.
-  return `${WORKSPACE_VIEW_STORAGE_KEY_PREFIX}${gadgetId}`
-}
-
-function persistWorkspaceView(gadgetId: string, view: {mode: 'chat'} | {mode: 'app', appId: WorkpieceId}) {
-  try {
-    window.localStorage.setItem(workspaceViewStorageKey(gadgetId), JSON.stringify(view))
-  } catch {
-    // The preference still works for the current session when storage is unavailable.
-  }
-}
-
-function getStoredWorkspaceView(gadgetId: string | undefined): WorkspaceView | null {
-  if (!isBrowser || !gadgetId) return null
-  try {
-    const stored = window.localStorage.getItem(workspaceViewStorageKey(gadgetId))
-    if (stored === 'open') return { mode: 'app' }
-    if (stored === 'closed') {
-      const view = { mode: 'chat' } as const
-      persistWorkspaceView(gadgetId, view)
-      return view
-    }
-    if (!stored) return null
-
-    const parsed: unknown = JSON.parse(stored)
-    if (typeof parsed !== 'object' || parsed === null || !('mode' in parsed)) return null
-    if (parsed.mode === 'chat') return { mode: 'chat' }
-    if (parsed.mode === 'app' && 'appId' in parsed &&
-        typeof parsed.appId === 'number' && Number.isInteger(parsed.appId)) {
-      return { mode: 'app', appId: parsed.appId }
-    }
-    return null
-  } catch {
-    return null
-  }
 }
 
 function getInitialAppRailExpanded(): boolean {
@@ -795,22 +756,17 @@ export default function GadgetEditor() {
       .map(w => w.id)
   ), [allGadgets, effectiveSelectedChatId])
 
-  // The selected workpiece: explicit URL state wins, followed by the one open in this session
-  // (only accepted apps are persisted), then the workspace default and the first visible one.
-  const selectedWorkpieceId = useMemo(() => {
-    if (urlWorkpieceId !== null && visibleWorkpieces.some(g => g.id === urlWorkpieceId)) {
-      return urlWorkpieceId
-    }
-    const storedId = workspaceView?.mode === 'app' ? workspaceView.appId : undefined
-    if (storedId !== undefined && visibleWorkpieces.some(g => g.id === storedId)) {
-      return storedId
-    }
-    const defaultId = metadata?.defaultGadgetId
-    if (defaultId !== undefined && visibleGadgets.some(g => g.id === defaultId)) {
-      return defaultId
-    }
-    return visibleWorkpieces.length > 0 ? visibleWorkpieces[0].id : null
-  }, [urlWorkpieceId, workspaceView, visibleWorkpieces, visibleGadgets, metadata?.defaultGadgetId])
+  const selectedWorkpieceId = useMemo(() => selectWorkpiece({
+    urlWorkpieceId,
+    view: workspaceView,
+    visibleWorkpieces,
+    visibleGadgets,
+    defaultGadgetId: metadata?.defaultGadgetId,
+  }), [urlWorkpieceId, workspaceView, visibleWorkpieces, visibleGadgets, metadata?.defaultGadgetId])
+  // For leaving the pane's view without moving the selection. The workspace reset clears it, so a
+  // view built before the next render can't name the previous workspace's workpiece.
+  const selectedWorkpieceIdRef = useRef(selectedWorkpieceId)
+  selectedWorkpieceIdRef.current = selectedWorkpieceId
 
   const selectedWorkpieceSummary = selectedWorkpieceId !== null
     ? visibleWorkpieces.find(g => g.id === selectedWorkpieceId)
@@ -1021,13 +977,13 @@ export default function GadgetEditor() {
     setActivityClosing(false)
     activityReturnViewRef.current = null
     if (visibility === 'closed') {
-      const view = { mode: 'chat' } as const
+      const view = closedWorkspaceView(selectedWorkpieceIdRef.current)
       setWorkspaceView(view)
       if (id) persistWorkspaceView(id, view)
     } else {
       // Opening a draft is intentionally session-only. The normalization effect persists it if
       // and when the app is accepted.
-      setWorkspaceView({ mode: 'app', appId })
+      setWorkspaceView(view => openedWorkspaceView(view, appId))
     }
   }, [id])
 
@@ -1081,7 +1037,7 @@ export default function GadgetEditor() {
     setActivityClosing(false)
     if (workspaceView?.mode !== 'activity') activityReturnViewRef.current = workspaceView
     setActivityView(initialView)
-    setWorkspaceView({ mode: 'activity' })
+    setWorkspaceView({ mode: 'activity', appId: selectedWorkpieceIdRef.current ?? undefined })
   }, [workspaceView])
 
   const closeWorkspacePane = useCallback(() => {
@@ -1228,6 +1184,7 @@ export default function GadgetEditor() {
     setAnyChatProposedWorkpieces([])
     setSelectedChatProposedWorkpieces([])
     setWorkspaceView(getStoredWorkspaceView(id))
+    selectedWorkpieceIdRef.current = null
     openedWorkpieceParamRef.current = null
     activityReturnViewRef.current = null
     setActivityClosing(false)
