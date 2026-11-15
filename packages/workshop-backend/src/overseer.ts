@@ -5016,9 +5016,8 @@ class OverseerImpl implements AgentHooks {
           if (!meta || meta.activeAgent) return;
           // New access waits for the user, unless it is to a connection the user accepted in this
           // chat: having said yes to it here, they need not say yes again to the app the chat
-          // builds to use it. Nor is it new for an agent spawner to reach what every gadget that
-          // binds it (or will, once this chat's changes are kept) holds already: its agents, which
-          // those gadgets start, then reach nothing the gadgets could not.
+          // builds to use it. That holds for an agent spawner too, even one reaching only what the
+          // gadgets that bind it hold already: chats can start its agents as well.
           let accepted = new Set<WorkpieceId>();
           for (let message of this.storage.chats.list({prefix: chatKeyPrefix(chatId)})) {
             if (message.type === "connectionRequest" && message.state === "accepted" &&
@@ -5026,19 +5025,8 @@ class OverseerImpl implements AgentHooks {
               accepted.add(message.gatekeeperId);
             }
           }
-          let holders = this.#bindingHolders();
-          let reaches = (holder: BindingHolder, target: WorkpieceId,
-              kept = (edge: BindingRecord) => !edge.pending) =>
-            Object.values(holder.bindings).some(edge => edge.target === target && kept(edge));
-          let heldByBinders = (holder: BindingHolder, target: WorkpieceId) => {
-            if (!this.storage.gatekeepers.get(holder.id)) return false;
-            let binders = holders.filter(other => reaches(other, holder.id,
-                edge => !edge.pending || edge.pending.chatId === chatId));
-            return binders.length > 0 && binders.every(binder => reaches(binder, target));
-          };
-          if (holders.some(holder => Object.values(holder.bindings).some(edge =>
-              edge.pending?.chatId === chatId && !accepted.has(edge.target) &&
-              !heldByBinders(holder, edge.target)))) {
+          if (this.#bindingHolders().some(holder => Object.values(holder.bindings)
+              .some(edge => edge.pending?.chatId === chatId && !accepted.has(edge.target)))) {
             return;
           }
           let userMeta = await retryOnDoReset(() =>
@@ -6031,7 +6019,9 @@ class OverseerImpl implements AgentHooks {
     }
     // Also when a rule applies it: a user's "always approve" answers a pending request that way.
     this.traceAgentActionApproval(record, "approved");
-    this.#markGadgetActionsDirty(record.caller);
+    // One a rule applied never counted as waiting; one whose rule just came in is counted afresh
+    // by drainAutoApprovalsOf.
+    if (!autoApproved) this.#markGadgetActionsDirty(record.caller);
   }
 
   // Traces an approval step for an action an agent turn submitted.
@@ -6054,15 +6044,19 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Drains every connection holding a pending action whose caller matches, as a newly enabled
-  // mode for that caller may now apply them.
+  // mode for that caller may now apply them. What waits on a gadget may change with it.
   drainAutoApprovalsOf(matches: (caller: GatekeeperCaller) => boolean): void {
     let gatekeeperIds = new Set<WorkpieceId>();
+    let gadgets = false;
     for (let record of this.storage.actions.byHistoryFilter.get("pending")) {
-      if (record.type === "action" && matches(record.caller)) gatekeeperIds.add(record.gatekeeperId);
+      if (record.type !== "action" || !matches(record.caller)) continue;
+      gatekeeperIds.add(record.gatekeeperId);
+      gadgets ||= actingGadgetId(this.storage, record.caller) !== undefined;
     }
-    for (let gatekeeperId of gatekeeperIds) {
-      this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
-    }
+    let drains = [...gatekeeperIds].map(gatekeeperId => this.drainAutoApprovals(gatekeeperId));
+    this.ctx.waitUntil(Promise.allSettled(drains).then(() => {
+      if (gadgets) this.markOutputsDirty();
+    }));
   }
 
   // Blocks other messages and agent turns for this chat until the returned object is disposed.
@@ -7106,8 +7100,9 @@ class OverseerImpl implements AgentHooks {
 
     if (willAutoApprove) {
       this.ctx.waitUntil(this.drainAutoApprovals(gatekeeperId));
+    } else {
+      this.#markGadgetActionsDirty(caller);
     }
-    this.#markGadgetActionsDirty(caller);
   }
 
   // A gadget's actions waiting, and its agents', are counted in the outputs index (see outputsSnapshot()).
@@ -13647,8 +13642,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       actionKind,
       enabledBy: profile,
     });
-    // Apply the currently-visible pending action(s) with this tag right away.
-    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(gatekeeperId));
+    // Apply the currently-visible pending action(s) with this tag right away. What waits on the
+    // gadgets may change with it.
+    this.impl.ctx.waitUntil(this.#drainAutoApprovalsAndResume(gatekeeperId)
+        .finally(() => this.impl.markOutputsDirty()));
   }
 
   // Remove the auto-approval rule for `tag` on the given gatekeeper, so future matching actions

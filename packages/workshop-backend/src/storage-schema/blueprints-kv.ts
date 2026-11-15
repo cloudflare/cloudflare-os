@@ -53,17 +53,30 @@ export type BlueprintKvRecord = {
   gadgetId?: string;  // undefined = uploaded, not published from a gadget on this instance
 };
 
+/** Who wrote a blueprint's code when it does not say. */
+const UNKNOWN_PUBLISHER: AiChatAuthorInfo = { type: "user", id: "unknown", name: "someone else" };
+
 /**
  * Who wrote `record`'s blueprint's code, when that is not `ownerId` (a workspace's owner): its
- * author as it describes itself, for a blueprint someone else published, one uploaded from a file
- * (by anyone: a file's code is whoever made the file's), or one the deployment installed. Undefined
- * for one the owner published from a gadget of theirs here, and for a blueprint that is gone.
+ * author, for a blueprint someone else published, one uploaded from a file (by anyone: a file's
+ * code is whoever made the file's), or one the deployment installed. Undefined for one the owner
+ * published from a gadget of theirs here, and for a blueprint that is gone.
+ *
+ * Never undefined for anyone else's code, which would give it the owner's trust: a blueprint that
+ * names no author is `UNKNOWN_PUBLISHER`'s. A file's author is only what the file claims, so its
+ * name says so.
  */
 export function blueprintPublisher(record: BlueprintKvRecord | null | undefined, ownerId: string | undefined)
     : AiChatAuthorInfo | undefined {
   if (!record) return undefined;
   let ownWork = ownerId !== undefined && record.ownerId === ownerId && record.gadgetId !== undefined;
-  return ownWork ? undefined : record.metadata.author;
+  if (ownWork) return undefined;
+  // An imported archive's metadata is not validated, so its author may be missing or malformed.
+  let declared = record.metadata.author as Partial<AiChatAuthorInfo> | null | undefined;
+  let author = typeof declared?.id === "string" && typeof declared.name === "string"
+    ? declared as AiChatAuthorInfo : UNKNOWN_PUBLISHER;
+  let fromFile = record.ownerId !== undefined && record.gadgetId === undefined;
+  return fromFile ? { ...author, name: `${author.name} (from a file)` } : author;
 }
 
 /**

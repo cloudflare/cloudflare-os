@@ -178,10 +178,11 @@ async function settingUp(doc: number) {
 }
 
 describe("a spawner a turn sets up", () => {
-  it("is merged when it reaches only what the app that starts its agents holds", async () => {
+  // Chats can start its agents too, so holding no more than the app is not enough.
+  it("waits for the user even when it reaches only what the app that starts its agents holds", async () => {
     const {runTurn, messages} = await settingUp(21);
     await runTurn();
-    expect((await messages()).find(msg => msg.type === "merge")).toMatchObject({automatic: true});
+    expect((await messages()).some(msg => msg.type === "merge")).toBe(false);
   });
 
   it("waits for the user when it reaches what the app does not", async () => {

@@ -45,7 +45,8 @@ export function actingGadgetId(
  * authorized it: the author marked the action `autoApprovable`, the workspace has not latched
  * restricted mode, and either the agent's chat or the gadget the caller acts for (`actingGadgetId`,
  * which takes in an agent its code spawned) is in Auto
- * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove), that gadget is allowed the
+ * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove; for such an agent, only on a gatekeeper
+ * the gadget binds itself), that gadget is allowed the
  * action's `actionKind` on this gatekeeper (GadgetSummary.allowed), the user enabled a rule for it
  * on this gatekeeper, or the owner lets that kind go ahead on the
  * gatekeeper's service in all their workspaces (`ownerAutoApproveDefaults`); else undefined. A
@@ -68,7 +69,11 @@ export function autoApprovalRule(
   if (gadgetId !== undefined) {
     let gadget = storage.gadgets.get(gadgetId);
     if (gadget?.type === "gadget") {
-      if (gadget.autoApprove) return gadget.autoApprove;
+      // An agent it started may reach more than it does, through its spawner: Auto covers the
+      // agent only where the gadget reaches itself.
+      let own = caller.from !== "agent" || Object.values(gadget.bindings).some(edge =>
+          edge.target === gatekeeperId && !edge.pending);
+      if (gadget.autoApprove && own) return gadget.autoApprove;
       let allowance = tag === undefined ? undefined : gadget.allowed?.find(entry =>
           entry.gatekeeperId === gatekeeperId && entry.actionKind.tag === tag);
       if (allowance) return allowance;

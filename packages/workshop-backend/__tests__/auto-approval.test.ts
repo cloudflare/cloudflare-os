@@ -434,7 +434,7 @@ const SPAWNED = { from: "agent", chatId: 7 } as const;
 // Gadget 5, allowed edits on GK, and chat 7, which its code spawned.
 function spawnedBy(storage: AutoApprovalStorage, gadget: Record<string, unknown> = {}) {
   storage.gadgets.put({
-    type: "gadget", id: 5, title: "Calculator", created: new Date(0),
+    type: "gadget", id: 5, title: "Calculator", created: new Date(0), bindings: {},
     allowed: [{ gatekeeperId: GK, actionKind: { tag: "edit", label: "Edits" }, enabledBy: ENABLER }],
     ...gadget,
   } as never);
@@ -465,10 +465,18 @@ describe("an agent a gadget spawned", () => {
     expect(autoApprovalRule(storage, GK, eligibleDescription(), SPAWNED)).toBeUndefined();
   });
 
-  it("goes ahead while the gadget is in Auto", () => {
+  it("goes ahead while the gadget is in Auto, only on what the gadget reaches itself", () => {
     let storage = makeStorage();
-    spawnedBy(storage, { allowed: undefined, autoApprove: { enabledBy: ENABLER } });
-    expect(autoApprovalRule(storage, GK + 1, eligibleDescription(), SPAWNED)?.enabledBy).toEqual(ENABLER);
+    spawnedBy(storage, { allowed: undefined, autoApprove: { enabledBy: ENABLER }, bindings: { DOC: { target: GK } } });
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), SPAWNED)?.enabledBy).toEqual(ENABLER);
+    // Reached only through its spawner, or not yet kept.
+    expect(autoApprovalRule(storage, GK + 1, eligibleDescription(), SPAWNED)).toBeUndefined();
+    spawnedBy(storage, { allowed: undefined, autoApprove: { enabledBy: ENABLER },
+      bindings: { DOC: { target: GK, pending: { chatId: 1, sequence: 1 } } } });
+    expect(autoApprovalRule(storage, GK, eligibleDescription(), SPAWNED)).toBeUndefined();
+    // The gadget's own calls are covered wherever it calls.
+    expect(autoApprovalRule(storage, GK + 1, eligibleDescription(), { from: "gadget", chatId: 1, gadgetId: 5 })?.enabledBy)
+        .toEqual(ENABLER);
   });
 
   it("is held to what a published gadget was allowed, past the workspace's rules", () => {
