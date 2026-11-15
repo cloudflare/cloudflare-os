@@ -6,7 +6,7 @@ import { ADMIN_WORKSPACE_ACCESS_LEVELS, MAX_ADMIN_AUDIT_RETENTION_DAYS } from '@
 import type { AdminApi, AdminAuditStats, AdminWorkspaceAccess } from '@gadgets/workshop-shared/api'
 import { DurationSetting } from '../../components/DurationSetting'
 import { logRpcFailure, rpcFailureDescription } from '../../rpcErrors'
-import { ACCESS_LEVEL_NAMES } from './accessNames'
+import { ACCESS_LEVEL_NAMES, CONTENT_ABOVE_MAX_HELP, CONTENT_ACCESS_HELP } from './accessNames'
 import type { AuditFilter } from './auditFilter'
 import { AuditLog } from './AuditLog'
 import type { AuditSettings } from './auditSettings'
@@ -51,6 +51,26 @@ const ApprovedWrites = ({ count }: { count: unknown }) => typeof count !== 'numb
   </span>
 )
 
+// The window's content reads, which `onShow` lists in the log. Left out, as the approved writes
+// are, when the backend's statistics do not count them.
+const ContentReads = ({ count, onShow }: { count: unknown; onShow: () => void }) => {
+  if (typeof count !== 'number') return null
+  const counted = `${NUMBER.format(count)} ${count === 1 ? 'content read' : 'content reads'}`
+  return (
+    <span className="block">
+      <Button
+        variant="ghost"
+        size="sm"
+        className="-ml-2 text-sm"
+        aria-label={`${counted}: show only content reads`}
+        onClick={onShow}
+      >
+        {counted}
+      </Button>
+    </span>
+  )
+}
+
 const StatsCards = ({ stats, onFilterBy }: {
   stats: AdminAuditStats
   onFilterBy: (filter: AuditFilter) => void
@@ -62,6 +82,7 @@ const StatsCards = ({ stats, onFilterBy }: {
         <span className="text-2xl font-semibold text-kumo-default tabular-nums">{NUMBER.format(stats.totalEvents)}</span>
         {' '}{stats.totalEvents === 1 ? 'action' : 'actions'}, by UTC day
         <ApprovedWrites count={stats.writes} />
+        <ContentReads count={stats.contentReads} onShow={() => onFilterBy({ exposed: 'content' })} />
       </p>
       <Table>
         <Table.Header>
@@ -132,10 +153,13 @@ const accessHelp = ({ chosen, effective, max }: AuditSettings['adminWorkspaceAcc
       'user’s account, Metadata withholds what each connected account’s gatekeeper says of it ' +
       '(its names, avatar and what it grants) and the ids of the user’s blueprints. Off refuses ' +
       'inspection, and reaches views already open within about a minute.',
+    CONTENT_ACCESS_HELP,
   ]
   if (max === 'off') {
     help.push('This deployment’s ADMIN_WORKSPACE_ACCESS_MAX allows no inspection (a value that is ' +
       'not a level counts as off).')
+  } else if (max !== 'content') {
+    help.push(CONTENT_ABOVE_MAX_HELP)
   }
   if (chosen !== effective) {
     help.push(`The level set here is ${ACCESS_LEVEL_NAMES[chosen]}, which that maximum limits to ` +
@@ -248,7 +272,9 @@ export const AdminAuditPanel = ({ admin, settings, onSettingsChanged, filter, on
             <p className="text-sm text-kumo-subtle mt-0.5">
               Every change an admin makes to the deployment&rsquo;s settings, every admin call into a
               workspace or a user&rsquo;s account, and every step of an admin write to a workspace, kept
-              for {NUMBER.format(retention.effective)} days.
+              for {NUMBER.format(retention.effective)} days. The log records what admins do: a grant a
+              workspace&rsquo;s owner gives is the owner&rsquo;s own record, shown on the
+              workspace&rsquo;s admin page and on the issue report it came with.
             </p>
           </div>
           <Button

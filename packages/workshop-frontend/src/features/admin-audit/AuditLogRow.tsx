@@ -11,11 +11,12 @@ import type {
   AdminWriteRecord,
 } from '@gadgets/workshop-shared/api'
 import { formatFullTimestamp } from '../../utils/formatTimestamp'
-import { ACCESS_LEVEL_NAMES, REFUSAL_NAMES } from './accessNames'
+import { ACCESS_LEVEL_NAMES, REFUSAL_NAMES, openedForName } from './accessNames'
 import { targetUserOf, type AuditFilter } from './auditFilter'
 import { AuditValue } from './AuditValue'
+import { ExposureBadge } from './ExposureBadge'
 import { KindBadge } from './KindBadge'
-import { PASSKEY_REFUSAL_NAMES, WRITE_EVENT_NAMES, WRITE_EVENT_VARIANTS } from './writeNames'
+import { PASSKEY_REFUSAL_NAMES, WRITE_EVENT_NAMES, WRITE_EVENT_VARIANTS, writeActionName } from './writeNames'
 
 /** How many columns an AuditLogRow fills, for the table's empty and detail rows. */
 export const AUDIT_LOG_COLUMNS = 6
@@ -128,23 +129,33 @@ const ArgumentsDetail = ({ args }: { args: AdminAccessRecord['args'] }) => {
   )
 }
 
+// A call into a workspace or a user's account. What a workspace's view was opened for is said
+// only when that is not metadata, and its grant only when the call ran under one: a record has
+// no line for a field it lacks.
 const AccessDetails = ({ record, onFilterBy }: {
   record: AdminAccessRecord | AdminUserAccessRecord
   onFilterBy: (filter: AuditFilter) => void
-}) => (
-  <dl className="space-y-2">
-    {record.kind === 'workspace'
-      ? <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
-      : <Detail term="Account">{record.userId || 'Unknown'}</Detail>}
-    <Detail term="Reason">{record.reason}</Detail>
-    <Detail term="Access">
-      {ACCESS_LEVEL_NAMES[record.access]}
-      {record.refused && <> · refused: {REFUSAL_NAMES[record.refused]}</>}
-    </Detail>
-    <ArgumentsDetail args={record.args} />
-    <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
-  </dl>
-)
+}) => {
+  const openedFor = record.kind === 'workspace' ? openedForName(record.requested) : undefined
+  return (
+    <dl className="space-y-2">
+      {record.kind === 'workspace'
+        ? <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+        : <Detail term="Account">{record.userId || 'Unknown'}</Detail>}
+      <Detail term="Reason">{record.reason}</Detail>
+      {openedFor !== undefined && <Detail term="Opened for">{openedFor}</Detail>}
+      <Detail term="Access">
+        {ACCESS_LEVEL_NAMES[record.access]}
+        {record.refused && <> · refused: {REFUSAL_NAMES[record.refused]}</>}
+      </Detail>
+      {record.kind === 'workspace' && record.grantId && (
+        <Detail term="Under grant"><span className="font-mono text-xs break-all">{record.grantId}</span></Detail>
+      )}
+      <ArgumentsDetail args={record.args} />
+      <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
+    </dl>
+  )
+}
 
 // One step of a write request. The approval page is linked from the "requested" step alone, the
 // one every request has; the page says so when the request is no longer pending.
@@ -154,6 +165,7 @@ const WriteDetails = ({ record, onFilterBy }: {
 }) => (
   <dl className="space-y-2">
     <WorkspaceDetail record={record} onFilterBy={onFilterBy} />
+    <Detail term="Write">{writeActionName(record.method)}</Detail>
     <Detail term="Request">
       <span className="block font-mono text-xs break-all">{record.requestId}</span>
       {record.event === 'requested' && (
@@ -184,17 +196,19 @@ const WriteDetails = ({ record, onFilterBy }: {
 /**
  * One record of the Audit tab's log: a summary row (time, admin, action, kind, target user),
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
- * changes, an access record's workspace or account, reason, level and arguments, or a write
- * record's workspace, request, reason and arguments, with what its step adds: who requested it,
- * the check a refused approval failed, the passkey behind it, its outcome, its error or the reason
- * an admin gave for ending the grant. A write record's step is a badge beside its kind, where an
- * access record's refusal is. An access or a write record's target user is the user the call or
- * the write reached: its workspace's owner, or the user whose account a call was made into. The
- * admin's name and the target user, and in a workspace or a write record's details its workspace,
- * filter the log by `onFilterBy`. Names are never cut: an action too long for the space left is,
- * whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a table's even rows: Kumo
- * counts the details row below each one, hidden or not, so every summary row is an odd row to it
- * and would never be striped.
+ * changes, an access record's workspace or account, reason, level and arguments, with what a
+ * workspace's view was opened for when that is content and the grant the call ran under when it
+ * had one, or a write record's workspace, write, request, reason and arguments, with what its
+ * step adds: who requested it, the check a refused approval failed, the passkey behind it, its
+ * outcome, its error or the reason an admin gave for ending the grant. A workspace access
+ * record's kind is followed by a badge for what the call exposed, when the record says, and an
+ * access record's by its refusal; a write record's by its step. An access or a write record's
+ * target user is the user the call or the write reached: its workspace's owner, or the user whose
+ * account a call was made into. The admin's name and the target user, and in a workspace or a
+ * write record's details its workspace, filter the log by `onFilterBy`. Names are never cut: an
+ * action too long for the space left is, whole in its tooltip. `shaded` stripes the summary row as
+ * Kumo stripes a table's even rows: Kumo counts the details row below each one, hidden or not, so
+ * every summary row is an odd row to it and would never be striped.
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord
@@ -241,6 +255,7 @@ export const AuditLogRow = ({ record, shaded, onFilterBy }: {
         <Table.Cell>
           <span className="flex flex-wrap items-center gap-1.5">
             <KindBadge kind={record.kind} />
+            {record.kind === 'workspace' && <ExposureBadge exposed={record.exposed} />}
             {(record.kind === 'workspace' || record.kind === 'user') && record.refused && (
               <span title={REFUSAL_NAMES[record.refused]}><Badge variant="warning">Refused</Badge></span>
             )}

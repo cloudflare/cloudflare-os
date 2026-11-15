@@ -1,5 +1,21 @@
 import type { BadgeVariant } from '@cloudflare/kumo'
-import type { AdminApprovalRefusal, AdminWriteRecord } from '@gadgets/workshop-shared/api'
+import type { AdminApprovalRefusal, AdminWriteAction, AdminWriteRecord } from '@gadgets/workshop-shared/api'
+
+// What the Audit tab calls each write an admin can request, in a write record's details.
+const WRITE_ACTION_NAMES: Record<AdminWriteAction, string> = {
+  stopAgent: 'Stop agent',
+  restartWorkspace: 'Restart workspace',
+  grantContentAccess: 'Grant content access',
+}
+
+/**
+ * The name of the write a record holds. The log returns each record as it is stored, so a method
+ * that is not a write the API names is shown as it is. An own-property test, so that a method such
+ * as "toString" finds no name on Object.prototype.
+ */
+export function writeActionName(method: string): string {
+  return Object.hasOwn(WRITE_ACTION_NAMES, method) ? WRITE_ACTION_NAMES[method as AdminWriteAction] : method
+}
 
 /** What the Audit tab calls each step of an admin write to a workspace. */
 export const WRITE_EVENT_NAMES: Record<AdminWriteRecord['event'], string> = {
