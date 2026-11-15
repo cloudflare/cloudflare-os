@@ -2826,14 +2826,16 @@ Who uses what:
 | Sheets | one: the grid | none | planned |
 | Slides | one: the deck | none | planned |
 | PagerDuty | incidents | the incident listing | planned |
-| Outlook | messages | the message listing | planned |
+| Outlook | messages | the message listing | in the tree |
 
 A list gatekeeper that moves onto the store serves what its own overlay serves only under these
 conditions, which are rules of the store and its adapter:
 
 - A pending create targets its provisional ref only while the ref is unresolved. Once the provider
   has named the entity, the records behind the ref target that id, and the create targets nothing,
-  so it is never reduced onto the provider's row.
+  so it is never reduced onto the provider's row. A gatekeeper whose overlay lists a pending create
+  until it is decided (Outlook's drafts) keeps targeting the ref: the provider's row has another id,
+  so the create is still never reduced onto it.
 - A gatekeeper whose overlay resolves provisional ids when a row is served builds its view on each
   call (the adapter reads `view` at every fold and keeps none), so that a row is folded with the ids
   as they are then.
