@@ -261,7 +261,11 @@ Frontend:
 - Dismissing the chip sends that message with no focus at all. The chip returns for the next one.
 - The transcript draws the same chip on a sent message. Clicking it sets `w` to that gadget and,
   if the focus has a spot, `at` to its anchor, in one navigation. That selects the gadget and
-  navigates its frame.
+  navigates its frame. If the gadget is no longer one the chat can show (deleted, or a discarded
+  draft), the click only says so in a toast.
+- The composer offers only a focus the server would accept: no chip while a slash command is
+  selected, and none for a gadget still pending in a chat other than the one the message goes to
+  (for a new chat, any pending gadget).
 
 ### Presenting the focus to the agent
 

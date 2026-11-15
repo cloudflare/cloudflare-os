@@ -34,6 +34,7 @@ import {
   BlueprintOutput,
   WorkpiecesSubscriber,
   NotificationMute,
+  MessageFocus,
 } from '@gadgets/workshop-shared/api'
 import ObserverConfigModal from './ObserverConfigModal'
 import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
@@ -79,6 +80,7 @@ import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
 import { useFocusUrl, withWorkpiece } from './features/gadget-focus/useFocusUrl'
+import { usePaneFocus } from './features/gadget-focus/usePaneFocus'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -1038,7 +1040,7 @@ export default function GadgetEditor() {
   }, [workpiecesReady, urlWorkpieceId, visibleWorkpieces, setWorkspaceVisibility])
 
   // ── focus ─────────────────────────────────────────────────────────────────────
-  const gadgetFocus = useFocusUrl({
+  const focusUrl = useFocusUrl({
     workspaceId: id,
     urlWorkpieceId,
     at: atParam,
@@ -1058,6 +1060,11 @@ export default function GadgetEditor() {
         replace: true,
       })
     },
+  })
+  const { uiFocus: gadgetFocus, paneFocus } = usePaneFocus({
+    uiFocus: focusUrl,
+    gadget: selectedGadgetSummary,
+    showsGadget: showFullEditor && !showingActivity,
   })
 
   const openActivity = useCallback((initialView: ActivityView) => {
@@ -1483,6 +1490,25 @@ export default function GadgetEditor() {
       }),
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
+
+  // A sent message's focus chip. The gadget may since have been deleted, or be a draft this chat
+  // can't show, and then there is nothing to open.
+  const handleOpenFocus = (focus: MessageFocus) => {
+    if (!visibleGadgets.some(g => g.id === focus.gadgetId)) {
+      toasts.add({ title: 'That gadget is no longer available', variant: 'info' })
+      return
+    }
+    if (isAgentActive) userPickedWorkpieceThisTurnRef.current = true
+    handleTabSelect('app')
+    setWorkspaceVisibility('open', focus.gadgetId)
+    navigate({
+      to: '/workspace/$id',
+      params: { id: id! },
+      search: (prev: Record<string, unknown>) => focus.spot
+        ? { ...prev, w: focus.gadgetId, at: focus.spot.anchor }
+        : withWorkpiece(prev, focus.gadgetId),
+    })
+  }
 
   const handleRenameWorkpiece = useCallback(async (workpieceId: WorkpieceId, title: string) => {
     if (!overseer) return
@@ -2090,6 +2116,8 @@ export default function GadgetEditor() {
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
                   outputOfWorkpiece={outputOfWorkpiece}
+                  paneFocus={paneFocus}
+                  onOpenFocus={handleOpenFocus}
                 />
               </div>
 

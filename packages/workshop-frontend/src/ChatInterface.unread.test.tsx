@@ -48,7 +48,7 @@ it.each([10, 0, undefined])("only offers the useful thread read action (unread c
       selectedChatId={null} onNavigateToChat={() => {}}
       pendingConsoleLogCount={0} consoleLogPreview="" consoleLogSeverity="info"
       onConsumeConsoleLogs={() => ""} onDiscardConsoleLogs={() => {}}
-      onOpenGadget={() => {}} outputOfWorkpiece={() => undefined} />,
+      onOpenGadget={() => {}} onOpenFocus={() => {}} outputOfWorkpiece={() => undefined} />,
   );
   const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Actions for Unread test"]')!;
   await act(async () => trigger.click());
