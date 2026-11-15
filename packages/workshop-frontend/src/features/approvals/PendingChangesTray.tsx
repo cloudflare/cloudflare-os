@@ -66,12 +66,16 @@ export const PendingChangesTray = ({
   vendorIdByGatekeeper: ReadonlyMap<number, string>
   vendorBranding: ReadonlyMap<string, VendorBranding>
   actions: PendingChangeActions
-  bulk: BulkResolve
+  /**
+   * Absent under the branch approval model, where a chat's requests are accepted with its
+   * changes rather than resolved here as a batch.
+   */
+  bulk?: BulkResolve
 }) => {
   const [openGroupId, setOpenGroupId] = useState<number | null>(null)
   const [expandedActionId, setExpandedActionId] = useState<number | null>(null)
 
-  const failureNotice = (divided: boolean) => bulk.failure && (
+  const failureNotice = (divided: boolean) => bulk?.failure && (
     <p
       role="alert"
       className={`m-0 flex items-start gap-2 px-3.5 py-1.5 text-[11.5px] leading-4 text-kumo-danger ${divided ? 'border-t border-kumo-line/70' : ''}`}
@@ -93,7 +97,7 @@ export const PendingChangesTray = ({
     // still owed to the user, so it outlives the queue until they dismiss it. Capped and
     // scrolling like the full tray, for the same reason: it sits in the composer's unshrinkable
     // section, and a long reason on a short window would push the composer off the pane.
-    return bulk.failure
+    return bulk?.failure
       ? (
         <div className={`${barClass} max-h-[min(30rem,45vh)] rounded-t-[calc(1rem-1px)]`}>
           <div className="min-h-0 overflow-y-auto">{failureNotice(false)}</div>
@@ -110,8 +114,8 @@ export const PendingChangesTray = ({
   // While restricted, RESTRICTED_APPROVAL_COPY asks the approver to read every request in full.
   // Bulk apply would be the first path around that, and around the latch that already disables
   // every auto-approval rule.
-  const canBulk = ready && !rules.restricted && bulkableEntries.length > 1
-  const busy = bulk.progress !== null
+  const canBulk = bulk !== undefined && ready && !rules.restricted && bulkableEntries.length > 1
+  const busy = bulk?.progress != null
   const oldest = all[0]
   const elsewhere = countFromElsewhere(groups)
   const pressured = groups.filter(group => group.entries.length >= JOURNAL_PRESSURE_THRESHOLD)
@@ -127,7 +131,7 @@ export const PendingChangesTray = ({
 
   const runBulk = (entries: readonly PendingChange[], decision: 'approve' | 'deny') => {
     setOpenGroupId(null)
-    void bulk.run(entries, decision)
+    void bulk?.run(entries, decision)
   }
 
   return (
@@ -148,7 +152,7 @@ export const PendingChangesTray = ({
             {oldest && ` · oldest ${formatRelativeTime(oldest.createdAt)}`}
           </span>
         </span>
-        {busy && bulk.progress && (
+        {busy && bulk?.progress && (
           <span
             role="status"
             className="flex-shrink-0 text-[11.5px] leading-4 text-kumo-inactive"
@@ -214,7 +218,7 @@ export const PendingChangesTray = ({
               onToggle={() => setOpenGroupId(current =>
                 current === group.gatekeeperId ? null : group.gatekeeperId)}
               actions={decisions}
-              bulk={!ready || group.hasCreation || rules.restricted ? undefined : {
+              bulk={!bulk || !ready || group.hasCreation || rules.restricted ? undefined : {
                 onApplyAll: () => runBulk(group.entries, 'approve'),
                 onDiscardAll: () => runBulk(group.entries, 'deny'),
                 disabled: busy,

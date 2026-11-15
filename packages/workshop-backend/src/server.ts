@@ -310,8 +310,11 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }
   }
 
-  getUiFeatureFlags(): Promise<UiFeatureFlags> {
-    return resolveUiFeatureFlags(this.env, this.#userId.name!);
+  async getUiFeatureFlags(): Promise<UiFeatureFlags> {
+    let flags = await resolveUiFeatureFlags(this.env, this.#userId.name!);
+    // The UI offers the branch approval model only where the kernel runs it.
+    flags["branch-approval"] &&= this.env.BRANCH_APPROVAL === "true";
+    return flags;
   }
 
   async #openWorkspaceInternal(id: string, shareKey?: string,

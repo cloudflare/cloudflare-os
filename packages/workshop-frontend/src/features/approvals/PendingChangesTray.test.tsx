@@ -70,7 +70,7 @@ async function render(options: {
   enabledTags?: string[]
   restricted?: boolean
   ready?: boolean
-  bulk?: BulkResolve
+  bulk?: BulkResolve | null
   actions?: Partial<PendingChangeActions>
 }) {
   const calls: string[] = []
@@ -96,7 +96,7 @@ async function render(options: {
       vendorIdByGatekeeper={new Map()}
       vendorBranding={new Map()}
       actions={actions}
-      bulk={options.bulk ?? noBulk}
+      bulk={options.bulk === null ? undefined : options.bulk ?? noBulk}
     />,
   ))
   return { calls, container }
@@ -300,5 +300,49 @@ describe('PendingChangesTray', () => {
     await render({ groups: [group(many)] })
 
     expect(document.body.textContent).toContain('holding 40 unresolved requests')
+  })
+})
+
+// The tray's branch approval model hooks: only request 2 is approved on its own.
+const branch = (calls: string[]) => ({
+  canApprove: (entry: PendingChange) => entry.id === 2,
+  onRetry: (entry: PendingChange) => calls.push(`retry:${entry.id}`),
+})
+
+describe('PendingChangesTray under the branch approval model', () => {
+
+  it('offers no bulk resolve, and Approve only where the model allows one', async () => {
+    const calls: string[] = []
+    await render({
+      groups: [group([request(1), request(2)])], bulk: null, actions: { branch: branch(calls) },
+    })
+    expect(button('Apply all 2')).toBeUndefined()
+    expect(button('Discard all')).toBeUndefined()
+    await openGroup()
+    expect(buttons().filter(b => b.textContent?.trim() === 'Deny')).toHaveLength(2)
+    expect(buttons().filter(b => b.textContent?.trim() === 'Approve')).toHaveLength(1)
+  })
+
+  it('shows a request that failed to apply, with Retry, and what waits on it', async () => {
+    const calls: string[] = []
+    const failed = { ...request(1), applyError: { message: 'Quota exceeded.', retryable: true } }
+    await render({
+      groups: [group([failed, request(2, { title: 'Write two' })])], bulk: null,
+      actions: { branch: branch(calls) },
+    })
+    await openGroup()
+    expect(document.querySelector('[role="alert"]')?.textContent)
+        .toContain('Could not apply: Quota exceeded.')
+    expect(document.body.textContent).toContain('Waiting on "Write 1" above it.')
+    await click(button('Retry'))
+    expect(calls).toEqual(['retry:1'])
+  })
+
+  it('offers no Retry for a failure that cannot be retried', async () => {
+    const failed = { ...request(1), applyError: { message: 'Gone.', retryable: false } }
+    await render({ groups: [group([failed])], bulk: null, actions: { branch: branch([]) } })
+    await openGroup()
+    expect(document.body.textContent).toContain('Could not apply: Gone.')
+    expect(button('Retry')).toBeUndefined()
   })
 })

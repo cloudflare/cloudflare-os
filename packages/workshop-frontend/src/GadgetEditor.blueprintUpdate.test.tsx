@@ -100,6 +100,7 @@ vi.mock('@cloudflare/kumo', () => {
 vi.mock('./AuthContext', () => ({
   useAuthenticatedApi: () => ({ authenticatedApi: mocks.authenticatedApi }),
 }))
+vi.mock('./FeatureFlagsContext', () => ({ useUiFeatureFlag: () => ({ enabled: false }) }))
 vi.mock('./RpcContext', () => ({ useConnectionLost: () => false, useRpcStub: () => ({}) }))
 vi.mock('./useWorkspaceOpen', () => ({
   useWorkspaceOpen: () => mocks.workspace,

@@ -75,6 +75,7 @@ import ReconnectingChip from './components/ReconnectingChip'
 import WorkspaceOpenErrorPage from './components/WorkspaceOpenErrorPage'
 import { observerOpenFailureMessage, useWorkspaceOpen } from './useWorkspaceOpen'
 import { reportIssue } from './errorReporting'
+import { useUiFeatureFlag } from './FeatureFlagsContext'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
@@ -480,6 +481,7 @@ export default function GadgetEditor() {
   const id = params.id
   const navigate = useNavigate()
   const { authenticatedApi, currentUser, isCurrentUserConfirmed } = useAuthenticatedApi()
+  const { enabled: branchApproval } = useUiFeatureFlag('branch-approval')
   const publicApi = useRpcStub()
 
   const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
@@ -2062,6 +2064,7 @@ export default function GadgetEditor() {
                   onChatCountChange={handleChatCountChange}
                   onAgentActiveChange={handleAgentActiveChange}
                   autoApproval={autoApproval}
+                  branchApproval={branchApproval}
                   onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}

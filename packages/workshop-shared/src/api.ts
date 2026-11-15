@@ -3540,6 +3540,13 @@ export interface Overseer extends RpcTarget {
    * On a connection whose gatekeeper applies actions as a list (`Gatekeeper.applyActions()`),
    * the pending actions with no chat on that connection apply first, and then the action's
    * chat's earlier actions there, since its gatekeeper simulated it on top of them.
+   *
+   * Under the branch approval model (see mergeChanges()) that holds on every connection: approving
+   * an action applies its chat's earlier actions on that connection first, together with the
+   * pending actions with no chat there (on a connection that applies one action at a time, only
+   * those older than it, all in ID order), so nothing applies out of order. The Workshop offers it
+   * for an action the agent waits on (`ActionDescription.awaitDecision`), which cannot wait for
+   * its chat to be accepted.
    */
   approveAction(id: number, creation?: CreationApproval): Promise<void>;
 
@@ -3846,8 +3853,20 @@ export interface Overseer extends RpcTarget {
    * (AiChatMessageBody.blueprintMerges[].conflictPaths and mainlineMerge.gadgets[].conflictPaths),
    * as the Workshop UI does before accepting: it looks for a `<<<<<<< ` or `>>>>>>> ` line left
    * in each of those files, and asks the user whether to accept them as they are.
+   *
+   * Under the branch approval model, which a deployment turns on while it is proven (the
+   * `branch-approval` UI feature flag shows it), accepting a chat also applies its pending
+   * gatekeeper actions, and does so first: on each connection the chat acted on, the pending
+   * actions with no chat there (which the chat's were simulated on top of), and then the chat's
+   * own, one connection at a time, as they stood when the accept began. A pending creation among
+   * them needs `options.creations`; one that fails throws, as approveAction() does. The first
+   * other action that fails to apply stops the accept with a "failed" outcome, leaving the code
+   * unmerged and the action pending with its ActionLogEntry.applyError; calling again retries
+   * it. The accept is not atomic: what applied stays applied, and a "stale" outcome after the
+   * actions applied leaves only the code for the retry. Refused while the agent waits on a
+   * decision. With no code to merge, it applies the actions alone.
    */
-  mergeChanges(chatId: number): Promise<MergeChangesResult>;
+  mergeChanges(chatId: number, options?: MergeChangesOptions): Promise<MergeChangesResult>;
 
   /**
    * Merge mainline commits that landed after this chat's pins into the chat's uncommitted state.
@@ -3900,6 +3919,10 @@ export interface Overseer extends RpcTarget {
    * state -- content they may have transformed against is gone -- so ChatCodeBase.generation is
    * bumped destructively: in-flight submitCodeChange() calls fail and clients rebuild instead of
    * corrupting the chat.
+   *
+   * Under the branch approval model (see mergeChanges()) it also rejects, newest first, the
+   * chat's pending gatekeeper actions recorded at or after `revertFrom` in the chat; with
+   * `revertFrom` 0, every pending action of the chat's.
    */
   revertChanges(chatId: number, revertFrom: number): Promise<void>;
 
@@ -3921,7 +3944,10 @@ export interface Overseer extends RpcTarget {
    */
   discardChatDraftChanges(chatId: number): Promise<void>;
 
-  /** Delete a chat thread. */
+  /**
+   * Delete a chat thread. Under the branch approval model (see mergeChanges()) its pending
+   * gatekeeper actions are rejected first, as revertChanges(chatId, 0) rejects them.
+   */
   deleteChat(chatId: number): Promise<void>;
 
   /**
@@ -4443,9 +4469,20 @@ export type MergeChangesResult = {
    * "merged": the changes were accepted; every touched gadget's head fast-forwarded (also the
    * outcome when there was nothing to merge). "stale": nothing was merged -- mainline advanced
    * past one of the chat's pins, so the accept could not fast-forward; call
-   * updateChatFromMainline(), resolve any conflicts, and retry.
+   * updateChatFromMainline(), resolve any conflicts, and retry. "failed": under the branch
+   * approval model, one of the chat's pending actions could not be applied, so no code was
+   * merged; its ActionLogEntry.applyError says why.
    */
-  outcome: "merged" | "stale";
+  outcome: "merged" | "stale" | "failed";
+};
+
+/** Choices Overseer.mergeChanges() needs from the user accepting the chat. */
+export type MergeChangesOptions = {
+  /**
+   * How to make each pending creation (see ActionLogEntry.creation) the accept applies, keyed by
+   * the creation's action ID. Required for every one, under the branch approval model.
+   */
+  creations?: Record<number, CreationApproval>;
 };
 
 /**

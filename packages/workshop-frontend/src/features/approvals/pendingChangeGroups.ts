@@ -133,6 +133,26 @@ export function pendingChangeGroups(
 }
 
 /**
+ * The pending requests a tray shows under the branch approval model, where accepting a chat
+ * applies its own requests and, ahead of them, those no chat made on the same connections.
+ *
+ * In a chat (`chatId`), its own requests and the unchatted ones on a connection it has a request
+ * on, since accepting it applies those too. Outside any chat, only the unchatted ones, which no
+ * chat's accept covers.
+ */
+export function chatBranchPending(
+  pending: readonly ActionLogEntry[],
+  chatId: number | null,
+): ActionLogEntry[] {
+  const connections = new Set(pending.flatMap(log =>
+    chatId !== null && log.chatId === chatId && log.gatekeeperId !== undefined
+      ? [log.gatekeeperId] : []))
+  return pending.filter(log => log.chatId === undefined
+    ? chatId === null || (log.gatekeeperId !== undefined && connections.has(log.gatekeeperId))
+    : log.chatId === chatId)
+}
+
+/**
  * Whether every request in `group` is known to have been asked for somewhere else.
  *
  * One request whose origin is merely unknown is enough to withhold the label: the group may yet

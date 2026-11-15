@@ -17,6 +17,15 @@ export interface PendingChangeActions {
   onAlwaysApprove: (entry: PendingChange) => void
   /** Opens the pane where a standing rule is turned off again. */
   onManageRules: () => void
+  /**
+   * Present under the branch approval model, where a request applies when its chat's changes
+   * are accepted: which requests are still approved on their own, and how one that failed to
+   * apply is tried again.
+   */
+  branch?: {
+    canApprove: (entry: PendingChange) => boolean
+    onRetry: (entry: PendingChange) => void
+  }
 }
 
 /**
@@ -129,6 +138,10 @@ export const PendingChangeGroupRow = ({
               // a request nobody can decide here would be stranded with nothing saying why. One
               // the drain is applying right now refuses a second decision, whoever sends it.
               const ruled = isAutoApproved(entry, rules)
+              // An apply stops at the first request that fails, and what is queued behind it on
+              // the connection waits for it to be retried or denied.
+              const failedBefore = actions.branch &&
+                group.entries.find(other => other.id < entry.id && other.applyError)
               return (
                 <div key={entry.id}>
                   {!allElsewhere && entry.origin === 'elsewhere' && (
@@ -154,6 +167,29 @@ export const PendingChangeGroupRow = ({
                       </button>
                     </p>
                   )}
+                  {actions.branch && entry.applyError && (
+                    <p
+                      role="alert"
+                      className="m-0 flex flex-wrap items-center gap-x-1.5 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger"
+                    >
+                      <span className="min-w-0">Could not apply: {entry.applyError.message}</span>
+                      {entry.applyError.retryable && (
+                        <button
+                          type="button"
+                          onClick={() => actions.branch?.onRetry(entry)}
+                          disabled={actions.processing.has(entry.id)}
+                          className="cursor-pointer text-kumo-default underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </p>
+                  )}
+                  {failedBefore && (
+                    <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
+                      Waiting on "{failedBefore.description.title}" above it.
+                    </p>
+                  )}
                   <ReviewRequest
                     record={entry}
                     restricted={rules.restricted}
@@ -162,7 +198,9 @@ export const PendingChangeGroupRow = ({
                     processing={actions.processing.has(entry.id)}
                     onToggle={() => onToggleAction(entry.id)}
                     decide={{
-                      onApprove: () => actions.onApprove(entry),
+                      onApprove: actions.branch && !actions.branch.canApprove(entry)
+                        ? undefined
+                        : () => actions.onApprove(entry),
                       onReject: () => actions.onReject(entry),
                       onAlwaysApprove: canOfferAlwaysApprove(entry, rules)
                         ? () => actions.onAlwaysApprove(entry)

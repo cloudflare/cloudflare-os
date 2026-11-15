@@ -6,8 +6,10 @@ type UiFeatureFlagDefinition = {
 
 /** UI feature flags resolved by `workshop-backend` for `workshop-frontend`. */
 export const UI_FEATURE_FLAGS = [
-  // Replace this placeholder with the first real feature flag.
-  { key: "placeholder-flag", dev: false, default: false },
+  // The branch approval model of plans/forking-reality.md: the pending-changes banner accepts and
+  // discards a chat's actions with its code, and the tray lists only the open chat's actions.
+  // Resolves off unless the kernel runs the model too (`BRANCH_APPROVAL`).
+  { key: "branch-approval", dev: false, default: false },
 ] as const satisfies readonly UiFeatureFlagDefinition[];
 
 type UiFeatureFlag = (typeof UI_FEATURE_FLAGS)[number];

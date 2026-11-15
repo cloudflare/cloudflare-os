@@ -100,13 +100,14 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number } = {},
+  props: { restricted?: boolean, selectedChatId?: number, branchApproval?: boolean } = {},
 ) {
   return testRoot.render(
     <ChatInterface
       workspaceId="workspace"
       overseer={overseer}
       restricted={props.restricted}
+      branchApproval={props.branchApproval}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
@@ -420,6 +421,50 @@ describe('pending queue failure', () => {
     const labels = [...document.querySelectorAll('button')].map(b => b.textContent)
     expect(labels).not.toContain('Approve')
     expect(document.body.textContent).toContain('Waiting for review')
+  })
+})
+
+describe('the branch approval model', () => {
+  it("accepts a chat's requests from its pending-changes bar, and leaves only Deny on its cards",
+      async () => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    const mergeChanges = vi.fn<Overseer['mergeChanges']>(async () => ({ outcome: 'merged' }))
+    Object.assign(server.overseer as object, { mergeChanges })
+    await renderChat(server.overseer, { selectedChatId: 1, branchApproval: true })
+    await server.resolveSubscription()
+    const log = { ...pendingLog(), chatId: 1 } as ActionLogEntry
+    await server.resolvePendingQuery({ entries: [log, { ...entry(2), chatId: 2 } as ActionLogEntry] })
+    chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+
+    // Another chat's request is not this chat's to accept, and appears nowhere here.
+    expect(document.body.textContent).toContain('1 request waiting')
+    expect(document.body.textContent).toContain('Pending changes · 1 request to apply')
+    expect(document.body.textContent).toContain('Applies when the changes are accepted')
+    const labels = [...document.querySelectorAll('button')].map(b => b.textContent?.trim())
+    expect(labels).toContain('Deny')
+    expect(labels).not.toContain('Approve')
+    expect(labels).not.toContain('Discard all')
+
+    const accept = [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.includes('Accept changes'))
+    await act(async () => accept!.click())
+    expect(mergeChanges).toHaveBeenCalledWith(1, { creations: {} })
+  })
+
+  it('keeps Approve on a request the agent is waiting on', async () => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date() },
+    ])
+    await renderChat(server.overseer, { selectedChatId: 1, branchApproval: true })
+    await server.resolveSubscription()
+    const log = { ...pendingLog({ awaitDecision: true }), chatId: 1 } as ActionLogEntry
+    await server.resolvePendingQuery({ entries: [log] })
+    chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+    expect([...document.querySelectorAll('button')].map(b => b.textContent)).toContain('Approve')
   })
 })
 

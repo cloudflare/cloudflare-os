@@ -70,7 +70,11 @@ export class AutoApprovalDrainer {
       // Whether an action has a decision in flight (see OverseerImpl.claimDecision). The apply
       // would refuse one anyway, and the catch below would stop there just the same; asking
       // first keeps that ordinary race out of the failure log.
-      private isDeciding: (id: number) => boolean) {}
+      private isDeciding: (id: number) => boolean,
+      // Whether the drain applies a pending action at all. Under the branch approval model it
+      // applies only staged ones (see OverseerImpl.branchApproval): a chat's actions wait for
+      // its branch to be accepted, and hold up nothing here. TODO: Remove with the model's setting.
+      private inScope: (record: ActionRecord) => boolean = () => true) {}
 
   drain(gatekeeperId: number): Promise<void> {
     let running = this.#draining.get(gatekeeperId);
@@ -120,7 +124,7 @@ export class AutoApprovalDrainer {
   #eligible(gatekeeperId: number): ApplyItem[] {
     let eligible: ApplyItem[] = [];
     for (let record of this.storage.actions.pendingByGatekeeper.get(gatekeeperId)) {
-      if (record.type !== "action") continue;
+      if (record.type !== "action" || !this.inScope(record)) continue;
       let rule = autoApprovalRule(this.storage, gatekeeperId, record.description);
       // A manual gate. Stop rather than skipping ahead to any later auto-eligible action.
       if (rule === undefined) break;
