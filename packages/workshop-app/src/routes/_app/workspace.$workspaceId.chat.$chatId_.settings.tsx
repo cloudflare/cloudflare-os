@@ -50,7 +50,7 @@ function ChatSettings() {
       initialTitle={initialTitle}
       tab={tab}
       automationLink={automationLink}
-      onOpenConnections={() => navigate({ to: '/connections' })}
+      onOpenConnections={() => navigate({ to: '/gatekeepers' })}
       // In place, so that going back leaves the settings rather than going through their tabs.
       onTabChange={(next) =>
         navigate({

@@ -2,8 +2,8 @@ import { useRef, useState } from 'react'
 import { AddConnectionDialog, type ConnectionChoice } from '@/blocks/AddConnectionDialog'
 import { Composer, type ComposerHandle } from '@/blocks/Composer'
 import { Button } from '@/components/Button'
-import { ChangeRulesGroup, type ChangeRulesConnection } from '@/blocks/ChangeRulesGroup'
-import { ConnectionAccountView, type ChangeRulesState, type WorkspaceChangeRules } from '@/blocks/ConnectionAccountView'
+import { ChangeDefaultsList, type ChangeDefaultsGroup } from '@/blocks/ChangeDefaultsList'
+import { ConnectionAccountView } from '@/blocks/ConnectionAccountView'
 import { ConnectionDialog, type ConnectionDialogResource } from '@/blocks/ConnectionDialog'
 import { ConnectionRow } from '@/blocks/ConnectionRow'
 import { SetUpConnectionDialog, type SetUpConnectionAccount } from '@/blocks/SetUpConnectionDialog'
@@ -84,15 +84,10 @@ export const ConnectionsPreview = () => {
         <Button onClick={() => setOpen('connect-granular')}>Connect, choosing</Button>
         <Button onClick={() => setOpen('add')}>Add built in</Button>
       </Section>
-      <Section title="ChangeRulesGroup (what an account may change on its own in one workspace: closed, with some automatic; open; with two connections; restricted, where every change asks)">
-        <div className="flex w-full max-w-3xl flex-col gap-2">
-          <RulesPreview connections={[DRIVE]} title="Hello Workspace" />
-          <RulesPreview connections={[DRIVE]} title="Quarterly planning" defaultOpen />
-          <RulesPreview connections={[DRIVE, Q3_DOC]} title="Board pack" defaultOpen />
-          <RulesPreview connections={[DRIVE]} title="Payroll" restricted defaultOpen />
-        </div>
+      <Section title="ChangeDefaultsList (every kind of change a service can make, by what it changes: Ask first or Automatic in every workspace the user owns; one that can never go ahead on its own requires approval always; one a workspace lets go ahead though the service asks says where, with Ask there too)">
+        <div className="w-full max-w-3xl"><DefaultsPreview /></div>
       </Section>
-      <Section title="ConnectionAccountView (an account’s page, from the Connections page: what it can reach, with more to grant, which waits for its window; what changes go ahead on their own, by workspace; disconnecting, asked first. Signed in, expired, still reading its workspaces, and used by none)">
+      <Section title="ConnectionAccountView (an account’s page, from the Gatekeepers page: what changes go ahead on their own, in every workspace; what it can reach, with more to grant, which waits for its window; disconnecting, asked first. Signed in, expired, still reading, and a service that changes nothing)">
         <AccountPreview />
       </Section>
       <Section title="SetUpConnectionDialog (a chat’s connection request: accounts loading, none yet, one with the service’s form, an expired one, one without access)">
@@ -132,66 +127,60 @@ export const ConnectionsPreview = () => {
   )
 }
 
-const kinds = (automatic: string[], labels: [tag: string, label: string][]) =>
-  labels.map(([tag, label]) => ({ tag, label, automatic: automatic.includes(tag) }))
+const change = (tag: string, label: string, automatic = false, autoApprovable = true, alsoIn?: string[]) =>
+  ({ kind: { tag, label }, autoApprovable, automatic, ...(alsoIn ? { alsoIn } : {}) })
 
-const DRIVE: ChangeRulesConnection = {
-  gatekeeperId: 5,
-  title: 'Google Drive Account (read and write)',
-  kinds: kinds(['editDocument', 'driveComments'], [
-    ['editDocument', 'Document edits, in any Doc this connection reaches'],
-    ['editSheetValues', 'Sheet value edits, in any spreadsheet this connection reaches'],
-    ['formatSheets', 'Sheet formatting, in any spreadsheet this connection reaches'],
-    ['editSlidesText', 'Slide text edits, in any presentation this connection reaches'],
-    ['arrange-slides', 'Adding, copying and reordering slides, in any presentation this connection reaches'],
-    ['driveComments', 'Drive comments'],
-  ]),
-}
-const Q3_DOC: ChangeRulesConnection = {
-  gatekeeperId: 9,
-  title: 'Q3 plan',
-  kinds: kinds([], [['editDocument', 'Document edits, in this Doc']]),
-}
-
-const withKind = (connections: ChangeRulesConnection[], gatekeeperId: number, tag: string, automatic: boolean) =>
-  connections.map((held) => held.gatekeeperId !== gatekeeperId ? held : {
-    ...held,
-    kinds: held.kinds.map((kind) => (kind.tag === tag ? { ...kind, automatic } : kind)),
-  })
-
-const RulesPreview = ({ connections: initial, title, restricted, defaultOpen }: { connections: ChangeRulesConnection[]; title: string; restricted?: boolean; defaultOpen?: boolean }) => {
-  const [connections, setConnections] = useState(initial)
-  return (
-    <ChangeRulesGroup
-      workspace={{ title, label: title.slice(0, 2).toUpperCase() }}
-      connections={connections}
-      restricted={restricted}
-      defaultOpen={defaultOpen}
-      onChange={(gatekeeperId, tag, automatic) => setConnections((current) => withKind(current, gatekeeperId, tag, automatic))}
-    />
-  )
-}
-
-type AccountState = 'signed-in' | 'expired' | 'loading' | 'unused'
-
-const WORKSPACES: WorkspaceChangeRules[] = [
-  { id: 'a', title: 'Quarterly planning', label: 'QP', restricted: false, connections: [DRIVE] },
-  { id: 'b', title: 'Board pack', label: 'BP', restricted: false, connections: [{ ...DRIVE, kinds: DRIVE.kinds.map((kind) => ({ ...kind, automatic: false })) }, Q3_DOC] },
-  { id: 'c', title: 'Payroll', label: 'PA', restricted: true, connections: [DRIVE] },
+const GROUPS: ChangeDefaultsGroup[] = [
+  { key: 'gmail', title: 'Gmail', changes: [
+    change('gmail.label', 'Labels and archiving, in any message this connection reaches', true),
+    change('gmail.draft', 'Drafts, in this mailbox'),
+    change('gmail.send', 'Send email', false, false),
+    change('gmail.draftSend', 'Send drafts', false, false),
+  ] },
+  { key: 'doc', title: 'Google Doc', changes: [
+    change('editDocument', 'Document edits, in any Doc this connection reaches', false, true, ['Quarterly planning']),
+    change('addTab', 'New tabs, in any Doc this connection reaches'),
+    change('docComments', 'Comments and replies, in any Doc this connection reaches', true),
+  ] },
+  { key: 'sheet', title: 'Google Sheet', changes: [
+    change('editSheetValues', 'Sheet value edits, in any spreadsheet this connection reaches', false, true, ['Board pack', 'Budget']),
+    change('formatSheets', 'Sheet formatting, in any spreadsheet this connection reaches'),
+  ] },
+  { key: 'drive', title: 'Drive file', changes: [
+    change('driveComments', 'Drive comments'),
+    change('share', 'Sharing', false, false),
+  ] },
 ]
+
+const toggled = (groups: ChangeDefaultsGroup[], tag: string, update: (one: ChangeDefaultsGroup['changes'][number]) => ChangeDefaultsGroup['changes'][number]) =>
+  groups.map((group) => ({ ...group, changes: group.changes.map((one) => (one.kind.tag === tag ? update(one) : one)) }))
+
+const useGroups = () => {
+  const [groups, setGroups] = useState(GROUPS)
+  return {
+    groups,
+    set: (tag: string, automatic: boolean) => setGroups((current) => toggled(current, tag, (one) => ({ ...one, automatic, alsoIn: automatic ? undefined : one.alsoIn }))),
+    askEverywhere: (tag: string) => setGroups((current) => toggled(current, tag, ({ alsoIn: _, ...one }) => one)),
+  }
+}
+
+const DefaultsPreview = () => {
+  const { groups, set, askEverywhere } = useGroups()
+  return <ChangeDefaultsList groups={groups} onChange={(kind, automatic) => set(kind.tag, automatic)} onAskEverywhere={(kind) => askEverywhere(kind.tag)} />
+}
+
+type AccountState = 'signed-in' | 'expired' | 'loading' | 'nothing'
 
 const AccountPreview = () => {
   const { report, say, later } = useReport()
   const [state, setState] = useState<AccountState>('signed-in')
-  const [workspaces, setWorkspaces] = useState(WORKSPACES)
+  const { groups, set, askEverywhere } = useGroups()
   const [granted, setGranted] = useState(['https://mail.google.com/*'])
   const [failing, setFailing] = useState(false)
-  const rules: ChangeRulesState = state === 'loading' ? { status: 'loading' }
-    : { status: 'ready', workspaces: state === 'unused' ? [] : workspaces, failed: state === 'signed-in' ? ['Archive'] : [] }
   return (
     <div className="flex w-full flex-col gap-3">
       <div className="flex flex-wrap gap-2">
-        {(['signed-in', 'expired', 'loading', 'unused'] as const).map((each) => (
+        {(['signed-in', 'expired', 'loading', 'nothing'] as const).map((each) => (
           <Button key={each} variant={each === state ? 'primary' : 'secondary'} onClick={() => setState(each)}>{each}</Button>
         ))}
         <Button variant={failing ? 'primary' : 'secondary'} onClick={() => setFailing((current) => !current)}>Changes fail</Button>
@@ -221,15 +210,17 @@ const AccountPreview = () => {
             say('Google disconnected')
             return true
           }}
-          rules={rules}
-          onChangeRule={(workspaceId, gatekeeperId, tag, automatic) => {
-            const apply = (on: boolean) => setWorkspaces((current) => current.map((workspace) => workspace.id !== workspaceId ? workspace
-              : { ...workspace, connections: withKind(workspace.connections, gatekeeperId, tag, on) }))
-            apply(automatic)
-            say(`${tag} in ${workspaceId}: ${automatic ? 'automatic' : 'ask first'}`)
-            if (failing) setTimeout(() => apply(!automatic), 600)
+          changes={state === 'loading' ? undefined : state === 'nothing' ? [] : groups}
+          onChange={(kind, automatic) => {
+            set(kind.tag, automatic)
+            say(`${kind.tag}: ${automatic ? 'automatic' : 'ask first'}`)
+            if (failing) setTimeout(() => set(kind.tag, !automatic), 600)
           }}
-          ruleProblem={failing ? 'Couldn’t change “Document edits”: The workspace didn’t answer.' : undefined}
+          onAskEverywhere={(kind) => {
+            askEverywhere(kind.tag)
+            say(`${kind.tag}: asks first everywhere`)
+          }}
+          changeProblem={failing ? 'Couldn’t change “Document edits”: The server didn’t answer.' : undefined}
         />
       </div>
     </div>

@@ -32,7 +32,7 @@ export const AppSearch = ({ open, onOpenChange }: { open: boolean; onOpenChange:
     { key: 'new-chat', group: 'Go to', title: 'New chat', keywords: ['home', 'start'], icon: <NotePencilIcon />, onSelect: () => void navigate({ to: '/' }) },
     { key: 'workspaces', group: 'Go to', title: 'Workspaces', icon: <FolderIcon />, onSelect: () => void navigate({ to: '/workspaces' }) },
     { key: 'library', group: 'Go to', title: 'Library', keywords: ['gadgets', 'files'], icon: <CirclesFourIcon />, onSelect: () => void navigate({ to: '/library' }) },
-    { key: 'connections', group: 'Go to', title: 'Connections', keywords: ['accounts', 'services'], icon: <PlugsIcon />, onSelect: () => void navigate({ to: '/connections' }) },
+    { key: 'gatekeepers', group: 'Go to', title: 'Gatekeepers', keywords: ['connections', 'accounts', 'services'], icon: <PlugsIcon />, onSelect: () => void navigate({ to: '/gatekeepers' }) },
     { key: 'new-workspace', group: 'Go to', title: 'New workspace', keywords: ['create'], icon: <FolderPlusIcon />, onSelect: () => void navigate({ to: '/workspaces/new' }) },
   ]
   // Most recently active first, as the provider keeps them.

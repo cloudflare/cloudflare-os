@@ -415,7 +415,7 @@ export const ChatPane = ({
         open={asked?.open === true}
         onOpenChange={(open) => setAsked((current) => current && { ...current, open })}
         title={`Always approve “${asked?.rule.actionKind.label}”?`}
-        description="From now on these go ahead without asking, in every chat in this workspace and whichever gadget asks. Any waiting now go ahead too. You can change this on the account’s page in Connections."
+        description="From now on these go ahead without asking, in every chat in this workspace and whichever gadget asks. Any waiting now go ahead too. You can change this on the account’s page in Gatekeepers."
         confirm="Always approve"
         onConfirm={() => (asked ? actions.alwaysApprove(asked.rule) : undefined)}
       />

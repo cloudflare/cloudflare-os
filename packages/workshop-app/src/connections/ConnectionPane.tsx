@@ -9,30 +9,43 @@ import { useConnectionNotice } from '@/rpc/ConnectionNoticeContext'
 import { useConnectedAccounts } from './ConnectedAccountsContext'
 import { openConnectWindow } from './connectHandoff'
 import { accountName, resourcesOf, serviceOf } from './connectionGroups'
-import { useChangeRules } from './useChangeRules'
+import { changeGroups } from './changeGroups'
+import { useChangeDefaults } from './useChangeDefaults'
+import { useWorkspaceRules } from './useWorkspaceRules'
 
 export type ConnectionPaneProps = {
   accountId: number
-  /** Back to the Connections page, as when the account is gone. */
+  /** Back to the Gatekeepers page, as when the account is gone. */
   onBack: () => void
 }
 
 /**
- * One connected account's page (`ConnectionAccountView`), opened from the Connections page: what
- * it can reach, what it may change without asking in each of the user's workspaces
- * (`useChangeRules`), reconnecting it, and disconnecting it, after which it goes back.
+ * One connected account's page (`ConnectionAccountView`), opened from the Gatekeepers page: every
+ * kind of change its service can make, and which go ahead without asking in the user's workspaces
+ * (`useChangeDefaults`), with the workspaces that let one go ahead though the service asks
+ * (`useWorkspaceRules`); what it can reach; reconnecting it; and disconnecting it, after which it
+ * goes back.
  */
 export const ConnectionPane = ({ accountId, onBack }: ConnectionPaneProps) => {
   const { api } = useApi()
   const connection = useConnectionNotice()
   const accounts = useConnectedAccounts()
   const account = accounts.status === 'ready' ? accounts.accounts.find(({ id }) => id === accountId) : undefined
-  const { rules, change, problem } = useChangeRules(account?.vendorId)
-  useDocumentTitle(account?.vendor.displayName ?? 'Connection')
+  const defaults = useChangeDefaults(account?.vendorId)
+  const workspaceRules = useWorkspaceRules(account?.vendorId)
+  useDocumentTitle(account?.vendor.displayName ?? 'Gatekeeper')
+
+  // The workspaces that let each kind go ahead though the service asks first, by tag.
+  const alsoIn = new Map<string, string[]>()
+  for (const { tag, workspaceTitle } of workspaceRules.rules ?? []) {
+    const titles = alsoIn.get(tag) ?? []
+    if (!titles.includes(workspaceTitle)) titles.push(workspaceTitle)
+    alsoIn.set(tag, titles)
+  }
 
   const header = (
     <HeaderBubble>
-      <Button icon={CaretLeftIcon} onClick={onBack}>Connections</Button>
+      <Button icon={CaretLeftIcon} onClick={onBack}>Gatekeepers</Button>
     </HeaderBubble>
   )
 
@@ -45,7 +58,7 @@ export const ConnectionPane = ({ accountId, onBack }: ConnectionPaneProps) => {
           {accounts.status === 'ready' && (
             <>
               <p className="text-base text-kumo-subtle">This account isn’t connected anymore.</p>
-              <Button onClick={onBack}>See your connections</Button>
+              <Button onClick={onBack}>See your gatekeepers</Button>
             </>
           )}
         </div>
@@ -79,9 +92,10 @@ export const ConnectionPane = ({ accountId, onBack }: ConnectionPaneProps) => {
           onBack()
           return true
         }}
-        rules={rules}
-        onChangeRule={change}
-        ruleProblem={problem}
+        changes={defaults.automatic && changeGroups(account.supportedResources, defaults.automatic, alsoIn)}
+        onChange={defaults.change}
+        onAskEverywhere={(kind) => workspaceRules.clear(kind.tag, kind.label)}
+        changeProblem={defaults.problem ?? workspaceRules.problem}
       />
     </PageLayout>
   )

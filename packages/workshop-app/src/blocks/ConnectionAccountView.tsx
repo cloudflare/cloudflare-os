@@ -1,30 +1,13 @@
 import { useState, type ReactNode } from 'react'
-import { WarningCircleIcon } from '@phosphor-icons/react'
 import { Button } from '@/components/Button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ServiceLogo } from '@/components/ServiceLogo'
-import { ChangeRulesGroup, type ChangeRulesConnection } from './ChangeRulesGroup'
+import type { ActionKind } from '@gadgets/workshop-shared/gatekeeper'
+import { ChangeDefaultsList, type ChangeDefaultsGroup } from './ChangeDefaultsList'
 import type { ConnectionDialogResource, ConnectionDialogService } from './ConnectionDialog'
 import { isGranted, patternsToGrant } from './resourceGrants'
 import { ResourceReachList } from './ResourceReachList'
 import { SettingsGroup, SettingsRow } from './SettingsGroup'
-
-/** What an account may change on its own in one of the user's workspaces. */
-export type WorkspaceChangeRules = {
-  id: string
-  title: string
-  /** The two letters on its folder (`workspaceLabel`). */
-  label: string
-  /** It has read sensitive data, so every change asks (`ChangeRulesGroup`). */
-  restricted: boolean
-  connections: ChangeRulesConnection[]
-}
-
-/** The account's rules across the user's workspaces, as they are read. */
-export type ChangeRulesState =
-  | { status: 'loading' }
-  /** `failed`: the titles of workspaces that could not be read. */
-  | { status: 'ready'; workspaces: WorkspaceChangeRules[]; failed: string[] }
 
 export type ConnectionAccountViewProps = {
   service: ConnectionDialogService
@@ -40,10 +23,16 @@ export type ConnectionAccountViewProps = {
   onReconnect?: () => Promise<boolean>
   /** Disconnects it, once asked; as `ConfirmDialog`'s `onConfirm`, `false` if it was not tried. */
   onDisconnect: () => Promise<boolean>
-  rules: ChangeRulesState
-  onChangeRule: (workspaceId: string, gatekeeperId: number, tag: string, automatic: boolean) => void
-  /** Why the last change to a rule did not happen. */
-  ruleProblem?: string
+  /**
+   * Every kind of change the service can make, by what it changes, and which go ahead without
+   * asking; undefined while that is read.
+   */
+  changes?: ChangeDefaultsGroup[]
+  onChange: (kind: ActionKind, automatic: boolean) => void
+  /** Has the workspaces that let a kind go ahead though the service asks first ask too. */
+  onAskEverywhere: (kind: ActionKind) => void
+  /** Why the last change to what goes ahead did not happen. */
+  changeProblem?: string
 }
 
 const REACH_SHOWN = 5
@@ -60,13 +49,12 @@ const Section = ({ title, intro, children }: { title: string; intro?: ReactNode;
 
 /**
  * One connected account, on a page of its own: the service and which account it is, and whether it
- * is still signed in. Then what it may change without asking, in each of the user's workspaces that
- * holds a connection through it, a choice of "Ask first" or "Automatic" for each kind of change
- * (`ChangeRulesGroup`); what it can reach, the first few of a long list until asked for all, to
+ * is still signed in. Then every kind of change the service can make, each "Ask first" or
+ * "Automatic" in every workspace the user owns, or always asking (`ChangeDefaultsList`); what it can reach, the first few of a long list until asked for all, to
  * which more can be added, as connecting does; and last, disconnecting it, asked first.
  */
 export const ConnectionAccountView = (props: ConnectionAccountViewProps) => {
-  const { service, account, expired, resources, granted, onGrant, onReconnect, onDisconnect, rules, onChangeRule, ruleProblem } = props
+  const { service, account, expired, resources, granted, onGrant, onReconnect, onDisconnect, changes, onChange, onAskEverywhere, changeProblem } = props
   const grantable = resources.filter((resource) => resource.grantable).map(({ urlPattern }) => urlPattern)
   // Those switched on that were not granted.
   const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set())
@@ -124,44 +112,26 @@ export const ConnectionAccountView = (props: ConnectionAccountViewProps) => {
         {problem && <p role="alert" className="text-base/5 text-kumo-danger">{problem}</p>}
       </div>
 
-      <Section
-        title="When it changes something"
-        intro={(
-          <>
-            Reading never asks. Before a chat or gadget changes something through {service.name}, you’re asked
-            first, unless you make that kind of change automatic. It’s set for each workspace, for every chat
-            and gadget in it. Anything not listed always asks.
-          </>
-        )}
-      >
-        {rules.status === 'loading' && <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Looking through your workspaces…</p>}
-        {rules.status === 'ready' && rules.workspaces.length === 0 && rules.failed.length === 0 && (
-          <p className="rounded-3xl bg-kumo-tint px-5 py-4 text-base/6 text-kumo-subtle">
-            None of your workspaces changes anything through it yet. Once one does, choose here what goes ahead on its own.
+      {(changes === undefined || changes.length > 0) && (
+        <Section
+          title="When it changes something"
+          intro={(
+            <>
+              Reading never asks. Before a chat or gadget changes something through {service.name}, you’re asked
+              first, unless you make that kind of change automatic. What you choose here holds in every
+              workspace you own.
+            </>
+          )}
+        >
+          {changes === undefined
+            ? <p role="status" className="appears-late px-4 text-base text-kumo-subtle">Loading…</p>
+            : <ChangeDefaultsList groups={changes} logoUrl={service.logoUrl} onChange={onChange} onAskEverywhere={onAskEverywhere} />}
+          <p className="max-w-xl px-4 pt-1 text-sm/5 text-kumo-subtle">
+            Once a workspace has read something sensitive, every change in it asks first.
           </p>
-        )}
-        {rules.status === 'ready' && (
-          <div className="flex flex-col gap-2">
-            {rules.workspaces.map((workspace) => (
-              <ChangeRulesGroup
-                key={workspace.id}
-                workspace={workspace}
-                connections={workspace.connections}
-                restricted={workspace.restricted}
-                defaultOpen={rules.workspaces.length === 1}
-                onChange={(gatekeeperId, tag, automatic) => onChangeRule(workspace.id, gatekeeperId, tag, automatic)}
-              />
-            ))}
-          </div>
-        )}
-        {rules.status === 'ready' && rules.failed.length > 0 && (
-          <p className="flex items-start gap-2 px-4 text-sm/5 text-kumo-subtle">
-            <WarningCircleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-            Couldn’t look in {rules.failed.join(', ')}.
-          </p>
-        )}
-        {ruleProblem && <p role="alert" className="px-4 text-base/5 text-kumo-danger">{ruleProblem}</p>}
-      </Section>
+          {changeProblem && <p role="alert" className="px-4 text-base/5 text-kumo-danger">{changeProblem}</p>}
+        </Section>
+      )}
 
       {resources.length > 0 && (
         <Section title={grantable.length === 0 ? 'What it can do' : 'What it can reach'}>

@@ -88,7 +88,7 @@ const AppFrame = () => {
   const blueprintPage = useMatch({ from: '/_app/blueprints/$blueprintId', shouldThrow: false })
   const profilePage = useMatch({ from: '/_app/profile', shouldThrow: false })
   const workspacesPage = useMatch({ from: '/_app/workspaces', shouldThrow: false })
-  const connectionsPage = useMatch({ from: '/_app/connections', shouldThrow: false })
+  const connectionsPage = useMatch({ from: '/_app/gatekeepers', shouldThrow: false })
   const itemPage = appPage ?? libraryItemPage
   const pageItem = itemPage && parseItemPageId(itemPage.params.itemId)
 
@@ -267,7 +267,7 @@ const AppFrame = () => {
         current: connectionsPage !== undefined,
         onOpen: () => {
           leaveSidebar()
-          void navigate({ to: '/connections' })
+          void navigate({ to: '/gatekeepers' })
         },
       }}
       library={{

@@ -366,34 +366,47 @@ files), but the user then keeps code neither of them looked at. The question nam
 "ask the agent to combine them" is one message away. Worth revisiting once there is a way to start
 a turn with a drafted message.
 
-**Changes through a connection: ask first, unless the user said otherwise, in one place.** The
-kernel has three ways for an action to go ahead unasked: a rule per kind of change on a connection
-in a workspace (`setAutoApprovedActionKind`), a chat in Auto, and a gadget in Auto. Only the first
-is surfaced: "Always approve" on a request, and now each account's page (§14), where every rule can
-be seen and taken back. A chat's or a gadget's Auto is not offered: it is a second and third place
-to look when something went ahead unexpectedly, and a rule already covers "stop asking me about
-Doc edits". Every rule is still off while a workspace has read sensitive data, which the page says.
+**Changes through a connection: ask first, unless the user said otherwise, per service.** The
+kernel has four ways for an action to go ahead unasked: the owner's default for a kind of change on
+a service, across every workspace they own (new, `setDefaultAutoApprovedActionKind`); a rule per
+kind on one connection in one workspace (`setAutoApprovedActionKind`, "Always approve" on a
+request); a chat in Auto; and a gadget in Auto. The defaults are what the account's page (§14)
+sets. Workspace rules stay as exceptions, shown under the kind they apply to ("Automatic in Trip
+planner", with Ask there too). A chat's or a gadget's Auto is not offered: it is a third and
+fourth place to look when something went ahead unexpectedly. Every one of them is off while a
+workspace has read sensitive data, and the page says so.
 
-**Proposed next (kernel): a default per account.** "Automatic for Doc edits" is a choice about the
-user's Google account more than about one workspace. To make it one: record which account a
-connection came through (`GatekeeperCreationSpec.accountId`, as ambient connections already do),
-keep a per-account default set of kinds in the user's object, and seed a workspace's rules from it
-when the user connects that account there. The page's groups would then read "New workspaces: Ask
-first / Automatic" above the per-workspace overrides. Not built: it adds a mechanism beside the
-rules, and changes who a rule in a shared workspace belongs to, which wants a kernel reviewer's eye first.
+**How the defaults work (kernel).** A workspace does not record which of the user's accounts a
+connection came through, so a default is keyed by service (`vendorId:tag`), not account: two
+Google accounts share one. The user's object keeps them (`autoApproveDefaults`) and pushes them to
+every workspace it owns whenever they change; a workspace also reads them again as its owner opens
+it, which covers workspaces made afterwards and a push that did not arrive. The overseer applies
+them only to connections of that service, only to actions their gatekeeper marks
+`autoApprovable`, and only for the owner: in a workspace shared with them, the owner's defaults
+apply, not theirs. Setting one drains what is waiting. The page lists every kind the service can
+make, not only those a workspace has met: gatekeepers now declare them in
+`SupportedResource.actionKinds`, including the ones that always ask (Send email), which the page
+shows as "Always requires approval" so that nothing is left unsaid. Integration tests in
+`auto-approval-policy.test.ts`.
 
 ## 14. Each account gets a page
 
-The Connections page's manage dialog becomes a page per account (`/connections/$accountId`), the
-home for standing permissions. Top to bottom:
+The Connections page, now called Gatekeepers (`/gatekeepers`), opens a page per account
+(`/gatekeepers/$accountId`), the home for standing permissions. Top to bottom:
 
 - The service, which account, and whether it is signed in; Reconnect when it is not.
-- **When it changes something.** "Reading never asks." Then each of the user's own workspaces that
-  holds a connection to the service, closed to a line ("2 of 6 go ahead on their own"), open to a
-  row per kind of change with **Ask first | Automatic**. Kind labels from gatekeepers ("Slide text
-  edits, in any presentation this connection reaches") read as a title and how far it reaches.
+- **When it changes something.** "Reading never asks." Then every kind of change the service can
+  make, grouped by what it changes (Gmail, Google Doc, Spreadsheet), each **Ask first |
+  Automatic**, holding in every workspace the user owns, or "Always requires approval" for those
+  that can never go ahead alone. Kind labels from gatekeepers ("Slide text edits, in any
+  presentation this connection reaches") read as a title and how far it reaches. A workspace rule
+  that goes further than the default shows under its row, with Ask there too.
 - What it can reach, five until "Show all" (Google has thirteen), with more to grant.
 - Disconnect, asked first.
+
+An earlier version set rules per workspace, a group per workspace. It answered the wrong question
+("what may this account do in Trip planner?") and only listed kinds a workspace had already met,
+so a Google account showed Drive edits and nothing of Gmail.
 
 **Kernel.** One line of behaviour: `listPreApprovableActions` now covers every connection the
 workspace holds, not only those a gadget binds, since connections added to a chat (where Google

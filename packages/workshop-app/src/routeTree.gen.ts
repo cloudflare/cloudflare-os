@@ -12,7 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as GalleryRouteImport } from './routes/gallery'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
-import { Route as AppConnectionsRouteImport } from './routes/_app/connections'
+import { Route as AppGatekeepersRouteImport } from './routes/_app/gatekeepers'
 import { Route as AppProfileRouteImport } from './routes/_app/profile'
 import { Route as AppWorkspacesRouteImport } from './routes/_app/workspaces'
 import { Route as ConnectHandoffRouteImport } from './routes/connect.handoff'
@@ -20,7 +20,7 @@ import { Route as MockIndexRouteImport } from './routes/mock.index'
 import { Route as MockScenarioRouteImport } from './routes/mock.$scenario'
 import { Route as AppAppItemIdRouteImport } from './routes/_app/app.$itemId'
 import { Route as AppBlueprintsBlueprintIdRouteImport } from './routes/_app/blueprints.$blueprintId'
-import { Route as AppConnectionsAccountIdRouteImport } from './routes/_app/connections_.$accountId'
+import { Route as AppGatekeepersAccountIdRouteImport } from './routes/_app/gatekeepers_.$accountId'
 import { Route as AppLibraryIndexRouteImport } from './routes/_app/library.index'
 import { Route as AppLibraryItemIdRouteImport } from './routes/_app/library.$itemId'
 import { Route as AppSkillsSkillIdRouteImport } from './routes/_app/skills.$skillId'
@@ -45,9 +45,9 @@ const AppIndexRoute = AppIndexRouteImport.update({
   path: '/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppConnectionsRoute = AppConnectionsRouteImport.update({
-  id: '/connections',
-  path: '/connections',
+const AppGatekeepersRoute = AppGatekeepersRouteImport.update({
+  id: '/gatekeepers',
+  path: '/gatekeepers',
   getParentRoute: () => AppRoute,
 } as any)
 const AppProfileRoute = AppProfileRouteImport.update({
@@ -86,9 +86,9 @@ const AppBlueprintsBlueprintIdRoute =
     path: '/blueprints/$blueprintId',
     getParentRoute: () => AppRoute,
   } as any)
-const AppConnectionsAccountIdRoute = AppConnectionsAccountIdRouteImport.update({
-  id: '/connections_/$accountId',
-  path: '/connections/$accountId',
+const AppGatekeepersAccountIdRoute = AppGatekeepersAccountIdRouteImport.update({
+  id: '/gatekeepers_/$accountId',
+  path: '/gatekeepers/$accountId',
   getParentRoute: () => AppRoute,
 } as any)
 const AppLibraryIndexRoute = AppLibraryIndexRouteImport.update({
@@ -144,7 +144,7 @@ const AppWorkspaceWorkspaceIdChatChatIdSettingsRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/gallery': typeof GalleryRoute
-  '/connections': typeof AppConnectionsRoute
+  '/gatekeepers': typeof AppGatekeepersRoute
   '/profile': typeof AppProfileRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
@@ -152,7 +152,7 @@ export interface FileRoutesByFullPath {
   '/mock/': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
   '/blueprints/$blueprintId': typeof AppBlueprintsBlueprintIdRoute
-  '/connections/$accountId': typeof AppConnectionsAccountIdRoute
+  '/gatekeepers/$accountId': typeof AppGatekeepersAccountIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/workspaces/new': typeof AppWorkspacesNewRoute
@@ -165,7 +165,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/gallery': typeof GalleryRoute
-  '/connections': typeof AppConnectionsRoute
+  '/gatekeepers': typeof AppGatekeepersRoute
   '/profile': typeof AppProfileRoute
   '/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
@@ -174,7 +174,7 @@ export interface FileRoutesByTo {
   '/mock': typeof MockIndexRoute
   '/app/$itemId': typeof AppAppItemIdRoute
   '/blueprints/$blueprintId': typeof AppBlueprintsBlueprintIdRoute
-  '/connections/$accountId': typeof AppConnectionsAccountIdRoute
+  '/gatekeepers/$accountId': typeof AppGatekeepersAccountIdRoute
   '/library/$itemId': typeof AppLibraryItemIdRoute
   '/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/workspaces/new': typeof AppWorkspacesNewRoute
@@ -189,7 +189,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/gallery': typeof GalleryRoute
-  '/_app/connections': typeof AppConnectionsRoute
+  '/_app/gatekeepers': typeof AppGatekeepersRoute
   '/_app/profile': typeof AppProfileRoute
   '/_app/workspaces': typeof AppWorkspacesRoute
   '/connect/handoff': typeof ConnectHandoffRoute
@@ -198,7 +198,7 @@ export interface FileRoutesById {
   '/mock/': typeof MockIndexRoute
   '/_app/app/$itemId': typeof AppAppItemIdRoute
   '/_app/blueprints/$blueprintId': typeof AppBlueprintsBlueprintIdRoute
-  '/_app/connections_/$accountId': typeof AppConnectionsAccountIdRoute
+  '/_app/gatekeepers_/$accountId': typeof AppGatekeepersAccountIdRoute
   '/_app/library/$itemId': typeof AppLibraryItemIdRoute
   '/_app/skills/$skillId': typeof AppSkillsSkillIdRoute
   '/_app/workspaces_/new': typeof AppWorkspacesNewRoute
@@ -214,7 +214,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/gallery'
-    | '/connections'
+    | '/gatekeepers'
     | '/profile'
     | '/workspaces'
     | '/connect/handoff'
@@ -222,7 +222,7 @@ export interface FileRouteTypes {
     | '/mock/'
     | '/app/$itemId'
     | '/blueprints/$blueprintId'
-    | '/connections/$accountId'
+    | '/gatekeepers/$accountId'
     | '/library/$itemId'
     | '/skills/$skillId'
     | '/workspaces/new'
@@ -235,7 +235,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/gallery'
-    | '/connections'
+    | '/gatekeepers'
     | '/profile'
     | '/workspaces'
     | '/connect/handoff'
@@ -244,7 +244,7 @@ export interface FileRouteTypes {
     | '/mock'
     | '/app/$itemId'
     | '/blueprints/$blueprintId'
-    | '/connections/$accountId'
+    | '/gatekeepers/$accountId'
     | '/library/$itemId'
     | '/skills/$skillId'
     | '/workspaces/new'
@@ -258,7 +258,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/gallery'
-    | '/_app/connections'
+    | '/_app/gatekeepers'
     | '/_app/profile'
     | '/_app/workspaces'
     | '/connect/handoff'
@@ -267,7 +267,7 @@ export interface FileRouteTypes {
     | '/mock/'
     | '/_app/app/$itemId'
     | '/_app/blueprints/$blueprintId'
-    | '/_app/connections_/$accountId'
+    | '/_app/gatekeepers_/$accountId'
     | '/_app/library/$itemId'
     | '/_app/skills/$skillId'
     | '/_app/workspaces_/new'
@@ -310,11 +310,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/connections': {
-      id: '/_app/connections'
-      path: '/connections'
-      fullPath: '/connections'
-      preLoaderRoute: typeof AppConnectionsRouteImport
+    '/_app/gatekeepers': {
+      id: '/_app/gatekeepers'
+      path: '/gatekeepers'
+      fullPath: '/gatekeepers'
+      preLoaderRoute: typeof AppGatekeepersRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/profile': {
@@ -366,11 +366,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppBlueprintsBlueprintIdRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/connections_/$accountId': {
-      id: '/_app/connections_/$accountId'
-      path: '/connections/$accountId'
-      fullPath: '/connections/$accountId'
-      preLoaderRoute: typeof AppConnectionsAccountIdRouteImport
+    '/_app/gatekeepers_/$accountId': {
+      id: '/_app/gatekeepers_/$accountId'
+      path: '/gatekeepers/$accountId'
+      fullPath: '/gatekeepers/$accountId'
+      preLoaderRoute: typeof AppGatekeepersAccountIdRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/library/': {
@@ -440,13 +440,13 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppRouteChildren {
-  AppConnectionsRoute: typeof AppConnectionsRoute
+  AppGatekeepersRoute: typeof AppGatekeepersRoute
   AppProfileRoute: typeof AppProfileRoute
   AppWorkspacesRoute: typeof AppWorkspacesRoute
   AppIndexRoute: typeof AppIndexRoute
   AppAppItemIdRoute: typeof AppAppItemIdRoute
   AppBlueprintsBlueprintIdRoute: typeof AppBlueprintsBlueprintIdRoute
-  AppConnectionsAccountIdRoute: typeof AppConnectionsAccountIdRoute
+  AppGatekeepersAccountIdRoute: typeof AppGatekeepersAccountIdRoute
   AppLibraryItemIdRoute: typeof AppLibraryItemIdRoute
   AppSkillsSkillIdRoute: typeof AppSkillsSkillIdRoute
   AppWorkspacesNewRoute: typeof AppWorkspacesNewRoute
@@ -459,13 +459,13 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
-  AppConnectionsRoute: AppConnectionsRoute,
+  AppGatekeepersRoute: AppGatekeepersRoute,
   AppProfileRoute: AppProfileRoute,
   AppWorkspacesRoute: AppWorkspacesRoute,
   AppIndexRoute: AppIndexRoute,
   AppAppItemIdRoute: AppAppItemIdRoute,
   AppBlueprintsBlueprintIdRoute: AppBlueprintsBlueprintIdRoute,
-  AppConnectionsAccountIdRoute: AppConnectionsAccountIdRoute,
+  AppGatekeepersAccountIdRoute: AppGatekeepersAccountIdRoute,
   AppLibraryItemIdRoute: AppLibraryItemIdRoute,
   AppSkillsSkillIdRoute: AppSkillsSkillIdRoute,
   AppWorkspacesNewRoute: AppWorkspacesNewRoute,

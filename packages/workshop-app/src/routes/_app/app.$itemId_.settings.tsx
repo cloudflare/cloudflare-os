@@ -46,7 +46,7 @@ function GadgetSettings() {
       }}
       // Its workspace's library, which it was one of; in place, as the gadget is no longer there to go back to.
       onDeleted={() => navigate({ to: '/workspace/$workspaceId', params: { workspaceId }, search: { tab: 'library' }, replace: true })}
-      onOpenConnections={() => navigate({ to: '/connections' })}
+      onOpenConnections={() => navigate({ to: '/gatekeepers' })}
       link={new URL(router.buildLocation(gadget).href, window.location.origin).href}
       automationLink={automationLink}
       onOpenBlueprint={(blueprintId) => navigate({ to: '/blueprints/$blueprintId', params: { blueprintId } })}

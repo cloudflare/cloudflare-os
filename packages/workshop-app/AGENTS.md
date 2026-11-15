@@ -317,7 +317,7 @@ and one of the format icons, which the agent can also give it (createGadget's `f
 ## Search and the account
 
 Search (`SearchDialog`, from the sidebar or ⌘K/Ctrl+K anywhere, `routes/-AppSearch.tsx`) finds the
-app's pages (Connections among them) and every workspace from the list the sidebar already has, so
+app's pages (Gatekeepers among them) and every workspace from the list the sidebar already has, so
 opening it reads nothing. What fits is ranked by `blocks/searchMatches.ts`: a title that starts with
 what was typed, then a word in it that does, then anywhere; a single letter only at a word's start.
 The arrow keys move through it and Enter goes. The sidebar's avatar opens the account menu: its first
@@ -430,8 +430,8 @@ header has a clock while its cards show an automation, which opens the chat's ta
 ## Connections
 
 `connections/` holds the user's connected accounts (`ConnectedAccounts`, a plain class provided
-once by `_app`), the services they can connect (`useServices`) and the Connections page
-(`/connections`, from the sidebar's pill, which stacks the connected services' logos).
+once by `_app`), the services they can connect (`useServices`) and the Gatekeepers page
+(`/gatekeepers`, from the sidebar's pill, which stacks the connected services' logos).
 `connectionGroups` sorts services into Connected, Built in and Available; blocks get logos and
 accounts as props. A connection finishes in a popup that ends on the app's own `/connect/handoff`,
 which redeems the ticket with the nonce the opener left in the popup's sessionStorage. In dev, start
@@ -443,17 +443,20 @@ one of the user's accounts (`useApproveCreation`): with only one that can, there
 service puts new things (My Drive); otherwise, or when the agent suggested where, `ConnectResource`
 asks which account and where, in the service's creation form (`startCreationConfigurator`).
 
-An account opens its own page (`/connections/$accountId`, `ConnectionPane`, drawn by
+An account opens its own page (`/gatekeepers/$accountId`, `ConnectionPane`, drawn by
 `ConnectionAccountView`); a service not connected yet opens `ConnectionDialog` to connect it. The
-page leads with what the account may change without asking: each of the user's own workspaces
-holding a connection to its service, one `ChangeRulesGroup` each, with "Ask first" or "Automatic"
-(`Segmented`) per kind of change its gatekeeper can let through (`useChangeRules`, over
-`listPreApprovableActions` and the workspace's rules). Rules are the workspace's, keyed by
-connection, so they are found by service: a workspace does not record which of the user's accounts
-it connected through, and one shared with them may hold another person's, so it lists only theirs.
-A kind's label splits at ", in " into what it is and how far it reaches (`kindLabel`). Then what
-the account can reach, five until "Show all", with more to grant, and Disconnect, asked first.
-"Always approve" on a request says this is where to change it.
+page leads with what the service may change without asking: every kind of change its gatekeeper
+declares (`SupportedResource.actionKinds`), grouped by what it changes (`changeGroups`, a kind
+listed once, under the first), each "Ask first" or "Automatic" (`Segmented`), or "Always requires
+approval" where the gatekeeper never lets it through (`ChangeDefaultsList`). The choice is the
+user's default for the service in every workspace they own (`useChangeDefaults`, over
+`setDefaultAutoApprovedActionKind`): a workspace does not record which of the user's accounts it
+connected through, so it is by service, not account. A workspace rule ("Always approve" on a
+request, `setAutoApprovedActionKind`) that goes further shows under its kind, "Automatic in Trip
+planner", with the way to clear it (`useWorkspaceRules`, over each owned workspace's
+`listPreApprovableActions`). A kind's label splits at ", in " into what it is and how far it
+reaches (`kindLabel`). Then what the account can reach, five until "Show all", with more to grant,
+and Disconnect, asked first. "Always approve" on a request says this is where to change it.
 
 The user adds one themselves with `AddConnection`: `AddConnectionDialog` lists every connectable
 kind of resource of the services that are not built in, those with an account first, then

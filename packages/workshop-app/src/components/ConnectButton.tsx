@@ -46,7 +46,7 @@ export const ConnectButton = ({ logos = [], suggested = [], current, onConnect }
   const shown = all.slice(0, SHOWN)
   const more = inviting ? 0 : logos.length - shown.length
   const label = !inviting
-    ? `Connections: ${logos.map(({ name }) => name).join(', ')}`
+    ? `Gatekeepers: ${logos.map(({ name }) => name).join(', ')}`
     : shown.length ? `Connect ${AND.format([...shown.map(({ name }) => name), 'more'])}` : 'Connect an app'
 
   return (

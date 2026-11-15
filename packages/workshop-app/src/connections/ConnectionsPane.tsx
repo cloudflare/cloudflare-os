@@ -48,7 +48,7 @@ export const ConnectionsPane = ({ onOpenAccount }: ConnectionsPaneProps) => {
   const [target, setTarget] = useState<Target>()
   // Why the last thing asked of a row did not happen.
   const [problem, setProblem] = useState<string>()
-  useDocumentTitle('Connections')
+  useDocumentTitle('Gatekeepers')
 
   const all = accounts.status === 'ready' ? accounts.accounts : []
   const groups = groupConnections(all, services.status === 'ready' ? services.vendors : [], services.status === 'ready' ? services.addable : [])
@@ -123,7 +123,7 @@ export const ConnectionsPane = ({ onOpenAccount }: ConnectionsPaneProps) => {
         <HeaderBubble>
           <h1 className="flex h-9 items-center gap-2 rounded-full bg-kumo-base pr-4 pl-3 text-base font-medium text-kumo-default ring-1 ring-kumo-line [&>svg]:size-[1.125em]">
             <PlugsConnectedIcon aria-hidden="true" />
-            Connections
+            Gatekeepers
           </h1>
         </HeaderBubble>
       )}
