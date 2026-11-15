@@ -3868,7 +3868,8 @@ export interface Overseer extends RpcTarget {
   listAutoApprovedActionKinds(): Promise<Array<{ gatekeeperId: WorkpieceId; actionKind: ActionKind }>>;
 
   /**
-   * List the auto-approvable action kinds offered by gatekeepers bound in this workspace. Each
+   * List the auto-approvable action kinds offered by the workspace's connections: those its
+   * gadgets bind, and every connection to a service it holds, such as one added to a chat. Each
    * entry identifies its connection and reports whether a matching auto-approval rule is enabled.
    */
   listPreApprovableActions(): Promise<PreApprovableAction[]>;

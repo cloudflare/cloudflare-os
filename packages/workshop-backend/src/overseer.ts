@@ -13598,13 +13598,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async listPreApprovableActions(): Promise<PreApprovableAction[]> {
-    // Surface actions from every gatekeeper bound by some gadget (the connections the UI shows).
+    // Surface actions from every gatekeeper bound by some gadget, and from every connection to a
+    // service the workspace holds, as a chat's are, which no gadget binds: a rule covers an
+    // action on any of them, however it is reached.
     let boundIds = new Set<WorkpieceId>();
     for (let gadget of this.impl.storage.gadgets.list()) {
       if (gadget.type !== "gadget") continue;  // worktrees have no binding edges
       for (let edge of Object.values(gadget.bindings)) {
         boundIds.add(edge.target);
       }
+    }
+    for (let record of this.impl.storage.gatekeepers.list()) {
+      let type = record.creationSpec?.type;
+      if (type === "gatekeeper" || type === "ambient") boundIds.add(record.id);
     }
 
     // TODO: a single gatekeeper failing (e.g. a rejected RPC) currently fails the whole catalog,
@@ -13623,7 +13629,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         // second step after the record is first persisted (see addGatekeeper). It can be absent if
         // that describe() failed, or for records predating the field, so fall back to a placeholder.
         resourceTitle: gk.resourceTitle || "(title unavailable)",
-        vendorId: gk.creationSpec?.type === "gatekeeper" ? gk.creationSpec.vendorId : undefined,
+        vendorId: gk.creationSpec?.type === "gatekeeper" || gk.creationSpec?.type === "ambient"
+            ? gk.creationSpec.vendorId : undefined,
         actionKind,
         alreadyEnabled:
             this.impl.storage.autoApproveTags.get(`${gk.id}:${actionKind.tag}`) !== undefined,

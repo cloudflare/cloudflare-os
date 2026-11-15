@@ -96,6 +96,11 @@ async function listWrites(ws: Workspace): Promise<Array<ActionLogEntry & { type:
       .toSorted((a, b) => a.id - b.id);
 }
 
+// The catalog's entries for the workspace's own test connection, apart from its built-in one.
+async function catalogOf(ws: Workspace) {
+  return (await ws.overseer.listPreApprovableActions()).filter(a => a.gatekeeperId === ws.gatekeeperId);
+}
+
 // The drain runs via ctx.waitUntil after submit, so "did not auto-approve" needs a settle window.
 // One further RPC round trip plus a beat is far beyond the drain's synchronous storage work.
 async function settle(ws: Workspace): Promise<void> {
@@ -104,6 +109,20 @@ async function settle(ws: Workspace): Promise<void> {
 }
 
 describe("auto-approval policy", () => {
+  it.concurrent("lists the kinds a connection no gadget binds can make on its own, as a chat's",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "unbound");
+      await expect(catalogOf(ws)).resolves.toEqual([
+        expect.objectContaining({ actionKind: SET_VALUE, alreadyEnabled: false, vendorId: TEST_VENDOR_ID }),
+      ]);
+      await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
+      await expect(catalogOf(ws)).resolves.toEqual([
+        expect.objectContaining({ actionKind: SET_VALUE, alreadyEnabled: true }),
+      ]);
+    });
+  });
+
   it.concurrent("auto-approves a rule-enabled, author-approvable action", async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "auto-happy");
@@ -124,10 +143,6 @@ describe("auto-approval policy", () => {
       async () => {
     await withSession(async publicApi => {
       const ws = await newWorkspace(publicApi, "pre-latch");
-      // The catalog lists only connections some gadget binds (pure storage writes; no gadget code
-      // runs), so bind this one to make its rule visible below. Unshared, so no restart.
-      using gadget = await ws.overseer.createGadget("Test Gadget", undefined, "TEST_GADGET");
-      await gadget.bind("TEST_THING", ws.gatekeeperId);
       await ws.overseer.setAutoApprovedActionKind(ws.gatekeeperId, SET_VALUE);
       await ws.session.readValue(true);
 
@@ -140,10 +155,8 @@ describe("auto-approval policy", () => {
 
       // The catalog still names each existing rule's connection so it stays identifiable and
       // revocable in the UI.
-      await expect(ws.overseer.listPreApprovableActions()).resolves.toEqual([
-        expect.objectContaining({
-          gatekeeperId: ws.gatekeeperId, actionKind: SET_VALUE, alreadyEnabled: true,
-        }),
+      await expect(catalogOf(ws)).resolves.toEqual([
+        expect.objectContaining({ actionKind: SET_VALUE, alreadyEnabled: true }),
       ]);
 
       // Manual approval still works: the human is the intended path.
