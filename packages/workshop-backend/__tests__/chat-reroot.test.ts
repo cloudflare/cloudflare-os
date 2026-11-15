@@ -519,6 +519,18 @@ describe("what the agent is told of a revert", () => {
   }));
 });
 
+describe("what the agent is told of a denial", () => {
+  it("names the action the user denied", () => withImpl(async impl => {
+    impl.storage.chatMeta.put(
+        { id: CHAT, title: "Chat", started: new Date(0), lastActive: new Date(0) });
+    putMessage(impl, { type: "actionDenied", actionId: 3, title: "Send the email" });
+    expect(await observations(impl)).toEqual([
+      `The user denied a pending change in this conversation, "Send the email". It will not ` +
+          `be applied, and reads no longer reflect it.`,
+    ]);
+  }));
+});
+
 // What the agent is shown of the user's changes at the start of its next turn: the results of
 // the observeUserChanges calls that replay inserts, in order.
 async function observations(impl: any): Promise<string[]> {

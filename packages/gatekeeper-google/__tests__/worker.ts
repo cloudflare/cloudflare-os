@@ -1,7 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ActionField, ActionKind, ApprovalQueue, Gatekeeper, GitCache, HookController,
-  HookDescription, ObservationDescription, ResourceDescription,
+  ActionDescription, ActionField, ActionKind, ApprovalQueue, BranchView, Gatekeeper, GitCache,
+  HookController, HookDescription, ObservationDescription, ResourceDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import { TestGitCache } from "./test-git-cache";
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
@@ -261,6 +261,14 @@ class TestApprovalQueue extends RpcTarget implements ApprovalQueue {
 
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
+  }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
   }
 }
 

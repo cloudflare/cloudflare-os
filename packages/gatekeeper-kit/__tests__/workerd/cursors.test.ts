@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
+  BranchView,
   GatekeeperUserVerifier,
   GitCache,
   ObservationAuthorizer,
@@ -54,6 +55,14 @@ class TestAuthorizer extends RpcTarget implements ObservationAuthorizer {
 
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
+  }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
   }
 }
 

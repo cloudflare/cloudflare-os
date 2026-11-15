@@ -55,9 +55,12 @@ describe("OverseerDurableObject.startHook", () => {
     // The returned callback is a per-firing wrapper over the stored persistent stub (see
     // makeHookFiringCallback), never the stored stub itself -- so identity doesn't hold; what
     // matters is that calls forward while the hook lives.
-    let { callback } = await overseer.startHook(1);
+    let { callback, approvalQueue, branch } = await overseer.startHook(1);
     await expect((callback as any).deliver("evt")).resolves.toBe("delivered:evt");
     expect(deliver).toHaveBeenCalledWith("evt");
+    // A firing is on no chat's branch: its actions are staged.
+    expect(branch).toEqual({ branch: null });
+    await expect(approvalQueue.getBranch()).resolves.toEqual({ branch: null });
   });
 
   it("allows delivery for a function-valued callback invoked directly", async () => {

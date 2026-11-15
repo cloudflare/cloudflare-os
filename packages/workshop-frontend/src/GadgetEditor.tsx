@@ -3,6 +3,7 @@ import { useParams, useNavigate, useSearch, Link } from '@tanstack/react-router'
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import {
   ShareNetwork,
+  HandPalm,
   Pencil,
   Check,
   X,
@@ -42,6 +43,7 @@ import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
+import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
@@ -677,6 +679,8 @@ export default function GadgetEditor() {
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
+  // For the Activity page's review tab.
+  const [chatsWithChanges, setChatsWithChanges] = useState<readonly ChatWithChanges[]>([])
   // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
   // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
   const [liveRows, setLiveRows] = useState<ChatLiveChangeRows | undefined>(undefined)
@@ -952,7 +956,8 @@ export default function GadgetEditor() {
   // Show the selected chat's draft only when it proposes changes to the *selected* gadget: a
   // chat that touched some other gadget would otherwise run this one as a needlessly separate
   // chat-scoped instance with identical code (the backend applies the same per-gadget rule in
-  // getGadgetFacetFetcher).
+  // getGadgetFacetFetcher). The list is of the gadgets that run on the chat's branch
+  // (AiChatMetadata.branchGadgets), by the same rule as the backend's.
   const previewChatId =
     effectiveSelectedChatId !== null && selectedGadgetId !== null &&
         selectedChatProposedWorkpieces.includes(selectedGadgetId)
@@ -1180,6 +1185,7 @@ export default function GadgetEditor() {
 
   useEffect(() => {
     setChatChanges(undefined)
+    setChatsWithChanges([])
     setLiveRows(undefined)
     setStreamingActiveFileState(null)
     setHasCode(null)
@@ -1256,6 +1262,20 @@ export default function GadgetEditor() {
     },
     [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode]
   )
+
+  // An agentless chat with holding on (see Overseer.setChatHolding()), with the gadget opened in
+  // it.
+  const holdChanges = async (gadget: { title: string }) => {
+    if (!overseerStub) return
+    try {
+      const chatId = await overseerStub.newChat(
+        `Holding the changes made in ${gadget.title} for review.`, null)
+      await overseerStub.setChatHolding(chatId, true)
+      navigateToChat(chatId)
+    } catch {
+      toasts.add({ title: 'Failed to hold changes', variant: 'error' })
+    }
+  }
 
   // ── keep single-chat routing aligned with the current mode ──────────────────
   // Keep the URL aligned with simple mode's implied chat-0 selection.
@@ -2064,6 +2084,7 @@ export default function GadgetEditor() {
                   autoApproval={autoApproval}
                   onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
+                  onChatsWithChangesChange={setChatsWithChanges}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
                   outputOfWorkpiece={outputOfWorkpiece}
@@ -2171,6 +2192,19 @@ export default function GadgetEditor() {
                 />
               )}
 
+              {/* Holding the gadget's changes runs it in a chat of its own with holding on, so its
+                  requests wait there for review. */}
+              {!paneShowsActivity && selectedGadgetSummary &&
+                previewChatId === undefined && (
+                <WorkshopIconButton
+                  aria-label="Hold changes"
+                  title="Hold changes: open the gadget in a new chat that keeps its requests until you accept them"
+                  onClick={() => { void holdChanges(selectedGadgetSummary) }}
+                >
+                  <HandPalm size={16} />
+                </WorkshopIconButton>
+              )}
+
               {/* A draft belongs to its chat until accepted, and only accepted gadgets can be shared. */}
               {!paneShowsActivity && selectedGadgetSummary && (
                 <WorkshopIconButton
@@ -2230,6 +2264,12 @@ export default function GadgetEditor() {
                   view={activityView}
                   onViewChange={setActivityView}
                   autoApproval={autoApproval}
+                  chats={chatsWithChanges}
+                  onOpenChat={chatId => {
+                    navigateToChat(chatId)
+                    // The chat is where its changes are accepted; on a phone the pane hides it.
+                    if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+                  }}
                 />
               </div>
             )}

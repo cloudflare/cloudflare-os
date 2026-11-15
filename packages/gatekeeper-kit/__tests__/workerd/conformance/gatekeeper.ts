@@ -10,6 +10,7 @@
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import type {
   ActionDescription,
+  BranchView,
   GitCache,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -123,6 +124,15 @@ export class FixtureQueue extends RpcTarget {
   /** No code execution opened this session. */
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
+  }
+
+  /** Every action is staged, as for a session outside any chat. */
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
   }
 }
 

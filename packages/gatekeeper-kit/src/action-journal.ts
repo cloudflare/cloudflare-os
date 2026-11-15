@@ -1,5 +1,6 @@
 /** Durable action lifecycle storage for approval, simulation, retry, and retention. */
 
+import type { BranchView } from "@gadgets/workshop-shared/gatekeeper";
 import type { KvScannable } from "./kv";
 import { reservedObserverOverlap } from "./observer-keys";
 import { requirePositiveInt } from "./positive-int";
@@ -54,14 +55,18 @@ export type ActionFence = { generation: string };
 /**
  * A stored action. Failed records always include a reason, and classify whether the provider
  * effect is known not to have landed or is simply unknown.
+ *
+ * `view` is the view the action was submitted under (see `BranchView`), stored by a session handle
+ * (`BoundActionSet.session()`). A record with none was submitted another way, or before views
+ * existed: every view sees it, ahead of everything that has one.
  */
 export type JournalRecord<A> =
   | {
-    state: Exclude<JournalState, "failed">; action: A; fence?: ActionFence; error?: never;
-    undispatched?: never; outcome?: never;
+    state: Exclude<JournalState, "failed">; action: A; fence?: ActionFence; view?: BranchView;
+    error?: never; undispatched?: never; outcome?: never;
   }
   | {
-    state: "failed"; action: A; fence?: ActionFence; error: string;
+    state: "failed"; action: A; fence?: ActionFence; view?: BranchView; error: string;
     /** The apply refused before the handler ran, so a rejection still owes its cleanup. */
     undispatched?: true;
     /**
@@ -75,6 +80,63 @@ export type JournalRecord<A> =
 
 /** An action ID and payload used by simulation. */
 export type JournalEntry<A> = { readonly id: number; readonly action: A };
+
+/** Where a pending action stands in a view's order: what it was submitted under, and its ID. */
+type Placed = { readonly id: number; readonly view?: BranchView };
+
+/**
+ * Whether an action is visible in `view`: one with no view, or staged, is visible in every view;
+ * one on a branch, in that branch's view and in the views of branches forked from it after it.
+ * @param view The view reading.
+ * @param action The action and the view it was submitted under.
+ * @returns Whether `view` sees the action.
+ */
+export function visibleIn(view: BranchView, action: Placed): boolean {
+  const branch = action.view?.branch;
+  if (branch === undefined || branch === null || branch === view.branch) return true;
+  return view.ancestors?.some(ancestor =>
+    ancestor.branch === branch && action.id <= ancestor.through) ?? false;
+}
+
+// A view's order (see `BranchView`): actions with no view, then staged ones, then the branch's and
+// its ancestors', each group by ID.
+const groupOf = (action: Placed): number =>
+  action.view === undefined ? 0 : action.view.branch === null ? 1 : 2;
+const inViewOrder = (a: Placed, b: Placed): number =>
+  groupOf(a) - groupOf(b) || a.id - b.id;
+
+/**
+ * Whether `later` could have been built on `earlier`: `earlier` is visible in the view `later`
+ * was submitted under, and comes before it in that view's order. An action with no view was
+ * submitted when every session saw every pending action, in ID order.
+ */
+function builtOn(later: Placed, earlier: Placed): boolean {
+  if (later.view === undefined) return earlier.id < later.id;
+  return visibleIn(later.view, earlier) && inViewOrder(earlier, later) < 0;
+}
+
+/**
+ * Whether the action that submitted under `dependent.view` could see `provider`, and so may name
+ * a reference it provides. One with no view could see everything.
+ */
+export function couldSee(dependent: Placed, provider: Placed): boolean {
+  return dependent.view === undefined || visibleIn(dependent.view, provider);
+}
+
+/**
+ * Copies a view down to the fields it declares, so what a record stores is a view and nothing
+ * the caller happened to attach to it.
+ * @param view The view to copy.
+ * @returns The copy, with no `ancestors` key when there are none.
+ */
+export function copyView(view: BranchView): BranchView {
+  return {
+    branch: view.branch,
+    ...(view.ancestors?.length
+      ? { ancestors: view.ancestors.map(({ branch, through }) => ({ branch, through })) }
+      : {}),
+  };
+}
 
 /** One storage-bounded page of retained actions. */
 export type RetainedActionPage<A> = {
@@ -130,9 +192,11 @@ export type ActionJournalOptions<A> = JournalKeys & {
  * @example
  * ```ts
  * const journal = new ActionJournal<PendingAction>(ctx.storage.kv, { namespace: "calendar" });
+ * // A session reads through its handle (`BoundActionSet.session()`), which shows it its own view.
  * const pending = createSimulationView(
- *   journal.listPending(),
+ *   session.pending(),
  *   action => action.projectIds,
+ *   { keepOrder: true },
  * );
  * return pending.forTarget(projectId);
  * ```
@@ -195,10 +259,12 @@ export class ActionJournal<A> {
    * Reserves and stages the next action.
    * @param action Payload to store.
    * @param fence Connection generation the staging operation ran under.
+   * @param view The view the action is submitted under, when a session handle submits it. The cap
+   * then counts only the unresolved actions of its branch (or of staging).
    * @returns Allocated action ID.
    */
-  allocate(action: A, fence?: ActionFence): number {
-    this.#requireCapacity();
+  allocate(action: A, fence?: ActionFence, view?: BranchView): number {
+    this.#requireCapacity(view);
     const id = this.#kv.get<number>(this.#nextIdKey) ?? 1;
     // Occupancy or retired-id memory at this id means the counter is behind -- a port pointed
     // `nextIdKey` at a last-issued counter. Raw reads, not `get`: a legacy row `upgradeRecord`
@@ -209,8 +275,12 @@ export class ActionJournal<A> {
         + `"${this.#nextIdKey}" must hold the next unused id, not the last issued one.`);
     }
     this.#kv.put(this.#nextIdKey, id + 1);
-    this.#write(this.#pendingKey(id),
-      { state: "staged", action, ...(fence ? { fence: { generation: fence.generation } } : {}) });
+    this.#write(this.#pendingKey(id), {
+      state: "staged",
+      action,
+      ...(fence ? { fence: { generation: fence.generation } } : {}),
+      ...(view ? { view: copyView(view) } : {}),
+    });
     return id;
   }
 
@@ -262,7 +332,7 @@ export class ActionJournal<A> {
         ...(options.undispatched ? { undispatched: true } as const : {}),
         // Only the non-default is stored, so a record carries no key for the ordinary case.
         ...(options.outcome === "unknown" ? { outcome: "unknown" } as const : {}),
-        ...(record.fence ? { fence: record.fence } : {}),
+        ...carried(record),
       });
     }
   }
@@ -297,7 +367,7 @@ export class ActionJournal<A> {
     this.#write(this.#retainedKey(id), {
       state: "applied",
       action: action ?? record.action,
-      ...(record.fence ? { fence: record.fence } : {}),
+      ...carried(record),
     });
     this.#kv.delete(this.#pendingKey(id));
   }
@@ -402,23 +472,145 @@ export class ActionJournal<A> {
     };
   }
 
-  /** @returns Actions visible to simulation, ordered by ID. */
+  /**
+   * @deprecated Reads across every branch, which a session must not. Session code reads through
+   * its handle's `pending()`; housekeeping calls `listPendingAcrossBranches()`.
+   * @returns Actions visible to simulation in any view, ordered by ID.
+   */
   listPending(): JournalEntry<A>[] {
-    return this.#scan(PROJECTED);
+    return this.listPendingAcrossBranches();
   }
 
-  /** @returns Actions still eligible for a decision, ordered by ID. */
+  /**
+   * @deprecated Reads across every branch, which a session must not. Session code reads through
+   * its handle's `undecided()`; housekeeping calls `listUndecidedAcrossBranches()`.
+   * @returns Actions still eligible for a decision in any view, ordered by ID.
+   */
   listUndecided(): JournalEntry<A>[] {
-    return this.#scan(UNDECIDED);
+    return this.listUndecidedAcrossBranches();
+  }
+
+  /**
+   * Every branch's projected actions, for housekeeping that is about storage rather than what a
+   * session sees, such as pruning stored files. Not for a session's reads: see `listPendingIn()`.
+   * @returns Actions visible to simulation in any view, ordered by ID.
+   */
+  listPendingAcrossBranches(): JournalEntry<A>[] {
+    return this.#scan(PROJECTED).map(entryOf);
+  }
+
+  /**
+   * Every branch's actions still eligible for a decision. Not for a session's reads: see
+   * `listUndecidedIn()`.
+   * @returns Matching actions ordered by ID.
+   */
+  listUndecidedAcrossBranches(): JournalEntry<A>[] {
+    return this.#scan(UNDECIDED).map(entryOf);
+  }
+
+  /**
+   * The actions a session reading through `view` simulates, in the order it replays them: those
+   * with no view, then staged ones, then its branch's and its ancestors', each group by ID.
+   * @param view The session's view.
+   * @returns Projected actions visible in `view`.
+   */
+  listPendingIn(view: BranchView): JournalEntry<A>[] {
+    return this.#scanIn(view, PROJECTED);
+  }
+
+  /**
+   * As `listPendingIn()`, for the actions still eligible for a decision.
+   * @param view The session's view.
+   * @returns Undecided actions visible in `view`, in its order.
+   */
+  listUndecidedIn(view: BranchView): JournalEntry<A>[] {
+    return this.#scanIn(view, UNDECIDED);
+  }
+
+  /**
+   * The projected actions action `id` was built on, in the order its view replays them: those
+   * visible in the view it was submitted under that come before it there. For an apply-time guard
+   * that needs "the changes queued before it", which runs outside any session.
+   * @param id A pending action.
+   * @returns The actions before it, or `[]` when it is not in the pending tier.
+   */
+  pendingBefore(id: number): JournalEntry<A>[] {
+    const scanned = this.#scan(PROJECTED);
+    const self = this.#placed(id);
+    if (self === undefined) return [];
+    const before = scanned.filter(entry => entry.id !== id && builtOn(self, entry));
+    return (self.view === undefined ? before : before.toSorted(inViewOrder)).map(entryOf);
+  }
+
+  /**
+   * The projected actions built on action `id`: those whose view sees it and puts it before them.
+   * For a denial, which runs outside any session and must know whose simulation it changes.
+   * @param id A pending action.
+   * @returns The actions after it, ordered by ID, or `[]` when it is not in the pending tier.
+   */
+  pendingAfter(id: number): JournalEntry<A>[] {
+    const self = this.#placed(id);
+    if (self === undefined) return [];
+    return this.#scan(PROJECTED)
+      .filter(entry => entry.id !== id && builtOn(entry, self))
+      .map(entryOf);
+  }
+
+  /**
+   * Every record a decision is still owed for, with its state and the view it was submitted
+   * under: pending, claimed and failed records, across every branch. For a denial's cascade, which
+   * looks at failures as well as pending actions, and outside any session.
+   * @returns Their IDs and records, ordered by ID.
+   */
+  listOutstanding(): { id: number; record: JournalRecord<A> }[] {
+    const outstanding: { id: number; record: JournalRecord<A> }[] = [];
+    for (const { id } of this.#scan(["pending", "claimed", "failed"])) {
+      const record = this.#read(this.#pendingKey(id));
+      if (record !== undefined) outstanding.push({ id, record });
+    }
+    return outstanding;
+  }
+
+  /**
+   * Staged records that carry a view: submissions a session handle made whose `submitAction()`
+   * reply this journal never saw. Each waits, unread, until the Workshop says whether it holds it
+   * (see `ApprovalQueue.submitAction()`, rule 4). Records with no view are not listed: a later
+   * callback naming one confirms it, as before views existed.
+   * @returns Their IDs, in order.
+   */
+  listUnconfirmed(): number[] {
+    return this.#scan(["staged"]).filter(entry => entry.view !== undefined).map(({ id }) => id);
+  }
+
+  /**
+   * Where a pending-tier record stands in the views, for the order helpers.
+   * @param id Action ID.
+   * @returns Its ID and view, or `undefined` when absent or already applied.
+   */
+  #placed(id: number): Placed | undefined {
+    if (this.wasApplied(id) || this.isRetained(id)) return undefined;
+    const record = this.#read(this.#pendingKey(id));
+    return record && { id, ...(record.view ? { view: record.view } : {}) };
+  }
+
+  /**
+   * Scans the pending tier for selected states visible in a view.
+   * @param view The reading view.
+   * @param states States to include.
+   * @returns Matching actions in the view's order.
+   */
+  #scanIn(view: BranchView, states: readonly JournalState[]): JournalEntry<A>[] {
+    return this.#scan(states).filter(entry => visibleIn(view, entry)).toSorted(inViewOrder)
+      .map(entryOf);
   }
 
   /**
    * Scans the pending tier for selected states.
    * @param states States to include.
-   * @returns Matching actions ordered by ID.
+   * @returns Matching actions, with the view each was submitted under, ordered by ID.
    */
-  #scan(states: readonly JournalState[]): JournalEntry<A>[] {
-    const found: JournalEntry<A>[] = [];
+  #scan(states: readonly JournalState[]): ScannedEntry<A>[] {
+    const found: ScannedEntry<A>[] = [];
     const applied = this.#appliedSet();
     for (const [key, raw] of this.#kv.list<unknown>({ prefix: this.#prefix })) {
       const record = this.#coerce(raw);
@@ -427,13 +619,18 @@ export class ActionJournal<A> {
       // A record left behind by an interrupted `retain` or `retire` is applied, not pending:
       // projecting it would simulate an effect the provider has already made real.
       if (id === undefined || applied.has(id) || this.isRetained(id)) continue;
-      found.push({ id, action: record.action });
+      found.push({ id, action: record.action, ...(record.view ? { view: record.view } : {}) });
     }
     return found.toSorted((a, b) => a.id - b.id);
   }
 
-  /** Enforces capacity and prunes excess staged or failed records. */
-  #requireCapacity(): void {
+  /**
+   * Enforces capacity and prunes excess staged or failed records.
+   * @param view The view of the action about to be staged. With one, only unresolved actions on
+   * the same branch (or staged, for a staged action) count against the cap; without one, every
+   * unresolved action does, as before views existed.
+   */
+  #requireCapacity(view?: BranchView): void {
     let unresolved = 0;
     const staged: number[] = [];
     const failed: number[] = [];
@@ -447,15 +644,24 @@ export class ActionJournal<A> {
       // An interrupted `retain` or `retire` leaves a stale source record here, whatever its state;
       // the retained tier and the retired-id memory decide, as they do for `get` and `listPending`.
       if (record === undefined || applied.has(id) || this.isRetained(id)) continue;
-      if (record.state === "staged") staged.push(id);
+      if (record.state === "staged") {
+        // A staged record with a view is an unconfirmed submission, owed the Workshop's answer
+        // before it may go (see `listUnconfirmed`); it holds no slot meanwhile.
+        if (record.view === undefined) staged.push(id);
+        continue;
+      }
       // An undispatched failure holds a slot rather than joining the prunable set: only a
       // rejection can release what its staging set up, so discarding the record would strand
       // those artifacts for good. An unknown outcome holds one for the opposite reason -- it is
       // the only record saying the provider may already have changed, and pruning it would evict
       // that warning first. Blocking is recoverable -- the user rejects it.
-      else if (record.state !== "failed" || record.undispatched
-        || record.outcome === "unknown") unresolved += 1;
-      else failed.push(id);
+      if (record.state === "failed" && !record.undispatched && record.outcome !== "unknown") {
+        failed.push(id);
+      } else if (view === undefined || record.view?.branch === view.branch) {
+        // Per branch for a session's submission, so one chat's actions cannot fill another's
+        // allowance; leftovers with no view count against no branch.
+        unresolved += 1;
+      }
     }
     if (unresolved >= this.#maxPending) {
       throw new Error(
@@ -521,11 +727,7 @@ export class ActionJournal<A> {
   #transition(id: number, from: readonly JournalState[], next: Exclude<JournalState, "failed">) {
     const record = this.#transitionable(id, from);
     if (record) {
-      this.#write(this.#pendingKey(id), {
-        state: next,
-        action: record.action,
-        ...(record.fence ? { fence: record.fence } : {}),
-      });
+      this.#write(this.#pendingKey(id), { state: next, action: record.action, ...carried(record) });
     }
   }
 
@@ -566,17 +768,20 @@ export class ActionJournal<A> {
     if ("v" in raw && raw.v === JOURNAL_VERSION) {
       // The marker is storage detail; callers see the record only. One fallback here, not one per
       // reader, keeps the type's promise that a failed record explains itself.
-      const { state, action, error, fence, undispatched, outcome } =
+      const { state, action, error, fence, view, undispatched, outcome } =
         raw as StoredJournalRecord<A>;
-      const carried = fence ? { fence: { generation: fence.generation } } : {};
+      const kept = {
+        ...(fence ? { fence: { generation: fence.generation } } : {}),
+        ...(isView(view) ? { view: copyView(view) } : {}),
+      };
       return state === "failed"
         ? {
-          state, action, error: error ?? FAILURE_REASON_LOST, ...carried,
+          state, action, error: error ?? FAILURE_REASON_LOST, ...kept,
           ...(undispatched ? { undispatched: true } as const : {}),
           // A record written before this field existed reads as the default, `"not-applied"`.
           ...(outcome === "unknown" ? { outcome: "unknown" } as const : {}),
         }
-        : { state, action, ...carried };
+        : { state, action, ...kept };
     }
     // Anything else was written by whatever this gatekeeper stored before adopting the journal,
     // and since it only kept records awaiting approval, it was pending. An upgraded record carries
@@ -584,4 +789,30 @@ export class ActionJournal<A> {
     const upgraded = this.#upgradeRecord?.(raw);
     return upgraded === undefined ? undefined : { state: "pending", action: upgraded };
   }
+}
+
+type ScannedEntry<A> = JournalEntry<A> & { readonly view?: BranchView };
+
+/** Drops what a scan carries beyond an entry, which callers outside the journal never see. */
+const entryOf = <A>({ id, action }: ScannedEntry<A>): JournalEntry<A> => ({ id, action });
+
+/**
+ * What a transition carries over from the record it rewrites.
+ * @param record The record before the transition.
+ * @returns Its fence and view, each only when present.
+ */
+function carried<A>(record: JournalRecord<A>): { fence?: ActionFence; view?: BranchView } {
+  return {
+    ...(record.fence ? { fence: record.fence } : {}),
+    ...(record.view ? { view: record.view } : {}),
+  };
+}
+
+/** Whether a stored value is a view a session handle wrote, rather than damage or nothing. */
+function isView(value: unknown): value is BranchView {
+  if (typeof value !== "object" || value === null || !("branch" in value)) return false;
+  const { branch, ancestors } = value as { branch: unknown; ancestors?: unknown };
+  return (branch === null || typeof branch === "string")
+    && (ancestors === undefined || (Array.isArray(ancestors) && ancestors.every(ancestor =>
+      typeof ancestor?.branch === "string" && Number.isSafeInteger(ancestor?.through))));
 }

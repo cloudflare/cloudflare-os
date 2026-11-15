@@ -45,7 +45,8 @@ export function ReviewRequest({
   showResource?: boolean
   onToggle: () => void
   decide: {
-    onApprove: () => void
+    /** Absent where the request is not approved on its own, but with its chat's changes. */
+    onApprove?: () => void
     onReject: () => void
     onAlwaysApprove?: () => void
   }
@@ -114,7 +115,9 @@ export function ReviewRequest({
             <AlwaysApproveButton onClick={decide.onAlwaysApprove} disabled={processing} />
           )}
           <ResolveButton tone="deny" onClick={decide.onReject} disabled={processing} describedBy={describedBy} />
-          <ResolveButton tone="approve" onClick={decide.onApprove} disabled={processing} describedBy={describedBy} />
+          {decide.onApprove && (
+            <ResolveButton tone="approve" onClick={decide.onApprove} disabled={processing} describedBy={describedBy} />
+          )}
         </div>
       </div>
 

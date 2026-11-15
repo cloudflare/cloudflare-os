@@ -136,7 +136,8 @@ describe('in the Activity log', () => {
     const server = makeOverseer()
     const enableHook = vi.fn<(id: number) => Promise<void>>(async () => {})
     Object.assign(server.overseer as object, { enableHook, disableHook: async () => {} })
-    await render(<Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}} />)
+    await render(<Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}}
+      chats={[]} onOpenChat={() => {}} />)
     await server.resolveSubscription()
     await server.resolvePage({ entries: [bound(false)] })
 

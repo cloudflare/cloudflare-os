@@ -1,7 +1,6 @@
 import { ArrowSquareOut, CaretRight, Lightning } from '@phosphor-icons/react'
 import { GatekeeperIcon } from '../../components/GatekeeperIcon'
 import type { VendorBranding } from '../../useVendorBranding'
-import { BulkResolveButtons } from './BulkResolveButtons'
 import { ReviewRequest } from './ReviewRequest'
 import {
   blockedBy, canOfferAlwaysApprove, isAutoApproved, type AutoApprovalRules,
@@ -17,6 +16,12 @@ export interface PendingChangeActions {
   onAlwaysApprove: (entry: PendingChange) => void
   /** Opens the pane where a standing rule is turned off again. */
   onManageRules: () => void
+  /**
+   * Whether a request is approved on its own. Most apply when their chat's changes are accepted.
+   */
+  canApprove: (entry: PendingChange) => boolean
+  /** Tries again to apply a request that failed to. */
+  onRetry: (entry: PendingChange) => void
 }
 
 /**
@@ -37,7 +42,6 @@ export const PendingChangeGroupRow = ({
   open,
   onToggle,
   actions,
-  bulk,
 }: {
   group: PendingChangeGroup
   vendorId?: string
@@ -48,8 +52,6 @@ export const PendingChangeGroupRow = ({
   open: boolean
   onToggle: () => void
   actions: PendingChangeActions
-  /** Absent for a group nothing here can resolve in bulk, such as one holding a pending creation. */
-  bulk?: { onApplyAll: () => void, onDiscardAll: () => void, disabled: boolean }
 }) => {
   const autoApprovedCount = group.entries.filter(entry => isAutoApproved(entry, rules)).length
   // Nothing in this group is something the open chat asked for, so the row says so once rather
@@ -124,11 +126,16 @@ export const PendingChangeGroupRow = ({
             )}
             {group.entries.map(entry => {
               const blocker = blockedBy(entry, group.entries, rules)
-              // A rule covers this one, so the kernel will apply it unasked once the drain reaches
-              // it. The controls stay, though: a drain stops for good at an apply that fails, and
-              // a request nobody can decide here would be stranded with nothing saying why. One
-              // the drain is applying right now refuses a second decision, whoever sends it.
+              // A rule covers this one, so the kernel may apply it unasked, with the rest of its
+              // chat's (see Overseer.setAutoApprovedActionKind()). The controls stay, though: an
+              // automatic apply stops for good at one that fails, and a request nobody can decide
+              // here would be stranded with nothing saying why. One being applied right now
+              // refuses a second decision, whoever sends it.
               const ruled = isAutoApproved(entry, rules)
+              // An apply stops at the first request that fails, and what is queued behind it on
+              // the connection waits for it to be retried or denied.
+              const failedBefore =
+                group.entries.find(other => other.id < entry.id && other.applyError)
               return (
                 <div key={entry.id}>
                   {!allElsewhere && entry.origin === 'elsewhere' && (
@@ -154,6 +161,29 @@ export const PendingChangeGroupRow = ({
                       </button>
                     </p>
                   )}
+                  {entry.applyError && (
+                    <p
+                      role="alert"
+                      className="m-0 flex flex-wrap items-center gap-x-1.5 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger"
+                    >
+                      <span className="min-w-0">Could not apply: {entry.applyError.message}</span>
+                      {entry.applyError.retryable && (
+                        <button
+                          type="button"
+                          onClick={() => actions.onRetry(entry)}
+                          disabled={actions.processing.has(entry.id)}
+                          className="cursor-pointer text-kumo-default underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Retry
+                        </button>
+                      )}
+                    </p>
+                  )}
+                  {failedBefore && (
+                    <p className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-inactive">
+                      Waiting on "{failedBefore.description.title}" above it.
+                    </p>
+                  )}
                   <ReviewRequest
                     record={entry}
                     restricted={rules.restricted}
@@ -162,7 +192,7 @@ export const PendingChangeGroupRow = ({
                     processing={actions.processing.has(entry.id)}
                     onToggle={() => onToggleAction(entry.id)}
                     decide={{
-                      onApprove: () => actions.onApprove(entry),
+                      onApprove: actions.canApprove(entry) ? () => actions.onApprove(entry) : undefined,
                       onReject: () => actions.onReject(entry),
                       onAlwaysApprove: canOfferAlwaysApprove(entry, rules)
                         ? () => actions.onAlwaysApprove(entry)
@@ -173,18 +203,6 @@ export const PendingChangeGroupRow = ({
               )
             })}
           </div>
-          {/* Outside the scroller: resolving the group as a whole must not be something the user
-              has to scroll past every request to reach. */}
-          {bulk && group.entries.length > 1 && (
-            <div className="flex items-center gap-2 border-t border-kumo-line/70 px-5 py-2">
-              <BulkResolveButtons
-                count={group.entries.length}
-                disabled={bulk.disabled}
-                onDiscardAll={bulk.onDiscardAll}
-                onApplyAll={bulk.onApplyAll}
-              />
-            </div>
-          )}
         </div>
       )}
     </div>

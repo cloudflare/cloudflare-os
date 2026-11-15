@@ -1,5 +1,5 @@
 // What a deployment that never set WEBHOOK_ORIGIN gets from the real GitHub gatekeeper through the
-// real Workshop: connecting, reading and approved writes work as before, a gadget asking for a hook
+// real Workshop: connecting, reading and writes work as before, a gadget asking for a hook
 // is told why it can't have one, and nothing is ever asked of GitHub's webhooks.
 
 import type { RpcStub } from "capnweb";
@@ -64,18 +64,17 @@ it("connects, reads and writes, but refuses hooks and never touches webhooks", a
   const gadget = stack.use(await ws.createGadget("Triage", undefined, "TRIAGE"));
   await gadget.bind("GITHUB", await connection.getId());
 
-  // Reads, and a write that waits for approval, as without hooks.
+  // Reads, and a write, as without hooks: outside any chat, it applies at once.
   const binding = stack.use((await gadget.getBinding("GITHUB"))!);
   const session = stack.use(await binding.openSession() as unknown as RpcStub<GitHubRepo>);
   using issue = await session.getIssue("42");
   expect(await issue.getDetails()).toMatchObject({ id: "42", title: "Crash on start" });
   await issue.postComment("Looking into it.");
-  const [comment] = await waitFor("the comment to wait for approval", async () => {
-    const { entries } = await ws.listActions({ filter: "pending" });
-    return entries.length > 0 ? entries : null;
+  const [comment] = await waitFor("the comment to apply", async () => {
+    const { entries } = await ws.listActions({ filter: "action" });
+    return entries[0]?.state === "approved" ? entries : null;
   });
   expect(comment!.description.title).toBe("Comment on #42");
-  await ws.approveAction(comment!.id);
   expect(github.comments).toEqual([`${repo.name}#42: Looking into it.`]);
 
   // A hook, asked for as an agent would, is refused with the reason.

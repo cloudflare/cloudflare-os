@@ -1,6 +1,7 @@
 import { DurableObject, RpcStub, RpcTarget } from "cloudflare:workers";
 import type {
-  ActionDescription, ActionKind, ApprovalQueue, GitCache, HookController, HookDescription,
+  ActionDescription, ActionKind, ApprovalQueue, BranchView, GitCache, HookController,
+  HookDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type {
   CalendarEventDraft, CalendarEventPatch, CalendarSendUpdates, GoogleCalendarSession,
@@ -47,6 +48,14 @@ class RecordingApprovalQueue extends RpcTarget implements ApprovalQueue {
 
   async getExecutionId(): Promise<string | undefined> {
     return undefined;
+  }
+
+  async getBranch(): Promise<BranchView> {
+    return { branch: null };
+  }
+
+  async holdsAction(): Promise<boolean> {
+    return false;
   }
 }
 

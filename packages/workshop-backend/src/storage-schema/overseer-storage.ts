@@ -30,7 +30,7 @@ import {
 import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatGatewayRpcTarget } from "@gadgets/workshop-shared/external-message-gateway";
 import type {
-  ActionDescription, ActionKind, Gatekeeper, GitObjectType, GitOid, HookController,
+  ActionDescription, ActionKind, BranchId, Gatekeeper, GitObjectType, GitOid, HookController,
   HookDescription, ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import type { SpawnCallableOptions } from "../agent-spawner-binding";
@@ -54,6 +54,16 @@ export type GatekeeperRecord = {
 
   /** Records how this gatekeeper was originally created, enabling blueprint metadata derivation. */
   creationSpec?: GatekeeperCreationSpec;
+
+  /**
+   * Set the first time the gatekeeper is found to implement Gatekeeper.applyActions(): the
+   * highest action ID recorded by then. The connection's pending actions up to it are its
+   * leftovers, recorded on no branch of the gatekeeper's: each is visible in every view and
+   * applied ahead of the rest, by name (see OverseerImpl.adoptsBranches). Absent while the
+   * gatekeeper applies one action at a time, so that every pending action is visible in every
+   * view. TODO: Remove once no leftover is pending.
+   */
+  leftoversThrough?: number;
 
   /**
    * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
@@ -496,9 +506,9 @@ export type ActionRecord = {
   createdAt: Date;
 
   /**
-   * When the record last changed state: an action's approval/rejection, a hook's enable/disable
-   * toggle or deletion. Absent while nothing has happened since creation (and on legacy records
-   * from before it was tracked).
+   * When the record last changed state: an action's approval/rejection or a failure to apply it,
+   * a hook's enable/disable toggle or deletion. Absent while nothing has happened since creation
+   * (and on legacy records from before it was tracked).
    */
   appliedAt?: Date;
 
@@ -519,6 +529,23 @@ export type ActionRecord = {
   description: StoredActionDescription;
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
+  applyError?: {message: string, retryable: boolean};  // see ActionLogEntry.applyError
+
+  /**
+   * The reconciliation mark: set on each action a Gatekeeper.applyActions() call names, before
+   * the call, and cleared once the call's result is recorded for it. Found already set when a
+   * call begins, it means an earlier call that named the action lost its result, so the action
+   * may have been applied then (see OverseerImpl.applyActionList).
+   */
+  applying?: true;
+
+  /**
+   * Set by the version 10 migration on each staged action then pending: one that, before staging
+   * applied actions at once, was waiting for a user's review. Staging holds it, and what follows
+   * it on its connection, until a user decides it (see OverseerImpl.#stagedRun). Meaningless once
+   * it is decided.
+   */
+  heldForReview?: true;
 } | {
   type: "observation";
 
@@ -1251,6 +1278,21 @@ export function observerContextOf(caller: GatekeeperCaller): ObserverContext | u
   }
 }
 
+/**
+ * The branch `caller`'s actions join (see BranchView): its chat's, or null for a caller outside
+ * any chat, whose actions are staged. Chat IDs are never reused, so a branch ID names one chat's
+ * branch for good.
+ *
+ * The actions `pendingByBranch` index stores this mapping's result when each record is written,
+ * so changing it requires reindexing the pending records.
+ */
+export function branchOf(caller: GatekeeperCaller): BranchId | null {
+  return caller.from !== "hook" && caller.chatId !== undefined ? `chat:${caller.chatId}` : null;
+}
+
+/** The `pendingByBranch` key of the pending records on no branch: staging. */
+export const STAGING_KEY = "staging";
+
 // Leads the part of an observer requirement key naming its context's type.
 const OBSERVER_CONTEXT_TAGS = {workspace: "w", chat: "c", gadget: "g"} as const;
 
@@ -1391,6 +1433,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //   7 = no grant is of every gadget: each "use" edge names one gadget, and each "use" link
       //       names one (`gadgetId`) or several (`gadgetIds`), frozen to the gadgets the workspace
       //       held when it was migrated (see migrateToFrozenGadgetGrants() in overseer-migrations.ts).
+      //   8 = the actions collection's pendingByBranch index exists and is backfilled.
+      //   9 = no pending action is on a connection the workspace no longer has.
+      //  10 = staged actions pending from before staging applied at once are marked
+      //       ActionRecord.heldForReview.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1588,9 +1634,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // The first three indexes are backfilled by the version-3 migration;
-        // byObserverRequirement needs none: no gatekeeper reported subresources before the
-        // Workshop enforced them, so no earlier observation is a requirement.
+        // The first three indexes are backfilled by the version-3 migration and pendingByBranch
+        // by the version-8 one; byObserverRequirement needs none: no gatekeeper reported
+        // subresources before the Workshop enforced them, so no earlier observation is a
+        // requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
@@ -1626,6 +1673,13 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
               keys.add(observerRequirementKey(record.gatekeeperId, context, id));
             }
             return [...keys];
+          },
+
+          // Sparse index over just the pending records, keyed by the branch they are on (see
+          // branchOf), or STAGING_KEY for those on none, so that one chat's pending actions, or
+          // staging's, are one read in ID order.
+          pendingByBranch(record: ActionRecord) {
+            return record.state === "pending" ? branchOf(record.caller) ?? STAGING_KEY : null;
           },
         }
       }),

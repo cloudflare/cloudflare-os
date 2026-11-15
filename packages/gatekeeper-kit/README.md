@@ -88,7 +88,7 @@ import {
 | `./single-flight` | Keyed coalescing of concurrent work, without caching results. | Concurrent callers must share one in-flight request or write, such as two approvals that would each create the same resource. |
 | `./serial-queue` | FIFO serialization of async operations; a failed one never blocks the next. | Operations on shared state must not interleave, such as preparing changes that each check those queued before them. |
 | `./cursors` | Array, page-number, offset, and continuation-token cursors, with injected simulated rows (`CursorInjection`); `PageHookCursor`, which runs a hook on each page of a cursor the gatekeeper already built; and `SessionGitCache`, a git session's `GitCache` stub holder that advertises returned commit ids. | A session returns more rows than one RPC reply should carry. |
-| `./actions` | Action declaration, approval, application, retention, and journaling. | An operation has an externally visible side effect. |
+| `./actions` | Action declaration, approval, application, retention, and journaling; per-session handles scoped to a branch's view (`session()`), applying the Workshop's lists (`applyList()`), and denials that report what they rejected (`rejectAction()`). | An operation has an externally visible side effect. |
 | `./action-files` | Bounded, integrity-checked action-file storage. | A queued action carries file bytes. Store only its `ActionFileReference` in the action. |
 | `./action-description` | Approval-text builder: prose plus exact typed fields under one byte budget, and the `descriptionIsComplete` claim. | An action's `describe` renders what it will write or send. |
 | `./simulation` | Pending-action replay and provisional-ID mapping. | An action continues with simulation and later reads must include its projected effect. |
@@ -107,6 +107,7 @@ import {
 | `./git-upload-pack` | `serveGitUploadPack`: native Git's read-only smart-HTTP fetch (protocol v2), answered from a `WorktreeReplicator`'s `gitHead()` and `gitPull()`. | A container gatekeeper keeps a replica of a mounted worktree and lets Git in the container fetch it. |
 | `./git-objects` | Commit-id validation, raw commit-object parsing, and commit advertising (`advertiseCommits`, and `advertisePages` as a `PageHookCursor` hook). | A session returns commit ids (advertise them) or simulates reads of commits queued for push from their local bytes. |
 | `./git-diff` | Tree-to-tree diff over an injected `TreeDiffSource`, and `parseUnifiedPatch` for provider patches, both producing the unified-patch hunk shape agents see. | A pull/merge request's source branch has queued pushes and the provider cannot compute the diff yet, or a provider returns unified patches. |
+| `./testing` | `branchHarnessCases` and `runBranchHarness`: drive a gatekeeper that adopted branches through branch isolation, a refused submission, a paused one, and an apply that outruns the reply, with queues the harness plays the Workshop through. Workers only. | A gatekeeper implements `applyActions()`; its tests run the harness against its facet. |
 
 ## Internal modules
 

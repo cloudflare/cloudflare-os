@@ -8,6 +8,7 @@ import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './componen
 import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
+import { canApproveAlone } from './features/approvals/pendingChangeGroups'
 import {
   PENDING_CHECKING_COPY,
   PENDING_ERROR_COPY,
@@ -140,12 +141,16 @@ export default function ActivityNotifications({
                         onClick={() => void resolveAction(action, 'deny')}
                         describedBy={describedBy}
                       />
-                      <ResolveButton
-                        tone="approve"
-                        disabled={isProcessing}
-                        onClick={() => void resolveAction(action, 'approve')}
-                        describedBy={describedBy}
-                      />
+                      {/* A chat's requests apply only when its changes are accepted, so only
+                          some are offered for approval on their own. */}
+                      {canApproveAlone(action) && (
+                        <ResolveButton
+                          tone="approve"
+                          disabled={isProcessing}
+                          onClick={() => void resolveAction(action, 'approve')}
+                          describedBy={describedBy}
+                        />
+                      )}
                     </div>
                   </div>
                   {fields.length > 0 && restricted && (

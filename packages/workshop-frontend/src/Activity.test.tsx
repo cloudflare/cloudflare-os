@@ -3,8 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
-import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
+import type { ActionLogEntry, Overseer } from '@gadgets/workshop-shared/api'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
 
@@ -13,9 +12,6 @@ vi.mock('@cloudflare/kumo', async (importOriginal) => {
   const toasts = { add: addToast }
   return { ...actual, useKumoToastManager: () => toasts }
 })
-vi.mock('./useAlwaysApproveTag', () => ({
-  useAlwaysApproveTag: () => ({ alwaysApproveTag: vi.fn<() => Promise<void>>(), isTagAutoApproved: () => false }),
-}))
 const auth = vi.hoisted(() => ({ authenticatedApi: {} as Record<string, unknown> }))
 vi.mock('./AuthContext', () => ({ useAuthenticatedApi: () => auth }))
 
@@ -36,11 +32,12 @@ const fields = [
   { label: 'Body', kind: 'text', value: 'Full body text' },
 ]
 
-// Renders the review view with one complete pending request carrying `fields`.
+// Renders the review view with one complete pending request carrying `fields`, held by staging.
 async function renderReview(restricted: boolean) {
   const server = makeOverseer()
   await view.render(
-    <Activity overseer={server.overseer} restricted={restricted} view="review" onViewChange={() => {}} />,
+    <Activity overseer={server.overseer} restricted={restricted} view="review" onViewChange={() => {}}
+      chats={[]} onOpenChat={() => {}} />,
   )
   await server.resolveSubscription()
   await server.resolvePendingQuery({
@@ -58,11 +55,11 @@ async function renderReview(restricted: boolean) {
 const bodyBox = () =>
   [...document.querySelectorAll('pre')].find(pre => pre.textContent === 'Full body text')
 
-// The text a screen reader announces as the Approve button's description.
-function approveDescribedBy(): string | null {
-  const approve = [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')
-  if (!approve) throw new Error('No Approve button rendered')
-  const ids = approve.getAttribute('aria-describedby')
+// The text a screen reader announces as the Deny button's description.
+function denyDescribedBy(): string | null {
+  const deny = [...document.querySelectorAll('button')].find(b => b.textContent === 'Deny')
+  if (!deny) throw new Error('No Deny button rendered')
+  const ids = deny.getAttribute('aria-describedby')
   if (ids === null) return null
   return ids.split(' ').map(id => {
     const el = document.getElementById(id)
@@ -72,18 +69,19 @@ function approveDescribedBy(): string | null {
 }
 
 describe('Activity review request fields', () => {
-  it('shows the fields in full, named by the approve button, while restricted', async () => {
+  it('shows the fields in full, named by the deny button, while restricted', async () => {
     await renderReview(true)
     expect(document.body.textContent).toContain('Full body text')
     expect(document.body.textContent).not.toContain('2 fields')
-    const described = approveDescribedBy()
+    const described = denyDescribedBy()
     expect(described).toContain('a@example.com')
     expect(described).toContain('Full body text')
   })
 
   it('offers no disclosure while restricted, since everything it would reveal is shown', async () => {
     await renderReview(true)
-    expect(document.querySelector('[aria-expanded]')).toBeNull()
+    // (The held-changes bar's Discard opens a confirmation, which is no disclosure.)
+    expect(document.querySelector('[aria-expanded]:not([aria-haspopup])')).toBeNull()
     expect(bodyBox()?.className).not.toContain('max-h-56')
   })
 
@@ -92,73 +90,6 @@ describe('Activity review request fields', () => {
     expect(document.body.textContent).toContain('2 fields')
     expect(document.body.textContent).not.toContain('Full body text')
     expect(document.querySelector('[aria-expanded="false"]')).not.toBeNull()
-  })
-})
-
-describe('Activity creation approval', () => {
-  it('creates the resource in the account the approver chooses, among their accounts for its vendor',
-      async () => {
-    auth.authenticatedApi = {
-      listGatekeeperVendors: async () =>
-        [{ id: 'test', description: { displayName: 'Test' }, supportedResources: [] }],
-      subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
-        const accounts = [[1, 'test', 'work'], [2, 'test', 'home'], [3, 'other', 'elsewhere']] as const
-        for (const [id, vendorId, uniqueName] of accounts) {
-          subscriber.add(id, { uniqueName } as AccountDescription, {} as VendorDescription, [], true,
-              vendorId)
-        }
-        subscriber.ready()
-        return Object.assign(Promise.resolve({}), { [Symbol.dispose]: () => {} })
-      },
-    }
-    const server = makeOverseer()
-    const approveAction = vi.fn<Overseer['approveAction']>(async () => {})
-    Object.assign(server.overseer, {
-      approveAction,
-      getGatekeeperById: async () => ({
-        getCreationSpec: async () =>
-          ({ type: 'gatekeeper', vendorId: 'test', typeUrlPattern: 'https://test.example/*' }),
-        [Symbol.dispose]: () => {},
-      }),
-    })
-    await view.render(
-      <Activity overseer={server.overseer} view="review" onViewChange={() => {}} />,
-    )
-    await server.resolveSubscription()
-    await server.resolvePendingQuery({ entries: [entry(1, { gatekeeperId: 7, creation: true })] })
-    flushFrames()
-
-    await act(async () =>
-      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
-    const dialog = document.querySelector('[role="dialog"]')!
-    expect(dialog.textContent).toContain('work')
-    expect(dialog.textContent).not.toContain('elsewhere')
-    await act(async () =>
-      [...dialog.querySelectorAll('button')].find(b => b.textContent?.startsWith('home'))!.click())
-    await act(async () =>
-      [...dialog.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
-
-    expect(approveAction).toHaveBeenCalledWith(1, { accountId: 2 })
-  })
-
-  it("tells the approver why an approval failed, since the gatekeeper's message says what to do",
-      async () => {
-    const message = 'The previous Gmail send outcome is still unknown. Deny this request to clear it.'
-    const server = makeOverseer()
-    Object.assign(server.overseer, {
-      approveAction: vi.fn<Overseer['approveAction']>(async () => { throw new Error(message) }),
-    })
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    await view.render(<Activity overseer={server.overseer} view="review" onViewChange={() => {}} />)
-    await server.resolveSubscription()
-    await server.resolvePendingQuery({ entries: [entry(1)] })
-    flushFrames()
-
-    await act(async () =>
-      [...document.querySelectorAll('button')].find(b => b.textContent === 'Approve')!.click())
-
-    expect(addToast).toHaveBeenCalledWith(
-      { title: 'Failed to approve action', description: message, variant: 'error' })
   })
 })
 
@@ -183,7 +114,8 @@ describe('Activity hook toggles', () => {
     const disableHook = vi.fn<(id: number) => Promise<void>>(async () => {})
     Object.assign(server.overseer as object, { enableHook, disableHook })
     await view.render(
-      <Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}} />,
+      <Activity overseer={server.overseer} restricted={false} view="history" onViewChange={() => {}}
+        chats={[]} onOpenChat={() => {}} />,
     )
     await server.resolveSubscription()
     await server.resolvePage({ entries: [bound(enabled)] })
@@ -255,5 +187,80 @@ describe('Activity hook toggles', () => {
     expect(enableHook).toHaveBeenCalledTimes(2)
     await server.emit(bound(true))
     expect(isOn()).toBe(true)
+  })
+})
+
+describe('Activity review', () => {
+  const chats = [
+    { id: 4, title: 'Plan the trip', requests: 2, codeChanges: true, holding: true, awaitingDecision: false },
+  ]
+
+  async function renderBranchReview(entries: ActionLogEntry[], onOpenChat = vi.fn<(id: number) => void>()) {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        chats={chats} onOpenChat={onOpenChat} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries })
+    flushFrames()
+    return { server, onOpenChat }
+  }
+
+  const buttons = () => [...document.querySelectorAll('button')]
+  const labelled = (label: string) => buttons().filter(b => b.textContent?.trim() === label)
+
+  it("lists each chat with changes, which opens it, rather than the chat's requests", async () => {
+    const { onOpenChat } = await renderBranchReview([entry(1, { chatId: 4 })])
+    expect(document.body.textContent).toContain('1 with changes to review')
+    expect(document.body.textContent).toContain('2 requests to apply · code changes · holding')
+    // A chat's request is accepted with the chat, so it is neither listed nor decided here.
+    expect(document.body.textContent).not.toContain('Action 1')
+    expect(labelled('Approve')).toHaveLength(0)
+
+    await act(async () => buttons().find(b => b.textContent?.includes('Plan the trip'))!.click())
+    expect(onOpenChat).toHaveBeenCalledExactlyOnceWith(4)
+  })
+
+  it('shows what staging holds, with per-request Deny but no Approve, and its failure', async () => {
+    const { server } = await renderBranchReview([
+      entry(1, { applyError: { message: 'Quota exceeded.', retryable: true } }),
+      entry(2),
+      entry(3, { chatId: 4 }),
+    ])
+    expect(document.body.textContent).toContain('2 with changes to review')
+    expect(document.body.textContent).toContain('Held changes · 2 requests to apply')
+    expect(document.querySelector('[role="alert"]')?.textContent)
+      .toBe('Could not apply: Quota exceeded. Accept the held changes to try again.')
+    expect(labelled('Deny')).toHaveLength(2)
+    expect(labelled('Approve')).toHaveLength(0)
+
+    await act(async () => labelled('Deny')[1].click())
+    expect(server.decisionCalls).toEqual(['reject:2'])
+  })
+
+  it('accepts what staging holds as a whole', async () => {
+    const acceptStagedActions = vi.fn<Overseer['acceptStagedActions']>(async () => ({ outcome: 'applied' }))
+    const server = makeOverseer()
+    Object.assign(server.overseer, { acceptStagedActions })
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        chats={[]} onOpenChat={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1)] })
+    await act(async () => buttons().find(b => b.textContent?.includes('Accept changes'))!.click())
+    expect(acceptStagedActions).toHaveBeenCalledOnce()
+  })
+
+  it("has nothing to review with no chat changes and nothing held, whatever a chat's requests", async () => {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        chats={[]} onOpenChat={() => {}} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1, { chatId: 4 })] })
+    expect(document.body.textContent).toContain('Nothing to review')
   })
 })

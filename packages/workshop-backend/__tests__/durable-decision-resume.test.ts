@@ -143,6 +143,7 @@ function decisionClient(impl: Impl, profile = USER, overrides: object = {}) {
     addChatMessages: impl.addChatMessages.bind(impl),
     startAgent: impl.startAgent.bind(impl),
     drainAutoApprovals: impl.drainAutoApprovals.bind(impl),
+    autoAcceptChatsOn: impl.autoAcceptChatsOn.bind(impl),
     ...overrides,
   }});
 }
@@ -209,7 +210,9 @@ describe("awaitingDecision on a chat's metadata", () => {
     using client = await openClient(s);
     await (kind === "connection" ? client.denyConnectionRequest("1:connection") : client.rejectAction(7));
     // A denial resumes nothing, which is the write subscribers would otherwise hear it through.
-    expect(heard).toEqual([{awaiting: undefined, responding: false}]);
+    // (A denied action is also sent again as it leaves its chat's pending actions.)
+    expect(heard).not.toHaveLength(0);
+    for (const update of heard) expect(update).toEqual({awaiting: undefined, responding: false});
   });
 
   it("is not sent again when a turn ends with no decision", async () => {
@@ -306,13 +309,14 @@ describe("decision handoff using the existing execution row", () => {
     });
   });
 
-  it.each([1, 2])("always-approve drains and resumes a legacy pause with %i pending actions", async count => {
+  it.each([1, 2])("always-approve applies and resumes a legacy pause with %i pending actions", async count => {
     const s = await scenario("action"), requests = inference();
     await s.visit(async impl => {
       impl.storage.activeAgents.delete(CHAT);
       modelLookup(impl, async () => ({profile: USER, aiModel: MODEL}));
-      // Only the rule-setting path reads this record; applying the external effect is stubbed below.
-      fakeGatekeeper(impl);
+      // The gatekeeper's apply is stubbed; the kernel records each action as applied.
+      const apply = vi.fn(async () => {});
+      fakeGatekeeper(impl, apply);
       const action = impl.storage.actions.get(7)!;
       if (action.type !== "action") throw new Error("Missing action");
       const actionKind = {tag: "edit", label: "Edits"};
@@ -322,9 +326,6 @@ describe("decision handoff using the existing execution row", () => {
         }});
         if (i) impl.addChatMessages(CHAT, MODEL.profile, [{type: "action", actionId: 7 + i}]);
       }
-      const apply = vi.spyOn(impl, "applyPendingAction").mockImplementation(async record => {
-        impl.storage.actions.put({...record, state: "approved"});
-      });
       let background: Promise<unknown> | undefined;
       using client = await decisionClient(impl, USER, {ctx: {
         id: impl.ctx.id, exports: impl.ctx.exports,
@@ -866,17 +867,19 @@ describe("decision handoff using the existing execution row", () => {
 // a double resume one too many.
 //
 // The model keeps the writes in submission order, the rule, and the writes the latest turn waits
-// on. Writes apply as auto-approval.ts documents: an approval applies its own write; after it, and
-// after a rejection, the rule being switched on, or an auto-approvable write being staged under
-// it, the pending writes the rule covers apply in order, up to the first that needs a person or
-// fails. A turn makes one more request once everything it staged is approved: within its step and
-// without a note if that all auto-applies, whether before the step ends or after; else as a resume,
-// when the last approval lands. A rejected write ends the wait for good, as does a newer prompt.
+// on. All are on one chat's branch, so writes apply as the branch approval model has it: an
+// approval applies the chat's pending writes up to and including its own, in order, up to the
+// first that fails. A write the rule covers, with every pending write before it, applies so as it
+// is staged; switching the rule on applies so each pending write in turn. A rejection applies
+// nothing. A turn makes one more request once everything it staged is approved: within its step
+// and without a note if that all applied as it was staged, whether before the step ends or after;
+// else as a resume, when the last approval lands. A rejected write ends the wait for good, as does
+// a newer prompt. A turn that ends normally, with the rule covering every pending write, applies
+// them all (the end-of-turn accept), as does switching the rule on while nothing waits.
 //
 // Left out: concurrent decisions (pinned in integration-tests' workshop-agent-actions.test.ts),
 // and an apply that fails while the step that staged its write still runs, whose turn carries on
-// regardless (see #drainAutoApprovalsAndResume). Scenarios a seed might miss are pinned as
-// `examples`.
+// regardless. Scenarios a seed might miss are pinned as `examples`.
 
 const EDITS = {tag: "edit", label: "Edits"};
 
@@ -905,10 +908,23 @@ class ResumeModel {
     return true;
   }
 
-  #drain() {
-    for (const [i, state] of this.states.entries()) {
-      if (state === "pending" && !(this.rule && this.auto[i] && this.#apply(i))) return;
-    }
+  #pending(): number[] {
+    return this.states.flatMap((state, i) => state === "pending" ? [i] : []);
+  }
+
+  // Applies the pending writes up to and including `upTo`, in order, up to the first that fails.
+  #applyThrough(upTo: number): boolean {
+    return this.#pending().filter(i => i <= upTo).every(i => this.#apply(i));
+  }
+
+  // Whether the rule covers the pending writes up to and including `upTo`.
+  #covers(upTo: number): boolean {
+    return this.rule && this.#pending().filter(i => i <= upTo).every(i => this.auto[i]);
+  }
+
+  // The end-of-turn accept, and the one switching the rule on makes while nothing waits.
+  #autoAccept() {
+    if (this.waiting.length === 0 && this.#covers(Infinity)) this.#applyThrough(Infinity);
   }
 
   #carryOn(resumed: boolean) {
@@ -918,6 +934,7 @@ class ResumeModel {
       this.waiting = [];
       this.requests++;
       if (resumed) this.nudges++;
+      this.#autoAccept();
     }
   }
 
@@ -927,29 +944,32 @@ class ResumeModel {
     for (const auto of writes) {
       this.states.push("pending");
       this.auto.push(auto);
-      if (this.rule && auto) this.#drain();
+      const i = this.states.length - 1;
+      if (this.#covers(i)) this.#applyThrough(i);
     }
     this.#carryOn(false);
   }
 
   /** False when the provider failed the approval, which leaves the write pending. */
   approve(i: number): boolean {
-    const applied = this.#apply(i);
-    if (applied) this.#drain();
+    const applied = this.#applyThrough(i);
     this.#carryOn(true);
     return applied;
   }
 
   reject(i: number) {
     this.states[i] = "rejected";
-    this.#drain();
     this.#carryOn(true);
   }
 
   setRule(on: boolean) {
     this.rule = on;
-    if (on) this.#drain();
+    if (!on) return;
+    for (const i of this.#pending()) {
+      if (this.states[i] === "pending" && this.#covers(i)) this.#applyThrough(i);
+    }
     this.#carryOn(true);
+    this.#autoAccept();
   }
 }
 
@@ -961,7 +981,7 @@ async function replayDecisions(sessions: Step[][]) {
   let staged: boolean[] | undefined;
   let landing: PromiseWithResolvers<void> | undefined, fail = 0, at = 0;
   const requests = inference(undefined, () => staged !== undefined);
-  // A decision finishes in the background (the drain, and the turn it resumes), so a check first
+  // A decision finishes in the background (the applies, and the turn it resumes), so a check first
   // waits for everything the workspace has started.
   const background: Promise<unknown>[] = [];
   const check = (label: string) => s.visit(async impl => {
@@ -1064,8 +1084,8 @@ describe("decisions on a turn's staged writes, for generated sessions", () => {
       [{kind: "prompt", writes: [true, true], late: false}, {kind: "rule", on: true, fail: 2}],
       [{kind: "approve", pick: 0, fail: 0}],
     ]],
-    // A newer turn's auto-approvable write queues behind an older turn's held one, so that turn
-    // suspends too. Rejecting the older write applies the newer and resumes its turn.
+    // A newer turn's auto-approvable write waits behind an older turn's held one, so that turn
+    // suspends too. Rejecting the older write applies nothing, so the newer turn still waits.
     [[[
       {kind: "prompt", writes: [false], late: false}, RULE_ON,
       {kind: "prompt", writes: [true], late: true}, {kind: "reject", pick: 0, fail: 0},
@@ -1077,7 +1097,7 @@ describe("decisions on a turn's staged writes, for generated sessions", () => {
       [{kind: "approve", pick: 0, fail: 1}, {kind: "approve", pick: 0, fail: 0}, RULE_ON],
     ]],
     // Writes that all auto-apply after their step ended never suspended it. Of two later turns,
-    // approving the newer one's write resumes it, and then the older one's resumes nothing.
+    // approving the newer one's write applies the older one's too and resumes the newer turn.
     [[[
       RULE_ON, {kind: "prompt", writes: [true, true], late: true},
       {kind: "prompt", writes: [false], late: false}, {kind: "prompt", writes: [false], late: false},

@@ -10,7 +10,7 @@ declare namespace Cloudflare {
     // Populates Cloudflare.Exports, the type of ctx.exports.
     mainModule: typeof import("./test-gatekeeper.js");
     // Storage classes exposed as DO namespaces on ctx.exports.
-    durableNamespaces: "TestGatekeeper" | "TestControl";
+    durableNamespaces: "TestGatekeeper" | "BranchTestGatekeeper" | "KitTestGatekeeper" | "TestControl";
   }
 
   interface Env {

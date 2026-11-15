@@ -46,7 +46,6 @@ interface OverseerInternals {
   cancelAgent(chatId: number): void;
   submitAction(gatekeeperId: number, action: number, description: ActionDescription,
                caller: { from: "agent", chatId: number } | { from: "user" }): Promise<unknown>;
-  drainAutoApprovals(gatekeeperId: number): Promise<void>;
   getGatekeeperFacet(): Promise<{ applyAction(): Promise<void> }>;
   applyPendingAction(record: ActionRecord, author: AiChatAuthorInfo, autoApproved: boolean)
       : Promise<void>;
@@ -401,15 +400,20 @@ describe("agent tracing", () => {
         },
       });
       impl.storage.autoApproveTags.put({ gatekeeperId: 7, actionKind: poke, enabledBy: OWNER });
+      impl.storage.chatMeta.put({
+        id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0),
+      });
       impl.getGatekeeperFacet = async () => ({ applyAction: async () => {} });
 
-      // A rule approves this action without a request. (Submitted first: a pending manual gate
-      // holds back every later action of its connection.)
+      // A rule approves this action without a request: one the agent waits on applies as it is
+      // submitted. (Submitted first: a pending manual gate holds back every later action of its
+      // connection.)
       await impl.submitAction(7, 1, {
         title: "Poke", description: "", implementsRevert: false, autoApprovable: true,
-        actionKind: poke,
+        actionKind: poke, awaitDecision: true,
       }, { from: "agent", chatId: CHAT_ID });
-      await impl.drainAutoApprovals(7);
+      await vi.waitFor(() => expect([...impl.storage.actions.list()].find(record =>
+          record.type === "action" && record.action === 1)?.state).toBe("approved"));
       await impl.submitAction(7, 2, {
         title: `Send ${SECRET}`, description: SECRET, implementsRevert: false,
         autoApprovable: false,

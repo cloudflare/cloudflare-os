@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ActionLogEntry, AiChatMessage } from '@gadgets/workshop-shared/api'
 import {
+  chatBranchPending,
   chatRequestIds,
   countFromElsewhere,
   describeGroupSize,
@@ -203,5 +204,22 @@ describe('describeGroupSize', () => {
 
     expect(describeGroupSize(one)).toBe('1 request')
     expect(describeGroupSize(two)).toBe('2 requests')
+  })
+})
+
+describe('chatBranchPending', () => {
+  const pending = [
+    entry({ id: 1, chatId: 1 }),
+    entry({ id: 2 }),                       // unchatted, on the chat's connection
+    entry({ id: 3, gatekeeperId: 2 }),      // unchatted, on another connection
+    entry({ id: 4, chatId: 2 }),            // another chat's
+  ]
+
+  it("holds a chat's requests and the unchatted ones on its connections", () => {
+    expect(chatBranchPending(pending, 1).map(log => log.id)).toEqual([1, 2])
+  })
+
+  it('holds only the unchatted requests outside any chat', () => {
+    expect(chatBranchPending(pending, null).map(log => log.id)).toEqual([2, 3])
   })
 })

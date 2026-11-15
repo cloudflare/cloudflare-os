@@ -34,4 +34,6 @@ export default defineGadgetsWorker({
 /** This worker's own DO classes are reached via ctx.exports; no durable_objects binding needed. */
 export const migrations: DurableObjectMigration[] = [
   { tag: "v0", new_sqlite_classes: ["TestGatekeeper", "TestControl"] },
+  { tag: "v1", new_sqlite_classes: ["BranchTestGatekeeper"] },
+  { tag: "v2", new_sqlite_classes: ["KitTestGatekeeper"] },
 ];

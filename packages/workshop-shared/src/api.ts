@@ -2860,6 +2860,14 @@ export type WorkspaceMetadata = {
   containsRestrictedData?: boolean;
 
   /**
+   * How many gatekeeper actions with no chat are pending (see Overseer.mergeChanges()): those
+   * staged by gadgets running outside any chat, hooks, and other sessions with no chat. They
+   * normally apply as soon as they are submitted, so this is present only while they wait (see
+   * Overseer.acceptStagedActions()). Absent when none, and for a "use" collaborator.
+   */
+  stagedActions?: number;
+
+  /**
    * True when the workspace has observed data marked `ownerInvitesOnly` (see
    * `ObservationDescription`). Only collaborators the owner added directly have access: share
    * links can no longer be created, copied, or redeemed, and only the owner can add collaborators.
@@ -3168,9 +3176,19 @@ export type ActionLogEntry = {
 
   /**
    * True when the action was applied automatically by an auto-approval rule rather than by a human
-   * clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
+   * clicking Approve. Only ever set alongside state "approved". An action can also be rejected
+   * automatically -- a staged action whose gatekeeper says it can never apply (see
+   * Overseer.acceptStagedActions()) -- but that is recorded as a rejection by the workspace owner,
+   * with its `applyError`, and never with this.
    */
   autoApproved?: boolean;
+
+  /**
+   * Why the last attempt to apply the action failed, as its gatekeeper reported it; cleared once
+   * it applies. `retryable` is false when applying again cannot succeed, so the action can only be
+   * rejected. Also kept on an action rejected because its gatekeeper turned out not to hold it.
+   */
+  applyError?: {message: string, retryable: boolean};
 
   /**
    * True for the creation queued by createExternalResource. Approving it requires one of the
@@ -3529,14 +3547,45 @@ export interface Overseer extends RpcTarget {
    * Approve an action that is currently in the "pending" state. The action will be performed on
    * approval. Approving a creation (see ActionLogEntry.creation) requires `creation`: how the
    * approver chose to make it.
+   *
+   * Approving an action applies its chat's earlier actions on that connection first, together
+   * with the pending actions with no chat there, since its gatekeeper simulated it on top of them
+   * (see mergeChanges()). On a connection whose gatekeeper applies actions as a list
+   * (`Gatekeeper.applyActions()`) those with no chat go first; on one that applies one action at
+   * a time, only those older than it go, all in ID order. Either way nothing applies out of
+   * order. The Workshop offers it for an action the agent waits on
+   * (`ActionDescription.awaitDecision`), which cannot wait for its chat to be accepted.
    */
   approveAction(id: number, creation?: CreationApproval): Promise<void>;
 
   /**
    * Reject an action that is in the "pending" state. This notifies the gatekeeper that it will not
-   * be approved in the future.
+   * be approved in the future. The pending actions its gatekeeper reports it had to reject along
+   * with it are rejected too.
+   *
+   * When the gatekeeper reports that other simulated work was built on the action, the gadgets
+   * running on its chat's branch restart, or, for an action with no chat, every running gadget,
+   * since every chat sees those; and the chat's agent is told in its next turn that the action was
+   * denied (see the "actionDenied" message).
    */
   rejectAction(id: number): Promise<void>;
+
+  /**
+   * Applies the pending actions with no chat (see WorkspaceMetadata.stagedActions), one connection
+   * at a time, as they stood when the call began. Those normally apply as soon as they are
+   * submitted; they wait for this while the workspace has read restricted data, behind one that
+   * was waiting for a user's review before they did, and behind one that failed to apply. The first that fails to apply stops it with a "failed" outcome, leaving that
+   * action pending with its ActionLogEntry.applyError and those after it on its connection pending;
+   * calling again retries it.
+   */
+  acceptStagedActions(): Promise<{outcome: "applied" | "failed"}>;
+
+  /**
+   * Rejects the pending actions with no chat (see WorkspaceMetadata.stagedActions), newest first,
+   * as rejectAction() rejects each one: what discarding a chat's changes does to its actions (see
+   * revertChanges()), for staging.
+   */
+  discardStagedActions(): Promise<void>;
 
   /**
    * List the hooks waking the workspace's gadgets: scheduled tasks (the scheduler's) and more.
@@ -3572,9 +3621,13 @@ export interface Overseer extends RpcTarget {
 
   /**
    * Enable auto-approval of actions carrying the given `actionKind` (the
-   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`. Future actions
-   * with that kind's tag whose author marked them `autoApprovable` are then applied automatically
-   * without manual approval, and any matching action(s) already pending are applied immediately.
+   * ActionDescription.actionKind) on the gatekeeper identified by `gatekeeperId`. An action with
+   * that kind's tag whose author marked it `autoApprovable` then needs no manual approval: an agent
+   * turn that finished normally accepts its chat automatically when every action the accept would
+   * apply satisfies a rule and the chat proposes no code changes (see mergeChanges()), and an
+   * action the agent waits on (`ActionDescription.awaitDecision`) applies as it is submitted when
+   * it and the actions approving it applies do. Enabling a rule does the same at once for the
+   * idle chats with a pending action on the connection.
    *
    * Auto-approval rules are workspace-wide per gatekeeper: approving an action kind approves it
    * no matter which gadget invokes it.
@@ -3799,6 +3852,15 @@ export interface Overseer extends RpcTarget {
   setChatTitle(chatId: number, title: string): Promise<void>;
 
   /**
+   * Turns holding on or off in a chat (see AiChatMetadata.holding). While it is on, every gadget
+   * opened in the chat runs on its branch, so the gadget's actions wait for the chat's changes to
+   * be accepted, and the chat is never accepted automatically. A chat with no agent (see newChat())
+   * serves just for this. Turned off, gadgets go back to running outside the chat once nothing else
+   * keeps them on its branch (see AiChatMetadata.branchGadgets).
+   */
+  setChatHolding(chatId: number, holding: boolean): Promise<void>;
+
+  /**
    * Indicates that the user has requested that the chat's proposed changes be merged into the
    * mainline. Always merges *everything* the chat proposes -- changes not yet materialized into a
    * `changes` message are swept in first, and there is no way to accept only a subset.
@@ -3834,8 +3896,19 @@ export interface Overseer extends RpcTarget {
    * (AiChatMessageBody.blueprintMerges[].conflictPaths and mainlineMerge.gadgets[].conflictPaths),
    * as the Workshop UI does before accepting: it looks for a `<<<<<<< ` or `>>>>>>> ` line left
    * in each of those files, and asks the user whether to accept them as they are.
+   *
+   * Accepting a chat also applies its pending gatekeeper actions, and does so first: on each
+   * connection the chat acted on, the pending actions with no chat there (which the chat's were
+   * simulated on top of), and then the chat's own, one connection at a time, as they stood when the
+   * accept began. A pending creation among them needs `options.creations`; one that fails throws,
+   * as approveAction() does. The first other action that fails to apply stops the accept with a
+   * "failed" outcome, leaving the code unmerged and the action pending with its
+   * ActionLogEntry.applyError; calling again retries it. The accept is not atomic: what applied
+   * stays applied, and a "stale" outcome after the actions applied leaves only the code for the
+   * retry. Refused while the agent waits on a decision. With no code to merge, it applies the
+   * actions alone.
    */
-  mergeChanges(chatId: number): Promise<MergeChangesResult>;
+  mergeChanges(chatId: number, options?: MergeChangesOptions): Promise<MergeChangesResult>;
 
   /**
    * Merge mainline commits that landed after this chat's pins into the chat's uncommitted state.
@@ -3888,6 +3961,9 @@ export interface Overseer extends RpcTarget {
    * state -- content they may have transformed against is gone -- so ChatCodeBase.generation is
    * bumped destructively: in-flight submitCodeChange() calls fail and clients rebuild instead of
    * corrupting the chat.
+   *
+   * It also rejects, newest first, the chat's pending gatekeeper actions recorded at or after
+   * `revertFrom` in the chat; with `revertFrom` 0, every pending action of the chat's.
    */
   revertChanges(chatId: number, revertFrom: number): Promise<void>;
 
@@ -3909,7 +3985,10 @@ export interface Overseer extends RpcTarget {
    */
   discardChatDraftChanges(chatId: number): Promise<void>;
 
-  /** Delete a chat thread. */
+  /**
+   * Delete a chat thread. Its pending gatekeeper actions are rejected first, as
+   * revertChanges(chatId, 0) rejects them.
+   */
   deleteChat(chatId: number): Promise<void>;
 
   /**
@@ -4169,6 +4248,28 @@ export type AiChatMetadata = {
    * server-side from the chat's log and delivered on metadata updates; never submitted by clients.
    */
   awaitingDecision?: true;
+
+  /**
+   * How many of the chat's gatekeeper actions are pending (see Overseer.mergeChanges()): they apply
+   * when its changes are accepted. Absent when none. Derived server-side and delivered on metadata
+   * updates; never submitted by clients.
+   */
+  pendingActions?: number;
+
+  /**
+   * The gadgets that run on the chat's branch when opened in the chat's context (see
+   * GadgetClient.connectToGadget()): their reads see the chat's pending actions and their actions
+   * join them. Those are the gadgets the chat proposes changes to, those an agent turn in the chat
+   * has invoked until the turn ends, and, while the chat has pending actions or holding is on,
+   * every gadget. Any other runs as it does outside the chat. Absent when none. Derived server-side
+   * and delivered on metadata updates; never submitted by clients.
+   */
+  branchGadgets?: WorkpieceId[];
+
+  /**
+   * Present while holding is on in the chat (see Overseer.setChatHolding()).
+   */
+  holding?: true;
 
   /**
    * Tokens the model reported for this conversation's last step, if known. Cleared when compaction
@@ -4431,9 +4532,20 @@ export type MergeChangesResult = {
    * "merged": the changes were accepted; every touched gadget's head fast-forwarded (also the
    * outcome when there was nothing to merge). "stale": nothing was merged -- mainline advanced
    * past one of the chat's pins, so the accept could not fast-forward; call
-   * updateChatFromMainline(), resolve any conflicts, and retry.
+   * updateChatFromMainline(), resolve any conflicts, and retry. "failed": one of the chat's
+   * pending actions could not be applied, so no code was merged; its ActionLogEntry.applyError
+   * says why.
    */
-  outcome: "merged" | "stale";
+  outcome: "merged" | "stale" | "failed";
+};
+
+/** Choices Overseer.mergeChanges() needs from the user accepting the chat. */
+export type MergeChangesOptions = {
+  /**
+   * How to make each pending creation (see ActionLogEntry.creation) the accept applies, keyed by
+   * the creation's action ID. Required for every one.
+   */
+  creations?: Record<number, CreationApproval>;
 };
 
 /**
@@ -4889,6 +5001,20 @@ export type AiChatMessageBody = {
    */
   type: "agentNudge";
   text: string;
+} | {
+  /**
+   * A user denied a pending gatekeeper action on the chat's branch whose gatekeeper reported that
+   * later simulated work was built on it (see Overseer.rejectAction()). Model-visible, so the agent
+   * learns in its next turn that the action will not apply. The action's own card already shows the
+   * denial.
+   */
+  type: "actionDenied";
+
+  /** The denied action (see ActionLogEntry.id). */
+  actionId: number;
+
+  /** The action's title (see ActionDescription.title), as the agent is told it. */
+  title: string;
 } | {
   /**
    * The agent requested that the user connect a gatekeeper (e.g. "I need ClickHouse cluster X").
