@@ -2725,6 +2725,20 @@ export type IssueReportStatus = typeof ISSUE_REPORT_STATUSES[number];
  * string's `length`) of the text once trimmed. */
 export const MAX_ISSUE_REPORT_TEXT_LENGTH = 2000;
 
+/** The most images one issue report holds. */
+export const MAX_ISSUE_REPORT_IMAGES = 5;
+
+/** The largest image an issue report takes, in bytes: 5 MiB, which a PNG capture of a browser tab
+ * on a high-density display fits in. The Workshop re-encodes a larger capture before sending. */
+export const MAX_ISSUE_REPORT_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** The image formats an issue report takes, as the server recognises them from an image's first
+ * bytes: never from a name or a type its sender gave. */
+export const ISSUE_REPORT_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
+
+/** One of ISSUE_REPORT_IMAGE_TYPES. */
+export type IssueReportImageType = typeof ISSUE_REPORT_IMAGE_TYPES[number];
+
 /** The most issue reports one user may file in a UTC day. */
 export const MAX_ISSUE_REPORTS_PER_DAY = 20;
 
@@ -2737,6 +2751,15 @@ export const MAX_ISSUE_REPORT_THREAD_ENTRIES = 200;
 
 /** The most replies one user may write in the threads of their issue reports in a UTC day. */
 export const MAX_ISSUE_REPORT_REPLIES_PER_DAY = 100;
+
+/** The most image bytes the issue reports one user filed hold together while they are kept:
+ * 50 MiB, ten images of the largest size. The deployment's images have no bound as a whole, so
+ * this is what bounds how much they grow. */
+export const MAX_ISSUE_REPORT_IMAGE_BYTES_PER_USER = 50 * 1024 * 1024;
+
+/** The most images one user may be uploading to their issue reports at one time. An upload that
+ * was interrupted counts until the server has cleared it away, some minutes later. */
+export const MAX_ISSUE_REPORT_IMAGE_UPLOADS_PER_USER = 2;
 
 /** The most links admins attach to one issue report. */
 export const MAX_ISSUE_REPORT_LINKS = 10;
@@ -2763,6 +2786,11 @@ export const ISSUE_REPORT_ERROR_CODES = {
   tooManyReports: "ISSUE_REPORT_TOO_MANY",
   tooManyReplies: "ISSUE_REPORT_TOO_MANY_REPLIES",
   threadFull: "ISSUE_REPORT_THREAD_FULL",
+  tooManyImages: "ISSUE_REPORT_TOO_MANY_IMAGES",
+  imageTooLarge: "ISSUE_REPORT_IMAGE_TOO_LARGE",
+  imageNotRecognised: "ISSUE_REPORT_IMAGE_NOT_RECOGNISED",
+  imageQuotaReached: "ISSUE_REPORT_IMAGE_QUOTA_REACHED",
+  tooManyUploads: "ISSUE_REPORT_TOO_MANY_UPLOADS",
 } as const;
 
 /** An expected refusal code from ISSUE_REPORT_ERROR_CODES. */
@@ -2779,6 +2807,17 @@ const issueReportErrors = codedErrorFamily<IssueReportErrorCode>({
   [ISSUE_REPORT_ERROR_CODES.tooManyReplies]:
       "You have replied to issue reports too many times today. Try again tomorrow.",
   [ISSUE_REPORT_ERROR_CODES.threadFull]: "This issue report's thread is full.",
+  [ISSUE_REPORT_ERROR_CODES.tooManyImages]:
+      `An issue report holds at most ${MAX_ISSUE_REPORT_IMAGES} images.`,
+  [ISSUE_REPORT_ERROR_CODES.imageTooLarge]:
+      `An issue report's image can be at most ${MAX_ISSUE_REPORT_IMAGE_BYTES / (1024 * 1024)} MiB.`,
+  [ISSUE_REPORT_ERROR_CODES.imageNotRecognised]:
+      "Only PNG, JPEG and WebP images can be attached to an issue report.",
+  [ISSUE_REPORT_ERROR_CODES.imageQuotaReached]:
+      "Your issue reports already hold as many images as one user may keep. Your report was " +
+      "filed without this one.",
+  [ISSUE_REPORT_ERROR_CODES.tooManyUploads]:
+      "You are uploading too many images to issue reports at once. Try again in a few minutes.",
 });
 
 /** Creates an expected issue report refusal with a machine-readable code. */
@@ -2810,6 +2849,17 @@ export type IssueReportInput = {
   priority: IssueReportPriority;
   /** Where the reporter was. */
   context?: IssueReportContext;
+};
+
+/** One image of an issue report. Its bytes are read with readIssueReportImage(). */
+export type IssueReportImage = {
+  /** Opaque, unique in its report. */
+  id: string;
+  /** The format the server recognised from the image's bytes. A client renders the bytes as an
+   * image of exactly this type, and as nothing else. */
+  type: IssueReportImageType;
+  /** Its size in bytes. */
+  byteLength: number;
 };
 
 /** Who wrote an entry of an issue report's thread, kept as a NamedUser is. A reporter reads an
@@ -2888,6 +2938,8 @@ export type IssueReport = {
   context: IssueReportContext;
   /** Where it stands. */
   status: IssueReportStatus;
+  /** Its images, in the order they were added. */
+  images: IssueReportImage[];
   /** The grant given with it, if any. */
   grant?: IssueReportGrant;
 };
@@ -3384,7 +3436,8 @@ export interface AdminApi {
   /**
    * Set how many days an issue report is kept from its filing,
    * DEFAULT_ISSUE_REPORT_RETENTION_DAYS by default. The store deletes older reports, with their
-   * threads, once a day, by the retention then in force: a report outlives it by about a day.
+   * threads and images, once a day, by the retention then in force: a report outlives it by
+   * about a day, and by longer only while its images cannot be deleted from their bucket.
    * Throws unless `days` is a whole number from the deployment's minimum
    * (AdminSettingsView.issueReportRetentionDays.min, set by its ISSUE_REPORT_RETENTION_MIN_DAYS
    * environment variable) to MAX_ISSUE_REPORT_RETENTION_DAYS.
