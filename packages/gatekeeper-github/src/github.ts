@@ -713,10 +713,18 @@ const PULL_REQUEST_RESOURCE: SupportedResource = {
   description: "Read and manage a specific GitHub pull request and its review threads.",
 };
 
+// What each resource can change, for the vendor to advertise before anything is connected
+// (SupportedResource.actionKinds): the kinds its session submits, then merging, which a person
+// always approves.
+const catalogOf = (kind: ResourceKind, mergeable: boolean): NonNullable<SupportedResource["actionKinds"]> => [
+  ...BINDING_ACTIONS[kind].map(action => ({ kind: ACTION_KINDS[action], autoApprovable: true })),
+  ...(mergeable ? [{ kind: ACTION_KINDS.mergePullRequest, autoApprovable: false }] : []),
+];
+
 const SUPPORTED_RESOURCES: SupportedResource[] = [
-  REPO_RESOURCE,
-  ISSUE_RESOURCE,
-  PULL_REQUEST_RESOURCE,
+  { ...REPO_RESOURCE, actionKinds: catalogOf("repo", true) },
+  { ...ISSUE_RESOURCE, actionKinds: catalogOf("issue", false) },
+  { ...PULL_REQUEST_RESOURCE, actionKinds: catalogOf("pull", true) },
 ];
 
 const INVALID_LINK_HTML = `<!DOCTYPE html>

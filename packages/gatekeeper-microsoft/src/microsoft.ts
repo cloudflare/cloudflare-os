@@ -55,6 +55,7 @@ import { SITE_SELECT, parseMe, parseSite } from "./graph-parse";
 import {
   RECONNECT_MESSAGE, accountSource, type MicrosoftVerifierApi, type PublicGrant, type StoredIdentity, type VerifiedIdentity,
 } from "./microsoft-credentials";
+import { resourcesWithActionKinds } from "./action-catalog";
 import {
   ALL_RESOURCES,
   CALENDAR_RESOURCE,
@@ -499,7 +500,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return ALL_RESOURCES;
+    return resourcesWithActionKinds();
   }
 
   async getTypeScriptTypes(): Promise<string> {
@@ -915,7 +916,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async getSupportedResources(): Promise<SupportedResource[]> {
-    return ALL_RESOURCES;
+    return resourcesWithActionKinds();
   }
 
   /**
