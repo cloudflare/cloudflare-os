@@ -239,7 +239,9 @@ focus?: MessageFocus & { gadgetTitle: string };
 ```
 
 - The backend checks that `gadgetId` names a gadget in the workspace and that the strings are
-  within the limits, and rejects the message otherwise.
+  within the limits, and rejects the message otherwise. As with a capsule, a worktree, a
+  gatekeeper, or a gadget still pending in another chat's proposal is not a gadget in the
+  workspace. The check and the title stamp cover a steer too, at the moment it is queued.
 - A focus grants nothing. It does not add the gadget to the chat's env.
 - A slash-command request carries no focus, as it carries no capsules.
 
@@ -276,7 +278,7 @@ Net revenue: 1,204,331
 - `gadget` is the chat's env name for the gadget, omitted when the chat holds none; `title` is the
   stamped title. That is the same pair the gadget listing shows.
 - `label` and `anchor` appear only when the focus has a spot, and the element has a body only
-  when the spot has a context. A gadget-level focus is the single tag
+  when the spot has a non-empty context. A gadget-level focus is the single tag
   `<user-focus gadget="env.BUDGET" title="Budget"/>`.
 - Attribute values and the body are escaped (`&`, `<`, `"`), so nothing a gadget reports can close
   the block or add an attribute.

@@ -3835,10 +3835,10 @@ export interface Overseer extends RpcTarget {
   /**
    * Send a message to the chat from this client. Sending a message causes the LLM to start
    * running if it isn't already.
-   * While it runs, plain text with no capsules, attachments or formats steers it, on the running
-   * turn's model whatever `modelId` is, even null: it waits in `AiChatMetadata.queuedSteers` until
-   * the agent reads it. Anything else, or anything sent after `stopAgent()`, throws until the
-   * agent finishes.
+   * While it runs, plain text with no capsules, attachments or formats, though possibly a focus,
+   * steers it, on the running turn's model whatever `modelId` is, even null: it waits in
+   * `AiChatMetadata.queuedSteers` until the agent reads it. Anything else, or anything sent after
+   * `stopAgent()`, throws until the agent finishes.
    * If a slash command produces no message, only its visible invocation event is committed and the
    * agent does not run.
    *
@@ -4236,9 +4236,11 @@ export type AiChatMetadata = {
    * `Overseer.sendChatMessage`). Each then appears in the chat as a message marked `steered`,
    * unless a turn ends without reading it and without failing or waiting on the user's decision:
    * it then prompts the next turn as an ordinary message. Stopping the agent drops them all (see
-   * `Overseer.stopAgent`). Absent when none.
+   * `Overseer.stopAgent`). Absent when none. A `focus` is as the message will carry it (see
+   * AiChatMessageBody.focus).
    */
-  queuedSteers?: {text: string, author: AiChatAuthorInfo}[];
+  queuedSteers?: {text: string, author: AiChatAuthorInfo,
+                  focus?: MessageFocus & {gadgetTitle: string}}[];
 
   /** If this was started from an agent spawner, the spawner's display name. */
   spawnerName?: string;
@@ -4666,6 +4668,13 @@ export type AiChatMessageBody = {
 
   /** Attachments that were sent with this message. Actual bytes stored separately. */
   attachments?: ChatAttachmentRef[];
+
+  /**
+   * What the sender was focused on (see `ChatMessageOptions.focus`), with the gadget's title as
+   * it was when the message was sent, so the message still reads the same after the gadget is
+   * renamed or deleted.
+   */
+  focus?: MessageFocus & {gadgetTitle: string};
 
   /**
    * Sequence of the visible slash-command event that generated this agent-visible message.
@@ -5486,6 +5495,23 @@ export type ChatMessageOptions = {
    * the text.
    */
   formats?: MessageFormatRef[];
+
+  /**
+   * What the user was focused on when they sent the message, so the agent knows what "this"
+   * refers to. `gadgetId` must name one of the workspace's gadgets, and the spot must be within
+   * the `GadgetFocus` limits, or the message is refused. It grants the agent nothing: the gadget
+   * is not added to the chat's env. A slash-command request cannot carry one.
+   */
+  focus?: MessageFocus;
+};
+
+/** What the user was focused on when they sent a chat message. */
+export type MessageFocus = {
+  /** The gadget they were viewing. */
+  gadgetId: WorkpieceId;
+
+  /** The spot within it, if the gadget's UI had reported one. Absent: the gadget as a whole. */
+  spot?: GadgetFocus;
 };
 
 /**
