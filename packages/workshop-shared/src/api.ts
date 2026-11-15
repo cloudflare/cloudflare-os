@@ -246,14 +246,20 @@ export type ChatReadState = {
   workspaceId: string;
   /** The chat's ID within its workspace. */
   chatId: number;
-  /** Visible messages the user hasn't read, including in muted chats. Zero means fully read. */
+  /** Visible messages the user hasn't read, including in muted chats. Zero means fully read once initialized. */
   unreadMessageCount: number;
   /**
    * Sequence of the last timeline record the user has read, inclusive: any visible messages after
    * it are unread. -1 means the user hasn't read anything in this chat yet. Use this, for example,
-   * to place a "new messages" divider.
+   * to place a "new messages" divider, once `readStatePending` clears.
    */
   readThroughSequence: number;
+  /**
+   * True when this row contains only a notification preference and read tracking is not yet
+   * initialized. Wait for catch-up before acknowledging the viewport. Absent on initialized
+   * rows and older servers.
+   */
+  readStatePending?: true;
   /**
    * Whether this chat appears in the unread inbox and contributes badges and completion alerts
    * for this user. Approval alerts bypass the default-off state, but honor an explicit mute.

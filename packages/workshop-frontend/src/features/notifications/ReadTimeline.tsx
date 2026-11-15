@@ -42,7 +42,7 @@ export const ReadTimeline = ({
 }) => {
   const unread = useUnreadState();
   const chat = unread?.chats?.find(
-    (item) => item.workspaceId === workspaceId && item.chatId === chatId,
+    (item) => item.workspaceId === workspaceId && item.chatId === chatId && !item.readStatePending,
   );
   const [visit, renderVisit] = useState<{ divider?: number; paused: boolean }>();
   // A new request also retries a failed page when navigation is already pending; zero is idle.
@@ -120,7 +120,7 @@ export const ReadTimeline = ({
   }, [oldestSequence, onUnreadNavigation, setVisit, container, workspaceId, chatId]);
 
   useLayoutEffect(() => unread?.subscribeToUpdates((state, initialSnapshot) => {
-    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId), true, initialSnapshot);
+    reconcileChat(state.chats.find(item => item.workspaceId === workspaceId && item.chatId === chatId && !item.readStatePending), true, initialSnapshot);
   }), [unread?.subscribeToUpdates, workspaceId, chatId, reconcileChat]);
 
   useLayoutEffect(() => {

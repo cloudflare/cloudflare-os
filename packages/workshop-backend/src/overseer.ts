@@ -1354,8 +1354,8 @@ class OverseerImpl implements AgentHooks {
           }
         }
         if (newer !== token || failedRecipients.length) {
-          // ACKed/denied users are not retried. New broadcasts still reach everyone, while
-          // failures alone retain older work. Eviction before this write can replay the batch.
+          // ACKed/denied users are not retried. New broadcasts use the enrollment/approval filter
+          // above; failures alone retain older work. Eviction before this write can replay the batch.
           if (newer !== token || !dirty.retryOnly || failedRecipients.length !== dirty.failedRecipients?.length ||
               failedRecipients.some((failed, index) => {
                 let old = dirty.failedRecipients?.[index];

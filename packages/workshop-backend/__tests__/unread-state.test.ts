@@ -136,6 +136,29 @@ it.each([false, true])("reports the source notification default without enrollin
 });
 
 describe("one-way chat fanout enrollment", () => {
+  it.each([false, true])("distinguishes a preference-only row until delayed enrollment catches up (enabled: %s)", async enabled => {
+    const fixture = await setup(undefined, false, false);
+    await withImpl(fixture.workspace, async impl => {
+      write(impl, 0, "Old first message"); write(impl, 1, "Old tail");
+      await impl.deliverDirtyChats();
+      const restore = interceptDelivery(impl, async () => { throw new Error("Catch-up delayed"); });
+      try {
+        await impl.setChatNotificationsEnabled(fixture.user.id.toString(), 1, enabled, fixture.profile.id);
+        await expect(impl.deliverDirtyChats()).rejects.toThrow("Catch-up delayed");
+      } finally { restore(); }
+    });
+    expect(await fixture.user.getWorkspaceUnreadState(fixture.workspaceId)).toMatchObject([
+      {readThroughSequence: -1, unreadMessageCount: 0, notificationsEnabled: enabled,
+        notificationsEnabledOverride: enabled, readStatePending: true},
+    ]);
+    await evictDurableObject(fixture.user);
+    expect((await fixture.user.getWorkspaceUnreadState(fixture.workspaceId))[0].readStatePending).toBe(true);
+    await withImpl(fixture.workspace, impl => impl.deliverDirtyChats());
+    const [ready] = await fixture.user.getWorkspaceUnreadState(fixture.workspaceId);
+    expect(ready).toMatchObject({readThroughSequence: -1, unreadMessageCount: 2, notificationsEnabled: enabled});
+    expect(ready.readStatePending).toBeUndefined();
+  });
+
   it("skips untouched users, then preserves muted catch-up after first open without opting into alerts", async () => {
     const fixture = await setup(undefined, false, false);
     const {reader} = await addReader(fixture, false);

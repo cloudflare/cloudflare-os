@@ -209,6 +209,31 @@ describe("timeline read/unread experience", () => {
     expect(markChatRead).not.toHaveBeenCalled();
   });
 
+  it.each([false, true].flatMap(enabled => [false, true].map(beforeEntry => ({enabled, beforeEntry}))))(
+      "waits for delayed catch-up after a preference (enabled: $enabled, before entry: $beforeEntry)", async ({enabled, beforeEntry}) => {
+    visibleBottom = 350;
+    await render(<p>Conversation list</p>);
+    await update({workspaces: [], unreadChatCount: 0, unreadMessageCount: 0, chats: []});
+    const preference: UserUnreadState = {workspaces: [], unreadChatCount: 0, unreadMessageCount: 0,
+      chats: [{workspaceId: "workspace", chatId: 1, readThroughSequence: -1, unreadMessageCount: 0,
+        notificationsEnabled: enabled, notificationsEnabledOverride: enabled, readStatePending: true}]};
+    if (beforeEntry) await updateChat(preference);
+    await render(<View oldest={2} />);
+    if (!beforeEntry) await updateChat(preference);
+    await settle();
+    expect(markChatRead).not.toHaveBeenCalled();
+    expect(loadEarlier).not.toHaveBeenCalled();
+    await updateChat(snapshot());
+    await settle();
+    expect(loadEarlier).toHaveBeenCalledOnce();
+    expect(navigate).toHaveBeenCalledWith(true);
+    expect(markChatRead).not.toHaveBeenCalled();
+    await render(<View />);
+    await settle();
+    expect(container.querySelector("[data-unread-divider]")).not.toBeNull();
+    expect(markChatRead).toHaveBeenCalledExactlyOnceWith(1, 2);
+  });
+
   it("keeps a New divider for messages received while the tab was hidden", async () => {
     visibleBottom = 450;
     await render(); await update(snapshot(1, 2)); await settle();

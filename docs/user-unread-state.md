@@ -103,7 +103,10 @@ The existing source fanout carries inbox metadata with the count; title changes 
 same thread and use the same retry path. Metadata-only updates don't initialize a missing cursor or
 change read horizons, including on preference-only rows whose read tracking has not started.
 Preference changes accept only the source default and alert receipt, leaving the read positions,
-count and paired inbox head to ordinary fanout. The existing admission callback can repair metadata
+count and paired inbox head to ordinary fanout. Queries and updates label preference-only rows
+`readStatePending`; the timeline waits for initialized catch-up before acknowledging the viewport.
+This flag is derived from the existing cursor, including after eviction, without new stored state.
+The existing admission callback can repair metadata
 skipped during denied admission, using `headUpdatedAt` to reject older captured titles without a source read or new counter.
 Every live tracked cursor stores a head and both visible positions, supplied by message fanout,
 first admission or an open-session read command. Tombstones and preference-only rows may omit a
@@ -112,8 +115,9 @@ head. Bulk actions rely on this invariant; there is no metadata lookup fallback.
 Three targeted local queries avoid transferring the full thread state for every consumer:
 
 - `getUnreadThreads()` returns unread rows with notifications enabled, including display metadata, newest first.
-- `getWorkspaceUnreadState(workspaceId)` returns tracked thread horizons/counts for that workspace,
-  including read rows, to merge into the Workspace DO's ordinary thread list. Missing rows are read.
+- `getWorkspaceUnreadState(workspaceId)` returns local thread horizons/counts and notification
+  preferences for that workspace, including read rows, to merge into its ordinary thread list.
+  Missing rows contribute zero; preference-only rows report `readStatePending` until catch-up.
 - `getUnreadSummary()` returns badge totals and nonzero per-workspace rollups, excluding muted chats
   and without thread rows. Per-chat queries still return actual unread counts for muted chats.
 
