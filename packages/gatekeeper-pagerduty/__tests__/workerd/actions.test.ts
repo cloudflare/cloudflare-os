@@ -413,6 +413,16 @@ describe("simulation", () => {
     expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: t.incident.id, status: "acknowledged" }]]);
   });
 
+  it("lists the incidents pending changes move into the filter newest first, in whatever order the changes were staged", async () => {
+    const t = await setup();
+    const older = t.pd.incident(SERVICE, { created_at: new Date(Date.now() - HOUR).toISOString() });
+    await t.run(onIncident("acknowledge")(older.id));
+    await t.run(onIncident("acknowledge")(t.incident.id));
+    // PagerDuty lists neither as acknowledged, so the page is the two incidents the changes move in.
+    expect(await t.run([["listIncidents", { statuses: ["acknowledged"] }]], 5))
+      .toMatchObject([[{ id: t.incident.id }, { id: older.id }]]);
+  });
+
   it("leaves out, in a team binding, an incident a pending change moves into the filter once it has left the team", async () => {
     const t = await setup({ resourceKind: "team", id: TEAM.id });
     await t.run(onIncident("acknowledge")(t.incident.id));
@@ -452,6 +462,21 @@ describe("simulation", () => {
     expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(2);
   });
 
+  it("stops listing an incident a pending change moved into the filter once the change is rejected mid-walk", async () => {
+    const t = await setup();
+    const first = t.pd.incident(SERVICE, { status: "acknowledged", created_at: new Date(Date.now() + HOUR).toISOString() });
+    await t.run(onIncident("acknowledge")(t.incident.id));
+    const [acknowledge] = await t.submitted();
+    // PagerDuty lists only `first` as acknowledged; the pending acknowledgement moves `t.incident`
+    // into the filter, behind it, until it is rejected after the first page.
+    t.pd.on("GET", /^\/users/, async () => {
+      await t.reject(acknowledge.actionId);
+      return undefined;
+    });
+    expect(await t.run([["listIncidents", { statuses: ["acknowledged"], allTime: true, pageSize: 1 }]], 5, [[["findUsers", "bob"]]]))
+      .toMatchObject([[{ id: first.id }]]);
+  });
+
   it("resolves an incident's alerts with a pending resolve, in its details and as its alerts are served", async () => {
     const t = await setup();
     const alert = (n: number) =>
@@ -482,6 +507,39 @@ describe("simulation", () => {
     expect(await t.run([["getIncident", "~1"], ["getDetails"]])).toMatchObject({ id: made.id });
   });
 
+  it("lists an incident a pending action opens as the changes staged on it since leave it", async () => {
+    const t = await setup();
+    await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }], ["setTitle", "Checkout failing in EU"]]);
+    expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: "~1", title: "Checkout failing in EU" }, { id: t.incident.id }]]);
+    // A resolve staged on it takes it out of the open incidents, and into the resolved ones.
+    await t.run(onIncident("resolve")("~1"));
+    expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: t.incident.id }]]);
+    expect(await t.run([["listIncidents", { statuses: ["resolved"] }]], 5))
+      .toMatchObject([[{ id: "~1", title: "Checkout failing in EU", status: "resolved" }]]);
+  });
+
+  it("shows a change staged on an incident a pending action opens on the incident PagerDuty made of it, opened while the page was being fetched", async () => {
+    const t = await setup();
+    await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }], ["setTitle", "Checkout failing in EU"]]);
+    const [create] = await t.submitted();
+    // Applied while the walk's one fetch is in flight, after the walk read the pending actions.
+    let applied = false;
+    t.pd.on("GET", /^\/incidents\?/, async () => {
+      if (!applied) {
+        applied = true;
+        await t.apply(create.actionId);
+      }
+      return undefined;
+    });
+    // A stand-in is dated from its staging, so a listing that ends before it leaves the stand-in
+    // out, and lists the incident PagerDuty opens, which the fake dates minutes back.
+    const until = new Date(Date.now() - 30_000).toISOString();
+    const pages = await t.run([["listIncidents", { until }]], 5);
+    const made = [...t.pd.incidents.values()].find(i => i.title === "Checkout failing")!;
+    expect(pages).toMatchObject([[{ id: t.incident.id }, { id: made.id, title: "Checkout failing in EU" }]]);
+    expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(1);
+  });
+
   it("reports the service of an incident a pending action opens, whose details staging read from it", async () => {
     const t = await setup();
     await t.run([["getService", OTHER_SERVICE.id], ["createIncident", { title: "Refunds failing" }]]);
@@ -507,6 +565,22 @@ describe("simulation", () => {
     const [create] = await t.submitted();
     expect(await t.reject(create.actionId)).toEqual({ restart: true });
     expect(await t.run([["listIncidents"]], 5)).toMatchObject([[{ id: t.incident.id }]]);
+  });
+
+  it("stops listing an incident a pending action opens once opening it is rejected mid-walk", async () => {
+    const t = await setup();
+    const newest = t.pd.incident(SERVICE, { created_at: new Date(Date.now() + HOUR).toISOString() });
+    await t.run([["getService", SERVICE.id], ["createIncident", { title: "Checkout failing" }]]);
+    const [create] = await t.submitted();
+    // Rejected after the first page: the stand-in sorts between PagerDuty's two incidents, which
+    // one fetch already buffered.
+    t.pd.on("GET", /^\/users/, async () => {
+      await t.reject(create.actionId);
+      return undefined;
+    });
+    expect(await t.run([["listIncidents", { allTime: true, pageSize: 1 }]], 5, [[["findUsers", "bob"]]]))
+      .toMatchObject([[{ id: newest.id }], [{ id: t.incident.id }]]);
+    expect(t.pd.matching("GET", /^\/incidents\?/)).toHaveLength(1);
   });
 
   it("lists and reports, in a team binding, an incident a pending action opens on one of its services", async () => {
