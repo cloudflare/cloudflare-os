@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -10258,6 +10258,12 @@ class OverseerImpl implements AgentHooks {
     if (!resolved.ok) {
       return { requested: false, message:
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
+    }
+    if (input.resourceTypeId !== undefined && input.resourceUrl !== undefined &&
+        !matchesResourceUrlPattern(resolved.resource.urlPattern, input.resourceUrl)) {
+      return { requested: false, message:
+          `resourceUrl does not match resourceTypeId "${input.resourceTypeId}" ` +
+          `(${resolved.resource.urlPattern}). Supply a matching URL or omit resourceUrl to use the picker.` };
     }
 
     this.#captureDecisionRequest(chatId, {

@@ -226,6 +226,32 @@ describe("agent resource discovery", () => {
       }]);
     });
   });
+
+  const repository = { ...EXISTING, id: "repository", urlPattern: "https://git.example/:owner/:repo" };
+  const issue = { ...EXISTING, id: "issue", urlPattern: "https://git.example/:owner/:repo/issues/:issue" };
+
+  it("rejects a URL belonging to another explicitly selected connection type", async () => {
+    await withDiscovery([repository, issue], async impl => {
+      expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "REPOSITORY",
+        reason: "Read code", resourceTypeId: "repository",
+        resourceUrl: "https://git.example/cloudflare/cloudflare-os/issues/1" })).toMatchObject({
+        requested: false, message: expect.stringContaining("does not match"),
+      });
+      expect(impl.consumeCapturedDecisionRequests(1)).toEqual([]);
+    });
+  });
+
+  it.each([undefined, "https://git.example/cloudflare/cloudflare-os/"])(
+    "accepts an explicit connection type with an optional matching URL %s", async resourceUrl => {
+      await withDiscovery([repository, issue], async impl => {
+        expect(await impl.requestConnection(1, { vendorId: "example", bindingName: "REPOSITORY",
+          reason: "Read code", resourceTypeId: "repository", resourceUrl })).toMatchObject({ requested: true });
+        expect(impl.consumeCapturedDecisionRequests(1)).toMatchObject([{
+          type: "connectionRequest", resourceTypeId: "repository", resourceUrl,
+        }]);
+      });
+    },
+  );
 });
 
 
