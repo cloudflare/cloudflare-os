@@ -65,21 +65,26 @@ async function provisionAccount(api: RpcStub<AuthenticatedApi>): Promise<Connect
 const actionState = (label: string) => testActionState(harness, label);
 
 type Workspace = {
+  api: RpcStub<AuthenticatedApi>;
   overseer: RpcStub<Overseer>;
   session: RpcStub<TestSession>;
   gatekeeperId: number;
   label: string;
 };
 
-async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): Promise<Workspace> {
+async function newWorkspace(
+    publicApi: RpcStub<PublicApi>, thingName: string,
+    beforeCreating?: (api: RpcStub<AuthenticatedApi>) => Promise<void>): Promise<Workspace> {
   const [alice] = nextUsernames("alice");
   const aliceApi = await signUp(publicApi, alice);
   const account = await provisionAccount(aliceApi);
+  await beforeCreating?.(aliceApi);
   const overseer = await aliceApi.newWorkspace();
   const gatekeeper = await overseer.newGatekeeper(
       account.id, `https://gadgets-test.example/things/${thingName}`);
   if (!gatekeeper) throw new Error("Failed to create the test connection");
   return {
+    api: aliceApi,
     overseer,
     session: await gatekeeper.openSession() as RpcStub<TestSession>,
     gatekeeperId: await gatekeeper.getId(),
@@ -109,6 +114,60 @@ async function settle(ws: Workspace): Promise<void> {
 }
 
 describe("auto-approval policy", () => {
+  it.concurrent("a default the owner sets for a service applies in their workspaces, to what waits too",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "owner-default");
+      // Waits: nothing lets it through yet.
+      const write = ws.session.writeValue(1, { autoApprovable: true });
+      await settle(ws);
+      expect((await listWrites(ws))[0].state).toBe("pending");
+
+      await ws.api.setDefaultAutoApprovedActionKind(TEST_VENDOR_ID, SET_VALUE);
+      await expect(ws.api.listDefaultAutoApprovedActionKinds())
+          .resolves.toEqual([{ vendorId: TEST_VENDOR_ID, actionKind: SET_VALUE }]);
+      await expect(write).resolves.toEqual(expect.any(Number));
+      const applied = await waitFor("the waiting write to be auto-approved", async () => {
+        const [first] = await listWrites(ws);
+        return first?.state === "approved" ? first : null;
+      });
+      expect(applied.autoApproved).toBe(true);
+
+      // Taken back, the next one waits again.
+      await ws.api.removeDefaultAutoApprovedActionKind(TEST_VENDOR_ID, SET_VALUE.tag);
+      await waitFor("the default to be withdrawn", async () => {
+        void ws.session.writeValue(2, { autoApprovable: true });
+        await settle(ws);
+        const writes = await listWrites(ws);
+        return writes.at(-1)?.state === "pending" ? true : null;
+      });
+    });
+  });
+
+  it.concurrent("a workspace made after the default is set follows it once its owner opens it",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "default-first",
+          api => api.setDefaultAutoApprovedActionKind(TEST_VENDOR_ID, SET_VALUE));
+      await waitFor("a write to be auto-approved by the owner's default", async () => {
+        void ws.session.writeValue(1, { autoApprovable: true });
+        await settle(ws);
+        return (await listWrites(ws)).some(write => write.autoApproved) ? true : null;
+      });
+    });
+  });
+
+  it.concurrent("a default never lets through what the gatekeeper does not mark auto-approvable",
+      async () => {
+    await withSession(async publicApi => {
+      const ws = await newWorkspace(publicApi, "default-manual");
+      await ws.api.setDefaultAutoApprovedActionKind(TEST_VENDOR_ID, SET_VALUE);
+      void ws.session.writeValue(1, { autoApprovable: false });
+      await settle(ws);
+      expect((await listWrites(ws))[0].state).toBe("pending");
+    });
+  });
+
   it.concurrent("lists the kinds a connection no gadget binds can make on its own, as a chat's",
       async () => {
     await withSession(async publicApi => {

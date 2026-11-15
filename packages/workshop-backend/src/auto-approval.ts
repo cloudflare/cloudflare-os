@@ -6,9 +6,10 @@
 import type { Collection, NonUniqueIndex, Singleton } from "@gadgets/typed-storage";
 import type { AiChatAuthorInfo } from "@gadgets/workshop-shared/api";
 import { createWorkshopLogger } from "./observability";
-import type {
-  ActionRecord, AutoApproveTagRecord, GatekeeperCaller, StoredActionDescription, StoredChatMetadata,
-  WorkpieceRecord,
+import {
+  connectionVendorId, type ActionRecord, type AutoApproveTagRecord, type GatekeeperCaller,
+  type GatekeeperRecord, type OwnerAutoApproveDefaults, type StoredActionDescription,
+  type StoredChatMetadata, type WorkpieceRecord,
 } from "./storage-schema/overseer-storage.js";
 
 const logger = createWorkshopLogger("workshop.auto.approval");
@@ -19,6 +20,10 @@ export interface AutoApprovalStorage {
   autoApproveTags: Collection<AutoApproveTagRecord>;
   chatMeta: Collection<StoredChatMetadata, number>;
   gadgets: Collection<WorkpieceRecord, number>;
+  gatekeepers: Collection<GatekeeperRecord, number>;
+
+  /** The owner's defaults across their workspaces, by service (see makeOverseerStorage). */
+  ownerAutoApproveDefaults: Singleton<OwnerAutoApproveDefaults>;
 
   /** The restricted-data latch (see makeOverseerStorage). While set, nothing auto-approves. */
   containsRestrictedData: Singleton<boolean>;
@@ -28,9 +33,11 @@ export interface AutoApprovalStorage {
  * The single authority on whether an action may be applied without a human, returning who
  * authorized it: the author marked the action `autoApprovable`, the workspace has not latched
  * restricted mode, and either the agent's chat or the acting gadget is in Auto
- * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove) or the user enabled a rule for the
- * action's `actionKind` on this gatekeeper; else undefined. A stored description may lack the
- * verdict, which counts as no. A gadget caller recorded without its gadget names none.
+ * (AiChatMetadata.autoApprove, GadgetSummary.autoApprove), the user enabled a rule for the
+ * action's `actionKind` on this gatekeeper, or the owner lets that kind go ahead on the
+ * gatekeeper's service in all their workspaces (`ownerAutoApproveDefaults`); else undefined. A
+ * stored description may lack the verdict, which counts as no. A gadget caller recorded without
+ * its gadget names none.
  */
 export function autoApprovalRule(
     storage: AutoApprovalStorage, gatekeeperId: number, description: StoredActionDescription,
@@ -47,7 +54,13 @@ export function autoApprovalRule(
   }
   let tag = description.actionKind?.tag;
   if (tag === undefined) return undefined;
-  return storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
+  let rule = storage.autoApproveTags.get(`${gatekeeperId}:${tag}`);
+  if (rule) return rule;
+  let {defaults, owner} = storage.ownerAutoApproveDefaults.get();
+  let vendorId = connectionVendorId(storage.gatekeepers.get(gatekeeperId))?.toLowerCase();
+  if (!owner || vendorId === undefined) return undefined;
+  let byDefault = defaults.some(entry => entry.vendorId.toLowerCase() === vendorId && entry.actionKind.tag === tag);
+  return byDefault ? {enabledBy: owner} : undefined;
 }
 
 /**

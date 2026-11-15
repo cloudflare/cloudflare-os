@@ -15,7 +15,7 @@ import { deploymentOutputForBlueprint, listFormatOffers, readAdminConfig } from 
 
 // Re-export the optional-feature Durable Objects + entrypoints so they can be bound in wrangler.
 export { PendingLogin, LoginConnectCallbackImpl };
-import { GatekeeperUiFrame, GatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionKind, GatekeeperUiFrame, GatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { DecisionModelGatekeeper, LanguageModelGatekeeper } from "./ai-models";
 import { getGatewayModels } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
@@ -471,6 +471,18 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   disconnectAccount(accountId: number): Promise<void> {
     return this.#user.disconnectAccount(accountId);
+  }
+
+  setDefaultAutoApprovedActionKind(vendorId: string, actionKind: ActionKind): Promise<void> {
+    return this.#user.setDefaultAutoApprovedActionKind(vendorId, actionKind);
+  }
+
+  removeDefaultAutoApprovedActionKind(vendorId: string, tag: string): Promise<void> {
+    return this.#user.removeDefaultAutoApprovedActionKind(vendorId, tag);
+  }
+
+  listDefaultAutoApprovedActionKinds(): Promise<Array<{vendorId: string, actionKind: ActionKind}>> {
+    return this.#user.listDefaultAutoApprovedActionKinds();
   }
 
   reconnectAccount(accountId: number): Promise<ConnectFlowStart> {

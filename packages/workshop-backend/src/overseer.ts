@@ -21,6 +21,7 @@ import {
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type ChatFanoutStart, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
+  type OwnerAutoApproveDefaults,
   type ViewRecord,
   type StoredAssistantMessage, type StoredChatMessage, type StoredChatMetadata,
   type WorkpieceRecord, type WorktreeRecord,
@@ -12016,6 +12017,21 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * The owner's default auto-approvals (AuthenticatedApi.setDefaultAutoApprovedActionKind()),
+   * delivered by their user object whenever they change and fetched again each time the owner
+   * opens the workspace. Ignored unless the caller really is the owner. Actions waiting that they
+   * now cover are applied.
+   */
+  async setOwnerAutoApproveDefaults(ownerId: string, defaults: OwnerAutoApproveDefaults["defaults"],
+                                    owner: AiChatAuthorInfo): Promise<void> {
+    if (this.impl.ownerId !== ownerId) return;
+    let next: OwnerAutoApproveDefaults = {defaults, owner};
+    if (JSON.stringify(this.impl.storage.ownerAutoApproveDefaults.get()) === JSON.stringify(next)) return;
+    this.impl.storage.ownerAutoApproveDefaults.put(next);
+    this.impl.drainAutoApprovalsOf(() => true);
+  }
+
+  /**
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openWorkspaceInternal() to detect Durable Object disconnects.
    */
@@ -12057,9 +12073,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
 
     let isOwner = (userId == this.impl.ownerId);
 
-    // Cache the owner's profileId in memory when the owner opens.
+    // Cache the owner's profileId in memory when the owner opens, and catch up on their default
+    // auto-approvals, should a delivery have missed this workspace.
     if (isOwner) {
       this.impl.ownerProfileId = profileId;
+      let ownerUser = this.impl.users.get(this.impl.users.idFromString(userId));
+      // Never in the way of opening: a refresh that cannot be had waits for the next open. The
+      // owner's session keeps this object alive meanwhile, so it is not held for with waitUntil.
+      void Promise.resolve().then(() => ownerUser.autoApproveDefaults()).then(
+          ({defaults, owner}) => this.setOwnerAutoApproveDefaults(userId, defaults, owner),
+          (error: unknown) => this.impl.logger.warn("auto-approve defaults refresh failed", {
+            event: "auto_approve_defaults.refresh.failed", error,
+          }));
     }
 
     // Make singleton gatekeepers (e.g. the Context Library) available to the agent as unnamed

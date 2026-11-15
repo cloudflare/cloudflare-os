@@ -131,7 +131,7 @@ const REACTION_ACTION: ActionKind = { tag: "chatReaction", label: "Chat reaction
  * The kinds a user may opt into auto-approving. Starting a conversation is its own kind, so
  * replying where the user already talks can be trusted without trusting cold outreach.
  */
-const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
+export const AUTO_APPROVABLE_ACTIONS: ActionKind[] = [
   SEND_MESSAGE_ACTION, START_CONVERSATION_ACTION, EDIT_MESSAGE_ACTION, REACTION_ACTION,
 ];
 

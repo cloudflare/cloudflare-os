@@ -393,6 +393,16 @@ export type SupportedResource = {
    * in a single consent request, so a user connecting any type on the card is asked for all of them.
    */
   groupedWith?: string;
+
+  /**
+   * The kinds of change a connection of this type can make, so that a user can choose before
+   * connecting anything which go ahead without asking (see
+   * AuthenticatedApi.setDefaultAutoApprovedActionKind()). `autoApprovable` marks those whose
+   * actions it may mark `autoApprovable`, as Gatekeeper.getAutoApprovableActions() lists them; the
+   * rest always wait for a person. A connection may offer fewer, as one reached read-only does.
+   * Approves nothing by itself. Absent means it does not say.
+   */
+  actionKinds?: Array<{kind: ActionKind, autoApprovable: boolean}>;
 }
 
 /** Removes every trailing slash from a string in linear time. */

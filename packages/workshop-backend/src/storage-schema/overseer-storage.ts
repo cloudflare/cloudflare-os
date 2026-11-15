@@ -616,6 +616,13 @@ export type BoundHookRecord = {
 };
 
 /** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper */
+/** The owner's default auto-approvals (see `ownerAutoApproveDefaults`). */
+export type OwnerAutoApproveDefaults = {
+  defaults: Array<{vendorId: string, actionKind: ActionKind}>;
+  /** Who the actions they approve are attributed to; absent until first delivered. */
+  owner?: AiChatAuthorInfo;
+};
+
 export type AutoApproveTagRecord = {
   gatekeeperId: WorkpieceId;
   /**
@@ -1540,6 +1547,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // approval (autoApprovalRule never fires); the approver checks the action text for restricted
       // data. The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
+
+      // The kinds of change the owner lets go ahead without asking on a service's connections, in
+      // every workspace they own (AuthenticatedApi.setDefaultAutoApprovedActionKind()), as their
+      // user object last delivered them, with the profile they run under.
+      ownerAutoApproveDefaults: singleton<OwnerAutoApproveDefaults>({defaults: []}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
       // its `ObservationDescription`. Share links stop working and only the owner can add

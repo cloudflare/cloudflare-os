@@ -311,6 +311,18 @@ function actionKinds(labels: Record<string, string>): ActionKind[] {
   return Object.entries(labels).map(([tag, label]) => ({tag, label}));
 }
 
+/**
+ * Every kind of change a Gmail connection makes, for the vendor's catalog
+ * (SupportedResource.actionKinds). Sending, a message or a draft, carries no kind of its own and
+ * always waits for a person; it is listed under the action's type so the user sees that it does.
+ */
+export const GMAIL_ACTION_KINDS: Array<{kind: ActionKind, autoApprovable: boolean}> = [
+  ...[...actionKinds(MESSAGE_MUTATION_LABELS), ...actionKinds(RESOURCE_ACTION_LABELS)]
+      .map(kind => ({kind, autoApprovable: true})),
+  {kind: {tag: "send", label: "Send email"}, autoApprovable: false},
+  {kind: {tag: "draftSend", label: "Send drafts"}, autoApprovable: false},
+];
+
 function gmailAutoApprovalMetadata(
     action: GmailAction,
 ): Pick<ActionDescription, "actionKind" | "autoApprovable"> {

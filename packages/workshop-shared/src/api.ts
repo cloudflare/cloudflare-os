@@ -1169,6 +1169,25 @@ export interface AuthenticatedApi extends RpcTarget {
   disconnectAccount(accountId: number): Promise<void>;
 
   /**
+   * Let actions carrying `actionKind` on any connection to the service `vendorId`, in every
+   * workspace the user owns, now and later, go ahead without asking, as a rule on each connection
+   * would (see Overseer.setAutoApprovedActionKind()): only actions their gatekeeper marks
+   * `autoApprovable`, and none in a workspace that has read restricted data. Matching actions
+   * already waiting are applied. The kinds a service offers are in its
+   * SupportedResource.actionKinds.
+   */
+  setDefaultAutoApprovedActionKind(vendorId: string, actionKind: ActionKind): Promise<void>;
+
+  /**
+   * Stop letting actions tagged `tag` on `vendorId`'s connections go ahead without asking by
+   * default. A rule a workspace holds for a connection of its own still applies.
+   */
+  removeDefaultAutoApprovedActionKind(vendorId: string, tag: string): Promise<void>;
+
+  /** The kinds of change the user lets go ahead without asking by default, by service. */
+  listDefaultAutoApprovedActionKinds(): Promise<Array<{vendorId: string, actionKind: ActionKind}>>;
+
+  /**
    * Get the UI used to choose a specific resource from a connected account.
    *
    * `accountId` is the user's connected account that provides this resource.

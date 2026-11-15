@@ -1,7 +1,7 @@
 import { RpcStub } from "capnweb";
 import type { ChatReadState, ChatTimelineHead, FavoriteItem, FavoriteItemSpec, LibraryItemRef, LibraryRemoval, UnreadStateScope, WorkspaceKind, UnreadStateSubscriber, UserUnreadState, UnreadThread, UserUnreadSummary, WorkspaceUnreadSummary } from "@gadgets/workshop-shared/api";
 import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
-import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
+import { ActionDescription, ActionKind, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -11,7 +11,7 @@ import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
   type PendingHandoffRecord, type UserAiModelRecord, type UserStorage, type WorkspaceOutputEntry,
-  type ChatReadCursor, favoriteKey, libraryItemKey,
+  type ChatReadCursor, type AutoApproveDefault, favoriteKey, libraryItemKey,
 } from "./storage-schema/user-storage.js";
 import { chatKey, chatKeyPrefix } from "./storage-schema/overseer-storage.js";
 import { recordAnalytics } from "./analytics";
@@ -2592,6 +2592,47 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         subscriber[Symbol.dispose]();
       }
     });
+  }
+
+  async setDefaultAutoApprovedActionKind(vendorId: string, actionKind: ActionKind): Promise<void> {
+    this.storage.autoApproveDefaults.put({vendorId, actionKind});
+    this.ctx.waitUntil(this.#pushAutoApproveDefaults());
+  }
+
+  async removeDefaultAutoApprovedActionKind(vendorId: string, tag: string): Promise<void> {
+    this.storage.autoApproveDefaults.delete(`${vendorId}:${tag}`);
+    this.ctx.waitUntil(this.#pushAutoApproveDefaults());
+  }
+
+  async listDefaultAutoApprovedActionKinds(): Promise<AutoApproveDefault[]> {
+    return [...this.storage.autoApproveDefaults.list()];
+  }
+
+  /**
+   * The user's defaults, for a workspace they own to apply (see
+   * Overseer.setOwnerAutoApproveDefaults), with the profile the actions they approve are
+   * attributed to.
+   */
+  autoApproveDefaults(): {defaults: AutoApproveDefault[], owner: AiChatAuthorInfo} {
+    return {defaults: [...this.storage.autoApproveDefaults.list()], owner: this.storage.profile.get()};
+  }
+
+  // Delivers the defaults to every workspace the user owns, including one not opened yet, which
+  // ignores them until it is set up. One that misses this catches up when the owner next opens it.
+  async #pushAutoApproveDefaults() {
+    let ownerId = this.ctx.id.toString();
+    let {defaults, owner} = this.autoApproveDefaults();
+    let overseers = this.ctx.exports.OverseerDurableObject;
+    let targets = [...this.storage.gadgets.list()].filter(gadget => !gadget.owner);
+    let results = await Promise.allSettled(targets.map(({id}) =>
+        overseers.get(overseers.idFromString(id)).setOwnerAutoApproveDefaults(ownerId, defaults, owner)));
+    let failed = results.filter(result => result.status === "rejected").length;
+    if (failed) {
+      logger.warn("auto-approve defaults delivery deferred", {
+        event: "auto_approve_defaults.delivery.deferred", failureCount: failed,
+        error: results.find(result => result.status === "rejected")?.reason,
+      });
+    }
   }
 
   async disconnectAccount(accountId: number): Promise<void> {

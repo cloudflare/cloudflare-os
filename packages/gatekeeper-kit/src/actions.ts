@@ -357,6 +357,13 @@ export type ActionSet<Host, M extends Record<string, unknown>> = {
    * @returns The bound action set.
    */
   bind(journal: ActionJournal<TaggedAction<M>>, host: Host): BoundActionSet<M>;
+  /**
+   * Every kind the set's actions carry, one per tag in the order declared, and whether actions of
+   * it may be approved automatically: the catalog a vendor advertises before anything is bound
+   * (SupportedResource.actionKinds).
+   * @returns Kinds and their verdicts.
+   */
+  kinds(): Array<{ kind: ActionKind; autoApprovable: boolean }>;
 };
 
 // Pending action references used to find stranded dependents.
@@ -472,6 +479,9 @@ export function defineActions<Host, M extends Record<string, unknown>>(
   const bound = new WeakMap<object, { host: Host; set: BoundActionSet<M> }>();
 
   return {
+    kinds: () => [...labelByTag].map(([tag, label]) =>
+      ({ kind: { tag, label }, autoApprovable: autoApprovableByTag.has(tag) })),
+
     /**
      * Binds this set to a journal and host.
      * @param journal Resource action journal.

@@ -84,6 +84,7 @@ export async function openFakeOverseer(
   let userId = opts.userId ?? (role === "build" ? ownerId : "viewer-id");
   let overseer = {
     open: OverseerDurableObject.prototype.open,
+    setOwnerAutoApproveDefaults: async () => {},
     impl: {
       ownerId,
       assertGatekeeperUsable: () => {},
@@ -110,6 +111,7 @@ export async function openFakeOverseer(
         get: () => ({
           whoami: async () => ({ id: "profile-id", name: "Test User" }),
           recordSharedWorkspaceOpen: async () => {},
+          autoApproveDefaults: async () => ({ defaults: [] }),
         }),
       },
       storage: Object.assign(storage, {
@@ -120,6 +122,6 @@ export async function openFakeOverseer(
       }),
       ...opts.impl,
     },
-  } satisfies Pick<OverseerDurableObject, "open"> & { impl: object };
+  } satisfies Pick<OverseerDurableObject, "open" | "setOwnerAutoApproveDefaults"> & { impl: object };
   return overseer.open(userId, `${userId}-profile`, new NativeRpcStub<() => void>(() => {}));
 }

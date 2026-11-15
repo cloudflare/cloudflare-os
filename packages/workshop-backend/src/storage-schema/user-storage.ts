@@ -11,7 +11,7 @@ import type {
   LibraryItemRef, LibraryRemoval,
 } from "@gadgets/workshop-shared/api";
 import { chatKey } from "./overseer-storage.js";
-import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
+import type { AccountDescription, ActionKind, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
 
 export type ConnectedAccountRecord = {
@@ -260,6 +260,12 @@ export type CloudflareBilling = {
   creditsUpdatedAt?: number;
 };
 
+/** One kind of change the user lets go ahead without asking on a service's connections. */
+export type AutoApproveDefault = {
+  vendorId: string;
+  actionKind: ActionKind;
+};
+
 export function makeUserStorage(storage: DurableObjectStorage) {
   return createTypedStorage(storage, {
     collections: {
@@ -284,6 +290,12 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       }),
       connectedAccounts: collection<ConnectedAccountRecord>()({
         primaryKey: "id"
+      }),
+      // The kinds of change the user lets go ahead without asking on a service's connections, in
+      // every workspace they own (AuthenticatedApi.setDefaultAutoApprovedActionKind()). Presence
+      // of a record -> enabled.
+      autoApproveDefaults: collection<AutoApproveDefault>()({
+        primaryKey: record => `${record.vendorId}:${record.actionKind.tag}`,
       }),
       sessions: collection<LoginSessionRecord>()({
         primaryKey: "tokenId",
