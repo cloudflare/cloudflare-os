@@ -30,7 +30,7 @@ export type LibraryEntry = {
   sharedBy?: string
   /** The chat a file was sent or last worked on in, which its own page is shown from. */
   chatId?: number
-  /** How it is starred, when it can be. A connected file lives with its service, and cannot. */
+  /** How it is starred, when it can be: anything but a chat, which is starred in its workspace. */
   favorite?: FavoriteItemSpec
   starred: boolean
   /** How it is taken out of the Library. */
@@ -56,7 +56,8 @@ export type LibrarySources = {
 export const favoriteKey = (ref: FavoriteItemRef) =>
   ref.kind === 'app' ? `${ref.workspaceId}:app:${ref.workpieceId}`
     : ref.kind === 'chat' ? `${ref.workspaceId}:chat:${ref.chatId}`
-      : `${ref.workspaceId}:file:${ref.chatId}:${ref.fileId}`
+      : ref.kind === 'external' ? `${ref.workspaceId}:external:${ref.subjectId}`
+        : `${ref.workspaceId}:file:${ref.chatId}:${ref.fileId}`
 
 /** The key a removed item is known by, as the server knows it (`libraryItemKey`). */
 export const removalKey = (ref: LibraryItemRef) =>
@@ -128,7 +129,7 @@ const fileEntry = (file: WorkspaceFile, starred: ReadonlySet<string>): LibraryEn
   }
 }
 
-const connectedEntry = (file: LibrarySources['connected'][number]): LibraryEntry => {
+const connectedEntry = (file: LibrarySources['connected'][number], starred: ReadonlySet<string>): LibraryEntry => {
   const { workspaceId, gatekeeperId, subjectId, kind, url } = file
   const item: AsideItem = {
     key: formatAsideRef({ kind: 'connected', gatekeeperId, subjectId }),
@@ -137,6 +138,7 @@ const connectedEntry = (file: LibrarySources['connected'][number]): LibraryEntry
     kind: 'connected',
     connected: { workspaceId, gatekeeperId, subjectId, fileKind: kind, url },
   }
+  const favorite: FavoriteItemSpec = { kind: 'external', workspaceId, subjectId, title: file.title }
   return {
     key: entryKey(workspaceId, item),
     item,
@@ -146,7 +148,8 @@ const connectedEntry = (file: LibrarySources['connected'][number]): LibraryEntry
     workspaceId,
     workspaceTitle: file.workspaceTitle,
     chatId: file.chatId,
-    starred: false,
+    favorite,
+    starred: starred.has(favoriteKey(favorite)),
     removal: { kind: 'external', workspaceId, subjectId },
     canDelete: false,
   }
@@ -178,15 +181,16 @@ export const libraryEntries = (sources: LibrarySources): LibraryEntries => {
     .toSorted(latest)
   const files = [
     ...sources.files.map((file) => fileEntry(file, starred)),
-    ...sources.connected.map(connectedEntry),
+    ...sources.connected.map((file) => connectedEntry(file, starred)),
   ].filter((entry) => kept(entry, sources.removals)).toSorted(latest)
 
   const listed = new Map([...gadgets, ...files].flatMap((entry) => (entry.favorite ? [[favoriteKey(entry.favorite), entry] as const] : [])))
   const favorites = sources.favorites.flatMap((favorite): LibraryEntry[] => {
     const found = listed.get(favoriteKey(favorite))
     if (found) return [found]
-    // Starred chats are listed in their workspace, not in the Library.
-    if (favorite.kind === 'chat') return []
+    // Starred chats are listed in their workspace, not in the Library; a connected file is opened
+    // through the connection its workspace lists it with, so it is shown only while listed.
+    if (favorite.kind === 'chat' || favorite.kind === 'external') return []
     const entry = favorite.kind === 'app'
       ? gadgetEntry({ ...favorite, at: favorite.starred }, sources, starred)
       : fileEntry({ ...favorite, id: favorite.fileId, name: favorite.title, mimeType: favorite.mimeType ?? 'application/octet-stream', size: 0, attached: favorite.starred }, starred)

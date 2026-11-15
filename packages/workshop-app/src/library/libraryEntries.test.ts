@@ -88,8 +88,19 @@ describe('libraryEntries', () => {
     expect(gadgets[0].starred).toBe(true)
   })
 
+  it('stars a connected file by its subject, showing it starred only while it is listed', () => {
+    const favorites: FavoriteItem[] = [
+      { kind: 'external', workspaceId: 'w1', subjectId: 'doc', title: 'Plan', starred: hoursAgo(1) },
+      { kind: 'external', workspaceId: 'w1', subjectId: 'unlisted', title: 'Gone', starred: hoursAgo(1) },
+    ]
+    const { files, favorites: starred } = libraryEntries(sources({ connected: [connected('doc', 2)], favorites }))
+    expect(files[0]).toMatchObject({ starred: true, favorite: { kind: 'external', workspaceId: 'w1', subjectId: 'doc', title: 'Plan' } })
+    expect(starred.map((entry) => entry.title)).toEqual(['Plan'])
+  })
+
   it('knows starred and removed items by the server’s keys', () => {
     expect(favoriteKey({ kind: 'file', workspaceId: 'w', chatId: 1, fileId: 'f' })).toBe('w:file:1:f')
+    expect(favoriteKey({ kind: 'external', workspaceId: 'w', subjectId: 's' })).toBe('w:external:s')
     expect(removalKey({ kind: 'external', workspaceId: 'w', subjectId: 's' })).toBe('w:external:s')
   })
 })

@@ -367,7 +367,7 @@ what others shared with them, in tabs: Favorites, Gadgets, Files, Automations an
 left out; a Google file that was taken out comes back once it is worked on again. Rows are grouped
 by when, or by name, and searched by name. The list or grid and the order are this device's
 (`prefs/`). Everything opens as its own page, a file shown from the chat it was sent in. A
-workspace's Library tab and a chat's settings show the same rows. A star or a removal shows at once
+workspace's Library tab and a chat's settings show the same rows. A Google file is starred by its subject, and shows starred while its workspace lists it. A star or a removal shows at once
 and is undone, with why, if it does not hold; deleting a gadget asks first and is only offered to
 whoever builds where it was made.
 
