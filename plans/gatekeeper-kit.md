@@ -2824,7 +2824,7 @@ Who uses what:
 |---|---|---|---|
 | Docs | a tab; and the tab tree as one outline entity, which a pending tab create targets beside its provisional tab id | none | in the tree |
 | Sheets | one: the grid | none | in the tree |
-| Slides | one: the deck | none | planned |
+| Slides | one: the deck | none | in the tree |
 | PagerDuty | incidents | the incident listing | planned |
 | Outlook | messages | the message listing | planned |
 
