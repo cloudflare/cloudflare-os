@@ -4,7 +4,7 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { GadgetFocus, GadgetSummary } from '@gadgets/workshop-shared/api'
+import type { GadgetFocus, GadgetSummary, MessageFocus } from '@gadgets/workshop-shared/api'
 import type { GadgetUIFocus } from '../../GadgetUI'
 import type { PaneFocus } from './paneFocus'
 import { usePaneFocus } from './usePaneFocus'
@@ -22,8 +22,11 @@ const gadget = (id: number, title: string, chatId?: number) =>
 const budget = gadget(3, 'Budget')
 const trips = gadget(4, 'Trips')
 const q3: GadgetFocus = { anchor: 'sheet/q3/cell/B7', label: 'Q3 › cell B7' }
+const q4: GadgetFocus = { anchor: 'sheet/q4/cell/C2', label: 'Q4 › cell C2', context: 'Net revenue: 1,204,331' }
+const lisbon: GadgetFocus = { anchor: 'trip/t_9', label: 'Lisbon', context: 'Flights booked, hotel pending' }
 
-type State = { gadget: GadgetSummary | undefined; showsGadget: boolean }
+// `anchor` is the URL's `at` for the selected gadget.
+type State = { gadget: GadgetSummary | undefined; anchor: string | undefined; showsGadget: boolean }
 
 let container: HTMLDivElement
 let root: Root
@@ -31,11 +34,12 @@ let state: State
 // What the hook last returned.
 let uiFocus: GadgetUIFocus | undefined
 let paneFocus: PaneFocus | undefined
+let onFocusOpened: (focus: MessageFocus) => void
 const urlFocusChange = vi.fn<(focus: GadgetFocus | null) => void>()
 
 const Harness = () => {
-  ({ uiFocus, paneFocus } = usePaneFocus({
-    uiFocus: state.gadget && { anchor: undefined, onFocusChange: urlFocusChange },
+  ({ uiFocus, paneFocus, onFocusOpened } = usePaneFocus({
+    uiFocus: state.gadget && { anchor: state.anchor, onFocusChange: urlFocusChange },
     gadget: state.gadget,
     showsGadget: state.showsGadget,
   }))
@@ -47,11 +51,18 @@ const render = async (changes: Partial<State>) => {
   await act(async () => root.render(<Harness />))
 }
 const report = (focus: GadgetFocus | null) => act(() => uiFocus!.onFocusChange(focus))
+// What GadgetUI does as it replaces the frame or sends it to a spot it didn't report.
+const reset = () => act(() => uiFocus!.onFocusReset!())
+// A sent message's chip is clicked: the editor notes it, then sets `w` and `at`.
+const openChip = async (focus: MessageFocus) => {
+  await act(() => onFocusOpened(focus))
+  await render({ gadget: focus.gadgetId === trips.id ? trips : budget, anchor: focus.spot?.anchor })
+}
 
 beforeEach(() => {
   container = document.body.appendChild(document.createElement('div'))
   root = createRoot(container)
-  state = { gadget: budget, showsGadget: true }
+  state = { gadget: budget, anchor: undefined, showsGadget: true }
   urlFocusChange.mockClear()
 })
 
@@ -92,7 +103,7 @@ describe('usePaneFocus', () => {
   it("drops the spot when the frame is replaced, so an old frame's label never shows", async () => {
     await render({})
     await report(q3)
-    await act(() => uiFocus!.onFocusReset!())
+    await reset()
     expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget' })
     expect(urlFocusChange).toHaveBeenCalledOnce()
   })
@@ -104,5 +115,87 @@ describe('usePaneFocus', () => {
     expect(paneFocus?.focus).toStrictEqual({ gadgetId: 4, gadgetTitle: 'Trips' })
     await render({ gadget: budget })
     expect(paneFocus?.focus.spot).toBeUndefined()
+  })
+
+  describe('after a sent message\'s chip opens a spot', () => {
+    it('offers that spot, context and all, though the gadget never reports it', async () => {
+      await render({})
+      await report(q3)
+      await openChip({ gadgetId: 3, spot: q4 })
+      // GadgetUI sends the frame to the new anchor.
+      await reset()
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget', spot: q4 })
+    })
+
+    it("offers another gadget's spot across the new frame's reset", async () => {
+      await render({})
+      await report(q3)
+      await openChip({ gadgetId: 4, spot: lisbon })
+      // The old frame goes, then the new one starts and is sent to the anchor.
+      await reset()
+      await reset()
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 4, gadgetTitle: 'Trips', spot: lisbon })
+    })
+
+    it("lets the gadget's own report replace it", async () => {
+      await render({})
+      await openChip({ gadgetId: 3, spot: q4 })
+      const fresh = { ...q4, context: 'Net revenue: 1,300,000' }
+      await report(fresh)
+      expect(paneFocus?.focus.spot).toStrictEqual(fresh)
+    })
+
+    it('drops it when the spot no longer resolves', async () => {
+      await render({})
+      await openChip({ gadgetId: 3, spot: q4 })
+      // A false navigate reports null, which clears `at`.
+      await report(null)
+      await render({ anchor: undefined })
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget' })
+    })
+
+    it('drops it once the gadget is sent elsewhere without a chip, even if it comes back', async () => {
+      await render({})
+      await openChip({ gadgetId: 3, spot: q4 })
+      await render({ anchor: 'sheet/q1/cell/A1' })
+      await reset()
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget' })
+
+      // A pasted link back to the spot isn't the chip, and the gadget hasn't said what it shows.
+      await render({ anchor: q4.anchor })
+      await reset()
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget' })
+    })
+
+    it('keeps it through a report from the gadget being left', async () => {
+      await render({})
+      await act(() => onFocusOpened({ gadgetId: 4, spot: lisbon }))
+      await report(q3)
+      await render({ gadget: trips, anchor: lisbon.anchor })
+      expect(paneFocus?.focus).toStrictEqual({ gadgetId: 4, gadgetTitle: 'Trips', spot: lisbon })
+    })
+
+    it("leaves the frame's report standing when the chip names the spot already in the URL", async () => {
+      // The URL still names q4, but the frame has since reported q3 and the write is pending.
+      await render({ anchor: q4.anchor })
+      await report(q3)
+      await openChip({ gadgetId: 3, spot: q4 })
+      expect(paneFocus?.focus.spot).toStrictEqual(q3)
+    })
+
+    it('shows the current title, not the one the message recorded', async () => {
+      await render({})
+      await openChip({ gadgetId: 3, spot: q4 })
+      await render({ gadget: gadget(3, 'Budget 2027') })
+      expect(paneFocus?.focus.gadgetTitle).toBe('Budget 2027')
+    })
+  })
+
+  it('drops the reported spot when the frame is sent to one it did not report', async () => {
+    await render({})
+    await report(q3)
+    await render({ anchor: 'sheet/q1/cell/A1' })
+    await reset()
+    expect(paneFocus?.focus).toStrictEqual({ gadgetId: 3, gadgetTitle: 'Budget' })
   })
 })

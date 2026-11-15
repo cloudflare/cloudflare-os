@@ -158,7 +158,9 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   `navigate`. That covers a pasted link and, later, a clicked comment, without echoing the
   gadget's own reports back to it. Because the URL lags the reports, an anchor the frame reported
   since `anchor` last changed is not a navigation either: after reports A then B, the URL can
-  still catch up through A, and sending the frame back to A would undo B.
+  still catch up through A, and sending the frame back to A would undo B. Before it sends that
+  `navigate`, `GadgetUI` calls `onFocusReset`: the frame's last report describes the spot it is
+  leaving, and a gadget is asked to report from `navigate` but may not.
 - A `navigate` that returns false, or fails, reports a null focus, which clears the stale anchor.
   It does so only if nothing has superseded it: a `navigate` can still be pending when the user
   moves on, so each call is numbered, and its failure is ignored if the frame has reported a focus
@@ -168,10 +170,10 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   about to be sent to.
 - A new frame starts with no "last reported" anchor and no callback, so it gets `navigate(anchor)`
   when it registers. That is the whole restore mechanism for code-change reloads and page reloads.
-- Whenever the frame is replaced, `GadgetUI` calls `onFocusReset`. That includes replacements it
-  decides on itself (a failed reconnect bumps `iframeGeneration`), which the parent cannot see.
-  A reset is not a null report: what the old frame said no longer stands, but the anchor is kept,
-  because the new frame is about to be sent to it.
+- Whenever the frame is replaced, `GadgetUI` calls `onFocusReset` too. That includes replacements
+  it decides on itself (a failed reconnect bumps `iframeGeneration`), which the parent cannot see.
+  A reset is not a null report: what the frame said no longer stands, but the anchor is kept,
+  because the frame is about to be sent to it.
 
 `GadgetEditor` owns the state:
 
@@ -191,7 +193,16 @@ onFocusReset?() }`. `onFocusReset` is optional because only the composer's state
   the one our last write made and hasn't yet come back through the URL.
 - The reported `GadgetFocus` is kept in React state for the composer. `onFocusReset` clears it
   and leaves the URL alone, so the chip never shows a label from old code while the new frame is
-  still starting.
+  still starting, or the spot a navigated frame has left.
+- A transcript chip's click also keeps a copy of that chip's spot (anchor, label and context) for
+  the composer, since the gadget may never report the spot it is sent to. The click records it
+  before the URL changes, so it waits for its gadget and anchor to be `w` and `at`, then is the
+  composer's spot until `at` moves on (even if it later comes back, which no chip did) or the
+  gadget reports, which replaces it. A failed `navigate` reports null, so it goes then too. A
+  report from the gadget being left does not cancel it, and a frame reset leaves it, because
+  opening another gadget's spot, or one with the pane closed, starts a new frame. A click on the
+  spot `at` already names sends the frame nowhere, so it keeps no copy and the frame's report
+  stands.
 - A frame that never reports leaves `at` alone.
 
 `GadgetUseView` gets the same URL behavior and has no chat.
@@ -263,8 +274,10 @@ Frontend:
 - Dismissing the chip sends that message with no focus at all. The chip returns for the next one.
 - The transcript draws the same chip on a sent message. Clicking it sets `w` to that gadget and,
   if the focus has a spot, `at` to its anchor, in one navigation. That selects the gadget and
-  navigates its frame. If the gadget is no longer one the chat can show (deleted, or a discarded
-  draft), the click only says so in a toast.
+  navigates its frame. The composer's chip then shows the clicked chip's spot, context included,
+  until the gadget reports one of its own; it keeps the gadget's current title. If the gadget is
+  no longer one the chat can show (deleted, or a discarded draft), the click only says so in a
+  toast.
 - The composer offers only a focus the server would accept: no chip while a slash command is
   selected, and none for a gadget still pending in a chat other than the one the message goes to
   (for a new chat, any pending gadget).
@@ -374,7 +387,10 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   turn, and replaying the chat afterwards produces the same bytes; hostile label, anchor and
   context text cannot break out of the block; a bad `gadgetId` or an oversized string is refused.
 - **Chips** (frontend tests): shown whenever the pane shows a gadget; the label gains the spot
-  when one is reported; dismissal lasts one message.
+  when one is reported; dismissal lasts one message. After a transcript chip's click, the
+  composer offers the clicked spot though the gadget never reports, for the same gadget and
+  across a new frame for another; the gadget's report replaces it, a failed `navigate` drops it,
+  and a navigation without a chip drops the reported spot.
 - **Live**: a hand-written gadget with two views, checked in a browser for restore across a code
   change and a page reload, and for the transcript chip navigating back.
 
@@ -390,6 +406,9 @@ the server, and "fix this" costs a tool round trip before the agent knows what "
   regardless, and a gadget version that doesn't know it returns false.
 - **Collaborators.** Focus is per browser. A message records its sender's focus; nobody sees
   anyone else's.
+- **A chip clicked while a report waits to be written.** If the frame has just moved from the
+  spot `at` names, a click on a chip for that spot leaves `at` unchanged, so the frame is not
+  sent back. The composer keeps what the frame reported, which is what it shows.
 - **Callers outside this repository** of `newChat()` and `sendChatMessage()` (the internal repo)
   need the options struct too.
 

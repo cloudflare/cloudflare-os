@@ -1061,7 +1061,7 @@ export default function GadgetEditor() {
       })
     },
   })
-  const { uiFocus: gadgetFocus, paneFocus } = usePaneFocus({
+  const { uiFocus: gadgetFocus, paneFocus, onFocusOpened } = usePaneFocus({
     uiFocus: focusUrl,
     gadget: selectedGadgetSummary,
     showsGadget: showFullEditor && !showingActivity,
@@ -1501,6 +1501,7 @@ export default function GadgetEditor() {
     if (isAgentActive) userPickedWorkpieceThisTurnRef.current = true
     handleTabSelect('app')
     setWorkspaceVisibility('open', focus.gadgetId)
+    onFocusOpened(focus)
     navigate({
       to: '/workspace/$id',
       params: { id: id! },

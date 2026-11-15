@@ -277,8 +277,8 @@ export type GadgetUIFocus = {
   /** The frame reported a focus. Null also clears an anchor that no longer resolves. */
   onFocusChange: (focus: GadgetFocus | null) => void
   /**
-   * The frame was replaced, so what it reported no longer stands. The anchor still does: the next
-   * frame is sent to it.
+   * What the frame reported no longer stands: the frame was replaced, or is being sent to a spot it
+   * did not report. The anchor still does: the frame is sent to it.
    */
   onFocusReset?: () => void
 }
@@ -423,6 +423,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     const echo = anchor !== undefined && frame.unacknowledged.has(anchor)
     frame.unacknowledged = new Set(frame.lastReported === null ? [] : [frame.lastReported])
     if (anchor === undefined || !frame.navigate || echo) return
+    // What the frame last reported is the spot it is leaving, and it may never report the new one.
+    focusRef.current?.onFocusReset?.()
     void sendNavigate(frame, frame.navigate, anchor)
   }, [anchor])
 

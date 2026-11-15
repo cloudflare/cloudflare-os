@@ -248,7 +248,7 @@ describe('focus', () => {
 
     await show(gadget, 'cell/C1')
 
-    await expect.poll(() => recorder.events).toEqual(['navigate cell/C1'])
+    await expect.poll(() => recorder.events).toEqual(['reset', 'navigate cell/C1'])
   })
 
   it("doesn't echo the frame's own report back to it", async () => {
@@ -264,6 +264,22 @@ describe('focus', () => {
 
     await show(gadget, 'cell/C1')
     await expect.poll(() => recorder.events.at(-1)).toBe('navigate cell/C1')
+  })
+
+  it('resets before sending the frame to a spot it did not report, which it may never report', async () => {
+    const gadget = focusGadget()
+    await show(gadget, undefined)
+    const control = await frame(0)
+    await control.register()
+    await control.report({ anchor: 'cell/B7', label: 'B7' })
+    await show(gadget, 'cell/B7')
+
+    await show(gadget, 'cell/C1')
+    await expect.poll(() => recorder.navigations.length).toBe(1)
+    recorder.navigations[0].resolve(true)
+    await settle()
+
+    expect(recorder.events).toEqual(['change {"anchor":"cell/B7","label":"B7"}', 'reset', 'navigate cell/C1'])
   })
 
   it("doesn't navigate to the frame's earlier report as the anchor catches up with its reports", async () => {
@@ -357,7 +373,7 @@ describe('focus', () => {
     recorder.navigations[1].resolve(true)
     await settle()
 
-    expect(recorder.events).toEqual(['navigate gone', 'navigate cell/C1'])
+    expect(recorder.events).toEqual(['navigate gone', 'reset', 'navigate cell/C1'])
   })
 
   it('ignores a failure superseded by a return to the spot the frame reported', async () => {
@@ -374,7 +390,7 @@ describe('focus', () => {
     recorder.navigations[0].resolve(false)
     await settle()
 
-    expect(recorder.events).toEqual(['change {"anchor":"cell/B7","label":"B7"}', 'navigate gone'])
+    expect(recorder.events).toEqual(['change {"anchor":"cell/B7","label":"B7"}', 'reset', 'navigate gone'])
   })
 
   it("ignores a replaced frame's pending navigate failing as its session closes", async () => {
