@@ -132,3 +132,42 @@ describe('ActivityNotifications action fields', () => {
     expect(document.body.textContent).not.toMatch(/\d+ fields?/)
   })
 })
+
+describe('ActivityNotifications under the branch approval model', () => {
+  // Which of the rendered requests (by title) offer Approve beside Deny.
+  function approvableTitles(): string[] {
+    return [...document.querySelectorAll('button')]
+        .filter(button => button.textContent === 'Approve')
+        .map(button => button.closest('.flex.items-start')?.querySelector('span')?.textContent ?? '')
+  }
+
+  async function renderRequests(branchApproval: boolean) {
+    const server = makeOverseer()
+    await view.render(
+      <ActivityNotifications
+        overseer={server.overseer} onViewActivity={() => {}} branchApproval={branchApproval} />,
+    )
+    await server.resolveSubscription()
+    const description = { description: '', implementsRevert: false, autoApprovable: true }
+    await server.resolvePendingQuery({
+      entries: [
+        entry(1, { chatId: 4, description: { ...description, title: 'Chat write' } }),
+        entry(2, { chatId: 4, description: { ...description, title: 'Awaited', awaitDecision: true } }),
+        entry(3, { description: { ...description, title: 'Staged write' } }),
+      ],
+    })
+    flushFrames()
+  }
+
+  it('offers Approve only where a request can apply without its chat being accepted', async () => {
+    await renderRequests(true)
+    expect(approvableTitles()).toEqual(['Awaited', 'Staged write'])
+    expect([...document.querySelectorAll('button')]
+        .filter(button => button.textContent === 'Deny')).toHaveLength(3)
+  })
+
+  it('offers Approve on every request without it', async () => {
+    await renderRequests(false)
+    expect(approvableTitles()).toEqual(['Chat write', 'Awaited', 'Staged write'])
+  })
+})

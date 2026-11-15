@@ -472,6 +472,26 @@ describe('the branch approval model', () => {
     expect([...document.querySelectorAll('button')].map(b => b.textContent)).toContain('Approve')
   })
 
+  it.each([true, false])(
+      'holds back Accept changes only while the agent is stopped on a decision (%s)',
+      async (awaitingDecision) => {
+    const server = makeOverseer()
+    const chat = withChatApi(server, undefined, [{
+      id: 1, title: 'Chat', started: new Date(), lastActive: new Date(),
+      ...(awaitingDecision ? { awaitingDecision: true as const } : {}),
+    }])
+    await renderChat(server.overseer, { selectedChatId: 1, branchApproval: true })
+    await server.resolveSubscription()
+    // A stopped turn leaves its awaited request pending without waiting on it any longer.
+    const log = { ...pendingLog({ awaitDecision: true }), chatId: 1 } as ActionLogEntry
+    await server.resolvePendingQuery({ entries: [log] })
+    chat.emitMessage({ ...actionMessage, actionLog: log } as AiChatMessage)
+
+    const accept = [...document.querySelectorAll('button')]
+      .find(b => b.textContent?.trim() === 'Accept changes') as HTMLButtonElement
+    expect(accept.disabled).toBe(awaitingDecision)
+  })
+
   it('accepts the held requests no chat made from the bar under the tray, outside any chat',
       async () => {
     const server = makeOverseer()

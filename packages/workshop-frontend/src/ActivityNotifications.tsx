@@ -8,6 +8,7 @@ import { IncompleteDescriptionNotice, isDescriptionIncomplete } from './componen
 import { ActionFields, entryFields, fieldCountLabel } from './components/ActionFields'
 import { ResolveButton } from './components/ResolveButton'
 import { RestrictedApprovalNotice } from './components/RestrictedApprovalNotice'
+import { canApproveAlone } from './features/approvals/pendingChangeGroups'
 import {
   PENDING_CHECKING_COPY,
   PENDING_ERROR_COPY,
@@ -23,6 +24,9 @@ interface ActivityNotificationsProps {
   // True once the workspace has read restricted data (WorkspaceMetadata.containsRestrictedData):
   // the approver is the leak check, so each request is shown in full with a notice saying so.
   restricted?: boolean
+  // The branch approval model (the `branch-approval` UI feature flag), where a chat's requests
+  // apply only when its changes are accepted, so only some are offered for approval on their own.
+  branchApproval?: boolean
 }
 
 const PREVIEW_LIMIT = 3
@@ -31,6 +35,7 @@ export default function ActivityNotifications({
   overseer,
   onViewActivity,
   restricted,
+  branchApproval,
 }: ActivityNotificationsProps) {
   const [open, setOpen] = useState(false)
   const [processing, setProcessing] = useState<Set<number>>(new Set())
@@ -140,12 +145,14 @@ export default function ActivityNotifications({
                         onClick={() => void resolveAction(action, 'deny')}
                         describedBy={describedBy}
                       />
-                      <ResolveButton
-                        tone="approve"
-                        disabled={isProcessing}
-                        onClick={() => void resolveAction(action, 'approve')}
-                        describedBy={describedBy}
-                      />
+                      {(!branchApproval || canApproveAlone(action)) && (
+                        <ResolveButton
+                          tone="approve"
+                          disabled={isProcessing}
+                          onClick={() => void resolveAction(action, 'approve')}
+                          describedBy={describedBy}
+                        />
+                      )}
                     </div>
                   </div>
                   {fields.length > 0 && restricted && (

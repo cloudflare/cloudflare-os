@@ -1798,6 +1798,7 @@ export default function GadgetEditor() {
             overseer={overseer.stub}
             onViewActivity={openActivity}
             restricted={metadata?.containsRestrictedData === true}
+            branchApproval={branchApproval}
           />
 
           {showReconnecting && <ReconnectingChip />}

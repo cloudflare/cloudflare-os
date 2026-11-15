@@ -118,7 +118,8 @@ import { StagedChangesBar } from "./features/approvals/StagedChangesBar";
 import { HoldingToggle } from "./features/approvals/HoldingToggle";
 import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/chatsWithChanges";
 import {
-  chatBranchPending, chatRequestIds, pendingChangeEntries, pendingChangeGroups, type PendingChange,
+  canApproveAlone, chatBranchPending, chatRequestIds, pendingChangeEntries, pendingChangeGroups,
+  type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
 import { CreationAccountModal } from "./components/CreationAccountModal";
 import {
@@ -4669,10 +4670,7 @@ function ChatInterface({
     },
     onManageRules: () => onViewActivity?.("auto"),
     branch: branchApproval ? {
-      // An awaited request cannot wait for its chat's accept, and one no chat made is not
-      // covered by any chat's accept.
-      canApprove: (entry: PendingChange) =>
-        entry.description.awaitDecision === true || entry.chatId === undefined,
+      canApprove: canApproveAlone,
       // A chat's other requests apply only with its accept, which resumes at the failed one.
       onRetry: (entry: PendingChange) => {
         if (entry.chatId === undefined || entry.description.awaitDecision) {
@@ -4719,6 +4717,9 @@ function ChatInterface({
   const renderCodeDraftBar = (chat: AiChatMetadata, isTop: boolean) => {
     const isDiscardingChanges = discardingChangesChatIds.has(chat.id);
     const changesActionsDisabled = isAgentActive || isDiscardingChanges;
+    // The kernel refuses an accept while the agent's turn is stopped on a decision, which would
+    // resume the turn in the middle of the accept. Discarding rejects an awaited request too.
+    const awaitingDecision = branchApproval && chat.awaitingDecision === true;
     return (
       <div className={`themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2 ${isTop ? "rounded-t-[calc(1rem-1px)]" : ""}`}>
         <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-kumo-brand/40 to-transparent" aria-hidden="true" />
@@ -4746,11 +4747,13 @@ function ChatInterface({
           ? "Wait for the agent to finish before accepting changes."
           : isDiscardingChanges
             ? "Wait for pending changes to finish discarding."
-            : branchRequests.length > 0
-              ? "Apply the requests above, then keep any code changes as the gadget's current version."
-              : "Keep this draft and make it the gadget's current version."} asChild>
+            : awaitingDecision
+              ? "Decide what the agent is waiting on first."
+              : branchRequests.length > 0
+                ? "Apply the requests above, then keep any code changes as the gadget's current version."
+                : "Keep this draft and make it the gadget's current version."} asChild>
           <WorkshopButton
-            disabled={changesActionsDisabled}
+            disabled={changesActionsDisabled || awaitingDecision}
             onClick={() => { void handleAcceptChanges(); }}
             tone="primary"
             className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"

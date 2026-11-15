@@ -153,6 +153,16 @@ export function chatBranchPending(
 }
 
 /**
+ * Whether, under the branch approval model, the UI offers to approve `log` on its own: one the
+ * agent waits on (`awaitDecision`) cannot wait for its chat's accept, and one no chat made is
+ * covered by no chat's accept. A chat's other requests apply only when its changes are accepted.
+ */
+export function canApproveAlone(log: ActionLogEntry): boolean {
+  return (log.type === 'action' && log.description.awaitDecision === true) ||
+    log.chatId === undefined
+}
+
+/**
  * Whether every request in `group` is known to have been asked for somewhere else.
  *
  * One request whose origin is merely unknown is enough to withhold the label: the group may yet
