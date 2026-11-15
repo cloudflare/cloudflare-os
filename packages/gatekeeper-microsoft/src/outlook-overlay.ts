@@ -1,12 +1,14 @@
 // Pending changes, as reads see them: a message moved, flagged or deleted reads back that way, a
 // folder or draft not yet created is listed with `pending` set, and a draft being sent says so.
-// Nothing here reads Graph. Sessions read what Exchange holds and pass it through `apply`, so a
+// Nothing here reads Graph. Sessions read what Exchange holds and pass it through the fold, so a
 // simulated change only relabels what the guard already admitted: a message a pending action moves
 // into the listed folder is fetched by ID and guarded like any other.
 //
 // `messageStore` folds the actions pending on one message over it, oldest first, and `messageView`
 // says which actions those are. A listing folds each row as it is served, so a row shows what is
-// pending when its page is returned, however long before that it was read.
+// pending when its page is returned, however long before that it was read. `OutlookOverlay` is
+// the same queue indexed once for what writes check and for what is not a message, and its
+// `apply` and `pendingDrafts` read a message through that fold.
 
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import { createSimulationView, type SimulationView } from "@gadgets/gatekeeper-kit/simulation";
@@ -22,13 +24,15 @@ export type PendingFolder = { id: string; name: string; parentId: string };
 /** A draft a pending action creates, as `MessageInfo` needs it. */
 export type PendingDraft = { id: string; message: Composed; origin: OutlookActions["createDraft"]["origin"]; submittedAt: number };
 
-/** The pending actions of a binding, indexed for reads. */
+/**
+ * The pending actions of a binding, indexed for what writes check and for what is not a message
+ * (folders, sends); `apply` and `pendingDrafts` read a message through `messageStore`. Every
+ * temporary ID is resolved once, when the overlay is made, so its indexes, `apply` and
+ * `pendingDrafts` read one state of the IDs however long a caller holds it across awaits.
+ */
 export class OutlookOverlay {
   /** Where pending moves put each message: a folder ID (real or `~N`). */
   readonly moved = new Map<string, string>();
-  /** Messages pending deletion, which reads leave out unless they list Deleted Items. */
-  readonly deleted = new Set<string>();
-  readonly updates = new Map<string, OutlookActions["updateMessages"]["change"][]>();
   readonly folders: PendingFolder[] = [];
   readonly drafts = new Map<string, PendingDraft>();
   /** The latest pending edit of each draft, by its ID (real or `~N`). */
@@ -37,22 +41,20 @@ export class OutlookOverlay {
   /** Drafts (real or `~N`) a pending action sends, and messages composed straight to sending. */
   readonly sending = new Set<string>();
   readonly sends: OutlookActions["send"][] = [];
+  /** The pending actions by the message each changes. */
+  readonly #messages: SimulationView<Pending[number], string>;
+  /** The folder each pending move names, by the ID its action holds, as it resolved. */
+  readonly #destinations = new Map<string, string>();
 
   constructor(pending: Pending, resolve: (id: string) => string) {
     for (const { action } of pending) {
       switch (action.kind) {
-        case "moveMessages":
-          for (const message of action.payload.messages) {
-            this.moved.set(message.id, resolve(action.payload.to.id));
-            if (action.payload.as === "delete") this.deleted.add(message.id);
-            else this.deleted.delete(message.id);
-          }
+        case "moveMessages": {
+          const to = resolve(action.payload.to.id);
+          this.#destinations.set(action.payload.to.id, to);
+          for (const message of action.payload.messages) this.moved.set(message.id, to);
           break;
-        case "updateMessages":
-          for (const message of action.payload.messages) {
-            this.updates.set(message.id, [...(this.updates.get(message.id) ?? []), action.payload.change]);
-          }
-          break;
+        }
         case "createFolder":
           this.folders.push({ id: action.payload.ref, name: action.payload.name, parentId: resolve(action.payload.parent.id) });
           break;
@@ -71,10 +73,13 @@ export class OutlookOverlay {
           if (action.payload.draft) this.sending.add(resolve(action.payload.draft.id));
           this.sends.push(action.payload);
           break;
+        case "updateMessages":
         case "setAutomaticReplies":
           break;
       }
     }
+    // The view indexes as it is made, so `resolve` is not kept.
+    this.#messages = messageView(pending, resolve);
   }
 
   /** Whether reads leave a message out: a draft pending deletion. (A deleted message reads as moved to Deleted Items.) */
@@ -82,36 +87,27 @@ export class OutlookOverlay {
     return this.deletedDrafts.has(id);
   }
 
-  /** A message as it will be once the pending changes apply. `folderName` gives a moved-to folder's path. */
+  /**
+   * A message as it will be once the pending changes apply. `folderName` gives a moved-to folder's
+   * path. A draft pending deletion is still shown: `hides` is for the reads that list.
+   */
   apply(info: MessageInfo, folderName: (folderId: string) => string): MessageInfo {
-    let result = info;
-    const movedTo = this.moved.get(info.id);
-    if (movedTo !== undefined && movedTo !== info.folderId) {
-      result = { ...result, folderId: movedTo, folder: folderName(movedTo), pending: this.deleted.has(info.id) ? "delete" : "move" };
-    }
-    for (const change of this.updates.get(info.id) ?? []) {
-      const categories = new Map(result.categories.map(name => [name.toLowerCase(), name]));
-      for (const name of change.addCategories ?? []) categories.set(name.toLowerCase(), name);
-      for (const name of change.removeCategories ?? []) categories.delete(name.toLowerCase());
-      result = {
-        ...result,
-        ...(change.isRead !== undefined ? { isRead: change.isRead } : {}),
-        ...(change.flag ? { flag: change.flag.status === "flagged" && change.flag.dueAt ? { status: "flagged", dueAt: change.flag.dueAt } : { status: change.flag.status } } : {}),
-        categories: [...categories.values()],
-        pending: result.pending ?? "update",
-      };
-    }
-    const edit = this.draftEdits.get(info.id);
-    if (edit && info.isDraft) result = { ...result, ...composedFields(edit), pending: result.pending ?? "update" };
-    if (this.sending.has(info.id)) result = { ...result, pending: "send" };
-    return result;
+    const store = messageStore({
+      destination: named => {
+        const id = this.#destinations.get(named) ?? named;
+        return { id, path: folderName(id) };
+      },
+    });
+    const records = this.#messages.forTarget(info.id).filter(({ action }) => action.kind !== "deleteDraft");
+    // With no deletion among them, the fold always holds a message.
+    return store.fold(info.id, info, records).entity ?? info;
   }
 
-  /** Drafts pending creation, as messages in Drafts. */
+  /** Drafts pending creation, as messages in Drafts, oldest first. */
   pendingDrafts(draftsFolder: { id: string; path: string }, mailbox: { address: string; name?: string }): MessageInfo[] {
-    return [...this.drafts.values()]
-      .filter(draft => !this.deletedDrafts.has(draft.id))
-      .map(draft => this.apply(pendingDraftInfo(draft, draftsFolder, mailbox), () => draftsFolder.path));
+    // Nothing moves a draft pending creation, so the destination is never asked for.
+    const store = messageStore({ destination: id => ({ id, path: "" }), drafts: { folder: draftsFolder, mailbox } });
+    return [...this.drafts.keys()].flatMap(ref => store.fold(ref, undefined, this.#messages.forTarget(ref)).entity ?? []);
   }
 }
 

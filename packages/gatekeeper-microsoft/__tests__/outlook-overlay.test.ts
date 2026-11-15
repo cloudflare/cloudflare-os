@@ -1,11 +1,12 @@
 // How the actions pending on one Outlook message fold over it: which actions `messageView` files
-// under which message, what each does to a message in `messageStore`, and the fold held, over
-// generated queues, to a reading of the whole queue from maps.
+// under which message, what each does to a message in `messageStore`, what `OutlookOverlay` reads
+// through that fold, and the fold held, over generated queues, to a reading of the whole queue
+// from maps.
 
 import { describe, expect, it } from "vitest";
 import type { JournalEntry } from "@gadgets/gatekeeper-kit/actions";
 import type { Composed, MessageTarget, OutlookAction, OutlookActions } from "../src/outlook-actions";
-import { OutlookOverlay, messageStore, messageView } from "../src/outlook-overlay";
+import { OutlookOverlay, messageStore, messageView, preview } from "../src/outlook-overlay";
 import type { MessageInfo } from "../src/outlook-types";
 
 type Entry = JournalEntry<OutlookAction>;
@@ -79,6 +80,9 @@ function fold(id: string, base: MessageInfo | undefined, pending: readonly Entry
   return store.fold(id, base, messageView(pending, resolve).forTarget(id).filter(keep)).entity;
 }
 
+/** Whether a record is anything but a draft's deletion, which the reads that do not list leave out. */
+const notDeletion = ({ action }: Entry) => action.kind !== "deleteDraft";
+
 const ids = (records: readonly Entry[]) => records.map(record => record.id);
 
 describe("messageView", () => {
@@ -151,8 +155,10 @@ describe("messageStore", () => {
     const entity = fold("m1", base, pending);
     expect(entity).toEqual(base);
     expect("pending" in entity!).toBe(false);
-    // A reading from the last move and the list of updates cannot tell that the update shows nothing.
-    expect(new OutlookOverlay(pending, identity).apply(base, name).pending).toBe("update");
+    // A single read answers through the same fold.
+    const applied = new OutlookOverlay(pending, identity).apply(base, name);
+    expect(applied).toEqual(base);
+    expect("pending" in applied).toBe(false);
   });
 
   it("marks an update that changes nothing the row shows, on a message that was not moved", () => {
@@ -246,6 +252,58 @@ describe("messageStore", () => {
   });
 });
 
+describe("OutlookOverlay through the fold", () => {
+  it("answers apply as the fold does, for a row the listing would hide too", () => {
+    const base = draft("d1");
+    const pending = [updateDraft(1, "d1", { subject: "Edited" }), deleteDraft(2, "d1")];
+    const overlay = new OutlookOverlay(pending, identity);
+    expect(overlay.hides("d1")).toBe(true);
+    expect(fold("d1", base, pending)).toBeUndefined();
+    const applied = overlay.apply(base, name);
+    expect(applied).toMatchObject({ id: "d1", subject: "Edited", pending: "update" });
+    expect(applied).toEqual(fold("d1", base, pending, identity, notDeletion));
+  });
+
+  it("keeps update through apply on a message moved away and back", () => {
+    const base = info("m1", { isRead: false });
+    const pending = [update(1, ["m1"], { isRead: true }), move(2, ["m1"], "archive"), move(3, ["m1"], "inbox")];
+    expect(new OutlookOverlay(pending, identity).apply(base, name)).toEqual({ ...base, isRead: true, pending: "update" });
+  });
+
+  it("lists pending drafts oldest first, each with its later edit", () => {
+    const pending = [createDraft(1, "~1", { subject: "First" }, 1_000), createDraft(2, "~2", { subject: "Second" }, 2_000), updateDraft(3, "~1", { subject: "First, edited" })];
+    const listed = new OutlookOverlay(pending, identity).pendingDrafts(DRAFTS.folder, DRAFTS.mailbox);
+    expect(listed.map(({ id, subject, pending: mark }) => ({ id, subject, pending: mark }))).toEqual([
+      { id: "~1", subject: "First, edited", pending: "draft" },
+      { id: "~2", subject: "Second", pending: "draft" },
+    ]);
+    expect(listed.map(({ receivedAt }) => receivedAt)).toEqual(["1970-01-01T00:00:01.000Z", "1970-01-01T00:00:02.000Z"]);
+  });
+
+  it("resolves temporary IDs once, when it is made", () => {
+    const pending = [move(1, ["m1"], "~9"), updateDraft(2, "~1", { subject: "Edited" })];
+    const bound = new Map<string, string>();
+    const resolve = (id: string) => bound.get(id) ?? id;
+    const bind = () => bound.set("~9", "acme").set("~1", "real-1");
+
+    // The folder and the draft are created after the overlay is made: it reads the IDs it was made with.
+    const early = new OutlookOverlay(pending, resolve);
+    bind();
+    expect(early.apply(info("m1"), name)).toMatchObject({ folderId: "~9", folder: "path:~9", pending: "move" });
+    expect(early.moved.get("m1")).toBe("~9");
+    const real = draft("real-1");
+    expect(early.apply(real, name)).toBe(real);
+    expect(early.draftEdits.has("~1")).toBe(true);
+    expect(early.draftEdits.has("real-1")).toBe(false);
+
+    // An overlay made once both exist reads the IDs Exchange gave them.
+    const late = new OutlookOverlay(pending, resolve);
+    expect(late.apply(info("m1"), name)).toMatchObject({ folderId: "acme", folder: "path:acme", pending: "move" });
+    expect(late.apply(real, name)).toMatchObject({ id: "real-1", subject: "Edited", pending: "update" });
+    expect(late.draftEdits.has("real-1")).toBe(true);
+  });
+});
+
 /** A generator of numbers in [0, 1) that gives the same sequence for the same seed. */
 const seeded = (seed: number) => {
   let a = seed >>> 0;
@@ -335,17 +393,80 @@ function shown({ folderId: _folderId, folder: _folder, pending: _pending, ...res
   return JSON.stringify(rest);
 }
 
-/**
- * The reading the fold is held to: the whole queue indexed once into maps (each message's last
- * move, its updates in order, each draft's latest edit, what is deleted and what is being sent),
- * and a message read from them.
- */
-function reference(pending: readonly Entry[], resolve: (id: string) => string): Pick<OutlookOverlay, "apply" | "hides" | "pendingDrafts"> {
-  return new OutlookOverlay(pending, resolve);
+/** The fields of a message that what was composed decides, as a read shows them. */
+function composedFields(message: Composed): Pick<MessageInfo, "subject" | "to" | "cc" | "bcc" | "importance" | "preview" | "hasAttachments"> {
+  const { subject, to, cc, bcc, importance } = message;
+  return { subject, to, cc, bcc, importance, preview: preview(message.markdown), hasAttachments: message.attachments.length > 0 };
 }
 
-/** Whether a record is anything but a draft's deletion, which the reads that do not list leave out. */
-const notDeletion = ({ action }: Entry) => action.kind !== "deleteDraft";
+/**
+ * The reading the fold is held to, with no fold in it: the whole queue indexed once into maps
+ * (each message's last move, its updates in order, each draft's latest edit, what is deleted and
+ * what is being sent), and a message read from them.
+ */
+function reference(pending: readonly Entry[], resolve: (id: string) => string): Pick<OutlookOverlay, "apply" | "hides" | "pendingDrafts"> {
+  const moved = new Map<string, string>();
+  const deleted = new Set<string>();
+  const updates = new Map<string, Change[]>();
+  const drafts = new Map<string, OutlookActions["createDraft"]>();
+  const draftEdits = new Map<string, Composed>();
+  const deletedDrafts = new Set<string>();
+  const sending = new Set<string>();
+  for (const { action } of pending) {
+    if (action.kind === "moveMessages") {
+      for (const { id } of action.payload.messages) {
+        moved.set(id, resolve(action.payload.to.id));
+        if (action.payload.as === "delete") deleted.add(id);
+        else deleted.delete(id);
+      }
+    } else if (action.kind === "updateMessages") {
+      for (const { id } of action.payload.messages) updates.set(id, [...(updates.get(id) ?? []), action.payload.change]);
+    } else if (action.kind === "createDraft") {
+      drafts.set(action.payload.ref, action.payload);
+    } else if (action.kind === "updateDraft") {
+      draftEdits.set(resolve(action.payload.draftId), action.payload.message);
+    } else if (action.kind === "deleteDraft") {
+      deletedDrafts.add(resolve(action.payload.draftId));
+    } else if (action.kind === "send" && action.payload.draft) {
+      sending.add(resolve(action.payload.draft.id));
+    }
+  }
+
+  const apply = (row: MessageInfo, folderName: (folderId: string) => string): MessageInfo => {
+    let result = row;
+    // The last move, compared with the folder Exchange holds the message in.
+    const movedTo = moved.get(row.id);
+    if (movedTo !== undefined && movedTo !== row.folderId) {
+      result = { ...result, folderId: movedTo, folder: folderName(movedTo), pending: deleted.has(row.id) ? "delete" : "move" };
+    }
+    for (const change of updates.get(row.id) ?? []) {
+      const categories = new Map(result.categories.map(category => [category.toLowerCase(), category]));
+      for (const category of change.addCategories ?? []) categories.set(category.toLowerCase(), category);
+      for (const category of change.removeCategories ?? []) categories.delete(category.toLowerCase());
+      result = {
+        ...result,
+        ...(change.isRead !== undefined ? { isRead: change.isRead } : {}),
+        ...(change.flag ? { flag: change.flag.status === "flagged" && change.flag.dueAt ? { status: "flagged", dueAt: change.flag.dueAt } : { status: change.flag.status } } : {}),
+        categories: [...categories.values()],
+        pending: result.pending ?? "update",
+      };
+    }
+    const edit = draftEdits.get(row.id);
+    if (edit && row.isDraft) result = { ...result, ...composedFields(edit), pending: result.pending ?? "update" };
+    if (sending.has(row.id)) result = { ...result, pending: "send" };
+    return result;
+  };
+
+  return {
+    hides: id => deletedDrafts.has(id),
+    apply,
+    pendingDrafts: (folder, mailbox) => [...drafts.values()].filter(({ ref }) => !deletedDrafts.has(ref)).map(({ ref, origin, message, submittedAt }) => apply({
+      id: ref, conversationId: origin.kind === "new" ? "" : origin.source.conversationId ?? "", folderId: folder.id, folder: folder.path,
+      ...composedFields(message), from: mailbox, senderKind: "you", receivedAt: new Date(submittedAt).toISOString(), isRead: true, isDraft: true,
+      flag: { status: "notFlagged" }, categories: [], webLink: "", pending: "draft",
+    }, () => folder.path)),
+  };
+}
 
 describe("the fold against a reading of the whole queue from maps", () => {
   it("reads every message and every pending draft of generated queues the same, but a message moved away and back whose pending update shows nothing", () => {
@@ -353,6 +474,7 @@ describe("the fold against a reading of the whole queue from maps", () => {
     for (let seed = 1; seed <= SEEDS; seed++) {
       const { rows, pending, created, resolve } = generate(seed);
       const maps = reference(pending, resolve);
+      const overlay = new OutlookOverlay(pending, resolve);
       for (const row of rows) {
         const at = `seed ${seed}, message ${row.id}`;
         counted.rows++;
@@ -376,9 +498,13 @@ describe("the fold against a reading of the whole queue from maps", () => {
           if (back && kept.pending === "update") counted.updateShownAfterMoveBack++;
         }
         if (folded !== undefined) expect(folded, at).toEqual(kept);
+        // The overlay's single read is the fold, with no exception.
+        expect(overlay.hides(row.id), at).toBe(folded === undefined);
+        expect(overlay.apply(row, name), at).toEqual(kept);
       }
       const standIns = created.flatMap(ref => fold(ref, undefined, pending, resolve) ?? []);
       expect(standIns, `seed ${seed}`).toEqual(maps.pendingDrafts(DRAFTS.folder, DRAFTS.mailbox));
+      expect(overlay.pendingDrafts(DRAFTS.folder, DRAFTS.mailbox), `seed ${seed}`).toEqual(standIns);
       counted.standIns += standIns.length;
     }
     // The one stated difference is met, and is too rare to hide another.
