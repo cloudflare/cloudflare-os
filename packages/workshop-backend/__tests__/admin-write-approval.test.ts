@@ -3,8 +3,8 @@ import {
   ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES,
   ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   getAdminWriteErrorCode,
-  type AdminPasskeyAssertion, type AdminPasskeyChallenge, type AdminPasskeyRefusal,
-  type AdminWriteRecord,
+  type AdminApprovalRefusal, type AdminPasskeyAssertion, type AdminPasskeyChallenge,
+  type AdminPasskeyRefusal, type AdminWriteRecord,
 } from "@gadgets/workshop-shared/api";
 import { auditOwnerId, type AdminWriteActor } from "../src/admin-access.js";
 import type { AdminSettings } from "../src/admin-settings.js";
@@ -20,7 +20,7 @@ const DEMOTED = "Its requester is no longer a deployment admin.";
 const ANSWER_LOST =
     "The workspace's answer never arrived, so whether the write was applied is unknown.";
 const BASE64URL = { alphabet: "base64url", omitPadding: true } as const;
-const { passkeyRefused, passkeyRequired, requestNotFound, requestNotPending } =
+const { passkeyRefused, passkeyRequired, requestNotFound, requestNotPending, secondAdminRequired } =
     ADMIN_WRITE_ERROR_CODES;
 
 type Authenticator = Awaited<ReturnType<typeof softwareAuthenticator>>;
@@ -142,10 +142,10 @@ function recordOf(request: StoredAdminWrite, event: AdminWriteRecord["event"],
 
 /** The record of `admin`'s refused attempt on `request`: the check it failed and, when the answer
  * named one of that admin's own, the passkey. */
-function refusedRecord(request: StoredAdminWrite, admin: string, check: AdminPasskeyRefusal,
-    passkey?: Authenticator): unknown {
+function refusedRecord(request: StoredAdminWrite, admin: string, check: AdminApprovalRefusal,
+    passkey?: Authenticator, extra: object = {}): unknown {
   return recordOf(request, "refused", actor(admin),
-      { refusal: check, ...(passkey && { passkey: passkey.credentialId }) });
+      { refusal: check, ...(passkey && { passkey: passkey.credentialId }), ...extra });
 }
 
 const requesterOf = ({ requestedBy: admin, sessionId, via }: StoredAdminWrite) =>
@@ -1090,5 +1090,104 @@ describe("the object's own environment", () => {
     expect(await stored(theirs.id)).toStrictEqual(theirs);
     expect(await storedChallenges()).toStrictEqual(challenges);
     expect((await storedPasskey(passkeyA))!.lastUsed).toBeUndefined();
+  });
+});
+
+/** Makes a request to read a workspace's content: by ADMIN unless `overrides` say otherwise. */
+function contentRequest(overrides: Partial<StoredAdminWrite> = {}): Promise<StoredAdminWrite> {
+  return requestWrite({ action: "grantContentAccess", args: {}, ...overrides });
+}
+
+describe("a request that needs a second admin", () => {
+  it("gives its requester no challenge, recording nothing", async () => {
+    const request = await contentRequest();
+    harness.appended.length = 0;
+
+    expect(await harness.inDo(
+        settings => codeOf(settings.beginWorkspaceWriteApproval(request.id, ADMIN))))
+        .toBe(secondAdminRequired);
+
+    expect(await storedChallenges()).toStrictEqual([]);
+    expect(harness.appended).toStrictEqual([]);
+    expect((await stored(request.id))?.state).toBe("pending");
+  });
+
+  it("refuses its requester's approval before any passkey check, recorded, and stays pending",
+      async () => {
+    const request = await contentRequest();
+    // The requester holds a challenge, for another request: none is issued to them for this one.
+    const assertion = await answer(passkeyA);
+
+    expect(await refusal(assertion, ADMIN, request.id)).toBe(secondAdminRequired);
+
+    expect(recordsOf(request.id)).toStrictEqual([
+      recordOf(request, "requested", requesterOf(request), { args: {} }),
+      refusedRecord(request, ADMIN, "requester", passkeyA, { args: {} }),
+    ]);
+    expect(await stored(request.id)).toStrictEqual(request);
+    // The challenge is spent, and the passkey was not used.
+    expect(await storedChallenges()).toStrictEqual([]);
+    expect((await storedPasskey(passkeyA))?.lastUsed).toBeUndefined();
+    expect(await refusal(assertion)).toBe(passkeyRefused);
+  });
+
+  it("is approved by another admin's passkey", async () => {
+    const request = await contentRequest();
+
+    const approved = await approve(
+        await answer(passkeyB, OTHER_ADMIN, request.id), OTHER_ADMIN, request.id);
+
+    expect(approved).toMatchObject({
+      id: request.id, action: "grantContentAccess", state: "approved", resolvedBy: OTHER_ADMIN,
+      approver: { ...actor(OTHER_ADMIN), passkey: passkeyB.credentialId },
+    });
+    // The approval is the workspace's to record.
+    expect(eventsOf(request.id)).toStrictEqual(["requested"]);
+  });
+
+  it("is the requester's to approve for every other action", async () => {
+    expect((await approve(await answer(passkeyA))).state).toBe("approved");
+  });
+
+  it("owes the requester's refusal to the log when it cannot be written", async () => {
+    const request = await contentRequest();
+    const assertion = await answer(passkeyA);
+    harness.audit.fail = true;
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
+    expect(await refusal(assertion, ADMIN, request.id)).toBe(secondAdminRequired);
+
+    expect((await stored(request.id))?.refusals).toStrictEqual(
+        [{ ...actor(ADMIN), refusal: "requester", passkey: passkeyA.credentialId }]);
+  });
+
+  describe("with two accounts that one entry of ADMINS matches", () => {
+    const ALICE = "alice@example.com";
+    const ALICE_AGAIN = "Alice@Example.com";
+    const GRACE = "grace@example.com";
+
+    it("takes them for one admin, and lets another approve", async () => {
+      harness = adminWritesHarness({ ADMINS: [ALICE, GRACE] });
+      // An account of its own, with a passkey of its own.
+      const again = await enrol(ALICE_AGAIN);
+      const grace = await enrol(GRACE);
+      const request = await contentRequest({ requestedBy: ALICE });
+      const other = await requestWrite({ requestedBy: ALICE });
+      harness.appended.length = 0;
+
+      expect(await harness.inDo(
+          settings => codeOf(settings.beginWorkspaceWriteApproval(request.id, ALICE_AGAIN))))
+          .toBe(secondAdminRequired);
+      expect(harness.appended).toStrictEqual([]);
+
+      const assertion = await answer(again, ALICE_AGAIN, other.id);
+      expect(await refusal(assertion, ALICE_AGAIN, request.id)).toBe(secondAdminRequired);
+      expect(recordsOf(request.id)).toStrictEqual(
+          [refusedRecord(request, ALICE_AGAIN, "requester", again, { args: {} })]);
+      expect(await stored(request.id)).toStrictEqual(request);
+
+      const approved = await approve(await answer(grace, GRACE, request.id), GRACE, request.id);
+      expect(approved).toMatchObject({ state: "approved", resolvedBy: GRACE });
+    });
   });
 });

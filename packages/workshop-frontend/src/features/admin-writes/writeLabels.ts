@@ -6,6 +6,7 @@ import type {
 export const WRITE_ACTION_LABELS: Record<AdminWriteAction, string> = {
   stopAgent: 'Stop the agent',
   restartWorkspace: 'Restart the workspace',
+  grantContentAccess: "Read the workspace's content",
 }
 
 /** What each argument of a write is called, in the order the approval page lists them. */
@@ -49,12 +50,16 @@ export const namesWorkspaceIds = (args: AdminWriteArgs): boolean =>
   args.chatId !== undefined || args.gatekeeperId !== undefined
 
 /**
- * Who reads a write's reason once it is approved: those who read the workspace's action log, which
- * a collaborator who only uses a gadget does not.
+ * Who reads a write's reason once it is approved. A change to a workspace shows it to those who
+ * read the workspace's action log, which a collaborator who only uses a gadget does not. A request
+ * to read the workspace's content shows it to nobody there: it stays with the admins.
  */
-export const REASON_SHOWN_NOTE =
-  "Once approved, this reason is shown, word for word, in the workspace's activity, to its owner "
-  + 'and everyone invited to the workspace. People who were only given a gadget do not see it.'
+export const reasonShownNote = (action: AdminWriteAction): string =>
+  action === 'grantContentAccess'
+    ? "This reason is kept in the admins' audit log. Nobody in the workspace is shown it, and the "
+      + "workspace's owner is not told of the request."
+    : "Once approved, this reason is shown, word for word, in the workspace's activity, to its owner "
+      + 'and everyone invited to the workspace. People who were only given a gadget do not see it.'
 
 /**
  * What the approval page says of the ids it cannot resolve. Where admin inspection is "off" the

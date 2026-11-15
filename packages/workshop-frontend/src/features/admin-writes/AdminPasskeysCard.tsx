@@ -165,9 +165,11 @@ export const AdminPasskeysCard = ({ admin, user, siteName, writesOn }: {
       {writesOn ? (
         <p className="text-sm text-kumo-subtle mb-5">
           This deployment lets admins change a workspace (stop the agent, restart the workspace)
-          only through a request that another step approves with a passkey. Enrol one on each
-          device you approve from. You remove only your own passkeys, and a removal is confirmed
-          with one of them. Every enrolment and removal is in the Audit tab.
+          only through a request that another step approves with a passkey. A passkey also
+          approves another admin’s request to read a workspace’s content without its owner’s
+          grant; the admin who asked cannot approve it. Enrol one on each device you approve from.
+          You remove only your own passkeys, and a removal is confirmed with one of them. Every
+          enrolment and removal is in the Audit tab.
         </p>
       ) : (
         <p className="text-sm text-kumo-subtle mb-5">

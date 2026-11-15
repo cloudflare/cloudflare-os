@@ -1,4 +1,4 @@
-import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRefusal, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
+import { ADMIN_ACCESS_ERROR_CODES, ADMIN_PASSKEY_CHALLENGE_LIFETIME_SECONDS, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, ADMIN_WRITE_SETTLE_SECONDS, AdminApi, AdminApprovalRefusal, AdminAuditPage, AdminAuditQuery, AdminAuditStats, AdminAuditStatsQuery, AdminFormat, AdminFormatPatch, AdminInspectOptions, AdminModel, AdminPasskey, AdminPasskeyAssertion, AdminPasskeyChallenge, AdminPasskeyRegistration, AdminResourceVendor, AdminSettingChange, AdminSettingMethod, AdminSettingsView, AdminUserPage, AdminUserQuery, AdminUserView, AdminVia, AdminWorkspaceAccess, AdminWorkspaceInspectOptions, AdminWorkspacePage, AdminWorkspaceQuery, AdminWorkspaceView, AdminWriteAction, AdminWriteArgs, AdminWriteErrorCode, AdminWriteRecord, AdminWriteRequest, AiModelConfig, AiModelProvider, AmbientGatekeeperMode, BannerColor, BlueprintPublicInfo, DeploymentUpdateStatus, GatewayModel, GatewayModelLevelTest, GatewayModelMode, GatewayModelSettings, GatewayModelTest, MAX_ADMIN_AUDIT_ARG_LENGTH, MAX_ADMIN_AUDIT_RETENTION_DAYS, MAX_ADMIN_PASSKEYS, MAX_ADMIN_PASSKEY_NAME_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_PENDING_ADMIN_WRITES, MAX_SITE_NAME_LENGTH, MAX_UPDATE_CHECK_INTERVAL_MINUTES, MAX_UPDATE_HOURS, ReasoningLevel, SUGGESTED_MODELS, createAdminAccessError, createAdminWriteError, getAdminAccessErrorCode, isAdminWorkspaceAccess, isAmbientGatekeeperMode, isBannerColor, isHexColor } from '@gadgets/workshop-shared/api';
 import { GatekeeperVendor, getResourceTypeId, findResourceType } from '@gadgets/workshop-shared/gatekeeper';
 import { DurableObject } from 'cloudflare:workers';
 import { RpcTarget, type RpcStub } from 'capnweb';
@@ -20,9 +20,9 @@ import type { UserDirectoryDurableObject } from './user-directory.js';
 import type { AdminAuditDurableObject } from './admin-audit.js';
 import type { OverseerDurableObject } from './overseer.js';
 import { type AdminSettingActor, type AdminWorkspaceViewTerms, type AdminWriteActor, adminAccessPolicy, adminAuditStatsDays, adminListLimit, adminPasskeyRelyingParty, adminSettingChange, adminViewLifetimeMs, adminWorkspaceWritesEnabled, auditOwnerId, cutAdminAuditText, lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs, validateAdminAccessReason } from './admin-access.js';
-import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, newPasskeyChallenge } from './admin-writes.js';
+import { type AdminWriteApprover, type AdminWriteRefusal, type StoredAdminWrite, adminWriteArgs, adminWriteDigest, needsSecondAdmin, newPasskeyChallenge } from './admin-writes.js';
 import { MAX_CREDENTIAL_ID_LENGTH, PasskeyError, verifyPasskeyAssertion, verifyPasskeyRegistration } from './webauthn.js';
-import { isDeploymentAdmin } from './auth/config.js';
+import { isDeploymentAdmin, sameDeploymentAdmin } from './auth/config.js';
 import { bundledBlueprintsManifestVersion, installBundledBlueprints } from './bundled-blueprints.js';
 import { BUNDLED_BLUEPRINTS } from './generated/bundled-blueprints.js';
 import { type DeployServiceInstall, NO_ANSWER, type VersionAnswer, deployServiceInstall, deploymentUpdateStatus, fetchLatestRelease, updateCheckDue } from './deployment-updates.js';
@@ -1073,8 +1073,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * request's digest (see adminWriteDigest()), so that the passkey approving it signs what it
    * approves. It replaces the approval challenge `admin` had outstanding, so an admin has one
    * approval ceremony at a time, and it lasts no longer than the request does. Refused
-   * `requestNotPending` for a request that has left "pending", and `passkeyRequired` for an admin
-   * with no passkey of their own. Never recorded: beginning answers nothing. */
+   * `requestNotPending` for a request that has left "pending", `secondAdminRequired` for the
+   * requester of a request that needs a second admin, and `passkeyRequired` for an admin with no
+   * passkey of their own. Never recorded: beginning answers nothing. */
   beginWorkspaceWriteApproval(id: string, admin: string): Promise<AdminPasskeyChallenge> {
     return this.#serializeWrites(async () => {
       requireAdmin(this.env, admin, true);
@@ -1082,6 +1083,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       let request = this.#storedWrite(id);
       if (request.state !== "pending") {
         throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
+      }
+      if (needsSecondAdmin(request.action) && sameDeploymentAdmin(admin, request.requestedBy)) {
+        throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
       }
       if (this.#passkeysOf(admin).length === 0) {
         throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.passkeyRequired);
@@ -1099,7 +1103,9 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
    * passkeys, over the approval challenge the actor was last given, issued for this request as it
    * is still stored. A failed passkey check is recorded "refused" and thrown `passkeyRefused`,
    * leaving the request pending; an attempt on a stored request that is no longer pending is
-   * recorded "refused" too, and thrown `requestNotPending`. The approval itself is not recorded
+   * recorded "refused" too, and thrown `requestNotPending`, and so is the requester's attempt on
+   * a request that needs a second admin, thrown `secondAdminRequired`, which leaves the request
+   * pending. The approval itself is not recorded
    * here: the workspace records "approved" before it changes anything. Returns the request.
    */
   approveWorkspaceWrite(id: string, assertion: AdminPasskeyAssertion, actor: AdminWriteActor)
@@ -1121,6 +1127,13 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
       if (request.state !== "pending") {
         return this.#refuseApproval(
             request, actor, "challenge", passkey, ADMIN_WRITE_ERROR_CODES.requestNotPending);
+      }
+      // Before any passkey check: whatever the requester's passkey signed, it is not a second
+      // admin's approval.
+      if (needsSecondAdmin(request.action) &&
+          sameDeploymentAdmin(actor.admin, request.requestedBy)) {
+        return this.#refuseApproval(
+            request, actor, "requester", passkey, ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
       }
 
       let signCount: number;
@@ -1174,7 +1187,7 @@ export class AdminSettings extends DurableObject<Cloudflare.Env> {
   // logged rather than thrown in the refusal's place, and the record is kept with the request,
   // owed, for the sweep to write. At most MAX_OWED_REFUSALS are kept for one request.
   async #refuseApproval(request: StoredAdminWrite, actor: AdminWriteActor,
-                        refusal: AdminPasskeyRefusal, passkey?: AdminPasskeyRecord,
+                        refusal: AdminApprovalRefusal, passkey?: AdminPasskeyRecord,
                         code: AdminWriteErrorCode = ADMIN_WRITE_ERROR_CODES.passkeyRefused)
       : Promise<never> {
     logger.warn("refused a write approval", {
@@ -2331,6 +2344,12 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
     this.#requireWrites();
     reason = validateAdminAccessReason(reason);
     let clean = adminWriteArgs(action, args);
+    // A grant is asked for only while content can be read: nothing is stored or recorded below
+    // "content". The workspace checks the level again when the approved request reaches it.
+    if (action === "grantContentAccess" &&
+        adminAccessPolicy(await this.admin.committedAdminConfig(), this.env).access !== "content") {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+    }
     let id: DurableObjectId;
     try {
       id = this.overseers.idFromString(workspaceId);
@@ -2415,6 +2434,26 @@ export class AdminApiImpl extends RpcTarget implements AdminApi {
       result = { error: error instanceof Error ? error.message : String(error) };
     }
     return await this.admin.settleWorkspaceWrite(request.id, result);
+  }
+
+  /** Asks only for an admin, whatever the access level and whether or not writes are on: ending
+   * a grant only takes access away. Nothing is appended here: the workspace records the
+   * "revoked" step before it ends the grant. */
+  async endWorkspaceGrant(workspaceId: string, grantId: string, reason: string): Promise<void> {
+    this.#requireAdmin();
+    reason = validateAdminAccessReason(reason);
+    let id: DurableObjectId;
+    try {
+      id = this.overseers.idFromString(workspaceId);
+    } catch {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    try {
+      await this.overseers.get(id).endAdminGrant(this.#writeActor(), grantId, reason);
+    } catch (error) {
+      await this.#dropIfMissing(id, error);
+      throw error;
+    }
   }
 
   /** Listing and removal ask only for an admin: while writes are off a passkey approves nothing,

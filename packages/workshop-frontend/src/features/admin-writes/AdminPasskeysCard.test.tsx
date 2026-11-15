@@ -234,9 +234,17 @@ describe('AdminPasskeysCard', () => {
     it('names every write a passkey approves, and no other', async () => {
       await render()
 
-      const named = /change a workspace \(([^)]*)\)/.exec(container.textContent ?? '')?.[1]
-      expect(named?.split(', ')).toEqual(
-        ADMIN_WRITE_ACTIONS.map((action) => WRITE_ACTION_LABELS[action].toLowerCase()))
+      // The changes are listed in the parentheses; the request to read content, which changes
+      // nothing and which its requester cannot approve, is named in a sentence of its own. An
+      // action added to ADMIN_WRITE_ACTIONS fails this until the card names it.
+      const text = container.textContent ?? ''
+      const named = /change a workspace \(([^)]*)\)/.exec(text)?.[1].split(', ') ?? []
+      expect(named).toEqual(
+        ADMIN_WRITE_ACTIONS.filter((action) => action !== 'grantContentAccess')
+          .map((action) => WRITE_ACTION_LABELS[action].toLowerCase()))
+      expect(named.length + 1).toBe(ADMIN_WRITE_ACTIONS.length)
+      expect(text).toContain('read a workspace’s content')
+      expect(text).toContain('the admin who asked cannot approve it')
     })
 
     it('says so when no passkey is enrolled', async () => {

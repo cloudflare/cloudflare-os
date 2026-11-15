@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { env } from "cloudflare:workers";
 import {
-  ADMIN_ACCESS_ERROR_CODES, ADMIN_WRITE_ERROR_CODES, ADMIN_WRITE_REQUEST_LIFETIME_SECONDS,
-  DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS, MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError,
-  createAdminWriteError, getAdminAccessErrorCode, getAdminWriteErrorCode,
+  ADMIN_ACCESS_ERROR_CODES, ADMIN_GRANT_ERROR_CODES, ADMIN_WRITE_ERROR_CODES,
+  ADMIN_WRITE_REQUEST_LIFETIME_SECONDS, DEFAULT_ADMIN_VIEW_LIFETIME_SECONDS,
+  MAX_ADMIN_AUDIT_ARG_LENGTH, createAdminAccessError, createAdminGrantError,
+  createAdminWriteError, getAdminAccessErrorCode, getAdminGrantErrorCode, getAdminWriteErrorCode,
   type AdminAccessRecord, type AdminPasskeyAssertion, type AdminPasskeyRegistration,
   type AdminUserAccessRecord, type AdminVia, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
@@ -749,6 +750,8 @@ describe("AdminApiImpl write requests", () => {
   const methods: Record<string, (api: AdminApiImpl) => Promise<unknown>> = {
     requestWorkspaceWrite: api =>
         api.requestWorkspaceWrite(workspaceId(), "stopAgent", { chatId: 3 }, REASON),
+    requestContentAccess: api =>
+        api.requestWorkspaceWrite(workspaceId(), "grantContentAccess", {}, REASON),
     getWorkspaceWrite: api => api.getWorkspaceWrite(REQUEST_ID),
     denyWorkspaceWrite: api => api.denyWorkspaceWrite(REQUEST_ID),
     beginWorkspaceWriteApproval: api => api.beginWorkspaceWriteApproval(REQUEST_ID),
@@ -796,6 +799,7 @@ describe("AdminApiImpl write requests", () => {
       ["stopAgent", {}],
       ["stopAgent", { chatId: -1 }],
       ["stopAgent", { chatId: 3, gatekeeperId: 1 }],
+      ["grantContentAccess", { chatId: 1 }],
     ];
     for (let [action, args] of refused) {
       const error = await rejection(api.requestWorkspaceWrite(id, action, args, REASON));
@@ -956,6 +960,116 @@ describe("AdminApiImpl write requests", () => {
     expect(await rejection(
         api.requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON))).toBe(refusal);
     expect(await rejection(api.denyWorkspaceWrite(REQUEST_ID))).toBe(refusal);
+  });
+
+  describe("a request to read a workspace's content", () => {
+    const CONTENT = {
+      config: { adminWorkspaceAccess: "content" as const },
+      vars: { ...ON, ADMIN_WORKSPACE_ACCESS_MAX: "content" },
+    };
+    const handlers = { directory: { workspaceListing: () => LISTING } };
+
+    it.each([
+      ["no cap", { ...CONTENT, vars: ON }],
+      ["the cap at metadata", { ...CONTENT, vars: { ...ON, ADMIN_WORKSPACE_ACCESS_MAX: "metadata" } }],
+      ["the admins' choice of metadata", { vars: CONTENT.vars }],
+    ])("is refused while the level in force is below content, by %s, storing and recording nothing",
+        async (_case, setup) => {
+      const { mint, calls, callsTo } = deployment({ ...setup, handlers });
+      const error = await rejection(
+          mint().requestWorkspaceWrite(workspaceId(), "grantContentAccess", {}, REASON));
+      expect(getAdminAccessErrorCode(error)).toBe(ADMIN_ACCESS_ERROR_CODES.contentOff);
+      // Only the committed config was read.
+      expect(named(calls)).toEqual(["admin.committedAdminConfig"]);
+      expect(callsTo("overseers", "get")).toEqual([]);
+    });
+
+    it("is stored like any other request at level content, never reaching the workspace",
+        async () => {
+      const { mint, callsTo } = deployment({ ...CONTENT, handlers });
+      const id = workspaceId();
+      const view = await mint(ADMIN, "api").requestWorkspaceWrite(
+          id, "grantContentAccess", {}, REASON);
+
+      const [stored] = callsTo("admin", "requestWorkspaceWrite")[0].args as [StoredAdminWrite];
+      expect(stored).toMatchObject({
+        workspaceId: id, workspaceTitle: LISTING.title, workspaceOwner: LISTING.ownerId,
+        action: "grantContentAccess", args: {}, reason: REASON, requestedBy: ADMIN, via: "api",
+        state: "pending",
+      });
+      expect(stored.expiresAt.getTime() - stored.requestedAt.getTime())
+          .toBe(ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000);
+      expect(view).toMatchObject({
+        id: stored.id, action: "grantContentAccess",
+        approvalUrl: `https://workshop.example/admin/approve/${stored.id}`,
+      });
+      expect(callsTo("overseers", "get")).toEqual([]);
+      expect(callsTo("audit", "append")).toEqual([]);
+    });
+
+    it("leaves the level alone for every other action", async () => {
+      const { mint, callsTo } = deployment({ vars: ON, handlers });
+      await mint().requestWorkspaceWrite(workspaceId(), "restartWorkspace", {}, REASON);
+      expect(callsTo("admin", "committedAdminConfig")).toEqual([]);
+      expect(callsTo("admin", "requestWorkspaceWrite")).toHaveLength(1);
+    });
+  });
+
+  describe("ending a grant an approval gave", () => {
+    const GRANT_ID = "0b6f6c0e-2f0b-4f0a-9d0b-6a3c0a2d9e11";
+
+    // Whatever the level, and with writes off: these deployments set neither.
+    it("has the workspace end it, through the capability's own session and `via`", async () => {
+      const { mint, calls, callsTo } = deployment();
+      const api = mint(ADMIN, "cli");
+      const id = workspaceId();
+
+      expect(await api.endWorkspaceGrant(id, GRANT_ID, `  ${REASON}  `)).toBeUndefined();
+
+      // Nothing is appended here: the workspace records the step.
+      expect(named(calls)).toEqual(
+          ["overseers.idFromString", "overseers.get", "overseer.endAdminGrant"]);
+      expect(callsTo("overseers", "get")[0].args).toEqual([id]);
+      expect(callsTo("overseer", "endAdminGrant")[0].args).toStrictEqual(
+          [{ admin: ADMIN, sessionId: expect.any(String), via: "cli" }, GRANT_ID, REASON]);
+    });
+
+    it("refuses a caller no longer an admin, a bad reason and a malformed id before reaching " +
+        "any workspace", async () => {
+      const { mint, callsTo } = deployment();
+      expect(getAdminAccessErrorCode(await rejection(
+          mint("former@example.test").endWorkspaceGrant(workspaceId(), GRANT_ID, REASON))))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+      const api = mint();
+      for (let reason of ["", "   ", "r".repeat(501)]) {
+        expect(await rejection(api.endWorkspaceGrant(workspaceId(), GRANT_ID, reason)))
+            .toBeInstanceOf(TypeError);
+      }
+      expect(getAdminAccessErrorCode(
+          await rejection(api.endWorkspaceGrant("not-an-id", GRANT_ID, REASON))))
+          .toBe(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+      expect(callsTo("overseers", "get")).toEqual([]);
+    });
+
+    it.each<[string, () => unknown, boolean]>([
+      ["drops a workspace found missing from the directory",
+        () => createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound), true],
+      ["leaves the workspace listed when it holds no such grant",
+        () => createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound), false],
+    ])("passes the workspace's refusal through, and %s", async (_label, thrown, dropped) => {
+      const refusal = thrown();
+      const { mint, callsTo } = deployment({
+        handlers: { overseer: { endAdminGrant: () => { throw refusal; } } },
+      });
+      const id = workspaceId();
+      expect(await rejection(mint().endWorkspaceGrant(id, GRANT_ID, REASON))).toBe(refusal);
+      expect(callsTo("directory", "removeWorkspace").map(call => call.args))
+          .toEqual(dropped ? [[id]] : []);
+      // The grant's own family of codes, which the caller reads as it reads any refusal.
+      if (!dropped) {
+        expect(getAdminGrantErrorCode(refusal)).toBe(ADMIN_GRANT_ERROR_CODES.notFound);
+      }
+    });
   });
 
   describe("approval", () => {

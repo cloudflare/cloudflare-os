@@ -1,5 +1,5 @@
 import { createObservabilityContext, type Logger } from "@gadgets/observability/observability-context";
-import type { AdminPasskeyRefusal } from "@gadgets/workshop-shared/api";
+import type { AdminApprovalRefusal } from "@gadgets/workshop-shared/api";
 
 /** Observability fields emitted by the Workshop backend. */
 export type WorkshopObservabilityFields = {
@@ -41,7 +41,7 @@ export type WorkshopObservabilityFields = {
   outcome: "ok" | "error" | "stopped" | "usage_limit" | "no_email" | "signups_disabled";
   path: string;
   pauseEnd: "turn" | "left" | "revert" | "deleted";
-  reason: AdminPasskeyRefusal;
+  reason: AdminApprovalRefusal;
   recordedType: string;
   resourceTitle: string;
   resendCostUsd: number;

@@ -93,7 +93,8 @@ export function minAdminAuditRetentionDays(env: Cloudflare.Env): number {
 /** Whether ADMIN_WORKSPACE_WRITES lets admins change workspaces: only "on", in any case and
  * trimmed. Unset, blank and "off" are off. Any other value misconfigures a security bound, so it
  * is off too, logged as an error (once per isolate per value, never the value itself). A bound of
- * its own: neither ADMIN_WORKSPACE_ACCESS_MAX nor the level admins chose holds a write back. */
+ * its own: neither ADMIN_WORKSPACE_ACCESS_MAX nor the level admins chose holds a write back,
+ * except "grantContentAccess", which also needs the level in force to be "content". */
 export function adminWorkspaceWritesEnabled(env: Cloudflare.Env): boolean {
   let raw: unknown = env.ADMIN_WORKSPACE_WRITES;
   if (isBlank(raw)) return false;

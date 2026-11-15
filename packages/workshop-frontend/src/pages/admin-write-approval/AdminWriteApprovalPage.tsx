@@ -16,7 +16,7 @@ import {
   DESTRUCTIVE_WRITES,
   idsNote,
   namesWorkspaceIds,
-  REASON_SHOWN_NOTE,
+  reasonShownNote,
   WRITE_ACTION_LABELS,
   WRITE_CONSEQUENCES,
   writeArgRows,
@@ -353,7 +353,7 @@ const AdminWriteApprovalPage = ({ requestId }: { requestId: string }) => {
         <dl className="divide-y divide-kumo-line border-t border-kumo-line">
           <Row label="Reason">
             <span className="block whitespace-pre-wrap">{request.reason}</span>
-            <span className="mt-1 block text-kumo-subtle">{REASON_SHOWN_NOTE}</span>
+            <span className="mt-1 block text-kumo-subtle">{reasonShownNote(request.action)}</span>
           </Row>
           <Row label="Requested by">{request.requestedBy} {VIA_LABELS[request.via]}</Row>
           <Row label="Expires">

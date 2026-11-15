@@ -3,6 +3,7 @@ import { ADMIN_WRITE_ACTIONS, type AdminWriteArgs } from '@gadgets/workshop-shar
 import {
   idsNote,
   namesWorkspaceIds,
+  reasonShownNote,
   WRITE_ACTION_LABELS,
   WRITE_ARG_LABELS,
   writeArgRows,
@@ -55,6 +56,29 @@ describe('namesWorkspaceIds', () => {
 
   it('is false for arguments that name nothing in the workspace', () => {
     expect(namesWorkspaceIds({})).toBe(false)
+  })
+})
+
+describe('reasonShownNote', () => {
+  const changes = ADMIN_WRITE_ACTIONS.filter((action) => action !== 'grantContentAccess')
+
+  it('says a change’s reason is shown in the workspace’s activity', () => {
+    expect(changes).toHaveLength(2)
+    for (const action of changes) {
+      expect(reasonShownNote(action)).toBe(reasonShownNote('stopAgent'))
+    }
+    expect(reasonShownNote('stopAgent')).toContain("workspace's activity")
+    expect(reasonShownNote('stopAgent')).toContain('owner and everyone invited')
+  })
+
+  it('says the reason of a request to read content stays with the admins', () => {
+    const note = reasonShownNote('grantContentAccess')
+
+    expect(note).toContain("admins' audit log")
+    expect(note).toContain('not told')
+    expect(note).not.toContain('activity')
+    expect(note).not.toContain('owner and everyone invited')
+    expect(note).not.toContain('shown, word for word')
   })
 })
 

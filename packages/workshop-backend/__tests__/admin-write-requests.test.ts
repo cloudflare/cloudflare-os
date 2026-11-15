@@ -491,6 +491,29 @@ describe("a write record", () => {
     ]);
   });
 
+  it("keeps a request to read content like any other: pending for ten minutes, then expired",
+      async () => {
+    const made = await requestWrite({ action: "grantContentAccess", args: {} });
+    expect(made.expiresAt.getTime() - made.requestedAt.getTime())
+        .toBe(ADMIN_WRITE_REQUEST_LIFETIME_SECONDS * 1000);
+    await harness.inDo(async admin => {
+      expect(await admin.getWorkspaceWrite(made.id)).toStrictEqual(made);
+      age(admin, made.id);
+      expect((await admin.getWorkspaceWrite(made.id)).state).toBe("expired");
+    });
+    expect(harness.appended).toStrictEqual([
+      recordOf(made, "requested", undefined, { args: {} }),
+      recordOf(made, "expired", undefined, { args: {} }),
+    ]);
+  });
+
+  // Only its approval needs another admin.
+  it("lets the requester of a request to read content deny it", async () => {
+    const made = await requestWrite({ action: "grantContentAccess", args: {} });
+    await harness.inDo(admin => admin.denyWorkspaceWrite(made.id, actor(ADMIN)));
+    expect(eventsOf(made.id)).toStrictEqual(["requested", "denied"]);
+  });
+
   it("is appended with the retention the committed config and the environment give", async () => {
     const first = pendingWrite();
     const second = pendingWrite();

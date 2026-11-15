@@ -597,9 +597,12 @@ describe("what the grant methods leave alone", () => {
     let longEnded = put(ws, approvalGrantOf({
       revokedAt: new Date(Date.now() - 2 * RETENTION * DAY_MS), revokedBy: ADMIN,
     }));
-    let kept = () => [raw(ws, live.id), raw(ws, longEnded.id)];
+    // One that ran out an hour ago, which nothing recorded.
+    let ranOut = put(ws, approvalGrantOf({ expiresAt: new Date(Date.now() - HOUR_MS) }));
+    let kept = () => [raw(ws, live.id), raw(ws, longEnded.id), raw(ws, ranOut.id)];
     let before = kept();
-    expect(before).toStrictEqual([{ ...live, id: null }, { ...longEnded, id: null }]);
+    expect(before).toStrictEqual(
+        [{ ...live, id: null }, { ...longEnded, id: null }, { ...ranOut, id: null }]);
 
     await asOwner(ws, async client => {
       let audit = await auditRecords();
@@ -612,7 +615,7 @@ describe("what the grant methods leave alone", () => {
       let own = await client.grantAdminAccess();
       expect(kept()).toStrictEqual(before);
 
-      for (let grant of [live, longEnded]) {
+      for (let grant of [live, longEnded, ranOut]) {
         expect(await refusalOf(client.renewAdminAccess(grant.id))).toStrictEqual(renewNothing);
         expect(kept()).toStrictEqual(before);
         expect(await refusalOf(client.revokeAdminAccess(grant.id))).toStrictEqual(revokeNothing);
@@ -629,7 +632,7 @@ describe("what the grant methods leave alone", () => {
     });
 
     expect(ws.impl.liveAdminGrants()).toStrictEqual([live]);
-    expect(storedGrants(ws)).toHaveLength(3);
+    expect(storedGrants(ws)).toHaveLength(4);
   }));
 
   it("delete an approval's long-ended grant only when no source is named",

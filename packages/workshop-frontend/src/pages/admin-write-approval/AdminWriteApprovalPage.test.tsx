@@ -272,6 +272,15 @@ describe('what the approval page shows of a request', () => {
       expect(row('Reason')).toContain('People who were only given a gadget do not see it.')
     })
 
+  it('says beside the reason of a request to read content that the workspace is shown nothing', async () => {
+    await renderRequest({ action: 'grantContentAccess', args: {} })
+
+    expect(row('Reason')).toContain("admins' audit log")
+    expect(row('Reason')).toContain('is not told')
+    expect(text()).not.toContain("workspace's activity")
+    expect(text()).not.toContain('everyone invited to the workspace')
+  })
+
   it('says ids are shown as requested, advises an inspection and links the workspace’s audit records', async () => {
     await renderRequest({ action: 'stopAgent', args: { chatId: 5 } })
 

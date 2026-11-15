@@ -1,5 +1,5 @@
 import type { BadgeVariant } from '@cloudflare/kumo'
-import type { AdminPasskeyRefusal, AdminWriteRecord } from '@gadgets/workshop-shared/api'
+import type { AdminApprovalRefusal, AdminWriteRecord } from '@gadgets/workshop-shared/api'
 
 /** What the Audit tab calls each step of an admin write to a workspace. */
 export const WRITE_EVENT_NAMES: Record<AdminWriteRecord['event'], string> = {
@@ -10,6 +10,7 @@ export const WRITE_EVENT_NAMES: Record<AdminWriteRecord['event'], string> = {
   failed: 'Failed',
   denied: 'Denied',
   expired: 'Expired',
+  revoked: 'Grant ended',
 }
 
 /**
@@ -25,10 +26,11 @@ export const WRITE_EVENT_VARIANTS: Record<AdminWriteRecord['event'], BadgeVarian
   failed: 'error',
   denied: 'warning',
   expired: 'outline',
+  revoked: 'warning',
 }
 
 /** What the Audit tab says of each check a refused approval attempt failed. */
-export const PASSKEY_REFUSAL_NAMES: Record<AdminPasskeyRefusal, string> = {
+export const PASSKEY_REFUSAL_NAMES: Record<AdminApprovalRefusal, string> = {
   // Also what an approval sent again is refused with: its request is no longer pending.
   challenge: 'No challenge was outstanding (none issued, expired, already answered, or the request ' +
     'no longer pending), or the answer signed another',
@@ -42,4 +44,5 @@ export const PASSKEY_REFUSAL_NAMES: Record<AdminPasskeyRefusal, string> = {
   type: 'The answer was to another kind of ceremony',
   algorithm: 'An unsupported key',
   malformed: 'A malformed answer',
+  requester: 'Requested by the same admin',
 }

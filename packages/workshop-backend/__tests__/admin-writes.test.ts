@@ -3,7 +3,9 @@ import {
   ADMIN_WRITE_ACTIONS, MAX_ADMIN_AUDIT_ARG_LENGTH,
   type AdminVia, type AdminWriteAction, type AdminWriteArgs,
 } from "@gadgets/workshop-shared/api";
-import { adminWriteArgs, adminWriteDigest, adminWriteTitle } from "../src/admin-writes.js";
+import {
+  adminWriteArgs, adminWriteDigest, adminWriteTitle, entersActionLog, needsSecondAdmin,
+} from "../src/admin-writes.js";
 
 // A value each argument accepts.
 const VALID: Required<AdminWriteArgs> = { chatId: 3, gatekeeperId: 7 };
@@ -14,6 +16,7 @@ const TAKES: Record<AdminWriteAction,
     { required: (keyof AdminWriteArgs)[]; optional: (keyof AdminWriteArgs)[] }> = {
   stopAgent: { required: ["chatId"], optional: [] },
   restartWorkspace: { required: [], optional: [] },
+  grantContentAccess: { required: [], optional: [] },
 };
 
 function pick(names: (keyof AdminWriteArgs)[]): AdminWriteArgs {
@@ -132,11 +135,48 @@ describe("adminWriteTitle", () => {
   const TITLES: Record<AdminWriteAction, string> = {
     stopAgent: "Stop the agent in chat 3",
     restartWorkspace: "Restart the workspace",
+    grantContentAccess: "Read the workspace's content",
   };
 
   it.each(ADMIN_WRITE_ACTIONS)("names %s from its ids alone", action => {
     const { required, optional } = TAKES[action];
     expect(adminWriteTitle(action, pick([...required, ...optional]))).toBe(TITLES[action]);
+  });
+});
+
+describe("the action that reads content", () => {
+  // Written out here, so that an action added to ADMIN_WRITE_ACTIONS is decided on purpose.
+  const CHANGES = ["stopAgent", "restartWorkspace"];
+
+  it("is the only one that needs a second admin, and the only one the action log leaves out",
+      () => {
+    expect(ADMIN_WRITE_ACTIONS.filter(action => !needsSecondAdmin(action))).toEqual(CHANGES);
+    expect(ADMIN_WRITE_ACTIONS.filter(entersActionLog)).toEqual(CHANGES);
+    expect(needsSecondAdmin("grantContentAccess")).toBe(true);
+    expect(entersActionLog("grantContentAccess")).toBe(false);
+  });
+
+  it("takes no argument", () => {
+    expect(adminWriteArgs("grantContentAccess", {})).toStrictEqual({});
+    expect(typeError(() => adminWriteArgs("grantContentAccess", { chatId: 1 })))
+        .toBe("\"grantContentAccess\" takes no `chatId`.");
+  });
+});
+
+describe("the digest of a request to read content", () => {
+  it("covers its action: the same request for another action signs differently", async () => {
+    const request = {
+      id: "4c1d2a0e-8a53-4c59-9a0e-3d7f1b6c2e11", workspaceId: "a".repeat(64),
+      workspaceTitle: "Quarterly report", workspaceOwner: "bob@example.test",
+      action: "grantContentAccess" as AdminWriteAction, args: {},
+      reason: "Ticket 7: the owner cannot be reached", requestedBy: "admin@example.test",
+      via: "cli" as AdminVia, requestedAt: new Date("2026-01-02T03:04:05.000Z"),
+      expiresAt: new Date("2026-01-02T03:14:05.000Z"),
+    };
+    const digest = (await adminWriteDigest(request)).toHex();
+    expect((await adminWriteDigest({ ...request, action: "restartWorkspace" })).toHex())
+        .not.toBe(digest);
+    expect((await adminWriteDigest({ ...request })).toHex()).toBe(digest);
   });
 });
 

@@ -194,9 +194,19 @@ test("request-workspace-write's own help says what each action does, and what re
   // Only what a method's doc says reaches its command's help: a constant's doc is not in the schema.
   const { doc, args } = real.nodes.AdminApi!.commands["request-workspace-write"]!;
   const actions = args.find((arg) => arg.name === "action")?.choices ?? [];
-  assert.equal(actions.length, 2);
+  assert.equal(actions.length, 3);
   for (const action of actions) assert.ok(doc.includes(`- "${action}": `), action);
-  for (const refusal of ["notAdmin", "writesOff"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+  for (const refusal of ["notAdmin", "writesOff", "contentOff"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
+});
+
+test("ending a grant an approval gave is an ordinary command: a workspace, a grant and a reason", () => {
+  const { doc, args } = real.nodes.AdminApi!.commands["end-workspace-grant"]!;
+  assert.deepEqual(args.map(({ name, flag, encoding }) => ({ name, flag, encoding })), [
+    { name: "workspaceId", flag: undefined, encoding: "string" },
+    { name: "grantId", flag: undefined, encoding: "string" },
+    { name: "reason", flag: undefined, encoding: "string" },
+  ]);
+  for (const refusal of ["notAdmin", "workspaceNotFound", "notFound"]) assert.ok(doc.includes(`\`${refusal}\``), refusal);
 });
 
 test("makes required parameters positional and optional ones flags, clear of the runtime's", () => {

@@ -79,7 +79,7 @@ import {
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent,
   withholdChatContent, withholdChatStateContent, withholdCommitContent, withholdCreationContent,
   withholdHookContent, workpieceHoldsContent,
-  type AdminAccessPolicy, type AdminWorkspaceViewTerms,
+  type AdminAccessPolicy, type AdminWorkspaceViewTerms, type AdminWriteActor,
 } from "./admin-access";
 import { adminViewCall } from "./admin-view";
 import type { AdminAuditDurableObject } from "./admin-audit";
@@ -88,9 +88,9 @@ import {
   newestAdminGrantFirst,
 } from "./admin-grants";
 import {
-  adminWriteArgs, adminWriteTitle, type AdminWriteGrant,
+  adminWriteArgs, adminWriteTitle, entersActionLog, needsSecondAdmin, type AdminWriteGrant,
 } from "./admin-writes";
-import { isDeploymentAdmin } from "./auth/config";
+import { isDeploymentAdmin, sameDeploymentAdmin } from "./auth/config";
 import { DIRECTORY_ACTIVITY_INTERVAL_MS, type UserDirectoryDurableObject } from "./user-directory";
 import { chatChangeStatuses, foldCompactedCode, isTurnPrompt } from "./agent-compaction";
 import type { CachedRequest } from "./ai-models";
@@ -12259,6 +12259,9 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *     (`requestNotPending`);
    *   - an approver or a requester who is no longer a deployment admin (`notAdmin`), and writes
    *     turned off (`writesOff`);
+   *   - for "grantContentAccess": an approver who is the requester (`secondAdminRequired`, see
+   *     sameDeploymentAdmin()), a request that already gave this workspace its grant
+   *     (`requestNotPending`), and a level in force below "content" (`contentOff`);
    *   - a grant whose `workspaceOwner` is not this workspace's owner (`workspaceChanged`): the
    *     approver confirmed a write to that owner's workspace, and a deleted workspace's id can be
    *     initialised again for someone else. Not `workspaceNotFound`, on which the caller drops the
@@ -12269,14 +12272,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    *      record cannot be written does not happen. Nor does one whose workspace was deleted while
    *      the record was appended (`workspaceNotFound`): the record is kept, and nothing follows it.
    *   2. The write's entry is put in the workspace's action log (see ActionLogEntry.byAdmin), for
-   *      every action, so that no admin write can exist that its workspace's action log lacks.
-   *      The log is read by the workspace's owner and its "build" collaborators only.
+   *      every action but "grantContentAccess", so that no change an admin makes to a workspace
+   *      can exist that its action log lacks. The log is read by the workspace's owner and its
+   *      "build" collaborators only. "grantContentAccess" skips this step, and raises no event,
+   *      notification or unread count either: a workspace's members are not told that admins read
+   *      its content (see entersActionLog()).
    *   3. The operation runs (see runAdminWrite()). If it throws, the entry is turned "rejected"
    *      and the error is rethrown.
    * The entry is "approved" before the operation runs, so an object that dies midway leaves an
    * "approved" entry for a write done in part.
    *
-   * Resolves what the workspace reported (`outcome`), for an action that reports something.
+   * Resolves what the workspace reported (`outcome`), for an action that reports something:
+   * "grantContentAccess" does.
    */
   async applyAdminWrite(grant: AdminWriteGrant): Promise<{ outcome?: string }> {
     let impl = this.impl;
@@ -12317,13 +12324,30 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     if (!adminWorkspaceWritesEnabled(impl.env)) {
       throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.writesOff);
     }
+    // What was handed over is checked again: AdminSettings refused the requester's own approval.
+    if (needsSecondAdmin(grant.action) && sameDeploymentAdmin(grant.admin, grant.requestedBy)) {
+      throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.secondAdminRequired);
+    }
+    // The deployment's policy, read for "grantContentAccess" alone: a grant is stored only while
+    // the level in force is "content", and a request gives its grant once.
+    let policy: AdminAccessPolicy | undefined;
+    if (grant.action === "grantContentAccess") {
+      if (grantedByRequest(impl, grant.requestId)) {
+        throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
+      }
+      policy = adminAccessPolicy(await readAdminConfig(impl.env), impl.env);
+      if (!impl.ownerId) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+      }
+      if (policy.access !== "content") {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+      }
+    }
 
     // Resolved before the record, so that nothing but its append is awaited between the record
     // and the effect.
     let ownerId = await impl.getOwnerProfileId();
-    let admin: AiChatAuthorInfo = await retryOnDoReset(
-        () => impl.users.getByName(grant.admin).whoamiIfExists(), impl.logger) ??
-        {type: "user", id: grant.admin, name: grant.admin};
+    let admin = await adminProfile(impl, grant.admin);
     // Deleted during those reads: a deleted workspace gets no record, as for a view's call.
     if (!impl.ownerId) {
       throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
@@ -12365,12 +12389,14 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     }
 
     // Synchronously after that check and before the effect.
-    let entryId = impl.recordAdminWrite(grant.action, args, reason, grant.requestId, admin);
+    let entryId = entersActionLog(grant.action)
+        ? impl.recordAdminWrite(grant.action, args, reason, grant.requestId, admin) : undefined;
     let outcome: string | undefined;
     try {
-      outcome = await runAdminWrite(impl, grant.action, args);
+      outcome = await runAdminWrite(impl, grant.action, args, admin,
+          {requestId: grant.requestId, requestedBy: grant.requestedBy, reason}, policy);
     } catch (err) {
-      impl.failAdminWrite(entryId);
+      if (entryId !== undefined) impl.failAdminWrite(entryId);
       throw err;
     }
     // Never the reason or the arguments.
@@ -12378,6 +12404,92 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
       event: "admin.write.applied", operation: grant.action,
     });
     return {outcome};
+  }
+
+  /**
+   * End a grant with source "admins" (AdminApiImpl.endWorkspaceGrant()), recording the "revoked"
+   * AdminWriteRecord first. `actor` carries the admin's canonical user id, session id and via, as
+   * an AdminWriteRecord keeps them. Reachable only over the Workshop's Durable Object binding.
+   *
+   * Refuses, writing and recording nothing: a workspace never initialised or since deleted
+   * (`workspaceNotFound`), a blank or over-long reason and a `via` that is not "api" or "cli"
+   * (TypeError), an actor who is not a deployment admin (`notAdmin`), and an id that names no
+   * live grant with source "admins" here (`notFound`): an owner's grant is the owner's to end.
+   * It asks for neither writes nor a level: ending a grant only takes access away.
+   *
+   * The record is appended before the grant is ended, so an ending whose record cannot be
+   * written does not happen. A grant another admin ended while the record was appended is
+   * refused `notFound`, and the record stands for the attempt. Like the approval that gave the
+   * grant, the ending shows the workspace's members nothing.
+   */
+  async endAdminGrant(actor: AdminWriteActor, grantId: string, reason: string): Promise<void> {
+    let impl = this.impl;
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    let endReason = validateAdminAccessReason(reason);
+    if (actor.via !== "api" && actor.via !== "cli") {
+      throw new TypeError("An admin write's via must be \"api\" or \"cli\".");
+    }
+    if (!isDeploymentAdmin(impl.env, actor.admin)) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.notAdmin);
+    }
+    let liveGrant = () => {
+      let stored = impl.storage.adminGrants.get(grantId);
+      if (stored?.source !== "admins" || !isAdminGrantLive(stored)) {
+        throw createAdminGrantError(ADMIN_GRANT_ERROR_CODES.notFound);
+      }
+      return stored;
+    };
+    // An approval's grant always carries its request, requester and reason.
+    let {requestId = "", requestedBy = "", reason: requestReason = ""} = liveGrant();
+
+    // Resolved before the record, so that nothing but its append is awaited between the record
+    // and the effect.
+    let ownerId = await impl.getOwnerProfileId();
+    let admin = await adminProfile(impl, actor.admin);
+    let {retentionDays} = adminAccessPolicy(await readAdminConfig(impl.env), impl.env);
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+
+    let record: AdminWriteRecord = {
+      kind: "write",
+      at: new Date(),
+      admin: actor.admin,
+      sessionId: actor.sessionId,
+      via: actor.via,
+      requestId,
+      event: "revoked",
+      workspaceId: impl.ctx.id.toString(),
+      workspaceOwner: ownerId,
+      workspaceTitle: cutAdminAuditText(impl.storage.title.get(), MAX_ADMIN_AUDIT_ARG_LENGTH),
+      method: "grantContentAccess",
+      args: {},
+      reason: requestReason,
+      requestedBy,
+      endReason,
+    };
+    try {
+      // No retention, as for a view's call (see AdminWorkspaceViewImpl).
+      await impl.adminAudits.getByName("").append(record);
+    } catch (err) {
+      // Nothing has changed: the grant is still live.
+      impl.logger.warn("failed to append to the admin audit log", {
+        event: "admin.audit.append.failed", operation: "endAdminGrant", error: err,
+      });
+      throw err;
+    }
+
+    // Nothing is awaited from here on. The workspace may have been deleted, or the grant ended
+    // by another admin, while the record was appended.
+    if (!impl.ownerId) {
+      throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+    }
+    impl.storage.adminGrants.put(
+        {...liveGrant(), revokedAt: new Date(), revokedBy: namedUser(admin)});
+    impl.pruneAdminGrants(retentionDays);
+    impl.logger.info("admin grant ended", {event: "admin.grant.ended"});
   }
 
   #getExternalChat(externalChatKey: string): ExternalChatRecord | undefined {
@@ -15443,10 +15555,14 @@ class AdminWorkspaceViewImpl extends RpcTarget implements AdminWorkspaceView {
 
 // Runs the operation of an approved admin write (see OverseerDurableObject.applyAdminWrite()):
 // for each action, the one a member's session runs for it (see AdminApi.requestWorkspaceWrite()).
-// `args` are as adminWriteArgs() kept them. Resolves what the workspace reported, for an action
-// that reports something.
-async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs)
-    : Promise<string | undefined> {
+// `args` are as adminWriteArgs() kept them, `admin` is the profile of the admin who approved it,
+// `request` is what a grant keeps of the request, and `policy` is the deployment's as
+// applyAdminWrite() read it for "grantContentAccess", the one action that needs it. Resolves
+// what the workspace reported, for an action that reports something: "grantContentAccess" does.
+async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args: AdminWriteArgs,
+    admin: AiChatAuthorInfo,
+    request: Pick<AdminWriteGrant, "requestId" | "requestedBy" | "reason">,
+    policy: AdminAccessPolicy | undefined): Promise<string | undefined> {
   // adminWriteArgs() checked that every argument the action needs was given.
   let {chatId} = args as Required<AdminWriteArgs>;
 
@@ -15465,9 +15581,50 @@ async function runAdminWrite(impl: OverseerImpl, action: AdminWriteAction, args:
       // first.
       impl.scheduleAccessRestart("Gadget restarted by a deployment admin.");
       return undefined;
+
+    case "grantContentAccess": {
+      // Nothing is awaited here, so every check holds when the grant is put: the workspace is
+      // still its owner's, the level is the one applyAdminWrite() read, and the request has not
+      // given its grant. Nothing is recorded here either: the "approved" record is written, and
+      // the request's "applied" record carries the outcome.
+      if (!impl.ownerId) {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.workspaceNotFound);
+      }
+      if (policy?.access !== "content") {
+        throw createAdminAccessError(ADMIN_ACCESS_ERROR_CODES.contentOff);
+      }
+      if (grantedByRequest(impl, request.requestId)) {
+        throw createAdminWriteError(ADMIN_WRITE_ERROR_CODES.requestNotPending);
+      }
+      // Of either source: this is an admins' write.
+      impl.pruneAdminGrants(policy.retentionDays);
+      let stored = newAdminGrant({
+        source: "admins", scope: "workspace", grantedBy: admin, requestedBy: request.requestedBy,
+        requestId: request.requestId, reason: request.reason,
+      });
+      impl.storage.adminGrants.put(stored);
+      return `grant ${stored.id} until ${stored.expiresAt.toISOString()}`;
+    }
   }
   // Reached by no action: one without an operation above does not compile.
   return action satisfies never;
+}
+
+// Whether the approved request `requestId` has given this workspace its grant: a request is
+// applied once, so a grant naming it means the request was handed over before.
+function grantedByRequest(impl: OverseerImpl, requestId: string): boolean {
+  for (let grant of impl.storage.adminGrants.list()) {
+    if (grant.requestId === requestId) return true;
+  }
+  return false;
+}
+
+// The profile of the admin `admin` (a canonical user id) as a workspace keeps it of an admin's
+// write: their account's, or the id alone for an admin whose account has no profile.
+async function adminProfile(impl: OverseerImpl, admin: string): Promise<AiChatAuthorInfo> {
+  return await retryOnDoReset(
+      () => impl.users.getByName(admin).whoamiIfExists(), impl.logger) ??
+      {type: "user", id: admin, name: admin};
 }
 
 // Capability representing one gadget workpiece, handed to "build"-role sessions via

@@ -176,6 +176,7 @@ const WriteDetails = ({ record, onFilterBy }: {
     )}
     {record.outcome && <Detail term="Outcome">{record.outcome}</Detail>}
     {record.error && <Detail term="Error">{record.error}</Detail>}
+    {record.endReason && <Detail term="Reason for ending">{record.endReason}</Detail>}
     <Detail term="Via">{VIA_NAMES[record.via]}</Detail>
   </dl>
 )
@@ -185,14 +186,15 @@ const WriteDetails = ({ record, onFilterBy }: {
  * with a toggle that shows the rest in a row below it: how the call came, and a setting record's
  * changes, an access record's workspace or account, reason, level and arguments, or a write
  * record's workspace, request, reason and arguments, with what its step adds: who requested it,
- * the check a refused approval failed, the passkey behind it, its outcome or its error. A write
- * record's step is a badge beside its kind, where an access record's refusal is. An access or a
- * write record's target user is the user the call or the write reached: its workspace's owner, or
- * the user whose account a call was made into. The admin's name and the target user, and in a
- * workspace or a write record's details its workspace, filter the log by `onFilterBy`. Names are
- * never cut: an action too long for the space left is, whole in its tooltip. `shaded` stripes the
- * summary row as Kumo stripes a table's even rows: Kumo counts the details row below each one,
- * hidden or not, so every summary row is an odd row to it and would never be striped.
+ * the check a refused approval failed, the passkey behind it, its outcome, its error or the reason
+ * an admin gave for ending the grant. A write record's step is a badge beside its kind, where an
+ * access record's refusal is. An access or a write record's target user is the user the call or
+ * the write reached: its workspace's owner, or the user whose account a call was made into. The
+ * admin's name and the target user, and in a workspace or a write record's details its workspace,
+ * filter the log by `onFilterBy`. Names are never cut: an action too long for the space left is,
+ * whole in its tooltip. `shaded` stripes the summary row as Kumo stripes a table's even rows: Kumo
+ * counts the details row below each one, hidden or not, so every summary row is an odd row to it
+ * and would never be striped.
  */
 export const AuditLogRow = ({ record, shaded, onFilterBy }: {
   record: AdminAuditRecord

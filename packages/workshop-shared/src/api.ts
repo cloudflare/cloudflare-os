@@ -695,6 +695,7 @@ export const ADMIN_WRITE_ERROR_CODES = {
   tooManyRequests: "ADMIN_WRITE_TOO_MANY_REQUESTS",
   passkeyRequired: "ADMIN_WRITE_PASSKEY_REQUIRED",
   passkeyRefused: "ADMIN_WRITE_PASSKEY_REFUSED",
+  secondAdminRequired: "ADMIN_WRITE_SECOND_ADMIN_REQUIRED",
 } as const;
 
 /** An expected refusal code from ADMIN_WRITE_ERROR_CODES. */
@@ -723,6 +724,8 @@ const adminWriteErrors = codedErrorFamily<AdminWriteErrorCode>({
       "This needs a passkey of your own. Enrol one in the admin panel first.",
   [ADMIN_WRITE_ERROR_CODES.passkeyRefused]:
       "The passkey confirmation was not accepted. Start again.",
+  [ADMIN_WRITE_ERROR_CODES.secondAdminRequired]:
+      "This request must be approved by an admin other than the one who made it.",
 });
 
 /** Creates an expected admin-write refusal with a machine-readable code. */
@@ -1634,7 +1637,8 @@ export type AdminSettingsView = {
    * Whether admins may change a workspace through AdminApi.requestWorkspaceWrite(): true only
    * while the deployment's ADMIN_WORKSPACE_WRITES environment variable is "on". Unset, blank,
    * "off" and any other value are false, so a misconfiguration never enables writes, and no admin
-   * setting can. This switch alone bounds writes: `adminWorkspaceAccess` does not.
+   * setting can. `adminWorkspaceAccess` bounds no write but "grantContentAccess", which also needs
+   * the level in force to be "content".
    */
   adminWorkspaceWrites: boolean;
   /** Site name shown next to the top-bar logo ("" falls back to DEFAULT_SITE_NAME). */
@@ -2006,14 +2010,14 @@ export type AdminUserMethod = typeof ADMIN_USER_METHODS[number];
 /**
  * The AdminApi methods that change a deployment setting, each recorded as an AdminSettingRecord
  * before its change takes effect. inspectWorkspace() is recorded as an AdminAccessRecord,
- * inspectUser() as an AdminUserAccessRecord, and requestWorkspaceWrite(), denyWorkspaceWrite()
- * and approveWorkspaceWrite() as AdminWriteRecords. The rest change no setting and are not
- * recorded: the reads (getSettings, isBlueprintFeatured, getUpdateStatus, listUsers,
- * listWorkspaces, listAdminAudit, getAdminAuditStats, getWorkspaceWrite, listAdminPasskeys), the
- * passkey challenges (beginAdminPasskeyEnrolment, beginAdminPasskeyRemoval,
- * beginWorkspaceWriteApproval), the gateway tests, and checkForUpdates. A call that is not
- * recorded can still leave a record that is not its own: getWorkspaceWrite() and
- * beginWorkspaceWriteApproval(), like every write-request method, first end the requests that
+ * inspectUser() as an AdminUserAccessRecord, and requestWorkspaceWrite(), denyWorkspaceWrite(),
+ * approveWorkspaceWrite() and endWorkspaceGrant() as AdminWriteRecords. The rest change no
+ * setting and are not recorded: the reads (getSettings, isBlueprintFeatured, getUpdateStatus,
+ * listUsers, listWorkspaces, listAdminAudit, getAdminAuditStats, getWorkspaceWrite,
+ * listAdminPasskeys), the passkey challenges (beginAdminPasskeyEnrolment,
+ * beginAdminPasskeyRemoval, beginWorkspaceWriteApproval), the gateway tests, and checkForUpdates.
+ * A call that is not recorded can still leave a record that is not its own: getWorkspaceWrite()
+ * and beginWorkspaceWriteApproval(), like every write-request method, first end the requests that
  * have run out, each recorded "expired" (see AdminWriteRecord).
  */
 export const ADMIN_SETTING_METHODS = [
@@ -2387,7 +2391,7 @@ export type AdminAccessGrant = {
  * action does is said where one is requested: see AdminApi.requestWorkspaceWrite().
  */
 export const ADMIN_WRITE_ACTIONS = [
-  "stopAgent", "restartWorkspace",
+  "stopAgent", "restartWorkspace", "grantContentAccess",
 ] as const;
 
 /** One of ADMIN_WRITE_ACTIONS. */
@@ -2397,7 +2401,8 @@ export type AdminWriteAction = typeof ADMIN_WRITE_ACTIONS[number];
  * The arguments of a write request. Each action takes only its own, and a request naming any
  * other, or missing a required one, is rejected:
  *   - stopAgent: `chatId`;
- *   - restartWorkspace: none.
+ *   - restartWorkspace: none;
+ *   - grantContentAccess: none.
  * No action takes `gatekeeperId` yet.
  */
 export type AdminWriteArgs = {
@@ -2466,7 +2471,8 @@ export type AdminWriteRequest = {
   args: AdminWriteArgs;
   /** Why, as the requester gave it. Once the write is approved, the workspace's owner and its
    * "build" collaborators read it, word for word, in the workspace's action log (see
-   * ActionLogEntry.byAdmin). */
+   * ActionLogEntry.byAdmin), except for "grantContentAccess", whose reason stays in the admin
+   * audit log. */
   reason: string;
   /** The admin who made the request, by canonical user id. */
   requestedBy: string;
@@ -2485,7 +2491,8 @@ export type AdminWriteRequest = {
   resolvedBy?: string;
   /** When it left "pending". */
   resolvedAt?: Date;
-  /** What the workspace reported once it ran, for an action that reports something. */
+  /** What the workspace reported once it ran, for an action that reports something: for
+   * "grantContentAccess", the grant's id and when it ends, as `grant <id> until <ISO time>`. */
   outcome?: string;
   /** Why it failed, or why it expired before `expiresAt`, cut to MAX_ADMIN_AUDIT_ARG_LENGTH
    * characters. */
@@ -2514,12 +2521,20 @@ export type AdminPasskeyRefusal =
     "malformed" | "type" | "challenge" | "origin" | "relyingParty" | "userPresence" |
     "userVerification" | "credential" | "algorithm" | "signature" | "counter";
 
+/** Why an attempt to approve a write request was refused, as its "refused" record says: a
+ * passkey check (see AdminPasskeyRefusal), or "requester": the admin who made the request tried
+ * to approve it, for an action that needs a second admin ("grantContentAccess"). An account
+ * whose name differs from the requester's only by the case of ASCII letters is the requester:
+ * the deployment's list of admins matches names that way, so both are one entry of it. */
+export type AdminApprovalRefusal = AdminPasskeyRefusal | "requester";
+
 /**
  * One step in the life of a write request, in the deployment-wide audit log:
  *   - "requested": an admin asked for the write. Recorded before the request is stored;
  *   - "refused":   an admin's attempt to approve the request was not accepted (`refusal`). Either
- *                  the answer failed a passkey check, which leaves a pending request pending, or
- *                  the request was no longer pending, as when an approval is sent again;
+ *                  the answer failed a passkey check or came from the requester of a request that
+ *                  needs a second admin, which leaves a pending request pending, or the request
+ *                  was no longer pending, as when an approval is sent again;
  *   - "approved":  an admin confirmed it with a passkey. Recorded by the workspace itself, before
  *                  it changes anything, so that a write whose record cannot be written does not
  *                  happen;
@@ -2529,7 +2544,12 @@ export type AdminPasskeyRefusal =
  *                  after one, the workspace may have changed in part or in whole;
  *   - "denied":    an admin denied the request;
  *   - "expired":   the request ran out unapproved, or its requester stopped being a deployment
- *                  admin first (`error`).
+ *                  admin first (`error`);
+ *   - "revoked":   for "grantContentAccess" only: an admin ended the grant the request gave, before
+ *                  its time (AdminApi.endWorkspaceGrant()). Recorded by the workspace itself, before
+ *                  the grant is ended, so that an ending whose record cannot be written does not
+ *                  happen. It follows "applied", possibly days later. A grant that runs out is
+ *                  recorded by nothing: its "applied" record says when it ends.
  * Every approved request is closed by "applied" or "failed". Those two are recorded after the
  * fact, so they are written at least once: a retry after a lost acknowledgement can repeat one.
  * A "refused" step can follow any other, a closing one included: it is how a replayed approval
@@ -2538,7 +2558,7 @@ export type AdminPasskeyRefusal =
  * Unlike an AdminAccessRecord, an approved write is also shown in the workspace: as an entry of
  * its action log (see ActionLogEntry.byAdmin), which the workspace's owner and its "build"
  * collaborators read. A collaborator who only uses a gadget is given no action log, so is shown
- * nothing.
+ * nothing. The exception is "grantContentAccess", which the workspace shows nobody.
  */
 export type AdminWriteRecord = {
   /** Distinguishes this from an AdminAccessRecord and an AdminSettingRecord. */
@@ -2547,7 +2567,7 @@ export type AdminWriteRecord = {
   at: Date;
   /** The admin whose step it is: the requester for "requested" and "expired", the admin who
    * tried for "refused", the approver for "approved", "applied" and "failed", the denier for
-   * "denied". */
+   * "denied", the admin who ended the grant for "revoked". */
   admin: string;
   /** Opaque. The AuthenticatedApi.getAdminApi() capability the step was made through: the
    * request's own for "expired", the approval's for "applied" and "failed". */
@@ -2557,12 +2577,13 @@ export type AdminWriteRecord = {
   /** The request (AdminWriteRequest.id). */
   requestId: string;
   /** The step. */
-  event: "requested" | "refused" | "approved" | "applied" | "failed" | "denied" | "expired";
+  event: "requested" | "refused" | "approved" | "applied" | "failed" | "denied" | "expired" |
+      "revoked";
   /** The workspace. */
   workspaceId: string;
   /** The workspace's owner, kept as an AdminAccessRecord keeps it: as the workspace itself gives
-   * them for "approved", as the deployment directory listed them when the request was made for
-   * the other steps. */
+   * them for "approved" and "revoked", as the deployment directory listed them when the request
+   * was made for the other steps. */
   workspaceOwner: string;
   /** The workspace's title, cut as an AdminAccessRecord cuts it, from the same source as
    * `workspaceOwner`. */
@@ -2583,13 +2604,16 @@ export type AdminWriteRecord = {
   passkey?: string;
   /** For "refused": the check the attempt failed. An attempt on a request that was no longer
    * pending is refused "challenge". */
-  refusal?: AdminPasskeyRefusal;
+  refusal?: AdminApprovalRefusal;
   /** For "applied": what the workspace reported, when it reports anything (see
    * AdminWriteRequest.outcome). */
   outcome?: string;
   /** For "failed": why. For "expired": why it ended before its time, absent when it simply ran
    * out. Cut to MAX_ADMIN_AUDIT_ARG_LENGTH characters. */
   error?: string;
+  /** For "revoked": why, as the admin who ended the grant gave it. `reason` stays the
+   * requester's. */
+  endReason?: string;
 };
 
 /** One passkey an admin enrolled to approve writes with, as AdminApi.listAdminPasskeys() lists it.
@@ -3113,8 +3137,9 @@ export interface AdminApi {
   /**
    * Ask for a write to a workspace: `action` with `args` (see AdminWriteArgs), for `reason`. A
    * reason is required, as for inspectWorkspace(), but unlike an inspection's it does not stay in
-   * the admins' log: once the write is approved, everyone who reads the workspace's action log,
-   * its owner and its "build" collaborators, reads it word for word, so write it for them.
+   * the admins' log, except for "grantContentAccess": once the write is approved, everyone who
+   * reads the workspace's action log, its owner and its "build" collaborators, reads it word for
+   * word, so write it for them.
    *
    * Nothing in the workspace is read or changed: its title and owner are the deployment
    * directory's. The request is recorded ("requested") before it is stored, so a request whose
@@ -3127,6 +3152,13 @@ export interface AdminApi {
    *     no client stops the turn to put them in its draft, so they go into the chat as their
    *     senders' messages (see `steered` of AiChatMessageBody).
    *   - "restartWorkspace": ends every session on the workspace, as a revoked collaborator does.
+   *   - "grantContentAccess": stores a grant with source "admins" on the workspace (see
+   *     AdminAccessGrant), for ADMIN_GRANT_LIFETIME_SECONDS, never renewed: it is asked for and
+   *     approved again. It must be approved by an admin other than the requester (an account that
+   *     matches the same entry of the deployment's admin list as the requester's is the
+   *     requester). Unlike the other actions it enters nothing in the workspace's action log and
+   *     raises nothing a member can see; its reason stays in the admins' log. Refused
+   *     `contentOff` (ADMIN_ACCESS_ERROR_CODES) while the level in force is below "content".
    *
    * Refused `notAdmin` for a caller who is no longer a deployment admin, `writesOff` unless the
    * deployment's ADMIN_WORKSPACE_WRITES environment variable is "on", `workspaceNotFound` for a
@@ -3148,7 +3180,8 @@ export interface AdminApi {
   /**
    * Start approving a pending write request: the challenge the caller's passkey must sign. Refused
    * `passkeyRequired` while the caller has enrolled none, `requestNotFound`, `requestNotPending`
-   * and `originUnset`.
+   * and `originUnset`. Refused `secondAdminRequired` for the requester of a "grantContentAccess"
+   * request.
    */
   beginWorkspaceWriteApproval(requestId: string): Promise<AdminPasskeyChallenge>;
 
@@ -3158,15 +3191,29 @@ export interface AdminApi {
    * the deployment's origin and relying party, with user verification, by one of the caller's own
    * passkeys. Anything else is refused `passkeyRefused`, leaving the request pending and the
    * challenge spent; an attempt on a request that is no longer pending, such as an approval sent
-   * a second time, is refused `requestNotPending`. Either refusal is recorded ("refused", with
-   * the check that failed); an id that names no request is refused `requestNotFound`, which has
-   * no request to be recorded against. The workspace then records the write ("approved") in the
-   * deployment-wide log, enters it in its action log, which its owner and "build" collaborators
-   * read, and only then runs it; what came of it is recorded too ("applied" or "failed"). Returns
-   * the request as it stands: "applied", or "failed" with the workspace's error.
+   * a second time, is refused `requestNotPending`; the requester of a "grantContentAccess"
+   * request is refused `secondAdminRequired`, leaving the request pending and the challenge
+   * spent. Each refusal is recorded ("refused", with the check that failed, "requester" for the
+   * last); an id that names no request is refused `requestNotFound`, which has no request to be
+   * recorded against. The workspace then records the write ("approved") in the deployment-wide
+   * log, enters it in its action log, which its owner and "build" collaborators read (for every
+   * action but "grantContentAccess"), and only then runs it; what came of it is recorded too
+   * ("applied" or "failed"). Returns the request as it stands: "applied", or "failed" with the
+   * workspace's error.
    */
   approveWorkspaceWrite(requestId: string, assertion: AdminPasskeyAssertion)
       : Promise<AdminWriteRequest>;
+
+  /**
+   * End a grant with source "admins" on a workspace, now, for `reason` (required, as for
+   * inspectWorkspace()). Recorded as the "revoked" step of the write request the grant was
+   * approved through (see AdminWriteRecord), with the caller and the reason, before the grant is
+   * ended: an ending whose record cannot be written is refused. Works whatever the access level
+   * and whether or not writes are on: it only takes access away. An owner's grant is the owner's
+   * to end. Refused `notAdmin`, `workspaceNotFound`, and `notFound` (ADMIN_GRANT_ERROR_CODES)
+   * for an id that names no live grant with source "admins" on that workspace.
+   */
+  endWorkspaceGrant(workspaceId: string, grantId: string, reason: string): Promise<void>;
 
   /** Every passkey enrolled on the deployment, by admin and then by enrolment time, those of
    * accounts that are no longer deployment admins included: they stay stored, and approve
@@ -4977,12 +5024,13 @@ export type ActionLogEntry = {
    * write request (see AdminApi.requestWorkspaceWrite()), rather than a gatekeeper's action on a
    * gadget's or an agent's behalf. Such an entry has no `gatekeeperId`; `resolvedBy` is the admin
    * who approved it, `description.title` names the write, and its fields give the admin's reason
-   * and the request. It is written before the workspace changes, so that no admin write is
-   * missing from the log: its `state` is "approved" from then on, and becomes "rejected" if the
+   * and the request. It is written before the workspace changes, so that no change an admin makes
+   * is missing from the log: its `state` is "approved" from then on, and becomes "rejected" if the
    * workspace then could not run the write. An entry still "approved" can therefore stand for a
    * write that was cut short and done only in part. Like the rest of the action log it reaches
    * the workspace's owner and its "build" collaborators only: a collaborator who only uses a
-   * gadget is given no action log, and no other notice of the write.
+   * gadget is given no action log, and no other notice of the write. No entry is written for
+   * "grantContentAccess", which changes nothing in the workspace.
    */
   byAdmin?: true;
 } | {

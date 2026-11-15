@@ -58,6 +58,7 @@ const WRITE_ARGS: Record<AdminWriteAction,
     { required: (keyof AdminWriteArgs)[]; optional?: (keyof AdminWriteArgs)[] }> = {
   stopAgent: { required: ["chatId"] },
   restartWorkspace: { required: [] },
+  grantContentAccess: { required: [] },
 };
 
 // What an argument's value must be beyond its type, which the RPC validator has checked: `keep`
@@ -124,7 +125,25 @@ export function adminWriteTitle(action: AdminWriteAction, args: AdminWriteArgs):
   switch (action) {
     case "stopAgent": return `Stop the agent in chat ${args.chatId}`;
     case "restartWorkspace": return "Restart the workspace";
+    // A case only because the switch has no default: no entry of the action log is written with
+    // it (see entersActionLog()).
+    case "grantContentAccess": return "Read the workspace's content";
   }
+}
+
+/** Whether a request for `action` must be approved by an admin other than the one who made it.
+ * True for "grantContentAccess" alone: it lets admins read a workspace's content without its
+ * owner, so one admin's word is not enough. The other actions change a workspace in ways its
+ * members see, and their requester may approve them. */
+export function needsSecondAdmin(action: AdminWriteAction): boolean {
+  return action === "grantContentAccess";
+}
+
+/** Whether an approved `action` is entered in the workspace's action log, where its members read
+ * it. False for "grantContentAccess" alone: the workspace's owner is not told that admins read
+ * its content, so the write is recorded in the admin audit log and nowhere a member can see. */
+export function entersActionLog(action: AdminWriteAction): boolean {
+  return action !== "grantContentAccess";
 }
 
 /** The SHA-256 an approval signs: of the canonical JSON (adminAuditValue()) of everything about
