@@ -37,11 +37,15 @@ through logs and errors, then everything else.
   deliberately env-var driven in `auth/config.ts` and must **not** move into `AdminConfig`, so a
   compromised admin session cannot change it. Reject changes that relocate it.
 - `AdminSettings` is the only writer of the authoritative `AdminConfig`. Other code reads through
-  `readAdminConfig(env)`, except `AdminApiImpl`, which deliberately reads the authoritative config
-  in two places: where a view is minted, for `inspectWorkspace()` and `inspectUser()` alike, so
-  that a KV mirror still holding a higher access level never mints a view at it, and the audit
-  log's retention in `listAdminAudit()` and `getAdminAuditStats()`. The admin-settings conventions
-  are in `packages/workshop-backend/AGENTS.md`.
+  `readAdminConfig(env)`, except these, which deliberately read the authoritative config
+  (`committedAdminConfig()`): in `AdminApiImpl`, where a view is minted, for `inspectWorkspace()`
+  and `inspectUser()` alike, so that a KV mirror still holding a higher access level never mints a
+  view at it, a content view included; the audit log's retention in `listAdminAudit()` and
+  `getAdminAuditStats()`; and `requestWorkspaceWrite()` for `"grantContentAccess"`, so that a
+  request for content is never made at a level the mirror alone still shows; and
+  `IssueReportsDurableObject` (`#dueBefore()`), in `alarm()` and when an image upload is accepted,
+  so that reports are never deleted, and no upload refused or let through, by a retention that may
+  be stale. The admin-settings conventions are in `packages/workshop-backend/AGENTS.md`.
 - `OverseerDurableObject.openForAdmin()` stays reachable only over the Durable Object binding, never
   through a capability a user holds, and refuses an uninitialised workspace without writing.
   `UserDurableObject.openForAdmin()` is held to the same, for an account never created. Both views
@@ -52,9 +56,15 @@ through logs and errors, then everything else.
   whose record cannot be written returns nothing. An `AdminWorkspaceView` never reaches a
   connection (an admin's reads of trees and history never pull). An `AdminUserView` reads only
   the account's own store, writes nothing to it, and returns no token, hash, API key, API URL or
-  header value. No view method returns what the `"metadata"` level withholds (see
-  docs/admin-access.md). Flag a path that returns a workspace's or an account's data to an admin
-  without these, a method that returns content, or a `withhold*` helper applied conditionally.
+  header value. An `AdminWorkspaceView` method returns what the `"metadata"` level withholds (see
+  docs/admin-access.md) only when its `#call()` found, on that call, a view opened for content,
+  the level in force `"content"` and a live grant (`contentGrant()`), and it records the grant's
+  id; an `AdminUserView` method never does. The one condition a `withhold*` helper may hang on is
+  the `content` flag `#call()` hands the read, and every workspace method has its entry in
+  `ADMIN_METHOD_ANSWERS`. Flag a path that returns a workspace's or an account's data to an admin
+  without `adminViewCall()`; a content read whose condition is anything but that flag; a method
+  missing from the table or classified by a second list; a liveness test for a grant that is not
+  `isAdminGrantLive()`; and a content read that holds a file or an attachment whole.
 - That an `AdminUserView` never calls a gatekeeper is a type, so check the diff, not a call graph:
   `AdminUserViewImpl` reaches the account only through `AdminUserViewHost`, whose `UserStoreReads`
   leaves out the collections that hold gatekeeper stubs and whose `connectedAccounts()` yields
@@ -69,16 +79,45 @@ through logs and errors, then everything else.
   and is called only by `AdminApiImpl.approveWorkspaceWrite()`, after `AdminSettings` has verified
   a passkey assertion over that request's challenge and claimed the request. It appends its
   `"approved"` record to the deployment-wide log before any effect, so that a write whose record
-  cannot be written does not happen, and enters the write in the workspace's action log. Flag a
+  cannot be written does not happen, and enters the write in the workspace's action log, except
+  `"grantContentAccess"`, which enters nothing there and raises nothing a member can see. Flag a
   path that changes a workspace for an admin without these, any code that reads
   `ADMIN_WORKSPACE_WRITES` other than through `adminWorkspaceWritesEnabled()`, any move of passkeys
   into `AdminConfig`, any passkey check that trusts a request header for the origin, any way to
   remove or use a passkey without an assertion, and any way to remove or use another admin's
-  passkey.
-- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS` and `ADMIN_WORKSPACE_WRITES` are
-  env-driven, like auth config, and the cap and the writes switch fail closed. Flag code that
-  enforces `adminWorkspaceAccess`, or enforces or prunes with `adminAuditRetentionDays`, without
-  `adminAccessPolicy()`.
+  passkey. Flag also an approver compared with the requester other than through
+  `sameDeploymentAdmin()`; a member-facing path that writes, deletes or returns a grant with source
+  `"admins"`, or that asks the owner's account for the account-wide grant; and an owner's grant
+  call that appends to the admin audit log.
+- Three more entry points stay reachable only over the Durable Object binding, never through a
+  capability a user or a member's session holds. `OverseerDurableObject.endAdminGrant()` is called
+  only by `AdminApiImpl.endWorkspaceGrant()`; it ends only a live grant with source `"admins"`, and
+  appends its `"revoked"` record to the deployment-wide log before the grant is ended, so that an
+  ending whose record cannot be written does not happen. `OverseerDurableObject.issueReportContext()`
+  is called only by `AuthenticatedApiImpl.submitIssueReport()`, for the caller's own user id; it
+  answers from the sharing records, opens no session, joins no presence and writes nothing.
+  `UserDurableObject.liveAccountAdminGrant()` is reached over the binding only by
+  `OverseerImpl.contentGrant()`, that is, only when an admin's call needs content and the
+  workspace's own storage holds no live grant (the account's own `grantAccountAdminAccess()` reads
+  it too); it reads one value and writes nothing. Flag any of the three exposed through a
+  capability; a second caller of any of them; an `endAdminGrant()` that ends an owner's grant or
+  ends before its record is appended; an `issueReportContext()` handed a user id that is not the
+  caller's own; and a path other than `contentGrant()` (a listing, a metadata call, any
+  member-facing method) that asks an account for its account-wide grant.
+- Issue reports (see docs/issue-reports.md) keep an admins-only entry from the reporter and an
+  image behind its row. Flag a path that returns an admins-only entry, or anything derived from
+  one (a count, a timestamp), to a reporter; a path that returns an admin's id to a reporter; an
+  image served or rendered with a type that is not the recognised one; a use of the image bucket
+  (`ISSUE_IMAGES`) outside `issue-reports.ts`, an image reachable over an HTTP route or a bucket
+  URL, an image object read before its row is checked, or an image row deleted before its object;
+  a copy of a profile or other member-controlled text into the report store, or into a grant,
+  other than through `namedUser()`; a reporter's or an owner's call that can add a row the store
+  keeps without a bound (a `grants` row no report names); and a listing that returns every report
+  or every grant.
+- `ADMIN_WORKSPACE_ACCESS_MAX`, `ADMIN_AUDIT_RETENTION_MIN_DAYS`, `ISSUE_REPORT_RETENTION_MIN_DAYS`
+  and `ADMIN_WORKSPACE_WRITES` are env-driven, like auth config, and the cap and the writes switch
+  fail closed. Flag code that enforces `adminWorkspaceAccess`, or enforces or prunes with
+  `adminAuditRetentionDays` or `issueReportRetentionDays`, without `adminAccessPolicy()`.
 - A new `AdminSettings` mutator takes an `AdminSettingActor` and records through
   `#mutateAdminConfig()`, or records explicitly before any other write.
 - Text a user or workspace member controls (display names, titles) enters the directory or the
