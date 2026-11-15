@@ -1,22 +1,26 @@
-import type { CSSProperties, ReactNode } from 'react'
+import { useRef, type CSSProperties, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Image as ImageIcon } from '@phosphor-icons/react'
-import type { DocumentPreview } from '@gadgets/workshop-shared/gatekeeper'
+import type { DocumentPage, DocumentPreview } from '@gadgets/workshop-shared/gatekeeper'
 import { webUrl } from '@/components/webUrl'
 import { changeAttributes, changeLabel, changeState, focusRing, inlineChangeProps, isAttributed, isFocused, type ChangeMarks } from './changeMarks'
 import { placeEdits, rehypeChangeMarks, type UnplacedEdit } from './documentMarking'
 import { colors, fonts } from './googleTheme'
 import { OVERLAY_CLEARANCE, PreviewOverlay } from './PreviewOverlay'
 import { useElementSize } from './useElementSize'
+import { rehypePageBlocks, usePages } from './usePages'
 import { useRovingTabs, useSelectionFollowingFocus } from './useRovingTabs'
 
-// US Letter at 96dpi with Docs' default one-inch margins.
-const PAGE_WIDTH = 816
-const PAGE_HEIGHT = 1056
-const PAGE_MARGIN = 96
+// US Letter with one-inch margins, Docs' own default, for a tab that does not say.
+const LETTER: DocumentPage = { width: 612, height: 792, margins: { top: 72, right: 72, bottom: 72, left: 72 } }
 const GUTTER = 16
-const PAGELESS_BELOW = 0.7
+// Between one sheet and the next, as Docs draws them.
+const PAGE_GAP = 12
+// Shrunk further than this, a page's text is too small to read; Docs' own answer is pageless.
+const PAGELESS_BELOW = 0.5
+// Points to CSS pixels, at 96 to the inch.
+const px = (points: number) => (points * 96) / 72
 
 const pt = (points: number) => `${points}pt`
 
@@ -164,7 +168,11 @@ const LoadingLines = () => (
   </div>
 )
 
-/** A Google Doc as it will be: the active tab on a Letter page, each placed edit as a suggestion. */
+/**
+ * A Google Doc as it will be, each placed edit as a suggestion: the active tab on its own paper
+ * (`DocumentPage`, else Letter), broken into pages where Docs would break it, or as one
+ * continuous page where the tab is pageless or there is no room for a readable page.
+ */
 export const DocumentPreviewView = ({ title, content, actions, marks, overlay, loading = false }: {
   title: string
   /** Floated over the bottom of the main area: the file's review controls. */
@@ -183,10 +191,15 @@ export const DocumentPreviewView = ({ title, content, actions, marks, overlay, l
   const tabProps = useRovingTabs({ count: tabs.length, selected, onSelect: setSelected })
   const [scrollRef, size] = useElementSize<HTMLDivElement>()
   const tab = tabs[Math.min(selected, tabs.length - 1)]
-  const fit = !size?.width ? 1 : (size.width - 2 * GUTTER) / PAGE_WIDTH
-  // Shrunk much further, a page's text is too small to read; Docs' own answer is pageless format.
-  const pageless = fit < PAGELESS_BELOW
+  const page = tab?.page ?? LETTER
+  const width = px(page.width)
+  const height = px(page.height)
+  const margin = { top: px(page.margins.top), right: px(page.margins.right), bottom: px(page.margins.bottom), left: px(page.margins.left) }
+  const fit = !size?.width ? 1 : (size.width - 2 * GUTTER) / width
+  const pageless = page.pageless === true || fit < PAGELESS_BELOW
   const zoom = Math.min(1, fit)
+  const text = useRef<HTMLElement>(null)
+  const pages = usePages(text, pageless || loading ? undefined : { height, top: margin.top, bottom: margin.bottom, gap: PAGE_GAP })
 
   const { placed, unplaced } = tab ? placeEdits(tab.markdown, tab.edits, actions) : { placed: [], unplaced: [] }
 
@@ -219,36 +232,47 @@ export const DocumentPreviewView = ({ title, content, actions, marks, overlay, l
       <div className="relative flex min-h-0 flex-1 flex-col">
       <div ref={scrollRef} data-preview-scroll role={tabs.length > 1 ? 'tabpanel' : undefined} className="min-h-0 flex-1 overflow-auto" style={{ padding: `${pageless ? 0 : GUTTER}px 0 ${overlay ? OVERLAY_CLEARANCE : GUTTER}px`, background: pageless ? colors.page : undefined }}>
         {tab && (
-          <article
-            aria-label={`${title}${tabs.length > 1 ? `, ${tab.title}` : ''}`}
-            className="mx-auto"
-            style={{
-              ...(pageless
-                ? { width: '100%', padding: `${GUTTER}px ${2 * GUTTER}px` }
-                : { zoom, width: PAGE_WIDTH, minHeight: PAGE_HEIGHT, padding: PAGE_MARGIN, boxShadow: colors.pageShadow }),
-              background: colors.page,
-              fontFamily: fonts.document,
-              fontSize: pt(11),
-              lineHeight: 1.15,
-              color: colors.documentInk,
-              overflowWrap: 'break-word',
-            }}
-          >
-            {loading && <LoadingLines />}
-            {unplaced.length > 0 && (
-              <div className="mb-4 space-y-1.5">
-                {unplaced.map((edit, i) => <UnplacedNote key={`${edit.changeId}-${i}`} edit={edit} marks={marks} />)}
-              </div>
-            )}
-            <ReactMarkdown
-              skipHtml
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeChangeMarks(tab.markdown, placed)]}
-              components={components(marks)}
+          <div className="relative mx-auto" style={pageless ? undefined : { zoom, width }}>
+            {/* The sheets, behind the text that is laid out on them (`usePages`). */}
+            {!pageless && Array.from({ length: pages }, (_, index) => (
+              <div
+                key={index}
+                aria-hidden="true"
+                className="absolute inset-x-0"
+                style={{ top: index * (height + PAGE_GAP), height, background: colors.page, boxShadow: colors.pageShadow }}
+              />
+            ))}
+            <article
+              ref={text}
+              aria-label={`${title}${tabs.length > 1 ? `, ${tab.title}` : ''}`}
+              className="relative"
+              style={{
+                ...(pageless
+                  ? { width: '100%', padding: `${GUTTER}px ${2 * GUTTER}px`, background: colors.page }
+                  : { minHeight: pages * (height + PAGE_GAP) - PAGE_GAP, padding: `${margin.top}px ${margin.right}px ${margin.bottom}px ${margin.left}px` }),
+                fontFamily: fonts.document,
+                fontSize: pt(11),
+                lineHeight: 1.15,
+                color: colors.documentInk,
+                overflowWrap: 'break-word',
+              }}
             >
-              {tab.markdown}
-            </ReactMarkdown>
-          </article>
+              {loading && <LoadingLines />}
+              {unplaced.length > 0 && (
+                <div className="mb-4 space-y-1.5">
+                  {unplaced.map((edit, i) => <UnplacedNote key={`${edit.changeId}-${i}`} edit={edit} marks={marks} />)}
+                </div>
+              )}
+              <ReactMarkdown
+                skipHtml
+                remarkPlugins={[remarkGfm]}
+                rehypePlugins={[rehypeChangeMarks(tab.markdown, placed), rehypePageBlocks]}
+                components={components(marks)}
+              >
+                {tab.markdown}
+              </ReactMarkdown>
+            </article>
+          </div>
         )}
       </div>
       {overlay && <PreviewOverlay>{overlay}</PreviewOverlay>}

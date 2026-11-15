@@ -6,7 +6,7 @@ import { ConnectedFileThumbnail } from '@/blocks/resource-preview/ConnectedFileT
 import { LibraryRow, type LibraryAction } from '@/blocks/LibraryRow'
 import { LibraryTile } from '@/blocks/LibraryTile'
 import { LibraryToolbar, type LibraryOrder, type LibraryView } from '@/blocks/LibraryToolbar'
-import { documentFixture, presentationFixture, spreadsheetFixture } from '@/blocks/resource-preview/fixtures'
+import { documentFixture, longDocumentFixture, presentationFixture, spreadsheetFixture } from '@/blocks/resource-preview/fixtures'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { FormatIcon } from '@/components/FormatIcon'
 import { GroupedList, type GroupedListGroup } from '@/components/GroupedList'
@@ -146,9 +146,10 @@ export const LibraryPreview = () => (
     <Section title="LibraryToolbar, GroupedList, LibraryRow, LibraryTile, ContextMenu (the Library: a list or a grid, latest first or by name, searched; star a row to see it shrink out of its stretch of time and grow into the starred group, and unstar it to send it back; More and the star slide out when pointed at, a starred one keeps its star, and a right-click opens the same menu as More where it was clicked; a tile’s buttons pop out in its corner, an image fills its tile, a gadget’s screen or a file’s first page sits under its name, and pressing a tile gives a little; the review is a gadget the viewer builds, so it can be deleted once asked)">
       <LibraryItemsPreview />
     </Section>
-    <Section title="ConnectedFileView (a Google Doc, Sheet and Slides deck beside the page, read only and in their own look, as they will be once the changes waiting are made, counted in a pill; and each while it loads, a blank one of its kind where it will be. These are fixtures: nothing is fetched from Google)">
+    <Section title="ConnectedFileView (a Google Doc, Sheet and Slides deck beside the page, read only and in their own look, as they will be once the changes waiting are made, counted in a pill; a long Doc broken into Letter pages where Docs would break it, a manual page break included; and each while it loads, a blank one of its kind where it will be. These are fixtures: nothing is fetched from Google)">
       <Column>
         <Pane><ConnectedFileView preview={documentFixture} kind="document" /></Pane>
+        <Pane><ConnectedFileView preview={longDocumentFixture} kind="document" /></Pane>
         <Pane><ConnectedFileView preview={spreadsheetFixture} kind="spreadsheet" /></Pane>
         <Pane><ConnectedFileView preview={presentationFixture} kind="presentation" /></Pane>
         <Pane><ConnectedFileView kind="document" /></Pane>

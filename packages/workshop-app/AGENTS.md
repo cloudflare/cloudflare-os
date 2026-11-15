@@ -367,6 +367,13 @@ A Google file a chat's agent created is drawn in the chat as the file (`ActionIt
 `OutputCard` in Drive's icon) once its creation is approved, rather than as the approval, and opens
 beside the chat as `connected-<connection>-<id>`, among what the chat can switch to.
 
+A Google Doc is drawn on its own paper (`DocumentPage`: the tab's size and margins, else Letter
+with one-inch margins), zoomed to fit the pane, and broken into pages where Docs would break it
+(`blocks/resource-preview/usePages`): a block that would run past the foot of a page's text starts
+the next, a heading goes with the block after it, and a manual page break starts a page. Breaks
+fall between blocks and list items, never within a paragraph, and a table moves whole. A pageless
+tab, or a pane too narrow for a readable page (under half size), is one continuous page.
+
 ## Skills
 
 A skill is a `SKILL.md` in a Context Library collection (gatekeeper-context). `skills/SkillsLibrary`

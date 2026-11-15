@@ -296,3 +296,31 @@ export const presentationFixture: ResourcePreview = {
     ],
   },
 }
+
+const section = (heading: string) => `## ${heading}
+
+The beta taught us that small teams want to start working before they finish setting up. Every step that asked for something up front lost a share of the people who reached it, and the ones who stayed told us the same thing in interviews: let me see it working first.
+
+So the new flow opens on a workspace that already has a sample project in it. People can poke at it, rename it, or throw it away, and the setup questions come later, one at a time, when they matter.
+
+- Invite teammates once there is something to show them
+- Connect a calendar when the first deadline is set
+- Choose a plan when the trial is half over
+`
+
+/** A document long enough to run over several pages, with a manual page break before its appendix. */
+export const longDocumentFixture: ResourcePreview = {
+  title: 'Aurora Research Notes',
+  url: 'https://docs.google.com/document/d/1AuroraResearch/edit',
+  actions: [],
+  content: {
+    type: 'document',
+    tabs: [{
+      id: 't.0',
+      title: 'Notes',
+      markdown: `# Aurora Research Notes\n\n${['What we heard', 'What we changed', 'What we measured', 'What surprised us'].map(section).join('\n')}\n[Page break]\n\n# Appendix\n\nInterview guide and raw notes follow.\n`,
+      edits: [],
+      page: { width: 612, height: 792, margins: { top: 72, right: 72, bottom: 72, left: 72 } },
+    }],
+  },
+}

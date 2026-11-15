@@ -359,4 +359,9 @@ list it here, so it is known what workshop-app needs from the kernel.
   `setOwnDisplayName`, `setAvatar` and `changePassword`. AI spend is the sum of
   each workspace's `totalCost` from `listWorkspaces`, so it counts the workspaces the user builds in,
   not their use of gadgets shared with them; a per-user total would need the kernel.
-
+- **Where a Google Doc's pages break.** A preview had only each tab's Markdown, so a Doc could be
+  drawn as one long page. Now each tab says how it is laid out on paper (kernel:
+  `DocumentPage`, an optional `page` on `DocumentPreview`'s tabs in workshop-shared; filled by
+  gatekeeper-google from the `documentStyle` it already fetched), so the preview breaks it into
+  pages of the right size and draws a pageless Doc as one. A snapshot cached before this has no
+  page until the Doc next changes, and is drawn on Letter meanwhile.
