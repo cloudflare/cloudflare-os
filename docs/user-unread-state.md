@@ -30,7 +30,8 @@ suppresses approval alerts too. Before participation, the thread menu offers **E
 and **Mute notifications**, so silencing approvals takes one action. An explicitly muted chat offers
 **Unmute notifications**. The private read state reports the explicit override separately from the
 effective preference. Approval alerts use the ordinary durable outbox and local retries;
-read commands, later automated messages and collaborator reopens do not discard them.
+read commands, later automated messages and collaborator reopens do not discard them unless the
+chat is explicitly muted.
 
 Muting clears queued alerts and excludes the chat from badge rollups and the unread inbox,
 without advancing its read horizon or clearing its unread count. Muted chats keep their catch-up
@@ -213,13 +214,14 @@ Use-only sessions deny these commands. No separate caller-supplied identity auth
 The User DO applies this packet synchronously using only local rows, without waiting for
 notification delivery. It preserves newer heads and own-message read advances received before the packet is processed,
 unless the command explicitly rewinds. It commits changed horizons/counts and publishes updates;
-identical state causes no write. Read commands never drain queued alerts, so a delivery failure
-cannot reject a successfully committed read. Alert delivery retains its own mutexed processing.
+identical state causes no write. Read commands never deliver queued alerts, so a delivery failure
+cannot reject a successfully committed read. For explicitly muted chats, the command also keeps the
+queue empty and consumes known alert positions. Alert delivery retains its own mutexed processing.
 
 `AuthenticatedApi.markWorkspaceRead(workspaceId)` and `markAllRead()` operate entirely in the
 User DO. They advance each tracked unread row to its locally received head and visible position,
 without waking a workspace or fetching its newer tail. Messages arriving afterward remain unread.
-Read commands leave notification receipts and queued alerts unchanged.
+These bulk commands leave notification receipts and queued alerts unchanged.
 
 There are no read receipt tokens or versions. In-workspace commands use the ordinary session
 failure/reopen behavior; local bulk commands retain the API's existing one-time reset retry.
