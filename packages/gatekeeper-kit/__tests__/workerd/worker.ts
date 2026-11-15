@@ -4,6 +4,7 @@ import { DurableObject, RpcTarget, WorkerEntrypoint, type RpcStub } from "cloudf
 import { HookRegistry } from "../../src/hook-registry";
 import { ObserverTracker } from "../../src/observers";
 export { ConformanceAccount, ConformanceResource, ConformanceVerifier } from "./conformance/gatekeeper";
+export { BranchGatekeeper } from "./branch-gatekeeper";
 
 type VerifierProps = { allowed: readonly string[]; dropVerdicts?: number };
 

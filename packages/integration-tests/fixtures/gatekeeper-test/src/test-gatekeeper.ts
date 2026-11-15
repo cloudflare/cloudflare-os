@@ -25,9 +25,13 @@ import {
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
 import { HookRegistry, type HookCapabilities, type HookDelivery } from "@gadgets/gatekeeper-kit/hook-registry";
+import {
+  ActionJournal, defineActions, type ActionRejection, type ActionSession, type TaggedAction,
+} from "@gadgets/gatekeeper-kit/actions";
+import { runBranchHarness } from "@gadgets/gatekeeper-kit/testing";
 import type {
   AccountDescription, ActionDescription, ActionKind, AgentCatalog, ApplyActionsResult, ApprovalQueue,
-  BranchView, ConnectHandoff, Gatekeeper, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
+  BranchView, ConnectHandoff, Gatekeeper, GitCache, GatekeeperConnectCallback, GatekeeperUser, GatekeeperUserVerifier, HookController,
   HookInitiator, HookTargetMetadata, ObservationAuthorizer, ResourceDescription,
   ResourceConfiguratorFrame, SupportedResource, VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
@@ -229,6 +233,34 @@ export class TestControl extends DurableObject<Cloudflare.Env> {
     state.value = action.value;
     state.applyCount++;
     this.ctx.storage.kv.put(`actions:${label}`, state);
+  }
+
+  /** A KitTestGatekeeper's apply: what its provider now holds. */
+  applyValue(label: string, value: number): void {
+    const state = this.getActionState(label);
+    state.value = value;
+    state.applyCount++;
+    this.ctx.storage.kv.put(`actions:${label}`, state);
+  }
+
+  /**
+   * Runs gatekeeper-kit's branch harness against a fresh KitTestGatekeeper facet hosted here,
+   * reached over RPC as the Workshop reaches one, for a thing in account `label`.
+   */
+  async runKitHarness(label: string): Promise<void> {
+    const resourceUrl = `https://${VENDOR_HOST}/things/kit-harness-${crypto.randomUUID()}`;
+    const facet = this.ctx.facets.get(resourceUrl, () =>
+        ({ class: this.ctx.exports.KitTestGatekeeper({ props: { label, resourceUrl } }) }));
+    const gatekeeper = facet as unknown as Gatekeeper<TestSession>;
+    await runBranchHarness<RpcStub<TestSessionTarget>>({
+      startSession: async (queue, branch) =>
+        await gatekeeper.startSession(queue, branch) as unknown as RpcStub<TestSessionTarget>,
+      applyActions: (branch, actions, cache) => gatekeeper.applyActions!(branch, actions, cache),
+      // The thing holds one value, so a marker is its value: a read sees it while it is the last
+      // pending write visible, or, with none pending, what was last applied.
+      submit: (session, marker) => session.writeValue(markerValue(marker)),
+      reads: async (session, marker) => await session.readValue() === markerValue(marker),
+    });
   }
 
   /** Moves a simulated thing's staged actions to the account it was created in. */
@@ -743,9 +775,12 @@ export class TestAccount
     if (parsed.host !== VENDOR_HOST || !parsed.pathname.startsWith("/things/")) {
       throw new Error(`Not a test-gatekeeper resource URL: ${url}`);
     }
-    // A thing named `branches-...` is bound through the gatekeeper that can adopt branches.
+    // A thing named `branches-...` is bound through the gatekeeper that can adopt branches, and
+    // one named `kit-...` through the one built on gatekeeper-kit's branch support.
     const gatekeeper = parsed.pathname.startsWith("/things/branches-")
-      ? this.ctx.exports.BranchTestGatekeeper : this.ctx.exports.TestGatekeeper;
+      ? this.ctx.exports.BranchTestGatekeeper
+      : parsed.pathname.startsWith("/things/kit-")
+      ? this.ctx.exports.KitTestGatekeeper : this.ctx.exports.TestGatekeeper;
     return {
       class: gatekeeper({ props: { label: this.ctx.props.label, resourceUrl: url } }),
       resource: SUPPORTED_RESOURCES[0],
@@ -862,12 +897,12 @@ export interface ValueHook extends RpcTarget {
 
 @validateRpc()
 class TestSessionTarget extends RpcTarget implements TestSession {
-  private readonly approvalQueue: RpcStub<ApprovalQueue>;
+  protected readonly approvalQueue: RpcStub<ApprovalQueue>;
 
   constructor(
       approvalQueue: RpcStub<ApprovalQueue>,
-      private readonly state: DurableObjectStub<TestControl>,
-      private readonly label: string,
+      protected readonly state: DurableObjectStub<TestControl>,
+      protected readonly label: string,
       private readonly resourceUrl: string,
       private readonly ctx: DurableObjectState) {
     super();
@@ -967,6 +1002,71 @@ class TestSessionTarget extends RpcTarget implements TestSession {
 }
 
 const SET_VALUE_ACTION_KIND: ActionKind = { tag: "set-value", label: "Set value" };
+
+/** The integer a branch-harness marker names, so the one-value thing can carry it. */
+function markerValue(marker: string): number {
+  let hash = 0;
+  for (const char of marker) hash = (hash * 31 + char.charCodeAt(0)) | 0;
+  return Math.abs(hash) + 1000;
+}
+
+type KitActions = { setValue: { value: number } };
+
+/** What a KitTestGatekeeper's actions do at its provider, which is TestControl. */
+type KitProvider = { setValue(value: number): Promise<void> };
+
+const kitActions = defineActions<KitProvider, KitActions>({
+  setValue: {
+    kind: SET_VALUE_ACTION_KIND,
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    describe: ({ value }) => ({
+      title: `Set the test value to ${value}`,
+      description: `Set the deterministic integration-test value to **${value}**.`,
+      descriptionIsComplete: true,
+      implementsRevert: false,
+    }),
+    apply: ({ value }, provider) => provider.setValue(value),
+  },
+}, { fence: "none" });
+
+/**
+ * A KitTestGatekeeper session: writes through its kit session handle, and reads the value its view
+ * shows, the last visible pending write over what was applied.
+ */
+@validateRpc()
+class KitTestSessionTarget extends TestSessionTarget {
+  /**
+   * `actions` submits through `kept`, a queue stub of its own that this session releases: the
+   * argument startSession() was given goes when that call returns.
+   */
+  constructor(
+      kept: RpcStub<ApprovalQueue>, state: DurableObjectStub<TestControl>, label: string,
+      resourceUrl: string, ctx: DurableObjectState, private readonly actions: ActionSession<KitActions>) {
+    super(kept, state, label, resourceUrl, ctx);
+    this.kept = kept;
+  }
+
+  private readonly kept: RpcStub<ApprovalQueue>;
+
+  override async readValue(): Promise<number> {
+    await this.approvalQueue.authorizeObservation({
+      title: "Read the test value",
+      description: "Read the value of a test thing, with this session's pending writes over it.",
+    });
+    return this.actions.pending().at(-1)?.action.payload.value
+        ?? (await this.state.getActionState(this.label)).value ?? 0;
+  }
+
+  override async writeValue(value: number): Promise<number> {
+    return this.actions.submit("setValue", { value });
+  }
+
+  override [Symbol.dispose](): void {
+    super[Symbol.dispose]();
+    this.kept[Symbol.dispose]();
+  }
+}
 
 /** Where a gatekeeper facet keeps its ApplyMode: its own storage, so the getter reads it in sync. */
 const APPLY_MODE_KEY = "apply-mode";
@@ -1170,6 +1270,44 @@ export class BranchTestGatekeeper extends TestGatekeeper {
     await super.rejectAction(action);
     if (this.ctx.storage.kv.get<ApplyMode>(APPLY_MODE_KEY) !== "branches") return;
     return { rejected: await control(this.ctx.exports).takeRejectAlso(this.ctx.props.label) };
+  }
+}
+
+/**
+ * The test gatekeeper built on gatekeeper-kit's branch support (plans/forking-reality.md), as a
+ * gatekeeper adopting branches is: a session handle per session, applyActions() and
+ * rejectAction() delegated to the bound action set. Bound for a thing named `kit-...`.
+ */
+@validateRpc()
+export class KitTestGatekeeper extends TestGatekeeper {
+  readonly #actions = kitActions.bind(
+      new ActionJournal<TaggedAction<KitActions>>(this.ctx.storage.kv, { namespace: "kit" }),
+      { setValue: value => control(this.ctx.exports).applyValue(this.ctx.props.label, value) });
+
+  override async startSession(approvalQueue: RpcStub<ApprovalQueue>, branch?: BranchView)
+      : Promise<TestSession> {
+    const kept = approvalQueue.dup();
+    try {
+      return new KitTestSessionTarget(kept, control(this.ctx.exports), this.ctx.props.label,
+          this.ctx.props.resourceUrl, this.ctx, await this.#actions.session(kept, branch));
+    } catch (error) {
+      kept[Symbol.dispose]();
+      throw error;
+    }
+  }
+
+  async applyActions(branch: BranchView, actions: number[], cache: RpcStub<GitCache>)
+      : Promise<ApplyActionsResult> {
+    return this.#actions.applyList(branch, actions, { gitCache: cache });
+  }
+
+  /** The Workshop never calls it once applyActions() exists. */
+  override async applyAction(): Promise<void> {
+    throw new Error("This test gatekeeper applies actions as lists.");
+  }
+
+  override async rejectAction(action: number): Promise<ActionRejection> {
+    return this.#actions.rejectAction(action);
   }
 }
 
@@ -1410,6 +1548,18 @@ export default {
     // The BranchTestGatekeeper.applyActions() calls for `label`, and the knobs that stop them.
     // Bodies: {"label"} -> {"lists": [{"branch", "actions"}, ...]}; {"label", "limit": number |
     // null}; {"label", "action", "message", "retryable"}; {"label"}; {"label", "actions": number[]}.
+    // Runs gatekeeper-kit's branch harness against a fresh KitTestGatekeeper. Body: {"label"} ->
+    // 204, or 500 with what the harness found.
+    if (url.pathname === "/control/kit-harness" && req.method === "POST") {
+      const { label } = body as Record<string, unknown>;
+      if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");
+      try {
+        await control(ctx.exports).runKitHarness(label);
+      } catch (error) {
+        return new Response(error instanceof Error ? error.message : String(error), { status: 500 });
+      }
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === "/control/apply-lists" && req.method === "POST") {
       const { label } = body as Record<string, unknown>;
       if (!isNonEmptyString(label)) return badRequest("`label` must be a non-empty string");

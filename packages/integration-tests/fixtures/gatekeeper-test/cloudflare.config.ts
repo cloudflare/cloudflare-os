@@ -35,4 +35,5 @@ export default defineGadgetsWorker({
 export const migrations: DurableObjectMigration[] = [
   { tag: "v0", new_sqlite_classes: ["TestGatekeeper", "TestControl"] },
   { tag: "v1", new_sqlite_classes: ["BranchTestGatekeeper"] },
+  { tag: "v2", new_sqlite_classes: ["KitTestGatekeeper"] },
 ];

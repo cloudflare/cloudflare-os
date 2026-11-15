@@ -55,6 +55,9 @@ import {
   ResourceDescription,
   ApprovalQueue,
   ActionKind,
+  ApplyActionsResult,
+  BranchView,
+  GitCache,
   ObservationDescription,
   VendorDescription,
   GatekeeperConnectCallback,
@@ -62,6 +65,13 @@ import {
   SupportedResource,
   ResourceConfiguratorFrame,
 } from '@gadgets/workshop-shared/gatekeeper';
+import { buildDescription } from "@gadgets/gatekeeper-kit/action-description";
+import {
+  ActionJournal,
+  defineActions,
+  type ActionSession,
+  type TaggedAction,
+} from "@gadgets/gatekeeper-kit/actions";
 import { observerAccessVerifier } from "@gadgets/gatekeeper-kit/observers";
 import { formatSubresourceId } from "@gadgets/gatekeeper-kit/subresource-ids";
 import { MySession, MyHook as MyHookIface } from "./types";  // Remove MyHook if no hooks
@@ -134,6 +144,36 @@ function authorizeResourceObservation(
 // "Action kinds and auto-approval"). The user's "always approve" rule is stored under the tag, so never rename it
 // once shipped; the label is what the user sees.
 const MY_EDIT_KIND: ActionKind = { tag: "edit-data", label: "Edit data" };
+
+// What each kind of action carries. The kit stores it, and the session overlays it on reads.
+type MyActions = { updateData: { resourceId: string; value: string } };
+
+// What the handlers may do at the provider. Deliberately not the Durable Object: exposing provider
+// mutators on the DO would let any stub holder skip approval.
+type MyProvider = { putData(resourceId: string, value: string): Promise<void> };
+
+const myActions = defineActions<MyProvider, MyActions>({
+  updateData: {
+    kind: MY_EDIT_KIND,
+    // `true` unless the action falls under the opt-out policy in SKILL.md. Where it depends on the
+    // payload, declare sibling definitions instead, one `true` and one `false`, with a comment
+    // naming the rule on the `false` one.
+    autoApprovable: true,
+    delivery: "continue-with-simulation",
+    describe: ({ value }) => ({
+      title: "Update data",
+      // Agent-supplied text goes in a field, never into the prose (the kit's USAGE.md,
+      // "Describe with buildDescription").
+      ...buildDescription("Updates the resource's value.").verbatim("Value", value).finish(),
+      // `true` only with a revertAction() that reads back what was applied (`retainApplied`).
+      implementsRevert: false,
+    }),
+    // Derive an idempotency key from the stable `ctx.id` where the provider takes one.
+    apply: ({ resourceId, value }, provider) => provider.putData(resourceId, value),
+  },
+// "none": this example's payload means the same thing under any connection. Most provider writes
+// pin the connection instead ("authority", passing the `CredentialRead` as `fence` at submit).
+}, { fence: "none" });
 
 // ---------------------------------------------------------------------------
 // HTTP handler — serves the browser-based auth flow.
@@ -455,24 +495,43 @@ export class MyGatekeeperImpl extends DurableObject<Env, MyGatekeeperImplProps>
     return [MY_EDIT_KIND];
   }
 
-  async startSession(approvalQueue: RpcStub<ApprovalQueue>): Promise<MySession> {
-    return new MySessionImpl(
-      approvalQueue.dup(),  // Always dup() before storing
-      this.ctx,
-      // ... API client, props, etc.
-    );
+  // The kit keeps each action's record, the view (branch) it was submitted under, and its
+  // lifecycle. One journal and one bound set per facet, for the activation's life.
+  readonly #actions = myActions.bind(
+    new ActionJournal<TaggedAction<MyActions>>(this.ctx.storage.kv, { namespace: "my" }),
+    { putData: (resourceId, value) => this.#putData(resourceId, value) },
+  );
+
+  // `branch` is the view this session reads through (each chat has its own branch of pending
+  // actions). Hand it to the kit untouched: the session handle submits under it and shows the
+  // session only the pending actions it may see.
+  async startSession(approvalQueue: RpcStub<ApprovalQueue>, branch?: BranchView): Promise<MySession> {
+    let kept = approvalQueue.dup();  // Always dup() before storing
+    try {
+      return new MySessionImpl(kept, await this.#actions.session(kept, branch), this.ctx);
+    } catch (error) {
+      kept[Symbol.dispose]();
+      throw error;
+    }
   }
 
-  async applyAction(actionId: number): Promise<void> {
-    // Look up the action by ID from this gatekeeper's own storage, then perform it
-    // against the external service.
-    // TODO: Implement action lookup and execution.
-    throw new Error(`Unknown action: ${actionId}`);
+  // Approved actions, in the order to apply them. Implementing this is how the gatekeeper tells
+  // the Workshop it reads through branches, so it implements no applyAction().
+  applyActions(branch: BranchView, actions: number[], cache: RpcStub<GitCache>)
+      : Promise<ApplyActionsResult> {
+    return this.#actions.applyList(branch, actions, { gitCache: cache });
   }
 
-  async rejectAction(actionId: number): Promise<void | { restart?: boolean }> {
-    // Clean up simulation state for this action.
-    // Return { restart: true } if the session can't recover from rejection.
+  // The kit withdraws the action, rejects what could not apply without it, and says whether
+  // sessions built on it must restart.
+  rejectAction(actionId: number) {
+    return this.#actions.rejectAction(actionId);
+  }
+
+  async #putData(resourceId: string, value: string): Promise<void> {
+    // TODO: Perform the write against the external service.
+    void resourceId;
+    void value;
   }
 
   revertAction(actionId: number):
@@ -580,13 +639,16 @@ export class MyHookControllerImpl extends WorkerEntrypoint<Env, MyHookController
 
 class MySessionImpl extends RpcTarget implements MySession {
   #approvalQueue: RpcStub<ApprovalQueue>;
+  #actions: ActionSession<MyActions>;
   #ctx: DurableObjectState<MyGatekeeperImplProps>;
 
   constructor(
       approvalQueue: RpcStub<ApprovalQueue>,
+      actions: ActionSession<MyActions>,
       ctx: DurableObjectState<MyGatekeeperImplProps>) {
     super();
     this.#approvalQueue = approvalQueue;
+    this.#actions = actions;
     this.#ctx = ctx;
   }
 
@@ -605,6 +667,11 @@ class MySessionImpl extends RpcTarget implements MySession {
     });
     if (!response.ok) throw new Error(`Resource read failed: HTTP ${response.status}`);
     let result = await response.text();
+    // Simulation: overlay this session's pending actions, in the order the handle returns them.
+    // Never a facet-wide list, which would show this chat another chat's pending changes.
+    for (let { action } of this.#actions.pending()) {
+      if (action.payload.resourceId === this.#ctx.props.resourceId) result = action.payload.value;
+    }
 
     await authorizeResourceObservation(this.#approvalQueue, {
       title: "Read data",
@@ -615,26 +682,15 @@ class MySessionImpl extends RpcTarget implements MySession {
     return result;
   }
 
-  // Example: action (side effect). Submit for approval; do NOT perform here.
-  // Assign a sequential action ID, store the action details in the gatekeeper's
-  // own storage, then submit the ID to the approval queue. If you read current state to build
-  // the description or capture revert info, do NOT log it as an observation: nothing is
-  // returned to the caller.
+  // Example: action (side effect). Submit for approval; do NOT perform here. The kit stores the
+  // action, submits it, and keeps it out of every read until the Workshop has accepted it, so a
+  // refused submission leaves nothing behind. If you read current state to build the description
+  // or capture revert info, do NOT log it as an observation: nothing is returned to the caller.
   async updateData(newValue: string): Promise<void> {
-    let actionId = /* assign next sequential ID and store action details */ 0;
-
-    await this.#approvalQueue.submitAction(actionId, {
-      title: "Update data",
-      description: `Update value to: ${newValue}`,
-      implementsRevert: true,
-      actionKind: MY_EDIT_KIND,
-      // `true` unless the action falls under the opt-out policy in SKILL.md. Where it depends on
-      // the payload, compute it, with a comment naming the rule:
-      //   autoApprovable: !removesContent(newValue),  // rule 1: deletes or removes content
-      autoApprovable: true,
+    await this.#actions.submit("updateData", {
+      resourceId: this.#ctx.props.resourceId, value: newValue,
     });
-
-    // TODO: Update cache/simulation state so subsequent reads reflect this
+    // Nothing else to update: reads overlay `this.#actions.pending()`.
   }
 
   // Example: hook registration — remove if the gatekeeper doesn't push events.
