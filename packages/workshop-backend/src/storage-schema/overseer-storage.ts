@@ -21,7 +21,8 @@ import type {
 import { createTypedStorage, collection, singleton, keyString } from "@gadgets/typed-storage";
 import {
   actionChangeTime,
-  type ActionState, type AgentSpawnerConfig, type AiChatAuthorInfo, type AiChatMessage,
+  type ActionState, type AdminAccessGrant, type AgentSpawnerConfig, type AiChatAuthorInfo,
+  type AiChatMessage,
   type AlwaysAvailableResource,
   type AiChatMetadata, type BlueprintBindingAnnotation, type BlueprintMetadata,
   type BlueprintOutput, type ChatGadgetPinRecord, type CollaboratorRole, type GadgetUpstream,
@@ -1669,6 +1670,17 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `${gatekeeperId}:${actionKind.tag}`.
       autoApproveTags: collection<AutoApproveTagRecord>()({
         primaryKey: (r) => `${r.gatekeeperId}:${r.actionKind.tag}`,
+      }),
+
+      // The grants that let deployment admins read this workspace's content (see
+      // AdminAccessGrant), live and ended, by id: those its owner gave on it, and those a second
+      // admin's approval gave. The owner's account-wide grant is kept in their account, never
+      // here. No member-facing path writes, deletes or returns a record whose `source` is
+      // "admins": nothing a member can call may change because an approval gave a grant. The
+      // collection needs no storage version: a workspace that never held a grant reads it as
+      // empty.
+      adminGrants: collection<AdminAccessGrant>()({
+        primaryKey: "id",
       }),
 
       chatMeta: collection<StoredChatMetadata>()({

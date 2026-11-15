@@ -9,8 +9,9 @@ import {
 import {
   ADMIN_AUDIT_EXCERPT_CONTEXT, adminAccessPolicy, adminAuditStatsDays, adminAuditValue,
   adminCommitLogDepth, adminListLimit, adminSettingChange, adminViewLifetimeMs,
-  adminWorkspaceWritesEnabled, assertAdminViewLive, cutAdminAuditText, lowerAdminWorkspaceAccess,
-  maxAdminWorkspaceAccess, minAdminAuditRetentionDays, redactAdminAuditArgs,
+  adminWorkspaceWritesEnabled, assertAdminViewLive, auditOwnerId, cutAdminAuditText,
+  lowerAdminWorkspaceAccess, maxAdminWorkspaceAccess, minAdminAuditRetentionDays, namedUser,
+  redactAdminAuditArgs,
   validateAdminAccessReason, withholdActionContent, withholdBlueprintContent, withholdChatContent,
   withholdCommitContent, withholdCreationContent, withholdHookContent,
   type AdminViewTerms,
@@ -317,6 +318,48 @@ describe("cutAdminAuditText", () => {
       path: cutAdminAuditText(long, MAX_ADMIN_AUDIT_ARG_LENGTH),
       chatId: 3,
     });
+  });
+});
+
+describe("namedUser", () => {
+  it("keeps a short id and name whole", () => {
+    expect(namedUser({ id: "owner@example.test", name: "Owner" }))
+        .toStrictEqual({ id: "owner@example.test", name: "Owner" });
+    let atLimit = {
+      id: "i".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH), name: "n".repeat(MAX_ADMIN_AUDIT_ARG_LENGTH),
+    };
+    expect(namedUser(atLimit)).toStrictEqual(atLimit);
+  });
+
+  it("keeps a long id as the audit log keeps a workspace owner's", () => {
+    let long = `${"i".repeat(300)}@example.test`;
+    let named = namedUser({ id: long, name: "Owner" });
+    expect(named.id).toBe(auditOwnerId(long));
+    expect(named.id).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(namedUser(named)).toStrictEqual(named);
+  });
+
+  it("keeps two long ids sharing a start apart", () => {
+    let start = "i".repeat(290);
+    let one = namedUser({ id: `${start}-one@example.test`, name: "One" });
+    let two = namedUser({ id: `${start}-two@example.test`, name: "Two" });
+    expect(one.id).not.toBe(two.id);
+    expect(one.id.slice(0, 200)).toBe(two.id.slice(0, 200));
+  });
+
+  it("cuts a long name, marked", () => {
+    let named = namedUser({ id: "owner@example.test", name: "n".repeat(1_000_000) });
+    expect(named.name).toHaveLength(MAX_ADMIN_AUDIT_ARG_LENGTH);
+    expect(named.name.endsWith("…")).toBe(true);
+    expect(namedUser(named)).toStrictEqual(named);
+  });
+
+  it("drops every other key of what it is given", () => {
+    let profile = {
+      type: "user", id: "owner@example.test", name: "Owner", description: "About me",
+      commitEmail: "owner@example.test",
+    };
+    expect(namedUser(profile)).toStrictEqual({ id: "owner@example.test", name: "Owner" });
   });
 });
 
