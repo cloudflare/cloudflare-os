@@ -16,7 +16,7 @@ import { FOLDER_MIME_TYPE as FOLDER, SHORTCUT_MIME_TYPE as SHORTCUT } from "../.
 import {
   DRIVE_WRITES_GRANT, GOOGLE_DOC_RESOURCE, GOOGLE_DRIVE_FILE_RESOURCE, GOOGLE_DRIVE_FOLDER_RESOURCE,
   GOOGLE_DRIVE_RESOURCE, GOOGLE_SHEETS_RESOURCE, GOOGLE_SLIDES_RESOURCE,
-  OFFICE_IMPORT_GRANT,
+  OFFICE_IMPORT_GRANT, SUPPORTED_RESOURCES,
   SHARED_DRIVES_GRANT, resourceUrlPatternsToOAuthScopes,
 } from "../../src/resources";
 
@@ -816,8 +816,11 @@ describe.each(OFFICE_KIND_CASES)("the $title type's Office files", testCase => {
   it("are chosen in the Drive picker, which the type shares a card with", async () => {
     let { frame, user } = await startOfficeConfigurator(testCase);
     let drive = await user.startResourceConfigurator(GOOGLE_DRIVE_RESOURCE.urlPattern);
+    let resource = SUPPORTED_RESOURCES.find(resource => resource.urlPattern === testCase.pattern)!;
+    let byId = await user.startResourceConfigurator(resource.id!);
 
     expect(frame.iframeHtml).toBe(drive.iframeHtml);
+    expect(byId.iframeHtml).toBe(drive.iframeHtml);
   });
 
   it("tells native, Office and unsupported files apart, with whether the owner allows copying", async () => {
@@ -1033,6 +1036,19 @@ async function storedAccount(
   };
   return { account, user: new GatekeeperUserImpl(ctx as never, {} as never) };
 }
+
+it.each(SUPPORTED_RESOURCES.filter(resource => resource.creatable))(
+  "opens $title's creation configurator by stable ID or legacy pattern", async resource => {
+    let { user } = await storedAccount([]);
+    let byPattern = await user.startCreationConfigurator(resource.urlPattern);
+    try {
+      let byId = await user.startCreationConfigurator(resource.id!);
+      try {
+        expect(byId.iframeHtml).toBe(byPattern.iframeHtml);
+      } finally { byId.ui[Symbol.dispose](); }
+    } finally { byPattern.ui[Symbol.dispose](); }
+  },
+);
 
 describe("the Office import grant on a stored account", () => {
   it("is kept by the account, so asking for it again needs no consent, but is never described", async () => {

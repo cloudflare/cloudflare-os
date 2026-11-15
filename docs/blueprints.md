@@ -29,7 +29,7 @@ A blueprint does **not** capture:
 
 - The gadget's SQLite storage contents.
 - AI chat history, or the gadget's commit history. Its commit messages hold chat titles and its authors include collaborators, neither of which the publisher chose to share.
-- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, URL pattern, etc.) is recorded.
+- Live connections or credentials. Only the *shape* of each binding (its type, gatekeeper name, resource type ID or legacy URL pattern, etc.) is recorded.
 
 ## Binding Annotations
 
@@ -45,7 +45,7 @@ All named bindings are included in the blueprint. Annotations are configured in 
 
 Blueprints support three types of bindings, matching the three types of gatekeepers:
 
-1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a URL pattern describing what kind of resource is expected. When instantiating, the user picks a connected account and configures a matching resource.
+1. **Gatekeeper** (`type: "gatekeeper"`) -- an external resource connection (e.g. Google Drive, a REST API). The blueprint records the gatekeeper adapter name and a `resourceTypeId` identifying the expected resource type within that vendor. An explicit ID is authoritative; a legacy record without one resolves only through an exact current URL pattern. When instantiating, the user picks a connected account and configures a matching resource. See [resource type identity](gatekeeper-resource-types.md).
 
 2. **AI Model** (`type: "aiModel"`) -- a language model binding, or a decision model binding when `modelKind: "decision"` (see `ModelKind`). The blueprint may suggest a specific provider/model. When instantiating, the user picks from their own configured models of the same kind.
 

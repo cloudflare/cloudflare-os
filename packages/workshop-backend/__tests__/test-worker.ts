@@ -68,6 +68,7 @@ export { GatekeeperHookLoopback } from "../src/server.js";
  * than covered by the `export *`.
  */
 export class TestConnectCallback extends GatekeeperConnectCallbackImpl {}
+export { GatekeeperConnectCallbackImpl } from "../src/user.js";
 /** The sign-in callback, reachable the same way. */
 export class TestLoginCallback extends LoginConnectCallbackImpl {}
 /**

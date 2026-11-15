@@ -1,6 +1,6 @@
 import { WorkerEntrypoint, DurableObject, RpcTarget, RpcStub } from "cloudflare:workers";
 import { skipRpcValidation, validateRpc } from "capnweb-validate";
-import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff } from '@gadgets/workshop-shared/gatekeeper';
+import { GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor as GatekeeperVendorIface, Gatekeeper, ResourceDescription, ApprovalQueue, ObservationDescription, VendorDescription, GatekeeperConnectCallback, GatekeeperConnectOptions, AccountDescription, SupportedResource, ResourceConfiguratorFrame, Cursor, ActionKind, GitCache, workerVersionTag, type ActionDescription, type ConnectHandoff, resourceTypeUrlPattern, requestedResourceUrlPatterns, getGrantedResourceTypeIds } from '@gadgets/workshop-shared/gatekeeper';
 import { ActionJournal } from "@gadgets/gatekeeper-kit/actions";
 import { buildDescription, codeSpan } from "@gadgets/gatekeeper-kit/action-description";
 import { connectHandoffPageHtml, htmlResponse } from "@gadgets/gatekeeper-kit/connect-pages";
@@ -474,7 +474,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     let authOnly = options?.scopes === "auth";
     let requestedResources = authOnly
         ? []
-        : options?.resourceUrlPatterns ?? SUPPORTED_RESOURCES.map(resource => resource.urlPattern);
+        : requestedResourceUrlPatterns(options, SUPPORTED_RESOURCES) ?? SUPPORTED_RESOURCES.map(resource => resource.urlPattern);
     let mode: OAuthFlowMode = authOnly ? "auth" : "connect";
     await this.ctx.exports.UserAccount.get(userObjectId)
         .setCallback(callback, initiationNonce, requestedResources, mode);
@@ -499,6 +499,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Env> implements Gatekeepe
     resource: SupportedResource;
     action: ActionDescription;
   }> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     let kind = creatableKind(resourceUrlPattern);
     let props: SimulatedFileProps = { creation: { title: newFileTitle(title) } };
     let cls: DurableObjectClass<Gatekeeper<any>>;
@@ -645,7 +646,9 @@ export class UserAccount extends DurableObject<Env> {
   #recordedGrant(): RecordedResourceGrant {
     let resourceUrlPatterns = this.ctx.storage.kv.get<string[]>("grantedResources");
     let oauthScopes = this.ctx.storage.kv.get<string[]>("grantedScopes");
+    let resourceTypeIds = this.ctx.storage.kv.get<string[]>("grantedResourceTypeIds");
     return {
+      ...(resourceTypeIds === undefined ? {} : { resourceTypeIds }),
       ...(resourceUrlPatterns === undefined ? {} : { resourceUrlPatterns }),
       ...(oauthScopes === undefined ? {} : { oauthScopes }),
     };
@@ -1054,6 +1057,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     // A private grant is the gatekeeper's own business, never a resource the Workshop can bind.
     description.grantedResourceUrlPatterns =
       (await grantedResourcesPromise).filter(pattern => !isPrivateGrant(pattern));
+    description.grantedResourceTypeIds = getGrantedResourceTypeIds(description, SUPPORTED_RESOURCES);
     return description;
   }
 
@@ -1170,6 +1174,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   async startResourceConfigurator(
       resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     let { getToken, holds } = this.#configuratorAccess();
 
     if (resourceUrlPattern === BIGQUERY_RESOURCE.urlPattern) {
@@ -1219,7 +1224,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
     let groupedWith = SUPPORTED_RESOURCES
       .find(resource => resource.urlPattern === resourceUrlPattern)?.groupedWith;
     if (resourceUrlPattern === GOOGLE_DRIVE_RESOURCE.urlPattern ||
-        groupedWith === GOOGLE_DRIVE_RESOURCE.urlPattern) {
+        groupedWith === GOOGLE_DRIVE_RESOURCE.id) {
       return {
         iframeHtml: DRIVE_CONFIGURATOR_HTML,
         ui: new RpcStub(
@@ -1232,6 +1237,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
 
   /** Every creatable type is configured by where it is created. */
   async startCreationConfigurator(resourceUrlPattern: string): Promise<ResourceConfiguratorFrame> {
+    resourceUrlPattern = resourceTypeUrlPattern(await this.getSupportedResources(), resourceUrlPattern);
     creatableKind(resourceUrlPattern);
     let { getToken, holds } = this.#configuratorAccess();
     return {
@@ -1261,6 +1267,7 @@ export class GatekeeperUserImpl extends WorkerEntrypoint<Env, GatekeeperUserImpl
   }
 
   async ensureResources(resourceUrlPatterns: string[]): Promise<{url?: string}> {
+    resourceUrlPatterns = resourceUrlPatterns.map(value => isPrivateGrant(value) ? value : resourceTypeUrlPattern(SUPPORTED_RESOURCES, value));
     let id = this.ctx.exports.UserAccount.idFromString(this.ctx.props.userObjectId);
     let obj = this.ctx.exports.UserAccount.get(id);
     let granted = new Set(await obj.getGrantedResourceUrlPatterns());

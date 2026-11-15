@@ -5,7 +5,7 @@ import { Overseer, WorkspaceMetadata, UiBundle, WorkpieceId, WorkpieceSummary, W
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   requireTextFiles, type FileContent, type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, matchesResourceUrlPattern, HookController, HookDescription, ActionKind, GitCache, GitPullHints, type GitPullTransfer, type GitShallowInfo, getResourceTypeId } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -392,6 +392,8 @@ function observerBindingNeed(record: GatekeeperRecord): ObserverBindingNeed {
     vendorId: observerVendorId(record)!,
     resourceTitle: observerBindingTitle(record),
     resourceUrl: record.resourceUrl,
+    resourceTypeId: record.creationSpec?.type === "gatekeeper"
+      ? record.creationSpec.resourceTypeId : undefined,
   };
 }
 
@@ -9186,6 +9188,7 @@ class OverseerImpl implements AgentHooks {
           // Use the vendor's URL pattern, not the specific resource URL.
           // Fall back to resourceUrl for gatekeepers created before typeUrlPattern was stored.
           typeUrlPattern: spec.typeUrlPattern || spec.resourceUrl!,
+          resourceTypeId: spec.resourceTypeId,
           ...(suggestValue ? {resourceUrl: spec.resourceUrl} : {}),
         };
       } else if (spec.type === "aiModel") {
@@ -9251,6 +9254,7 @@ class OverseerImpl implements AgentHooks {
                   type: "gatekeeper",
                   gatekeeperName: targetSpec.vendorId,
                   typeUrlPattern: targetSpec.typeUrlPattern || targetSpec.resourceUrl!,
+                  resourceTypeId: targetSpec.resourceTypeId,
                 }
               : {
                   ...synthBase,
@@ -10179,9 +10183,9 @@ class OverseerImpl implements AgentHooks {
     let creations = vendor.supportedResources.filter(resource => resource.creatable);
     if (existing.length > 0) {
       lines.push("\nExisting resources (requestConnection):");
-      for (let r of existing) lines.push(`* ${r.title} — urlPattern: ${r.urlPattern}\n  ${r.description}`);
+      for (let r of existing) lines.push(`* ${r.title} — resourceTypeId: ${getResourceTypeId(r)}; urlPattern: ${r.urlPattern}\n  ${r.description}`);
       lines.push(`To connect one, call requestConnection with vendorId="${vendorId}" and a ` +
-          `matching resourceUrl (or omit resourceUrl to let the user pick).`);
+          `resourceTypeId from the list, optionally including resourceUrl to prefill the picker.`);
     } else {
       lines.push("No existing resources are offered for connection.");
     }
@@ -10189,7 +10193,7 @@ class OverseerImpl implements AgentHooks {
       lines.push("\nNew resources (createExternalResource):");
       for (let r of creations) {
         let takes = r.creationConfigurator && r.creationConfigurationDescription;
-        lines.push(`* ${r.title} — resourceUrlPattern: ${r.urlPattern}` +
+        lines.push(`* ${r.title} — resourceTypeId: ${getResourceTypeId(r)}` +
             `${takes ? ` (configuration: ${takes})` : ""}\n  ${r.description}`);
       }
     }
@@ -10202,6 +10206,7 @@ class OverseerImpl implements AgentHooks {
   // `decisionRequested` flag in agent.ts).
   async requestConnection(chatId: number, input: {
     vendorId: string;
+    resourceTypeId?: string;
     resourceUrl?: string;
     reason: string;
     bindingName: string;
@@ -10211,7 +10216,7 @@ class OverseerImpl implements AgentHooks {
     validateBindingName(input.bindingName);
 
     if (input.vendorId === AGENT_SPAWNER_CONNECTION_ID) {
-      if (input.resourceUrl !== undefined) {
+      if (input.resourceUrl !== undefined || input.resourceTypeId !== undefined) {
         return { requested: false, message:
             `Cannot request an agent spawner with a resourceUrl; omit it.` };
       }
@@ -10249,10 +10254,17 @@ class OverseerImpl implements AgentHooks {
     // Resolve the exact resource this request maps to, using the same precedence the accept modal
     // uses. If it can't be resolved, REJECT the request: otherwise the user would get an accept
     // card that opens a blank "create new connection" picker. The agent is told what to fix.
-    let resolved = resolveRequestedResource(connectableResources, input.resourceUrl);
+    let resolved = resolveRequestedResource(connectableResources, input.resourceUrl, input.resourceTypeId);
     if (!resolved.ok) {
       return { requested: false, message:
           `Cannot request a connection for "${vendor.description.displayName}": ${resolved.reason}` };
+    }
+    if (input.resourceTypeId !== undefined && input.resourceUrl !== undefined &&
+        resolved.resource.urlPattern !== "https://*" &&
+        !matchesResourceUrlPattern(resolved.resource.urlPattern, input.resourceUrl)) {
+      return { requested: false, message:
+          `resourceUrl does not match resourceTypeId "${input.resourceTypeId}" ` +
+          `(${resolved.resource.urlPattern}). Supply a matching URL or omit resourceUrl to use the picker.` };
     }
 
     this.#captureDecisionRequest(chatId, {
@@ -10264,6 +10276,7 @@ class OverseerImpl implements AgentHooks {
       resourceTitle: resolved.resource.title,
       resourceUrl: input.resourceUrl,
       resourceUrlPattern: resolved.resource.urlPattern,
+      resourceTypeId: resolved.resource.id,
       reason: input.reason,
       state: "pending",
       // Claims the name in the chat's scope from this moment until denial; on acceptance the
@@ -10304,14 +10317,14 @@ class OverseerImpl implements AgentHooks {
       chatId: number, input: Extract<AiToolCall, {toolName: "createExternalResource"}>["input"])
       : Promise<{gatekeeperId: WorkpieceId}> {
     let minted = await this.#ownerUserStub().createResourceGatekeeper(
-        input.vendorId, input.resourceUrlPattern, input.title, input.configuration);
+        input.vendorId, input.resourceTypeId, input.title, input.resourceUrlPattern, input.configuration);
     let id = this.allocateWorkpieceId();
     this.storage.gatekeepers.put({
       id,
       class: minted.class,
       resourceTitle: input.title,
       creationSpec: {type: "gatekeeper", vendorId: input.vendorId,
-                     typeUrlPattern: minted.typeUrlPattern,
+                     typeUrlPattern: minted.typeUrlPattern, resourceTypeId: minted.resourceTypeId,
                      ...(input.configuration !== undefined
                          ? {configuration: input.configuration} : {})},
     });
@@ -12525,13 +12538,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
   async newGatekeeper(accountId: number, resourceUrl: string)
       : Promise<GatekeeperClient<any> | null> {
-    let {class: cls, vendorId, typeUrlPattern} =
+    let {class: cls, vendorId, typeUrlPattern, resourceTypeId} =
         await this.#clientUser.getGatekeeperClassFor(accountId, resourceUrl);
     let creationSpec: GatekeeperCreationSpec = {
       type: "gatekeeper",
       vendorId,
       resourceUrl,
       typeUrlPattern,
+      resourceTypeId,
     };
     let result = await this.impl.addGatekeeper(
         cls, creationSpec, this.clientUserId, this.#mintedCapabilityHolder());
