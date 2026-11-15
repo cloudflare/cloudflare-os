@@ -12,7 +12,8 @@ import type {
 } from '@gadgets/workshop-shared/api'
 
 // Covers which gadgets the editor offers "Update from blueprint" for, how the editor brings a
-// chat into view (the one a blueprint update was proposed in, or the one a notification opens),
+// chat into view (the one a blueprint update was proposed in, the one a notification opens, or
+// the one a gadget's UI names),
 // which gadget stub a use-only collaborator's view is given while gadgets are admitted, and which
 // workspace a gadget's deletion is confirmed in.
 // Everything the editor composes is stubbed down to the callbacks that drive its layout.
@@ -38,6 +39,10 @@ const mocks = vi.hoisted(() => {
     }) => void>(),
     search: {} as Record<string, unknown>,
     workspaceId: 'workspace',
+    // The editor's handler for its gadget UI's host.openAgentChat(), as last rendered.
+    onOpenAgentChat: null as null | ((chatToken: string, signal: AbortSignal) => Promise<void>),
+    // Reports chats by token to the editor, as the chat pane does when its list changes.
+    reportChatTokens: null as null | ((chatIdsByToken: ReadonlyMap<string, number>) => void),
     // The props the use-only view was last rendered with.
     useView: null as null | {
       gadget: unknown
@@ -113,8 +118,12 @@ vi.mock('./features/blueprint-updates/useBlueprintUpdateAvailable', () => ({
 
 // The two children whose reports decide when the editor's layout is ready.
 vi.mock('./ChatInterface', () => ({
-  default: ({ onChatCountChange }: { onChatCountChange: (count: number, hasChatZero: boolean) => void }) => {
+  default: ({ onChatCountChange, onChatTokensChange }: {
+    onChatCountChange: (count: number, hasChatZero: boolean) => void
+    onChatTokensChange: (chatIdsByToken: ReadonlyMap<string, number>) => void
+  }) => {
     useEffect(() => { onChatCountChange(0, false) }, [onChatCountChange])
+    mocks.reportChatTokens = onChatTokensChange
     return <div>chat pane</div>
   },
 }))
@@ -153,7 +162,12 @@ vi.mock('./ActivityNotifications', () => ({ default: () => null }))
 vi.mock('./BlueprintModal', () => ({ default: () => null }))
 vi.mock('./Connections', () => ({ default: () => null }))
 vi.mock('./GadgetExportMenu', () => ({ default: () => null }))
-vi.mock('./GadgetUI', () => ({ default: () => null }))
+vi.mock('./GadgetUI', () => ({
+  default: ({ onOpenAgentChat }: { onOpenAgentChat?: typeof mocks.onOpenAgentChat }) => {
+    mocks.onOpenAgentChat = onOpenAgentChat ?? null
+    return null
+  },
+}))
 vi.mock('./GadgetUseView', () => ({
   default: (props: NonNullable<typeof mocks.useView>) => {
     mocks.useView = props
@@ -225,6 +239,8 @@ async function proposeUpdate() {
 }
 
 beforeEach(() => {
+  mocks.onOpenAgentChat = null
+  mocks.reportChatTokens = null
   mocks.navigate.mockReset()
   mocks.search = {}
   mocks.workspaceId = 'workspace'
@@ -374,6 +390,98 @@ describe('GadgetEditor, opening a chat from a notification', () => {
     mocks.search = { chat: 3 }
     await openEditor('desktop')
     expect(isChatVisible('workspace', 3)).toBe(true)
+  })
+})
+
+// A gadget's UI names a chat it spawned by its token (GadgetHost.openAgentChat).
+describe('GadgetEditor, opening a chat a gadget names', () => {
+  const navigatedChats = () => mocks.navigate.mock.calls
+    .map(([{ search }]) => (search({}) as { chat?: number }).chat)
+    .filter(chat => chat !== undefined)
+
+  async function openAgentChat(chatToken: string, signal = new AbortController().signal) {
+    if (!mocks.onOpenAgentChat) throw new Error('The gadget UI has no openAgentChat handler')
+    await act(async () => { await mocks.onOpenAgentChat!(chatToken, signal) })
+  }
+
+  async function reportChatTokens(chatIdsByToken: Record<string, number>) {
+    await act(async () => { mocks.reportChatTokens!(new Map(Object.entries(chatIdsByToken))) })
+  }
+
+  it.each([
+    { screen: 'phone', view: 'Chat' },
+    { screen: 'desktop', view: 'Preview' },
+  ] as const)('selects the chat and shows it on a $screen', async ({ screen, view }) => {
+    await openEditor(screen)
+    await reportChatTokens({ 'tok-a': 5 })
+
+    await openAgentChat('tok-a')
+
+    expect(navigatedChats()).toEqual([5])
+    expect(currentView()).toEqual([view])
+  })
+
+  it('waits for a chat whose metadata arrives after the request', async () => {
+    await openEditor('desktop')
+    await reportChatTokens({})
+    let opened = false
+    const request = mocks.onOpenAgentChat!('tok-a', new AbortController().signal)
+      .then(() => { opened = true })
+    await act(async () => {})
+    expect(opened).toBe(false)
+
+    await reportChatTokens({ 'tok-a': 5 })
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([5])
+  })
+
+  it('does nothing while the gadget is hidden behind Activity', async () => {
+    await openEditor('phone')
+    await reportChatTokens({ 'tok-a': 5 })
+    await click('Activity')
+
+    await openAgentChat('tok-a')
+
+    expect(navigatedChats()).toEqual([])
+    expect(currentView()).toEqual(['Activity'])
+  })
+
+  it('drops a request whose gadget is hidden before its chat arrives', async () => {
+    await openEditor('phone')
+    await reportChatTokens({})
+    const request = mocks.onOpenAgentChat!('tok-a', new AbortController().signal)
+    await click('Activity')
+
+    await reportChatTokens({ 'tok-a': 5 })
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([])
+    expect(currentView()).toEqual(['Activity'])
+  })
+
+  it("drops a request whose frame's session ends just as its chat is found", async () => {
+    await openEditor('desktop')
+    await reportChatTokens({ 'tok-a': 5 })
+    const abort = new AbortController()
+    const request = mocks.onOpenAgentChat!('tok-a', abort.signal)
+    abort.abort()
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([])
+  })
+
+  it("drops a request whose frame's session ends before its chat arrives", async () => {
+    await openEditor('desktop')
+    await reportChatTokens({})
+    const abort = new AbortController()
+    const request = mocks.onOpenAgentChat!('tok-a', abort.signal)
+    abort.abort()
+
+    await reportChatTokens({ 'tok-a': 5 })
+    await act(async () => { await request })
+
+    expect(navigatedChats()).toEqual([])
   })
 })
 

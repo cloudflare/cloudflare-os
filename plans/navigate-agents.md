@@ -139,9 +139,11 @@ openAgentChat(chatToken: string): Promise<void>;
   `GadgetEditor` works out whether its gadget is actually showing: the pane is on the app with the
   app tab selected, or the gadget is full screen, or in the preview overlay. If it isn't, the
   handler ignores the call.
-- **The handler**, supplied by `GadgetEditor` to both of its `GadgetUI`s:
-  - **Look up the token** in the chat list `ChatInterface` holds. `ChatInterface` hands
-    `GadgetEditor` a lookup function, much as it reports the chat count today.
+- **The handler**, supplied by `GadgetEditor` to the pane's `GadgetUI`. (The preview overlay's
+  never renders: nothing sets `previewMode`.)
+  - **Look up the token** in the chat list `ChatInterface` holds. `ChatInterface` reports every
+    chat's ID by token as the list changes, much as it reports the chat count, into a
+    `ChatTokenIndex` that `GadgetEditor` keeps.
   - **A token not in the list yet** is waited for briefly, a few seconds. A gadget may spawn an
     agent and open its chat at once, and the chat's metadata arrives over the chat subscription,
     not with the gadget's RPC reply, so it can arrive later. If it still isn't there, throw "No
@@ -165,10 +167,9 @@ openAgentChat(chatToken: string): Promise<void>;
 - `agent-spawner-binding.d.ts`:
   - The docs for `spawn()` and `spawnCallable()` point at `spawnAgent()` for new code.
   - `SpawnedAgent` documents both methods.
-- `agent.ts`:
-  - The spawner guidance prefers `spawnAgent()`.
-  - The `host` paragraph describes `host.openAgentChat(chatToken)`. The UI gets the token from
-    the gadget's server, which holds the `SpawnedAgent`.
+- `agent.ts`: the `host` paragraph describes `host.openAgentChat(chatToken)`. The UI gets the
+  token from the gadget's server, which holds the `SpawnedAgent`. (The system prompt has no
+  spawner usage guidance to update: agents learn the spawner's API from the served `.d.ts`.)
 
 ## Commits
 

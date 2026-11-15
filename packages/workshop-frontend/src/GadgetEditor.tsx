@@ -78,6 +78,7 @@ import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
+import { ChatTokenIndex } from './features/chat/agents/chatTokenIndex'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -1257,6 +1258,41 @@ export default function GadgetEditor() {
     [id, navigate, selectedWorkpieceSummary?.chatId, workspaceView?.mode]
   )
 
+  // ── chats a gadget asks to show (GadgetHost.openAgentChat) ──────────────────
+  const [chatTokens] = useState(() => new ChatTokenIndex())
+  // A gadget may navigate the user only while it is what the user sees: the pane is open on the
+  // app tab, or the gadget is full screen. The gadget stays mounted behind the chat list, Activity
+  // and the other tabs, and there `isVisible` alone would still let it.
+  const shownGadget = {
+    workspaceId: id,
+    gadgetId: selectedGadgetId,
+    onScreen: activeTab === 'app' && !previewMode &&
+      (isGadgetFullscreen || (showFullEditor && !paneShowsActivity)),
+  }
+  const shownGadgetRef = useRef(shownGadget)
+  shownGadgetRef.current = shownGadget
+  const showChat = (chatId: number) => {
+    exitGadgetFullscreen()
+    navigateToChat(chatId)
+    if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+  }
+  const showChatRef = useRef(showChat)
+  showChatRef.current = showChat
+  const handleOpenAgentChat = async (chatToken: string, signal: AbortSignal) => {
+    const requestedBy = shownGadgetRef.current
+    if (!requestedBy.onScreen) return
+    const chatId = await chatTokens.find(chatToken, signal)
+    // The wait may outlast the view that asked, so the request stands only if its frame's session
+    // is still open (the editor may even have unmounted, leaving shownGadgetRef as it was) and that
+    // is still the gadget on screen.
+    const shown = shownGadgetRef.current
+    if (chatId === undefined || signal.aborted || !shown.onScreen ||
+        shown.workspaceId !== requestedBy.workspaceId || shown.gadgetId !== requestedBy.gadgetId) {
+      return
+    }
+    showChatRef.current(chatId)
+  }
+
   // ── keep single-chat routing aligned with the current mode ──────────────────
   // Keep the URL aligned with simple mode's implied chat-0 selection.
   useEffect(() => {
@@ -2060,6 +2096,7 @@ export default function GadgetEditor() {
                   onDiscardConsoleLogs={discardConsoleLogs}
                   constrainChatWidth
                   onChatCountChange={handleChatCountChange}
+                  onChatTokensChange={chatIdsByToken => chatTokens.update(chatIdsByToken)}
                   onAgentActiveChange={handleAgentActiveChange}
                   autoApproval={autoApproval}
                   onViewActivity={openActivity}
@@ -2259,6 +2296,7 @@ export default function GadgetEditor() {
                   onConsoleLog={handleClientConsoleLog}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                   onNoUiChange={handleNoUiChange}
+                  onOpenAgentChat={handleOpenAgentChat}
                 />
               ) : !previewMode && (
                 <NoGadgetPlaceholder height="100%" />

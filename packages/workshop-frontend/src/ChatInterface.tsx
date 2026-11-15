@@ -2382,6 +2382,8 @@ interface ChatInterfaceProps {
   onConsumeConsoleLogs: () => string;
   onDiscardConsoleLogs: () => void;
   onChatCountChange?: (count: number, hasChatZero: boolean) => void;
+  // Reports every chat's ID by its `chatToken`, whenever the chat list changes.
+  onChatTokensChange?: (chatIdsByToken: ReadonlyMap<string, number>) => void;
   // With no selected chat, report whether any chat in the workspace is running.
   onAgentActiveChange?: (chatId: number | null, isActive: boolean) => void;
   // Shared with the Activity pane, which is the other surface that changes these rules. Rules
@@ -2588,6 +2590,7 @@ function ChatInterface({
   onConsumeConsoleLogs,
   onDiscardConsoleLogs,
   onChatCountChange,
+  onChatTokensChange,
   onAgentActiveChange,
   autoApproval,
   onViewActivity,
@@ -3013,6 +3016,13 @@ function ChatInterface({
       onChatCountChangeRef.current?.(chatList.length, hasChatZero);
     }
   }, [chatList.length, chatListReady, hasChatZero]);
+
+  const onChatTokensChangeRef = useRef(onChatTokensChange);
+  onChatTokensChangeRef.current = onChatTokensChange;
+  useEffect(() => {
+    onChatTokensChangeRef.current?.(new Map(chatList.flatMap(
+        (meta) => meta.chatToken === undefined ? [] : [[meta.chatToken, meta.id]])));
+  }, [chatList]);
 
   // Notify parent which workpieces any chat proposes changes to (code written but not merged).
   // Keyed on the set's content, since chat metadata is redelivered wholesale on every lastActive
