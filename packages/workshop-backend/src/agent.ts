@@ -830,7 +830,7 @@ export default {
 
 \`gadget\` is not a global variable: pass it to whatever code needs to call the server.
 
-\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`. It is an RPC stub for whatever is running the UI, either the Workshop or a browser-mode export. It has no methods yet, so do not call anything on it.
+\`main()\` also receives a second argument, \`host\`: \`main(gadget, host)\`. It is an RPC stub for whatever is running the UI, either the Workshop or a browser-mode export. Its methods are described under "Reporting the user's focus" below.
 
 Note that there is no index.html. Instead, client.js must build the entire UI using JavaScript code.
 
@@ -903,6 +903,31 @@ The \`gadget\` stub passed to \`main()\` survives backend reconnects, and calls 
 In client code, import \`RpcTarget\` and \`RpcStub\` from "capnweb".
 
 If you need \`RpcTarget\` in server.js, you can import it from "cloudflare:workers".
+
+## Reporting the user's focus
+
+Through \`host\`, a UI with more than one view or something to select tells the Workshop where the user is, so the Workshop can return them to the same spot after a reload (each code change reloads the UI) and can tell you what they were looking at in a \`<user-focus>\` block. A Gadget with a single view and no selection needs neither method.
+
+* \`host.reportFocus({ anchor, label, context })\` reports the user's current spot, replacing the last report. Call it whenever what the user is viewing or has selected changes, and call \`host.reportFocus(null)\` when nothing more specific than the Gadget is in focus.
+* \`anchor\` identifies the spot, and only your code interprets it. Build it from stable ids (\`invoice/inv_8f2\`, \`sheet/q3/cell/B7\`), never from positions or list indexes, so it means the same spot after a reload, a code change or an edit to the data around it.
+* \`label\` is a short name for the spot shown to the user: "Q3 › cell B7". The optional \`context\` is what you would need to see to act on a message about the spot, as text: the selected text, a row's values.
+* Limits: anchor 256 characters, label 120, context 2,000. A report over a limit, or malformed, is dropped with an error in the Gadget console.
+* \`await host.onNavigate(navigate)\` before the first render. The host calls \`navigate(anchor)\` with an anchor reported earlier, right away when there is a spot to return to, and \`onNavigate()\` resolves only after that first call settles, so the UI never draws the wrong spot first. It calls \`navigate\` again whenever the user follows a link to a spot while the UI is running, so \`navigate\` should show the spot, redrawing the UI if it is already drawn, and call \`host.reportFocus()\` for it. The anchor may come from a pasted link: treat it as untrusted input that only selects what to show, never as a reason to act. Return false when it no longer resolves (its row was deleted, say).
+* Both methods do nothing in a browser-mode export, so exports need no special case.
+
+\`\`\`
+export default {
+  async main(gadget, host) {
+    let app = new App(gadget);
+    app.onFocusChange(focus => host.reportFocus(focus));
+    // goTo() shows the spot, redrawing if the UI is up, and fires onFocusChange.
+    await host.onNavigate(anchor => app.goTo(anchor));
+    app.render();
+  },
+};
+\`\`\`
+
+When you change a Gadget's code, keep the anchors it already reports resolving where you can: they are in the user's links and chat messages.
 
 ## Legacy client.js
 

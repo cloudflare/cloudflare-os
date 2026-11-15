@@ -3087,10 +3087,11 @@ export interface GadgetHost {
   /**
    * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor
    * this gadget reported earlier: right away if there is a spot to return to, and later when the
-   * user follows a link to one. `navigate` returns false if the anchor no longer resolves. A
-   * second registration replaces the first. Resolves once the call for a spot to return to, if
-   * there is one, has settled, so a UI that awaits this before its first render never draws the
-   * wrong spot first. Never calls `navigate` during an export.
+   * user follows a link to one. `navigate` returns false if the anchor no longer resolves, and
+   * otherwise should show the spot, even if the UI is already drawn, and report it with
+   * `reportFocus()`. A second registration replaces the first. Resolves once the call for a spot
+   * to return to, if there is one, has settled, so a UI that awaits this before its first render
+   * never draws the wrong spot first. Never calls `navigate` during an export.
    *
    * The anchor can come from outside the gadget (a pasted link, for one), so `navigate` must treat
    * it as untrusted input that selects what to show and never causes an action.

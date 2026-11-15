@@ -108,9 +108,10 @@ export interface GadgetHost {
   /**
    * Registers how the host sends the user to a spot. The host calls `navigate` with an anchor
    * this gadget reported earlier: right away if there is a spot to return to, and later when the
-   * user follows a link to one. `navigate` returns false if the anchor no longer resolves. A
-   * second registration replaces the first. Resolves once the call for a spot to return to, if
-   * there is one, has settled. Never calls `navigate` during an export.
+   * user follows a link to one. `navigate` returns false if the anchor no longer resolves, and
+   * otherwise should show the spot, even if the UI is already drawn, and report it with
+   * `reportFocus()`. A second registration replaces the first. Resolves once the call for a spot
+   * to return to, if there is one, has settled. Never calls `navigate` during an export.
    */
   onNavigate(navigate: (anchor: string) => boolean | Promise<boolean>): Promise<void>;
 }
@@ -129,8 +130,9 @@ A gadget's `main()` then looks like:
 export default {
   async main(gadget, host) {
     let app = new App(gadget);
-    await host.onNavigate(anchor => app.goTo(anchor));
     app.onFocusChange(focus => host.reportFocus(focus));
+    // goTo() shows the spot, redrawing if the UI is up, and fires onFocusChange.
+    await host.onNavigate(anchor => app.goTo(anchor));
     app.render();
   },
 };
@@ -303,6 +305,9 @@ Replace "It has no methods yet" (`agent.ts`) with how to use the two methods:
 - Build anchors from stable ids, never from positions or indexes.
 - Register `onNavigate()` and await it before the first render, treat the anchor as untrusted,
   and return false for one that no longer resolves.
+- The host calls `navigate` again later, while the UI is running, so `navigate` should show the
+  spot even when the UI is already drawn, and call `reportFocus()` for it. The example's `goTo()`
+  does both, by redrawing and firing the same focus-change callback a click does.
 - Write labels for people; put what the agent would need to see in `context`.
 
 ## Rejected alternatives
