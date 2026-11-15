@@ -7,7 +7,8 @@ for inbox, viewport and native bridge behavior.
 For newly created chats, notifications default to off until each user sends their first message
 or slash command, whether the chat was created normally or by an agent. Existing chats stay
 subscribed by default; there is no history scan or backfill migration. Each user can change this
-with the thread menu's **Mute notifications** / **Unmute notifications** control. The User DO stores the explicit
+with the thread menu's **Enable notifications**, **Mute notifications**, or **Unmute notifications**
+controls. The User DO stores the explicit
 override on its private read cursor; participation never overrides that choice. Human messages
 carry a durable participation signal through the source's existing dirty journal, including when a
 batch coalesces a user's message with a later agent response or retries after eviction. The User DO
