@@ -1,0 +1,244 @@
+<title>Keeping and Approving Changes</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&display=swap">
+<style>
+/* Layout: one reading column; each prototype sits on a tinted stage the width of the column. */
+:root {
+  --bg: #fbfbfa; --fg: #1b1c1e; --subtle: #6b6e74; --line: #e4e4e1; --tint: #f2f2f0; --raised: #ffffff;
+  --accent: #f6821f; --good: #1f8a4c; --danger: #c8322b;
+  --display: "Space Grotesk", "Inter", system-ui, sans-serif;
+  --body: "Inter", system-ui, -apple-system, sans-serif;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #161718; --fg: #ececea; --subtle: #9a9da3; --line: #2d2f32; --tint: #1f2022; --raised: #26282a;
+  --accent: #ff9a45; --good: #4cc27c; --danger: #ff6b62; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #161718; --fg: #ececea; --subtle: #9a9da3; --line: #2d2f32; --tint: #1f2022; --raised: #26282a;
+  --accent: #ff9a45; --good: #4cc27c; --danger: #ff6b62; color-scheme: dark }
+* { box-sizing: border-box }
+body { background: var(--bg); color: var(--fg); font: 16px/1.6 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 40px 80px }
+main { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 40px }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; letter-spacing: -0.01em }
+h1 { font-size: 2.1rem; line-height: 1.15 }
+h2 { font-size: 1.4rem }
+h3 { font-size: 1.05rem }
+p { margin: 0; max-width: 65ch }
+section { display: flex; flex-direction: column; gap: 14px }
+.lede { font-size: 1.1rem; color: var(--subtle) }
+.eyebrow { font-size: .75rem; letter-spacing: .08em; text-transform: uppercase; color: var(--subtle); font-weight: 600 }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px }
+@media (max-width: 620px) { .split { grid-template-columns: 1fr } }
+.box { background: var(--tint); border-radius: 18px; padding: 16px 18px; display: flex; flex-direction: column; gap: 6px; min-width: 0 }
+.box ul { margin: 0; padding-left: 1.1em; color: var(--subtle); font-size: .95rem }
+.stage { background: var(--tint); border-radius: 24px; padding: 18px; display: flex; flex-direction: column; gap: 14px }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+button { font: 500 .9rem var(--body); color: var(--fg); background: var(--raised); border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer }
+button:hover { border-color: var(--subtle) }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px }
+button.primary { background: var(--fg); color: var(--bg); border-color: var(--fg) }
+label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: .9rem; color: var(--subtle); padding: 4px 6px; cursor: pointer }
+.chats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px }
+@media (max-width: 620px) { .chats { grid-template-columns: 1fr } }
+.chat { background: var(--raised); border: 1px solid var(--line); border-radius: 18px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 150px }
+.chat header { display: flex; justify-content: space-between; align-items: baseline; gap: 8px }
+.chat header span { font-size: .85rem; color: var(--subtle) }
+.bubble { background: var(--tint); border-radius: 14px; padding: 8px 12px; font-size: .92rem }
+.card { border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; font-size: .9rem; display: flex; flex-direction: column; gap: 8px }
+.card .row { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap }
+.note { font-size: .85rem; color: var(--subtle) }
+.kept { color: var(--good); font-size: .88rem; font-weight: 500 }
+.log { font: .82rem/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--subtle); background: var(--raised); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; min-height: 64px; overflow-x: auto }
+.group { background: var(--raised); border: 1px solid var(--line); border-radius: 18px; overflow: hidden }
+.group > .head { display: flex; align-items: center; gap: 10px; padding: 12px 14px }
+.group > .head b { font-weight: 500 }
+.group > .head small { display: block; color: var(--subtle); font-size: .85rem }
+.rule { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 10px 14px; border-top: 1px solid var(--line) }
+.rule > span { flex: 1 1 200px; min-width: 0 }
+.rule small { display: block; color: var(--subtle); font-size: .85rem }
+.seg { display: inline-flex; background: var(--tint); border-radius: 999px; padding: 2px }
+.seg button { border: 0; background: transparent; color: var(--subtle); padding: 5px 12px; font-size: .85rem }
+.seg button[aria-checked="true"] { background: var(--raised); color: var(--fg); box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgb(0 0 0 / .06) }
+.seg button[disabled] { cursor: default; opacity: .6 }
+.folder { width: 26px; height: 22px; border-radius: 6px; background: var(--fg); color: var(--bg); font: 600 .6rem var(--body); display: grid; place-items: center; flex-shrink: 0 }
+.inherit { font-size: .78rem; color: var(--subtle); border: 1px dashed var(--line); border-radius: 999px; padding: 1px 8px }
+.override { font-size: .78rem; color: var(--accent); border: 1px solid var(--accent); border-radius: 999px; padding: 1px 8px }
+.verdict { border-left: 3px solid var(--accent); padding-left: 14px }
+code { font-size: .88em; background: var(--tint); border-radius: 6px; padding: 1px 5px }
+@media (prefers-reduced-motion: no-preference) { .fresh { animation: in .25s ease } @keyframes in { from { opacity: .3; transform: translateY(4px) } } }
+</style>
+
+<main>
+  <header style="display:flex;flex-direction:column;gap:12px">
+    <span class="eyebrow">Workshop · approvals</span>
+    <h1>Keeping a chat’s changes, and letting changes go ahead</h1>
+    <p class="lede">Two things wait for a person in the Workshop. They look alike, but they carry different risks, so they get different defaults. This page sets out what is built and what is proposed, with three prototypes to try.</p>
+  </header>
+
+  <section>
+    <div class="split">
+      <div class="box">
+        <h3>A chat’s changes to its gadgets</h3>
+        <p class="note">Code. Each chat works like a branch: it proposes, and keeping puts the changes into what everyone uses.</p>
+        <ul><li>Undoable in one click</li><li>Nobody outside the workspace sees them</li><li><b>Default: kept without asking</b></li></ul>
+      </div>
+      <div class="box">
+        <h3>A connection’s changes to the world</h3>
+        <p class="note">A Doc edited, a message sent, a slide moved. Decided one action at a time.</p>
+        <ul><li>Some can’t be taken back</li><li>Other people see them</li><li><b>Default: asks first, unless you said otherwise</b></li></ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">Built · prototype 1</span>
+    <h2>Chats are kept as they finish</h2>
+    <p>Before this, a chat was held back whenever another chat had changes waiting for the same gadget. Someone running two chats on one tracker was asked about both, at no risk to either. Now the first chat to finish is kept. When the second finishes, it brings in what the first kept, and is kept on top of it if that merges cleanly. Nobody sees the words merge, branch or conflict unless two chats changed the same lines.</p>
+    <div class="stage">
+      <div class="controls">
+        <button class="primary" id="finishA">Chat A finishes</button>
+        <button class="primary" id="finishB">Chat B finishes</button>
+        <label class="toggle"><input type="checkbox" id="clash"> Both changed the same lines</label>
+        <label class="toggle"><input type="checkbox" id="others"> Someone else is in the workspace</label>
+        <button id="reset">Start again</button>
+      </div>
+      <div class="chats">
+        <div class="chat" id="chatA"></div>
+        <div class="chat" id="chatB"></div>
+      </div>
+      <div class="log" id="log" aria-live="polite"></div>
+    </div>
+    <p class="note">Still asks for: a conflict, named by file; a binding, blueprint update or bring-in the user asked for, which are theirs to decide; and a workspace someone else is in, whose work in progress keeping could overtake.</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">Built · prototype 2</span>
+    <h2>Every account gets a page, and standing permissions live there</h2>
+    <p>The manage dialog becomes a page per connected account. It leads with what the account may change without asking. Reading never asks. Each workspace that uses the account gets one group, with a row per kind of change and a plain choice: <b>Ask first</b> or <b>Automatic</b>. “Always approve” on a request writes the same rule and says this page is where to change it.</p>
+    <div class="stage" id="rules"></div>
+    <p class="note">Labels come from the gatekeeper (“Slide text edits, in any presentation this connection reaches”) and split at “, in ” into the change and how far it reaches. A workspace that has read sensitive data asks before every change whatever is chosen, and says so.</p>
+  </section>
+
+  <section>
+    <span class="eyebrow">Proposed · prototype 3</span>
+    <h2>A default for the account, overridden per workspace</h2>
+    <p>“Doc edits can go ahead” is really a choice about your Google account, not about one workspace. The proposal adds one row above the workspaces. New workspaces follow it, and a workspace can differ from it.</p>
+    <div class="stage" id="defaults"></div>
+    <div class="box">
+      <h3>Kernel change it needs</h3>
+      <ul>
+        <li>Record which account a connection came through (<code>GatekeeperCreationSpec.accountId</code>; ambient connections already do).</li>
+        <li>Keep a per-account set of automatic kinds in the user’s object.</li>
+        <li>Seed a workspace’s rules from it when the user connects that account there.</li>
+      </ul>
+      <p class="note">Not built yet. It adds a mechanism beside the existing rules and changes who owns a rule in a shared workspace, so it should go past a kernel reviewer first.</p>
+    </div>
+  </section>
+
+  <section>
+    <span class="eyebrow">Considered and left out</span>
+    <h2>What isn’t offered, and why</h2>
+    <div class="split">
+      <div class="box">
+        <h3>An Auto switch per chat or per gadget</h3>
+        <p class="note">The kernel supports both. Offering them would give a second and third place to look when something went ahead unexpectedly. A rule already covers “stop asking me about Doc edits”, and it can be seen and taken back on the account page.</p>
+      </div>
+      <div class="box">
+        <h3>The agent resolving conflicts on its own</h3>
+        <p class="note">It could, since the conflict markers are in its files. But the user would then keep code that neither of them looked at. The question names the files, and asking the agent to combine them is one message away.</p>
+      </div>
+    </div>
+    <p class="verdict">The rule of thumb: keep code without asking, because it’s yours and it’s undoable. Ask before anything reaches the world, unless you chose otherwise in one place you can find again.</p>
+  </section>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id)
+  // Prototype 1: two chats on one gadget.
+  let state
+  const reset = () => { state = { A: 'working', B: 'working', mainline: 0, lines: [] }; draw() }
+  const say = (line) => { state.lines.push(line); draw() }
+  const finish = (name) => {
+    if (state[name] !== 'working') return
+    const other = name === 'A' ? 'B' : 'A'
+    if ($('others').checked) { state[name] = 'ask-shared'; return say(`Chat ${name} finished. Someone else is in the workspace, so it asks.`) }
+    if (state.mainline === 0) {
+      state[name] = 'kept'; state.mainline = 1
+      return say(`Chat ${name} finished first: kept straight away (fast-forward).`)
+    }
+    say(`Chat ${name} finished after Chat ${other} was kept: brings in what ${other} kept…`)
+    if ($('clash').checked) { state[name] = 'ask-conflict'; return say(`…TRACKER/client.js conflicts, so Chat ${name} asks, naming the file.`) }
+    state[name] = 'kept'; state.mainline += 1
+    say(`…merged cleanly, so Chat ${name} is kept on top. Nobody was asked.`)
+  }
+  const chat = (name, ask) => {
+    const s = state[name]
+    const body = s === 'working' ? '<p class="note">Agent is working on Habit Tracker…</p>'
+      : s === 'kept' ? '<p class="kept fresh">✓ Changes kept</p><p class="note">Undo is on the agent’s last answer.</p>'
+      : s === 'ask-shared' ? `<div class="card fresh"><b>Keep these changes?</b><span class="note">Updates Habit Tracker. Others work in this workspace too, so changes wait for you.</span><div class="row"><button data-d="${name}">Discard</button><button class="primary" data-k="${name}">Keep</button></div></div>`
+      : `<div class="card fresh"><b>Keep these changes?</b><span class="note">Brings in what was kept elsewhere since. Leaves 1 file with conflicts. Look over the conflicts before keeping them.</span><div class="row"><button data-d="${name}">Discard</button><button class="primary" data-k="${name}">Keep</button></div></div>`
+    return `<header><h3>Chat ${name}</h3><span>${ask}</span></header><div class="bubble">${name === 'A' ? 'Add a streak counter' : 'Make the week start on Monday'}</div>${body}`
+  }
+  const draw = () => {
+    $('chatA').innerHTML = chat('A', 'Habit Tracker')
+    $('chatB').innerHTML = chat('B', 'Habit Tracker')
+    $('log').innerHTML = state.lines.length ? state.lines.map((l) => `<div>${l}</div>`).join('') : 'Finish either chat to see what happens.'
+  }
+  document.addEventListener('click', (event) => {
+    const k = event.target.closest('[data-k]'); const d = event.target.closest('[data-d]')
+    if (k) { state[k.dataset.k] = 'kept'; state.mainline += 1; say(`You kept Chat ${k.dataset.k}.`) }
+    if (d) { state[d.dataset.d] = 'discarded'; say(`You discarded Chat ${d.dataset.d}'s changes.`) }
+  })
+  $('finishA').onclick = () => finish('A'); $('finishB').onclick = () => finish('B'); $('reset').onclick = reset
+  reset()
+
+  // Prototype 2 and 3: rule rows.
+  const KINDS = [
+    ['Document edits', 'In any Doc this connection reaches'],
+    ['Sheet value edits', 'In any spreadsheet this connection reaches'],
+    ['Slide text edits', 'In any presentation this connection reaches'],
+    ['Drive comments', ''],
+  ]
+  const seg = (on, disabled, attrs) => `<span class="seg" role="radiogroup">${['Ask first', 'Automatic'].map((label, i) =>
+    `<button role="radio" aria-checked="${(i === 1) === on}" ${disabled ? 'disabled' : ''} ${attrs} data-v="${i}">${label}</button>`).join('')}</span>`
+  const rules = { QP: [true, false, false, true], BP: [false, false, false, false], PA: [false, false, false, false] }
+  const WS = [['QP', 'Quarterly planning', false], ['BP', 'Board pack', false], ['PA', 'Payroll', true]]
+  const drawRules = () => {
+    $('rules').innerHTML = WS.map(([id, title, restricted]) => {
+      const n = restricted ? 0 : rules[id].filter(Boolean).length
+      return `<div class="group"><div class="head"><span class="folder">${id}</span><span><b>${title}</b><small>${n ? `${n} of ${KINDS.length} go ahead on their own` : 'Asks before every change'}</small></span></div>
+        ${restricted ? '<div class="rule"><span class="note">This workspace has read sensitive data, so every change asks first here.</span></div>' : ''}
+        ${KINDS.map(([t, r], i) => `<div class="rule"><span>${t}${r ? `<small>${r}</small>` : ''}</span>${seg(!restricted && rules[id][i], restricted, `data-ws="${id}" data-i="${i}"`)}</div>`).join('')}</div>`
+    }).join('')
+  }
+  $('rules').addEventListener('click', (e) => { const b = e.target.closest('button[data-ws]'); if (!b || b.disabled) return; rules[b.dataset.ws][b.dataset.i] = b.dataset.v === '1'; drawRules() })
+  drawRules()
+
+  const base = [true, false, false, true]
+  const over = { QP: {}, BP: { 0: false } }
+  const drawDefaults = () => {
+    const row = (title, sub, on, attrs, badge) => `<div class="rule"><span>${title}${sub ? `<small>${sub}</small>` : ''}</span>${badge || ''}${seg(on, false, attrs)}</div>`
+    $('defaults').innerHTML =
+      `<div class="group"><div class="head"><span><b>New workspaces</b><small>What a workspace starts with when you connect this account there</small></span></div>
+        ${KINDS.map(([t, r], i) => row(t, r, base[i], `data-def="${i}"`)).join('')}</div>` +
+      [['QP', 'Quarterly planning'], ['BP', 'Board pack']].map(([id, title]) => {
+        const diff = Object.keys(over[id]).length
+        return `<div class="group"><div class="head"><span class="folder">${id}</span><span><b>${title}</b><small>${diff ? `Differs on ${diff}` : 'Follows the account'}</small></span></div>
+          ${KINDS.map(([t], i) => {
+            const own = i in over[id]; const on = own ? over[id][i] : base[i]
+            const badge = own ? `<button class="override" data-reset="${id}" data-i="${i}" title="Follow the account again">Differs · reset</button>` : '<span class="inherit">From account</span>'
+            return row(t, '', on, `data-ws="${id}" data-i="${i}"`, badge)
+          }).join('')}</div>`
+      }).join('')
+  }
+  $('defaults').addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return
+    if (b.dataset.def !== undefined) base[b.dataset.def] = b.dataset.v === '1'
+    else if (b.dataset.reset) delete over[b.dataset.reset][b.dataset.i]
+    else if (b.dataset.ws) { const v = b.dataset.v === '1'; if (v === base[b.dataset.i]) delete over[b.dataset.ws][b.dataset.i]; else over[b.dataset.ws][b.dataset.i] = v }
+    drawDefaults()
+  })
+  drawDefaults()
+})()
+</script>

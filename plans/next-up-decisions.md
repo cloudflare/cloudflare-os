@@ -339,6 +339,9 @@ No kernel change.
 
 ## 13. Accepting changes, and changes that go ahead on their own
 
+The write-up with three prototypes to try (two chats finishing on one gadget, an account's rules,
+and the proposed per-account default) is `plans/approvals-prototypes.html`; open it in a browser.
+
 Two different things wait for the user, and the design keeps them apart because they carry
 different risks:
 
