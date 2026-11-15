@@ -125,6 +125,13 @@ const grantNotice = (context: Context, grant: string, why: string) =>
 
 export default {
   initial: { folder: MY_DRIVE },
+  // Pre-selects the folder, or My Drive, where the agent that asked for the creation suggested. A
+  // suggestion that names none this account can add files to selects nothing, so the approver must
+  // choose rather than approve My Drive believing it is the agent's place.
+  initialValuesFromResourceUrl: async ({ resourceUrl, ui }) => {
+    const folder = await ui.folderForUrl(resourceUrl).catch(() => null);
+    return { folder, suggested: folder };
+  },
   isReady: ({ values: { folder }, acceptedResourceUrlPatterns: accepted }) =>
     typeof folder === "string" && (!needsGrant(folder, accepted) || canCreate === true),
   // `creationFolderId` in creation.ts reads this back with `parseResourceUrl`.
@@ -133,7 +140,7 @@ export default {
     return FOLDER_PATTERN.replace(":folderId", encodeURIComponent(folder.slice(folder.indexOf(":") + 1)));
   },
   render(context) {
-    const { values: { folder = null }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
+    const { values: { folder = null, suggested }, setValues, ui, acceptedResourceUrlPatterns: accepted } = context;
     return <Section>
       <Field label="Where to create it">
         <HierarchyPicker
@@ -153,11 +160,20 @@ export default {
               ? { items: [], unavailable: "Listing shared drives needs one more permission from Google. Allow it below, then select Retry." }
               : { items: page.nodes.map(toItem), nextCursor: page.nextCursor };
           }}
+          loadItem={async id => {
+            const node = await ui.getFolder(id);
+            return node && toItem(node);
+          }}
           onChange={next => setValues({ folder: next })}
           icons={ICONS}
           searchPlaceholder="Search all of Drive or paste a folder link…"
         />
       </Field>
+      {folder === suggested && folder !== MY_DRIVE && <Notice tone={folder === null ? "error" : undefined}>
+        {folder === null
+          ? "The agent suggested a place this Google account can't find or add files to. Choose where to create it."
+          : "The agent suggested this folder. Whoever it is shared with will see what is created in it."}
+      </Notice>}
       {listingGrant && grantNotice(context, listingGrant, "Google will ask to let this app \"View and download all " +
         "your Drive files\". It is used only to list your shared drives.")}
       {folder && needsGrant(folder, accepted) && canCreate === false && grantNotice(context, CREATED_FILES_GRANT,

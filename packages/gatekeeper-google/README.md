@@ -302,16 +302,20 @@ Google and no account is involved.
 
 A creation is never auto-approved. The approver picks which of their connected Google accounts to
 create the file in, and where in that account's Drive (My Drive by default, or any folder or shared
-drive the account can add files to), and the binding switches to the real file. A folder is made in
-place, by an account that also holds the Drive folder grant, without which its binding could read
-only what this app puts in it. The Docs, Sheets and Slides APIs cannot name a folder, and Drive's
-own `files.create` would lose the default `Sheet1` and fixed Slides IDs the simulations rely on, so
-those files are made in My Drive and then moved. The folder is checked before anything is made; a
-retried approval binds the file the first one made and moves it to the retry's choice, reading
-where it is rather than trusting what was recorded. Only the account the file was made in can move
-it, so another approver's retry is refused unless it chooses where the file already is (their own
-My Drive is never that). Doc edits queued against the simulation then apply to the created document
-like any other edit, and Slides changes apply to the created presentation unchanged.
+drive the account can add files to), and the binding switches to the real file. The picker opens
+on the folder the agent suggested, read from its Drive link, when it suggests one, and says the
+agent chose it until the approver chooses another. A suggestion that names no folder the account
+can add files to selects nothing, and the picker says so, so the approver must choose. A folder is
+made in place, by an account that also holds the Drive folder grant, without which its binding
+could read only what this app puts in it. The Docs, Sheets and Slides APIs cannot name a folder,
+and Drive's own `files.create` would lose the default `Sheet1` and fixed Slides IDs the
+simulations rely on, so those files are made in My Drive and then moved. The folder is checked
+before anything is made; a retried approval binds the file the first one made and moves it to the
+retry's choice, reading where it is rather than trusting what was recorded. Only the account the
+file was made in can move it, so another approver's retry is refused unless it chooses where the
+file already is (their own My Drive is never that). Doc edits queued against the simulation then
+apply to the created document like any other edit, and Slides changes apply to the created
+presentation unchanged.
 
 That works for Slides because Google gives every new presentation the same object IDs (master
 `simple-light-2`, title slide `p`, and layouts `p2` to `p12`, seen both on a personal account
