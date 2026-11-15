@@ -114,6 +114,9 @@ import { PENDING_CHECKING_COPY, PENDING_ERROR_COPY } from "./Activity";
 import { WorkshopButton, WorkshopIconButton, WorkshopInput } from "./components/WorkshopControls";
 import { WebFetchRequestCard } from "./features/web-fetch/WebFetchRequestCard";
 import { PendingChangesTray } from "./features/approvals/PendingChangesTray";
+import { StagedChangesBar } from "./features/approvals/StagedChangesBar";
+import { HoldingToggle } from "./features/approvals/HoldingToggle";
+import { chatsWithChanges, type ChatWithChanges } from "./features/approvals/chatsWithChanges";
 import {
   chatBranchPending, chatRequestIds, pendingChangeEntries, pendingChangeGroups, type PendingChange,
 } from "./features/approvals/pendingChangeGroups";
@@ -2402,6 +2405,9 @@ interface ChatInterfaceProps {
   renderExtraTab?: () => React.ReactNode;
   // The workpieces any chat proposes changes to (see AiChatMetadata.proposedChangeWorkpieces).
   onAnyChatProposedChangesChange?: (workpieceIds: readonly WorkpieceId[]) => void;
+  // Under the branch approval model, the chats with requests or code changes waiting to be
+  // accepted, for the Activity page's review tab. Not reported otherwise.
+  onChatsWithChangesChange?: (chats: readonly ChatWithChanges[]) => void;
   // The workpieces the selected chat proposes changes to (empty when none is selected or it
   // proposes nothing); see AiChatMetadata.proposedChangeWorkpieces. Under the branch approval
   // model, the gadgets that run on its branch instead (AiChatMetadata.branchGadgets), which
@@ -2605,6 +2611,7 @@ function ChatInterface({
   onSidebarResize,
   renderExtraTab,
   onAnyChatProposedChangesChange,
+  onChatsWithChangesChange,
   onSelectedChatProposedChangesChange,
   constrainChatWidth,
   onOpenGadget,
@@ -3043,6 +3050,18 @@ function ChatInterface({
     }
     // oxlint-disable-next-line exhaustive-deps -- anyProposedWorkpieces is covered by its key.
   }, [anyProposedWorkpiecesKey, chatListReady]);
+
+  // Keyed on content for the same reason.
+  const onChatsWithChangesChangeRef = useRef(onChatsWithChangesChange);
+  onChatsWithChangesChangeRef.current = onChatsWithChangesChange;
+  const withChanges = chatsWithChanges(chatList);
+  const withChangesKey = JSON.stringify(withChanges);
+  useEffect(() => {
+    if (branchApproval && chatListReady) {
+      onChatsWithChangesChangeRef.current?.(withChanges);
+    }
+    // oxlint-disable-next-line exhaustive-deps -- withChanges is covered by its key.
+  }, [withChangesKey, chatListReady, branchApproval]);
 
   // In sidebar mode, auto-select the most recent chat when none is selected.
   useEffect(() => {
@@ -4329,24 +4348,6 @@ function ChatInterface({
     }
   };
 
-  // Under the branch approval model, applies the requests no chat made that are waiting (see
-  // Overseer.acceptStagedActions()). One that fails stays in the tray with its error.
-  const [isAcceptingStaged, setIsAcceptingStaged] = useState(false);
-  const handleAcceptStaged = async () => {
-    setIsAcceptingStaged(true);
-    try {
-      const { outcome } = await overseer.acceptStagedActions();
-      toasts.add(outcome === "applied"
-        ? { title: "Requests applied", variant: "success" }
-        : { title: "A request could not be applied", description: "Retry it or deny it.", variant: "error" });
-    } catch (err) {
-      console.error("Failed to apply requests:", err);
-      toasts.add({ title: "Failed to apply requests", variant: "error" });
-    } finally {
-      setIsAcceptingStaged(false);
-    }
-  };
-
   // For the tray's Retry, which an accept under the branch approval model performs.
   const acceptChangesRef = useRef(handleAcceptChanges);
   acceptChangesRef.current = handleAcceptChanges;
@@ -4703,28 +4704,10 @@ function ChatInterface({
 
   // Under the branch approval model, outside any chat, the tray holds the requests no chat made
   // that are waiting (while the workspace has read restricted data, or behind one that failed),
-  // and this bar under it accepts them, as a chat's bar accepts the chat's.
-  const stagingBar = branchApproval && selectedChatId === null && trayPending.length > 0 ? (
-    <div className="themed-surface-inset relative flex items-center gap-2 overflow-hidden border-b border-kumo-line bg-kumo-elevated px-3.5 py-2">
-      <span className="min-w-0 flex-1 truncate text-[12px] font-medium leading-4 tracking-[-0.2px] text-kumo-default">
-        Held changes
-        <span className="font-normal text-kumo-inactive">
-          {trayPending.length === 1 ? " · 1 request to apply" : ` · ${trayPending.length} requests to apply`}
-        </span>
-      </span>
-      <Tooltip content="Apply the requests above, which were made outside any chat." asChild>
-        <WorkshopButton
-          disabled={isAcceptingStaged}
-          onClick={() => { void handleAcceptStaged(); }}
-          tone="primary"
-          className="!h-7 !cursor-pointer !rounded-md !border-transparent !shadow-none gap-1 text-[12px]"
-        >
-          <Check size={11} weight="bold" />
-          Accept changes
-        </WorkshopButton>
-      </Tooltip>
-    </div>
-  ) : null;
+  // and this bar under it accepts or discards them, as a chat's bar does the chat's.
+  const stagingBar = branchApproval && selectedChatId === null && trayPending.length > 0
+    ? <StagedChangesBar overseer={overseer} count={trayPending.length} />
+    : null;
 
   // The gadget's own code draft, docked under the tray. Accepting always merges everything the
   // chat proposes (drafts swept in, no partial accepts -- see Overseer.mergeChanges()), so the
@@ -6035,6 +6018,16 @@ function ChatInterface({
                       >
                         <Pencil size={11} />
                       </WorkshopIconButton>
+                      {/* Holding is otherwise shown and set only in the chat list's menu, out of
+                          sight while the chat is open. */}
+                      {branchApproval && currentChatMetadata && (
+                        <HoldingToggle
+                          holding={currentChatMetadata.holding === true}
+                          onHoldingChange={(holding) => {
+                            void handleSetHolding(currentChatMetadata.id, holding);
+                          }}
+                        />
+                      )}
                     </>
                   )}
 

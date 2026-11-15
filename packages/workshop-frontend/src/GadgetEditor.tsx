@@ -43,6 +43,7 @@ import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
+import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 import { useAutoApprovalChannel } from './features/approvals/autoApprovalChannel'
 import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
@@ -680,6 +681,8 @@ export default function GadgetEditor() {
   // base and the current epoch's recorded changes, plumbed from the chat subscription into the
   // code view, which layers them over the per-pin commit-derived doc base.
   const [chatChanges, setChatChanges] = useState<ChatCodeChanges | undefined>(undefined)
+  // Under the branch approval model, for the Activity page's review tab.
+  const [chatsWithChanges, setChatsWithChanges] = useState<readonly ChatWithChanges[]>([])
   // The selected chat's live (unmaterialized) change row stream, stable per chat; the code view
   // subscribes to it rather than reading rows through renders (see ChatLiveChangeRows).
   const [liveRows, setLiveRows] = useState<ChatLiveChangeRows | undefined>(undefined)
@@ -1184,6 +1187,7 @@ export default function GadgetEditor() {
 
   useEffect(() => {
     setChatChanges(undefined)
+    setChatsWithChanges([])
     setLiveRows(undefined)
     setStreamingActiveFileState(null)
     setHasCode(null)
@@ -2083,6 +2087,7 @@ export default function GadgetEditor() {
                   branchApproval={branchApproval}
                   onViewActivity={openActivity}
                   onAnyChatProposedChangesChange={setAnyChatProposedWorkpieces}
+                  onChatsWithChangesChange={setChatsWithChanges}
                   onSelectedChatProposedChangesChange={setSelectedChatProposedWorkpieces}
                   onOpenGadget={handleSelectWorkpiece}
                   outputOfWorkpiece={outputOfWorkpiece}
@@ -2262,6 +2267,14 @@ export default function GadgetEditor() {
                   view={activityView}
                   onViewChange={setActivityView}
                   autoApproval={autoApproval}
+                  branch={branchApproval ? {
+                    chats: chatsWithChanges,
+                    onOpenChat: chatId => {
+                      navigateToChat(chatId)
+                      // The chat is where its changes are accepted; on a phone the pane hides it.
+                      if (isSinglePaneLayout()) setWorkspaceVisibility('closed')
+                    },
+                  } : undefined}
                 />
               </div>
             )}

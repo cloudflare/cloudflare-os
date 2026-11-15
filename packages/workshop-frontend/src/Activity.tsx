@@ -21,6 +21,9 @@ import { safeExternalUrl } from './utils/safeExternalUrl'
 import { ReviewRequest } from './features/approvals/ReviewRequest'
 import AutoApproveConfirmDialog from './components/AutoApproveConfirmDialog'
 import { ActionFields, entryFields } from './components/ActionFields'
+import { StagedChangesBar } from './features/approvals/StagedChangesBar'
+import { chatBranchPending } from './features/approvals/pendingChangeGroups'
+import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
 export type ActivityView = 'review' | 'history' | 'auto'
 
@@ -36,6 +39,13 @@ interface ActivityProps {
   onViewChange: (view: ActivityView) => void
   // Shared with the chat: a rule changed here has to reach the tray's own list.
   autoApproval?: AutoApprovalChannel
+  // Present under the branch approval model (the `branch-approval` UI feature flag), where a
+  // chat's requests are accepted with its changes: the review tab lists each chat with changes
+  // waiting, which opens in the chat panel, and what staging holds, instead of every request.
+  branch?: {
+    chats: readonly ChatWithChanges[]
+    onOpenChat: (chatId: number) => void
+  }
 }
 
 /** Pending-status copy while the pending set is still being gathered (also in the popover). */
@@ -151,6 +161,7 @@ export default function Activity({
   view,
   onViewChange,
   autoApproval,
+  branch,
 }: ActivityProps) {
   const { status: pendingStatus, pending: pendingActions } = useActions(overseer)
   const [historyFilter, setHistoryFilter] = useState<HistoryViewFilter>('all')
@@ -209,6 +220,7 @@ export default function Activity({
   }
 
   function renderReviewContent(): ReactNode {
+    if (branch) return renderBranchReview(branch)
     if (pendingActions.length > 0) {
       return (
         <>
@@ -269,6 +281,11 @@ export default function Activity({
       )
     }
 
+    return renderNothingToReview(
+      'Requests that need your approval show up here and in the workspace header.')
+  }
+
+  function renderNothingToReview(description: string): ReactNode {
     if (pendingStatus === 'checking') {
       return (
         <div className="flex flex-1 items-center justify-center text-[13px] text-kumo-subtle">
@@ -290,12 +307,78 @@ export default function Activity({
       <ActivityNotice
         icon={<Check size={17} weight="bold" />}
         title="Nothing to review"
-        description="Requests that need your approval show up here and in the workspace header."
+        description={description}
       >
         <WorkshopButton className="mt-4" onClick={() => onViewChange('history')}>
           View history
         </WorkshopButton>
       </ActivityNotice>
+    )
+  }
+
+  // Under the branch approval model a chat's requests are accepted with its code, in the chat, so
+  // the review tab lists the chats rather than their requests. What staging holds belongs to no
+  // chat, so it is reviewed here: accepted or discarded as a whole, or denied one at a time.
+  function renderBranchReview({ chats, onOpenChat }: NonNullable<ActivityProps['branch']>): ReactNode {
+    const staged = chatBranchPending(pendingActions, null)
+    const count = chats.length + (staged.length > 0 ? 1 : 0)
+    if (count === 0) {
+      return renderNothingToReview(
+        'Chats with changes to accept, and requests held outside any chat, show up here.')
+    }
+    return (
+      <>
+        <div className={`${PANE_BAR} gap-2 px-5`}>
+          <span className="text-[12.5px] font-medium leading-[17px] tracking-[-0.15px] text-kumo-default">
+            {count} with changes to review
+          </span>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          {staged.length > 0 && (
+            <section aria-label="Held changes">
+              <StagedChangesBar overseer={overseer} count={staged.length} />
+              {staged.map(record => (
+                <div key={record.id}>
+                  {record.type === 'action' && record.applyError && (
+                    <p role="alert" className="m-0 px-5 pt-2 text-[11.5px] leading-4 text-kumo-danger">
+                      Could not apply: {record.applyError.message}
+                      {record.applyError.retryable && ' Accept the held changes to try again.'}
+                    </p>
+                  )}
+                  <ReviewRequest
+                    record={record}
+                    restricted={restricted}
+                    expanded={expandedActionId === record.id}
+                    processing={processingActions.has(record.id)}
+                    onToggle={() => toggleExpanded(record.id)}
+                    decide={{ onReject: () => void resolveAction(record, 'deny') }}
+                  />
+                </div>
+              ))}
+            </section>
+          )}
+          {chats.length > 0 && (
+            <section>
+              <h3 className="sticky top-0 m-0 border-b border-kumo-line bg-kumo-base/90 px-5 py-1 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive backdrop-blur-sm">
+                Chats
+              </h3>
+              {chats.map(chat => (
+                <ChatChangesRow key={chat.id} chat={chat} onOpen={() => onOpenChat(chat.id)} />
+              ))}
+            </section>
+          )}
+          {pendingStatus === 'checking' && (
+            <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+              Still checking for held requests…
+            </p>
+          )}
+          {pendingStatus === 'error' && (
+            <p className="m-0 px-5 py-3 text-center text-[12px] leading-4 text-kumo-inactive">
+              Could not finish checking for held requests — reload the page to try again.
+            </p>
+          )}
+        </div>
+      </>
     )
   }
 
@@ -628,6 +711,36 @@ function AutoApprovalPanel({
         ))}
       </div>
     </>
+  )
+}
+
+/** A chat with changes waiting, which opens the chat, where they are accepted. */
+const ChatChangesRow = ({ chat, onOpen }: { chat: ChatWithChanges; onOpen: () => void }) => {
+  const summary = [
+    chat.requests > 0 && (chat.requests === 1 ? '1 request to apply' : `${chat.requests} requests to apply`),
+    chat.codeChanges && 'code changes',
+    chat.holding && 'holding',
+    chat.awaitingDecision && 'waiting on your decision',
+  ].filter(part => part !== false).join(' · ')
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full cursor-pointer items-center gap-3 border-b border-kumo-line/70 px-5 py-2.5 text-left transition-colors hover:bg-kumo-elevated/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-kumo-ring"
+    >
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
+          {chat.title || 'Chat'}
+        </span>
+        <span className="mt-0.5 block truncate text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
+          {summary.charAt(0).toUpperCase() + summary.slice(1)}
+        </span>
+      </span>
+      <span className="flex-shrink-0 text-[12px] font-medium text-kumo-subtle group-hover:text-kumo-default">
+        Review
+      </span>
+      <CaretRight size={12} className="flex-shrink-0 text-kumo-inactive" />
+    </button>
   )
 }
 

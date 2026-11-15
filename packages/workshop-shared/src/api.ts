@@ -3177,7 +3177,10 @@ export type ActionLogEntry = {
 
   /**
    * True when the action was applied automatically by an auto-approval rule rather than by a human
-   * clicking Approve. Only ever set alongside state "approved" (there is no automatic rejection).
+   * clicking Approve. Only ever set alongside state "approved". An action can also be rejected
+   * automatically -- under the branch approval model, a staged action whose gatekeeper says it
+   * can never apply (see Overseer.acceptStagedActions()) -- but that is recorded as a rejection by
+   * the workspace owner, with its `applyError`, and never with this.
    */
   autoApproved?: boolean;
 

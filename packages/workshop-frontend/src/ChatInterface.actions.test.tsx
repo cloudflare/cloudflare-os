@@ -57,6 +57,7 @@ import ChatInterface from './ChatInterface'
 import { INCOMPLETE_DESCRIPTION_COPY } from './components/IncompleteDescriptionNotice'
 import { RESTRICTED_APPROVAL_COPY } from './components/RestrictedApprovalNotice'
 import { linkActionLog } from './useActions'
+import type { ChatWithChanges } from './features/approvals/chatsWithChanges'
 
 const testRoot = makeTestRoot()
 
@@ -100,7 +101,10 @@ function withChatApi(
 
 function renderChat(
   overseer: RpcStub<Overseer>,
-  props: { restricted?: boolean, selectedChatId?: number, branchApproval?: boolean } = {},
+  props: {
+    restricted?: boolean, selectedChatId?: number, branchApproval?: boolean,
+    onChatsWithChangesChange?: (chats: readonly ChatWithChanges[]) => void,
+  } = {},
 ) {
   return testRoot.render(
     <ChatInterface
@@ -108,6 +112,7 @@ function renderChat(
       overseer={overseer}
       restricted={props.restricted}
       branchApproval={props.branchApproval}
+      onChatsWithChangesChange={props.onChatsWithChangesChange}
       selectedChatId={props.selectedChatId ?? null}
       onNavigateToChat={() => {}}
       pendingConsoleLogCount={0}
@@ -483,6 +488,49 @@ describe('the branch approval model', () => {
       .find(b => b.textContent?.includes('Accept changes'))
     await act(async () => accept!.click())
     expect(acceptStagedActions).toHaveBeenCalledOnce()
+  })
+
+  it("shows holding in the open chat's header, and turns it off there", async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), holding: true },
+    ])
+    const setChatHolding = vi.fn<Overseer['setChatHolding']>(async () => {})
+    Object.assign(server.overseer as object, { setChatHolding })
+    await renderChat(server.overseer, { selectedChatId: 1, branchApproval: true })
+    await server.resolveSubscription()
+
+    const toggle = document.querySelector<HTMLButtonElement>('button[aria-pressed]')!
+    expect(toggle.textContent).toBe('Hold changes')
+    expect(toggle.getAttribute('aria-pressed')).toBe('true')
+    await act(async () => toggle.click())
+    expect(setChatHolding).toHaveBeenCalledExactlyOnceWith(1, false)
+  })
+
+  it('reports the chats with changes waiting, for the Activity page', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Busy', started: new Date(), lastActive: new Date(), pendingActions: 1 },
+      { id: 2, title: 'Idle', started: new Date(), lastActive: new Date() },
+    ])
+    const reported = vi.fn<(chats: readonly ChatWithChanges[]) => void>()
+    await renderChat(server.overseer, { branchApproval: true, onChatsWithChangesChange: reported })
+    await server.resolveSubscription()
+    expect(reported).toHaveBeenLastCalledWith([
+      { id: 1, title: 'Busy', requests: 1, codeChanges: false, holding: false, awaitingDecision: false },
+    ])
+  })
+
+  it('neither shows holding nor reports chats with changes with the model off', async () => {
+    const server = makeOverseer()
+    withChatApi(server, undefined, [
+      { id: 1, title: 'Chat', started: new Date(), lastActive: new Date(), holding: true, pendingActions: 1 },
+    ])
+    const reported = vi.fn<(chats: readonly ChatWithChanges[]) => void>()
+    await renderChat(server.overseer, { selectedChatId: 1, onChatsWithChangesChange: reported })
+    await server.resolveSubscription()
+    expect(document.querySelector('button[aria-pressed]')).toBeNull()
+    expect(reported).not.toHaveBeenCalled()
   })
 })
 

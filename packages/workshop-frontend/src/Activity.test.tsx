@@ -3,7 +3,7 @@
 
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
+import type { ActionLogEntry, ConnectedAccountsSubscriber, Overseer } from '@gadgets/workshop-shared/api'
 import type { AccountDescription, VendorDescription } from '@gadgets/workshop-shared/gatekeeper'
 
 const addToast = vi.hoisted(() => vi.fn<(options: unknown) => void>())
@@ -255,5 +255,80 @@ describe('Activity hook toggles', () => {
     expect(enableHook).toHaveBeenCalledTimes(2)
     await server.emit(bound(true))
     expect(isOn()).toBe(true)
+  })
+})
+
+describe('Activity review under the branch approval model', () => {
+  const chats = [
+    { id: 4, title: 'Plan the trip', requests: 2, codeChanges: true, holding: true, awaitingDecision: false },
+  ]
+
+  async function renderBranchReview(entries: ActionLogEntry[], onOpenChat = vi.fn<(id: number) => void>()) {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        branch={{ chats, onOpenChat }} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries })
+    flushFrames()
+    return { server, onOpenChat }
+  }
+
+  const buttons = () => [...document.querySelectorAll('button')]
+  const labelled = (label: string) => buttons().filter(b => b.textContent?.trim() === label)
+
+  it("lists each chat with changes, which opens it, rather than the chat's requests", async () => {
+    const { onOpenChat } = await renderBranchReview([entry(1, { chatId: 4 })])
+    expect(document.body.textContent).toContain('1 with changes to review')
+    expect(document.body.textContent).toContain('2 requests to apply · code changes · holding')
+    // A chat's request is accepted with the chat, so it is neither listed nor decided here.
+    expect(document.body.textContent).not.toContain('Action 1')
+    expect(labelled('Approve')).toHaveLength(0)
+
+    await act(async () => buttons().find(b => b.textContent?.includes('Plan the trip'))!.click())
+    expect(onOpenChat).toHaveBeenCalledExactlyOnceWith(4)
+  })
+
+  it('shows what staging holds, with per-request Deny but no Approve, and its failure', async () => {
+    const { server } = await renderBranchReview([
+      entry(1, { applyError: { message: 'Quota exceeded.', retryable: true } }),
+      entry(2),
+      entry(3, { chatId: 4 }),
+    ])
+    expect(document.body.textContent).toContain('2 with changes to review')
+    expect(document.body.textContent).toContain('Held changes · 2 requests to apply')
+    expect(document.querySelector('[role="alert"]')?.textContent)
+      .toBe('Could not apply: Quota exceeded. Accept the held changes to try again.')
+    expect(labelled('Deny')).toHaveLength(2)
+    expect(labelled('Approve')).toHaveLength(0)
+
+    await act(async () => labelled('Deny')[1].click())
+    expect(server.decisionCalls).toEqual(['reject:2'])
+  })
+
+  it('accepts what staging holds as a whole', async () => {
+    const acceptStagedActions = vi.fn<Overseer['acceptStagedActions']>(async () => ({ outcome: 'applied' }))
+    const server = makeOverseer()
+    Object.assign(server.overseer, { acceptStagedActions })
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        branch={{ chats: [], onOpenChat: () => {} }} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1)] })
+    await act(async () => buttons().find(b => b.textContent?.includes('Accept changes'))!.click())
+    expect(acceptStagedActions).toHaveBeenCalledOnce()
+  })
+
+  it("has nothing to review with no chat changes and nothing held, whatever a chat's requests", async () => {
+    const server = makeOverseer()
+    await view.render(
+      <Activity overseer={server.overseer} view="review" onViewChange={() => {}}
+        branch={{ chats: [], onOpenChat: () => {} }} />,
+    )
+    await server.resolveSubscription()
+    await server.resolvePendingQuery({ entries: [entry(1, { chatId: 4 })] })
+    expect(document.body.textContent).toContain('Nothing to review')
   })
 })
